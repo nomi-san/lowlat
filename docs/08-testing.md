@@ -102,7 +102,17 @@ Every byte that arrives from the network is parsed by a fuzz target:
 
 Rules:
 
-- **Corpora are committed.** A crash found once is a corpus entry forever.
+- **Crash reproducers are committed**, as named regression tests. A crash found once is
+  covered forever. This is the part of the policy that matters.
+- **Coverage corpora are committed only after minimizing.** Raw output keeps every input that
+  reached a new branch, including redundant and needlessly long ones; minimizing replaces each
+  with the shortest input reaching the same branches. On this project that was a 95 percent
+  size reduction at identical coverage, and the gap widens with every run. A corpus committed
+  raw only ever grows, and binary blobs never leave git history.
+- A coverage corpus is a **speed optimization for bounded runs**, not a correctness artifact.
+  It earns its keep on stateful targets, where reaching a path takes many mutations; on a
+  small stateless parser the fuzzer rediscovers full coverage in milliseconds and the corpus
+  is close to dead weight.
 - Targets run in continuous integration for a bounded time per commit, and unbounded nightly.
 - **A crash is a release blocker.** These parse hostile input from the network by definition.
 
