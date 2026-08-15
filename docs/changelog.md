@@ -13,7 +13,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   carries the keepalive flag and a zeroed trigger.
 - `lowlat-net`: the media socket with the full option set and the granted
   buffer readable at open, batched receive pulling a burst per syscall, and
-  batched send with segmentation offload and a per-datagram fallback.
+  batched send with segmentation offload and a per-datagram fallback, the
+  application send wake, and the event loop that drives an endpoint over them.
 
 **Notes**
 
@@ -53,6 +54,18 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   allocations**, so one field exists purely to keep an allocation alive and is
   never read through its handle. Removing it because nothing reads it would
   leave the kernel writing through dangling pointers.
+- **The wake is taken before the application rings are pulled, never after.**
+  Anything enqueued from that point on leaves the descriptor armed, so the next
+  wait returns at once. The reverse order consumes the token belonging to an
+  item that has not been read yet and leaves it sitting until the next timeout.
+  It is the same shape as a notify that never reaches its waiter: the wake
+  exists and the sequence around it loses it. Named test.
+- **Producers own their own descriptor** rather than sharing a reference count,
+  so the send path touches no atomic refcount and ownership stays single.
+- **Wake accounting is a counter, not a description.** The loop records why each
+  pass woke, so "event driven rather than polling" is a number: an idle loop
+  wakes about once per deadline it armed, where a ticking one wakes an order of
+  magnitude more. Asserted at the shell.
 - **The kernel's segmentation rules shape the send API rather than hiding
   inside it.** Every segment but the last must be the same size and all go to
   one destination, so a burst closes on a size change, a destination change, or
