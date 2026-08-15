@@ -14,7 +14,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - `lowlat-net`: the media socket with the full option set and the granted
   buffer readable at open, batched receive pulling a burst per syscall, and
   batched send with segmentation offload and a per-datagram fallback, the
-  application send wake, and the event loop that drives an endpoint over them.
+  application send wake, the event loop that drives an endpoint over them, and
+  the merged per-guest thread with its teardown.
 
 **Notes**
 
@@ -54,6 +55,19 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   allocations**, so one field exists purely to keep an allocation alive and is
   never read through its handle. Removing it because nothing reads it would
   leave the kernel writing through dangling pointers.
+- **Teardown wakes before it joins.** Setting the state and joining strands the
+  thread in its wait until the deadline expires, which turns a clean disconnect
+  into a visible hang. The state is set, the loop's descriptor is notified, and
+  only then is the thread joined; teardown also runs from `Drop`, so a caller
+  who forgets is not the difference between a clean exit and a stranded loop.
+- **The teardown test's threshold sits below the loop's wait cap, deliberately.**
+  At or above it the test passes without the wake at all, because the thread
+  times out into the same check and joins looking prompt. Only a threshold below
+  the cap can distinguish being woken from timing out.
+- **No thread raises its own priority**, and the crate says why where someone
+  would otherwise add it: a library outranking its host process's interface
+  thread is a priority inversion that has shipped as a hard hang. The process
+  class is the lever that works and it belongs to the application.
 - **The wake is taken before the application rings are pulled, never after.**
   Anything enqueued from that point on leaves the descriptor armed, so the next
   wait returns at once. The reverse order consumes the token belonging to an

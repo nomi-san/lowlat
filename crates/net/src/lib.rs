@@ -26,12 +26,14 @@
     )
 )]
 
+pub mod guest;
 pub mod recv;
 pub mod send;
 pub mod shell;
 pub mod socket;
 pub mod wake;
 
+pub use guest::{Guest, Running};
 pub use shell::{Shell, Stats, Turn, Woke};
 pub use socket::{DEFAULT_TTL, RECV_BATCH, RECV_SLOT, Socket};
 pub use wake::{Wake, WakeHandle};
