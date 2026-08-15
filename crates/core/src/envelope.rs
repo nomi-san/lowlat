@@ -161,13 +161,33 @@ impl Envelope {
             .len()
             .checked_add(ENVELOPE_LEN)
             .ok_or(Error::Oversized)?;
+        let body = out
+            .get_mut(CIPHERTEXT_OFFSET..total)
+            .ok_or(Error::BufferTooSmall)?;
+        body.copy_from_slice(plaintext);
+        self.seal_in_place(counter, plaintext.len(), out)
+    }
+
+    /// Encrypt cleartext that is **already** sitting at `out[ENVELOPE_LEN..]`.
+    ///
+    /// Lets a caller build a packet directly into its send buffer and wrap it
+    /// without a second copy, which is the difference between one and two
+    /// passes over every byte on the data path.
+    pub fn seal_in_place(
+        &self,
+        counter: u64,
+        plaintext_len: usize,
+        out: &mut [u8],
+    ) -> Result<usize> {
+        let total = plaintext_len
+            .checked_add(ENVELOPE_LEN)
+            .ok_or(Error::Oversized)?;
         if total > crate::MAX_DATAGRAM {
             return Err(Error::Oversized);
         }
         let out = out.get_mut(..total).ok_or(Error::BufferTooSmall)?;
 
         let (header, body) = out.split_at_mut(CIPHERTEXT_OFFSET);
-        body.copy_from_slice(plaintext);
 
         let nonce_bytes = self.nonce_bytes(counter);
         let nonce = GenericArray::from_slice(&nonce_bytes);
@@ -194,7 +214,7 @@ impl Envelope {
         // Reproduced for byte fidelity. A peer never reads it.
         // The ceiling check above bounds the plaintext far below u16::MAX,
         // so the fallback is unreachable; it exists so no cast can truncate.
-        let size = u16::try_from(plaintext.len())
+        let size = u16::try_from(plaintext_len)
             .unwrap_or(u16::MAX)
             .wrapping_add(SIZE_FIELD_BIAS);
         let Some(s) = dst.get_mut(SIZE_OFFSET..SIZE_OFFSET + 2) else {

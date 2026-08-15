@@ -47,6 +47,7 @@ pub mod message;
 pub mod packet;
 pub mod send;
 pub mod seq;
+pub mod session;
 pub mod video;
 
 pub use error::{Error, Result};
