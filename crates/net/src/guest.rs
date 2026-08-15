@@ -34,8 +34,11 @@ pub struct Running {
 impl Running {
     /// True once teardown has begun. Check it once per pass.
     ///
-    /// `Acquire` pairs with the `Release` in the teardown, so everything the
-    /// stopping side did before signalling is visible here.
+    /// Acquire, paired with the Release in the teardown. Nothing is published
+    /// through the flag today, so Relaxed would also be correct; the pairing is
+    /// the idiomatic contract for a signal and costs nothing on a path taken
+    /// once per session. What actually closes the race is the wake, not the
+    /// ordering: the flag alone cannot pull a thread out of its wait.
     pub fn stopping(&self) -> bool {
         self.stop.load(Ordering::Acquire) != 0
     }
@@ -89,8 +92,8 @@ impl Guest {
     /// Idempotent, and called from `Drop` as well, so a caller that forgets is
     /// not the difference between a clean exit and a stranded thread.
     pub fn stop(&mut self) {
-        // Release, so the loop sees everything done before this once it
-        // observes the flag.
+        // Release, pairing with the loop's Acquire. See `Running::stopping`:
+        // the ordering is the contract, the wake is what makes it prompt.
         self.running.stop.store(1, Ordering::Release);
         // Then wake it. Setting the flag alone leaves a thread parked in its
         // wait until the deadline expires.
@@ -228,6 +231,23 @@ mod tests {
             took < cap / 2,
             "teardown took {took:?} against a {cap:?} wait, so the thread timed out rather than being woken"
         );
+    }
+
+    /// Churn. A teardown race shows up across many cycles or not at all, and
+    /// this is also the seed of the connect-and-teardown soak, which is where
+    /// per-cycle leaks in descriptors and threads become visible.
+    #[test]
+    fn many_spawn_and_teardown_cycles_all_complete() {
+        let cycles = 64;
+        for _ in 0..cycles {
+            let (mut guest, bound, passes) = spawn();
+            bound.recv_timeout(Duration::from_secs(5)).expect("bound");
+            guest.stop();
+            assert!(
+                passes.recv_timeout(Duration::from_secs(1)).expect("passes") > 0,
+                "a cycle produced no passes"
+            );
+        }
     }
 
     #[test]

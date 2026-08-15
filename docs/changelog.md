@@ -55,6 +55,18 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   allocations**, so one field exists purely to keep an allocation alive and is
   never read through its handle. Removing it because nothing reads it would
   leave the kernel writing through dangling pointers.
+- **This crate adds no model-checking obligation, and that is a finding rather
+  than a skip.** Its batches are single threaded by construction, the
+  application seam is a call rather than a ring, and the one shared word is a
+  teardown flag carrying no payload: a model of it passes under relaxed
+  ordering too, so it could not fail. What closes the teardown race is the wake
+  descriptor, which a model checker cannot represent, because it cannot execute
+  a syscall. The primitives that do carry the obligation stay model checked.
+- **ThreadSanitizer is the checked build here**, and it runs clean over every
+  test in the crate. It covers what the model checker cannot: kernel-mediated
+  concurrency across a real spawn boundary.
+- A churn test over spawn and teardown cycles covers what a single pass cannot,
+  and seeds the connect-and-teardown soak.
 - **Teardown wakes before it joins.** Setting the state and joining strands the
   thread in its wait until the deadline expires, which turns a clean disconnect
   into a visible hang. The state is set, the loop's descriptor is notified, and

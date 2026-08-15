@@ -205,7 +205,9 @@ clamp for both framings already landed in Phase 1 and is not re-litigated here.
 - [ ] Per-datagram TTL applied and **restored** around a mapping probe.
 - [ ] Application send wake via `eventfd`.
 - [ ] Teardown that wakes every waiter.
-- [ ] `loom` on every new ring and atomic handoff; `unsafe` confined to thin syscall wrappers.
+- [x] `unsafe` confined to thin syscall wrappers, with the crate stating why `miri` cannot
+  reach them.
+- [x] Concurrency assurance, per the note below.
 
 **Gate:**
 
@@ -227,6 +229,19 @@ clamp for both framings already landed in Phase 1 and is not re-litigated here.
    is not a preview of the shell; this is where the real one takes over.
 8. Ten thousand connect and teardown cycles show no per-cycle growth in memory, threads, or
    descriptors. Nightly.
+
+**Note on concurrency assurance.** The rule is that every ring and every atomic handoff is
+model checked. **This crate adds neither.** Its receive and send batches are single threaded by
+construction, the application seam is a call rather than a ring, and the one shared word is a
+teardown flag that publishes no payload -- a model of it passes under relaxed ordering too, so
+it could not fail and would prove nothing. What actually closes the teardown race is the wake
+descriptor, which a model checker cannot represent at all, because it cannot execute a syscall.
+
+So the obligation is met where it applies rather than performed where it does not. The
+primitives in `lowlat-common` remain model checked and were shown capable of failing at
+[Phase 0](#phase-0---workspace-and-common); the checked build here is **ThreadSanitizer**,
+which does cover kernel-mediated concurrency, and a churn test over spawn and teardown cycles
+covers what a single pass cannot.
 
 **Note on gate 8.** The lesson behind this soak is a crypto library leaking per-thread state
 for every thread that touched it, at roughly 11 KB per connect cycle. **That mechanism cannot
