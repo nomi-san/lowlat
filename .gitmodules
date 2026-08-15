@@ -1,0 +1,4 @@
+[submodule "third_party/matoya"]
+	path = third_party/matoya
+	url = https://github.com/parsec-cloud/libmatoya
+	branch = stable
