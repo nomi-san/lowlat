@@ -30,6 +30,8 @@ or a typed failure.
   chained translators, hairpin, a seeded path with loss, duplication,
   reordering, jitter, and hop-limited delivery.
 - The topology matrix, each case stating the outcome it expects.
+- The recovery gate: ten thousand messages across a degraded path, delivered
+  and in order.
 
 **Notes**
 
@@ -82,8 +84,19 @@ or a typed failure.
   failure. Two pairs differ by a single behaviour flag and produce opposite
   outcomes, which is what shows the harness can report both.
 
-**Still to land:** the namespace fixtures, the two-machine run, and the fuzz
-targets.
+- **Recovery figures**, ten thousand messages on one channel: a clean path
+  delivers them in 440 ms of simulated time; five percent loss with five percent
+  reordering takes 4530 ms and discards 1323 datagrams; twenty percent loss with
+  ten percent reordering and five percent duplication takes 24705 ms and
+  discards 8644, and still converges with nothing lost or reordered at the
+  application. The order-of-magnitude cost at five percent is the in-order
+  channel stalling behind each gap until the retransmission arrives, which is
+  the expected shape and is worth remembering when reading a freeze.
+- A clean run is compared against a lossy one in the same test, because a
+  recovery suite where the conditions silently failed to apply would otherwise
+  pass while measuring nothing.
+
+**Still to land:** the namespace fixtures and the two-machine run.
 
 ## 1: protocol core (2026-08-16)
 
