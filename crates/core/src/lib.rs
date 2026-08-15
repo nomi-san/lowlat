@@ -40,6 +40,7 @@ extern crate std;
 
 pub mod channel;
 pub mod congestion;
+pub mod conn;
 pub mod control;
 pub mod envelope;
 pub mod error;

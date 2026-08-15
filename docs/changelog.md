@@ -3,6 +3,53 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2: connectivity (in progress)
+
+The punch, sans-IO like the rest of the core. Candidates in, checks out, a path
+or a typed failure.
+
+**Added**
+
+- `stun`: the check codec. Binding requests carrying the attribute set and order
+  a peer expects, binding responses carrying the address a request was observed
+  from, integrity and fingerprint over both.
+- `conn`: the punch state machine. Candidate table, check schedule, the
+  once-per-attempt mapping probe, first-answer-wins path selection, and a typed
+  failure when the window closes.
+- An output carries a destination and a send-time TTL, so a probe cannot be
+  emitted without the shell being told to restore the socket afterwards.
+- `hmac` and `sha1`, default features off, asserted allocation free rather than
+  assumed to be.
+
+**Notes**
+
+- **The check length field is written twice.** Integrity covers a message whose
+  length claims to end after the integrity attribute, while the length left on
+  the wire claims to end after the fingerprint. Hashing the bytes as received
+  fails every message. The digest is fed a substituted value instead of the
+  message being copied and edited.
+- **Integrity and fingerprint must be adjacent and last**, and a message outside
+  52 to 256 bytes is refused before parsing. A peer rejects both cases with no
+  diagnostic, so the codec rejects at exactly the same boundaries.
+- **The mapping probe is emitted once per attempt, not once per candidate.** It
+  exists to open the local mapping, not to reach anyone, so repeating it per
+  candidate buys nothing and spends budget.
+- **There are two passwords and swapping them still authenticates.** A check we
+  send is signed with the peer's password; a check we receive was signed with
+  ours. Both directions carry a test that fails if they are exchanged.
+- **The window is 7500 ms at a 500 ms per-candidate cadence**, so an attempt has
+  about fifteen checks per candidate and no slow retry tier behind it. A
+  candidate that cannot answer must therefore never be admitted, which is why a
+  gateway mapping outside globally routable space is discarded rather than
+  offered.
+- Transaction identifiers are derived from a per-session seed rather than
+  generated. The identifier is echoed rather than validated and integrity is
+  what authenticates, so deriving it keeps the core free of a random number
+  generator and makes a failing run replayable from its seed alone.
+
+**Still to land:** the simulator, the namespace fixtures, the two-machine run,
+and the fuzz targets.
+
 ## 1: protocol core (2026-08-16)
 
 Sans-IO, `no_std`, allocation free. Bytes in, bytes out, time as a parameter.
