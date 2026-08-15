@@ -124,24 +124,63 @@ gate is satisfied where the risk actually is.
 ## Phase 2 - Connectivity and the simulator
 
 - [ ] Connectivity checks on the shared socket, demultiplexed per [01 §2](01-protocol.md).
-- [ ] Candidate gathering, server-reflexive discovery, punch state machine, all sans-IO.
-- [ ] Relay client (RFC 5766) including allocation, permissions, channel binding, and consent.
+- [ ] Candidate intake, server-reflexive discovery, punch state machine, all sans-IO.
+- [ ] Transaction identifiers derived from a per-session seed, so the core still needs no
+  random number generator ([00-overview.md](00-overview.md) D4).
 - [ ] `lowlat-sim`: injected time, scripted loss, reordering, duplication, jitter, and a
   topology model.
 - [ ] Network namespace fixtures with real kernel address translation.
+- [ ] Fuzz targets: binding request, binding response, attribute parsing
+  ([08 §6](08-testing.md)).
 
 **Gate:**
 
-1. **Topology matrix green in the simulator and in namespaces:** full cone, restricted cone,
-   port restricted, symmetric, carrier-grade, and hairpin.
-2. Relay fallback succeeds when direct connectivity fails.
+1. **The topology matrix, each case with its expected outcome stated**, in the simulator and in
+   namespaces. Full cone, restricted cone, port restricted, and hairpin establish a direct
+   path; symmetric and carrier-grade report `probe timeout` and must not report success. Every
+   fixture is shown capable of failing before it is trusted, because "green" over a matrix
+   whose interesting cases are failures is otherwise indistinguishable from a broken harness.
+2. **A real session between two machines on the development network**: candidates exchange,
+   checks pass, media flows. Those machines share a subnet, so this succeeds on host candidates
+   and is the end-to-end check on real sockets, **not** a result about address translation
+   ([08 §5](08-testing.md)).
 3. A v4-mapped peer address is classified as IPv4. *Named regression test.*
-4. Relay framing overhead is accounted for in receive sizing; a full-size datagram survives
-   the relay path. *Named regression test.*
-5. Five percent uniform loss and five percent reordering: the stream recovers with bounded
-   freeze and no reference-chain break, over ten thousand simulated frames.
+4. **A probe leaves the socket TTL at the value it found.** *Named regression test.* A
+   probe-scoped TTL that is never restored caps the media path at a few hops, which presents as
+   a connection that establishes and then carries nothing over any distance.
+5. Five percent uniform loss and five percent reordering across ten thousand simulated
+   messages: every message is delivered, in order, and recovery stays inside the
+   retransmission bound. *The frame-level form of this, bounded freeze with no reference chain
+   broken, belongs to Gate A, where frames exist.*
 
-**Not in scope:** real sockets outside the fixtures.
+**Not in scope:** the relay (Phase 2b); gateway port mapping ([03 §6](03-connectivity.md));
+real sockets outside the fixtures and the two-machine run.
+
+---
+
+## Phase 2b - Relay
+
+**Scheduled after Gate A, not after Phase 2.** Nothing before Gate A depends on it, and it has
+no test surface until Phase 2's fixtures exist. Kept here because it is connectivity work and
+belongs beside the rest of it; the plan's document order and its commit order differ for this
+one item only.
+
+- [ ] Relay client (RFC 5766): allocation, permissions, channel binding, refresh, and consent.
+- [ ] The relayed address is advertised as an ordinary candidate, so the peer needs no relay
+  support of its own ([03 §7](03-connectivity.md)).
+
+**Gate:**
+
+1. Relay fallback succeeds when direct connectivity fails, in the simulator and in the
+   symmetric namespace fixture.
+2. Relay framing overhead is accounted for in receive sizing; a full-size datagram survives the
+   relay path. *Named regression test.*
+3. A peer that does not answer checks arriving from the relayed address produces a typed
+   outcome rather than a path that silently carries nothing.
+
+**Scope:** client side only, against an ordinary external relay server. No server, no default
+address compiled in, and reaching the relay over a stream transport is deferred. The datagram
+clamp for both framings already landed in Phase 1 and is not re-litigated here.
 
 ---
 
@@ -327,4 +366,11 @@ from a source change.
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
 
+- 2026-08-16: Phase 2 split. The relay moves to Phase 2b, scheduled after Gate A: nothing
+  before Gate A depends on it, it has no test surface until Phase 2's fixtures exist, and its
+  datagram clamp already landed in Phase 1. Gateway port mapping leaves the phase entirely.
+  Gate 1 now states an expected outcome per topology instead of "green", because half the
+  matrix is expected to fail. Gate 5 loses its frame-level wording, which needed an encoder
+  that does not exist until Phase 5. Two gate items added: the two-machine end-to-end run, and
+  the TTL restore regression.
 - 2026-08-15: plan created.

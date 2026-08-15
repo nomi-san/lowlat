@@ -84,9 +84,12 @@ translation, and hairpin.
   no state behind.
 - They require elevated privilege to create, which is the one place the test suite needs it.
   The suite skips them with a clear message rather than failing when it is unavailable.
-- **This tier exists because the developer network is symmetric carrier-grade translation**,
-  under which classic hole punching is supposed to fail. Green connectivity tests on that
-  network would mean nothing; the failure path would be all that was ever exercised.
+- **This tier exists because the development network cannot produce a traversal at all.** The
+  two machines on it share a subnet, so a direct connection between them succeeds on host
+  candidates without traversing anything, and the upstream path is carrier-grade translated
+  with no second site behind it to connect from. One case passes for the wrong reason and the
+  other cannot be run, so a green connectivity result on that network says nothing about the
+  five topologies that are not it.
 
 ## §6 Fuzzing
 

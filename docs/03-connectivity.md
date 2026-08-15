@@ -123,6 +123,16 @@ is reachable even under symmetric translation.
   shutdown expires rather than persisting.
 - Discovery failure is not an error. It is the common case on networks where the feature is
   disabled, and it must not delay the punch. Gathering proceeds without it.
+- **A mapped candidate whose external address is not globally routable is discarded, never
+  advertised.** Shared address space, private ranges, link-local, and loopback all fail that
+  test. Offering one spends the whole punch budget probing an address nothing can reach.
+
+**Deferred, and not part of the first connectivity phase** ([impl-plan.md](impl-plan.md)). The
+discovery mechanism cannot sit behind the sans-IO boundary, the benefit is opportunistic by
+construction, and on a carrier-grade translated upstream it is worse than absent: the gateway
+returns its own WAN address, that address is itself shared address space, and the rule above
+then discards the only candidate the whole mechanism produced. The escalation path in §8 does
+not depend on it, because the relay is ours.
 
 ## §7 Relay
 
@@ -152,8 +162,14 @@ Requirements:
   small control packets pass. It presents as a working connection that never shows video, and
   it is independent of the network. Sizing is specified in [02 §5](02-io-shell.md) and is
   derived from the protocol ceiling plus a fixed relay margin.
-- Both transports are supported for reaching the relay, since the plain one is blocked by some
-  networks.
+- **Reaching the relay over a stream transport is deferred.** It cannot sit behind the sans-IO
+  boundary, where there is no async runtime and no transport security, so it is a shell concern
+  if it is ever wanted. The datagram transport is the whole of the first implementation.
+
+**Scheduled after Gate A** ([impl-plan.md](impl-plan.md) Phase 2b). The host is a relay
+*client* against an ordinary external server. It is not a relay server, it does not run one
+alongside itself, and it does not reach one over loopback; a design that co-locates the two is
+a different component solving a different problem and nothing here is derived from it.
 
 ## §8 Policy and the ladder
 
