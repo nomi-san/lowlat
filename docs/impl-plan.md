@@ -133,7 +133,7 @@ gate is satisfied where the risk actually is.
 - [x] Fuzz targets: binding request, binding response, attribute parsing
   ([08 §6](08-testing.md)).
 
-**Gate:**
+**Gate:** passed 2026-08-16.
 
 1. [x] **The topology matrix, each case with its expected outcome stated**, in the simulator and in
    namespaces. Full cone, restricted cone, port restricted, and hairpin establish a direct

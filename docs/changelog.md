@@ -3,7 +3,7 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
-## 2: connectivity (in progress)
+## 2: connectivity (2026-08-16)
 
 The punch, sans-IO like the rest of the core. Candidates in, checks out, a path
 or a typed failure.
@@ -135,8 +135,19 @@ or a typed failure.
   unauthenticated source address would let anyone able to reach the socket
   decide where we send.
 
-**Still to land:** nothing. Both halves of the two-machine gate now pass across
-the wide area.
+**Gate closed 2026-08-16.**
+
+```
+matrix:   10 topologies simulated, 6 against a real kernel, 0 unexpected
+wide area: both sides established between two networks, 32 ms to first path
+recovery: 10000 messages at 5 percent loss and reorder, in order, 4530 ms
+fuzz:     check parser 35.3M executions, no crash
+tests:    206 passed; clippy, fmt, ascii clean
+```
+
+The wide-area run is the item that earned its place: both synthetic tiers were
+green while a one-sided failure sat in the engine, because in every synthetic
+case both sides advertised addresses that were genuinely reachable.
 
 ## 1: protocol core (2026-08-16)
 
