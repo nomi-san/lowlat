@@ -23,13 +23,15 @@ before it is unverified in the only way that counts.
 
 ## Prerequisites
 
-- [ ] **Session corpus captured.** A recorded exchange between a stock host and a stock
-  client, with the session key, sufficient to replay both directions offline. Phase 1's gate
-  depends on it. Capturing it before Phase 1 rather than during is deliberate: it is the only
-  ground truth that catches wire drift at the moment the code is written rather than weeks
-  later.
+- [x] **Session corpus captured** (2026-08-15). WAN 1080p60, 112 s, 438506 records, full
+  coverage including a 529-fragment message, nack-flagged acknowledgements, and 11130
+  retransmissions. Held outside the repo; the path and its handling rules are in project
+  memory, not here, because the file carries a live session key.
 - [ ] Test peer available: a stock client on a second machine or VM, reachable over the
   development network.
+
+**Gap to close later:** the recording covers the 256-bit cipher only. The legacy 128-bit path
+has no corpus and its Phase 1 coverage is therefore structural rather than byte-exact.
 
 ---
 

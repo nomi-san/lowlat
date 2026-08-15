@@ -140,6 +140,26 @@ Each entry is the next sequence number the sender expects on that channel, so it
 everything below it. Acknowledgements are **fire and forget**. They are never placed in a
 reliable ring and never retransmitted; doing so deadlocks the ring.
 
+### §5.3 Message framing and fragmentation
+
+A channel carries **messages**, not packets. A message is laid out across one or more
+consecutive sequence numbers:
+
+```
+first fragment body:  [u32 be total_length][caller header][payload ...]
+later fragment bodies: [payload continues ...]
+```
+
+`total_length` counts the caller's header plus its payload, and **excludes its own four
+bytes**. Fragment count is `ceil((total_length + 4) / body_capacity)`.
+
+`body_capacity` is the per-fragment budget for everything after the 7-byte packet header. At
+the default datagram size it is 1193, which is why 1193 and 1200 both appear: 1193 of body
+plus 7 of header is the 1200-byte cleartext.
+
+The last fragment carries flag `0x20`; earlier ones do not (§5.1). **Emit this correctly, but
+never depend on it when reassembling** (§7).
+
 ## §6 Channels
 
 19 channels, index 0 to 18, each an independent reliable ordered stream with its own sequence
@@ -150,7 +170,13 @@ space, rings, and cumulative acknowledgement.
 | 0 | control and input |
 | 1 | video, stream 0 |
 | 2 | audio |
-| 3 and above | additional streams and application data |
+| 3 | video, stream 1 |
+| 4 | video, stream 2 |
+| 5 to 18 | unused |
+
+Video stream `n` maps to channel 1 for `n = 0` and `n + 2` otherwise. v1 runs stream 0 only,
+but the mapping is fixed and channels 3 and 4 are reserved for it rather than being general
+purpose.
 
 Sequence spaces are strictly per channel. A shared receive ring keyed by a per-channel sequence
 collides and corrupts.
@@ -173,8 +199,15 @@ A receiver drops a packet whose sequence is below the current base, or whose slo
 occupied, and counts it. Otherwise it stores the payload, marks the slot ready, and advances
 the base across every contiguous ready slot.
 
-Messages larger than one payload are fragmented across consecutive sequence numbers on the
-channel, with `0x20` marking the final fragment. Reassembly walks forward from the base.
+**Reassembly is length-driven, not flag-driven.** A reader at the base reads the four-byte
+length prefix from that slot's body, computes how many fragments the message occupies, waits
+until all of them are present, then concatenates their bodies, skipping the prefix on the first
+and clearing each slot as it advances.
+
+The `0x20` flag plays no part in this. A reassembler that stopped at the flag instead of at the
+declared length would work against a well-behaved sender and fail on a truncated or reordered
+tail, which is exactly when it matters. Emit the flag for the peer's validation; ignore it on
+receive.
 
 ## §8 MTU and path probing
 
@@ -240,10 +273,23 @@ silently discards whole datagrams and presents as "control works, video does not
   since the last one, and immediately on a receive that advances a base or reveals a gap.
 - **Round trip estimate** is an exponentially weighted moving average, `rtt = rtt * 0.9 +
   sample * 0.1`, sampled when an acknowledgement clears a slot carrying a send timestamp.
-- **Retransmission timeout** is derived from the round trip estimate scaled and offset by the
-  active congestion level (§10).
-- **Negative acknowledgement** (`0x10` with `0x02`) names a specific gap and triggers fast
-  retransmission without waiting for the timeout.
+- **Retransmission timeout** is per fragment and exponential in its retry count:
+
+  ```
+  rto = clamp(2 * (retransmissions + 1) * srtt, 50 ms, 1000 ms)
+  resend when time_since_last_send > rto + 30 ms
+  ```
+
+  The 30 ms is a flat grace on top of the clamp, not part of it. Note this is **not** derived
+  from the congestion level table; that table serves a different purpose (§10).
+- **Negative acknowledgement** (`0x10` with `0x02`) triggers fast retransmission of everything
+  below the named sequence, without waiting for the timeout. **Once per fragment per
+  acknowledgement**, tracked by a latch on the fragment, so a burst of nacks cannot turn into a
+  retransmission storm.
+- **Outstanding fragments are capped at 100 per channel.** A sender at the cap does not send; it
+  marks the fragment deferred and lets the retransmission scan release it as the window drains.
+  The same 100 is the congestion controller's window floor (§10), so it is one constant with
+  three consumers and must not be tuned in one place alone.
 - **Stall escape:** when a gap cannot be filled and the window is starving, the reader skips
   forward. It MUST jump to the **furthest** occupied slot, never the nearest. Jumping to the
   nearest crawls the flow-control window and has cost a 20x throughput regression.
@@ -278,11 +324,21 @@ rate = clamp(current, min_rate, max_rate)
 
 Levels:
 
-| Level | Threshold | Retransmit timing | Notes |
+| Level | Stale ratio | Staleness threshold | Notes |
 |---|---|---|---|
-| 0 | 0.0 | legacy | Fires on any stale packet once the window exceeds 100. This is the most aggressive setting, not a disabled one. Do not use it as a fallback for an out-of-range value. |
-| 1 | 0.15 | `rtt * 1.1 + 20 ms` | Default. Quick to retransmit. |
-| 2 | 0.35 | `rtt * 1.5 + 50 ms` | Allows more time for acknowledgement. |
+| 0 | 0.0 | none | Fires on any stale fragment once the window exceeds 100. This is the most aggressive setting, not a disabled one. Do not use it as a fallback for an out-of-range value. |
+| 1 | 0.15 | `srtt * 1.1 + 20 ms` | Default. |
+| 2 | 0.35 | `srtt * 1.5 + 50 ms` | Tolerates more delay before counting a fragment stale. |
+
+**The staleness threshold is not a retransmission timer** (§9). It classifies an outstanding
+fragment as stale for the purpose of the ratio above. A fragment counts as stale if it is older
+than the threshold, or if the smoothed round trip has grown past its own budget scaled the same
+way, or if it has already been retransmitted, fast-retransmitted, or deferred.
+
+**Where `stale` comes from.** The retransmission scan produces it as a side effect of walking
+the outstanding fragments, and writes it where the controller reads it. The two are one loop
+split across two functions, not independent subsystems, and changing the scan changes the
+controller's input.
 
 The resulting rate actuates the **encoder bitrate** through a live reconfigure. It does not
 pace the socket. The reconfigure MUST NOT reinitialize the encoder and MUST NOT force a
@@ -341,7 +397,54 @@ length **includes the terminator**; omitting it causes a silent parse failure on
 Cursor images on the wire are **PNG, not raw pixels**. Cursor position is in stream space and
 requires the host-to-client transform, including a width and height swap on rotated displays.
 
-### §11.3 Session initialization
+### §11.3 Video framing
+
+Video is not a control message. It rides the ordinary message framing of §5.3 on its own
+channel, with a 10-byte header ahead of the bitstream:
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 4 | frame identifier, **little endian** |
+| 4 | 2 | width, little endian |
+| 6 | 2 | height, little endian |
+| 8 | 1 | reserved, `0x01` |
+| 9 | 1 | flags |
+
+Flags: bits 0 to 2 rotation, bit 3 keyframe, bit 4 fullscreen.
+
+Note the endianness change. Sequence numbers and message lengths are big endian; these fields
+are little endian. Getting this backwards produces a plausible-looking frame with absurd
+dimensions.
+
+Three traps, all of which have cost time already.
+
+**Rotation is one-based.** `0` means unspecified, and upright is `1`. A host that emits `0x00`
+for an unrotated display is emitting "unknown", not "none". Conversely a receiver that reads
+`0x01` and concludes the display is rotated has misread it by one; a quarter turn is `2`.
+
+**The keyframe bit is not reliable on receive.** Stock hosts leave it clear on every frame,
+including keyframes. Confirmed across a 112 second recording covering 4883 video messages: the
+flags byte was `0x01` on every single one, including both frames whose first unit was a
+parameter set. So a receiver must classify keyframes from the bitstream, by finding the start
+code and testing the unit type for a parameter set or an instantaneous refresh. Check the bit
+first in case some peer does set it, but never rely on it alone. **As a host we do set it**,
+since it is strictly more informative and costs nothing.
+
+**The frame identifier is not a frame counter.** It is an encoder generation counter and stays
+constant across a whole session's frames, incrementing only when the encoder is reconfigured.
+It went from 1 to 2 across the same 112 second recording. Anything using it to order or
+deduplicate frames is broken.
+
+Within the first fragment's body, and remembering the four-byte length prefix from §5.3, the
+absolute offsets are: length at 0, frame identifier at 4, dimensions at 8 and 10, reserved at
+12, flags at 13, start code at 14, and the first unit's type byte at 18.
+
+### §11.4 Audio framing
+
+Audio rides channel 2 with its own short header ahead of an Opus packet. The exact layout is
+recorded at Phase 10 with the rest of the audio work; it is not on the Phase 1 path.
+
+### §11.5 Session initialization
 
 The connecting side sends opcode 11 with a JSON body declaring its preferences: maximum
 resolution, codec capability, colour mode, and feature flags. The host is authoritative and
@@ -370,7 +473,13 @@ in v1 (D7).
 | envelope size | 29 | §3 |
 | data header size | 7 | §5.1 |
 | group ack size | 83 | §5.2 |
+| message length prefix | 4 | §5.3, big endian, first fragment only |
+| body capacity per fragment | 1229 - 36 = 1193 at the default | §5.3, tracks the datagram size |
 | channel count | 19 | §6 |
+| outstanding fragment cap | 100 | §9, also the congestion window floor |
+| retransmission floor | 50 ms | §9 |
+| retransmission ceiling | 1000 ms | §9 |
+| retransmission grace | 30 ms | §9, added after the clamp |
 | peer ring depth | 4000 | §7, bounds the send window |
 | peer slot payload capacity | 2000 | §7 |
 | datagram size, floor and default | 1229 | §8, yields 1193 payload |
