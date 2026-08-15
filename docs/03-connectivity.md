@@ -49,13 +49,26 @@ production stream ([02 §5](02-io-shell.md)).
 
 ## §3 Candidates
 
-Three kinds, in the order they become available:
+Four kinds, in the order they become available:
 
 | Kind | Source |
 |---|---|
 | host | local interface enumeration |
 | server reflexive | binding response from a public server |
+| peer reflexive | the source address of an authenticated check we received |
 | mapped | a port mapping created on the gateway (§6) |
+
+**Peer-reflexive candidates are not optional.** Under symmetric translation the address a peer
+advertised was created toward a reflexive server, and its packets to us leave from a different
+mapping entirely, so the advertised address is not reachable and the observed one is the only
+address that is. A host that ignores it will answer such a peer's checks while never finding a
+path of its own, and a host that never finds a path never sends media. The failure is
+one-sided and looks like the peer connecting successfully, which is what makes it easy to
+miss.
+
+The source of a **verified** check is admitted; nothing weaker is. Authentication means the
+sender holds the password from the credential exchange, and an unauthenticated source address
+would let anyone able to reach the socket point us anywhere.
 
 Gathering rules:
 

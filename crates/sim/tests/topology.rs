@@ -212,6 +212,25 @@ fn one_symmetric_side_times_out() {
     }));
 }
 
+/// A symmetric side and a peer that filters nothing. The advertised address is
+/// useless in one direction only: our checks reach the peer, because it admits
+/// anyone, but its checks go to the mapping we made toward the reflexive server
+/// and land on a port nothing is listening on.
+///
+/// The peer can only get there by using the address our check actually arrived
+/// from. This is the case that requires it, and the pairing a real wide-area run
+/// produced on the first attempt.
+#[test]
+fn a_symmetric_side_is_reached_at_the_address_its_checks_come_from() {
+    assert_established(punch(|sim| {
+        pair(
+            sim,
+            Nat::symmetric(public_ip(1)),
+            Nat::full_cone(public_ip(2)),
+        )
+    }));
+}
+
 /// Two layers of translation do not break a punch on their own. What matters is
 /// the mapping behaviour, not the number of layers, and a carrier translator
 /// that keeps mappings endpoint independent is punchable.

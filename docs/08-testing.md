@@ -101,12 +101,13 @@ sides time out. The same length makes the fixtures the real form of the TTL regr
 media crosses more hops than a probe can and a socket left at the probe value carries nothing.
 - They require elevated privilege to create, which is the one place the test suite needs it.
   The suite skips them with a clear message rather than failing when it is unavailable.
-- **This tier exists because the development network cannot produce a traversal at all.** The
-  two machines on it share a subnet, so a direct connection between them succeeds on host
-  candidates without traversing anything, and the upstream path is carrier-grade translated
-  with no second site behind it to connect from. One case passes for the wrong reason and the
-  other cannot be run, so a green connectivity result on that network says nothing about the
-  five topologies that are not it.
+- **This tier exists because the development network produces one topology, not six.** The two
+  machines available to it sit behind different consumer routers, so a live run between them
+  exercises exactly one pair of translation behaviours -- whichever those two routers happen to
+  implement -- and says nothing about the other five. Nor can it be made to produce them on
+  demand, because the behaviour belongs to the routers rather than to us. A live run is
+  therefore the strongest possible evidence for one point of the space and no evidence at all
+  for the rest, which is precisely the division of labour between this tier and the simulator.
 
 ## §6 Fuzzing
 

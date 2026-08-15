@@ -34,6 +34,8 @@ or a typed failure.
   and in order.
 - Network namespace fixtures: six topologies against a real kernel, driven by a
   fixture endpoint that runs the engine over a real socket.
+- Peer-reflexive candidates: the source address of a verified check becomes a
+  candidate and is checked like any other.
 
 **Notes**
 
@@ -117,7 +119,24 @@ or a typed failure.
   keeps running for a settling period after a path is found. Without it one side
   established and the other timed out, on every topology.
 
-**Still to land:** the two-machine run.
+- **Peer-reflexive candidates are not optional, and a wide-area run is what
+  found that.** Under symmetric translation the address a peer advertised was
+  created toward a reflexive server, so its packets to us leave from a different
+  mapping and the advertised address is unreachable. Only the address its check
+  actually arrived from is. Without this the far side answers our checks while
+  never finding a path of its own, and a host that never finds a path never
+  sends media. The failure is one-sided and looks like the peer connecting
+  successfully.
+- Neither the simulator nor the namespace fixtures caught it, because in every
+  case there both sides advertised addresses that were genuinely reachable. The
+  matrix now carries the symmetric-to-full-cone pairing that exposes it; it
+  failed before the change with exactly the wide-area symptom.
+- Admission is the check having authenticated, and nothing weaker. An
+  unauthenticated source address would let anyone able to reach the socket
+  decide where we send.
+
+**Still to land:** nothing. Both halves of the two-machine gate now pass across
+the wide area.
 
 ## 1: protocol core (2026-08-16)
 

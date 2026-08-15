@@ -115,8 +115,11 @@ fn server(args: &[String]) -> Result<(), String> {
 /// Run the engine until it finds a path or the window closes.
 fn peer(args: &[String]) -> Result<(), String> {
     let bind = required(args, "--bind")?;
-    let publish = PathBuf::from(required(args, "--publish")?);
-    let expect = PathBuf::from(required(args, "--await")?);
+    // File rendezvous is optional. Across the wide area an exchange takes longer
+    // than the punch window, so the candidate is supplied directly and the
+    // window is spent punching rather than waiting for signaling.
+    let publish = flag(args, "--publish").map(PathBuf::from);
+    let expect = flag(args, "--await").map(PathBuf::from);
     let timeout_ms: u64 = required(args, "--timeout-ms")?
         .parse()
         .map_err(|_| "bad --timeout-ms".to_string())?;
@@ -141,14 +144,28 @@ fn peer(args: &[String]) -> Result<(), String> {
         .map_err(|e| format!("set ttl: {e}"))?;
 
     let mut conn = Conn::new(credentials, [seed_byte; 16], 0.0);
-    if let Some(server) = flag(args, "--server") {
-        let server: SocketAddr = server.parse().map_err(|_| "bad --server".to_string())?;
-        conn.add_server(server).map_err(|e| e.to_string())?;
+    // Repeatable. Asking two servers from one socket is how the mapping
+    // behaviour is measured: one external port for both answers is endpoint
+    // independent and punchable, two is symmetric and is not.
+    for pair in args.windows(2) {
+        let (name, value) = (&pair[0], &pair[1]);
+        if name == "--server" {
+            let server: SocketAddr = value.parse().map_err(|_| "bad --server".to_string())?;
+            conn.add_server(server).map_err(|e| e.to_string())?;
+        }
+    }
+    let mut awaited = false;
+    if let Some(candidate) = flag(args, "--candidate") {
+        let candidate: SocketAddr = candidate
+            .parse()
+            .map_err(|_| "bad --candidate".to_string())?;
+        conn.add_candidate(candidate).map_err(|e| e.to_string())?;
+        awaited = true;
+        println!("candidate {candidate}");
     }
 
     let started = Instant::now();
     let mut published = false;
-    let mut awaited = false;
     let mut settled_at: Option<f64> = None;
     let mut tx = [0u8; 512];
     let mut rx = [0u8; 2048];
@@ -167,7 +184,8 @@ fn peer(args: &[String]) -> Result<(), String> {
 
         // The other side's candidate, once signaling has carried it.
         if !awaited
-            && let Ok(text) = fs::read_to_string(&expect)
+            && let Some(path) = expect.as_ref()
+            && let Ok(text) = fs::read_to_string(path)
             && let Ok(addr) = text.trim().parse::<SocketAddr>()
         {
             conn.add_candidate(addr).map_err(|e| e.to_string())?;
@@ -191,11 +209,13 @@ fn peer(args: &[String]) -> Result<(), String> {
                         println!("  {now_ms:.0} rx {kind} <- {from}");
                     }
                     match conn.process_input(datagram, from) {
-                        Ok(Inbound::Reflexive(mapped)) if !published => {
-                            fs::write(&publish, mapped.to_string())
-                                .map_err(|e| format!("publish: {e}"))?;
+                        Ok(Inbound::Reflexive(mapped)) => {
+                            if !published && let Some(path) = publish.as_ref() {
+                                fs::write(path, mapped.to_string())
+                                    .map_err(|e| format!("publish: {e}"))?;
+                            }
                             published = true;
-                            println!("reflexive {mapped}");
+                            println!("reflexive {mapped} via {from}");
                         }
                         Ok(Inbound::PathEstablished(addr)) if settled_at.is_none() => {
                             println!("established {addr}");

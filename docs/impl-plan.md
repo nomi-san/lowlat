@@ -140,17 +140,18 @@ gate is satisfied where the risk actually is.
    path; symmetric reports `probe timeout` and must not report success, as does a pairing where
    only one side is symmetric. **Carrier-grade translation is decided by its mapping behaviour,
    not by the number of layers**: two layers that keep mappings endpoint independent are
-   punchable and must establish, while a symmetric carrier translator must time out. Every
+   punchable and must establish, while a symmetric carrier translator must time out. **A
+   symmetric side facing a peer that filters nothing must establish in both directions**, which
+   it can only do by using the address a check arrived from rather than the one advertised.
+   Every
    fixture is shown capable of failing before it is trusted, because "green" over a matrix
    whose interesting cases are failures is otherwise indistinguishable from a broken harness;
    the paired cases that differ by one behaviour flag are what demonstrate it.
-2. **A real session between two machines**: candidates exchange, checks pass, media flows.
-   Two forms, and the stronger one is preferred. Across the wide area it is a genuine
-   traversal through whatever the two networks impose. Between the two machines on the
-   development network it is not, because they share a subnet and it succeeds on host
-   candidates without traversing anything; that form still checks the engine end to end on
-   real sockets, and it is labelled for what it does not prove
-   ([08 §5](08-testing.md)).
+2. [x] **A real session between two machines on different networks**: reflexive discovery against a
+   public server, candidates exchange, checks pass, media flows. This is a genuine traversal
+   through whatever the two routers impose, and it is the strongest evidence available for the
+   one topology pair it happens to exercise. It is no evidence at all about the other five,
+   which is why it does not replace gate 1 ([08 §5](08-testing.md)).
 3. [x] A v4-mapped peer address is classified as IPv4. *Named regression test.*
 4. [x] **A probe leaves the socket TTL at the value it found.** *Named regression test.* A
    probe-scoped TTL that is never restored caps the media path at a few hops, which presents as

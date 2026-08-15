@@ -271,6 +271,25 @@ impl<'a> Conn<'a> {
                 if !message.verify(self.credentials.local_pwd) {
                     return Err(Error::Decrypt);
                 }
+
+                // The source of a verified check is reachable by definition:
+                // it is where the datagram actually came from. Under symmetric
+                // translation it is the *only* address that is, because what the
+                // peer advertised was created toward a reflexive server and its
+                // packets to us leave from a different mapping entirely. Without
+                // this, such a peer connects from its side while we never find a
+                // path, and a host that never finds a path never sends media.
+                //
+                // Admission rests on the check having authenticated, which means
+                // whoever sent it holds the password from the credential
+                // exchange. Nothing weaker would do: an unauthenticated source
+                // address is an invitation to point us anywhere.
+                //
+                // A full table refuses the addition, which is correct and not
+                // fatal: the check is still answered, so the peer can still
+                // reach us on a path it already had.
+                let _ = self.add_candidate(from);
+
                 self.queue_response(from, message.transaction_id())?;
                 // Answering is unconditional and stays that way after a path is
                 // chosen. A peer that stops seeing answers withdraws the path,
@@ -739,6 +758,72 @@ mod tests {
             "a response must be signed with our own password"
         );
         assert_eq!(reply.mapped_address(), Some(peer));
+    }
+
+    /// The regression for a real wide-area failure. A peer behind symmetric
+    /// translation is reachable only at the address its checks actually come
+    /// from: what it advertised was created toward a reflexive server and its
+    /// packets to us leave from a different mapping. Without this the peer
+    /// connects from its side while we never find a path.
+    #[test]
+    fn a_verified_check_teaches_us_the_address_it_came_from() {
+        let mut conn = conn();
+        assert_eq!(conn.candidate_count(), 0);
+
+        let observed = addr(7, 41_000);
+        let mut theirs = [0u8; 256];
+        let len = stun::encode_binding_request(
+            &mut theirs,
+            TransactionId([0x5A; 12]),
+            THEIRS,
+            OURS,
+            [0; 8],
+            OUR_PWD,
+        )
+        .unwrap();
+        conn.process_input(&theirs[..len], observed).unwrap();
+
+        assert_eq!(
+            conn.candidate_count(),
+            1,
+            "the source of a verified check must become a candidate"
+        );
+
+        // Stored is not enough; it has to be checked, or we still never
+        // establish.
+        let sent = drain(&mut conn, 0.0);
+        assert!(
+            sent.iter().any(|(egress, _)| egress.to == observed),
+            "the learned candidate was never checked"
+        );
+    }
+
+    /// And authentication is the whole of the admission. An unauthenticated
+    /// source address would let anyone able to reach the socket point us
+    /// anywhere.
+    #[test]
+    fn an_unverified_check_teaches_us_nothing() {
+        let mut conn = conn();
+        let mut theirs = [0u8; 256];
+        let len = stun::encode_binding_request(
+            &mut theirs,
+            TransactionId([0x5A; 12]),
+            THEIRS,
+            OURS,
+            [0; 8],
+            "not the password",
+        )
+        .unwrap();
+
+        assert_eq!(
+            conn.process_input(&theirs[..len], addr(7, 41_000)),
+            Err(Error::Decrypt)
+        );
+        assert_eq!(
+            conn.candidate_count(),
+            0,
+            "an unauthenticated source must not become a candidate"
+        );
     }
 
     #[test]
