@@ -3,6 +3,48 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 1: protocol core (2026-08-16)
+
+Sans-IO, `no_std`, allocation free. Bytes in, bytes out, time as a parameter.
+
+**Added**
+
+- `envelope`: the record layer, both ciphers, nonce derived from the credential.
+- `packet`: data packets and group acknowledgements with the full flag validation matrix.
+- `message`: the length-prefix framing and fragmentation arithmetic.
+- `channel`: the receive ring, length-driven reassembly, and the stall escape.
+- `send`: the send ring, retransmission timeout, fast retransmission, staleness scan.
+- `congestion`: the host-local rate controller.
+- `pmtu`: path probing.
+- `control`, `video`: message headers and keyframe classification.
+- `session`: the facade the shell drives.
+- Fuzz targets for every surface that parses network bytes.
+
+**Notes**
+
+- **The nonce is not a zero prefix plus a counter.** The credential decodes to the key
+  followed by a four-byte nonce prefix, which is why a recorded key is 72 hex characters
+  rather than 64. Found by reading a working implementation before running the corpus, not by
+  the corpus failing.
+- **The cipher is a parameter, never inferred from material length.** The legacy path keys
+  from a 32-byte fingerprint with a 16-byte key, so a length guess picks the wrong cipher and
+  fails every packet on the one path with no corpus to catch it.
+- **Reassembly is length-driven and ignores the last-fragment flag.** Keying on the flag works
+  against a well-behaved sender and fails exactly when a tail is truncated or reordered.
+- **The retransmission timeout is not the congestion level table.** It is per fragment and
+  exponential in the retry count; the table classifies staleness, and the scan produces the
+  count the controller consumes.
+- **The stall escape jumps to the furthest resumable slot, never the nearest.** Jumping to the
+  nearest crawls the window one gap at a time. Which slots are resumable is the caller's
+  decision, because only the layer that understands the payload can tell a message start from
+  the middle of one.
+- **The first round-trip sample seeds the estimate outright.** Averaging against zero would
+  leave it an order of magnitude low for the first dozen samples, and the retransmission
+  timeout is built on it.
+- **The core contains no `unsafe`.** Every path uses checked slicing. That was not a goal; it
+  is what fell out of writing the parsers against hostile input, and it moves the `miri`
+  obligation to `lowlat-common` where the risk actually is.
+
 ## 0: workspace and common primitives (2026-08-15)
 
 **Added**

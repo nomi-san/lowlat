@@ -16,7 +16,7 @@ authors.workspace = true
 aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }
 
 [dev-dependencies]
-lowlat-common.workspace = true
+lowlat-common = { workspace = true, features = ["alloc-counter"] }
 
 [lints]
 workspace = true

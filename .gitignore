@@ -105,6 +105,14 @@ dist/
 .mcp.json
 third_party/parsec/
 
+# Fuzzing: corpora are committed, crash artifacts and coverage are not.
+fuzz/artifacts/
+fuzz/coverage/
+
+# Local developer convenience, not repo policy. Enable with
+#   git config core.hooksPath .githooks
+.githooks/
+
 # Local only. These may reference reverse engineering sources, the parsecd
 # binary, and the predecessor projects. Nothing here is ever published.
 AGENTS.md

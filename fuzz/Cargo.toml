@@ -1,0 +1,49 @@
+# Excluded from the workspace: cargo-fuzz needs nightly and its own flags, and
+# leaving it a member drags those into every ordinary build.
+[package]
+name = "lowlat-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+lowlat-core = { path = "../crates/core" }
+
+[[bin]]
+name = "envelope"
+path = "fuzz_targets/envelope.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "packet"
+path = "fuzz_targets/packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "control"
+path = "fuzz_targets/control.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "video"
+path = "fuzz_targets/video.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "reassembly"
+path = "fuzz_targets/reassembly.rs"
+test = false
+doc = false
+bench = false

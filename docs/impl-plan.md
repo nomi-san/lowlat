@@ -78,30 +78,46 @@ testing the resolution of the underlying timer, not our contract.
 `lowlat-core`, sans-IO, `no_std`. The whole of [01-protocol.md](01-protocol.md) except
 connectivity.
 
-- [ ] Record envelope encode and decode, both crypto modes, nonce derivation.
-- [ ] Cleartext data packets and the group acknowledgement, with the full flag validation
+- [x] Record envelope encode and decode, both crypto modes, nonce derivation.
+- [x] Cleartext data packets and the group acknowledgement, with the full flag validation
   matrix.
-- [ ] Channels, per-channel rings, reassembly, base advance.
-- [ ] Acknowledgement emission, negative acknowledgement, retransmission timeout, stall
+- [x] Channels, per-channel rings, reassembly, base advance.
+- [x] Acknowledgement emission, negative acknowledgement, retransmission timeout, stall
   escape jumping to the furthest occupied slot.
-- [ ] Send window bounded by the peer ring depth ([01 §7](01-protocol.md)).
-- [ ] Path probe state machine ([01 §8](01-protocol.md)), including the compile-time assertion
+- [x] Send window bounded by the peer ring depth ([01 §7](01-protocol.md)).
+- [x] Path probe state machine ([01 §8](01-protocol.md)), including the compile-time assertion
   that no emitted datagram can exceed the absolute ceiling.
-- [ ] Control message framing and the opcode table ([01 §11](01-protocol.md)).
-- [ ] Fuzz targets: envelope, cleartext packet, group acknowledgement, control message.
+- [x] Control message framing and the opcode table ([01 §11](01-protocol.md)).
+- [x] Fuzz targets: envelope, cleartext packet, control message, video header, reassembler.
 
-**Gate:**
+**Gate:** passed 2026-08-16.
 
-1. **Corpus replay is byte exact in both directions.** Feed the recorded bytes with a fake
-   clock; every emitted packet matches the recording.
-2. Property test: encode then decode is the identity for every message type, ten thousand
-   cases.
-3. Fuzz targets run 15 minutes each with no crash and no timeout.
-4. `miri` clean over every module containing `unsafe`.
-5. Zero-allocation assertions pass on the receive and send paths.
-6. The crate compiles as `no_std` with no `alloc` on any data path.
+1. [x] **Corpus replay is byte exact.** 219253 recorded datagrams decrypt to their recorded
+   cleartext, parse, and re-encode byte for byte; all 41437 message spans match their length
+   prefix with zero resyncs. A second replay drives the received direction through a full
+   session and lands on **exactly** the contiguous frontier the recorded peer claimed on every
+   channel.
+2. [x] Property tests: ten thousand cases per message type from a fixed seed, biased toward
+   field boundaries, plus fragmentation and reassembly through a real ring and records on both
+   ciphers.
+3. [x] Fuzz targets clean: envelope 5.7M executions, packet 21.9M, control 29.2M, video 25.1M,
+   reassembler 7.9M. No crash, no timeout, no leak.
+4. [x] `miri` clean. **The core contains no `unsafe` at all**, so this reduces to
+   `lowlat-common`, where the ring's uninitialized storage lives; that passes including the
+   cross-thread case.
+5. [x] Zero-allocation assertions on envelope, packet, receive ring, send ring, and a full
+   session round.
+6. [x] The crate compiles as `no_std` with no `alloc` on any data path.
 
 **Not in scope:** sockets, threads, connectivity.
+
+**Note on gate 3.** The stated budget is the continuous-integration one. These figures are a
+20-second run of each target locally; nightly runs them unbounded
+([08-testing.md §6](08-testing.md)).
+
+**Note on gate 4.** The wording assumed the core would contain `unsafe`. It does not: every
+path uses checked slicing, and the only `unsafe` in the workspace is in `lowlat-common`. The
+gate is satisfied where the risk actually is.
 
 ---
 

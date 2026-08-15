@@ -185,6 +185,70 @@ impl<'a> RecvRing<'a> {
         }
     }
 
+    /// Fragments held but not yet delivered.
+    pub fn window_used(&self) -> u32 {
+        self.highest.wrapping_sub(self.delivered)
+    }
+
+    /// Abandon an unfillable gap and resume further along the stream.
+    ///
+    /// Called when a fragment is gone for good and the reader would otherwise
+    /// wait forever. **Jumps to the furthest resumable slot, never the
+    /// nearest.** Jumping to the nearest crawls the flow-control window one
+    /// gap at a time and has cost a measured twenty-fold throughput
+    /// regression; the whole point is to get out of the hole in one move.
+    ///
+    /// `resumable` decides which slots are message starts worth landing on.
+    /// The ring cannot know that itself: only the layer that understands the
+    /// payload can tell a message start from the middle of one. A video
+    /// consumer passes a keyframe test, so the stream resumes somewhere the
+    /// decoder can actually recover from rather than mid-picture.
+    ///
+    /// Returns the new frontier, or `None` if there was nothing to escape to.
+    pub fn escape_stall(&mut self, resumable: impl Fn(&[u8]) -> bool) -> Option<u32> {
+        if !self.has_gap() {
+            return None;
+        }
+
+        let mut furthest: Option<u32> = None;
+        let mut furthest_resumable: Option<u32> = None;
+        let mut cursor = self.delivered;
+        while cursor != self.highest {
+            if let Some(body) = self.slot_body(cursor) {
+                furthest = Some(cursor);
+                if resumable(body) {
+                    furthest_resumable = Some(cursor);
+                }
+            }
+            cursor = cursor.wrapping_add(1);
+        }
+
+        // Prefer the furthest slot the consumer can resume from. Fall back to
+        // the furthest occupied slot only if nothing qualifies, since landing
+        // mid-message is still better than never advancing.
+        let target = furthest_resumable.or(furthest)?;
+        if seq::le(target, self.delivered) {
+            return None;
+        }
+
+        // Release everything skipped, so the sender's window opens in one step.
+        let mut cursor = self.delivered;
+        while cursor != target {
+            let index = self.index(cursor);
+            if let Some(meta) = self.meta.get_mut(index) {
+                *meta = SlotMeta::default();
+            }
+            cursor = cursor.wrapping_add(1);
+        }
+
+        self.delivered = target;
+        if seq::lt(self.cumulative, target) {
+            self.cumulative = target;
+        }
+        self.advance();
+        Some(target)
+    }
+
     /// Take the next complete message, writing its **content** into `out`.
     ///
     /// The four-byte length prefix is consumed here and does not appear in the
@@ -457,5 +521,122 @@ mod tests {
             let at = self.cumulative;
             self.store(at, body)
         }
+    }
+}
+
+#[cfg(test)]
+mod stall_tests {
+    use super::*;
+    use std::vec::Vec;
+
+    const SLOT: usize = 64;
+    const SLOTS: usize = 16;
+
+    struct Storage {
+        bodies: Vec<u8>,
+        meta: Vec<SlotMeta>,
+    }
+
+    impl Storage {
+        fn new() -> Self {
+            Self {
+                bodies: std::vec![0u8; SLOT * SLOTS],
+                meta: std::vec![SlotMeta::default(); SLOTS],
+            }
+        }
+        fn ring(&mut self) -> RecvRing<'_> {
+            RecvRing::new(&mut self.bodies, &mut self.meta, SLOT).unwrap()
+        }
+    }
+
+    /// One self-contained message: prefix plus content, small enough for one slot.
+    fn single(content: &[u8]) -> Vec<u8> {
+        let mut body = (content.len() as u32).to_be_bytes().to_vec();
+        body.extend_from_slice(content);
+        body
+    }
+
+    fn never(_: &[u8]) -> bool {
+        false
+    }
+
+    #[test]
+    fn nothing_to_escape_when_there_is_no_gap() {
+        let mut storage = Storage::new();
+        let mut ring = storage.ring();
+        ring.store(0, &single(b"a"));
+        assert_eq!(ring.escape_stall(never), None);
+    }
+
+    /// The rule that matters: jump to the furthest, not the nearest.
+    #[test]
+    fn escapes_to_the_furthest_occupied_slot() {
+        let mut storage = Storage::new();
+        let mut ring = storage.ring();
+        // Sequence 0 is lost forever; 1, 2 and 5 arrive.
+        for seq in [1u32, 2, 5] {
+            ring.store(seq, &single(b"x"));
+        }
+        assert!(ring.has_gap());
+        assert_eq!(ring.escape_stall(never), Some(5), "escaped to the nearest");
+        assert_eq!(ring.delivered(), 5);
+        assert_eq!(ring.cumulative_ack(), 6);
+
+        let mut out = [0u8; 32];
+        assert_eq!(ring.take_message(&mut out).unwrap().unwrap(), 1);
+    }
+
+    /// A consumer that can only resume at certain points gets to choose one.
+    #[test]
+    fn prefers_the_furthest_resumable_slot() {
+        let mut storage = Storage::new();
+        let mut ring = storage.ring();
+        ring.store(1, &single(b"resume-here"));
+        ring.store(2, &single(b"plain"));
+        ring.store(6, &single(b"resume-here"));
+        ring.store(7, &single(b"plain"));
+
+        let resumable =
+            |body: &[u8]| body.len() > 4 && body.get(4..).is_some_and(|c| c.starts_with(b"resume"));
+        assert_eq!(ring.escape_stall(resumable), Some(6));
+        let mut out = [0u8; 64];
+        let len = ring.take_message(&mut out).unwrap().unwrap();
+        assert_eq!(&out[..len], b"resume-here");
+    }
+
+    /// If nothing is resumable, advancing anyway beats waiting forever.
+    #[test]
+    fn falls_back_to_the_furthest_occupied_slot() {
+        let mut storage = Storage::new();
+        let mut ring = storage.ring();
+        ring.store(3, &single(b"x"));
+        ring.store(9, &single(b"y"));
+        assert_eq!(ring.escape_stall(|_| false), Some(9));
+    }
+
+    #[test]
+    fn escaping_frees_the_skipped_slots() {
+        let mut storage = Storage::new();
+        let mut ring = storage.ring();
+        for seq in 1..SLOTS as u32 {
+            ring.store(seq, &single(b"x"));
+        }
+        // Sequence 0 never arrives, so the window is full and stuck.
+        assert_eq!(ring.window_used(), SLOTS as u32);
+        ring.escape_stall(never).unwrap();
+        // Every slot below the new frontier is reusable.
+        assert!(ring.window_used() < SLOTS as u32);
+        assert_eq!(ring.store(SLOTS as u32, &single(b"z")), Stored::Accepted);
+    }
+
+    #[test]
+    fn escaping_never_moves_backwards() {
+        let mut storage = Storage::new();
+        let mut ring = storage.ring();
+        ring.store(4, &single(b"x"));
+        let first = ring.escape_stall(never).unwrap();
+        assert_eq!(first, 4);
+        assert_eq!(ring.escape_stall(never), None, "escaped twice from one gap");
+        assert_eq!(ring.delivered(), 4);
     }
 }

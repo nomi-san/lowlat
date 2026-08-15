@@ -181,6 +181,28 @@ impl<'a> Session<'a> {
             .take_message(out)
     }
 
+    /// True if `channel` is missing a fragment below what has arrived.
+    pub fn has_gap(&self, channel: u8) -> bool {
+        self.recv
+            .get(channel as usize)
+            .and_then(Option::as_ref)
+            .is_some_and(RecvRing::has_gap)
+    }
+
+    /// Abandon an unfillable gap on `channel` and resume further along.
+    ///
+    /// Policy lives with the caller, deliberately. Only the layer that
+    /// understands the payload can say which slots are resumable, and only the
+    /// shell knows how long a stall has lasted. The core supplies the
+    /// mechanism and the guarantee that the jump goes to the furthest usable
+    /// slot rather than the nearest.
+    pub fn escape_stall(&mut self, channel: u8, resumable: impl Fn(&[u8]) -> bool) -> Option<u32> {
+        self.recv
+            .get_mut(channel as usize)
+            .and_then(Option::as_mut)?
+            .escape_stall(resumable)
+    }
+
     /// Feed one received datagram.
     pub fn process_input(
         &mut self,
