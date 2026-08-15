@@ -14,15 +14,20 @@
 //!    header emission.
 //! 4. Message spans match the length prefix and end on the last-fragment flag.
 //!    Isolates the framing arithmetic.
+//! 5. Real receive rings reassemble the same messages, and their contents
+//!    parse as the media they claim to be. Isolates the ring and the
+//!    reassembler.
 
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 
+use lowlat_core::channel::{RecvRing, SlotMeta, Stored};
 use lowlat_core::envelope::{Cipher, Envelope};
 use lowlat_core::message;
 use lowlat_core::packet::{self, Packet};
+use lowlat_core::{control, video};
 
 const MAGIC: &[u8; 8] = b"P2PWIRE1";
 const STAGE_WIRE: u8 = 0;
@@ -120,6 +125,10 @@ struct Counts {
     messages_validated: u64,
     resyncs: u64,
     retransmits: u64,
+    reassembled: u64,
+    control_messages: u64,
+    video_messages: u64,
+    keyframes: u64,
 }
 
 #[test]
@@ -144,6 +153,27 @@ fn replays_a_recorded_session_byte_for_byte() {
     let mut pending_wire: HashMap<u8, Vec<u8>> = HashMap::new();
     let mut pending_clear: HashMap<u8, Vec<u8>> = HashMap::new();
     let mut framing: HashMap<(u8, u8), Framing> = HashMap::new();
+    // One ring per tracked channel per direction. Sized as the protocol
+    // specifies rather than as the recording happens to need, so the real
+    // window arithmetic is exercised.
+    const TRACKED: usize = 3;
+    const SLOT_LEN: usize = lowlat_core::MAX_CLEARTEXT - packet::HEADER_LEN;
+    const SLOTS: usize = lowlat_core::channel::RING_SLOTS;
+    let mut storages: Vec<(Vec<u8>, Vec<SlotMeta>)> = (0..TRACKED * 2)
+        .map(|_| {
+            (
+                vec![0u8; SLOTS * SLOT_LEN],
+                vec![SlotMeta::default(); SLOTS],
+            )
+        })
+        .collect();
+    let mut rings: Vec<RecvRing<'_>> = storages
+        .iter_mut()
+        .map(|(bodies, meta)| RecvRing::new(bodies, meta, SLOT_LEN).expect("ring storage"))
+        .collect();
+    let mut started = [false; TRACKED * 2];
+    let mut message_buf = vec![0u8; 2 << 20];
+
     let mut scratch = vec![0u8; lowlat_core::MAX_DATAGRAM];
     let mut reencode = vec![0u8; lowlat_core::MAX_DATAGRAM];
 
@@ -260,6 +290,53 @@ fn replays_a_recorded_session_byte_for_byte() {
                 data.channel, data.seq, state.remaining
             );
         }
+
+        // Assertion 5: a real ring reassembles the same message.
+        if (data.channel as usize) < TRACKED {
+            let slot = record.dir as usize * TRACKED + data.channel as usize;
+            let Some(ring) = rings.get_mut(slot) else {
+                continue;
+            };
+            if !started[slot] {
+                // The recording begins mid-stream for some channels; anchor the
+                // ring where the channel actually starts.
+                ring.reset_to(data.seq);
+                started[slot] = true;
+            }
+            match ring.store(data.seq, data.body) {
+                Stored::Accepted | Stored::Duplicate => {}
+                other => panic!(
+                    "ring refused ch {} seq {}: {other:?}",
+                    data.channel, data.seq
+                ),
+            }
+            while let Some(result) = ring.take_message(&mut message_buf) {
+                let len = result.expect("reassembly");
+                let content = message_buf.get(..len).expect("message fits");
+                counts.reassembled += 1;
+                match data.channel {
+                    0 => {
+                        let parsed = control::parse(content).expect("control message");
+                        assert!(!control::op::name(parsed.opcode).is_empty());
+                        counts.control_messages += 1;
+                    }
+                    1 => {
+                        let header = video::parse(content).expect("video header");
+                        assert!(
+                            header.width > 0 && header.height > 0,
+                            "implausible frame dimensions {}x{}",
+                            header.width,
+                            header.height
+                        );
+                        if video::is_keyframe(content, video::Codec::H264) {
+                            counts.keyframes += 1;
+                        }
+                        counts.video_messages += 1;
+                    }
+                    _ => {}
+                }
+            }
+        }
     }
 
     eprintln!(
@@ -273,6 +350,10 @@ fn replays_a_recorded_session_byte_for_byte() {
         counts.retransmits,
         counts.resyncs
     );
+    eprintln!(
+        "rings:  {} reassembled, {} control, {} video, {} keyframes",
+        counts.reassembled, counts.control_messages, counts.video_messages, counts.keyframes
+    );
 
     assert!(counts.wire > 1000, "corpus looks empty");
     assert!(
@@ -280,4 +361,10 @@ fn replays_a_recorded_session_byte_for_byte() {
         "too few complete messages validated: {}",
         counts.messages_validated
     );
+    assert_eq!(
+        counts.reassembled, counts.messages_validated,
+        "the ring and the framing walk disagree on how many messages there were"
+    );
+    assert!(counts.video_messages > 100, "no video reassembled");
+    assert!(counts.keyframes > 0, "no keyframe classified");
 }

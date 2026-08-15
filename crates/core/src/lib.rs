@@ -24,15 +24,27 @@
         clippy::unwrap_used,
         clippy::expect_used,
         clippy::indexing_slicing,
-        clippy::panic
+        clippy::panic,
+        // Fixtures build small values from loop counters; a truncating cast
+        // there is obviously fine and spelling out try_from obscures the test.
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
     )
 )]
 
+// The crate never uses the standard library. Tests may: fixtures are
+// allowed to allocate, and a test that cannot build a fixture is a broken
+// test rather than hostile input.
+#[cfg(test)]
+extern crate std;
+
+pub mod channel;
 pub mod control;
 pub mod envelope;
 pub mod error;
 pub mod message;
 pub mod packet;
+pub mod seq;
 pub mod video;
 
 pub use error::{Error, Result};
