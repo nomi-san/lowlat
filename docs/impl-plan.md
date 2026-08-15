@@ -178,13 +178,18 @@ connectivity.
 
 - [ ] `lowlat-encode` trait: asynchronous submit and poll, force keyframe, live bitrate
   reconfigure that never reinitializes.
-- [ ] NVENC backend, H.264, 8-bit 4:2:0, low-latency parameters.
+- [ ] **VAAPI backend**, H.264, 8-bit 4:2:0, low-latency parameters. First, not later: it is the
+  encoder on the primary Linux target and on the machine this is tested against
+  ([07 §3.1](07-platforms.md)).
+- [ ] NVENC backend, same trait, same parameters.
 - [ ] `lowlat-capture` trait plus the synthetic frame source.
 - [ ] Packetizer and the control opcodes streaming requires.
 - [ ] Congestion controller ([01 §10](01-protocol.md)) driving encoder bitrate.
 
 **Gate A:**
 
+0. Both hardware backends encode the same synthetic source, so the trait is shaped by two
+   implementations rather than one.
 1. **A stock client connects and renders our synthetic frames**, 1080p60, for 10 minutes, with
    no corruption and no freeze beyond the loss budget.
 2. Bitrate reconfigure is observed live with no keyframe and no reinitialization.
@@ -275,7 +280,6 @@ from a source change.
   be issued without latching the pending-keyframe state.
 - [ ] Consensus actuators and the degraded-guest event.
 - [ ] FFmpeg software encoder, dynamically loaded, resolved by name.
-- [ ] VAAPI backend.
 
 **Gate:**
 

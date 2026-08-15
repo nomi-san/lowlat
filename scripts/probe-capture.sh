@@ -13,6 +13,9 @@
 
 set -u
 
+# A non-login shell omits sbin, where modprobe lives.
+PATH="$PATH:/usr/sbin:/sbin"
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -21,7 +24,9 @@ FAIL=0
 SKIP=0
 
 # Findings consumed by the verdict.
-F_NVENC=skip
+F_ENCODE=skip
+ENCODER=""
+HWDEV=""
 F_SCANOUT_EXPORT=skip
 F_SCANOUT_MAP=skip
 F_SCANOUT_CUDA=skip
@@ -104,21 +109,46 @@ fi
 
 head2 "Stage 3: hardware encode (control)"
 
+# Being listed is not being usable: a distribution ffmpeg advertises NVENC
+# encoders on a machine with no NVIDIA hardware at all. So each candidate is
+# tried and the first that actually produces frames wins.
+try_encode() {
+    # try_encode <encoder> <hwdev>
+    case "$2" in
+        vaapi)
+            ffmpeg -hide_banner -loglevel error -init_hw_device vaapi=va:/dev/dri/renderD128 -filter_hw_device va -f lavfi -i testsrc=size=1920x1080:rate=60 -frames:v 60 -vf "format=nv12,hwupload" -c:v "$1" -f null - >"$WORK/enc.err" 2>&1
+            ;;
+        *)
+            ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc=size=1920x1080:rate=60 -frames:v 60 -c:v "$1" -f null - >"$WORK/enc.err" 2>&1
+            ;;
+    esac
+}
+
 if ! have ffmpeg; then
     result SKIP "ffmpeg missing" "install ffmpeg to run the remaining stages"
-elif ! ffmpeg -hide_banner -encoders 2>/dev/null | grep -q h264_nvenc; then
-    result FAIL "h264_nvenc not built into this ffmpeg" "the encode control cannot run"
-    F_NVENC=fail
 else
-    if ffmpeg -hide_banner -loglevel error -f lavfi -i testsrc=size=1920x1080:rate=60 \
-        -frames:v 60 -c:v h264_nvenc -f null - >"$WORK/nvenc.err" 2>&1; then
-        result PASS "hardware encode works" "synthetic 1080p60, 60 frames"
-        F_NVENC=pass
+    ENCODERS=$(ffmpeg -hide_banner -encoders 2>/dev/null || true)
+    LAST_ERR=""
+    for candidate in "h264_nvenc cuda" "h264_vaapi vaapi"; do
+        # shellcheck disable=SC2086
+        set -- $candidate
+        printf '%s' "$ENCODERS" | grep -q "$1" || continue
+        if try_encode "$1" "$2"; then
+            ENCODER="$1"; HWDEV="$2"
+            break
+        fi
+        LAST_ERR="$1: $(tail_err "$WORK/enc.err")"
+    done
+
+    if [ -n "$ENCODER" ]; then
+        result PASS "hardware encode works ($ENCODER)" "synthetic 1080p60, 60 frames"
+        F_ENCODE=pass
     else
-        result FAIL "hardware encode failed" "$(tail_err "$WORK/nvenc.err")"
-        F_NVENC=fail
+        result FAIL "no usable hardware encoder" "${LAST_ERR:-none of h264_nvenc, h264_vaapi are built in}"
+        F_ENCODE=fail
     fi
 fi
+
 
 # ---------------------------------------------------------------- stage 4
 
@@ -168,23 +198,28 @@ head2 "Stage 5: zero-copy import into the encoder's context"
 
 if [ "$F_SCANOUT_EXPORT" != pass ]; then
     result SKIP "scanout export did not succeed" ""
-elif [ "$F_NVENC" != pass ]; then
+elif [ "$F_ENCODE" != pass ]; then
     result SKIP "no working hardware encoder" ""
 else
-    # THE decisive test: capture -> shareable handle -> compute context -> encode,
-    # with no download to system memory anywhere in the chain.
-    if ffmpeg -hide_banner -loglevel error \
-        -init_hw_device cuda=cu -filter_hw_device cu \
-        -f kmsgrab -device "$CARD" -framerate 60 -i - \
-        -vf 'hwmap=derive_device=cuda,scale_cuda=format=nv12' \
-        -frames:v 60 -c:v h264_nvenc -f null - >"$WORK/zerocopy.err" 2>&1; then
-        result PASS "zero-copy capture to encode" "this is the v1 scanout path"
+    # THE decisive test: capture -> shareable handle -> the encoder's context ->
+    # encode, with no download to system memory anywhere in the chain.
+    if [ "$HWDEV" = vaapi ]; then
+        ZC_ARGS="-init_hw_device vaapi=va:/dev/dri/renderD128 -filter_hw_device va"
+        ZC_FILTER="hwmap=derive_device=vaapi,scale_vaapi=format=nv12"
+    else
+        ZC_ARGS="-init_hw_device cuda=cu -filter_hw_device cu"
+        ZC_FILTER="hwmap=derive_device=cuda,scale_cuda=format=nv12"
+    fi
+    # shellcheck disable=SC2086
+    if ffmpeg -hide_banner -loglevel error $ZC_ARGS         -f kmsgrab -device "$CARD" -framerate 60 -i -         -vf "$ZC_FILTER"         -frames:v 60 -c:v "$ENCODER" -f null - >"$WORK/zerocopy.err" 2>&1; then
+        result PASS "zero-copy capture to encode ($HWDEV)" "this is the v1 scanout path"
         F_SCANOUT_CUDA=pass
     else
-        result FAIL "zero-copy import failed" "$(tail_err "$WORK/zerocopy.err")"
+        result FAIL "zero-copy import failed ($HWDEV)" "$(tail_err "$WORK/zerocopy.err")"
         F_SCANOUT_CUDA=fail
     fi
 fi
+
 
 # ---------------------------------------------------------------- stage 6
 
@@ -231,7 +266,7 @@ fi
 
 head2 "Verdict"
 
-printf '  %-34s %s\n' "hardware encode"            "$F_NVENC"
+printf '  %-34s %s\n' "hardware encode"            "$F_ENCODE ${ENCODER:+($ENCODER)}"
 printf '  %-34s %s\n' "scanout export"             "$F_SCANOUT_EXPORT"
 printf '  %-34s %s\n' "scanout mappable"           "$F_SCANOUT_MAP"
 printf '  %-34s %s\n' "scanout zero-copy to encode" "$F_SCANOUT_CUDA"

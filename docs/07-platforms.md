@@ -1,8 +1,7 @@
 # 07 - Platforms
 
-**Status:** decision framed 2026-08-15, **resolved at Gate B by measurement**. This is the one
-document with a live decision in it rather than a settled one, and §3 says exactly what
-resolves it.
+**Status:** **resolved by measurement 2026-08-15** (§3.1). The capture backend, frame
+variant, process topology, and privilege requirement are settled; §3.2 lists what is not.
 
 ## §1 Matrix
 
@@ -96,19 +95,53 @@ is not worth designing around in either direction until measured.
 4. Import that handle into the compute context the encoder uses, and encode one frame.
 5. Repeat with a software virtual display driver as the control.
 
-**If steps 3 and 4 succeed:** scanout is the v1 backend, with §2.1's session-side probe, and
-compositor-mediated becomes the v1.x path for locked-down desktops.
+### §3.1 Result, measured 2026-08-15
 
-**If they fail on the physical device but succeed on the virtual one:** the virtual display is
-v1, the product is a headless host rather than a screen mirror, and the physical-screen case
-waits for compositor-mediated.
+**Scanout is the v1 capture backend.** Probed on Debian 13, kernel 6.12, a Ryzen 8845HS with
+integrated RDNA 3 graphics on the open driver, running a KDE Plasma Wayland session at
+2560x1440.
 
-**If both fail:** compositor-mediated becomes v1, the daemon gains a mandatory session helper,
-and unattended operation is deferred with the reason recorded.
+Every step passed once one mistake was removed:
 
-Until that probe runs, `lowlat_host_config`'s capture fields stay unspecified
-([06 §14](06-api.md)), and the frame variant crossing capture to encode stays abstract
-([05 §2](05-host.md)).
+| Step | Result |
+|---|---|
+| modesetting interface | present; the open driver needs no opt-in |
+| enumerate pipeline, fetch framebuffer | works, with the elevated capability |
+| export as a shareable buffer | **works, read-only only** |
+| encode on the same device | confirmed, 1080p60 |
+
+**Export must be read-only.** Requesting write access makes the driver refuse a scanout buffer
+outright, on every plane, including a plain linear cursor buffer. A capture path has no reason
+to write to a framebuffer, so this costs nothing, but it presents as a total and
+undiagnosable failure if you ask for it. The standard command-line capture tool does ask for
+it, which is why that tool cannot capture this machine at all.
+
+Three properties of the real framebuffer the backend must handle, none of them assumed by the
+design as written:
+
+- **It is 10-bit.** The compositor scans out `ABGR2101010`, not an 8-bit format. Colour
+  conversion must accept 10-bit input even while the encoder emits 8-bit
+  ([05 §3](05-host.md)), and it argues for bringing 10-bit encode forward from its deferred
+  position.
+- **It is multi-plane and compressed.** The primary framebuffer reports three buffers with
+  differing pitches under a vendor compression modifier. Import must be modifier-aware and
+  carry every plane; treating it as one linear buffer produces garbage.
+- **The cursor is a separate plane**, linear and 8-bit, exactly as [05 §8.1](05-host.md)
+  assumes.
+
+**The render node cannot be used for this.** It refuses plane enumeration outright. Capture
+needs the card node plus the elevated capability, which settles the privilege question in
+§6.
+
+### §3.2 What is still open
+
+The result is one vendor. The proprietary driver is unmeasured and remains the risk it always
+was, but it is no longer on the critical path, because the primary Linux target is the open
+stack.
+
+The virtual-display control could not run: the software virtual driver is not built for this
+kernel. §2.2's claim is therefore untested, and now less load-bearing.
+
 
 ## §4 Input
 
@@ -243,14 +276,18 @@ None of this reaches the protocol core, the IO shell's logic, or the public API.
 
 ## §11 Open items
 
-| Item | Closes at | Resolved by |
-|---|---|---|
-| framebuffer export on the proprietary driver | before Phase 9 | the §3 probe |
-| capture backend, and therefore the frame variant | Phase 9 | the §3 probe |
-| process topology | Phase 9 | follows the backend, §5 |
-| pointer-hidden signal source | Phase 9 | follows the backend, §2.1 |
-| audio capture surface | Phase 10 | follows the topology |
-| privilege requirement | Phase 9 | the §3 probe |
+| Item | Status |
+|---|---|
+| framebuffer export, open driver | **closed**: works, read-only (§3.1) |
+| capture backend | **closed**: scanout |
+| frame variant | **closed**: multi-plane, modifier-bearing, 10-bit capable |
+| process topology | **closed**: system service, session helpers optional (§5) |
+| privilege requirement | **closed**: card node plus the elevated capability |
+| pointer-hidden signal source | open: needs the session-side probe (§2.1) |
+| framebuffer export, proprietary driver | open, no longer on the critical path |
+| virtual display | open: the software virtual driver is absent from this kernel |
+| audio capture surface | open, Phase 10 |
 
-Six open items, one probe. That is the argument for running it early rather than treating it as
+Six of the nine closed by one probe, run before Phase 0 rather than at Phase 9. The three that
+remain are all narrower than the questions they replaced.
 part of Phase 9.
