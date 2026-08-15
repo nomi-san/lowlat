@@ -12,7 +12,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - The acknowledgement cadence is labelled correctly: one the cadence produced
   carries the keepalive flag and a zeroed trigger.
 - `lowlat-net`: the media socket with the full option set and the granted
-  buffer readable at open, and batched receive pulling a burst per syscall.
+  buffer readable at open, batched receive pulling a burst per syscall, and
+  batched send with segmentation offload and a per-datagram fallback.
 
 **Notes**
 
@@ -52,6 +53,20 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   allocations**, so one field exists purely to keep an allocation alive and is
   never read through its handle. Removing it because nothing reads it would
   leave the kernel writing through dangling pointers.
+- **The kernel's segmentation rules shape the send API rather than hiding
+  inside it.** Every segment but the last must be the same size and all go to
+  one destination, so a burst closes on a size change, a destination change, or
+  a datagram needing its own hop limit. Making that visible is what keeps the
+  caller from silently producing an unsendable batch.
+- **A probe never rides with anything else.** It carries a hop limit that cannot
+  reach the peer, so it leaves alone and the socket is restored in the same
+  call. Asserted at this layer as well as in the core, because this is the layer
+  that holds the option.
+- **Offload is a fast path, never a requirement**, and it is dropped for good
+  the first time a kernel refuses it rather than paying a failed syscall per
+  burst. The burst test asserts offload was still enabled afterwards; without
+  that it would pass identically on the fallback and keep passing if offload
+  silently stopped working.
 - **The keepalive is the acknowledgement cadence, not a separate schedule.**
   Every acknowledgement resets the cadence, whatever prompted it, so the timer
   fires only when nothing else has sent one and an acknowledgement leaves at

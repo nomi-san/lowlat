@@ -54,6 +54,12 @@ const DSCP_EF: libc::c_int = 0xB8;
 /// The TTL everything but a mapping probe leaves at.
 pub const DEFAULT_TTL: u8 = 64;
 
+/// Hop limit used for a mapping probe.
+///
+/// High enough to open the mapping on the way out of the local network, far too
+/// low to reach the peer. Mirrors the core's probe value.
+pub const PROBE_TTL_MAX: u8 = lowlat_core::conn::PROBE_TTL;
+
 /// Sizes into the kernel's length type.
 ///
 /// Every value passed is a compile-time struct size, orders of magnitude below
@@ -335,7 +341,7 @@ impl AsRawFd for Socket {
 }
 
 /// Convert a socket address into the kernel's form.
-fn to_storage(addr: SocketAddr) -> (libc::sockaddr_in6, libc::socklen_t) {
+pub(crate) fn to_storage(addr: SocketAddr) -> (libc::sockaddr_in6, libc::socklen_t) {
     // The socket is dual stack, so a v4 destination goes out as v4-mapped.
     let (ip, port) = match addr {
         SocketAddr::V4(v4) => (v4.ip().to_ipv6_mapped(), v4.port()),

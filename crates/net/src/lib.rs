@@ -27,7 +27,7 @@
 )]
 
 pub mod recv;
+pub mod send;
 pub mod socket;
 
-pub use recv::Batch;
 pub use socket::{DEFAULT_TTL, RECV_BATCH, RECV_SLOT, Socket};
