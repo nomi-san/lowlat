@@ -18,8 +18,15 @@
 //! **Integrity and fingerprint are adjacent and last.** A peer scans for the
 //! pair and rejects anything that separates them, with no diagnostic.
 //!
-//! **A message outside 52 to 256 bytes is refused before parsing.** Rejecting at
+//! **An authenticated message outside 52 to 256 bytes is refused.** Rejecting at
 //! the same boundary keeps us from defending a range no peer produces.
+//!
+//! Two trust domains share this codec. A peer check is authenticated and
+//! [`Message::verify`] is the whole of its admission. A reflexive server's
+//! answer carries no credentials at all, so parsing accepts it and the caller
+//! must admit it on a transaction identifier it is still expecting. Nothing
+//! here decides that; the two are kept apart by the caller because only the
+//! caller knows which transactions it opened.
 
 use core::net::{IpAddr, Ipv6Addr, SocketAddr};
 
@@ -103,8 +110,9 @@ pub struct Message<'a> {
     bytes: &'a [u8],
     method: Method,
     tid: TransactionId,
-    /// Offset of the integrity attribute, which is where the hash stops.
-    integrity_at: usize,
+    /// Offset of the integrity attribute, which is where the hash stops, or
+    /// `None` for a message that carries no credentials at all.
+    integrity_at: Option<usize>,
 }
 
 impl<'a> Message<'a> {
@@ -114,7 +122,7 @@ impl<'a> Message<'a> {
     /// [`Message::verify`] is a separate step because a caller answering a
     /// check and a caller matching a response use different passwords.
     pub fn parse(datagram: &'a [u8]) -> Result<Self> {
-        if datagram.len() < MIN_MESSAGE || datagram.len() > MAX_MESSAGE {
+        if datagram.len() < HEADER_LEN || datagram.len() > MAX_MESSAGE {
             return Err(Error::Malformed);
         }
         let head = datagram.get(..HEADER_LEN).ok_or(Error::Malformed)?;
@@ -141,26 +149,29 @@ impl<'a> Message<'a> {
         let mut tid = [0u8; 12];
         tid.copy_from_slice(head.get(8..20).ok_or(Error::Malformed)?);
 
-        // Integrity and fingerprint are required, adjacent, and last, so their
-        // offsets follow from the length alone rather than from a scan.
-        let integrity_at = datagram.len() - TRAILER_LEN;
-        if be16(datagram, integrity_at)? != ATTR_MESSAGE_INTEGRITY
-            || be16(datagram, integrity_at + 2)? != 20
-            || be16(datagram, integrity_at + INTEGRITY_LEN)? != ATTR_FINGERPRINT
-            || be16(datagram, integrity_at + INTEGRITY_LEN + 2)? != 4
-        {
-            return Err(Error::Malformed);
-        }
+        // Integrity and fingerprint, when present, are adjacent and last, so
+        // their offsets follow from the length rather than from a scan. Absent,
+        // the message is unauthenticated and only a caller that is expecting
+        // this transaction may act on it.
+        let integrity_at = (datagram.len() >= MIN_MESSAGE)
+            .then(|| datagram.len() - TRAILER_LEN)
+            .filter(|at| {
+                be16(datagram, *at) == Ok(ATTR_MESSAGE_INTEGRITY)
+                    && be16(datagram, at + 2) == Ok(20)
+                    && be16(datagram, at + INTEGRITY_LEN) == Ok(ATTR_FINGERPRINT)
+                    && be16(datagram, at + INTEGRITY_LEN + 2) == Ok(4)
+            });
 
         // Walking the attributes proves the trailer is where the encoding says
         // it is, rather than merely where the length puts it.
-        let mut walk = Attributes::new(datagram, integrity_at);
-        let mut ok = false;
+        let end = integrity_at.unwrap_or(datagram.len());
+        let mut walk = Attributes::new(datagram, end);
+        let mut reached = HEADER_LEN;
         while let Some(attribute) = walk.next() {
-            let (_, _, end) = attribute?;
-            ok = end == integrity_at;
+            let (_, _, next) = attribute?;
+            reached = next;
         }
-        if !ok && integrity_at != HEADER_LEN {
+        if reached != end {
             return Err(Error::Malformed);
         }
 
@@ -182,28 +193,37 @@ impl<'a> Message<'a> {
         self.tid
     }
 
+    /// True if the message carries credentials at all.
+    ///
+    /// A reflexive server's answer does not, which is why admitting one is a
+    /// question about outstanding transactions rather than about this message.
+    pub fn is_authenticated(&self) -> bool {
+        self.integrity_at.is_some()
+    }
+
     /// True if the message authenticates under `password`.
     ///
+    /// An unauthenticated message never satisfies this, whatever the password.
     /// The fingerprint is checked first because it is cheap and catches a
     /// truncated or spliced message before a digest is computed over it.
     pub fn verify(&self, password: &str) -> bool {
-        let Ok(expected) = be32(self.bytes, self.integrity_at + INTEGRITY_LEN + 4) else {
+        let Some(at) = self.integrity_at else {
             return false;
         };
-        let Ok(actual) = fingerprint_of(self.bytes, self.integrity_at) else {
+        let Ok(expected) = be32(self.bytes, at + INTEGRITY_LEN + 4) else {
+            return false;
+        };
+        let Ok(actual) = fingerprint_of(self.bytes, at) else {
             return false;
         };
         if expected != actual {
             return false;
         }
 
-        let Ok(mac) = integrity_of(self.bytes, self.integrity_at, password) else {
+        let Ok(mac) = integrity_of(self.bytes, at, password) else {
             return false;
         };
-        let Some(carried) = self
-            .bytes
-            .get(self.integrity_at + 4..self.integrity_at + 24)
-        else {
+        let Some(carried) = self.bytes.get(at + 4..at + 24) else {
             return false;
         };
         // Constant-time: a forged message must not be distinguishable by how
@@ -215,9 +235,14 @@ impl<'a> Message<'a> {
         diff == 0
     }
 
+    /// Where the attribute area stops: at the trailer, or at the end.
+    fn attributes_end(&self) -> usize {
+        self.integrity_at.unwrap_or(self.bytes.len())
+    }
+
     /// The username this message carries, if any.
     pub fn username(&self) -> Option<&'a str> {
-        let mut walk = Attributes::new(self.bytes, self.integrity_at);
+        let mut walk = Attributes::new(self.bytes, self.attributes_end());
         while let Some(Ok((kind, value, _))) = walk.next() {
             if kind == ATTR_USERNAME {
                 return core::str::from_utf8(value).ok();
@@ -228,7 +253,7 @@ impl<'a> Message<'a> {
 
     /// The reflexive address a peer observed for us, decoded.
     pub fn mapped_address(&self) -> Option<SocketAddr> {
-        let mut walk = Attributes::new(self.bytes, self.integrity_at);
+        let mut walk = Attributes::new(self.bytes, self.attributes_end());
         while let Some(Ok((kind, value, _))) = walk.next() {
             if kind == ATTR_XOR_MAPPED_ADDRESS {
                 return decode_mapped(value, self.tid);
@@ -274,6 +299,20 @@ pub fn encode_binding_request(
     w.attribute(ATTR_PRIORITY, &PRIORITY_VALUE.to_be_bytes())?;
 
     w.seal(password)
+}
+
+/// Build a bare binding request into `out`, for a reflexive server.
+///
+/// Twenty bytes, no attributes, no credentials: a public server has none to
+/// check against. The transaction identifier is therefore the only thing tying
+/// an answer to this request, which is why the caller must derive it
+/// unpredictably and refuse an answer it was not expecting.
+pub fn encode_reflexive_request(out: &mut [u8], tid: TransactionId) -> Result<usize> {
+    let mut w = Writer::new(out);
+    w.header(TYPE_BINDING_REQUEST, tid)?;
+    let at = w.at;
+    put_be16(w.buf, 2, 0)?;
+    Ok(at)
 }
 
 /// Build an authenticated binding response into `out`.
@@ -681,6 +720,23 @@ mod tests {
         assert_eq!(be16(&buf, at + INTEGRITY_LEN).unwrap(), ATTR_FINGERPRINT);
         assert_eq!(be16(&buf, at + INTEGRITY_LEN + 2).unwrap(), 4);
         assert_eq!(at + TRAILER_LEN, len);
+    }
+
+    /// Parsing accepts an unauthenticated message because a reflexive server
+    /// sends one, but it can never satisfy verification. Anything relying on
+    /// credentials must ask, not assume that parsing implied them.
+    #[test]
+    fn an_unauthenticated_message_parses_and_never_verifies() {
+        let mut buf = [0u8; MAX_BUILT];
+        let len = encode_reflexive_request(&mut buf, TID).unwrap();
+        assert_eq!(len, HEADER_LEN, "a reflexive probe is the bare header");
+
+        let message = Message::parse(&buf[..len]).unwrap();
+        assert_eq!(message.method(), Method::BindingRequest);
+        assert_eq!(message.transaction_id(), TID);
+        assert!(!message.is_authenticated());
+        assert!(!message.verify(PWD), "an unauthenticated message verified");
+        assert!(!message.verify(""), "an unauthenticated message verified");
     }
 
     #[test]

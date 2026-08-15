@@ -20,6 +20,12 @@ or a typed failure.
   emitted without the shell being told to restore the socket afterwards.
 - `hmac` and `sha1`, default features off, asserted allocation free rather than
   assumed to be.
+- `demux`: the two-byte classification that lets checks and media share one
+  socket.
+- Reflexive discovery: bare binding requests to a server, and the address it
+  reports emitted as a candidate.
+- `check` fuzz target over the classifier, the parser, every accessor, and
+  verification.
 - `lowlat-sim`: address translation modelled as two independent behaviours,
   chained translators, hairpin, a seeded path with loss, duplication,
   reordering, jitter, and hop-limited delivery.
@@ -51,6 +57,16 @@ or a typed failure.
   what authenticates, so deriving it keeps the core free of a random number
   generator and makes a failing run replayable from its seed alone.
 
+- **Two trust domains share the check codec.** A peer check is authenticated and
+  verification is the whole of its admission. A reflexive server's answer
+  carries no credentials at all, so it is admitted only on a transaction
+  identifier still outstanding toward that exact address. Parsing therefore
+  accepts an unauthenticated message and can never be mistaken for having
+  authenticated one, which is why `is_authenticated` exists and why
+  verification refuses such a message under every password.
+- **Classification is asymmetric on purpose.** Anything not shaped like a check
+  goes to the record layer, where authentication rejects it, so the check
+  parser is never handed input that was not already check-shaped.
 - **Mapping and filtering are separate knobs**, and the matrix is the pairings
   of them. Mapping decides whether the address a peer was told about is the one
   our packets leave from, which is what a punch depends on; filtering decides

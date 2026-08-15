@@ -42,6 +42,7 @@ pub mod channel;
 pub mod congestion;
 pub mod conn;
 pub mod control;
+pub mod demux;
 pub mod envelope;
 pub mod error;
 pub mod message;

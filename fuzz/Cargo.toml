@@ -42,6 +42,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "check"
+path = "fuzz_targets/check.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "reassembly"
 path = "fuzz_targets/reassembly.rs"
 test = false

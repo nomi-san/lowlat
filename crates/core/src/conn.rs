@@ -50,6 +50,9 @@ pub const MAX_CANDIDATES: usize = 16;
 /// Responses owed to a peer that are not yet on the wire.
 const MAX_PENDING: usize = 4;
 
+/// Reflexive servers consulted for our own mapped address.
+pub const MAX_SERVERS: usize = 4;
+
 /// How a datagram must be sent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -105,6 +108,9 @@ pub enum Inbound {
     CheckAnswered,
     /// A peer answered our check and this address became the path.
     PathEstablished(SocketAddr),
+    /// A reflexive server reported the address it sees us at. Emit it to the
+    /// application as a candidate.
+    Reflexive(SocketAddr),
     /// Authenticated, but it told us nothing new.
     Redundant,
 }
@@ -136,6 +142,16 @@ struct Candidate {
     outstanding: Option<TransactionId>,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct Server {
+    addr: SocketAddr,
+    last_probe_ms: Option<f64>,
+    /// Identifier of the outstanding probe. A server answer carries no
+    /// credentials, so this is the only thing that admits one.
+    outstanding: Option<TransactionId>,
+    answered: bool,
+}
+
 /// One punch attempt.
 #[derive(Debug)]
 pub struct Conn<'a> {
@@ -146,6 +162,7 @@ pub struct Conn<'a> {
     seed: [u8; 16],
 
     candidates: [Option<Candidate>; MAX_CANDIDATES],
+    servers: [Option<Server>; MAX_SERVERS],
     pending: [Option<(SocketAddr, TransactionId)>; MAX_PENDING],
 
     state: State,
@@ -164,6 +181,7 @@ impl<'a> Conn<'a> {
             credentials,
             seed,
             candidates: [None; MAX_CANDIDATES],
+            servers: [None; MAX_SERVERS],
             pending: [None; MAX_PENDING],
             state: State::Checking,
             started_ms: now_ms,
@@ -214,6 +232,29 @@ impl<'a> Conn<'a> {
         self.candidates.iter().flatten().count()
     }
 
+    /// Add a reflexive server to ask for our own mapped address.
+    ///
+    /// Optional. An attempt with none still punches; it simply has nothing but
+    /// whatever candidates the application gathered locally to offer.
+    pub fn add_server(&mut self, addr: SocketAddr) -> Result<()> {
+        let addr = stun::canonical(addr);
+        if self.servers.iter().flatten().any(|s| s.addr == addr) {
+            return Ok(());
+        }
+        let slot = self
+            .servers
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .ok_or(Error::Oversized)?;
+        *slot = Some(Server {
+            addr,
+            last_probe_ms: None,
+            outstanding: None,
+            answered: false,
+        });
+        Ok(())
+    }
+
     /// Feed one datagram that classified as a connectivity check.
     ///
     /// `from` is the address it actually arrived from, which is the only
@@ -237,10 +278,29 @@ impl<'a> Conn<'a> {
                 Ok(Inbound::CheckAnswered)
             }
             Method::BindingSuccess => {
+                let tid = message.transaction_id();
+
+                // A reflexive answer carries no credentials, so the only thing
+                // admitting it is that we are still expecting this transaction
+                // from this address. The identifier is derived from a seed the
+                // sender does not have, which is what makes that sufficient.
+                if let Some(server) = self
+                    .servers
+                    .iter_mut()
+                    .flatten()
+                    .find(|s| s.outstanding == Some(tid) && s.addr == from)
+                {
+                    server.outstanding = None;
+                    server.answered = true;
+                    return match message.mapped_address() {
+                        Some(mapped) => Ok(Inbound::Reflexive(mapped)),
+                        None => Err(Error::Malformed),
+                    };
+                }
+
                 if !message.verify(self.credentials.remote_pwd) {
                     return Err(Error::Decrypt);
                 }
-                let tid = message.transaction_id();
                 let known = self
                     .candidates
                     .iter_mut()
@@ -301,6 +361,13 @@ impl<'a> Conn<'a> {
             };
             soonest = soonest.min(due.max(self.pace_wait(now_ms)));
         }
+        for server in self.servers.iter().flatten().filter(|s| !s.answered) {
+            let due = match server.last_probe_ms {
+                Some(last) => (last + CHECK_CADENCE_MS - now_ms).max(0.0),
+                None => 0.0,
+            };
+            soonest = soonest.min(due.max(self.pace_wait(now_ms)));
+        }
         soonest
     }
 
@@ -325,10 +392,27 @@ impl<'a> Conn<'a> {
         // One probe per attempt, at the first candidate to arrive. It exists to
         // open the local mapping, not to reach anyone, so repeating it per
         // candidate would buy nothing and cost budget.
-        if !self.probe_sent {
-            let to = self.candidates.iter().flatten().next()?.addr;
+        if !self.probe_sent
+            && let Some(to) = self.candidates.iter().flatten().next().map(|c| c.addr)
+        {
             self.probe_sent = true;
             return Some(self.emit_check(to, Ttl::Probe, now_ms, out));
+        }
+
+        // Learning our own address is worth doing early, so it outranks peer
+        // checks: a candidate we have not discovered cannot be offered, and the
+        // peer cannot check what it was never told about.
+        let server_due = self.servers.iter().enumerate().find_map(|(index, slot)| {
+            let server = slot.as_ref()?;
+            let ready = !server.answered
+                && match server.last_probe_ms {
+                    Some(last) => now_ms - last >= CHECK_CADENCE_MS,
+                    None => true,
+                };
+            ready.then_some((index, server.addr))
+        });
+        if let Some((index, to)) = server_due {
+            return Some(self.emit_reflexive(index, to, now_ms, out));
         }
 
         let due = self
@@ -394,6 +478,27 @@ impl<'a> Conn<'a> {
         }
         self.last_sent_ms = Some(now_ms);
         Ok(Egress { to, ttl, len })
+    }
+
+    fn emit_reflexive(
+        &mut self,
+        index: usize,
+        to: SocketAddr,
+        now_ms: f64,
+        out: &mut [u8],
+    ) -> Result<Egress> {
+        let tid = self.next_transaction_id();
+        let len = stun::encode_reflexive_request(out, tid)?;
+        if let Some(server) = self.servers.get_mut(index).and_then(Option::as_mut) {
+            server.last_probe_ms = Some(now_ms);
+            server.outstanding = Some(tid);
+        }
+        self.last_sent_ms = Some(now_ms);
+        Ok(Egress {
+            to,
+            ttl: Ttl::Default,
+            len,
+        })
     }
 
     fn emit_response(
@@ -658,6 +763,102 @@ mod tests {
         assert!(
             drain(&mut conn, 1.0).is_empty(),
             "answered a check that failed authentication"
+        );
+    }
+
+    #[test]
+    fn a_reflexive_server_teaches_us_our_own_address() {
+        let mut conn = conn();
+        let server = addr(50, 3478);
+        let observed = addr(9, 41_000);
+        conn.add_server(server).unwrap();
+
+        let sent = drain(&mut conn, 0.0);
+        let (egress, buf) = sent.first().copied().unwrap();
+        assert_eq!(egress.to, server);
+        assert_eq!(egress.ttl, Ttl::Default);
+
+        // A public server answers without credentials of any kind.
+        let request = Message::parse(&buf[..egress.len]).unwrap();
+        assert!(
+            !request.is_authenticated(),
+            "a reflexive probe must carry no credentials"
+        );
+        let mut response = [0u8; 256];
+        let len =
+            stun::encode_binding_response(&mut response, request.transaction_id(), observed, "any")
+                .unwrap();
+
+        assert_eq!(
+            conn.process_input(&response[..len], server).unwrap(),
+            Inbound::Reflexive(observed)
+        );
+    }
+
+    /// The transaction identifier is the whole of the admission check for an
+    /// unauthenticated answer, so one we never sent must be refused. Otherwise
+    /// anyone able to reach the socket could dictate the address we advertise.
+    #[test]
+    fn a_reflexive_answer_we_did_not_ask_for_is_refused() {
+        let mut conn = conn();
+        let server = addr(50, 3478);
+        conn.add_server(server).unwrap();
+        drain(&mut conn, 0.0);
+
+        let mut response = [0u8; 256];
+        let len = stun::encode_binding_response(
+            &mut response,
+            TransactionId([0xEE; 12]),
+            addr(9, 41_000),
+            "any",
+        )
+        .unwrap();
+
+        assert_eq!(
+            conn.process_input(&response[..len], server),
+            Err(Error::Decrypt),
+            "an unexpected transaction must not set our advertised address"
+        );
+    }
+
+    /// And one with the right identifier from the wrong place is refused too.
+    #[test]
+    fn a_reflexive_answer_from_the_wrong_address_is_refused() {
+        let mut conn = conn();
+        let server = addr(50, 3478);
+        conn.add_server(server).unwrap();
+
+        let sent = drain(&mut conn, 0.0);
+        let (egress, buf) = sent.first().copied().unwrap();
+        let tid = Message::parse(&buf[..egress.len]).unwrap().transaction_id();
+
+        let mut response = [0u8; 256];
+        let len =
+            stun::encode_binding_response(&mut response, tid, addr(9, 41_000), "any").unwrap();
+
+        assert_eq!(
+            conn.process_input(&response[..len], addr(66, 1234)),
+            Err(Error::Decrypt)
+        );
+    }
+
+    #[test]
+    fn a_server_stops_being_probed_once_it_answers() {
+        let mut conn = conn();
+        let server = addr(50, 3478);
+        conn.add_server(server).unwrap();
+
+        let sent = drain(&mut conn, 0.0);
+        let (egress, buf) = sent.first().copied().unwrap();
+        let tid = Message::parse(&buf[..egress.len]).unwrap().transaction_id();
+        let mut response = [0u8; 256];
+        let len =
+            stun::encode_binding_response(&mut response, tid, addr(9, 41_000), "any").unwrap();
+        conn.process_input(&response[..len], server).unwrap();
+
+        assert!(
+            drain(&mut conn, CHECK_CADENCE_MS + 1.0).is_empty(),
+            "kept probing a server that already answered"
         );
     }
 
