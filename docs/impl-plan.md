@@ -137,9 +137,13 @@ gate is satisfied where the risk actually is.
 
 1. **The topology matrix, each case with its expected outcome stated**, in the simulator and in
    namespaces. Full cone, restricted cone, port restricted, and hairpin establish a direct
-   path; symmetric and carrier-grade report `probe timeout` and must not report success. Every
+   path; symmetric reports `probe timeout` and must not report success, as does a pairing where
+   only one side is symmetric. **Carrier-grade translation is decided by its mapping behaviour,
+   not by the number of layers**: two layers that keep mappings endpoint independent are
+   punchable and must establish, while a symmetric carrier translator must time out. Every
    fixture is shown capable of failing before it is trusted, because "green" over a matrix
-   whose interesting cases are failures is otherwise indistinguishable from a broken harness.
+   whose interesting cases are failures is otherwise indistinguishable from a broken harness;
+   the paired cases that differ by one behaviour flag are what demonstrate it.
 2. **A real session between two machines on the development network**: candidates exchange,
    checks pass, media flows. Those machines share a subnet, so this succeeds on host candidates
    and is the end-to-end check on real sockets, **not** a result about address translation

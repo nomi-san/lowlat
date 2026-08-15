@@ -20,6 +20,10 @@ or a typed failure.
   emitted without the shell being told to restore the socket afterwards.
 - `hmac` and `sha1`, default features off, asserted allocation free rather than
   assumed to be.
+- `lowlat-sim`: address translation modelled as two independent behaviours,
+  chained translators, hairpin, a seeded path with loss, duplication,
+  reordering, jitter, and hop-limited delivery.
+- The topology matrix, each case stating the outcome it expects.
 
 **Notes**
 
@@ -47,8 +51,23 @@ or a typed failure.
   what authenticates, so deriving it keeps the core free of a random number
   generator and makes a failing run replayable from its seed alone.
 
-**Still to land:** the simulator, the namespace fixtures, the two-machine run,
-and the fuzz targets.
+- **Mapping and filtering are separate knobs**, and the matrix is the pairings
+  of them. Mapping decides whether the address a peer was told about is the one
+  our packets leave from, which is what a punch depends on; filtering decides
+  what is let back in, which is what simultaneous open defeats. A model with one
+  knob cannot express the difference and the difference is the whole matrix.
+- **Carrier-grade translation is decided by mapping behaviour, not by the number
+  of layers.** Two layers that keep mappings endpoint independent are punchable
+  and the matrix requires them to establish; a symmetric carrier translator is
+  not. The plan previously assumed all carrier-grade cases fail, which would
+  have made a real regression on that path look like expected behaviour.
+- **Half the matrix is expected to fail**, so every case states its expected
+  outcome and the timeout cases require the specific failure rather than any
+  failure. Two pairs differ by a single behaviour flag and produce opposite
+  outcomes, which is what shows the harness can report both.
+
+**Still to land:** the namespace fixtures, the two-machine run, and the fuzz
+targets.
 
 ## 1: protocol core (2026-08-16)
 
