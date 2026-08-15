@@ -9,6 +9,14 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+# Primitives only. The state machines are ours; see AGENTS.md 11.
+# no_std, no alloc: default features pull in `alloc` and `getrandom`, and the
+# core needs neither. It derives nonces rather than generating them, which is
+# what keeps replay and simulation deterministic.
+aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }
+
+[dev-dependencies]
+lowlat-common.workspace = true
 
 [lints]
 workspace = true
