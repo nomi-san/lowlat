@@ -9,6 +9,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 - `endpoint`: one object owning the connectivity engine and the session,
   classifying each datagram and reporting the sooner of the two deadlines.
+- The acknowledgement cadence is labelled correctly: one the cadence produced
+  carries the keepalive flag and a zeroed trigger.
 
 **Notes**
 
@@ -31,6 +33,16 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   documents said otherwise; the engine is sans-IO and owns nothing. The rule
   that mattered survives: options are set once at open and nothing lowers one
   afterwards.
+- **The keepalive is the acknowledgement cadence, not a separate schedule.**
+  Every acknowledgement resets the cadence, whatever prompted it, so the timer
+  fires only when nothing else has sent one and an acknowledgement leaves at
+  least every 30 ms for the life of a session. It carries the keepalive flag and
+  a zeroed trigger when only the cadence prompted it, and the ordinary flag with
+  the real trigger when data did. A working note had this recorded as "keepalive
+  emission is not implemented, an idle session eventually trips liveness". That
+  was wrong: the cadence already emitted, so an idle pair never died. Only the
+  label and the stale trigger were wrong. An idle pair is now driven past the
+  hard liveness deadline in a test rather than argued about.
 - **The crypto per-thread leak cannot occur here.** The primitives in use keep no
   per-thread state, so the churn soak is kept for leaks that can still happen
   and the original cause is recorded as absent by construction rather than as

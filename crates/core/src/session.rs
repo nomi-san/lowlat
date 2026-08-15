@@ -72,6 +72,9 @@ pub struct Session<'a> {
     last_ack_sent_ms: f64,
     last_progress_ms: f64,
     ack_due: bool,
+    /// Why the pending acknowledgement is owed. Data arrival makes it an
+    /// acknowledgement; the cadence alone makes it a keepalive.
+    ack_kind: AckKind,
     trigger: (u8, u32),
 
     /// Which channel the output drain is working through.
@@ -94,6 +97,7 @@ impl<'a> Session<'a> {
             last_ack_sent_ms: now_ms,
             last_progress_ms: now_ms,
             ack_due: false,
+            ack_kind: AckKind::Ack,
             trigger: (0, 0),
             drain_channel: 0,
             drain_started: false,
@@ -220,6 +224,7 @@ impl<'a> Session<'a> {
                 // Any data arrival makes an acknowledgement due; the cadence
                 // check in get_output decides when it actually leaves.
                 self.ack_due = true;
+                self.ack_kind = AckKind::Ack;
                 let Some(ring) = self
                     .recv
                     .get_mut(data.channel as usize)
@@ -271,8 +276,13 @@ impl<'a> Session<'a> {
 
     /// Housekeeping. Safe to call whenever the loop wakes.
     pub fn poll(&mut self, now_ms: f64) {
-        if now_ms - self.last_ack_sent_ms >= ACK_CADENCE_MS {
+        // Every acknowledgement resets the cadence, whatever prompted it, so
+        // this fires only when nothing else has sent one. That is what makes it
+        // a keepalive: the session is never silent for longer than the cadence,
+        // and an idle one stays alive without a separate schedule.
+        if !self.ack_due && now_ms - self.last_ack_sent_ms >= ACK_CADENCE_MS {
             self.ack_due = true;
+            self.ack_kind = AckKind::Keepalive;
         }
         let (window, stale) = self.pressure();
         self.controller.tick(window, stale, 0.0);
@@ -344,6 +354,11 @@ impl<'a> Session<'a> {
     }
 
     /// Build and seal a group acknowledgement covering every channel.
+    ///
+    /// A keepalive carries the same nineteen cumulative counts but no trigger
+    /// and no negative acknowledgement: nothing prompted it, so there is
+    /// nothing to point at, and the flag combination with a trigger is not one
+    /// a peer accepts.
     fn emit_ack(&mut self, out: &mut [u8]) -> Result<usize> {
         let mut cumulative = [0u32; CHANNEL_COUNT];
         let mut gap = false;
@@ -356,11 +371,12 @@ impl<'a> Session<'a> {
                 gap = true;
             }
         }
+        let keepalive = self.ack_kind == AckKind::Keepalive;
         let ack = Ack {
-            kind: AckKind::Ack,
-            nack: gap,
-            trigger_channel: self.trigger.0,
-            trigger_seq: self.trigger.1,
+            kind: self.ack_kind,
+            nack: gap && !keepalive,
+            trigger_channel: if keepalive { 0 } else { self.trigger.0 },
+            trigger_seq: if keepalive { 0 } else { self.trigger.1 },
             cumulative,
         };
         let body = out.get_mut(ENVELOPE_LEN..).ok_or(Error::BufferTooSmall)?;
@@ -527,6 +543,79 @@ mod tests {
         }
         let unique: std::collections::BTreeSet<_> = seen.iter().collect();
         assert_eq!(unique.len(), seen.len(), "a nonce counter repeated");
+    }
+
+    /// An acknowledgement the cadence produced carries the keepalive flag and
+    /// points at nothing, because nothing prompted it.
+    #[test]
+    fn a_cadence_acknowledgement_is_flagged_keepalive() {
+        let mut arena = Arena::new();
+        let mut session = endpoint(&mut arena, 0.0);
+        let mut wire = [0u8; 512];
+        let mut scratch = [0u8; 512];
+
+        session.poll(ACK_CADENCE_MS);
+        let written = session
+            .get_output(ACK_CADENCE_MS, &mut wire)
+            .unwrap()
+            .unwrap();
+
+        let opened = session
+            .envelope
+            .open(&wire[..written], &mut scratch)
+            .unwrap();
+        let Packet::Ack(ack) = packet::parse(opened.cleartext).unwrap() else {
+            panic!("expected an acknowledgement");
+        };
+        assert_eq!(ack.kind, AckKind::Keepalive);
+        assert!(!ack.nack);
+        assert_eq!((ack.trigger_channel, ack.trigger_seq), (0, 0));
+    }
+
+    /// One that data prompted is an ordinary acknowledgement and does point at
+    /// what prompted it, which is what drives the peer's fast retransmission.
+    #[test]
+    fn a_data_acknowledgement_keeps_its_trigger() {
+        let mut left_arena = Arena::new();
+        let mut right_arena = Arena::new();
+        let mut left = endpoint(&mut left_arena, 0.0);
+        let mut right = endpoint(&mut right_arena, 0.0);
+
+        left.send_message(VIDEO, &[], b"x").unwrap();
+        pump(&mut left, &mut right, 1.0);
+
+        let mut wire = [0u8; 512];
+        let mut scratch = [0u8; 512];
+        let written = right.get_output(2.0, &mut wire).unwrap().unwrap();
+        let opened = right.envelope.open(&wire[..written], &mut scratch).unwrap();
+        let Packet::Ack(ack) = packet::parse(opened.cleartext).unwrap() else {
+            panic!("expected an acknowledgement");
+        };
+        assert_eq!(ack.kind, AckKind::Ack);
+        assert_eq!(ack.trigger_channel, VIDEO);
+    }
+
+    /// The regression for an idle session dying. Nothing is sent by the
+    /// application for well past the hard liveness deadline, and both ends stay
+    /// alive on the cadence alone.
+    #[test]
+    fn an_idle_pair_survives_past_the_hard_liveness_deadline() {
+        let mut left_arena = Arena::new();
+        let mut right_arena = Arena::new();
+        let mut left = endpoint(&mut left_arena, 0.0);
+        let mut right = endpoint(&mut right_arena, 0.0);
+
+        let mut now = 0.0;
+        while now < LIVENESS_HARD_MS + 10_000.0 {
+            now += ACK_CADENCE_MS;
+            left.poll(now);
+            right.poll(now);
+            pump(&mut left, &mut right, now);
+            pump(&mut right, &mut left, now);
+        }
+
+        assert_eq!(left.health(now), Health::Alive, "the idle sender died");
+        assert_eq!(right.health(now), Health::Alive, "the idle receiver died");
     }
 
     #[test]
