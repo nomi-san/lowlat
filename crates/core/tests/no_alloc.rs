@@ -15,6 +15,7 @@ use lowlat_core::message::Message;
 use lowlat_core::packet::{self, Data};
 use lowlat_core::send::{SendRing, SendSlot};
 use lowlat_core::session::Session;
+use lowlat_core::stun::{self, TransactionId};
 
 #[global_allocator]
 static ALLOC: Counting = Counting;
@@ -36,6 +37,26 @@ fn envelope_seal_and_open_do_not_allocate() {
             let n = envelope.seal(counter, &plaintext, &mut wire).unwrap();
             let opened = envelope.open(&wire[..n], &mut out).unwrap();
             std::hint::black_box(opened.counter);
+        }
+    });
+}
+
+/// Connectivity checks are cold compared with media, but the digest crates are
+/// a new dependency and this is the check that they keep their state on the
+/// stack rather than allocating on our behalf.
+#[test]
+fn connectivity_checks_do_not_allocate() {
+    let tid = TransactionId([7u8; 12]);
+    let mut wire = [0u8; stun::MAX_BUILT];
+
+    alloc_counter::assert_no_alloc(|| {
+        for round in 0..64u8 {
+            let len =
+                stun::encode_binding_request(&mut wire, tid, "loca", "remo", [round; 8], "secret")
+                    .unwrap();
+            let message = stun::Message::parse(&wire[..len]).unwrap();
+            std::hint::black_box(message.verify("secret"));
+            std::hint::black_box(message.username());
         }
     });
 }

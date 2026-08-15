@@ -49,6 +49,7 @@ pub mod pmtu;
 pub mod send;
 pub mod seq;
 pub mod session;
+pub mod stun;
 pub mod video;
 
 pub use error::{Error, Result};
