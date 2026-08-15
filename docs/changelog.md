@@ -3,6 +3,39 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 3: io shell (in progress)
+
+**Added**
+
+- `endpoint`: one object owning the connectivity engine and the session,
+  classifying each datagram and reporting the sooner of the two deadlines.
+
+**Notes**
+
+- **Classification and timer merging are protocol decisions, so they live in the
+  core rather than in the shell.** There they run on injected time and replay
+  from a seed; in the shell they would be the untested glue written once per
+  platform. The shell's job against an endpoint is four calls.
+- A shell arming from the session alone misses every connectivity deadline; one
+  arming from connectivity alone polls forever once the attempt is over, because
+  a finished attempt asks for no wakeups. Both are one-line mistakes and neither
+  is visible in a short test.
+- **Media has nowhere to go before a path exists**, so it waits rather than being
+  emitted to a default destination or dropped. Named test.
+- **The event loop's upper clamp was 5 ms, which is shorter than every deadline
+  the session actually arms.** It bound on every wake and reinstated exactly the
+  fixed over-poll the rule beside it forbids, while the gate two lines down
+  exists to prove the loop is event driven. Raised to 50 ms, where it never
+  binds in normal operation and still catches a core returning nonsense.
+- **The socket is opened by the shell, not by the connectivity engine.** Two
+  documents said otherwise; the engine is sans-IO and owns nothing. The rule
+  that mattered survives: options are set once at open and nothing lowers one
+  afterwards.
+- **The crypto per-thread leak cannot occur here.** The primitives in use keep no
+  per-thread state, so the churn soak is kept for leaks that can still happen
+  and the original cause is recorded as absent by construction rather than as
+  covered. A gate that passes without testing anything is worse than no gate.
+
 ## 2: connectivity (2026-08-16)
 
 The punch, sans-IO like the rest of the core. Candidates in, checks out, a path

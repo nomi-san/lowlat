@@ -43,6 +43,7 @@ pub mod congestion;
 pub mod conn;
 pub mod control;
 pub mod demux;
+pub mod endpoint;
 pub mod envelope;
 pub mod error;
 pub mod message;

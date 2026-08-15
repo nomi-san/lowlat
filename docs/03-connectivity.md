@@ -42,10 +42,10 @@ Connectivity checks and media share a single socket for the life of the session.
 is per [01 §2](01-protocol.md), on the first two bytes, before anything else. There is no
 separate control socket and no port pair.
 
-The socket is opened by the connectivity engine and the descriptor is handed to the IO shell
-once the path is established. **Ownership transfers; options do not change across the
-handoff.** A setup path that lowers a socket option and leaves it lowered has already cost a
-production stream ([02 §5](02-io-shell.md)).
+**The IO shell owns the socket and opens it before connectivity begins**, because the engine
+here is sans-IO and owns nothing. The rule that matters survives the correction: options are
+set once at open and **nothing lowers one afterwards**. A setup path that lowered a receive
+buffer and left it lowered has already cost a production stream ([02 §5](02-io-shell.md)).
 
 ## §3 Candidates
 

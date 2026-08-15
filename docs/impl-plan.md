@@ -196,25 +196,44 @@ clamp for both framings already landed in Phase 1 and is not re-litigated here.
 
 `lowlat-net`. [02-io-shell.md](02-io-shell.md) in full.
 
+- [x] `endpoint`: one object owning both state machines, classifying each datagram and
+  reporting the sooner of the two deadlines. Landed in `lowlat-core` ahead of the shell,
+  because classification and timer merging are protocol decisions rather than IO ones.
 - [ ] Socket open with the complete option set, logging the granted receive buffer.
 - [ ] `poll` plus batched receive, segmentation-offload send with per-datagram fallback.
-- [ ] The merged per-guest thread and its event loop, armed from the core's next timer.
+- [ ] The merged per-guest thread and its event loop, armed from `next_timer_ms`.
+- [ ] Per-datagram TTL applied and **restored** around a mapping probe.
 - [ ] Application send wake via `eventfd`.
-- [ ] Teardown that wakes every waiter, plus per-thread crypto state release.
+- [ ] Teardown that wakes every waiter.
+- [ ] `loom` on every new ring and atomic handoff; `unsafe` confined to thin syscall wrappers.
 
 **Gate:**
 
-1. Sustained loopback stream at the target packet rate for 60 minutes with no loss attributable
-   to the shell.
+1. **A sustained loopback stream at the target packet rate.** Every datagram sent is received,
+   and the granted receive buffer is never overrun. Ten minutes per commit, sixty nightly
+   ([08 §11](08-testing.md)). The load is a synthetic generator; there is no encoder until
+   Phase 5.
 2. Steady-state allocation count is zero.
 3. Granted receive buffer size appears in the log at open.
-4. Wake accounting: the ratio of timeout wakes to packet wakes matches the expected profile,
-   proving the loop is event driven rather than polling.
-5. Teardown under load joins every thread within 100 ms with no stranded waiter.
-6. Ten thousand connect and teardown cycles show no per-cycle memory growth. *This is the
-   per-thread crypto state regression, which is invisible without a churn soak.*
+4. **Wake accounting, as a number.** Under a steady stream, timeout wakes do not exceed the
+   count of armed deadlines by more than ten percent. A loop that polls instead of waiting
+   shows an order of magnitude more, so the check distinguishes the two rather than describing
+   a profile.
+5. **A probe leaves the socket TTL at the value it found**, asserted in the shell as well as in
+   the core. *Named regression test.*
+6. Teardown under load joins every thread within 100 ms with no stranded waiter.
+7. **The namespace fixtures pass with the shell driving**, replacing the fixture loop in
+   `crates/sim/src/bin/punch.rs`. That loop is deliberately the simplest thing that works and
+   is not a preview of the shell; this is where the real one takes over.
+8. Ten thousand connect and teardown cycles show no per-cycle growth in memory, threads, or
+   descriptors. Nightly.
 
----
+**Note on gate 8.** The lesson behind this soak is a crypto library leaking per-thread state
+for every thread that touched it, at roughly 11 KB per connect cycle. **That mechanism cannot
+occur here**: the primitives in use keep no per-thread state, so a gate phrased around
+releasing it would pass without testing anything. The soak is kept for the leaks that can
+still happen -- rings, threads, descriptors -- and the original cause is recorded as absent by
+construction rather than as covered.
 
 ## Phase 4 - Signaling and admission
 

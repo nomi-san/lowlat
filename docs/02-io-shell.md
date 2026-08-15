@@ -86,20 +86,34 @@ Linux, `WaitOnAddress` and `WakeByAddress` on Windows, `__ulock` on macOS.
 
 ```
 loop:
-    timeout = clamp(session.next_timer_us(now) as ms, 1, 5)
-    wait:   poll(fd, timeout)                       // or the platform equivalent
-    receive: batch drain -> session.process_input(bytes, now)
-    deliver: drain session events -> pipeline rings (+ notify)
+    timeout = clamp(endpoint.next_timer_ms(now), 1, 50)
+    wait:    poll(fd, timeout)                    // or the platform equivalent
+    receive: batch drain -> endpoint.process_input(bytes, from, now, scratch)
+    deliver: drain complete messages -> pipeline rings (+ notify)
     if app_send_seq changed:
-        pull input and data rings -> session.send(...)      // input FIRST
-    session.poll(now)
-    while n = session.get_output(buf):
-        batch -> send
+        pull input and data rings -> send_message(...)        // input FIRST
+    endpoint.poll(now)
+    while e = endpoint.get_output(now, buf):
+        apply e.ttl, send buf[..e.len] to e.to, restore the TTL
 ```
 
-- **There is no tick.** The timeout comes from the core's `next_timer_us`. The 1 to 5 ms clamp
-  is a safety cap, not a cadence. A next-timer function that exists but is never consumed
-  leaves a fixed over-poll in place, which is a real bug that shipped.
+- **There is no tick.** The timeout comes from the core. A next-timer function that exists but
+  is never consumed leaves a fixed over-poll in place, which is a real bug that shipped.
+- **The upper clamp is a safety net and must sit well above every real deadline, or it becomes
+  the cadence it was meant to prevent.** The session's own timer is bounded by the 30 ms
+  acknowledgement cadence, so a 5 ms cap would bind on *every* wake and reinstate exactly the
+  over-poll the rule above forbids. 50 ms never binds in normal operation and still catches a
+  core returning nonsense.
+- **One object, two state machines.** The shell drives a single endpoint, which owns both the
+  connectivity engine and the session, classifies each datagram, and reports the sooner of the
+  two deadlines. Classification and timer merging are protocol decisions and live in the core,
+  where they are exercised with injected time; a shell that arms from the session alone misses
+  every connectivity deadline, and one that arms from connectivity alone polls forever once the
+  attempt is over.
+- **An output carries its destination and how to send it.** A mapping probe leaves at a reduced
+  TTL, and the socket must be restored immediately afterwards or the media path silently caps
+  at a few hops ([03 §4](03-connectivity.md)). The obligation is in the type rather than in a
+  comment, and the shell honours it per datagram.
 - **Application sends wake the loop.** Enqueuing to an application-facing ring bumps a
   sequence and posts a dedicated wake: an `eventfd` on Linux, a completion post on Windows, a
   user event on macOS. Enqueue to wire is then microseconds rather than "next poll". Without
@@ -137,8 +151,10 @@ named constants** and must never be spelled with the same identifier.
 **Address family is determined structurally, never by scanning for a colon.** A v4-mapped
 address contains colons and is not IPv6; classifying it as such kills v4 connectivity.
 
-The connectivity engine opens the socket and hands the descriptor to the shell. Ownership
-transfers; options do not change across the handoff.
+**The shell owns the socket for the whole session and opens it before connectivity begins.**
+The connectivity engine is sans-IO and cannot open anything, so an earlier description of it
+handing a descriptor over does not survive contact with the boundary. What does survive is the
+rule that mattered: options are set once at open and nothing lowers one afterwards.
 
 ## §6 Per-platform receive and send
 
@@ -165,6 +181,11 @@ datagram size rises, since the packet rate falls but the burst size does not.
 - **Handoff is by slot index**, not by copying bytes, wherever the pool allows.
 - Shell hot paths satisfy the same zero-allocation assertions as the core: the counting
   allocator in the test harness must report exactly zero.
+- **This crate contains `unsafe`, and it is the first that does outside the concurrency
+  primitives.** Batched receive, offload send, and the wake descriptor are all syscalls. Keep
+  the unsafe in thin wrappers whose safety argument is local, and note that the `miri`
+  obligation in [08 §7](08-testing.md) cannot reach them, because `miri` cannot execute a
+  syscall. The sanitizer build carries that weight instead.
 
 ## §8 Timers
 
