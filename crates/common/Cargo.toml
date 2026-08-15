@@ -1,0 +1,24 @@
+[package]
+name = "lowlat-common"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+# Test-only counting allocator. Enabled by the test and bench profiles, never
+# in a shipping build. See docs/08-testing.md 8.
+alloc-counter = []
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
+[lints]
+workspace = true

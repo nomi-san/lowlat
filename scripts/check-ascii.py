@@ -22,7 +22,16 @@ EXTENSIONS = {
     ".json", ".yml", ".yaml", ".glsl", ".hlsl", ".comp", ".service",
 }
 
-BASENAMES = {"Makefile", "Dockerfile", ".gitignore", ".gitattributes"}
+BASENAMES = {
+    "Makefile",
+    "Dockerfile",
+    ".gitignore",
+    ".gitattributes",
+    # Git hooks are extensionless but are source we own.
+    "pre-commit",
+    "pre-push",
+    "commit-msg",
+}
 
 SKIP_DIRS = {".git", "target", "node_modules", "third_party", "local", ".claude"}
 

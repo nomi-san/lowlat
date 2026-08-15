@@ -1,0 +1,19 @@
+[package]
+name = "lowlat-tray"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "lowlat-tray"
+path = "src/main.rs"
+
+[dependencies]
+lowlat-common.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,24 @@
+[package]
+name = "lowlat-host"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+name = "lowlat"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+lowlat-common.workspace = true
+lowlat-core.workspace = true
+lowlat-net.workspace = true
+lowlat-capture.workspace = true
+lowlat-encode.workspace = true
+lowlat-inject.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,17 @@
+[package]
+name = "lowlat-net"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+lowlat-common.workspace = true
+lowlat-core.workspace = true
+libc.workspace = true
+
+[lints]
+workspace = true

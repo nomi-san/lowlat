@@ -1,0 +1,20 @@
+[package]
+name = "lowlatd"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "lowlatd"
+path = "src/main.rs"
+
+[dependencies]
+lowlat-host.workspace = true
+lowlat-kessel.workspace = true
+
+[lints]
+workspace = true

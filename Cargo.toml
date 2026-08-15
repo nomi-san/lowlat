@@ -1,0 +1,60 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/common",
+    "crates/core",
+    "crates/net",
+    "crates/sim",
+    "crates/capture",
+    "crates/encode",
+    "crates/inject",
+    "crates/host",
+    "crates/kessel",
+    "crates/daemon",
+    "crates/tray",
+]
+exclude = ["fuzz"]
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/wuuyi123/lowlat"
+authors = ["Nguyen Duy <wuuyi123@gmail.com>"]
+
+[workspace.dependencies]
+lowlat-common = { path = "crates/common" }
+lowlat-core = { path = "crates/core" }
+lowlat-net = { path = "crates/net" }
+lowlat-sim = { path = "crates/sim" }
+lowlat-capture = { path = "crates/capture" }
+lowlat-encode = { path = "crates/encode" }
+lowlat-inject = { path = "crates/inject" }
+lowlat-host = { path = "crates/host" }
+lowlat-kessel = { path = "crates/kessel" }
+
+libc = "0.2"
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }
+
+[workspace.lints.clippy]
+# Data-path crates additionally deny these at the crate root; see AGENTS 7.
+mem_forget = "deny"
+float_cmp = "warn"
+cast_possible_truncation = "warn"
+cast_sign_loss = "warn"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+# panic stays "unwind". The shared library catches unwinding at the ABI
+# boundary (docs/06-api.md 9) and "abort" would silently disable that.
+
+[profile.bench]
+lto = "fat"
+codegen-units = 1
+debug = true
