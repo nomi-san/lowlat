@@ -32,6 +32,8 @@ or a typed failure.
 - The topology matrix, each case stating the outcome it expects.
 - The recovery gate: ten thousand messages across a degraded path, delivered
   and in order.
+- Network namespace fixtures: six topologies against a real kernel, driven by a
+  fixture endpoint that runs the engine over a real socket.
 
 **Notes**
 
@@ -96,7 +98,26 @@ or a typed failure.
   recovery suite where the conditions silently failed to apply would otherwise
   pass while measuring nothing.
 
-**Still to land:** the namespace fixtures and the two-machine run.
+- **A default masquerade rule is not a cone translator.** It reallocates the
+  source port per destination, which is address-and-port-dependent mapping, so
+  the stock configuration is symmetric. A fixture built on it looks like a
+  port-restricted cone, fails to punch, and confirms the exact opposite of what
+  it was written to check. Every cone topology pins the external port; only the
+  symmetric case is left at the default.
+- **The path between fixture endpoints must be longer than a mapping probe can
+  travel.** On a short path the probe crosses the whole fabric and reaches the
+  far translator before that side has sent anything, which creates an entry in
+  the inbound direction; the far side's own outbound then matches that entry as
+  a reply, so no inward path is ever established and both sides time out. This
+  is the mechanism the reduced TTL exists to avoid, and it is only visible with
+  real distance. Carrier-grade needs one hop more than a plain gateway, because
+  the probe must die before reaching either of that side's two translators.
+- **An endpoint that exits the moment it establishes strands the other side.**
+  Answering checks is unconditional and outlives path selection, so the fixture
+  keeps running for a settling period after a path is found. Without it one side
+  established and the other timed out, on every topology.
+
+**Still to land:** the two-machine run.
 
 ## 1: protocol core (2026-08-16)
 

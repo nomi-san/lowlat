@@ -82,6 +82,23 @@ translation, and hairpin.
 
 - Each fixture is a script that builds the topology, runs the case, and tears it down, leaving
   no state behind.
+
+**Two properties of the fixtures are load bearing, and both were found by a fixture reporting
+the wrong answer confidently.**
+
+**A default masquerade rule is not a cone translator.** It reallocates the source port per
+destination, which is address-and-port-dependent mapping, so the stock configuration is a
+symmetric translator. A fixture built on it looks like a port-restricted cone, fails to punch,
+and confirms the exact opposite of what it was written to check. The external port must be
+pinned for every cone topology, and only the symmetric case may be left at the default.
+
+**The path between the endpoints must be longer than a mapping probe can travel.** A probe is
+emitted at a reduced TTL precisely so it opens the local mapping without the peer's translator
+seeing it. On a short path it crosses the whole fabric, arrives at the far translator before
+that side has sent anything, and creates an entry in the inbound direction; the far side's own
+outbound then matches that entry as a reply, so no inward path is ever established and both
+sides time out. The same length makes the fixtures the real form of the TTL regression, since
+media crosses more hops than a probe can and a socket left at the probe value carries nothing.
 - They require elevated privilege to create, which is the one place the test suite needs it.
   The suite skips them with a clear message rather than failing when it is unavailable.
 - **This tier exists because the development network cannot produce a traversal at all.** The

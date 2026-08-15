@@ -123,19 +123,19 @@ gate is satisfied where the risk actually is.
 
 ## Phase 2 - Connectivity and the simulator
 
-- [ ] Connectivity checks on the shared socket, demultiplexed per [01 §2](01-protocol.md).
-- [ ] Candidate intake, server-reflexive discovery, punch state machine, all sans-IO.
-- [ ] Transaction identifiers derived from a per-session seed, so the core still needs no
+- [x] Connectivity checks on the shared socket, demultiplexed per [01 §2](01-protocol.md).
+- [x] Candidate intake, server-reflexive discovery, punch state machine, all sans-IO.
+- [x] Transaction identifiers derived from a per-session seed, so the core still needs no
   random number generator ([00-overview.md](00-overview.md) D4).
-- [ ] `lowlat-sim`: injected time, scripted loss, reordering, duplication, jitter, and a
+- [x] `lowlat-sim`: injected time, scripted loss, reordering, duplication, jitter, and a
   topology model.
-- [ ] Network namespace fixtures with real kernel address translation.
-- [ ] Fuzz targets: binding request, binding response, attribute parsing
+- [x] Network namespace fixtures with real kernel address translation.
+- [x] Fuzz targets: binding request, binding response, attribute parsing
   ([08 §6](08-testing.md)).
 
 **Gate:**
 
-1. **The topology matrix, each case with its expected outcome stated**, in the simulator and in
+1. [x] **The topology matrix, each case with its expected outcome stated**, in the simulator and in
    namespaces. Full cone, restricted cone, port restricted, and hairpin establish a direct
    path; symmetric reports `probe timeout` and must not report success, as does a pairing where
    only one side is symmetric. **Carrier-grade translation is decided by its mapping behaviour,
@@ -144,15 +144,18 @@ gate is satisfied where the risk actually is.
    fixture is shown capable of failing before it is trusted, because "green" over a matrix
    whose interesting cases are failures is otherwise indistinguishable from a broken harness;
    the paired cases that differ by one behaviour flag are what demonstrate it.
-2. **A real session between two machines on the development network**: candidates exchange,
-   checks pass, media flows. Those machines share a subnet, so this succeeds on host candidates
-   and is the end-to-end check on real sockets, **not** a result about address translation
+2. **A real session between two machines**: candidates exchange, checks pass, media flows.
+   Two forms, and the stronger one is preferred. Across the wide area it is a genuine
+   traversal through whatever the two networks impose. Between the two machines on the
+   development network it is not, because they share a subnet and it succeeds on host
+   candidates without traversing anything; that form still checks the engine end to end on
+   real sockets, and it is labelled for what it does not prove
    ([08 §5](08-testing.md)).
-3. A v4-mapped peer address is classified as IPv4. *Named regression test.*
-4. **A probe leaves the socket TTL at the value it found.** *Named regression test.* A
+3. [x] A v4-mapped peer address is classified as IPv4. *Named regression test.*
+4. [x] **A probe leaves the socket TTL at the value it found.** *Named regression test.* A
    probe-scoped TTL that is never restored caps the media path at a few hops, which presents as
    a connection that establishes and then carries nothing over any distance.
-5. Five percent uniform loss and five percent reordering across ten thousand simulated
+5. [x] Five percent uniform loss and five percent reordering across ten thousand simulated
    messages: every message is delivered, in order, and recovery stays inside the
    retransmission bound. *The frame-level form of this, bounded freeze with no reference chain
    broken, belongs to Gate A, where frames exist.*
