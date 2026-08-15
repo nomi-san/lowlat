@@ -11,6 +11,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   classifying each datagram and reporting the sooner of the two deadlines.
 - The acknowledgement cadence is labelled correctly: one the cadence produced
   carries the keepalive flag and a zeroed trigger.
+- `lowlat-net`: the media socket with the full option set and the granted
+  buffer readable at open, and batched receive pulling a burst per syscall.
 
 **Notes**
 
@@ -33,6 +35,23 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   documents said otherwise; the engine is sans-IO and owns nothing. The rule
   that mattered survives: options are set once at open and nothing lowers one
   afterwards.
+- **`poll` rather than an event port, deliberately.** The loop waits on two
+  descriptors, the socket and the send wake. At that count a readiness scan is
+  free and an event port saves no syscall per wait, since both are one call;
+  it would only add registration state and a third descriptor. The trade
+  reverses if a thread ever multiplexes many guests, which the threading model
+  does not do, so revisit it only if that changes.
+- **Batched receive is not an optimisation.** A single outstanding receive plus
+  a poll loses a keyframe burst outright, so the batch pulls up to 64 datagrams
+  per syscall straight into slots the kernel writes.
+- **The address length is in and out.** A reused descriptor whose length is not
+  reset before each pass presents the previous datagram's value and truncates
+  the source address. Reset every slot, every pass; a named test sends from two
+  sockets in turn and checks the second is not reported as the first.
+- **The message descriptors hold raw pointers into the batch's own
+  allocations**, so one field exists purely to keep an allocation alive and is
+  never read through its handle. Removing it because nothing reads it would
+  leave the kernel writing through dangling pointers.
 - **The keepalive is the acknowledgement cadence, not a separate schedule.**
   Every acknowledgement resets the cadence, whatever prompted it, so the timer
   fires only when nothing else has sent one and an acknowledgement leaves at
