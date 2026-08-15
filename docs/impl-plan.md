@@ -37,29 +37,37 @@ before it is unverified in the only way that counts.
 
 Foundation. Nothing protocol-specific.
 
-- [ ] Cargo workspace, edition 2024, all crates from [00-overview.md](00-overview.md) present
+- [x] Cargo workspace, edition 2024, all crates from [00-overview.md](00-overview.md) present
   as skeletons with the dependency direction enforced.
-- [ ] `lowlat-common`: monotonic clock exposing **fractional milliseconds**, absolute-deadline
+- [x] `lowlat-common`: monotonic clock exposing **fractional milliseconds**, absolute-deadline
   sleep, the futex wait and notify pair as one primitive, bounded SPSC ring, byte order
   helpers, RFC 1982 sequence comparisons, logging.
-- [ ] Counting global allocator behind a test-only feature, plus the assertion helper that
+- [x] Counting global allocator behind a test-only feature, plus the assertion helper that
   hot-path tests use.
-- [ ] `loom` configuration for the concurrency crate.
-- [ ] CI: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`,
+- [x] `loom` configuration for the concurrency crate.
+- [x] CI: `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`,
   `python scripts/check-ascii.py`, `cargo deny check`.
-- [ ] Pre-commit hook running the ASCII check.
+- [x] Pre-commit hook running the ASCII check.
 
-**Gate:**
+**Gate:** passed 2026-08-15.
 
-1. CI green on Linux.
-2. `loom` passes on the SPSC ring.
-3. Clock: one million samples are strictly monotonic, and an interval shorter than one
-   millisecond returns a nonzero fractional value. *This is the regression test for the
+1. [x] CI green on Linux. Format clean, clippy clean with warnings denied, 29 tests passing,
+   ASCII check clean over 16 files.
+2. [x] `loom` passes on the SPSC ring. **And was shown capable of failing**: weakening the
+   producer's release store to relaxed makes loom report a causality violation, so the model
+   check is exercising the orderings rather than passing vacuously.
+3. [x] Clock: one million samples never go backwards and do advance, and a sub-millisecond
+   interval returns a nonzero fractional value. *This is the regression test for the
    quantization bug; an integer-millisecond clock fails it.*
-4. **The zero-allocation harness is itself verified**: a deliberately allocating test fails
-   the assertion. A harness that cannot fail proves nothing.
+4. [x] **The zero-allocation harness is itself verified**: `harness_can_fail` allocates on
+   purpose and must panic. A harness that cannot fail proves nothing.
 
 **Not in scope:** anything that parses a packet.
+
+**Note on gate 3.** The original wording said "strictly monotonic". The platform guarantees
+non-decreasing, not strictly increasing, so the test asserts that the clock never goes
+backwards and that it does advance across the sample set. Asserting strict increase would be
+testing the resolution of the underlying timer, not our contract.
 
 ---
 
