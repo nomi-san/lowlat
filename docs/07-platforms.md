@@ -119,10 +119,19 @@ it, which is why that tool cannot capture this machine at all.
 Three properties of the real framebuffer the backend must handle, none of them assumed by the
 design as written:
 
-- **It is 10-bit.** The compositor scans out `ABGR2101010`, not an 8-bit format. Colour
-  conversion must accept 10-bit input even while the encoder emits 8-bit
-  ([05 §3](05-host.md)), and it argues for bringing 10-bit encode forward from its deferred
-  position.
+- **It is 10-bit, and that is not predictable.** The compositor scans out `ABGR2101010`, not
+  an 8-bit format. Colour conversion must accept 10-bit input even while the encoder emits
+  8-bit ([05 §3](05-host.md)), and it argues for bringing 10-bit encode forward from its
+  deferred position.
+
+  **Do not infer the scanout format from anything above it.** Asking the X server reports
+  depth 24, because that is the visual X clients draw into; under a Wayland session the X
+  server is itself a client several layers above the buffer that reaches the display. The
+  format is the compositor's choice and it changes when high dynamic range is toggled, a
+  display is swapped, or the compositor restarts. **Read format and modifier from the kernel
+  on every framebuffer change** and handle what comes back. A backend that probes once at
+  startup and caches will produce correct output until the day it silently produces
+  garbage.
 - **It is multi-plane and compressed.** The primary framebuffer reports three buffers with
   differing pitches under a vendor compression modifier. Import must be modifier-aware and
   carry every plane; treating it as one linear buffer produces garbage.
