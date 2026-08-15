@@ -45,6 +45,7 @@ pub mod envelope;
 pub mod error;
 pub mod message;
 pub mod packet;
+pub mod pmtu;
 pub mod send;
 pub mod seq;
 pub mod session;

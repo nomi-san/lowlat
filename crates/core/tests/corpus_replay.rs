@@ -27,13 +27,14 @@ use lowlat_core::channel::{RecvRing, SlotMeta, Stored};
 use lowlat_core::envelope::{Cipher, Envelope};
 use lowlat_core::message;
 use lowlat_core::packet::{self, Packet};
+use lowlat_core::session::Session;
 use lowlat_core::{control, video};
 
 const MAGIC: &[u8; 8] = b"P2PWIRE1";
 const STAGE_WIRE: u8 = 0;
 const STAGE_CLEARTEXT: u8 = 1;
 
-struct Session {
+struct Recording {
     key: Vec<u8>,
     cipher: Cipher,
     body_capacity: usize,
@@ -65,7 +66,7 @@ fn unhex(text: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
-fn load_session(dir: &Path) -> Session {
+fn load_session(dir: &Path) -> Recording {
     let text = std::fs::read_to_string(dir.join("session.json")).expect("session.json");
     let cipher = match field(&text, "cipher").expect("cipher") {
         "aes256" => Cipher::Aes256,
@@ -78,7 +79,7 @@ fn load_session(dir: &Path) -> Session {
     let mtu: usize = field(&text, "mtu")
         .and_then(|v| v.parse().ok())
         .unwrap_or(1200);
-    Session {
+    Recording {
         key,
         cipher,
         body_capacity: mtu - packet::HEADER_LEN,
@@ -88,6 +89,7 @@ fn load_session(dir: &Path) -> Session {
 struct Record {
     dir: u8,
     stage: u8,
+    t_us: u64,
     data: Vec<u8>,
 }
 
@@ -100,9 +102,13 @@ fn read_record(reader: &mut impl Read) -> Option<Record> {
     let len = u32::from_le_bytes([head[12], head[13], head[14], head[15]]) as usize;
     let mut data = vec![0u8; len];
     reader.read_exact(&mut data).ok()?;
+    let t_us = u64::from_le_bytes([
+        head[4], head[5], head[6], head[7], head[8], head[9], head[10], head[11],
+    ]);
     Some(Record {
         dir: head[0],
         stage: head[1],
+        t_us,
         data,
     })
 }
@@ -367,4 +373,114 @@ fn replays_a_recorded_session_byte_for_byte() {
     );
     assert!(counts.video_messages > 100, "no video reassembled");
     assert!(counts.keyframes > 0, "no keyframe classified");
+}
+
+/// Phase 1 gate, widened: the received direction driven through a full
+/// [`Session`] rather than bare rings.
+///
+/// The decisive assertion is the last one. The recorded peer is a real client,
+/// and every acknowledgement it sent carries the contiguous frontier it had
+/// reached on each channel. Feeding the same stream into our session must land
+/// on exactly those numbers. Any divergence in reassembly anywhere across 112
+/// seconds shows up here as a mismatch.
+#[test]
+fn a_full_session_replays_the_received_direction() {
+    let Ok(dir) = std::env::var("LOWLAT_CORPUS") else {
+        eprintln!("skipping: set LOWLAT_CORPUS to a recording directory");
+        return;
+    };
+    let dir = PathBuf::from(dir);
+    let recording = load_session(&dir);
+    let envelope = Envelope::from_credential(&recording.key, recording.cipher).expect("credential");
+
+    const TRACKED: u8 = 3;
+    const SLOT_LEN: usize = lowlat_core::MAX_CLEARTEXT - packet::HEADER_LEN;
+    const SLOTS: usize = lowlat_core::channel::RING_SLOTS;
+
+    let mut storages: Vec<(Vec<u8>, Vec<SlotMeta>)> = (0..TRACKED)
+        .map(|_| {
+            (
+                vec![0u8; SLOTS * SLOT_LEN],
+                vec![SlotMeta::default(); SLOTS],
+            )
+        })
+        .collect();
+
+    let mut session = Session::new(envelope, lowlat_core::congestion::DEFAULT_LEVEL, 0.0);
+    for (channel, (bodies, meta)) in storages.iter_mut().enumerate() {
+        let channel = u8::try_from(channel).expect("channel index");
+        session
+            .attach_recv(
+                channel,
+                RecvRing::new(bodies, meta, SLOT_LEN).expect("ring storage"),
+            )
+            .expect("attach");
+    }
+
+    let file = File::open(dir.join("wire.bin")).expect("wire.bin");
+    let mut reader = BufReader::with_capacity(1 << 20, file);
+    let mut header = [0u8; 16];
+    reader.read_exact(&mut header).expect("file header");
+
+    let mut scratch = vec![0u8; lowlat_core::MAX_DATAGRAM];
+    let mut message_buf = vec![0u8; 2 << 20];
+    let mut peer_claim: Option<[u32; packet::CHANNEL_COUNT]> = None;
+    let mut delivered = 0u64;
+    let mut per_channel = [0u64; TRACKED as usize];
+    let mut datagrams = 0u64;
+
+    while let Some(record) = read_record(&mut reader) {
+        // The peer's own acknowledgements name the frontier it reached.
+        if record.dir == 1 && record.stage == STAGE_CLEARTEXT {
+            if let Ok(Packet::Ack(ack)) = packet::parse(&record.data) {
+                peer_claim = Some(ack.cumulative);
+            }
+            continue;
+        }
+        if record.dir != 0 || record.stage != STAGE_WIRE {
+            continue;
+        }
+
+        let now_ms = record.t_us as f64 / 1000.0;
+        session
+            .process_input(&record.data, now_ms, &mut scratch)
+            .unwrap_or_else(|e| panic!("session refused a recorded datagram: {e}"));
+        datagrams += 1;
+
+        for channel in 0..TRACKED {
+            while let Some(result) = session.take_message(channel, &mut message_buf) {
+                let len = result.expect("reassembly");
+                let content = message_buf.get(..len).expect("fits");
+                match channel {
+                    0 => {
+                        control::parse(content).expect("control");
+                    }
+                    1 => {
+                        let header = video::parse(content).expect("video");
+                        assert!(header.width > 0 && header.height > 0);
+                    }
+                    _ => {}
+                }
+                delivered += 1;
+                if let Some(slot) = per_channel.get_mut(channel as usize) {
+                    *slot += 1;
+                }
+            }
+        }
+    }
+
+    // The smoothed round trip stays zero here by construction: this replay has
+    // no uplink, so no acknowledgement of ours is ever returned to sample.
+    eprintln!("session: {datagrams} datagrams in, {delivered} messages out {per_channel:?}");
+
+    let claim = peer_claim.expect("the recording contained no peer acknowledgement");
+    for channel in 0..TRACKED {
+        let ours = session.recv_cumulative(channel).expect("ring attached");
+        let theirs = *claim.get(channel as usize).expect("channel in range");
+        assert_eq!(
+            ours, theirs,
+            "channel {channel}: our frontier {ours} differs from the peer's {theirs}"
+        );
+    }
+    assert!(delivered > 1000, "too few messages delivered: {delivered}");
 }

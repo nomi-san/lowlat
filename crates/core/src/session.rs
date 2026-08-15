@@ -140,6 +140,24 @@ impl<'a> Session<'a> {
         }
     }
 
+    /// Contiguous frontier on `channel`: what we would acknowledge.
+    pub fn recv_cumulative(&self, channel: u8) -> Option<u32> {
+        Some(self.recv.get(channel as usize)?.as_ref()?.cumulative_ack())
+    }
+
+    /// Anchor a receive channel at `sequence`.
+    ///
+    /// For a session joined mid-stream, or a replay that does not begin at
+    /// zero. Discards anything already buffered on that channel.
+    pub fn reset_recv(&mut self, channel: u8, sequence: u32) -> Result<()> {
+        self.recv
+            .get_mut(channel as usize)
+            .and_then(Option::as_mut)
+            .ok_or(Error::Malformed)?
+            .reset_to(sequence);
+        Ok(())
+    }
+
     /// Queue a message for sending on `channel`.
     ///
     /// Nothing goes on the wire here. The fragments become pending and
