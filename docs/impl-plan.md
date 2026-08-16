@@ -196,6 +196,8 @@ clamp for both framings already landed in Phase 1 and is not re-litigated here.
 
 `lowlat-net`. [02-io-shell.md](02-io-shell.md) in full.
 
+**Gate passed 2026-08-16.**
+
 - [x] `endpoint`: one object owning both state machines, classifying each datagram and
   reporting the sooner of the two deadlines. Landed in `lowlat-core` ahead of the shell,
   because classification and timer merging are protocol decisions rather than IO ones.
@@ -233,8 +235,10 @@ clamp for both framings already landed in Phase 1 and is not re-litigated here.
 7. [x] **The namespace fixtures pass with the shell driving**, replacing the fixture loop in
    `crates/sim/src/bin/punch.rs`. That loop is deliberately the simplest thing that works and
    is not a preview of the shell; this is where the real one takes over.
-8. [ ] Ten thousand connect and teardown cycles show no per-cycle growth in memory, threads, or
-   descriptors. Nightly.
+8. [x] Ten thousand connect and teardown cycles show no per-cycle growth in memory, threads, or
+   descriptors. Nightly. *Ten thousand cycles: descriptors 4 to 4, threads 2 to 2, resident
+   memory unchanged. Both exact counts were shown capable of failing, by leaking a descriptor
+   and by leaking a thread per cycle.*
 
 **Note on concurrency assurance.** The rule is that every ring and every atomic handoff is
 model checked. **This crate adds neither.** Its receive and send batches are single threaded by

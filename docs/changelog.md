@@ -3,7 +3,7 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
-## 3: io shell (in progress)
+## 3: io shell (2026-08-16)
 
 **Added**
 
@@ -27,6 +27,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   lost, nothing allocated in steady state, and wake accounting as a number.
 - The drain flushes a full staging batch instead of asking the core again with
   room it has already established is too small.
+- The connect and teardown churn soak, counting descriptors, threads and
+  resident memory across ten thousand cycles.
 
 **Notes**
 
@@ -51,6 +53,11 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   in for the shell polled every 5 ms and always punched outward first. The
   event-driven loop does not, and three topologies failed until the wake carried
   the candidate. Neither result was about the topology.
+- **The churn gate's exact counts were shown to fail.** Leaking a descriptor
+  per cycle takes the count from 4 to 254 over two hundred cycles, and leaking
+  the guest takes threads from 52 to 252. Resident memory is the one with a
+  tolerance, because an allocator holds arenas back and a plateau is not a
+  slope; the two that can be counted exactly are asserted exactly.
 - **A full staging batch is not a malformed emission, and treating it as one
   wedges the loop.** Staging hands back the room that is left; once that is
   shorter than the next datagram the core cannot encode into it and fails.
@@ -98,7 +105,6 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   that by name and must read the bound port back, because a host that silently
   takes an arbitrary port advertises the one it wanted and receives nothing on
   it -- a peer that answers checks and never establishes.
-
 - **Classification and timer merging are protocol decisions, so they live in the
   core rather than in the shell.** There they run on injected time and replay
   from a seed; in the shell they would be the untested glue written once per

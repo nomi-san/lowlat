@@ -423,3 +423,98 @@ fn a_sustained_stream_loses_nothing_allocates_nothing_and_does_not_tick() {
         right_stats.timeout_wakes as f64 / seconds
     );
 }
+
+/// Phase 3 gate 8: ten thousand connect and teardown cycles leak nothing.
+///
+/// Each cycle opens a socket, spawns the guest thread, lets it reach its loop,
+/// and tears it down. Descriptors and threads are counted exactly, because
+/// those are exact; resident memory is given a tolerance, because an allocator
+/// holds arenas back and a small plateau is not a leak.
+///
+/// **Flat is the pass condition.** The failure this exists for is a slow slope
+/// that never crashes: a few kilobytes a cycle is invisible below thousands of
+/// iterations and fatal over a day of streaming.
+///
+/// Cycles come from `LOWLAT_CHURN_CYCLES` so the default stays cheap and the
+/// nightly run is the real one.
+#[test]
+fn many_connect_and_teardown_cycles_leak_nothing() {
+    let cycles: u64 = std::env::var("LOWLAT_CHURN_CYCLES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200);
+
+    /// Enough cycles for the allocator and the thread pool to reach a plateau,
+    /// so the baseline is steady state rather than start-up.
+    const WARM_CYCLES: u64 = 50;
+
+    fn descriptors() -> usize {
+        std::fs::read_dir("/proc/self/fd")
+            .map(|d| d.count())
+            .unwrap_or(0)
+    }
+    fn field(name: &str) -> u64 {
+        std::fs::read_to_string("/proc/self/status")
+            .ok()
+            .and_then(|s| {
+                s.lines()
+                    .find(|l| l.starts_with(name))
+                    .and_then(|l| l.split_whitespace().nth(1).and_then(|v| v.parse().ok()))
+            })
+            .unwrap_or(0)
+    }
+
+    let one_cycle = || {
+        let socket = Socket::open(0).expect("socket");
+        let wake = Wake::new().expect("wake");
+        let (ready, ack) = std::sync::mpsc::channel();
+        let mut guest = lowlat_net::Guest::spawn(wake, move |wake, running| {
+            let _ = ready.send(());
+            while !running.stopping() {
+                // Park on the wake exactly as the real loop does, so teardown
+                // has a parked thread to release rather than a spinning one.
+                let _ = wake.take();
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+        })
+        .expect("spawn");
+        ack.recv_timeout(std::time::Duration::from_secs(5))
+            .expect("guest never reached its loop");
+        guest.stop();
+        drop(socket);
+    };
+
+    for _ in 0..WARM_CYCLES {
+        one_cycle();
+    }
+    let fds_before = descriptors();
+    let threads_before = field("Threads:");
+    let rss_before = field("VmRSS:");
+
+    for _ in 0..cycles {
+        one_cycle();
+    }
+
+    let fds_after = descriptors();
+    let threads_after = field("Threads:");
+    let rss_after = field("VmRSS:");
+    let rss_growth = rss_after.saturating_sub(rss_before);
+
+    println!("churn:  {cycles} cycles after {WARM_CYCLES} warm-up");
+    println!("fds:    {fds_before} -> {fds_after}");
+    println!("threads:{threads_before} -> {threads_after}");
+    println!(
+        "rss:    {rss_before} -> {rss_after} kB, growth {rss_growth} kB \
+         ({:.2} kB/cycle)",
+        rss_growth as f64 / cycles as f64
+    );
+
+    assert_eq!(fds_after, fds_before, "a descriptor leaked per cycle");
+    assert_eq!(threads_after, threads_before, "a thread leaked per cycle");
+    // The lesson behind this gate is a few kilobytes per cycle. A tenth of a
+    // kilobyte per cycle is far below that and far above allocator noise.
+    assert!(
+        rss_growth < cycles / 10 + 4096,
+        "resident memory grew {rss_growth} kB over {cycles} cycles, which is a slope"
+    );
+}
