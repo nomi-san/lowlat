@@ -169,6 +169,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         role: Role::Host,
         build: APP_V.to_string(),
         sdk_version: SDK_V,
+        keepalive: lowlat_kessel::client::KEEPALIVE,
     };
 
     // Who each attempt is with, so an outbound message can be addressed. The

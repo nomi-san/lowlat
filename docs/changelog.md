@@ -82,12 +82,23 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - **Two inbound actions were being dropped silently**: the service's close,
   whose reason is the only thing separating a bad session from an unknown host,
   and an opaque passthrough channel no schema lists. Both are reported now.
-- **A ping must be answered explicitly, and a quiet host is the only thing
-  that finds out.** The library queues a pong on the connection, but the read
-  and write halves are split and that queue is only flushed by a write. A host
-  with nothing to say never writes, so the pong never left and the service
-  closed us for silence about two minutes in. Anything that talks periodically
-  flushes the queue as a side effect and never discovers this.
+- **Silence is not a stable state for a connection, and answering pings is not
+  enough.** A host with nothing to say has to put something on the wire itself,
+  on a schedule, because the path to the service closes an idle websocket after
+  about a hundred seconds. Inbound pings are answered too, which is correct and
+  was not the cause.
+- **A working reconnect hid this for an hour.** The first diagnosis was that
+  queued pongs were never flushed, and the connection dropping every two minutes
+  was read as fixed because the host stayed in the discovery listing. It stayed
+  there because it was reconnecting roughly thirty times an hour, fast enough
+  that nothing above noticed. **A recovery mechanism masks the fault it recovers
+  from**, so the measurement that settles it is drops per hour, not whether the
+  host is visible.
+- **The first regression test for it passed against the defect.** It asserted
+  that an inbound ping was answered, which was true before and after the fix and
+  therefore proved nothing. The test that discriminates asserts an idle
+  connection transmits unprompted, and it fails in ten seconds against a client
+  with no keepalive.
 - **An established guest learns the peer left from the media path, not from
   signaling.** A peer that closes a session it was using does not withdraw its
   offer, so nothing arrives to say so. Without a liveness check the loop runs

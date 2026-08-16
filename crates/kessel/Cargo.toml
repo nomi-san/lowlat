@@ -19,5 +19,10 @@ serde.workspace = true
 serde_json.workspace = true
 rustls.workspace = true
 
+[dev-dependencies]
+# The liveness test stands a server up locally rather than reaching the network.
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
+futures-util.workspace = true
+
 [lints]
 workspace = true

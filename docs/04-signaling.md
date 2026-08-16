@@ -47,7 +47,17 @@ The role determines message direction: a host receives offers and sends answers,
 the reverse.
 
 Liveness is the connection itself. The service treats a dropped connection as the host going
-away, which is why §6 forbids a heartbeat.
+away, which is why §6 forbids a heartbeat *at the message layer*.
+
+**The transport underneath still needs one.** The path to the service closes a websocket that
+has carried nothing for around a hundred seconds, so a connection is kept open by transport
+keepalives sent from this side, roughly every thirty seconds. Answering the far side's pings
+does not substitute for it. The distinction matters because the two are easy to conflate: no
+advertisement on a timer, but traffic on the wire on a timer.
+
+A host that gets this wrong still works, which is what makes it worth stating. It drops and
+reconnects every couple of minutes, and a reconnect fast enough to stay in the listing hides it
+completely.
 
 Reconnection uses bounded exponential backoff with jitter. A reconnect re-sends the
 advertisement (§6) but does not resurrect in-flight attempts, which the peer has already

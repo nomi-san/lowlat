@@ -7,6 +7,8 @@
 //! Liveness is the connection. The service treats a dropped connection as the
 //! host going away, which is why nothing here sends a heartbeat.
 
+use core::time::Duration;
+
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message as Frame;
@@ -49,6 +51,15 @@ pub struct Client {
     inbound: mpsc::UnboundedReceiver<Inbound>,
 }
 
+/// How often an otherwise silent connection sends a ping.
+///
+/// **This is what keeps the connection open, and it is not optional.** The
+/// service sits behind an edge that closes an idle websocket after about a
+/// hundred seconds, so a host with nothing to say is disconnected roughly every
+/// two minutes and only survives because it reconnects. Answering the edge's
+/// own pings does not help; the traffic has to come from here.
+pub const KEEPALIVE: Duration = Duration::from_secs(30);
+
 /// Everything the upgrade needs.
 #[derive(Debug, Clone)]
 pub struct Connect {
@@ -57,6 +68,9 @@ pub struct Connect {
     pub role: Role,
     pub build: String,
     pub sdk_version: u32,
+    /// Interval between keepalive pings. [`KEEPALIVE`] unless a caller needs
+    /// a different one, which in practice is a test that cannot wait.
+    pub keepalive: Duration,
 }
 
 impl Client {
@@ -109,6 +123,22 @@ impl Client {
                 }
             }
             let _ = sink.close().await;
+        });
+
+        // The keepalive. A connection carrying no messages still has to put
+        // something on the wire, or the edge in front of the service closes it
+        // as idle.
+        let heartbeat = out_tx.clone();
+        let interval = params.keepalive;
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(interval);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                if heartbeat.send(Frame::Ping(Vec::new())).is_err() {
+                    return;
+                }
+            }
         });
 
         // The one reader. A frame that is not JSON we understand is dropped:

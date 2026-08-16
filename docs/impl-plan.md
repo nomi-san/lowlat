@@ -262,6 +262,8 @@ construction rather than as covered.
 
 ## Phase 4 - Signaling and admission
 
+**Gate passed 2026-08-17.**
+
 - [x] `lowlat-kessel`: transport, authentication, reconnection with backoff, host
   advertisement, and the message set from [04-signaling.md](04-signaling.md).
 - [x] Host admission seam: register attempt, add candidate, approve returning credentials,
@@ -421,6 +423,11 @@ from a source change.
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
 
+- 2026-08-17: Phase 4 closed. Five gates, all against a stock client on a real
+  service. The phase's lasting finding is not in the gates: a connection that
+  drops every two minutes and reconnects inside a second looks identical, from
+  the listing, to one that never drops. Recovery masks the fault it recovers
+  from, so the check is drops per hour rather than whether the host is visible.
 - 2026-08-16: Phase 4 gate 4 was briefly inverted and is restored. A capture showed a ten
   second advertisement cadence, which was read as the SDK's own timer; it was the application
   driving it from above. The emission is dirty-flag driven and there is no periodic caller.

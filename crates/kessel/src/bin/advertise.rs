@@ -70,6 +70,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         role: Role::Host,
         build: APP_V.to_string(),
         sdk_version: SDK_V,
+        keepalive: lowlat_kessel::client::KEEPALIVE,
     })
     .await?;
 

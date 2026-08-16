@@ -504,16 +504,22 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+mod tests_support {
+    use super::Peer;
 
-    fn peer() -> Peer {
+    pub(super) fn peer() -> Peer {
         Peer {
             ufrag: "aaaa".into(),
             pwd: "passwordforaaaa".into(),
             aes256: None,
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tests_support::*;
+    use super::*;
 
     fn admission(max_guests: usize) -> Admission {
         Admission::new(Config {
@@ -699,5 +705,46 @@ mod tests {
             }
         }
         assert_eq!(terminal, 0, "an application-initiated end reported itself");
+    }
+}
+
+#[cfg(test)]
+mod reclamation {
+    use super::tests_support::*;
+    use super::*;
+
+    /// A guest that ends gives its port back, so the next one lands on the base
+    /// again rather than walking past it. *Named regression test.*
+    ///
+    /// The failure this guards is slow and silent: a host that never reclaims
+    /// walks one port further per session and, after enough of them, cannot
+    /// admit anyone at all. It took a live run to notice, because every short
+    /// test admits one guest and stops.
+    #[test]
+    fn a_port_is_reclaimed_when_its_guest_ends() {
+        let probe = Socket::open(0).expect("probe");
+        let base = probe.local_addr().expect("addr").port();
+        drop(probe);
+
+        let mut seam = Admission::new(Config {
+            base_port: base,
+            max_guests: 4,
+            servers: Vec::new(),
+        });
+
+        let mut ports = Vec::new();
+        for round in 0..4 {
+            let id = format!("guest-{round}");
+            seam.new_attempt(&id, peer()).expect("register");
+            ports.push(seam.begin_p2p(&id).expect("approve").port);
+            seam.end_connection(&id);
+        }
+
+        assert_eq!(
+            ports,
+            vec![base; 4],
+            "the port walked instead of being reclaimed"
+        );
+        assert_eq!(seam.occupancy(), 0);
     }
 }
