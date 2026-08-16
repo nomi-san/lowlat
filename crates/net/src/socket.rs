@@ -12,6 +12,7 @@
 //! that weight instead.
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use core::time::Duration;
 use std::io;
 use std::mem;
 use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
@@ -60,6 +61,26 @@ pub const DEFAULT_TTL: u8 = 64;
 /// low to reach the peer. Mirrors the core's probe value.
 pub const PROBE_TTL_MAX: u8 = lowlat_core::conn::PROBE_TTL;
 
+/// Ports tried, starting at the requested one, before the walk gives up.
+///
+/// A host whose configured port is occupied has to start anyway, so the bind
+/// steps forward rather than failing. Each attempt takes a fresh descriptor:
+/// the option set is applied before the bind, so a failed bind cannot be
+/// retried on the socket that carried it.
+///
+/// The walk stops at the top of the range instead of wrapping. Wrapping lands
+/// on the privileged ports, where the bind fails for an unrelated reason and
+/// reports it as though the range were occupied.
+const PORT_WALK: u16 = 50;
+
+/// Between walk attempts.
+///
+/// A failed bind says nothing about the next port, so this is not waiting for
+/// anything to clear. It bounds the pathological case where the failure is
+/// descriptor exhaustion rather than an occupied port, and the whole walk is
+/// still under the time a single connection setup takes.
+const WALK_RETRY: Duration = Duration::from_millis(1);
+
 /// Sizes into the kernel's length type.
 ///
 /// Every value passed is a compile-time struct size, orders of magnitude below
@@ -83,13 +104,80 @@ pub struct Socket {
 }
 
 impl Socket {
-    /// Open a dual-stack UDP socket bound to `port`, with every option set.
+    /// Open a dual-stack UDP socket bound at or just above `port`, with every
+    /// option set.
     ///
-    /// Port 0 asks the kernel to choose. The socket is dual stack, so one
-    /// descriptor serves both families and a v4 peer arrives as a v4-mapped
-    /// address, which callers must classify structurally rather than by looking
-    /// for a colon.
+    /// Port 0 asks the kernel to choose and binds once, because there is
+    /// nothing to walk. Any other port is the head of a [`PORT_WALK`] range:
+    /// an occupied port steps forward rather than failing the host's start.
+    /// Exhausting the range returns the last bind error, so a caller sees
+    /// `AddrInUse` rather than a socket on a port it never asked for. A caller
+    /// that would rather have any port than none asks for
+    /// [`Socket::open_or_any_port`] by name.
+    ///
+    /// The socket is dual stack, so one descriptor serves both families and a
+    /// v4 peer arrives as a v4-mapped address, which callers must classify
+    /// structurally rather than by looking for a colon.
     pub fn open(port: u16) -> io::Result<Self> {
+        Self::walk(port, false)
+    }
+
+    /// As [`Socket::open`], but take a kernel-chosen port when the walk is
+    /// exhausted rather than failing.
+    ///
+    /// **The bound port is then not the requested one, and the caller must read
+    /// it back from [`Socket::local_addr`] before advertising anything.** This
+    /// is why the fallback is a separate call instead of the default: a host
+    /// that silently lands on an arbitrary port advertises the port it wanted
+    /// and receives nothing on it, which presents as a peer that answers checks
+    /// and never establishes.
+    pub fn open_or_any_port(port: u16) -> io::Result<Self> {
+        Self::walk(port, true)
+    }
+
+    fn walk(port: u16, any_on_exhaustion: bool) -> io::Result<Self> {
+        // Port 0 is already a request for whatever the kernel has free.
+        if port == 0 {
+            return Self::bound(0);
+        }
+
+        let mut last = None;
+        for step in 0..PORT_WALK {
+            let Some(candidate) = port.checked_add(step) else {
+                break;
+            };
+            match Self::bound(candidate) {
+                Ok(socket) => {
+                    if candidate != port {
+                        lowlat_common::log_info!(
+                            "net: port walked, want={} bound={}",
+                            port,
+                            candidate
+                        );
+                    }
+                    return Ok(socket);
+                }
+                Err(error) => last = Some(error),
+            }
+            lowlat_common::clock::precise_sleep(WALK_RETRY);
+        }
+
+        if any_on_exhaustion {
+            let socket = Self::bound(0)?;
+            let bound = socket.local_addr()?.port();
+            lowlat_common::log_info!(
+                "net: port walk exhausted, want={} bound={} ephemeral=1",
+                port,
+                bound
+            );
+            return Ok(socket);
+        }
+
+        Err(last.unwrap_or_else(|| io::Error::from(io::ErrorKind::AddrInUse)))
+    }
+
+    /// One attempt: a fresh descriptor, the full option set, and a bind.
+    fn bound(port: u16) -> io::Result<Self> {
         // SAFETY: a plain socket(2) with constant arguments; the returned
         // descriptor is handed straight to OwnedFd, which closes it on drop.
         let raw = unsafe { libc::socket(libc::AF_INET6, libc::SOCK_DGRAM, 0) };
@@ -411,6 +499,50 @@ mod tests {
 
         let local = socket.local_addr().expect("local addr");
         assert_ne!(local.port(), 0, "the kernel must have chosen a port");
+    }
+
+    /// A host whose configured port is occupied has to start anyway, so the
+    /// bind steps forward. Without the walk this is a hard failure at startup.
+    #[test]
+    fn an_occupied_port_walks_forward() {
+        let occupied = Socket::open(0).expect("occupy");
+        let taken = occupied.local_addr().expect("addr").port();
+
+        let walked = Socket::open(taken).expect("the walk must find room");
+        let bound = walked.local_addr().expect("addr").port();
+
+        assert_ne!(bound, taken, "the walk bound the port it was told was busy");
+        assert!(
+            bound > taken && bound < taken.saturating_add(PORT_WALK),
+            "walked out of its range: want={taken} bound={bound}"
+        );
+    }
+
+    /// The top of the range has no successor, so the walk gives up there.
+    ///
+    /// Two behaviours in one fixture because they need the same exclusive port.
+    /// It must report the bind failure rather than quietly landing elsewhere,
+    /// and it must not wrap into the privileged ports looking for room -- a
+    /// wrapping walk would answer this with a success on some low port.
+    #[test]
+    fn an_exhausted_walk_fails_unless_any_port_was_asked_for() {
+        const TOP: u16 = u16::MAX;
+        let _occupied = Socket::open(TOP);
+
+        let error = Socket::open(TOP).expect_err("the walk cannot step past the top of the range");
+        assert_eq!(
+            error.kind(),
+            io::ErrorKind::AddrInUse,
+            "an exhausted walk must report the bind failure"
+        );
+
+        let fallback = Socket::open_or_any_port(TOP).expect("fallback");
+        let bound = fallback.local_addr().expect("addr").port();
+        assert_ne!(bound, 0, "the kernel must have chosen a port");
+        assert_ne!(
+            bound, TOP,
+            "the fallback must report the port it got, not the one it wanted"
+        );
     }
 
     /// The receive slot comes from the protocol ceiling plus relay framing, and

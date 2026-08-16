@@ -199,12 +199,14 @@ clamp for both framings already landed in Phase 1 and is not re-litigated here.
 - [x] `endpoint`: one object owning both state machines, classifying each datagram and
   reporting the sooner of the two deadlines. Landed in `lowlat-core` ahead of the shell,
   because classification and timer merging are protocol decisions rather than IO ones.
-- [ ] Socket open with the complete option set, logging the granted receive buffer.
-- [ ] `poll` plus batched receive, segmentation-offload send with per-datagram fallback.
-- [ ] The merged per-guest thread and its event loop, armed from `next_timer_ms`.
-- [ ] Per-datagram TTL applied and **restored** around a mapping probe.
-- [ ] Application send wake via `eventfd`.
-- [ ] Teardown that wakes every waiter.
+- [x] Socket open with the complete option set, logging the granted receive buffer.
+- [x] The bind walks forward over a bounded range when the configured port is
+  occupied, with a kernel-chosen port only on explicit request.
+- [x] `poll` plus batched receive, segmentation-offload send with per-datagram fallback.
+- [x] The merged per-guest thread and its event loop, armed from `next_timer_ms`.
+- [x] Per-datagram TTL applied and **restored** around a mapping probe.
+- [x] Application send wake via `eventfd`.
+- [x] Teardown that wakes every waiter.
 - [x] `unsafe` confined to thin syscall wrappers, with the crate stating why `miri` cannot
   reach them.
 - [x] Concurrency assurance, per the note below.
@@ -408,6 +410,11 @@ from a source change.
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
 
+- 2026-08-16: Phase 3 gains the port walk. `Socket::open` bound once and returned
+  the error, so a host whose configured port was occupied failed to start. The
+  walk is bounded, the ephemeral fallback is a separate call rather than the
+  default, and the bound port is read back when it is taken. Added to the phase
+  because it is behaviour the shell owes rather than a gate revision.
 - 2026-08-16: Phase 2 split. The relay moves to Phase 2b, scheduled after Gate A: nothing
   before Gate A depends on it, it has no test surface until Phase 2's fixtures exist, and its
   datagram clamp already landed in Phase 1. Gateway port mapping leaves the phase entirely.

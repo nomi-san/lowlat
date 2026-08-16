@@ -16,8 +16,22 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   batched send with segmentation offload and a per-datagram fallback, the
   application send wake, the event loop that drives an endpoint over them, and
   the merged per-guest thread with its teardown.
+- The bind walks forward when the configured port is occupied, so an occupied
+  port delays a host's start rather than preventing it.
 
 **Notes**
+
+- **A bind failure is not a startup failure.** The walk takes 50 ports from the
+  configured one, each attempt on a fresh descriptor, because the option set is
+  applied before the bind and cannot be retried on the socket that carried it.
+  It stops at the top of the range instead of wrapping: wrapping lands on the
+  privileged ports, where the bind fails for an unrelated reason and reports it
+  as though the range were occupied.
+- **Landing on a port nobody asked for is opt-in.** Exhausting the walk returns
+  the bind error. A caller that would rather have any port than none asks for
+  that by name and must read the bound port back, because a host that silently
+  takes an arbitrary port advertises the one it wanted and receives nothing on
+  it -- a peer that answers checks and never establishes.
 
 - **Classification and timer merging are protocol decisions, so they live in the
   core rather than in the shell.** There they run on injected time and replay
