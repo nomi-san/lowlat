@@ -14,13 +14,13 @@ jobs:
     name: format, lints, tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install toolchain
         run: rustup component add rustfmt clippy
 
       - name: Cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ~/.cargo/registry
@@ -49,7 +49,7 @@ jobs:
     name: model checking
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # docs/08-testing.md 7: concurrency primitives are model checked, not
       # soak tested. This job is not optional.
@@ -63,7 +63,7 @@ jobs:
     name: licenses and advisories
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Run on the runner with the repository's own toolchain rather than in a
       # musl container: rust-toolchain.toml pins a target the container has no
       # toolchain for, which degrades dependency resolution before any policy
@@ -76,7 +76,7 @@ jobs:
     name: sanitizers
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install nightly
         run: rustup toolchain install nightly --component rust-src
