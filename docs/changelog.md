@@ -50,8 +50,14 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - **Exactly one TLS provider is chosen here**, rather than left to feature
   unification, which resolves to none and panics inside the TLS stack at the
   first connection. That reads as a crash rather than as a configuration gap.
-- **Liveness is the connection**, so nothing sends a heartbeat and the
-  advertisement is emitted on state change only.
+- **The advertisement is emitted on state change, not on a schedule**, and it is
+  driven by a stale mark rather than by a timer: something marks it dirty, the
+  loop publishes and clears the mark. A capture appearing to show a ten second
+  cadence was the layer above driving it, not the layer being measured -- the
+  cadence was attributed before its cause was, and correcting that took two
+  passes over the same document. Whether a host that advertises once stays
+  discoverable over hours is open, and is a question for the listing rather than
+  for argument.
 
 ## 3: io shell (2026-08-16)
 

@@ -140,6 +140,19 @@ the connection, so a periodic advertisement adds load and buys nothing. Emit on:
 - guest connected or disconnected, updating occupancy and the guest list
 - any advertised field changed by the application
 
+The emission is driven by a dirty flag rather than by a schedule: something marks the
+advertisement stale, the host loop publishes it and clears the mark. Nothing in the reference
+publishes on a timer, and a capture that appears to show a ten second cadence is showing the
+application above the SDK polling, not the SDK itself.
+
+**Open, and testable by the listing rather than by argument:** whether a host that advertises
+once and then goes quiet stays discoverable indefinitely. The document asserts it does. That
+has not been observed over a long connection, and the service marking a host online when an
+advertisement arrives is not evidence about what happens when one never arrives again.
+
+A separate greeting frame goes out once when the connection opens. It appears exactly once per
+session, so it is not a keepalive either.
+
 **Advertised capacity is read from the configured guest limit** ([00-overview.md](00-overview.md)
 D10), never a constant. A listing that promises more capacity than admission will grant is a
 listing that lies to users.

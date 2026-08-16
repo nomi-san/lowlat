@@ -418,6 +418,12 @@ from a source change.
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
 
+- 2026-08-16: Phase 4 gate 4 was briefly inverted and is restored. A capture showed a ten
+  second advertisement cadence, which was read as the SDK's own timer; it was the application
+  driving it from above. The emission is dirty-flag driven and there is no periodic caller.
+  **The lesson is about the measurement, not the gate:** a cadence was attributed to the layer
+  being studied without controlling for the layer driving it, which is the same error as
+  inferring a mechanism from an absence and cost a document correction in both directions.
 - 2026-08-16: Phase 3 gate 1 records a deployment requirement. On a stock kernel
   the granted receive buffer is a fraction of what is asked for, and ten minutes
   at the target rate loses 1648 datagrams to it. Recovery carried all of them and
