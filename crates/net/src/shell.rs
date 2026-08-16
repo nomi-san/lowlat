@@ -233,10 +233,24 @@ impl<'a> Shell<'a> {
             };
             let egress = match result {
                 Ok(egress) => egress,
-                // A malformed emission is our defect, not the network's. Drop
-                // it and keep the loop alive rather than tearing down a session
-                // over one datagram.
-                Err(_) => continue,
+                Err(_) => {
+                    // Nearly always a full batch rather than a bad emission:
+                    // staging hands back the room that is left, and once that
+                    // is shorter than the next datagram the core cannot encode
+                    // into it. Asking again unchanged returns the same failure
+                    // forever, which wedges the loop at full CPU the moment a
+                    // pass produces more than the batch holds -- invisible to
+                    // any test that sends a datagram or two.
+                    //
+                    // Flush, which makes the whole buffer available, and ask
+                    // once more. A failure with all of it free is our defect,
+                    // and the emission is dropped rather than retried.
+                    if self.outbound.staged() > 0 {
+                        self.outbound.flush(&self.socket)?;
+                        continue;
+                    }
+                    break;
+                }
             };
             self.outbound.commit(&self.socket, egress)?;
             sent += 1;

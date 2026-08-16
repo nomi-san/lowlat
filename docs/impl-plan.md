@@ -213,23 +213,27 @@ clamp for both framings already landed in Phase 1 and is not re-litigated here.
 
 **Gate:**
 
-1. **A sustained loopback stream at the target packet rate.** Every datagram sent is received,
+1. [x] **A sustained loopback stream at the target packet rate.** Every datagram sent is received,
    and the granted receive buffer is never overrun. Ten minutes per commit, sixty nightly
    ([08 §11](08-testing.md)). The load is a synthetic generator; there is no encoder until
-   Phase 5.
-2. Steady-state allocation count is zero.
-3. Granted receive buffer size appears in the log at open.
-4. **Wake accounting, as a number.** Under a steady stream, timeout wakes do not exceed the
+   Phase 5. *Ten minutes at 10009 datagrams/s: 6005082 messages sent, 6005082 received, no
+   gaps, no kernel drops. See the note below on what the buffer had to be raised to.*
+2. [x] Steady-state allocation count is zero. *Both loops, over the whole run.*
+3. [x] Granted receive buffer size appears in the log at open.
+4. [x] **Wake accounting, as a number.** Under a steady stream, timeout wakes do not exceed the
    count of armed deadlines by more than ten percent. A loop that polls instead of waiting
    shows an order of magnitude more, so the check distinguishes the two rather than describing
-   a profile.
-5. **A probe leaves the socket TTL at the value it found**, asserted in the shell as well as in
-   the core. *Named regression test.*
-6. Teardown under load joins every thread within 100 ms with no stranded waiter.
-7. **The namespace fixtures pass with the shell driving**, replacing the fixture loop in
+   a profile. *Sender 72/s, receiver 50/s, against the 1000/s a loop bound by the minimum wait
+   would show. Stated against that ceiling rather than against the armed count, because every
+   pass arms one and the comparison is otherwise vacuous.*
+5. [x] **A probe leaves the socket TTL at the value it found**, asserted in the shell as well as in
+   the core. *Named regression test.* *Confirmed on the wire as well: the probe leaves at the
+   probe hop limit and the next check at the default.*
+6. [x] Teardown under load joins every thread within 100 ms with no stranded waiter.
+7. [x] **The namespace fixtures pass with the shell driving**, replacing the fixture loop in
    `crates/sim/src/bin/punch.rs`. That loop is deliberately the simplest thing that works and
    is not a preview of the shell; this is where the real one takes over.
-8. Ten thousand connect and teardown cycles show no per-cycle growth in memory, threads, or
+8. [ ] Ten thousand connect and teardown cycles show no per-cycle growth in memory, threads, or
    descriptors. Nightly.
 
 **Note on concurrency assurance.** The rule is that every ring and every atomic handoff is
@@ -410,6 +414,14 @@ from a source change.
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
 
+- 2026-08-16: Phase 3 gate 1 records a deployment requirement. On a stock kernel
+  the granted receive buffer is a fraction of what is asked for, and ten minutes
+  at the target rate loses 1648 datagrams to it. Recovery carried all of them and
+  no message was lost, but the gate is about the buffer and not about recovery,
+  so it is measured with the ceiling raised and the stock figure kept as the
+  reason the service must raise it. Gate 4 is stated against the rate a loop
+  bound by the minimum wait would show, because every pass arms a deadline and
+  comparing timeout wakes against the armed count can never fail.
 - 2026-08-16: Phase 3 gains the port walk. `Socket::open` bound once and returned
   the error, so a host whose configured port was occupied failed to start. The
   walk is bounded, the ephemeral fallback is a separate call rather than the

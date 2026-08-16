@@ -23,6 +23,10 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - A second fixture endpoint that drives the namespace topologies through the
   real shell instead of a loop standing in for one. The topology matrix passes
   with it, as does a run between two machines on different networks.
+- The sustained loopback soak, carrying gates 1, 2 and 4 in one harness: nothing
+  lost, nothing allocated in steady state, and wake accounting as a number.
+- The drain flushes a full staging batch instead of asking the core again with
+  room it has already established is too small.
 
 **Notes**
 
@@ -47,6 +51,28 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   in for the shell polled every 5 ms and always punched outward first. The
   event-driven loop does not, and three topologies failed until the wake carried
   the candidate. Neither result was about the topology.
+- **A full staging batch is not a malformed emission, and treating it as one
+  wedges the loop.** Staging hands back the room that is left; once that is
+  shorter than the next datagram the core cannot encode into it and fails.
+  Asking again unchanged returns the same failure forever, so the loop spun at
+  full CPU with the stream stopped the moment a pass produced more than the
+  batch holds. Two messages crossed and then nothing. The drain flushes, which
+  makes the whole buffer available, and asks once more; a failure with all of it
+  free is ours and the emission is dropped. **Every test that sends a datagram
+  or two ran straight over this**, and so did the two-machine punch: it takes a
+  sustained stream to reach at all.
+- **A regression test for it has to punch first.** The first attempt queued a
+  burst on one shell with a candidate and no path. Media waits until a path
+  exists, so nothing was emitted, the batch never filled, and the test passed
+  just as happily against the loop that spins. It proves nothing without a peer.
+- **The receive buffer is the deployment's to grant, and now there is a number.**
+  Ten minutes at 10009 datagrams/s on a stock kernel: 6005139 messages sent,
+  6005139 received, no gaps, and **1648 datagrams dropped by the kernel** for
+  want of receive buffer. Recovery carried every one of them, which is the point
+  of the recovery, but the datagrams were still lost on arrival. With the
+  ceiling raised the same run drops none. The request has always been logged
+  against the grant; what this adds is that the grant is a deployment setting
+  and the service will have to raise it rather than assume it.
 - **The translator that filters must not be poisoned by what it filters.** Two
   fixtures let an unsolicited inbound check commit a connection entry whose
   reply direction was exactly the one the outbound punch then needed; with the

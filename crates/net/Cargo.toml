@@ -13,5 +13,8 @@ lowlat-common.workspace = true
 lowlat-core.workspace = true
 libc.workspace = true
 
+[dev-dependencies]
+lowlat-common = { workspace = true, features = ["alloc-counter"] }
+
 [lints]
 workspace = true
