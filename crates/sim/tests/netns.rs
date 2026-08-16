@@ -32,9 +32,12 @@ fn the_topology_matrix_holds_against_a_real_kernel() {
     let output = Command::new("bash")
         .arg("scripts/netns-fixtures.sh")
         .current_dir(root)
-        // Cargo built the endpoint for this test, so the script never has to
-        // guess where it is or whether it is current.
+        // Cargo built both endpoints for this test, so the script never has to
+        // guess where they are or whether they are current. The peers are the
+        // real shell; `punch` stays as the reflexive server, which no shell
+        // provides.
         .env("PUNCH", env!("CARGO_BIN_EXE_punch"))
+        .env("PEER", env!("CARGO_BIN_EXE_shell-punch"))
         .output()
         .expect("bash is required to run the namespace fixtures");
 

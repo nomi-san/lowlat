@@ -10,12 +10,19 @@
 #
 #   sudo scripts/netns-fixtures.sh [topology]
 #
-# Build the endpoint first:
-#   CARGO_TARGET_DIR=/tmp/lowlat-target cargo build -p lowlat-sim --bin punch --release
+# Build the endpoints first:
+#   CARGO_TARGET_DIR=/tmp/lowlat-target cargo build -p lowlat-sim \
+#       --bin punch --bin shell-punch --release
+#
+# PUNCH answers reflexive requests and PEER runs the two endpoints. They are
+# separate so the peers can be the real shell while the stand-in server, which
+# no shell provides, stays what it always was. Point PEER at `punch` to run the
+# hand-rolled fixture loop instead, which is how the two are compared.
 
 set -uo pipefail
 
 PUNCH=${PUNCH:-/tmp/lowlat-target/release/punch}
+PEER=${PEER:-/tmp/lowlat-target/release/shell-punch}
 RUN=${RUN:-/tmp/lowlat-netns}
 TIMEOUT_MS=12000
 VERBOSE=${VERBOSE:-}
@@ -130,7 +137,7 @@ start_server() {
 
 # ns bind_addr publish await ufrag pwd peer_ufrag peer_pwd seed out
 start_peer() {
-    ip netns exec "$1" "$PUNCH" peer \
+    ip netns exec "$1" "$PEER" peer \
         --bind "$2" \
         --server "$SERVER:$SERVER_PORT" \
         --publish "$3" --await "$4" \
@@ -350,7 +357,11 @@ if [[ $EUID -ne 0 ]]; then
     exit 0
 fi
 if [[ ! -x $PUNCH ]]; then
-    log "skipped: no endpoint at $PUNCH; build it first"
+    log "skipped: no reflexive server at $PUNCH; build it first"
+    exit 0
+fi
+if [[ ! -x $PEER ]]; then
+    log "skipped: no endpoint at $PEER; build it first"
     exit 0
 fi
 

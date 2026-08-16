@@ -11,6 +11,8 @@ authors.workspace = true
 [dependencies]
 lowlat-common.workspace = true
 lowlat-core.workspace = true
+# The namespace fixtures run the real shell, not a loop that stands in for one.
+lowlat-net.workspace = true
 
 [lints]
 workspace = true

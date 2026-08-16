@@ -20,6 +20,9 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   port delays a host's start rather than preventing it.
 - `conn` retains the addresses reflexive servers report, so a caller that
   processes datagrams in batches can still ask for its own candidates.
+- A second fixture endpoint that drives the namespace topologies through the
+  real shell instead of a loop standing in for one. The topology matrix passes
+  with it, as does a run between two machines on different networks.
 
 **Notes**
 
@@ -29,6 +32,25 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   It stops at the top of the range instead of wrapping: wrapping lands on the
   privileged ports, where the bind fails for an unrelated reason and reports it
   as though the range were occupied.
+- **The fixture endpoint is swapped, not grown.** The original loop stays as the
+  reflexive server, which no shell provides, and stays deliberately the simplest
+  thing that works. The endpoint under test is a separate binary owning a shell,
+  so the two can be run against the same topologies and compared.
+- **Signaling reaches the loop through the wake, not through a poll.** The
+  fixture's rendezvous is read on its own thread and injected where the
+  application's work is pulled. Polling it from the loop instead ties how fast a
+  candidate is noticed to how long the loop happens to be waiting, and the loop
+  waits on the endpoint's deadline -- tens of milliseconds when nothing is due.
+  That delay is invisible against a peer that waits and decisive against one
+  that does not, which is what made the difference in three topologies.
+- **A test that passes because it is fast is not passing.** The loop that stood
+  in for the shell polled every 5 ms and always punched outward first. The
+  event-driven loop does not, and three topologies failed until the wake carried
+  the candidate. Neither result was about the topology.
+- **One green run proved nothing here.** A first hypothesis about the difference
+  was supported by a single passing run and refuted by repeating it three times
+  each way. On a fixture with a race in it, a single pass is not evidence, and
+  the repeat is what turned an answer that fit the facts into one that was true.
 - **A candidate reported once is a candidate lost.** The reflexive address was
   returned from the call that processed the datagram carrying it and kept
   nowhere. A loop that handles one datagram at a time can read that return
