@@ -64,9 +64,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          command: check
+      # Run on the runner with the repository's own toolchain rather than in a
+      # musl container: rust-toolchain.toml pins a target the container has no
+      # toolchain for, which degrades dependency resolution before any policy
+      # is even evaluated.
+      - uses: taiki-e/install-action@cargo-deny
+      - name: Deny
+        run: cargo deny check
 
   sanitizers:
     name: sanitizers

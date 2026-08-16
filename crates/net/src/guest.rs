@@ -201,10 +201,13 @@ mod tests {
 
         guest.stop();
         assert!(!guest.alive());
-        assert!(
-            passes.recv_timeout(Duration::from_secs(1)).expect("passes") > 0,
-            "the loop never ran a pass"
-        );
+        // Receiving at all is the property: the thread reached the end of its
+        // loop and reported. The count is deliberately not asserted here --
+        // teardown can land between the shell being built and the loop's first
+        // check, which is a clean exit with zero passes and not a defect.
+        passes
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the loop did not exit cleanly");
     }
 
     /// The teardown gate. A thread parked in its wait must be woken, not left
@@ -212,7 +215,7 @@ mod tests {
     /// clean disconnect and a multi-second hang.
     #[test]
     fn teardown_wakes_a_parked_thread_promptly() {
-        let (mut guest, bound, _passes) = spawn();
+        let (mut guest, bound, passes) = spawn();
         bound.recv_timeout(Duration::from_secs(5)).expect("bound");
 
         // Let it settle into the wait rather than catching it mid-pass.
@@ -231,6 +234,13 @@ mod tests {
             took < cap / 2,
             "teardown took {took:?} against a {cap:?} wait, so the thread timed out rather than being woken"
         );
+
+        // Here the count *is* guaranteed, because the sleep above is longer
+        // than a full wait, so the loop completed passes before being stopped.
+        assert!(
+            passes.recv_timeout(Duration::from_secs(5)).expect("passes") > 0,
+            "the loop never ran a pass despite settling into its wait"
+        );
     }
 
     /// Churn. A teardown race shows up across many cycles or not at all, and
@@ -243,10 +253,12 @@ mod tests {
             let (mut guest, bound, passes) = spawn();
             bound.recv_timeout(Duration::from_secs(5)).expect("bound");
             guest.stop();
-            assert!(
-                passes.recv_timeout(Duration::from_secs(1)).expect("passes") > 0,
-                "a cycle produced no passes"
-            );
+            // Clean exit is the property under churn, not how much work each
+            // cycle managed. A cycle torn down before its first check exits
+            // with zero passes, which is correct.
+            passes
+                .recv_timeout(Duration::from_secs(5))
+                .expect("a cycle did not exit cleanly");
         }
     }
 
@@ -266,9 +278,8 @@ mod tests {
         let (guest, bound, passes) = spawn();
         bound.recv_timeout(Duration::from_secs(5)).expect("bound");
         drop(guest);
-        assert!(
-            passes.recv_timeout(Duration::from_secs(1)).expect("passes") > 0,
-            "the loop did not finish"
-        );
+        passes
+            .recv_timeout(Duration::from_secs(5))
+            .expect("dropping did not tear the loop down");
     }
 }

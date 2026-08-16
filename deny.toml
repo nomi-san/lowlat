@@ -35,6 +35,12 @@ allow = [
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# Our own crates are path dependencies carrying no version, which reads as a
+# wildcard. The rule exists to stop an unpinned *third-party* version reaching
+# the link graph, and this exemption covers path dependencies only, all of which
+# are publish = false here. Removing it does not tighten anything; it just
+# fails the build on our own workspace.
+allow-wildcard-paths = true
 # Nothing in the link graph may be copyleft. Runtime loading is the only
 # sanctioned way to reach a GPL codec.
 deny = []
