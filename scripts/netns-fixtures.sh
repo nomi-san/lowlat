@@ -94,9 +94,32 @@ nat_table() {
 # it was written to check. Pinning the external port is what makes the mapping
 # endpoint independent, and with one socket behind the translator that is
 # exactly what a cone does.
+#
+# Unsolicited inbound is dropped before conntrack can commit anything for it,
+# which is the second thing pinning the port makes necessary. A peer check that
+# arrives before the inside has punched outward creates an UNREPLIED entry whose
+# reply tuple is exactly the one the outbound punch then needs, and with the
+# external port pinned the translator has no second choice, so it drops the
+# punch for as long as the peer keeps retrying. That is not a cone filtering its
+# inbound; it is a translator poisoned by traffic it was supposed to ignore, and
+# it makes the fixture depend on which side happens to transmit first. Dropping
+# at prerouting before the nat hook leaves the entry unconfirmed, so it never
+# reaches the table.
 nat_port_restricted() {
     nat_table "$1" || return 1
+    nat_guard "$1" || return 1
+    ip netns exec "$1" nft add rule ip nat guard iifname "$2" ct state new drop || return 1
     ip netns exec "$1" nft add rule ip nat post oifname "$2" meta l4proto udp masquerade to ":$3"
+}
+
+# ns -> the chain unsolicited inbound is dropped from.
+#
+# Priority sits after conntrack, so the state match works, and before the nat
+# hook, so a dropped packet never reaches translation and its entry is never
+# confirmed.
+nat_guard() {
+    ip netns exec "$1" nft add chain ip nat guard \
+        '{ type filter hook prerouting priority -150 ; policy accept ; }'
 }
 
 # ns ext_if -> a fresh mapping per destination, which makes the advertised
@@ -117,10 +140,17 @@ nat_full_cone() {
 # ns ext_if inner_ip port -> only addresses the inside has sent to, on any port.
 # The dynamic set is what expresses address-dependent filtering; conntrack alone
 # cannot, because it keys on the port as well.
+#
+# The same drop as the port restricted case, qualified by the set: an address
+# the inside has contacted is admitted and translated, anything else is dropped
+# before conntrack commits an entry that would block the outbound punch.
 nat_restricted_cone() {
     nat_table "$1" || return 1
     ip netns exec "$1" nft add set ip nat contacted \
         '{ type ipv4_addr ; flags dynamic,timeout ; timeout 120s ; }' || return 1
+    nat_guard "$1" || return 1
+    ip netns exec "$1" nft add rule ip nat guard iifname "$2" \
+        ip saddr != @contacted ct state new drop || return 1
     ip netns exec "$1" nft add rule ip nat post oifname "$2" \
         meta l4proto udp update @contacted "{ ip daddr }" masquerade to ":$4" || return 1
     ip netns exec "$1" nft add rule ip nat pre iifname "$2" ip saddr @contacted \

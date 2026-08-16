@@ -47,6 +47,16 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   in for the shell polled every 5 ms and always punched outward first. The
   event-driven loop does not, and three topologies failed until the wake carried
   the candidate. Neither result was about the topology.
+- **The translator that filters must not be poisoned by what it filters.** Two
+  fixtures let an unsolicited inbound check commit a connection entry whose
+  reply direction was exactly the one the outbound punch then needed; with the
+  external port pinned there was no second choice, so the punch was dropped for
+  as long as the peer kept retrying. Real equipment discards unsolicited inbound
+  without keeping anything, and the fixtures now do too, dropping before
+  translation so the entry is never confirmed. Until that landed, the matrix
+  turned on which side transmitted first, which is not what any of the six cases
+  is about. It is shown by making the endpoint slow again: the arrangement that
+  failed three of six now passes all six.
 - **One green run proved nothing here.** A first hypothesis about the difference
   was supported by a single passing run and refuted by repeating it three times
   each way. On a fixture with a race in it, a single pass is not evidence, and
