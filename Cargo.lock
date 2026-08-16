@@ -406,6 +406,8 @@ version = "0.0.0"
 dependencies = [
  "lowlat-host",
  "lowlat-kessel",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

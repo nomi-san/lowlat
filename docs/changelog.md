@@ -53,6 +53,26 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - **Exactly one TLS provider is chosen here**, rather than left to feature
   unification, which resolves to none and panics inside the TLS stack at the
   first connection. That reads as a crash rather than as a configuration gap.
+- **A ping must be answered explicitly, and a quiet host is the only thing
+  that finds out.** The library queues a pong on the connection, but the read
+  and write halves are split and that queue is only flushed by a write. A host
+  with nothing to say never writes, so the pong never left and the service
+  closed us for silence about two minutes in. Anything that talks periodically
+  flushes the queue as a side effect and never discovers this.
+- **An established guest learns the peer left from the media path, not from
+  signaling.** A peer that closes a session it was using does not withdraw its
+  offer, so nothing arrives to say so. Without a liveness check the loop runs
+  forever holding its socket, and the next guest walks to the next port; three
+  connects in a row took three ports and freed none.
+- **A withdrawal can overtake the offer it withdraws.** Observed: a cancel for
+  an attempt arrived before that attempt's offer. Treating the cancel as a
+  no-op for an unknown attempt then admits the offer behind it, spending a
+  socket and a thread on a guest that has already gone. Withdrawals are
+  remembered briefly so the offer behind one is refused.
+- **The queue carries what the application did not cause.** Ending a connection
+  is the application causing it, so it emits nothing; reporting it back
+  produced a second terminal event for an attempt that had already reported
+  one, and the reaping call would have looped.
 - **A candidate marked `sync` is a readiness signal, not an address**, and the
   flag is a parameter of the call rather than the caller's business, because
   both ways of getting it wrong are silent. Adding one to the table spends

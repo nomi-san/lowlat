@@ -71,8 +71,10 @@ pub enum Outcome {
     /// Negotiated, but no path was found. The only outcome that justifies
     /// escalating to a relay.
     ConnectivityFailed,
-    /// The peer withdrew, or the application ended it.
-    Closed,
+    /// The peer stopped answering. An established session learns this from the
+    /// media path rather than from signaling, because a peer that closes a
+    /// session it was using does not withdraw its offer.
+    PeerGone,
 }
 
 /// What the offer told us about the peer.
@@ -114,6 +116,8 @@ pub enum Error {
     AtCapacity,
     /// The attempt has already been approved.
     AlreadyBegun,
+    /// Withdrawn before it was registered, so it is over before it began.
+    Withdrawn,
     /// A socket could not be opened, or a thread could not be spawned.
     Io,
     /// Entropy or key material.
@@ -126,6 +130,7 @@ impl core::fmt::Display for Error {
             Self::UnknownAttempt => "no such attempt",
             Self::AtCapacity => "at the configured guest limit",
             Self::AlreadyBegun => "attempt already approved",
+            Self::Withdrawn => "attempt was withdrawn before it was registered",
             Self::Io => "socket or thread could not be created",
             Self::Crypto => "credentials could not be produced",
         };
@@ -146,6 +151,12 @@ pub struct Config {
     pub servers: Vec<SocketAddr>,
 }
 
+/// How many withdrawn attempts are remembered.
+///
+/// Small and fixed: this exists to catch a withdrawal that overtakes its own
+/// offer, which is a race of a few messages, not a history.
+const TOMBSTONES: usize = 16;
+
 struct Attempt {
     peer: Peer,
     /// The peer has signalled it is ready. Recorded rather than acted on: the
@@ -163,6 +174,8 @@ struct Attempt {
 pub struct Admission {
     config: Config,
     attempts: HashMap<String, Attempt>,
+    /// Attempts withdrawn before they were ever registered.
+    withdrawn: Vec<String>,
     events: mpsc::Receiver<Event>,
     emit: mpsc::Sender<Event>,
 }
@@ -183,6 +196,7 @@ impl Admission {
         Self {
             config,
             attempts: HashMap::new(),
+            withdrawn: Vec::new(),
             events,
             emit,
         }
@@ -195,6 +209,13 @@ impl Admission {
 
     /// An offer arrived. Register it; the application decides what happens next.
     pub fn new_attempt(&mut self, id: &str, peer: Peer) -> Result<(), Error> {
+        // A withdrawal can overtake the offer it withdraws. Admitting one then
+        // spends a socket and a thread on a guest that has already gone, and
+        // nothing later arrives to say so.
+        if let Some(at) = self.withdrawn.iter().position(|seen| seen == id) {
+            self.withdrawn.remove(at);
+            return Err(Error::Withdrawn);
+        }
         if self.occupancy() >= self.config.max_guests {
             return Err(Error::AtCapacity);
         }
@@ -313,16 +334,29 @@ impl Admission {
         })
     }
 
-    /// Rejection, withdrawal, or disconnect. Addressed by attempt identifier.
+    /// Rejection, withdrawal, disconnect, or reaping an attempt that has just
+    /// reported it is over.
+    ///
+    /// **Emits nothing.** The queue carries what the application did not cause;
+    /// this call is the application causing it, and reporting it back produced
+    /// a second terminal event for an attempt that had already reported one.
     pub fn end_connection(&mut self, id: &str) {
-        if let Some(mut attempt) = self.attempts.remove(id) {
-            if let Some(guest) = attempt.guest.as_mut() {
-                guest.stop();
+        match self.attempts.remove(id) {
+            Some(mut attempt) => {
+                if let Some(guest) = attempt.guest.as_mut() {
+                    guest.stop();
+                }
             }
-            let _ = self.emit.send(Event::Ended {
-                attempt: id.to_string(),
-                outcome: Outcome::Closed,
-            });
+            // Withdrawn before it was ever registered. Remembered, because the
+            // offer it withdraws may still be in flight behind it.
+            None => {
+                if !self.withdrawn.iter().any(|seen| seen == id) {
+                    if self.withdrawn.len() >= TOMBSTONES {
+                        self.withdrawn.remove(0);
+                    }
+                    self.withdrawn.push(id.to_string());
+                }
+            }
         }
     }
 
@@ -437,6 +471,16 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 addr,
                 from_stun: true,
             });
+        }
+
+        // Only once there is a path. Before that nothing has arrived by
+        // definition, so liveness would read as dead from the first pass.
+        if settled && shell.endpoint().health(now) == lowlat_core::session::Health::Dead {
+            let _ = args.emit.send(Event::Ended {
+                attempt: args.attempt_id.clone(),
+                outcome: Outcome::PeerGone,
+            });
+            return;
         }
 
         match shell.endpoint().conn().state() {
@@ -617,28 +661,43 @@ mod tests {
         seam.end_connection("a");
     }
 
+    /// A withdrawal can overtake the offer it withdraws. Admitting the offer
+    /// then spends a socket and a thread on a guest that has already gone, and
+    /// nothing later arrives to say so -- the port stays held for the life of
+    /// the host. *Named regression test.*
     #[test]
-    fn ending_an_attempt_reports_it_and_frees_the_slot() {
+    fn a_withdrawal_that_overtakes_its_offer_refuses_the_offer() {
+        let mut seam = admission(4);
+        seam.end_connection("late");
+        assert_eq!(
+            seam.new_attempt("late", peer()).unwrap_err(),
+            Error::Withdrawn
+        );
+        assert_eq!(seam.occupancy(), 0);
+
+        // Only the once: a second offer with that identifier is a new attempt.
+        seam.new_attempt("late", peer())
+            .expect("the tombstone is consumed");
+        seam.end_connection("late");
+    }
+
+    #[test]
+    fn ending_an_attempt_frees_the_slot_without_reporting_it() {
         let mut seam = admission(1);
         seam.new_attempt("a", peer()).expect("register");
         seam.begin_p2p("a").expect("approve");
         seam.end_connection("a");
 
         assert_eq!(seam.occupancy(), 0);
-        // Drained rather than peeked: approval queues a readiness request
-        // ahead of this, and asserting on the first event would be asserting
-        // the order of two unrelated things.
-        let mut ended = false;
+        // The application caused this, so it needs no event back. A second
+        // terminal event for an attempt that already reported one is what this
+        // asserts against.
+        let mut terminal = 0;
         while let Some(event) = seam.poll_event() {
-            if event
-                == (Event::Ended {
-                    attempt: "a".to_string(),
-                    outcome: Outcome::Closed,
-                })
-            {
-                ended = true;
+            if matches!(event, Event::Ended { .. }) {
+                terminal += 1;
             }
         }
-        assert!(ended, "teardown was not reported");
+        assert_eq!(terminal, 0, "an application-initiated end reported itself");
     }
 }

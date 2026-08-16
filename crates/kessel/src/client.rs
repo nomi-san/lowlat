@@ -45,7 +45,7 @@ impl std::error::Error for Error {}
 /// How the caller reaches an established connection.
 #[derive(Debug)]
 pub struct Client {
-    outbound: mpsc::UnboundedSender<String>,
+    outbound: mpsc::UnboundedSender<Frame>,
     inbound: mpsc::UnboundedReceiver<Inbound>,
 }
 
@@ -96,14 +96,15 @@ impl Client {
         );
 
         let (mut sink, mut source) = stream.split();
-        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<String>();
+        let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Frame>();
         let (in_tx, in_rx) = mpsc::unbounded_channel::<Inbound>();
+        let pong = out_tx.clone();
 
         // The one writer. Everything outbound is serialized before it reaches
         // here, so this task neither knows nor cares what a message means.
         tokio::spawn(async move {
-            while let Some(text) = out_rx.recv().await {
-                if sink.send(Frame::Text(text)).await.is_err() {
+            while let Some(frame) = out_rx.recv().await {
+                if sink.send(frame).await.is_err() {
                     break;
                 }
             }
@@ -115,11 +116,22 @@ impl Client {
         // error on our side.
         tokio::spawn(async move {
             while let Some(frame) = source.next().await {
-                let Ok(Frame::Text(text)) = frame else {
-                    if matches!(frame, Ok(Frame::Close(_)) | Err(_)) {
-                        break;
+                let text = match frame {
+                    Ok(Frame::Text(text)) => text,
+                    // **A ping must be answered explicitly.** The library
+                    // queues a pong on the connection, but the halves are
+                    // split and that queue is only flushed by a write; a
+                    // connection with nothing to say never writes, so the pong
+                    // never leaves and the service closes us for silence. This
+                    // is what liveness-is-the-connection actually rests on.
+                    Ok(Frame::Ping(payload)) => {
+                        if pong.send(Frame::Pong(payload)).is_err() {
+                            break;
+                        }
+                        continue;
                     }
-                    continue;
+                    Ok(Frame::Close(_)) | Err(_) => break,
+                    Ok(_) => continue,
                 };
                 match serde_json::from_str::<Inbound>(&text) {
                     Ok(message) => {
@@ -144,7 +156,19 @@ impl Client {
     /// Queue one message. Returns once it is queued, not once it is on the wire.
     pub fn send<T: serde::Serialize>(&self, action: &str, payload: &T) -> Result<(), Error> {
         let text = crate::message::envelope(action, payload).map_err(|_| Error::Encode)?;
-        self.outbound.send(text).map_err(|_| Error::Closed)
+        self.outbound
+            .send(Frame::Text(text))
+            .map_err(|_| Error::Closed)
+    }
+
+    /// Queue a frame that is not one of our messages.
+    ///
+    /// The service accepts a bare greeting alongside the JSON protocol, which
+    /// is not an envelope and cannot go through `send`.
+    pub fn send_text(&self, text: &str) -> Result<(), Error> {
+        self.outbound
+            .send(Frame::Text(text.to_string()))
+            .map_err(|_| Error::Closed)
     }
 
     /// The next message from the service, or `None` once the reader has ended.

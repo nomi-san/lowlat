@@ -133,6 +133,78 @@ pub struct CandidateData {
     pub sync: bool,
 }
 
+/// The host's reply to an offer. Approval carries the credentials the session
+/// is keyed from, because the key that encrypts it is the host's.
+#[derive(Debug, Clone, Serialize)]
+pub struct Answer<'a> {
+    pub approved: bool,
+    pub attempt_id: &'a str,
+    pub data: AnswerData<'a>,
+    /// The peer, which is the offer's `from`.
+    pub to: &'a str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AnswerData<'a> {
+    #[serde(flatten)]
+    pub base: HostDataBase,
+    pub creds: &'a Credentials,
+}
+
+/// One candidate, or a readiness marker.
+#[derive(Debug, Clone, Serialize)]
+pub struct Candex<'a> {
+    pub attempt_id: &'a str,
+    pub data: CandidateData,
+    pub to: &'a str,
+}
+
+/// What a peer told us, in the shape the relay forwards.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OfferRelay {
+    pub attempt_id: String,
+    pub from: String,
+    pub data: OfferData,
+    #[serde(default)]
+    pub skip_approval: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OfferData {
+    pub creds: PeerCredentials,
+}
+
+/// The peer's half of the credentials. Only the check fields are used; the
+/// media key is the host's, and a peer supplying one is signalling support.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PeerCredentials {
+    pub ice_ufrag: String,
+    pub ice_pwd: String,
+    #[serde(default)]
+    pub aes256: Option<String>,
+}
+
+/// A candidate forwarded from the peer.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CandexRelay {
+    pub attempt_id: String,
+    pub data: RelayedCandidate,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RelayedCandidate {
+    pub ip: String,
+    pub port: u16,
+    #[serde(default)]
+    pub sync: bool,
+}
+
+/// A withdrawal, which is addressed by attempt and carries no reason.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CancelRelay {
+    pub attempt_id: String,
+}
+
 /// An envelope with a payload that has not been interpreted yet.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Inbound {
