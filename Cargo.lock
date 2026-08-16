@@ -328,6 +328,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "lowlat-crypto"
+version = "0.0.0"
+dependencies = [
+ "getrandom",
+]
+
+[[package]]
 name = "lowlat-encode"
 version = "0.0.0"
 dependencies = [

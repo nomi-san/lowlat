@@ -1,0 +1,17 @@
+[package]
+name = "lowlat-crypto"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# The one entropy source in the workspace. Small, audited, and a thin wrapper
+# over the platform call rather than a userspace generator with state to leak.
+getrandom.workspace = true
+
+[lints]
+workspace = true

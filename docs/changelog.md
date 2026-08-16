@@ -7,6 +7,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 **Added**
 
+- `lowlat-crypto`: credential generation, key material decoding, and the only
+  source of randomness in the workspace.
 - `lowlat-kessel`: the connect URL, the message set, and a transport with one
   reader and one writer over a queue, so producers never touch the socket.
 - The host advertisement, and a runnable endpoint that publishes a host into the
@@ -14,6 +16,17 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 **Notes**
 
+- **Entropy gets its own crate, below the core so the core cannot reach it.**
+  The core owns no generator by construction and everything above it needs one:
+  a session key, a check password, the seed a transaction identifier derives
+  from. Until now every one of those was a constant supplied by a fixture, which
+  is correct for a test and is not a source. One audited crate is the
+  alternative to scattering it into whichever crate happened to need it first.
+- **A generator that is not generating passes every length check**, so the test
+  that matters asserts two draws differ rather than that one is the right size.
+- **Credentials never render their contents**, whatever the format string, and
+  a test asserts it. A credential reaches a log by accident, and the accident is
+  worth making impossible rather than unlikely.
 - **The advertisement's field order is pinned by a test.** A strict parser on
   the far side is entitled to care, and matching the order costs nothing here
   while being invisible to find later.

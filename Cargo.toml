@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/common",
     "crates/core",
+    "crates/crypto",
     "crates/net",
     "crates/sim",
     "crates/capture",
@@ -25,6 +26,7 @@ authors = ["Nguyen Duy <wuuyi123@gmail.com>"]
 [workspace.dependencies]
 lowlat-common = { path = "crates/common" }
 lowlat-core = { path = "crates/core" }
+lowlat-crypto = { path = "crates/crypto" }
 lowlat-net = { path = "crates/net" }
 lowlat-sim = { path = "crates/sim" }
 lowlat-capture = { path = "crates/capture" }
@@ -34,6 +36,7 @@ lowlat-host = { path = "crates/host" }
 lowlat-kessel = { path = "crates/kessel" }
 
 libc = "0.2"
+getrandom = "0.2"
 
 # Signaling only. lowlat-kessel is the one crate permitted an async runtime, a
 # TLS stack and a JSON parser; nothing inside the FFI boundary links it.
