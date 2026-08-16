@@ -51,6 +51,13 @@ pub enum Event {
         addr: SocketAddr,
         from_stun: bool,
     },
+    /// Send the peer a candidate marked `sync`, once.
+    ///
+    /// It is a readiness marker rather than an address, and **a peer may
+    /// withhold every real candidate until it arrives**, so a host that never
+    /// emits one negotiates with a peer that never offers anything to check.
+    /// Whatever address rides along is ignored by the receiver.
+    Ready { attempt: String },
     /// Connectivity completed and media can flow.
     Established { attempt: String, addr: SocketAddr },
     /// The attempt is over, with the reason typed rather than a timeout.
@@ -141,6 +148,9 @@ pub struct Config {
 
 struct Attempt {
     peer: Peer,
+    /// The peer has signalled it is ready. Recorded rather than acted on: the
+    /// engine checks whatever candidates arrive whenever they arrive.
+    peer_ready: bool,
     /// Buffered until approval, because candidates trickle and the peer starts
     /// sending them before the answer reaches it.
     pending: Vec<SocketAddr>,
@@ -161,6 +171,7 @@ impl core::fmt::Debug for Attempt {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Attempt")
             .field("pending", &self.pending.len())
+            .field("peer_ready", &self.peer_ready)
             .field("running", &self.guest.is_some())
             .finish()
     }
@@ -191,6 +202,7 @@ impl Admission {
             id.to_string(),
             Attempt {
                 peer,
+                peer_ready: false,
                 pending: Vec::new(),
                 guest: None,
                 inject: None,
@@ -201,12 +213,22 @@ impl Admission {
 
     /// A candidate arrived for an attempt.
     ///
+    /// **`sync` marks a readiness signal, not an address**, and the flag is
+    /// taken rather than left to the caller because the address that rides on
+    /// one is arbitrary: a peer is entitled to send a placeholder, and one does
+    /// send a literal `1.2.3.4:1234`. Adding that to the table spends checks on
+    /// an unrelated host on the public internet.
+    ///
     /// Unknown attempts are a no-op rather than an error: an identifier that
     /// has just been torn down is a race with the peer, not a fault.
-    pub fn add_candidate(&mut self, id: &str, addr: SocketAddr) {
+    pub fn add_candidate(&mut self, id: &str, addr: SocketAddr, sync: bool) {
         let Some(attempt) = self.attempts.get_mut(id) else {
             return;
         };
+        if sync {
+            attempt.peer_ready = true;
+            return;
+        }
         match (&attempt.inject, &attempt.guest) {
             (Some(inject), Some(guest)) => {
                 if inject.send(addr).is_ok() {
@@ -274,6 +296,13 @@ impl Admission {
 
         attempt.inject = Some(inject);
         attempt.guest = Some(guest);
+
+        // Emitted with the answer rather than in response to anything, so a
+        // peer that withholds its candidates until it sees one is unblocked as
+        // early as possible.
+        let _ = self.emit.send(Event::Ready {
+            attempt: id.to_string(),
+        });
 
         Ok(HostCredentials {
             ufrag: local.ufrag,
@@ -456,7 +485,7 @@ mod tests {
         let mut seam = admission(4);
         // A candidate for an identifier that never existed, or has just been
         // torn down, is a race with the peer and not an error.
-        seam.add_candidate("nope", "127.0.0.1:9000".parse().unwrap());
+        seam.add_candidate("nope", "127.0.0.1:9000".parse().unwrap(), false);
         assert_eq!(seam.begin_p2p("nope").unwrap_err(), Error::UnknownAttempt);
     }
 
@@ -479,8 +508,8 @@ mod tests {
     fn candidates_arriving_before_approval_are_kept() {
         let mut seam = admission(4);
         seam.new_attempt("a", peer()).expect("register");
-        seam.add_candidate("a", "203.0.113.9:41000".parse().unwrap());
-        seam.add_candidate("a", "203.0.113.9:41001".parse().unwrap());
+        seam.add_candidate("a", "203.0.113.9:41000".parse().unwrap(), false);
+        seam.add_candidate("a", "203.0.113.9:41001".parse().unwrap(), false);
 
         let buffered = seam.attempts.get("a").map(|a| a.pending.len());
         assert_eq!(buffered, Some(2), "a candidate before approval was dropped");
@@ -546,6 +575,48 @@ mod tests {
         seam.end_connection("c");
     }
 
+    /// A readiness marker is not a candidate. A peer is entitled to put a
+    /// placeholder address on one, and one sends a literal `1.2.3.4:1234`;
+    /// checking that address spends the attempt on an unrelated host.
+    /// *Named regression test.*
+    #[test]
+    fn a_sync_marker_never_becomes_a_candidate() {
+        let mut seam = admission(4);
+        seam.new_attempt("a", peer()).expect("register");
+        seam.add_candidate("a", "1.2.3.4:1234".parse().unwrap(), true);
+
+        let attempt = seam.attempts.get("a").expect("attempt");
+        assert!(attempt.peer_ready, "the marker was not recorded");
+        assert_eq!(
+            attempt.pending.len(),
+            0,
+            "a readiness marker was queued as a candidate"
+        );
+    }
+
+    /// A peer may withhold every real candidate until it has seen one of ours,
+    /// so approval must produce it without being prompted.
+    /// *Named regression test.*
+    #[test]
+    fn approval_asks_for_a_readiness_marker_to_be_sent() {
+        let mut seam = admission(4);
+        seam.new_attempt("a", peer()).expect("register");
+        seam.begin_p2p("a").expect("approve");
+
+        let mut saw_ready = false;
+        while let Some(event) = seam.poll_event() {
+            if event
+                == (Event::Ready {
+                    attempt: "a".to_string(),
+                })
+            {
+                saw_ready = true;
+            }
+        }
+        assert!(saw_ready, "approval did not ask for a readiness marker");
+        seam.end_connection("a");
+    }
+
     #[test]
     fn ending_an_attempt_reports_it_and_frees_the_slot() {
         let mut seam = admission(1);
@@ -554,13 +625,20 @@ mod tests {
         seam.end_connection("a");
 
         assert_eq!(seam.occupancy(), 0);
-        let event = seam.poll_event();
-        assert_eq!(
-            event,
-            Some(Event::Ended {
-                attempt: "a".to_string(),
-                outcome: Outcome::Closed
-            })
-        );
+        // Drained rather than peeked: approval queues a readiness request
+        // ahead of this, and asserting on the first event would be asserting
+        // the order of two unrelated things.
+        let mut ended = false;
+        while let Some(event) = seam.poll_event() {
+            if event
+                == (Event::Ended {
+                    attempt: "a".to_string(),
+                    outcome: Outcome::Closed,
+                })
+            {
+                ended = true;
+            }
+        }
+        assert!(ended, "teardown was not reported");
     }
 }

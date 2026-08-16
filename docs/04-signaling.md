@@ -77,6 +77,19 @@ are unrelated and the distinction matters when reading logs.
 directions, before and after the answer. An implementation that batches them until gathering
 completes adds its slowest interface to every connection's setup time.
 
+**A candidate marked `sync` is a readiness signal, not an address.** Each side sends one, and
+the address on it is ignored by the receiver -- one implementation sends the literal
+`1.2.3.4:1234`. Two rules follow, and both are silent when broken:
+
+- **Never add one to the candidate table.** Doing so spends connectivity checks on whatever
+  unrelated host the placeholder names.
+- **Always send one.** A peer is entitled to withhold every real candidate until it has both
+  the answer and a `sync` marker, and at least one does. Against that peer, an endpoint that
+  never sends one negotiates successfully and then has nothing to check.
+
+The two remaining flags describe where a candidate came from and map onto the standard
+candidate types: `from_stun` is a server-reflexive candidate, `lan` is a host candidate.
+
 The relayed forms carry what the direct forms cannot: the sender's identity, ownership,
 whether approval may be skipped, and the requested permissions. The host reads permissions
 from the relayed offer and never from the client.

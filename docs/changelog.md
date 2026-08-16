@@ -53,6 +53,14 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - **Exactly one TLS provider is chosen here**, rather than left to feature
   unification, which resolves to none and panics inside the TLS stack at the
   first connection. That reads as a crash rather than as a configuration gap.
+- **A candidate marked `sync` is a readiness signal, not an address**, and the
+  flag is a parameter of the call rather than the caller's business, because
+  both ways of getting it wrong are silent. Adding one to the table spends
+  checks on whatever the placeholder names, and a peer that sends a literal
+  `1.2.3.4:1234` will be checked at that address. Never sending one is worse:
+  a peer is entitled to withhold every real candidate until it sees one, so
+  negotiation succeeds and then there is nothing to check. Approval queues the
+  request without being prompted. Two named tests, both shown to fail.
 - **The seam is polled, not called back.** A callback runs on our thread, so an
   application that blocks in one stalls a media loop and every integration has
   to reason about which thread it is on. A queue moves that decision to the
