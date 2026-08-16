@@ -10,6 +10,8 @@ authors.workspace = true
 
 [dependencies]
 lowlat-common.workspace = true
+# Jitter on the reconnect schedule; the workspace has one entropy source.
+lowlat-crypto.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 futures-util.workspace = true

@@ -16,6 +16,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   reader and one writer over a queue, so producers never touch the socket.
 - The host advertisement, and a runnable endpoint that publishes a host into the
   discovery listing and holds the connection open.
+- Reconnection with bounded exponential backoff and jitter, re-registering and
+  re-advertising on every connection rather than only the first.
 
 **Notes**
 
@@ -53,6 +55,21 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - **Exactly one TLS provider is chosen here**, rather than left to feature
   unification, which resolves to none and panics inside the TLS stack at the
   first connection. That reads as a crash rather than as a configuration gap.
+- **Jitter is the part of a reconnect schedule that matters.** Without it, a
+  service restart brings every host that was connected back on the same
+  schedule, arriving together at exactly the moment the service is least able
+  to take them. The draw is bounded below as well as above, so an unlucky run
+  cannot hammer a service trying to come back. A fixed schedule passes every
+  bound a growth test can state, so the test that matters asserts two schedules
+  disagree.
+- **The registering frame is resent on every connection, not just the first.**
+  The service takes it as what associates the connection with the host, so a
+  reconnect without it is a connection nobody has associated with anything.
+- **A reconnect abandons what was negotiating and keeps what established.** An
+  attempt still trading candidates is gone: the peer gave up when the
+  connection carrying them dropped. A guest that already established never
+  depended on that connection, and tearing it down because signaling blinked
+  would drop a working session for an unrelated reason.
 - **Silence is not a refusal.** A declined answer is a wire event the peer acts
   on at once; no answer at all leaves it connecting indefinitely, because
   nothing in the protocol reports a host that never replied. An offer refused

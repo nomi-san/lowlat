@@ -6,10 +6,12 @@
 //! application speaks to the service, and the seam between any signaling
 //! implementation and the SDK. Only the second is normative.
 
+pub mod backoff;
 pub mod client;
 pub mod message;
 pub mod url;
 
+pub use backoff::Backoff;
 pub use client::{Client, Connect, Error};
 pub use message::{ConnUpdate, Credentials, Guest, HostDataBase, Versions};
 pub use url::Role;

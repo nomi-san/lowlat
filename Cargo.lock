@@ -368,6 +368,7 @@ version = "0.0.0"
 dependencies = [
  "futures-util",
  "lowlat-common",
+ "lowlat-crypto",
  "rustls",
  "serde",
  "serde_json",

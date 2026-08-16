@@ -16,7 +16,7 @@ use lowlat_kessel::message::{
     Answer, AnswerData, CancelRelay, Candex, CandexRelay, CandidateData, ConnUpdate, Credentials,
     HostDataBase, OfferRelay, no_credentials,
 };
-use lowlat_kessel::{Client, Connect, Role};
+use lowlat_kessel::{Backoff, Client, Connect, Role};
 
 /// The generation this host implements, as the wire wants it: a string.
 const APP_V: &str = "150-104a";
@@ -163,33 +163,101 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         servers: vec![stun],
     });
 
-    let mut client = Client::connect(&Connect {
+    let params = Connect {
         server,
         session_id: session,
         role: Role::Host,
         build: APP_V.to_string(),
         sdk_version: SDK_V,
-    })
-    .await?;
-
-    // The greeting the service accepts alongside the message protocol. Sent
-    // once, as a peer does; it is not a keepalive and nothing depends on it.
-    let _ = client.send_text("__ping__");
-    client.send("conn_update", &advertisement(&name, 0))?;
-    println!("lowlatd: advertised as {name:?}, base port {base_port}, capacity {MAX_GUESTS}");
+    };
 
     // Who each attempt is with, so an outbound message can be addressed. The
-    // seam is addressed by attempt and knows nothing about peer identity.
+    // seam is addressed by attempt and knows nothing about peer identity. Both
+    // outlive a signaling drop, because an established guest has its own media
+    // path and does not depend on the connection that introduced it.
     let mut peers: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut established: std::collections::HashSet<String> = std::collections::HashSet::new();
     let local = primary_local_address();
+    let mut backoff = Backoff::new();
+
+    loop {
+        match Client::connect(&params).await {
+            Ok(client) => {
+                backoff.reset();
+                let quit = session_loop(
+                    client,
+                    &mut seam,
+                    &mut peers,
+                    &mut established,
+                    &name,
+                    local,
+                    reject_all,
+                )
+                .await?;
+                if quit {
+                    return Ok(());
+                }
+                println!("lowlatd: signaling closed");
+            }
+            Err(error) => println!("lowlatd: connect failed: {error}"),
+        }
+
+        // Attempts that were still negotiating are gone: the peer abandoned
+        // them when the connection carrying their candidates dropped. An
+        // established guest is not touched, because its media path never went
+        // through here.
+        let abandoned: Vec<String> = peers
+            .keys()
+            .filter(|id| !established.contains(*id))
+            .cloned()
+            .collect();
+        for id in abandoned {
+            println!("lowlatd: abandoning in-flight {id}");
+            seam.end_connection(&id);
+            peers.remove(&id);
+        }
+
+        let delay = backoff.next_delay();
+        println!("lowlatd: reconnecting in {:.1}s", delay.as_secs_f64());
+        tokio::select! {
+            _ = tokio::time::sleep(delay) => {}
+            _ = tokio::signal::ctrl_c() => {
+                println!("lowlatd: stopping");
+                return Ok(());
+            }
+        }
+    }
+}
+
+/// One connection's lifetime. Returns true when the operator asked to stop, and
+/// false when the connection merely ended and should be retried.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one call site, and a struct here would only rename the arguments"
+)]
+async fn session_loop(
+    mut client: Client,
+    seam: &mut Admission,
+    peers: &mut std::collections::HashMap<String, String>,
+    established: &mut std::collections::HashSet<String>,
+    name: &str,
+    local: Option<IpAddr>,
+    reject_all: bool,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    // Resent on every connection, not just the first: the service takes it as
+    // the frame that registers the session, so a reconnect without it is a
+    // connection the service has not associated with this host.
+    let _ = client.send_text("__ping__");
+    client.send("conn_update", &advertisement(name, occupancy(seam)))?;
+    println!(
+        "lowlatd: advertised as {name:?}, capacity {MAX_GUESTS}, {} guest(s) carried over",
+        seam.occupancy()
+    );
 
     loop {
         tokio::select! {
             message = client.recv() => {
-                let Some(message) = message else {
-                    println!("lowlatd: signaling closed");
-                    return Ok(());
-                };
+                let Some(message) = message else { return Ok(false) };
                 match message.action.as_str() {
                     "offer_relay" => {
                         let offer: OfferRelay = serde_json::from_value(message.payload)?;
@@ -271,7 +339,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                         println!("lowlatd: cancelled {}", cancel.attempt_id);
                         seam.end_connection(&cancel.attempt_id);
                         peers.remove(&cancel.attempt_id);
-                        client.send("conn_update", &advertisement(&name, occupancy(&seam)))?;
+                        client.send("conn_update", &advertisement(name, occupancy(seam)))?;
                     }
                     // The service closes with a reason, and the reason is the
                     // only thing that distinguishes a bad session from a host
@@ -286,7 +354,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             _ = tokio::time::sleep(std::time::Duration::from_millis(IDLE_MS)) => {}
             _ = tokio::signal::ctrl_c() => {
                 println!("lowlatd: stopping");
-                return Ok(());
+                return Ok(true);
             }
         }
 
@@ -327,7 +395,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 Event::Established { attempt, addr } => {
                     println!("lowlatd: established {attempt} over {addr}");
-                    client.send("conn_update", &advertisement(&name, occupancy(&seam)))?;
+                    established.insert(attempt.clone());
+                    client.send("conn_update", &advertisement(name, occupancy(seam)))?;
                 }
                 // The enum is non-exhaustive, so a catch-all is required across
                 // the crate boundary even though it is the shape this project
@@ -340,7 +409,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     // life of the host.
                     seam.end_connection(&attempt);
                     peers.remove(&attempt);
-                    client.send("conn_update", &advertisement(&name, occupancy(&seam)))?;
+                    established.remove(&attempt);
+                    client.send("conn_update", &advertisement(name, occupancy(seam)))?;
                 }
                 other => println!("lowlatd: unhandled seam event {other:?}"),
             }

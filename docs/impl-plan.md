@@ -262,10 +262,8 @@ construction rather than as covered.
 
 ## Phase 4 - Signaling and admission
 
-- [ ] `lowlat-kessel`: transport, authentication, reconnection with backoff, host
+- [x] `lowlat-kessel`: transport, authentication, reconnection with backoff, host
   advertisement, and the message set from [04-signaling.md](04-signaling.md).
-  *Transport, authentication, advertisement and the message set are done; reconnection with
-  backoff is not.*
 - [x] Host admission seam: register attempt, add candidate, approve returning credentials,
   end connection, plus the event queue.
 - [x] Advertised capacity read from the configured guest limit, never hardcoded.
