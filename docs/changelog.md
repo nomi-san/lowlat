@@ -9,6 +9,9 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 - `lowlat-crypto`: credential generation, key material decoding, and the only
   source of randomness in the workspace.
+- The admission seam in `lowlat-host`: register an attempt, add a candidate,
+  approve returning host credentials, end a connection, and an event queue the
+  application drains.
 - `lowlat-kessel`: the connect URL, the message set, and a transport with one
   reader and one writer over a queue, so producers never touch the socket.
 - The host advertisement, and a runnable endpoint that publishes a host into the
@@ -50,6 +53,26 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - **Exactly one TLS provider is chosen here**, rather than left to feature
   unification, which resolves to none and panics inside the TLS stack at the
   first connection. That reads as a crash rather than as a configuration gap.
+- **The seam is polled, not called back.** A callback runs on our thread, so an
+  application that blocks in one stalls a media loop and every integration has
+  to reason about which thread it is on. A queue moves that decision to the
+  caller and keeps our threads ours.
+- **One socket per guest, so concurrent guests walk the port.** The socket
+  punched for an attempt becomes that guest's media socket for the whole
+  session rather than being handed back, so a second guest cannot have the
+  configured port. Without the walk a host cannot admit a second guest at all,
+  which turns the walk from a convenience into the thing multi-guest rests on.
+  Named test over three guests taking P, P+1 and P+2.
+- **The bound port goes back in the answer, not the configured one.**
+  Advertising the port that was asked for when the bind walked produces a peer
+  that answers checks and never establishes.
+- **Credentials are generated at approval.** Earlier binds them to no socket;
+  per registration leaks state for attempts that are never approved. Two
+  concurrent guests are asserted not to share a media key.
+- **A candidate that arrives before approval is kept.** Candidates trickle and
+  the peer starts sending before the answer reaches it, so the early ones are
+  buffered and handed over on approval. On a wide-area path one of them may be
+  the only one that works.
 - **The advertisement is emitted on state change, not on a schedule**, and it is
   driven by a stale mark rather than by a timer: something marks it dirty, the
   loop publishes and clears the mark. A capture appearing to show a ten second

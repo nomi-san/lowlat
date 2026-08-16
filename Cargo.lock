@@ -349,6 +349,7 @@ dependencies = [
  "lowlat-capture",
  "lowlat-common",
  "lowlat-core",
+ "lowlat-crypto",
  "lowlat-encode",
  "lowlat-inject",
  "lowlat-net",

@@ -16,6 +16,8 @@ crate-type = ["cdylib", "rlib"]
 lowlat-common.workspace = true
 lowlat-core.workspace = true
 lowlat-net.workspace = true
+# Credentials are generated at approval; the core owns no generator.
+lowlat-crypto.workspace = true
 lowlat-capture.workspace = true
 lowlat-encode.workspace = true
 lowlat-inject.workspace = true
