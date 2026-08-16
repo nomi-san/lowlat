@@ -3,6 +3,43 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 4: signaling (in progress)
+
+**Added**
+
+- `lowlat-kessel`: the connect URL, the message set, and a transport with one
+  reader and one writer over a queue, so producers never touch the socket.
+- The host advertisement, and a runnable endpoint that publishes a host into the
+  discovery listing and holds the connection open.
+
+**Notes**
+
+- **The advertisement's field order is pinned by a test.** A strict parser on
+  the far side is entitled to care, and matching the order costs nothing here
+  while being invisible to find later.
+- **`app_v` is a string even though it holds a build number**, and a schema that
+  types it as a number is wrong about the wire. Named test.
+- **A candidate's `ip` is a string and its `port` is a number**, with exactly
+  three booleans after them. Transposing the pair produces a candidate a peer
+  accepts and silently ignores, which is the worst failure shape available, so
+  the layout carries a named test rather than a comment.
+- **The query hangs off exactly one root path.** Without the path the request
+  line is malformed and the edge answers 400 rather than upgrading; with two the
+  service has no such route. Named test, because the failure is a status code
+  with no body and nothing that names the cause.
+- **The credential is longer than the key.** The media key field carries far
+  more material than the cipher consumes, and only its leading portion is key
+  and nonce prefix. A validator written to the key's length rejects every real
+  offer.
+- **Both directions key from the host's material.** A client that supplies its
+  own is signalling support, not proposing a key; the session is encrypted with
+  what the host returns when it approves.
+- **Exactly one TLS provider is chosen here**, rather than left to feature
+  unification, which resolves to none and panics inside the TLS stack at the
+  first connection. That reads as a crash rather than as a configuration gap.
+- **Liveness is the connection**, so nothing sends a heartbeat and the
+  advertisement is emitted on state change only.
+
 ## 3: io shell (2026-08-16)
 
 **Added**
