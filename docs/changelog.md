@@ -53,6 +53,18 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - **Exactly one TLS provider is chosen here**, rather than left to feature
   unification, which resolves to none and panics inside the TLS stack at the
   first connection. That reads as a crash rather than as a configuration gap.
+- **Silence is not a refusal.** A declined answer is a wire event the peer acts
+  on at once; no answer at all leaves it connecting indefinitely, because
+  nothing in the protocol reports a host that never replied. An offer refused
+  on capacity was being dropped without a word, which is the worst failure shape
+  available: neither side reports anything. Every offer is answered now,
+  including the ones turned down.
+- **"Still waiting for the host" is not a protocol outcome.** There is no
+  message for it in either direction, so anything that needs to surface it owns
+  the timer itself.
+- **Two inbound actions were being dropped silently**: the service's close,
+  whose reason is the only thing separating a bad session from an unknown host,
+  and an opaque passthrough channel no schema lists. Both are reported now.
 - **A ping must be answered explicitly, and a quiet host is the only thing
   that finds out.** The library queues a pong on the connection, but the read
   and write halves are split and that queue is only flushed by a write. A host

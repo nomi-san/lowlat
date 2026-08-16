@@ -264,18 +264,23 @@ construction rather than as covered.
 
 - [ ] `lowlat-kessel`: transport, authentication, reconnection with backoff, host
   advertisement, and the message set from [04-signaling.md](04-signaling.md).
-- [ ] Host admission seam: register attempt, add candidate, approve returning credentials,
+  *Transport, authentication, advertisement and the message set are done; reconnection with
+  backoff is not.*
+- [x] Host admission seam: register attempt, add candidate, approve returning credentials,
   end connection, plus the event queue.
-- [ ] Advertised capacity read from the configured guest limit, never hardcoded.
+- [x] Advertised capacity read from the configured guest limit, never hardcoded.
 
 **Gate:**
 
-1. The host appears in the service's host listing.
-2. A stock client's offer is accepted through the seam, candidates exchange, and connectivity
-   completes.
-3. The session reaches the streaming state and holds it with no media flowing.
-4. Advertisement is emitted on state change only, never on a timer.
-5. Rejection and cancellation paths produce the correct typed outcomes.
+1. [x] The host appears in the service's host listing.
+2. [x] A stock client's offer is accepted through the seam, candidates exchange, and connectivity
+   completes. *Established over the peer's LAN candidate against a stock client.*
+3. [x] The session reaches the streaming state and holds it with no media flowing. *The client
+   enters its remote view and holds it, reporting only that nothing is arriving.*
+4. [x] Advertisement is emitted on state change only, never on a timer.
+5. [x] Rejection and cancellation paths produce the correct typed outcomes. *A declined answer
+   reaches the client as its declined status; a withdrawal and a connectivity failure each
+   produce their own outcome.*
 
 **Not in scope:** any video.
 

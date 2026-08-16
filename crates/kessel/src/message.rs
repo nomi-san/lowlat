@@ -151,6 +151,19 @@ pub struct AnswerData<'a> {
     pub creds: &'a Credentials,
 }
 
+/// Credentials that carry nothing, for an answer that refuses.
+///
+/// A refusal is read for its `approved` flag and closed on; the credential
+/// object is still present because the shape is the same either way.
+pub fn no_credentials() -> Credentials {
+    Credentials {
+        aes256: None,
+        fingerprint: String::new(),
+        ice_ufrag: String::new(),
+        ice_pwd: String::new(),
+    }
+}
+
 /// One candidate, or a readiness marker.
 #[derive(Debug, Clone, Serialize)]
 pub struct Candex<'a> {

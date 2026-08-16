@@ -14,7 +14,7 @@ use std::net::{IpAddr, SocketAddr, UdpSocket};
 use lowlat::admission::{Admission, Config, Event, Peer};
 use lowlat_kessel::message::{
     Answer, AnswerData, CancelRelay, Candex, CandexRelay, CandidateData, ConnUpdate, Credentials,
-    HostDataBase, OfferRelay,
+    HostDataBase, OfferRelay, no_credentials,
 };
 use lowlat_kessel::{Client, Connect, Role};
 
@@ -146,6 +146,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         hostname
     });
+    // Declines every offer, which is the only way to exercise the refusal path
+    // against a real peer: approval is otherwise unconditional here.
+    let reject_all = std::env::args().any(|arg| arg == "--reject");
     let base_port: u16 = flag("--port")
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_PORT);
@@ -195,14 +198,35 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
                         // Admission is the application's decision, and this
                         // application's policy is capacity alone.
-                        if let Err(error) = seam.new_attempt(&offer.attempt_id, Peer {
-                            ufrag: offer.data.creds.ice_ufrag,
-                            pwd: offer.data.creds.ice_pwd,
-                            aes256: offer.data.creds.aes256,
-                        }) {
-                            // Refusal is an answer too, and a peer that never
-                            // hears one waits out its whole window.
-                            println!("lowlatd: refusing {}: {error}", offer.attempt_id);
+                        // **Silence is not a refusal.** A declined answer is a
+                        // wire event the peer acts on at once; no answer at all
+                        // leaves it connecting indefinitely, because nothing in
+                        // the protocol reports a host that never replied. Every
+                        // offer gets an answer, including the ones we turn down.
+                        let refusal = if reject_all {
+                            Some("policy".to_string())
+                        } else {
+                            seam.new_attempt(&offer.attempt_id, Peer {
+                                ufrag: offer.data.creds.ice_ufrag,
+                                pwd: offer.data.creds.ice_pwd,
+                                aes256: offer.data.creds.aes256,
+                            })
+                            .err()
+                            .map(|error| error.to_string())
+                        };
+                        if let Some(why) = refusal {
+                            println!("lowlatd: declining {}: {why}", offer.attempt_id);
+                            let empty = no_credentials();
+                            client.send("answer", &Answer {
+                                approved: false,
+                                attempt_id: &offer.attempt_id,
+                                data: AnswerData {
+                                    base: HostDataBase::default(),
+                                    creds: &empty,
+                                },
+                                to: &offer.from,
+                            })?;
+                            seam.end_connection(&offer.attempt_id);
                             peers.remove(&offer.attempt_id);
                             continue;
                         }
@@ -249,6 +273,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                         peers.remove(&cancel.attempt_id);
                         client.send("conn_update", &advertisement(&name, occupancy(&seam)))?;
                     }
+                    // The service closes with a reason, and the reason is the
+                    // only thing that distinguishes a bad session from a host
+                    // that is simply unknown.
+                    "close" => println!("lowlatd: closed by the service: {}", message.payload),
+                    // An opaque passthrough channel the schema does not list.
+                    // Reported rather than dropped, so its arrival is visible.
+                    "sdk" => println!("lowlatd: sdk message: {}", message.payload),
                     other => println!("lowlatd: ignoring {other}"),
                 }
             }

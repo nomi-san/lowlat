@@ -208,6 +208,15 @@ Failures are typed, and the mapping to application behavior is the whole point o
 Only the last justifies escalation ([03 §8](03-connectivity.md)). A generic timeout would
 collapse all four into one and produce retry behavior that is wrong three times out of four.
 
+**Silence is not a refusal, and every offer must be answered.** A declined answer is a wire
+event the peer acts on at once. No answer at all is not a slower refusal: nothing in the
+protocol reports a host that never replied, so the peer stays in its connecting state
+indefinitely and neither side surfaces a reason. A host that means no must say no.
+
+The corollary for anything above the seam: **"still waiting for the host" is not a protocol
+outcome and has to be timed by whoever needs it.** There is no message for it in either
+direction.
+
 ## §9 The SDK seam
 
 **This section is normative for the SDK. Everything above is not.** Any signaling
