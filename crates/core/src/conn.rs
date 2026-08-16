@@ -150,6 +150,8 @@ struct Server {
     /// credentials, so this is the only thing that admits one.
     outstanding: Option<TransactionId>,
     answered: bool,
+    /// The address this server reported seeing us at, once it has.
+    mapped: Option<SocketAddr>,
 }
 
 /// One punch attempt.
@@ -194,6 +196,21 @@ impl<'a> Conn<'a> {
     /// Where the attempt has got to.
     pub fn state(&self) -> State {
         self.state
+    }
+
+    /// Every address a reflexive server has reported seeing us at.
+    ///
+    /// These are our server-reflexive candidates, and the application forwards
+    /// each one to the peer as it appears. They are retained rather than only
+    /// reported once through [`Inbound::Reflexive`], because a caller that
+    /// processes datagrams in batches has nowhere to put a one-shot result and
+    /// would drop the candidate that matters most on a wide-area path.
+    ///
+    /// Two servers reporting two different addresses is also how endpoint
+    /// independent mapping is told from symmetric, so the set is the answer
+    /// rather than any single entry.
+    pub fn reflexive(&self) -> impl Iterator<Item = SocketAddr> + '_ {
+        self.servers.iter().flatten().filter_map(|s| s.mapped)
     }
 
     /// The chosen path, once there is one.
@@ -251,6 +268,7 @@ impl<'a> Conn<'a> {
             last_probe_ms: None,
             outstanding: None,
             answered: false,
+            mapped: None,
         });
         Ok(())
     }
@@ -312,7 +330,10 @@ impl<'a> Conn<'a> {
                     server.outstanding = None;
                     server.answered = true;
                     return match message.mapped_address() {
-                        Some(mapped) => Ok(Inbound::Reflexive(mapped)),
+                        Some(mapped) => {
+                            server.mapped = Some(mapped);
+                            Ok(Inbound::Reflexive(mapped))
+                        }
                         None => Err(Error::Malformed),
                     };
                 }
@@ -878,6 +899,43 @@ mod tests {
             conn.process_input(&response[..len], server).unwrap(),
             Inbound::Reflexive(observed)
         );
+    }
+
+    /// The one-shot report is not enough on its own.
+    ///
+    /// A caller that processes datagrams in batches -- which the shell does --
+    /// has nowhere to put a per-datagram return value, so a reflexive candidate
+    /// reported only that way is learned and immediately lost. It is the
+    /// candidate a wide-area path depends on, so it is retained and asked for.
+    #[test]
+    fn a_reflexive_candidate_is_retained_after_it_is_reported() {
+        let mut conn = conn();
+        let server = addr(50, 3478);
+        let observed = addr(9, 41_000);
+        conn.add_server(server).unwrap();
+
+        assert_eq!(
+            conn.reflexive().count(),
+            0,
+            "nothing is known before an answer"
+        );
+
+        let sent = drain(&mut conn, 0.0);
+        let (egress, buf) = sent.first().copied().unwrap();
+        let request = Message::parse(&buf[..egress.len]).unwrap();
+        let mut response = [0u8; 256];
+        let len =
+            stun::encode_binding_response(&mut response, request.transaction_id(), observed, "any")
+                .unwrap();
+        conn.process_input(&response[..len], server).unwrap();
+
+        let mut gathered = conn.reflexive();
+        assert_eq!(
+            gathered.next(),
+            Some(observed),
+            "the candidate must survive the call that reported it"
+        );
+        assert_eq!(gathered.next(), None);
     }
 
     /// The transaction identifier is the whole of the admission check for an

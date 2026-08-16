@@ -18,6 +18,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   the merged per-guest thread with its teardown.
 - The bind walks forward when the configured port is occupied, so an occupied
   port delays a host's start rather than preventing it.
+- `conn` retains the addresses reflexive servers report, so a caller that
+  processes datagrams in batches can still ask for its own candidates.
 
 **Notes**
 
@@ -27,6 +29,12 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   It stops at the top of the range instead of wrapping: wrapping lands on the
   privileged ports, where the bind fails for an unrelated reason and reports it
   as though the range were occupied.
+- **A candidate reported once is a candidate lost.** The reflexive address was
+  returned from the call that processed the datagram carrying it and kept
+  nowhere. A loop that handles one datagram at a time can read that return
+  value; the shell pulls a burst per syscall and has nowhere to put it, so the
+  candidate a wide-area path depends on was learned and discarded on every
+  path that matters. It is retained and asked for instead.
 - **Landing on a port nobody asked for is opt-in.** Exhausting the walk returns
   the bind error. A caller that would rather have any port than none asks for
   that by name and must read the bound port back, because a host that silently
