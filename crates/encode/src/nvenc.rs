@@ -771,6 +771,17 @@ impl<'a> Session<'a> {
 
         let mut encode_config = preset_config.presetCfg;
         encode_config.version = crate::ffi::versions::NV_ENC_CONFIG_VER;
+        // **The nested block carries its own stamp and the preset query leaves
+        // it zero.** Stamped here because every structure this interface takes
+        // is supposed to carry one, and the module exists to keep that from
+        // being got wrong.
+        //
+        // Honestly: this driver does not appear to care. The block is read
+        // either way -- a constant quantiser set through it is obeyed exactly
+        // -- and stamping it changed no output that could be measured. It is
+        // kept as conformance rather than as a fix, and it is not the cause of
+        // anything.
+        encode_config.rcParams.version = crate::ffi::versions::NV_ENC_RC_PARAMS_VER;
 
         // **Keyframes only when asked for.** Recovery is driven by the
         // delivery gate, which throttles them; a periodic keyframe on top of
