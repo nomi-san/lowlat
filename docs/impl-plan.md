@@ -317,7 +317,9 @@ construction rather than as covered.
   generation messages ([01 §11.2](01-protocol.md)).
 - [ ] Packetizer and the video message framing ([01 §11.3](01-protocol.md)).
 - [ ] Congestion controller ([01 §10](01-protocol.md)) driving encoder bitrate, ticked once per
-  guest per frame from the encode loop and applied as the minimum across guests.
+  guest per frame from the encode loop, **each guest's ceiling being the configured rate divided
+  by the active count**, and the rate applied being the minimum across guests
+  ([05 §5](05-host.md)).
 
 **Gate A:**
 
@@ -415,8 +417,18 @@ when it must not.
 - [ ] HEVC encode path and the two-place capability signalling
   ([01 §11.3](01-protocol.md)).
 
-**Gate:** a stock client negotiates and decodes HEVC; both codecs are selectable; a client
-without HEVC falls back to H.264 without operator intervention.
+**Gate:** a stock client negotiates and decodes HEVC, and both codecs are selectable.
+
+**The third clause was removed, 2026-08-17.** It read "a client without HEVC falls back to
+H.264 without operator intervention", and **one encode serves every guest**
+([05 §6](05-host.md)), so there is no per-guest fallback to have: a session has one codec at a
+time and every seat gets it. The gate as written could only have been passed by running a
+second encoder, which contradicts the design it was meant to verify. What replaces it is a
+decision this phase has to make and state -- whether a guest that cannot decode the session's
+codec is refused at admission, or whether its arrival downgrades the session for everyone --
+and the gate is written from that decision rather than assuming an answer. The wire can express
+either: the encoder generation counter ([01 §11.3](01-protocol.md)) increments on reconfigure
+and every guest sees it.
 
 ---
 

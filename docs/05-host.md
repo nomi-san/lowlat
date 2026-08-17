@@ -199,6 +199,18 @@ The two actuators aggregate differently, and the difference is not an inconsiste
 **The frame gate requires every guest to be pressured.** Skipping the acquire helps nobody if
 one guest can still take the frame, so it fires on unanimity.
 
+**The configured bitrate is a budget for the host's uplink, not a per-guest allowance.** Every
+guest receives the same encoded stream, so N guests cost N times the encoded rate on the way
+out. The ceiling handed to each guest's controller is therefore the configured rate divided by
+the number of active streams, and the controller works downward from there. Skipping that
+division does not oversubscribe one guest; it oversubscribes the host, by a factor of the guest
+count, and the loss that follows lands on all of them at once.
+
+So the two aggregations compose: **each guest's ceiling is the configured rate divided by the
+active count, and the rate actually applied is the minimum of what the guests' controllers
+return.** One term bounds what the host can send in total, the other bounds what the slowest
+path can carry.
+
 **The bitrate is the minimum across guests**, applied only when it moves by more than 0.01
 Mbps so noise does not produce a reconfigure per frame. Which means a chronically slow guest
 *does* pull everyone's rate down, and that is the intended behaviour rather than a flaw in the
