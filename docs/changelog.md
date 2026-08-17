@@ -39,6 +39,19 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   surfaces at the surface's own stride.
 - `scripts/check-encoded-frames.py`, which decodes a dump and checks each
   picture against the frame index that produced it.
+- The encoder trait, and one shared collect result, with both hardware
+  backends implementing it and one generic loop driving both.
+
+**Fixed**
+
+- **The quantiser floor was configured but never applied.** It was added to
+  the configuration block, documented, and given a default, and nothing ever
+  wrote it to the rate controller. The change that added it was verified by
+  checking the encoder still encoded, which it did either way: a check that
+  cannot distinguish the two states proves nothing about which one holds. It
+  is applied now, to refresh and predicted pictures alike -- a floor on the
+  predicted ones only would leave the largest picture in the stream, and the
+  one that matters most for delay, unbounded.
 
 **Notes**
 

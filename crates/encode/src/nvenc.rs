@@ -22,6 +22,7 @@ use crate::ffi::nvenc::{
     NVENCSTATUS,
 };
 use crate::ffi::versions::NV_ENCODE_API_FUNCTION_LIST_VER;
+use crate::{Encoder as EncoderTrait, Poll};
 
 /// Versioned first. The unversioned alias belongs to the development package
 /// and is absent on a machine that merely has the driver.
@@ -790,6 +791,21 @@ impl<'a> Session<'a> {
         let per_frame = config.bitrate_bps / config.fps.max(1);
         rc.vbvBufferSize = per_frame;
         rc.vbvInitialDelay = per_frame;
+        // **The quantiser floor, which is a latency control and reads
+        // backwards.** Left unset the encoder is free to descend to a
+        // near-lossless quantiser on content it finds easy, and it does: a
+        // flat picture came out at 2.5 MB, four fifths of what the same
+        // picture occupies uncompressed, against half a kilobyte from the
+        // other backend for the identical frame. Those bits refine nothing
+        // the eye resolves and every one of them is a packet on the wire.
+        //
+        // The floor applies to all three picture kinds. Setting only the
+        // predicted ones leaves the refresh -- the largest frame in the
+        // stream and the one that matters most for delay -- unbounded.
+        rc.set_enableMinQP(1);
+        rc.minQP.qpIntra = config.min_qp;
+        rc.minQP.qpInterP = config.min_qp;
+        rc.minQP.qpInterB = config.min_qp;
         // Frames nothing references can be dropped by the gate without
         // breaking anyone's reference chain.
         rc.set_enableNonRefP(1);
@@ -992,16 +1008,6 @@ impl Encoder<'_> {
 /// must collect. Deep enough to absorb a slow frame, shallow enough that a
 /// stall is noticed rather than buffered away.
 const IN_FLIGHT: usize = 4;
-
-/// What a collect found.
-#[derive(Debug)]
-pub enum Poll<'a> {
-    /// A finished access unit, valid until the next call on this encoder.
-    Ready { bitstream: &'a [u8], keyframe: bool },
-    /// Nothing finished yet. **Not an error and not a wait**: the caller goes
-    /// round its loop and asks again.
-    Pending,
-}
 
 /// A registered input surface.
 ///
@@ -1293,5 +1299,25 @@ impl Encoder<'_> {
     /// How many pictures are queued but not collected.
     pub fn in_flight(&self) -> usize {
         self.pending.len()
+    }
+}
+
+impl EncoderTrait for Encoder<'_> {
+    type Error = Error;
+
+    fn submit(
+        &mut self,
+        frame: &lowlat_capture::Frame<'_>,
+        force_keyframe: bool,
+    ) -> Result<(), Error> {
+        Encoder::submit(self, frame, force_keyframe)
+    }
+
+    fn poll(&mut self) -> Result<Poll<'_>, Error> {
+        Encoder::poll(self)
+    }
+
+    fn reconfigure(&mut self, bitrate_bps: u32) -> Result<(), Error> {
+        Encoder::reconfigure(self, bitrate_bps)
     }
 }

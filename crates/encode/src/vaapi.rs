@@ -18,6 +18,8 @@ use core::ffi::{CStr, c_char, c_int, c_uint};
 
 use lowlat_common::dynlib::Library;
 
+use crate::{Encoder as EncoderTrait, Poll};
+
 use crate::ffi::va::{
     VA_ATTRIB_NOT_SUPPORTED, VA_ENC_PACKED_HEADER_PICTURE, VA_ENC_PACKED_HEADER_SEQUENCE,
     VA_PROGRESSIVE, VA_RC_CBR, VA_RC_CQP, VA_RC_VBR, VA_RT_FORMAT_YUV420, VA_STATUS_SUCCESS,
@@ -579,7 +581,7 @@ mod tests {
             let took = started.elapsed();
             polls += 1;
             match polled {
-                Poll::Ready { bitstream } => {
+                Poll::Ready { bitstream, .. } => {
                     assert!(!bitstream.is_empty(), "an empty picture");
                     stream.extend_from_slice(bitstream);
                     collected += 1;
@@ -962,16 +964,6 @@ fn copy_plane(
         into.copy_from_slice(from);
     }
     Ok(())
-}
-
-/// What a collect found.
-#[derive(Debug)]
-pub enum Poll<'a> {
-    Ready {
-        bitstream: &'a [u8],
-    },
-    /// Nothing finished. **Not a wait**: the caller goes round its loop.
-    Pending,
 }
 
 /// One picture in flight.
@@ -1460,6 +1452,11 @@ impl Encoder<'_> {
 
         Ok(Poll::Ready {
             bitstream: &self.collected,
+            // **Every picture this backend produces is an instantaneous
+            // refresh**, so this is not a placeholder: it is the truth until
+            // predicted pictures exist, and it stops being constant in the
+            // same change that makes them.
+            keyframe: true,
         })
     }
 
@@ -1482,6 +1479,30 @@ impl Encoder<'_> {
 
     pub fn in_flight(&self) -> usize {
         self.pending.len()
+    }
+}
+
+impl EncoderTrait for Encoder<'_> {
+    type Error = Error;
+
+    /// **The refresh request is accepted and has no effect**, because every
+    /// picture here is already an instantaneous refresh. That satisfies the
+    /// request rather than ignoring it: a caller asking for a keyframe gets
+    /// one. What it does not yet do is honour the *absence* of the request,
+    /// which costs bitrate and is what predicted pictures fix.
+    fn submit(&mut self, frame: &lowlat_capture::Frame<'_>, _force_keyframe: bool) -> Result<()> {
+        Encoder::submit(self, frame)
+    }
+
+    fn poll(&mut self) -> Result<Poll<'_>> {
+        Encoder::poll(self)
+    }
+
+    /// Cannot fail here: the rate travels with each picture rather than being
+    /// encoder state, so there is no call to make and nothing to refuse.
+    fn reconfigure(&mut self, bitrate_bps: u32) -> Result<()> {
+        Encoder::reconfigure(self, bitrate_bps);
+        Ok(())
     }
 }
 

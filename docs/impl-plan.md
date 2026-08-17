@@ -288,9 +288,11 @@ construction rather than as covered.
 
 ## Phase 5 - Encoder and Gate A
 
-- [ ] `lowlat-encode` trait: asynchronous submit and poll, force keyframe, live bitrate
+- [x] `lowlat-encode` trait: asynchronous submit and poll, force keyframe, live bitrate
   reconfigure that never reinitializes. **`poll` never blocks**, which is a real constraint on
-  both backends rather than a preference; see the note below.
+  both backends rather than a preference; see the note below. *Both backends implement it and a
+  single generic loop drives both, so a difference either one still carried in its shape would
+  be a compile error rather than an interface describing whichever was written first.*
 - [ ] **VAAPI backend**, H.264, 8-bit 4:2:0, low-latency parameters. First, not later: it is the
   encoder on the primary Linux target and on the machine this is tested against
   ([07 §3.1](07-platforms.md)).
@@ -358,6 +360,21 @@ construction rather than as covered.
    to less than one frame interval at the negotiated rate. A pipeline that cannot clear a frame
    within a frame interval cannot hold the frame rate, so this is the floor rather than the
    target; a tighter budget is set once the first measurement exists.
+
+**Open, found by running both backends over one source, 2026-08-17.** The vendor backend spends
+**2.4 MB on its first picture where the open-stack one spends 513 bytes**, for identical input at
+the same target rate, and another encoder driving the same interface on the same hardware and the
+same frames spends 680 bytes. Both decode bit-exact, so this is cost rather than corruption: the
+refresh is coded at quantiser 9 where the reference reaches the same result at 22. The rate
+controller is not constraining that picture, and at 60 frames per second a 2.4 MB refresh is
+roughly 2000 packets in one frame interval -- the exact burst shape that has already cost this
+project a receive-buffer lesson, so it must be understood before Gate A rather than tuned around.
+
+Ruled out by measurement, so they are not re-tried: the quantiser floor, which was genuinely
+unapplied and is now applied and moved the figure by six percent; the rate-control buffer
+override, which changes nothing when removed; and the forced-refresh flag, which changes nothing
+when withheld. **Raising the floor would shrink the picture and hide the question**, which is why
+it has not been done.
 
 **Note on ordering, 2026-08-17.** The frame source was built before the encoder trait, which
 inverts the order the items are listed in. The trait's shape is already settled by
