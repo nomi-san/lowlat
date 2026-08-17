@@ -274,3 +274,63 @@ mod tests {
         assert!(picture_parameter_set(&mut out).is_none());
     }
 }
+
+/// A slice header, and the exact number of bits it occupies.
+///
+/// **Not byte aligned, and that is the point.** Slice data follows the header
+/// immediately in the same unit, so there are no trailing bits and the length
+/// has to be carried in bits rather than bytes. A caller that rounds up and
+/// reports bytes tells the driver to start the slice data on the wrong
+/// boundary.
+#[derive(Debug, Clone, Copy)]
+pub struct SliceHeader {
+    pub bytes_written: usize,
+    pub bit_length: usize,
+}
+
+/// Write the slice header for an instantaneous refresh.
+///
+/// The only slice type produced so far, because predicted slices need the
+/// reference bookkeeping that is not written yet.
+pub fn idr_slice_header(params: &Params, out: &mut [u8]) -> Option<SliceHeader> {
+    let mut raw = [0u8; 64];
+    let mut w = BitWriter::new(&mut raw);
+
+    w.ue(0); // first macroblock in this slice
+    // Seven rather than two: the values above four assert that **every** slice
+    // in the picture has this type, which is what lets a decoder know the
+    // picture is entirely intra without reading the rest.
+    w.ue(7);
+    w.ue(0); // the picture parameter set to use
+
+    // Fixed width, and the width is what the sequence parameters declared. Get
+    // this wrong and every field after it is read at the wrong offset.
+    w.bits(0, params.log2_max_frame_num_minus4 + 4);
+    w.ue(0); // this refresh's identifier
+    w.bits(0, params.log2_max_poc_lsb_minus4 + 4);
+
+    // Reference picture marking, present because this slice is a reference.
+    w.bit(false); // earlier pictures may still be output
+    w.bit(false); // not a long-term reference
+
+    w.se(0); // no quantiser offset from the picture's initial value
+
+    // Deblocking control, present because the picture parameter set says so.
+    w.ue(0); // filter on, and it may cross slice boundaries
+    w.se(0); // no alpha offset
+    w.se(0); // no beta offset
+
+    // **No trailing bits.** The slice data continues in this same unit, so
+    // padding here would insert bits into the middle of it.
+    let bit_length = w.bit_len();
+    let payload = w.finish();
+
+    // Reference-marked, type five: a slice of an instantaneous refresh.
+    let bytes_written = emit(0x65, payload, out)?;
+    Some(SliceHeader {
+        bytes_written,
+        // The start code and unit header precede the payload and count toward
+        // what the driver is told.
+        bit_length: bit_length + (START_CODE.len() + 1) * 8,
+    })
+}

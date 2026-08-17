@@ -21,10 +21,10 @@ use lowlat_common::dynlib::Library;
 use crate::ffi::va::{
     VA_ATTRIB_NOT_SUPPORTED, VA_ENC_PACKED_HEADER_PICTURE, VA_ENC_PACKED_HEADER_SEQUENCE,
     VA_PROGRESSIVE, VA_RC_CBR, VA_RC_CQP, VA_RC_VBR, VA_RT_FORMAT_YUV420, VA_STATUS_SUCCESS,
-    VAConfigAttrib, VAConfigAttribEncPackedHeaders, VAConfigAttribRTFormat,
-    VAConfigAttribRateControl, VAConfigID, VAContextID, VADisplay, VAEntrypoint,
-    VAEntrypointEncSlice, VAProfile, VAProfileH264High, VAProfileH264Main, VAProfileHEVCMain,
-    VAStatus, VASurfaceID,
+    VABufferID, VABufferType, VAConfigAttrib, VAConfigAttribEncPackedHeaders,
+    VAConfigAttribRTFormat, VAConfigAttribRateControl, VAConfigID, VAContextID, VADisplay,
+    VAEntrypoint, VAEntrypointEncSlice, VAProfile, VAProfileH264High, VAProfileH264Main,
+    VAProfileHEVCMain, VAStatus, VASurfaceID,
 };
 
 /// The core interface and its display binding, versioned.
@@ -78,6 +78,28 @@ type CreateContext = unsafe extern "C" fn(
     *mut VAContextID,
 ) -> VAStatus;
 type DestroyContext = unsafe extern "C" fn(VADisplay, VAContextID) -> VAStatus;
+type CreateBuffer = unsafe extern "C" fn(
+    VADisplay,
+    VAContextID,
+    VABufferType,
+    c_uint,
+    c_uint,
+    *mut core::ffi::c_void,
+    *mut VABufferID,
+) -> VAStatus;
+type DestroyBuffer = unsafe extern "C" fn(VADisplay, VABufferID) -> VAStatus;
+type MapBuffer =
+    unsafe extern "C" fn(VADisplay, VABufferID, *mut *mut core::ffi::c_void) -> VAStatus;
+type UnmapBuffer = unsafe extern "C" fn(VADisplay, VABufferID) -> VAStatus;
+type BeginPicture = unsafe extern "C" fn(VADisplay, VAContextID, VASurfaceID) -> VAStatus;
+type RenderPicture =
+    unsafe extern "C" fn(VADisplay, VAContextID, *mut VABufferID, c_int) -> VAStatus;
+type EndPicture = unsafe extern "C" fn(VADisplay, VAContextID) -> VAStatus;
+type SyncSurface = unsafe extern "C" fn(VADisplay, VASurfaceID) -> VAStatus;
+/// Present from interface 1.15 onward, and the reason the collect can be a
+/// probe rather than a wait. Absent on an older runtime, where the surface
+/// sync above is the only option and it blocks.
+type SyncBuffer = unsafe extern "C" fn(VADisplay, VABufferID, u64) -> VAStatus;
 
 /// Why the backend could not be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +114,9 @@ pub enum Error {
     NoDevice,
     /// A call failed, carrying its status.
     Status(VAStatus),
+    /// As many pictures are in flight as there are surfaces. Back pressure,
+    /// not a fault.
+    QueueFull,
     /// The driver has no encode entry point for any codec we speak. A decode
     /// only device reaches here, and it is a refusal rather than a fault.
     NoEncoder,
@@ -104,6 +129,7 @@ impl core::fmt::Display for Error {
             Self::MissingSymbol => f.write_str("display runtime is missing an entry point"),
             Self::NoDevice => f.write_str("render node could not be opened"),
             Self::Status(status) => write!(f, "display runtime returned status {status}"),
+            Self::QueueFull => f.write_str("every surface is in flight"),
             Self::NoEncoder => f.write_str("device offers no encode entry point"),
         }
     }
@@ -159,6 +185,16 @@ pub struct Vaapi {
     destroy_surfaces: DestroySurfaces,
     create_context: CreateContext,
     destroy_context: DestroyContext,
+    create_buffer: CreateBuffer,
+    destroy_buffer: DestroyBuffer,
+    map_buffer: MapBuffer,
+    unmap_buffer: UnmapBuffer,
+    begin_picture: BeginPicture,
+    render_picture: RenderPicture,
+    end_picture: EndPicture,
+    sync_surface: SyncSurface,
+    /// Optional: an older runtime does not export it.
+    sync_buffer: Option<SyncBuffer>,
     get_display_drm: GetDisplayDrm,
     /// Last, so both outlive the addresses taken from them.
     _libva_drm: Library,
@@ -222,6 +258,25 @@ impl Vaapi {
                 destroy_context: libva
                     .symbol(c"vaDestroyContext")
                     .ok_or(Error::MissingSymbol)?,
+                create_buffer: libva
+                    .symbol(c"vaCreateBuffer")
+                    .ok_or(Error::MissingSymbol)?,
+                destroy_buffer: libva
+                    .symbol(c"vaDestroyBuffer")
+                    .ok_or(Error::MissingSymbol)?,
+                map_buffer: libva.symbol(c"vaMapBuffer").ok_or(Error::MissingSymbol)?,
+                unmap_buffer: libva.symbol(c"vaUnmapBuffer").ok_or(Error::MissingSymbol)?,
+                begin_picture: libva
+                    .symbol(c"vaBeginPicture")
+                    .ok_or(Error::MissingSymbol)?,
+                render_picture: libva
+                    .symbol(c"vaRenderPicture")
+                    .ok_or(Error::MissingSymbol)?,
+                end_picture: libva.symbol(c"vaEndPicture").ok_or(Error::MissingSymbol)?,
+                sync_surface: libva.symbol(c"vaSyncSurface").ok_or(Error::MissingSymbol)?,
+                // Absent before interface 1.15, and its absence is a
+                // capability question rather than a fault.
+                sync_buffer: libva.symbol(c"vaSyncBuffer"),
                 get_display_drm: libva_drm
                     .symbol(c"vaGetDisplayDRM")
                     .ok_or(Error::MissingSymbol)?,
@@ -422,8 +477,128 @@ mod tests {
                 .expect("context");
             assert_eq!(context.surfaces().len(), 4);
             assert!(context.surfaces().iter().all(|id| *id != 0));
+
+            // **The two pools must not intersect.** A picture read from the
+            // same surface it reconstructs into makes the driver release the
+            // buffer it is about to read, and the fault surfaces pictures
+            // later, inside the driver, with nothing naming a surface.
+            assert_eq!(context.recon().len(), context.surfaces().len());
+            assert!(
+                context
+                    .recon()
+                    .iter()
+                    .all(|id| !context.surfaces().contains(id)),
+                "a surface is serving as both the source and its own reconstruction"
+            );
             println!("  context built with {} surfaces", context.surfaces().len());
         }
+    }
+
+    /// Encode real pictures, and answer three things at once: whether this
+    /// backend's collect can ask rather than wait, whether the driver takes
+    /// our parameter sets, and whether the colour description reads back the
+    /// way it is meant to.
+    ///
+    /// The last one is the check the parameter-set writer has been owed since
+    /// it was written: it is verified by a decoder that knows nothing about
+    /// how these bytes were produced.
+    #[test]
+    #[ignore = "requires the open-stack driver"]
+    fn it_encodes_and_the_stream_says_what_we_wrote() {
+        use std::time::Instant;
+
+        let va = Vaapi::load().expect("runtime");
+        let display = va.open(NODE).expect("render node");
+        let caps = display.caps(Codec::H264).expect("caps");
+        let context = display
+            .create_context(caps, 1920, 1080, 4)
+            .expect("context");
+
+        let params = crate::h264::Params {
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            level_idc: 42,
+            log2_max_frame_num_minus4: 0,
+            log2_max_poc_lsb_minus4: 0,
+            max_num_ref_frames: 1,
+        };
+        let mut encoder = context.encoder(params, 20_000_000).expect("encoder");
+        println!("collect is a probe: {}", encoder.collect_is_a_probe());
+
+        let mut stream = Vec::new();
+        let mut slowest_pending = std::time::Duration::ZERO;
+        let mut pending = 0usize;
+        let mut polls = 0usize;
+
+        // The whole pool in flight, which is the shape the pipeline runs in.
+        // The knob stays so a single picture can be compared against a full
+        // queue, which is how the depth question was settled once already.
+        let burst: usize = std::env::var("LOWLAT_VA_BURST")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(4);
+        for _ in 0..burst {
+            encoder.submit().expect("submit");
+        }
+        let drain_started = Instant::now();
+        let mut collected = 0usize;
+        let mut submitted = burst;
+        while collected < 4 {
+            if submitted < 4 && encoder.in_flight() < burst {
+                encoder.submit().expect("submit");
+                submitted += 1;
+            }
+            let started = Instant::now();
+            let polled = encoder.poll().expect("poll");
+            let took = started.elapsed();
+            polls += 1;
+            match polled {
+                Poll::Ready { bitstream } => {
+                    assert!(!bitstream.is_empty(), "an empty picture");
+                    stream.extend_from_slice(bitstream);
+                    collected += 1;
+                }
+                Poll::Pending => {
+                    pending += 1;
+                    slowest_pending = slowest_pending.max(took);
+                    std::hint::spin_loop();
+                }
+            }
+        }
+        let drain = drain_started.elapsed();
+        println!(
+            "drain of 4 {drain:?}, polls {polls} of which {pending} pending \
+             (slowest pending {slowest_pending:?}), {} bytes",
+            stream.len()
+        );
+
+        // A parameter set leads, which means the driver took ours.
+        assert_eq!(&stream[..4], &[0, 0, 0, 1], "no start code");
+        assert_eq!(
+            stream[4] & 0x1F,
+            7,
+            "the stream does not open with our sequence set"
+        );
+
+        // **Every picture is there, and carries its own sets.** Checking only
+        // the leading unit passes a stream that emitted one picture and then
+        // stopped, which is exactly the failure this backend had. Escaping
+        // makes a three-byte start code impossible inside a payload, so
+        // counting them is exact rather than approximate.
+        let mut units = [0usize; 32];
+        for window in stream.windows(4) {
+            if window[..3] == [0, 0, 1] {
+                units[usize::from(window[3] & 0x1F)] += 1;
+            }
+        }
+        assert_eq!(units[7], collected, "a sequence set per picture");
+        assert_eq!(units[8], collected, "a picture set per picture");
+        assert_eq!(units[5], collected, "a refresh slice per picture");
+
+        let path = std::env::var("LOWLAT_DUMP").unwrap_or_else(|_| "/tmp/vaapi.h264".into());
+        std::fs::write(&path, &stream).expect("write");
+        println!("wrote {path}");
     }
 
     /// Needs the open-stack driver, so it is off by default. Run with
@@ -490,13 +665,17 @@ impl Caps {
     }
 }
 
-/// A configured encode context with its surface pool.
+/// A configured encode context with its two surface pools.
 #[derive(Debug)]
 pub struct Context<'a> {
     display: &'a Display<'a>,
     config: VAConfigID,
     context: VAContextID,
+    /// Where a picture's pixels are read from.
     surfaces: Vec<VASurfaceID>,
+    /// Where its reconstruction is written. Never the same surface that the
+    /// picture was read from; see [`Display::create_context`].
+    recon: Vec<VASurfaceID>,
 }
 
 impl Display<'_> {
@@ -591,29 +770,32 @@ impl Display<'_> {
         };
         self.va.check(status)?;
 
-        let mut pool = vec![0 as VASurfaceID; surfaces];
-        // SAFETY: the pool is writable for its own length. No surface
-        // attributes: the runtime format above already fixes the layout, and
-        // an explicit attribute list is where a driver-specific refusal comes
-        // from.
-        let status = unsafe {
-            (self.va.create_surfaces)(
-                self.raw,
-                VA_RT_FORMAT_YUV420,
-                width,
-                height,
-                pool.as_mut_ptr(),
-                c_uint::try_from(pool.len()).unwrap_or(0),
-                core::ptr::null_mut(),
-                0,
-            )
+        // **Two pools, and a picture must never take both roles from one
+        // surface.** The surface a picture begins on is where its pixels are
+        // read from; the surface named in its picture parameters is where the
+        // reconstruction is written. Given one surface for both, the driver
+        // releases the buffer it is about to read as it takes the surface into
+        // its reference store, and encodes from the freed pointer. The first
+        // picture survives whenever the allocator hands the same block back,
+        // so this presents as an intermittent fault several pictures in.
+        let mut pool = match self.surface_pool(width, height, surfaces) {
+            Ok(pool) => pool,
+            Err(error) => {
+                // SAFETY: the configuration was created above and nothing else
+                // owns it.
+                unsafe { (self.va.destroy_config)(self.raw, config) };
+                return Err(error);
+            }
         };
-        if let Err(error) = self.va.check(status) {
-            // SAFETY: the configuration was created above and nothing else
-            // owns it.
-            unsafe { (self.va.destroy_config)(self.raw, config) };
-            return Err(error);
-        }
+        let mut recon = match self.surface_pool(width, height, surfaces) {
+            Ok(recon) => recon,
+            Err(error) => {
+                self.destroy_pool(&mut pool);
+                // SAFETY: as above.
+                unsafe { (self.va.destroy_config)(self.raw, config) };
+                return Err(error);
+            }
+        };
 
         let mut context: VAContextID = 0;
         // SAFETY: the pool is readable for its length and outlives the call;
@@ -631,15 +813,11 @@ impl Display<'_> {
             )
         };
         if let Err(error) = self.va.check(status) {
-            // SAFETY: both were created above and nothing else owns them.
-            unsafe {
-                (self.va.destroy_surfaces)(
-                    self.raw,
-                    pool.as_mut_ptr(),
-                    c_int::try_from(pool.len()).unwrap_or(0),
-                );
-                (self.va.destroy_config)(self.raw, config);
-            }
+            self.destroy_pool(&mut recon);
+            self.destroy_pool(&mut pool);
+            // SAFETY: the configuration was created above and nothing else
+            // owns it.
+            unsafe { (self.va.destroy_config)(self.raw, config) };
             return Err(error);
         }
 
@@ -648,7 +826,42 @@ impl Display<'_> {
             config,
             context,
             surfaces: pool,
+            recon,
         })
+    }
+
+    /// One pool of `count` surfaces in the encoder's runtime format.
+    fn surface_pool(&self, width: u32, height: u32, count: usize) -> Result<Vec<VASurfaceID>> {
+        let mut pool = vec![0 as VASurfaceID; count];
+        // SAFETY: the pool is writable for its own length. No surface
+        // attributes: the runtime format already fixes the layout, and an
+        // explicit attribute list is where a driver-specific refusal comes
+        // from.
+        let status = unsafe {
+            (self.va.create_surfaces)(
+                self.raw,
+                VA_RT_FORMAT_YUV420,
+                width,
+                height,
+                pool.as_mut_ptr(),
+                c_uint::try_from(pool.len()).unwrap_or(0),
+                core::ptr::null_mut(),
+                0,
+            )
+        };
+        self.va.check(status)?;
+        Ok(pool)
+    }
+
+    fn destroy_pool(&self, pool: &mut [VASurfaceID]) {
+        // SAFETY: every entry came from a successful create.
+        unsafe {
+            (self.va.destroy_surfaces)(
+                self.raw,
+                pool.as_mut_ptr(),
+                c_int::try_from(pool.len()).unwrap_or(0),
+            );
+        }
     }
 }
 
@@ -657,9 +870,14 @@ impl Context<'_> {
         self.context
     }
 
-    /// The surface pool, one entry per in-flight picture.
+    /// The input pool, one entry per in-flight picture.
     pub fn surfaces(&self) -> &[VASurfaceID] {
         &self.surfaces
+    }
+
+    /// The reconstruction pool, paired by index with the input pool.
+    pub fn recon(&self) -> &[VASurfaceID] {
+        &self.recon
     }
 }
 
@@ -673,12 +891,450 @@ impl Drop for Context<'_> {
         // once here, in the reverse of the order it was built.
         unsafe {
             (va.destroy_context)(display, self.context);
-            (va.destroy_surfaces)(
-                display,
-                self.surfaces.as_mut_ptr(),
-                c_int::try_from(self.surfaces.len()).unwrap_or(0),
-            );
+        }
+        self.display.destroy_pool(&mut self.recon);
+        self.display.destroy_pool(&mut self.surfaces);
+        // SAFETY: created once above and destroyed once here.
+        unsafe {
             (va.destroy_config)(display, self.config);
+        }
+    }
+}
+
+/// What a collect found.
+#[derive(Debug)]
+pub enum Poll<'a> {
+    Ready {
+        bitstream: &'a [u8],
+    },
+    /// Nothing finished. **Not a wait**: the caller goes round its loop.
+    Pending,
+}
+
+/// One picture in flight.
+#[derive(Debug)]
+struct InFlight {
+    surface: VASurfaceID,
+    coded: VABufferID,
+}
+
+/// An encoder over a context.
+#[derive(Debug)]
+pub struct Encoder<'a> {
+    context: &'a Context<'a>,
+    params: crate::h264::Params,
+    bitrate_bps: u32,
+    /// One coded buffer per surface, allocated once.
+    coded: Vec<VABufferID>,
+    next: usize,
+    pending: std::collections::VecDeque<InFlight>,
+    idr_pic_id: u16,
+    collected: Vec<u8>,
+}
+
+impl<'a> Context<'a> {
+    /// Build an encoder over this context.
+    pub fn encoder(&'a self, params: crate::h264::Params, bitrate_bps: u32) -> Result<Encoder<'a>> {
+        let va = self.display.va;
+        let display = self.display.raw;
+        // Generous: a keyframe of a hard scene is far larger than the average,
+        // and a coded buffer too small fails the picture rather than truncating
+        // it, which is the right failure but an avoidable one.
+        let size = params.width * params.height * 3 / 2;
+
+        let mut coded = Vec::with_capacity(self.surfaces.len());
+        for _ in 0..self.surfaces.len() {
+            let mut id: VABufferID = 0;
+            // SAFETY: no initial data, so the pointer is null and the count is
+            // one buffer of `size` bytes.
+            let status = unsafe {
+                (va.create_buffer)(
+                    display,
+                    self.context,
+                    crate::ffi::va::VAEncCodedBufferType,
+                    size,
+                    1,
+                    core::ptr::null_mut(),
+                    &raw mut id,
+                )
+            };
+            if let Err(error) = va.check(status) {
+                for done in &coded {
+                    // SAFETY: each was created above.
+                    unsafe { (va.destroy_buffer)(display, *done) };
+                }
+                return Err(error);
+            }
+            coded.push(id);
+        }
+
+        Ok(Encoder {
+            context: self,
+            params,
+            bitrate_bps,
+            coded,
+            next: 0,
+            pending: std::collections::VecDeque::new(),
+            idr_pic_id: 0,
+            collected: Vec::new(),
+        })
+    }
+}
+
+impl Encoder<'_> {
+    fn va(&self) -> &Vaapi {
+        self.context.display.va
+    }
+
+    fn display(&self) -> VADisplay {
+        self.context.display.raw
+    }
+
+    /// Create one parameter buffer holding `value`.
+    fn buffer<T>(&self, kind: VABufferType, value: &T) -> Result<VABufferID> {
+        let mut id: VABufferID = 0;
+        // SAFETY: the interface copies `size` bytes from the pointer during
+        // the call, and `value` is live for its duration.
+        let status = unsafe {
+            (self.va().create_buffer)(
+                self.display(),
+                self.context.context,
+                kind,
+                c_uint::try_from(size_of::<T>()).unwrap_or(0),
+                1,
+                (value as *const T as *mut T).cast(),
+                &raw mut id,
+            )
+        };
+        self.va().check(status)?;
+        Ok(id)
+    }
+
+    /// A packed header, which is two buffers: what it is, then what it says.
+    fn packed(
+        &self,
+        kind: u32,
+        bytes: &[u8],
+        bit_length: usize,
+    ) -> Result<(VABufferID, VABufferID)> {
+        let parameter = crate::ffi::va::VAEncPackedHeaderParameterBuffer {
+            type_: kind,
+            bit_length: u32::try_from(bit_length).unwrap_or(0),
+            // The escaping is already applied, and saying otherwise makes the
+            // driver apply it a second time.
+            has_emulation_bytes: 1,
+            va_reserved: [0; 4],
+        };
+        let head = self.buffer(
+            crate::ffi::va::VAEncPackedHeaderParameterBufferType,
+            &parameter,
+        )?;
+
+        let mut data: VABufferID = 0;
+        // SAFETY: the interface copies the bytes during the call.
+        let status = unsafe {
+            (self.va().create_buffer)(
+                self.display(),
+                self.context.context,
+                crate::ffi::va::VAEncPackedHeaderDataBufferType,
+                c_uint::try_from(bytes.len()).unwrap_or(0),
+                1,
+                bytes.as_ptr().cast_mut().cast(),
+                &raw mut data,
+            )
+        };
+        self.va().check(status)?;
+        Ok((head, data))
+    }
+
+    /// Encode one picture. Returns as soon as it is queued.
+    ///
+    /// Every picture here is a keyframe for now: the reference-picture
+    /// bookkeeping a predicted picture needs is the next piece, and shipping a
+    /// half-correct reference list would produce a stream that decodes into
+    /// progressively wrong output rather than failing.
+    pub fn submit(&mut self) -> Result<()> {
+        if self.pending.len() >= self.coded.len() {
+            return Err(Error::QueueFull);
+        }
+        let slot = self.next;
+        self.next = (self.next + 1) % self.coded.len();
+        let input = *self.context.surfaces.get(slot).ok_or(Error::NoEncoder)?;
+        let recon = *self.context.recon.get(slot).ok_or(Error::NoEncoder)?;
+        let coded = self.coded[slot];
+
+        // The picture is read from the input surface and reconstructed into
+        // its counterpart. The two are never the same surface.
+        // SAFETY: the display and context are live for the call.
+        let status =
+            unsafe { (self.va().begin_picture)(self.display(), self.context.context, input) };
+        self.va().check(status)?;
+
+        let mut seq =
+            unsafe { core::mem::zeroed::<crate::ffi::va::VAEncSequenceParameterBufferH264>() };
+        seq.level_idc = u8::try_from(self.params.level_idc).unwrap_or(42);
+        // The sequence has to declare the same thing the pictures do. Every
+        // picture here is an instantaneous refresh, so the refresh period is
+        // one; leaving it zero says "never" while each picture says "now", and
+        // the driver acts on the sequence's answer.
+        seq.intra_period = 1;
+        seq.intra_idr_period = 1;
+        seq.ip_period = 1;
+        seq.bits_per_second = self.bitrate_bps;
+        seq.max_num_ref_frames = self.params.max_num_ref_frames;
+        seq.picture_width_in_mbs = u16::try_from(self.params.width.div_ceil(16)).unwrap_or(0);
+        seq.picture_height_in_mbs = u16::try_from(self.params.height.div_ceil(16)).unwrap_or(0);
+        // SAFETY: the flags are a union of a bitfield view and a plain word.
+        // The structure was zeroed, so either view is a valid value of it, and
+        // only the bitfield view is used from here on.
+        unsafe {
+            let bits = &mut seq.seq_fields.bits;
+            bits.set_chroma_format_idc(1);
+            bits.set_frame_mbs_only_flag(1);
+            bits.set_direct_8x8_inference_flag(1);
+            bits.set_log2_max_frame_num_minus4(self.params.log2_max_frame_num_minus4);
+            bits.set_pic_order_cnt_type(0);
+            bits.set_log2_max_pic_order_cnt_lsb_minus4(self.params.log2_max_poc_lsb_minus4);
+        }
+        let bottom = (self.params.height.div_ceil(16) * 16 - self.params.height) / 2;
+        if bottom > 0 {
+            seq.frame_cropping_flag = 1;
+            seq.frame_crop_bottom_offset = bottom;
+        }
+        let seq_buffer = self.buffer(crate::ffi::va::VAEncSequenceParameterBufferType, &seq)?;
+
+        // **The rate the encoder actually runs at is carried here, not in the
+        // sequence parameters.** The sequence buffer has a field for it and
+        // one driver never reads that field, so a rate set only there leaves
+        // the encoder on its own default with nothing reporting a problem.
+        // The field above is kept because a different driver does read it.
+        #[repr(C)]
+        struct RateControl {
+            header: crate::ffi::va::VAEncMiscParameterBuffer,
+            rate: crate::ffi::va::VAEncMiscParameterRateControl,
+        }
+        // SAFETY: a plain-data header followed by its payload, which is the
+        // layout the interface specifies for this buffer. All-zero is a valid
+        // value of every field, and the ones that matter are set below.
+        let mut rate = unsafe { core::mem::zeroed::<RateControl>() };
+        rate.header.type_ = crate::ffi::va::VAEncMiscParameterTypeRateControl;
+        rate.rate.bits_per_second = self.bitrate_bps;
+        // A variable-rate target is this percentage of the peak above. Zero
+        // asks for a target of nothing, which is what a zeroed buffer says.
+        rate.rate.target_percentage = 100;
+        rate.rate.window_size = 1000;
+        let rate_buffer = self.buffer(crate::ffi::va::VAEncMiscParameterBufferType, &rate)?;
+
+        // **Both parameter sets go into one header of sequence type, and the
+        // picture type is never used at all.** The interface names a type per
+        // set, which invites one header each; a working encoder on this driver
+        // sends them together and never sends the picture type, and sending it
+        // is what the driver faults on while assembling the stream.
+        let mut sets = [0u8; 384];
+        let sps_len =
+            crate::h264::sequence_parameter_set(&self.params, &mut sets).ok_or(Error::NoEncoder)?;
+        let pps_len =
+            crate::h264::picture_parameter_set(sets.get_mut(sps_len..).ok_or(Error::NoEncoder)?)
+                .ok_or(Error::NoEncoder)?;
+        let sets_len = sps_len + pps_len;
+        let (sets_head, sets_data) = self.packed(
+            crate::ffi::va::VAEncPackedHeaderSequence,
+            &sets[..sets_len],
+            sets_len * 8,
+        )?;
+
+        let mut pic =
+            unsafe { core::mem::zeroed::<crate::ffi::va::VAEncPictureParameterBufferH264>() };
+        pic.CurrPic.picture_id = recon;
+        pic.CurrPic.frame_idx = 0;
+        pic.CurrPic.TopFieldOrderCnt = 0;
+        pic.CurrPic.BottomFieldOrderCnt = pic.CurrPic.TopFieldOrderCnt;
+        // Unused entries must be marked invalid, not left zero: zero is a
+        // valid surface identifier and the driver would follow it.
+        for entry in &mut pic.ReferenceFrames {
+            entry.picture_id = crate::ffi::va::VA_INVALID_SURFACE;
+            entry.flags = crate::ffi::va::VA_PICTURE_H264_INVALID;
+        }
+        pic.coded_buf = coded;
+        pic.frame_num = 0;
+        pic.pic_init_qp = 26;
+        // SAFETY: as above, a zeroed union accessed only through one view.
+        unsafe {
+            let bits = &mut pic.pic_fields.bits;
+            bits.set_idr_pic_flag(1);
+            bits.set_reference_pic_flag(1);
+            bits.set_entropy_coding_mode_flag(1);
+            bits.set_deblocking_filter_control_present_flag(1);
+            bits.set_transform_8x8_mode_flag(1);
+        }
+        let pic_buffer = self.buffer(crate::ffi::va::VAEncPictureParameterBufferType, &pic)?;
+
+        let mut slice =
+            unsafe { core::mem::zeroed::<crate::ffi::va::VAEncSliceParameterBufferH264>() };
+        slice.num_macroblocks = self.params.width.div_ceil(16) * self.params.height.div_ceil(16);
+        // Two is an intra slice; the predicted types come with the reference
+        // bookkeeping.
+        slice.slice_type = 2;
+        // Alternates so two consecutive refreshes are distinguishable, which
+        // is what the field is for.
+        slice.idr_pic_id = self.idr_pic_id;
+        slice.pic_order_cnt_lsb = 0;
+        for entry in slice
+            .RefPicList0
+            .iter_mut()
+            .chain(slice.RefPicList1.iter_mut())
+        {
+            entry.picture_id = crate::ffi::va::VA_INVALID_SURFACE;
+            entry.flags = crate::ffi::va::VA_PICTURE_H264_INVALID;
+        }
+        let slice_buffer = self.buffer(crate::ffi::va::VAEncSliceParameterBufferType, &slice)?;
+
+        // **The driver expects one of these per picture once packed headers
+        // are in use.** Without it there is no slice header to emit and the
+        // stream cannot be assembled, which is a fault inside the driver
+        // rather than a status.
+        let mut header = [0u8; 64];
+        let written =
+            crate::h264::idr_slice_header(&self.params, &mut header).ok_or(Error::NoEncoder)?;
+        let (header_head, header_data) = self.packed(
+            crate::ffi::va::VAEncPackedHeaderSlice,
+            &header[..written.bytes_written],
+            written.bit_length,
+        )?;
+
+        // The order is load bearing twice over. The parameter sets declare the
+        // field widths the slice header is then read with, and the picture
+        // buffer decides which fields the slice header is expected to carry at
+        // all, so both precede it.
+        let mut buffers = [
+            seq_buffer,
+            rate_buffer,
+            sets_head,
+            sets_data,
+            pic_buffer,
+            slice_buffer,
+            header_head,
+            header_data,
+        ];
+
+        // SAFETY: the list is readable for its length.
+        let status = unsafe {
+            (self.va().render_picture)(
+                self.display(),
+                self.context.context,
+                buffers.as_mut_ptr(),
+                c_int::try_from(buffers.len()).unwrap_or(0),
+            )
+        };
+        let rendered = self.va().check(status);
+
+        // SAFETY: the picture began above.
+        let status = unsafe { (self.va().end_picture)(self.display(), self.context.context) };
+        let ended = self.va().check(status);
+
+        // **These come back to us once the picture is closed.** The interface
+        // reads them during the render and does not take them; left alone they
+        // accumulate for the life of the context, eight per picture. Released
+        // on the failing paths too, because a render that got as far as a
+        // status still consumed them.
+        for id in buffers {
+            // SAFETY: each came from a successful create above and is
+            // destroyed once.
+            unsafe { (self.va().destroy_buffer)(self.display(), id) };
+        }
+        rendered?;
+        ended?;
+
+        // **Every picture here is an instantaneous refresh, so neither
+        // counter advances.** A refresh resets both by definition: it carries
+        // frame number zero and restarts the picture order. Incrementing them
+        // while still flagging each picture as a refresh states two
+        // contradictory things, and the driver acts on the contradiction
+        // rather than rejecting it. Both counters start moving when predicted
+        // pictures do.
+        self.idr_pic_id ^= 1;
+        self.pending.push_back(InFlight {
+            surface: input,
+            coded,
+        });
+        Ok(())
+    }
+
+    /// Collect a finished picture, or report that none is ready.
+    ///
+    /// **Asks rather than waits, where the runtime allows it.** From interface
+    /// 1.15 the coded buffer can be synchronised with a timeout, and zero makes
+    /// it a probe. Older runtimes offer only a surface synchronise, which
+    /// blocks, and that is reported honestly by the capability below rather
+    /// than hidden.
+    pub fn poll(&mut self) -> Result<Poll<'_>> {
+        let Some(head) = self.pending.front() else {
+            return Ok(Poll::Pending);
+        };
+        let (surface, coded) = (head.surface, head.coded);
+
+        if let Some(sync) = self.va().sync_buffer {
+            // SAFETY: the buffer is live. Zero timeout: ask, do not wait.
+            let status = unsafe { sync(self.display(), coded, 0) };
+            if status == crate::ffi::va::VA_STATUS_ERROR_TIMEDOUT as VAStatus {
+                return Ok(Poll::Pending);
+            }
+            self.va().check(status)?;
+        } else {
+            // SAFETY: the surface is live. This one blocks; see the note.
+            let status = unsafe { (self.va().sync_surface)(self.display(), surface) };
+            self.va().check(status)?;
+        }
+
+        let mut mapped: *mut core::ffi::c_void = core::ptr::null_mut();
+        // SAFETY: the buffer is live and the out pointer is a live local.
+        let status = unsafe { (self.va().map_buffer)(self.display(), coded, &raw mut mapped) };
+        self.va().check(status)?;
+
+        self.collected.clear();
+        let mut segment = mapped.cast::<crate::ffi::va::VACodedBufferSegment>();
+        // The output is a chain, not one block. Reading only the first segment
+        // truncates a picture that happened to span two, which shows up on
+        // large frames alone.
+        while !segment.is_null() {
+            // SAFETY: the interface guarantees the chain while mapped.
+            let entry = unsafe { &*segment };
+            if !entry.buf.is_null() {
+                // SAFETY: the segment reports `size` readable bytes at `buf`.
+                let bytes = unsafe {
+                    core::slice::from_raw_parts(entry.buf.cast::<u8>(), entry.size as usize)
+                };
+                self.collected.extend_from_slice(bytes);
+            }
+            segment = entry.next.cast();
+        }
+
+        // SAFETY: balances the map above.
+        unsafe { (self.va().unmap_buffer)(self.display(), coded) };
+        self.pending.pop_front();
+
+        Ok(Poll::Ready {
+            bitstream: &self.collected,
+        })
+    }
+
+    /// True when the collect can ask rather than wait.
+    pub fn collect_is_a_probe(&self) -> bool {
+        self.va().sync_buffer.is_some()
+    }
+
+    pub fn in_flight(&self) -> usize {
+        self.pending.len()
+    }
+}
+
+impl Drop for Encoder<'_> {
+    fn drop(&mut self) {
+        let va = self.context.display.va;
+        let display = self.context.display.raw;
+        for id in &self.coded {
+            // SAFETY: each came from a successful create.
+            unsafe { (va.destroy_buffer)(display, *id) };
         }
     }
 }

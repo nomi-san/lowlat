@@ -28,8 +28,37 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   fields, trailing bits, and start-code escaping.
 - The sequence and picture parameter sets themselves, carrying the colour
   description one backend has no other way to state.
+- The second backend's encode path: a picture is submitted, the parameter sets
+  and the slice header travel with it as packed headers, and a finished picture
+  is collected as a probe rather than a wait.
 
 **Notes**
+
+- **A picture is read from one surface and reconstructed into another, and the
+  two are never the same.** The interface takes a surface at the start of a
+  picture and a second one in the picture parameters, and it is tempting to
+  pass the same identifier to both, because for a stream of independently
+  coded pictures there is no reconstruction to keep. That is wrong: as the
+  driver takes a surface into its reference store for the first time it
+  releases the buffer backing it and allocates a replacement, and the pointer
+  it encodes from was captured at the start of the picture. It then encodes
+  from freed memory. The first picture tends to survive, because a replacement
+  allocated immediately after a release usually lands on the same block, so
+  the failure presents as an intermittent fault a few pictures in with nothing
+  in the call chain naming a surface. Two pools, paired by index, and the
+  question does not arise. The context test asserts the pools are disjoint.
+- **The bitrate does not travel in the sequence parameters.** That structure
+  has a field for it, and one driver never reads that field; it takes the rate
+  only from a separate rate-control parameter, and silently runs on its own
+  default otherwise. The field is still filled because another driver does read
+  it, but the rate-control parameter is what makes it true. This is what the
+  congestion actuator will drive, so a rate that is quietly ignored would have
+  been discovered much later and at much greater cost.
+- **Parameter buffers are the caller's to release.** They are read while the
+  picture is being assembled and are not consumed by it, so the eight a picture
+  carries accumulate for the life of the context until they are destroyed
+  after the picture closes. They are released on the failing paths too: a call
+  that got far enough to return a status has already read them.
 
 - **The vendored headers are pinned to an old interface version on purpose.**
   Every encoder structure carries a version stamp taken from the header it was
