@@ -76,6 +76,10 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - Live diagnostics on a streaming guest: what it declared, what it is being
   sent, and what it is still sending back.
 
+- A peer that says it is leaving is taken at its word: the control channel
+  carries the notice, and the seat, the port and the share of the bitrate
+  budget come back at once rather than two minutes later.
+
 **Notes on the first stock client to render our frames**
 
 - **The session was keyed from the media key alone**, discarding the four-byte
@@ -97,6 +101,11 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - **Every frame we have sent fits in a single fragment**: median 129 bytes,
   largest 868, over four hundred access units. The multi-fragment path is
   covered by tests and by the corpus comparison and has never met a real peer.
+- **Nothing in signalling reports a peer closing a session it was using**, but
+  the peer itself does, on the control channel, and we were ignoring it. The
+  seat, the port and the share of the bitrate budget were held until the media
+  path's two-minute liveness deadline noticed, which is what made repeated test
+  connections exhaust capacity.
 
 **Notes on the timing, and the loop shape it forced**
 

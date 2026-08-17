@@ -344,10 +344,31 @@ refresh that recovers it.
 
 0. Both hardware backends encode the same synthetic source, so the trait is shaped by two
    implementations rather than one.
-1. [~] **A stock client connects and renders our synthetic frames**, 1080p60, for 10 minutes, with
-   no corruption and no freeze beyond the loss budget. *A stock client rendered our frames on
-   2026-08-17. The ten-minute soak and the corruption and freeze budgets are still to be run,
-   so this is first light rather than the closed item.*
+1. [x] **A stock client connects and renders our synthetic frames**, 1080p60, for 10 minutes, with
+   no corruption and no freeze beyond the loss budget. *Passed 2026-08-18, 640 seconds
+   continuous:*
+
+   | Measured at the client | |
+   |---|---|
+   | frame rate | min 59.6, median 60.0, **not one sample below 59** |
+   | decode | 0.9 to 1.3 ms |
+   | packet loss over 30 s | 0.00 percent, throughout |
+   | retransmissions | zero, fast and slow both |
+   | frames dropped from its queue | zero |
+   | shutdown | clean |
+
+   | Measured at the host, same run | |
+   |---|---|
+   | frames delivered | 39235 |
+   | send window | 0 to 1 for the whole run |
+   | stale fragments | zero |
+   | refreshes the peer asked for | zero |
+   | encode, capture to collected | 3.3 ms median |
+
+   *A send window of zero to one across ten minutes is the strongest single line here: every
+   fragment was acknowledged before the next frame was ready, so nothing in the delivery gate,
+   the pool or the retransmission path was ever under pressure. Three decoder backends render
+   the stream; a fourth refuses it, which is the open item below.*
 
    **Three faults stood between the loop and a picture, and only the first was ours.**
 

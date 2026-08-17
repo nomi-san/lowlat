@@ -117,6 +117,15 @@ pub enum Outcome {
     /// media path rather than from signaling, because a peer that closes a
     /// session it was using does not withdraw its offer.
     PeerGone,
+    /// The peer said it was leaving, on the control channel.
+    ///
+    /// **Distinct from [`Outcome::PeerGone`], and it is the difference between
+    /// a seat freed now and a seat freed two minutes from now.** Signaling
+    /// carries nothing when a peer closes a session it was using, so without
+    /// this the only thing that notices is the media path's liveness deadline,
+    /// and the guest's port and its share of the bitrate budget stay spent
+    /// until then. Repeated test connections exhaust capacity that way.
+    PeerLeft,
     /// Connected, then never said what it could decode.
     ///
     /// Distinct from [`Outcome::PeerGone`] on purpose: a peer that reached us
@@ -521,6 +530,11 @@ fn drain_control(
         let Ok(message) = control::parse(content) else {
             continue;
         };
+        // **A peer that is leaving says so here.** Nothing in signaling
+        // reports it, so this message is the only prompt notice there is.
+        if message.opcode == control::op::DISCONNECT {
+            return Err(Outcome::PeerLeft);
+        }
         // Input is the other thing on this channel and belongs to Phase 7.
         // Until then an opcode the negotiation does not want is dropped.
         let _ = negotiation.on_control(&message);
