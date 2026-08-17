@@ -1420,7 +1420,10 @@ mod geometry {
         let parsed = lowlat_core::video::parse(head).expect("a video header");
         assert_eq!((parsed.width, parsed.height), (1920, 1080));
         assert_eq!(parsed.rotation, lowlat_core::video::Rotation::None);
-        assert!(parsed.keyframe, "the refresh flag did not survive");
+        assert!(
+            !parsed.ten_bit,
+            "an eight-bit stream claimed ten-bit colour on the wire"
+        );
         assert_eq!(body, unit, "the bitstream did not arrive intact");
     }
 

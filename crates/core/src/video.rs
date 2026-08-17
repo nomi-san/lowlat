@@ -22,7 +22,21 @@ use crate::error::{Error, Result};
 pub const VIDEO_HEADER_LEN: usize = 10;
 
 const ROTATION_MASK: u8 = 0x07;
-const FLAG_KEYFRAME: u8 = 0x08;
+/// **Ten-bit colour, and it is not a keyframe marker.**
+///
+/// A receiver builds its decoder for the depth this bit names, before any
+/// bitstream is parsed. Setting it on an eight-bit stream makes one decoder
+/// family initialise for ten-bit and fail every picture, which is reported as
+/// a decode error rather than as a mismatch, and hardware that cannot decode
+/// ten-bit at all fails at the first submission.
+///
+/// It was read as a keyframe flag here until a peer was found refusing our
+/// stream over it. The recording said so all along: a host leaves it clear on
+/// every message including its own keyframes, which is inexplicable for a
+/// keyframe marker and exactly right for a depth that stream does not use.
+const FLAG_TEN_BIT: u8 = 0x08;
+/// Believed to be full screen. **Never set by us and never observed set**, so
+/// it carries the same doubt the bit above turned out to deserve.
 const FLAG_FULLSCREEN: u8 = 0x10;
 const RESERVED_BYTE: u8 = 0x01;
 
@@ -75,10 +89,10 @@ pub struct VideoHeader {
     pub width: u16,
     pub height: u16,
     pub rotation: Rotation,
-    /// As received this is unreliable: peers leave it clear on every frame,
-    /// keyframes included. Use [`is_keyframe`] instead. We do set it when
-    /// sending.
-    pub keyframe: bool,
+    /// **Ten-bit colour.** A receiver builds its decoder for this depth before
+    /// parsing any bitstream, so it must describe the stream and nothing else.
+    /// We emit eight-bit and therefore never set it.
+    pub ten_bit: bool,
     pub fullscreen: bool,
 }
 
@@ -119,7 +133,7 @@ pub fn parse(content: &[u8]) -> Result<VideoHeader> {
         width,
         height,
         rotation: Rotation::from_bits(flags),
-        keyframe: flags & FLAG_KEYFRAME != 0,
+        ten_bit: flags & FLAG_TEN_BIT != 0,
         fullscreen: flags & FLAG_FULLSCREEN != 0,
     })
 }
@@ -130,8 +144,8 @@ pub fn encode(out: &mut [u8], header: &VideoHeader) -> Result<usize> {
         .get_mut(..VIDEO_HEADER_LEN)
         .ok_or(Error::BufferTooSmall)?;
     let mut flags = header.rotation as u8;
-    if header.keyframe {
-        flags |= FLAG_KEYFRAME;
+    if header.ten_bit {
+        flags |= FLAG_TEN_BIT;
     }
     if header.fullscreen {
         flags |= FLAG_FULLSCREEN;
@@ -146,16 +160,11 @@ pub fn encode(out: &mut [u8], header: &VideoHeader) -> Result<usize> {
 
 /// Classify a video message as a keyframe.
 ///
-/// Checks the header bit first, then falls back to the bitstream. **The
-/// fallback is the path that actually fires**: peers leave the bit clear on
-/// every frame, so a receiver trusting it alone sees zero keyframes forever.
+/// **From the bitstream, and only from the bitstream.** No header bit carries
+/// this: the one that was read as a keyframe marker names the colour depth
+/// instead, so a receiver consulting it would call every ten-bit frame a
+/// keyframe and every eight-bit keyframe a predicted frame.
 pub fn is_keyframe(content: &[u8], codec: Codec) -> bool {
-    let Some(&flags) = content.get(9) else {
-        return false;
-    };
-    if flags & FLAG_KEYFRAME != 0 {
-        return true;
-    }
     let Some(bitstream) = content.get(VIDEO_HEADER_LEN..) else {
         return false;
     };
@@ -195,7 +204,7 @@ mod tests {
             width: 1920,
             height: 1080,
             rotation: Rotation::from_bits(flags),
-            keyframe: flags & FLAG_KEYFRAME != 0,
+            ten_bit: flags & FLAG_TEN_BIT != 0,
             fullscreen: flags & FLAG_FULLSCREEN != 0,
         };
         encode(&mut buf, &header).unwrap();
@@ -210,7 +219,7 @@ mod tests {
             width: 1920,
             height: 1080,
             rotation: Rotation::None,
-            keyframe: true,
+            ten_bit: true,
             fullscreen: false,
         };
         let mut buf = [0u8; 16];
@@ -219,7 +228,7 @@ mod tests {
         assert_eq!(&buf[4..6], &1920u16.to_le_bytes());
         assert_eq!(&buf[6..8], &1080u16.to_le_bytes());
         assert_eq!(buf[8], RESERVED_BYTE);
-        assert_eq!(buf[9], Rotation::None as u8 | FLAG_KEYFRAME);
+        assert_eq!(buf[9], Rotation::None as u8 | FLAG_TEN_BIT);
         assert_eq!(parse(&buf).unwrap(), header);
     }
 
@@ -243,7 +252,7 @@ mod tests {
             width: 1920,
             height: 1080,
             rotation: Rotation::None,
-            keyframe: false,
+            ten_bit: false,
             fullscreen: false,
         };
         assert_eq!(header.display_dimensions(), (1920, 1080));
@@ -295,13 +304,49 @@ mod tests {
         ));
     }
 
+    /// **The bit beside the rotation is the colour depth, not a keyframe.**
+    /// A receiver that reads it as a keyframe calls every ten-bit predicted
+    /// frame a keyframe, and a sender that writes it on its keyframes tells
+    /// every receiver its eight-bit stream is ten-bit. One decoder family acts
+    /// on that before parsing a single byte of bitstream, builds itself for a
+    /// depth the stream does not carry, and fails every picture; hardware
+    /// without ten-bit support fails at the first submission.
+    /// *Named regression test.*
     #[test]
-    fn honours_the_header_bit_when_a_peer_does_set_it() {
-        let flags = Rotation::None as u8 | FLAG_KEYFRAME;
-        assert!(is_keyframe(
+    fn the_ten_bit_flag_is_not_a_keyframe_marker() {
+        let flags = Rotation::None as u8 | FLAG_TEN_BIT;
+        // A predicted slice, with the depth bit set. It is still predicted.
+        assert!(!is_keyframe(
             &content(flags, &[0, 0, 0, 1, 0x41]),
             Codec::H264
         ));
+        // And a refresh is still a refresh with the bit clear, which is how
+        // every recorded host sends one.
+        let upright = Rotation::None as u8;
+        assert!(is_keyframe(
+            &content(upright, &[0, 0, 0, 1, 0x65]),
+            Codec::H264
+        ));
+    }
+
+    /// Nothing we emit sets it, because this stream is eight bit.
+    #[test]
+    fn a_sent_header_never_claims_ten_bit() {
+        let mut buf = [0u8; 16];
+        let header = VideoHeader {
+            frame_id: 1,
+            width: 1920,
+            height: 1080,
+            rotation: Rotation::None,
+            ten_bit: false,
+            fullscreen: false,
+        };
+        encode(&mut buf, &header).expect("encode");
+        assert_eq!(
+            buf[9] & FLAG_TEN_BIT,
+            0,
+            "an eight-bit stream claimed ten-bit colour"
+        );
     }
 
     #[test]

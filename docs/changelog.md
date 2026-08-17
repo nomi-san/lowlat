@@ -80,6 +80,28 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   carries the notice, and the seat, the port and the share of the bitrate
   budget come back at once rather than two minutes later.
 
+- The video header's third flag bit is the colour depth, not a keyframe
+  marker, and we no longer set it.
+
+**Notes on the flag that was not a keyframe**
+
+- **A peer built a ten-bit decoder for our eight-bit stream and failed every
+  picture**, on one decoder family out of four. We set that bit on every
+  keyframe because this project's own protocol document called it a keyframe
+  flag and argued that setting it was more informative and free.
+- **The evidence against that reading was already in the same paragraph.**
+  Across 4883 recorded video messages the flags byte was identical on every
+  one, including the two whose first unit was a parameter set. A host that
+  never sets the bit on its own keyframes is not describing keyframes with it.
+  The document noticed the pattern, concluded that peers are unreliable about
+  a keyframe flag, and then licensed us to set it anyway.
+- **Only one decoder family reads it**, so three rendered our stream happily
+  and the fourth reported a decode error rather than a mismatch. That is what
+  made it look like a defect on the peer's side.
+- Keyframes are now classified from the bitstream and from nowhere else. The
+  classifier used to check the bit first, which would have called every
+  ten-bit predicted frame a keyframe.
+
 **Notes on the first stock client to render our frames**
 
 - **The session was keyed from the media key alone**, discarding the four-byte

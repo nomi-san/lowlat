@@ -37,7 +37,11 @@ impl Packetiser {
                 width,
                 height,
                 rotation,
-                keyframe: false,
+                // **Never set.** The bit next to the rotation names ten-bit
+                // colour, and a receiver builds its decoder for the depth it
+                // names before any bitstream is parsed. This stream is eight
+                // bit.
+                ten_bit: false,
                 // Not set: this stream is a desktop, not a fullscreen capture
                 // of one application, and the flag is the peer's cue to change
                 // how it presents.
@@ -64,13 +68,17 @@ impl Packetiser {
 
     /// The header for one coded access unit, ready to precede it on the wire.
     ///
-    /// **The keyframe flag is set when it is true.** Peers leave it clear on
-    /// every frame including keyframes, so a receiver cannot rely on it and
-    /// ours sniffs the bitstream instead. Setting it is still right: it is
-    /// strictly more informative and costs nothing, and a peer that does read
-    /// it is better served.
-    pub fn header(&mut self, keyframe: bool) -> Option<&[u8]> {
-        self.header.keyframe = keyframe;
+    /// **Nothing in the header says which pictures are keyframes, and nothing
+    /// should.** The bit that was read as a keyframe marker names the colour
+    /// depth, so setting it on a keyframe tells a receiver the stream is ten
+    /// bit; one decoder family then builds itself for ten bit and fails every
+    /// picture, and hardware that cannot decode ten bit at all fails at the
+    /// first submission. A receiver classifies keyframes from the bitstream,
+    /// which is what ours does and what every recorded host requires.
+    ///
+    /// The argument is kept so callers read as they did; it names the picture
+    /// for the caller's sake and changes nothing in the bytes.
+    pub fn header(&mut self, _keyframe: bool) -> Option<&[u8]> {
         encode(&mut self.bytes, &self.header).ok()?;
         Some(&self.bytes)
     }
@@ -134,7 +142,11 @@ mod tests {
         assert_eq!(header.width, 1920);
         assert_eq!(header.height, 1080);
         assert_eq!(header.rotation, Rotation::None);
-        assert!(header.keyframe, "the flag we do set was not set");
+        // **Never set, whatever the picture is.** It names the colour depth.
+        assert!(
+            !header.ten_bit,
+            "an eight-bit stream claimed ten-bit colour"
+        );
         assert!(!header.fullscreen);
         assert_eq!(header.frame_id, 1);
     }

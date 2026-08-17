@@ -443,7 +443,7 @@ channel, with a 10-byte header ahead of the bitstream:
 | 8 | 1 | reserved, `0x01` |
 | 9 | 1 | flags |
 
-Flags: bits 0 to 2 rotation, bit 3 keyframe, bit 4 fullscreen.
+Flags: bits 0 to 2 rotation, **bit 3 ten-bit colour**, bit 4 believed to be full screen.
 
 Note the endianness change. Sequence numbers and message lengths are big endian; these fields
 are little endian. Getting this backwards produces a plausible-looking frame with absurd
@@ -455,13 +455,26 @@ Three traps, all of which have cost time already.
 for an unrotated display is emitting "unknown", not "none". Conversely a receiver that reads
 `0x01` and concludes the display is rotated has misread it by one; a quarter turn is `2`.
 
-**The keyframe bit is not reliable on receive.** Stock hosts leave it clear on every frame,
-including keyframes. Confirmed across a 112 second recording covering 4883 video messages: the
-flags byte was `0x01` on every single one, including both frames whose first unit was a
-parameter set. So a receiver must classify keyframes from the bitstream, by finding the start
-code and testing the unit type for a parameter set or an instantaneous refresh. Check the bit
-first in case some peer does set it, but never rely on it alone. **As a host we do set it**,
-since it is strictly more informative and costs nothing.
+**Nothing in the header says which pictures are keyframes.** A receiver classifies them from
+the bitstream, by finding the start code and testing the unit type for a parameter set or an
+instantaneous refresh. There is no bit to check first.
+
+**Correction (2026-08-18).** This section previously called bit 3 a keyframe flag and said a
+host should set it because doing so was more informative and free. **Bit 3 is the colour
+depth: set means ten-bit.** A receiver builds its decoder for the depth that bit names before
+parsing any bitstream, so setting it on an eight-bit stream makes one decoder family
+initialise for ten-bit and fail every picture, and hardware with no ten-bit support fails at
+the first submission. It is reported as a decode failure rather than as a mismatch, and only
+that one decoder family is affected, so it presents as a peer-specific defect.
+
+The evidence was already in this section and was read backwards: across 4883 video messages
+the flags byte was `0x01` on every one, **including both messages whose first unit was a
+parameter set**. A host that never sets the bit on its own keyframes cannot be describing
+keyframes with it; an eight-bit host never setting a ten-bit flag is exactly what it looks
+like. **We never set it.**
+
+Bit 4, called full screen above, has never been observed set either, and now carries the same
+doubt. Nothing turns on it while we leave it clear.
 
 **The frame identifier is not a frame counter.** It is an encoder generation counter and stays
 constant across a whole session's frames, incrementing only when the encoder is reconfigured.

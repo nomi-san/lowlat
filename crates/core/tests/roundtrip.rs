@@ -157,7 +157,7 @@ fn video_headers_round_trip() {
             width: rng.below(0xFFFF) as u16,
             height: rng.below(0xFFFF) as u16,
             rotation: video::Rotation::from_bits(rng.byte()),
-            keyframe: rng.next() & 1 == 0,
+            ten_bit: rng.next() & 1 == 0,
             fullscreen: rng.next() & 1 == 0,
         };
         video::encode(&mut buf, &header).expect("encode");
