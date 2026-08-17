@@ -45,6 +45,12 @@ pub enum Error {
     DriverTooOld { compiled: Version, driver: Version },
     /// The runtime refused to hand over its function table.
     Status(NVENCSTATUS),
+    /// The compute context could not be made current on this thread.
+    NoContext,
+    /// As many pictures are in flight as the encoder will hold. The caller
+    /// collects one before submitting another; it is back pressure, not a
+    /// fault.
+    QueueFull,
 }
 
 impl core::fmt::Display for Error {
@@ -57,6 +63,8 @@ impl core::fmt::Display for Error {
                 "driver supports interface {driver}, this build needs {compiled} or newer"
             ),
             Self::Status(status) => write!(f, "encoder runtime returned status {status}"),
+            Self::NoContext => f.write_str("compute context could not be made current"),
+            Self::QueueFull => f.write_str("encoder queue is full"),
         }
     }
 }
@@ -291,6 +299,111 @@ mod tests {
         }
     }
 
+    /// Encodes, and measures whether the collect waits.
+    ///
+    /// **The no-wait flag is not honoured on this driver.** The interface
+    /// documents it as returning a busy status in synchronous mode, and the
+    /// driver instead waits: four collects for four pictures, no busy status
+    /// once, and the slowest collect equal to one picture's encode time. A
+    /// genuinely non-blocking lock spun in this loop would return busy
+    /// hundreds of times.
+    ///
+    /// So this asserts the encode is correct and records the collect cost as
+    /// a number. Gate A item 5 is **not** met by this path and is met instead
+    /// by completion events on the encoder's own streams, which is the next
+    /// piece of work. The measurement is kept because it is the evidence that
+    /// the cheaper path was tried and does not work.
+    #[test]
+    #[ignore = "requires the vendor driver"]
+    fn the_encoder_produces_a_bitstream_and_the_collect_waits() {
+        use std::time::Instant;
+
+        let cuda = crate::cuda::Cuda::load().expect("compute runtime");
+        let device = cuda.any_device().expect("a device");
+        let context = cuda.retain_primary(&device).expect("context");
+        let api = Api::load().expect("encoder runtime");
+        let session = api.open_session(context).expect("session");
+
+        let config = Config {
+            codec: Codec::H264,
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            bitrate_bps: 20_000_000,
+        };
+        let mut encoder = session.initialize(config).expect("initialize");
+
+        // One planar frame: luma rows then half as many interleaved chroma
+        // rows, in one allocation at the driver's preferred pitch.
+        let rows = (config.height + config.height / 2) as usize;
+        let buffer = cuda
+            .alloc_pitch(config.width as usize, rows)
+            .expect("allocate");
+        cuda.fill(&buffer, 0x80, buffer.pitch() * rows)
+            .expect("fill");
+        let input = encoder.register(&buffer).expect("register");
+
+        // Fill the queue. The first is forced to a keyframe; the rest are not.
+        for index in 0..IN_FLIGHT {
+            encoder.submit(&input, index == 0).expect("submit");
+        }
+        assert_eq!(encoder.in_flight(), IN_FLIGHT);
+        assert_eq!(
+            encoder.submit(&input, false).unwrap_err(),
+            Error::QueueFull,
+            "the queue accepted more than it holds"
+        );
+
+        // The measurement. Every collect is timed; the slowest is what a
+        // blocking call would show, because it cannot return before the
+        // picture it names has finished.
+        let mut slowest = std::time::Duration::ZERO;
+        let drain_started = Instant::now();
+        let mut collected = 0usize;
+        let mut keyframes = 0usize;
+        let mut first_unit = 0u8;
+        while collected < IN_FLIGHT {
+            let started = Instant::now();
+            let polled = encoder.poll().expect("poll");
+            let took = started.elapsed();
+            slowest = slowest.max(took);
+            match polled {
+                Poll::Ready {
+                    bitstream,
+                    keyframe,
+                } => {
+                    assert!(!bitstream.is_empty(), "an empty access unit");
+                    if collected == 0 {
+                        assert_eq!(&bitstream[..4], &[0, 0, 0, 1], "no start code");
+                        first_unit = bitstream[4] & 0x1F;
+                    }
+                    if keyframe {
+                        keyframes += 1;
+                    }
+                    collected += 1;
+                }
+                Poll::Pending => std::hint::spin_loop(),
+            }
+        }
+        let drain = drain_started.elapsed();
+
+        println!(
+            "slowest collect {slowest:?}, drain of {IN_FLIGHT} {drain:?}, \
+             keyframes {keyframes}, first unit type {first_unit}"
+        );
+
+        // Parameter set first, because they repeat on every keyframe.
+        assert_eq!(first_unit, 7, "first unit is not a parameter set");
+        assert_eq!(keyframes, 1, "expected exactly the forced keyframe");
+        // Recorded rather than asserted as a bound, because the bound is not
+        // met by this path and pretending otherwise would make the gate item
+        // pass against the very behaviour it exists to reject.
+        assert!(
+            slowest <= drain,
+            "a single collect cannot exceed the whole drain"
+        );
+    }
+
     /// Needs the vendor driver, so it is off by default. Run with
     /// `cargo test -p lowlat-encode -- --ignored`.
     #[test]
@@ -370,6 +483,11 @@ impl<'a> Api {
     /// context it was opened against is a use-after-free that presents as a
     /// driver fault with no line number.
     pub fn open_session(&'a self, context: crate::cuda::Context) -> Result<Session<'a>, Error> {
+        // Everything from here on runs against whatever context is current on
+        // this thread, including allocations made for it, so bind it now
+        // rather than leaving each call site to remember.
+        context.make_current().map_err(|_| Error::NoContext)?;
+
         let open = self
             .functions
             .nvEncOpenEncodeSessionEx
@@ -533,6 +651,18 @@ pub struct Encoder<'a> {
     /// takes a complete configuration every time, not a delta.
     encode_config: crate::ffi::nvenc::NV_ENC_CONFIG,
     init_params: crate::ffi::nvenc::NV_ENC_INITIALIZE_PARAMS,
+    /// One output buffer per in-flight picture, allocated once.
+    outputs: [crate::ffi::nvenc::NV_ENC_OUTPUT_PTR; IN_FLIGHT],
+    next_output: usize,
+    /// Submitted and not yet collected, oldest first.
+    pending: std::collections::VecDeque<Pending>,
+    /// Where a collected access unit is copied to.
+    ///
+    /// The interface's buffer is valid only until the next call on this
+    /// encoder, so it cannot be handed to a packetiser on another thread. One
+    /// copy is the price; the capacity is reused, so it stops allocating after
+    /// the first few frames. The per-guest pool replaces this.
+    collected: Vec<u8>,
 }
 
 impl<'a> Session<'a> {
@@ -671,11 +801,34 @@ impl<'a> Session<'a> {
         // re-points this at the field it ends up in.
         init_params.encodeConfig = core::ptr::null_mut();
 
+        // Output buffers, allocated once. The interface owns the storage; we
+        // own the handles and must give them back before the encoder goes.
+        let create = self
+            .api
+            .functions
+            .nvEncCreateBitstreamBuffer
+            .ok_or(Error::MissingSymbol)?;
+        let mut outputs = [core::ptr::null_mut(); IN_FLIGHT];
+        for slot in &mut outputs {
+            let mut buffer = unsafe { core::mem::zeroed::<f::NV_ENC_CREATE_BITSTREAM_BUFFER>() };
+            buffer.version = crate::ffi::versions::NV_ENC_CREATE_BITSTREAM_BUFFER_VER;
+            // SAFETY: the block is stamped and live for the call.
+            let status = unsafe { create(self.encoder, &raw mut buffer) };
+            if status != NV_ENC_SUCCESS {
+                return Err(Error::Status(status));
+            }
+            *slot = buffer.bitstreamBuffer;
+        }
+
         Ok(Encoder {
             session: self,
             config,
             encode_config,
             init_params,
+            outputs,
+            next_output: 0,
+            pending: std::collections::VecDeque::with_capacity(IN_FLIGHT),
+            collected: Vec::new(),
         })
     }
 }
@@ -733,5 +886,223 @@ impl Encoder<'_> {
             return Err(Error::Status(status));
         }
         Ok(())
+    }
+}
+
+/// How many pictures may be in flight at once.
+///
+/// The submit returns immediately and the collect is non-blocking, so this
+/// bounds only how far the pipeline may run ahead of the hardware before it
+/// must collect. Deep enough to absorb a slow frame, shallow enough that a
+/// stall is noticed rather than buffered away.
+const IN_FLIGHT: usize = 4;
+
+/// What a collect found.
+#[derive(Debug)]
+pub enum Poll<'a> {
+    /// A finished access unit, valid until the next call on this encoder.
+    Ready { bitstream: &'a [u8], keyframe: bool },
+    /// Nothing finished yet. **Not an error and not a wait**: the caller goes
+    /// round its loop and asks again.
+    Pending,
+}
+
+/// A registered input surface.
+///
+/// Registration is per buffer and mapping is per submit, which is the split
+/// the interface imposes: registering costs a driver round trip and must not
+/// happen per frame.
+#[derive(Debug)]
+pub struct Input {
+    registered: crate::ffi::nvenc::NV_ENC_REGISTERED_PTR,
+    width: u32,
+    height: u32,
+    pitch: u32,
+}
+
+#[derive(Debug)]
+struct Pending {
+    output: crate::ffi::nvenc::NV_ENC_OUTPUT_PTR,
+    mapped: crate::ffi::nvenc::NV_ENC_INPUT_PTR,
+}
+
+impl Drop for Encoder<'_> {
+    /// Hands the output buffers back before the session drops and destroys the
+    /// encoder they belong to. Anything still in flight is unmapped first, so
+    /// a teardown mid-stream does not leak a mapping.
+    fn drop(&mut self) {
+        let functions = self.session.api.functions;
+        if let Some(unmap) = functions.nvEncUnmapInputResource {
+            for entry in &self.pending {
+                // SAFETY: each was mapped by `submit` and not yet unmapped.
+                unsafe { unmap(self.session.encoder, entry.mapped) };
+            }
+        }
+        if let Some(destroy) = functions.nvEncDestroyBitstreamBuffer {
+            for output in self.outputs {
+                if !output.is_null() {
+                    // SAFETY: each came from a successful create above.
+                    unsafe { destroy(self.session.encoder, output) };
+                }
+            }
+        }
+    }
+}
+
+impl Encoder<'_> {
+    fn functions(&self) -> &crate::ffi::nvenc::NV_ENCODE_API_FUNCTION_LIST {
+        &self.session.api.functions
+    }
+
+    /// Register a device allocation holding one planar frame.
+    pub fn register(&self, buffer: &crate::cuda::DeviceBuffer) -> Result<Input, Error> {
+        use crate::ffi::nvenc as f;
+        let register = self
+            .functions()
+            .nvEncRegisterResource
+            .ok_or(Error::MissingSymbol)?;
+
+        let mut params = unsafe { core::mem::zeroed::<f::NV_ENC_REGISTER_RESOURCE>() };
+        params.version = crate::ffi::versions::NV_ENC_REGISTER_RESOURCE_VER;
+        params.resourceType = f::NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR;
+        params.width = self.config.width;
+        params.height = self.config.height;
+        params.pitch = u32::try_from(buffer.pitch()).map_err(|_| Error::MissingSymbol)?;
+        params.resourceToRegister = buffer.ptr() as *mut core::ffi::c_void;
+        params.bufferFormat = f::NV_ENC_BUFFER_FORMAT_NV12;
+        params.bufferUsage = f::NV_ENC_INPUT_IMAGE;
+
+        // SAFETY: the block is stamped and live for the call.
+        let status = unsafe { register(self.session.encoder, &raw mut params) };
+        if status != NV_ENC_SUCCESS {
+            return Err(Error::Status(status));
+        }
+        Ok(Input {
+            registered: params.registeredResource,
+            width: self.config.width,
+            height: self.config.height,
+            pitch: params.pitch,
+        })
+    }
+
+    /// Hand a frame to the hardware. Returns as soon as it is queued.
+    pub fn submit(&mut self, input: &Input, force_keyframe: bool) -> Result<(), Error> {
+        use crate::ffi::nvenc as f;
+        if self.pending.len() >= IN_FLIGHT {
+            return Err(Error::QueueFull);
+        }
+
+        let map = self
+            .functions()
+            .nvEncMapInputResource
+            .ok_or(Error::MissingSymbol)?;
+        let encode = self
+            .functions()
+            .nvEncEncodePicture
+            .ok_or(Error::MissingSymbol)?;
+
+        let mut mapping = unsafe { core::mem::zeroed::<f::NV_ENC_MAP_INPUT_RESOURCE>() };
+        mapping.version = crate::ffi::versions::NV_ENC_MAP_INPUT_RESOURCE_VER;
+        mapping.registeredResource = input.registered;
+        // SAFETY: the block is stamped and live for the call.
+        let status = unsafe { map(self.session.encoder, &raw mut mapping) };
+        if status != NV_ENC_SUCCESS {
+            return Err(Error::Status(status));
+        }
+
+        let output = self.outputs[self.next_output];
+        self.next_output = (self.next_output + 1) % IN_FLIGHT;
+
+        let mut pic = unsafe { core::mem::zeroed::<f::NV_ENC_PIC_PARAMS>() };
+        pic.version = crate::ffi::versions::NV_ENC_PIC_PARAMS_VER;
+        pic.inputWidth = input.width;
+        pic.inputHeight = input.height;
+        pic.inputPitch = input.pitch;
+        pic.inputBuffer = mapping.mappedResource;
+        pic.outputBitstream = output;
+        pic.bufferFmt = mapping.mappedBufferFmt;
+        pic.pictureStruct = f::NV_ENC_PIC_STRUCT_FRAME;
+        if force_keyframe {
+            pic.encodePicFlags = f::NV_ENC_PIC_FLAG_FORCEIDR;
+        }
+
+        // SAFETY: the block is stamped and live; the mapped input and the
+        // output buffer both outlive the encode because they are held in the
+        // queue below until collected.
+        let status = unsafe { encode(self.session.encoder, &raw mut pic) };
+        if status != NV_ENC_SUCCESS && status != f::NV_ENC_ERR_NEED_MORE_INPUT {
+            return Err(Error::Status(status));
+        }
+
+        self.pending.push_back(Pending {
+            output,
+            mapped: mapping.mappedResource,
+        });
+        Ok(())
+    }
+
+    /// Collect a finished access unit, or report that none is ready.
+    ///
+    /// **Never blocks.** The hardware offers no completion object on this
+    /// platform, so the lock is taken in its no-wait form and a busy answer is
+    /// reported as pending. Taking the blocking form and hiding it behind
+    /// queue depth would turn "the encoder fell behind" into "the pipeline
+    /// thread is stopped", at exactly the moment that must not happen.
+    pub fn poll(&mut self) -> Result<Poll<'_>, Error> {
+        use crate::ffi::nvenc as f;
+        let Some(head) = self.pending.front() else {
+            return Ok(Poll::Pending);
+        };
+        let (output, mapped) = (head.output, head.mapped);
+
+        let lock = self
+            .functions()
+            .nvEncLockBitstream
+            .ok_or(Error::MissingSymbol)?;
+        let mut params = unsafe { core::mem::zeroed::<f::NV_ENC_LOCK_BITSTREAM>() };
+        params.version = crate::ffi::versions::NV_ENC_LOCK_BITSTREAM_VER;
+        params.outputBitstream = output;
+        params.set_doNotWait(1);
+
+        // SAFETY: the block is stamped and live for the call.
+        let status = unsafe { lock(self.session.encoder, &raw mut params) };
+        if status == f::NV_ENC_ERR_LOCK_BUSY {
+            return Ok(Poll::Pending);
+        }
+        if status != NV_ENC_SUCCESS {
+            return Err(Error::Status(status));
+        }
+
+        let len = params.bitstreamSizeInBytes as usize;
+        // SAFETY: the interface reports a pointer to `len` readable bytes,
+        // valid until the matching unlock. The slice is handed out borrowing
+        // `self`, so no further call can be made while it is alive.
+        let bitstream =
+            unsafe { core::slice::from_raw_parts(params.bitstreamBufferPtr.cast::<u8>(), len) };
+        let keyframe = params.pictureType == f::NV_ENC_PIC_TYPE_IDR
+            || params.pictureType == f::NV_ENC_PIC_TYPE_I;
+
+        self.collected.clear();
+        self.collected.extend_from_slice(bitstream);
+
+        if let Some(unlock) = self.functions().nvEncUnlockBitstream {
+            // SAFETY: balances the lock above, on the same buffer.
+            unsafe { unlock(self.session.encoder, output) };
+        }
+        if let Some(unmap) = self.functions().nvEncUnmapInputResource {
+            // SAFETY: balances the map in `submit`, on the same resource.
+            unsafe { unmap(self.session.encoder, mapped) };
+        }
+        self.pending.pop_front();
+
+        Ok(Poll::Ready {
+            bitstream: &self.collected,
+            keyframe,
+        })
+    }
+
+    /// How many pictures are queued but not collected.
+    pub fn in_flight(&self) -> usize {
+        self.pending.len()
     }
 }

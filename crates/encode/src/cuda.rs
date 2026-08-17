@@ -20,7 +20,7 @@ use core::ffi::{CStr, c_char, c_int, c_uint};
 
 use lowlat_common::dynlib::Library;
 
-use crate::ffi::cuda::{CUDA_SUCCESS, CUcontext, CUdevice, CUresult};
+use crate::ffi::cuda::{CUDA_SUCCESS, CUcontext, CUdevice, CUdeviceptr, CUresult};
 
 /// Versioned first, as with the encoder runtime.
 const SONAMES: [&CStr; 2] = [c"libcuda.so.1", c"libcuda.so"];
@@ -30,8 +30,13 @@ type DeviceGetCount = unsafe extern "C" fn(*mut c_int) -> CUresult;
 type DeviceGet = unsafe extern "C" fn(*mut CUdevice, c_int) -> CUresult;
 type DeviceGetName = unsafe extern "C" fn(*mut c_char, c_int, CUdevice) -> CUresult;
 type DeviceGetPciBusId = unsafe extern "C" fn(*mut c_char, c_int, CUdevice) -> CUresult;
+type MemAllocPitch =
+    unsafe extern "C" fn(*mut CUdeviceptr, *mut usize, usize, usize, c_uint) -> CUresult;
+type MemFree = unsafe extern "C" fn(CUdeviceptr) -> CUresult;
+type MemsetD8 = unsafe extern "C" fn(CUdeviceptr, u8, usize) -> CUresult;
 type PrimaryCtxRetain = unsafe extern "C" fn(*mut CUcontext, CUdevice) -> CUresult;
 type PrimaryCtxRelease = unsafe extern "C" fn(CUdevice) -> CUresult;
+type CtxPushCurrent = unsafe extern "C" fn(CUcontext) -> CUresult;
 
 /// Why the runtime could not be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,6 +158,7 @@ pub struct Context {
     raw: CUcontext,
     device: CUdevice,
     release: PrimaryCtxRelease,
+    push_current: CtxPushCurrent,
 }
 
 // SAFETY: a context is usable from any thread, and this type only hands out
@@ -164,6 +170,22 @@ impl Context {
     /// The raw handle, for the encoder session.
     pub fn raw(&self) -> CUcontext {
         self.raw
+    }
+
+    /// Make this context current on the calling thread.
+    ///
+    /// **Retaining a context does not make it current**, and every allocation
+    /// and every encoder call is made against whatever is current on the
+    /// calling thread. Without this they fail with an invalid-context status,
+    /// which names neither the context nor the thread and is the least
+    /// informative way this can go wrong.
+    ///
+    /// Pushed rather than assigned, because the interface offers no assign.
+    /// Never popped: the thread that drives a session drives it for the
+    /// session's life, so there is nothing to restore.
+    pub fn make_current(&self) -> Result<()> {
+        // SAFETY: the handle is valid for the life of `self`.
+        check(unsafe { (self.push_current)(self.raw) })
     }
 }
 
@@ -184,6 +206,10 @@ pub struct Cuda {
     device_get_pci_bus_id: DeviceGetPciBusId,
     primary_ctx_retain: PrimaryCtxRetain,
     primary_ctx_release: PrimaryCtxRelease,
+    ctx_push_current: CtxPushCurrent,
+    mem_alloc_pitch: MemAllocPitch,
+    mem_free: MemFree,
+    memset_d8: MemsetD8,
     /// Last, so it outlives the addresses taken from it.
     _library: Library,
 }
@@ -215,6 +241,18 @@ impl Cuda {
                     .ok_or(Error::MissingSymbol)?,
                 primary_ctx_release: library
                     .symbol(c"cuDevicePrimaryCtxRelease")
+                    .ok_or(Error::MissingSymbol)?,
+                ctx_push_current: library
+                    .symbol(c"cuCtxPushCurrent_v2")
+                    .ok_or(Error::MissingSymbol)?,
+                mem_alloc_pitch: library
+                    .symbol(c"cuMemAllocPitch_v2")
+                    .ok_or(Error::MissingSymbol)?,
+                mem_free: library
+                    .symbol(c"cuMemFree_v2")
+                    .ok_or(Error::MissingSymbol)?,
+                memset_d8: library
+                    .symbol(c"cuMemsetD8_v2")
                     .ok_or(Error::MissingSymbol)?,
                 _library: library,
             }
@@ -321,7 +359,64 @@ impl Cuda {
             raw,
             device: device.handle,
             release: self.primary_ctx_release,
+            push_current: self.ctx_push_current,
         })
+    }
+}
+
+/// A pitched device allocation.
+///
+/// Pitched rather than packed because the driver picks an alignment the
+/// hardware is happy to read, and the encoder takes the pitch as a parameter
+/// rather than assuming one.
+#[derive(Debug)]
+pub struct DeviceBuffer {
+    ptr: CUdeviceptr,
+    pitch: usize,
+    free: MemFree,
+}
+
+// SAFETY: a device allocation belongs to its context, not to a thread.
+unsafe impl Send for DeviceBuffer {}
+
+impl DeviceBuffer {
+    pub fn ptr(&self) -> CUdeviceptr {
+        self.ptr
+    }
+
+    pub fn pitch(&self) -> usize {
+        self.pitch
+    }
+}
+
+impl Drop for DeviceBuffer {
+    fn drop(&mut self) {
+        // SAFETY: allocated once, freed once; the type is neither `Copy` nor
+        // `Clone`.
+        unsafe { (self.free)(self.ptr) };
+    }
+}
+
+impl Cuda {
+    /// Allocate `rows` of at least `width` bytes.
+    pub fn alloc_pitch(&self, width: usize, rows: usize) -> Result<DeviceBuffer> {
+        let mut ptr: CUdeviceptr = 0;
+        let mut pitch: usize = 0;
+        // SAFETY: both out pointers are to live locals. The element size is
+        // the widest the encoder is documented to read through.
+        check(unsafe { (self.mem_alloc_pitch)(&raw mut ptr, &raw mut pitch, width, rows, 16) })?;
+        Ok(DeviceBuffer {
+            ptr,
+            pitch,
+            free: self.mem_free,
+        })
+    }
+
+    /// Fill `count` bytes from the start of a buffer with one value.
+    pub fn fill(&self, buffer: &DeviceBuffer, value: u8, count: usize) -> Result<()> {
+        // SAFETY: the caller's count is bounded by the allocation it came
+        // from; the pointer is live for the life of the buffer.
+        check(unsafe { (self.memset_d8)(buffer.ptr, value, count) })
     }
 }
 

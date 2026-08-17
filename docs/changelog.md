@@ -18,6 +18,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   hardware will actually do.
 - Configuring the encoder for low latency, with the colour description the
   wire requires, and changing its bitrate live.
+- Registering an input surface, submitting a picture, and collecting the
+  encoded access unit.
 
 **Notes**
 
@@ -113,6 +115,28 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   interface copies the configuration during the call, and the block it named is
   a local about to be moved into the returned value, so retaining it would
   leave a dangling pointer in a structure that is reused on every reconfigure.
+- **The no-wait collect is documented and not implemented.** The interface
+  states that its no-wait flag returns a busy status when a picture is not
+  ready, explicitly including the synchronous mode that is the only mode this
+  platform offers. The driver ignores it: four collects for four pictures, not
+  one busy status, and the slowest collect equal to one picture's encode time.
+  A genuinely non-blocking lock spun in that loop would report busy hundreds of
+  times. **The phase gate for a non-blocking collect is therefore not met by
+  this path**, and is met instead by recording a completion event on the
+  encoder's own stream and querying it, which is the next piece of work. The
+  measurement is kept as a test rather than deleted, because it is the evidence
+  that the cheap path was tried and does not work, and because a driver update
+  could change the answer.
+- **Nothing was allowed to pass by lowering the bar.** The obvious repair when
+  the assertion failed was to relax it. That would have made the gate item pass
+  against exactly the behaviour it exists to reject, so the assertion was
+  replaced by a recorded number and the gate left open.
+- **The test bug that hid the finding is worth naming.** The first version
+  polled once to time it, then drained a full queue's worth, having already
+  consumed one picture; it waited forever for a frame that could not arrive.
+  The symptom was a hang, and the temptation was to treat the hang as the
+  finding. The actual finding was one layer down and only visible after
+  instrumenting the status the driver returned.
 - **The selection test proves itself the same way the loader's does.** On a
   machine with one compute device, matching the display's address cannot
   distinguish a correct implementation from one that ignores the address
