@@ -115,6 +115,26 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   interface copies the configuration during the call, and the block it named is
   a local about to be moved into the returned value, so retaining it would
   leave a dangling pointer in a structure that is reused on every reconfigure.
+- **There is no way to learn a picture is finished without waiting for it.**
+  Two mechanisms were tried and measured. The interface's own no-wait flag is
+  documented for exactly this case and is ignored by the driver. A completion
+  marker recorded on the encoder's own stream does gate -- most polls in a
+  burst come back not-ready -- but it passes before the bitstream can be
+  retrieved, because the encode runs on a hardware engine rather than on that
+  stream. What the marker does buy is the half that matters: a caller with
+  nothing ready gets an answer in about 300 ns instead of being parked for a
+  frame. The phase gate was narrowed to that, and the retrieval cost recorded
+  as a number.
+- **A stream handle is not a pointer to a stream.** The encoder's stream setter
+  takes the address of a handle, and passing the handle makes the driver
+  dereference it as memory. It faults inside the driver with nothing pointing
+  back at the call site, which is the worst diagnostic shape available.
+- **Field declaration order is load bearing when fields own driver objects.**
+  Fields drop in declaration order, and the session owns the compute context;
+  a stream destroyed after its context has been released is a use-after-free.
+  The encoder therefore declares its stream and markers first and its session
+  last, and the comment says why, because the next person to add a field will
+  not guess it.
 - **The no-wait collect is documented and not implemented.** The interface
   states that its no-wait flag returns a busy status when a picture is not
   ready, explicitly including the synchronous mode that is the only mode this

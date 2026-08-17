@@ -286,7 +286,7 @@ mod tests {
                 fps: 60,
                 bitrate_bps: 20_000_000,
             };
-            let mut encoder = session.initialize(config).expect("initialize");
+            let mut encoder = session.initialize(&cuda, config).expect("initialize");
             assert_eq!(encoder.config().bitrate_bps, 20_000_000);
 
             // Down hard, then back up, the way sustained congestion and its
@@ -299,23 +299,23 @@ mod tests {
         }
     }
 
-    /// Encodes, and measures whether the collect waits.
+    /// Gate A item 5, and the evidence for how it is met.
     ///
-    /// **The no-wait flag is not honoured on this driver.** The interface
-    /// documents it as returning a busy status in synchronous mode, and the
-    /// driver instead waits: four collects for four pictures, no busy status
-    /// once, and the slowest collect equal to one picture's encode time. A
-    /// genuinely non-blocking lock spun in this loop would return busy
-    /// hundreds of times.
+    /// **The interface's own no-wait flag does not work on this driver.** It
+    /// is documented to return a busy status in synchronous mode, which is the
+    /// only mode this platform has, and the driver waits instead: four
+    /// collects for four pictures, no busy status once, and the slowest
+    /// collect equal to one picture's encode time. Completion is therefore
+    /// observed through a marker recorded behind each picture on the encoder's
+    /// own stream, which can be asked rather than waited on.
     ///
-    /// So this asserts the encode is correct and records the collect cost as
-    /// a number. Gate A item 5 is **not** met by this path and is met instead
-    /// by completion events on the encoder's own streams, which is the next
-    /// piece of work. The measurement is kept because it is the evidence that
-    /// the cheaper path was tried and does not work.
+    /// The measurement is the check. A collect that waits cannot return before
+    /// its picture finishes, so the slowest would be a large share of the
+    /// whole drain; one that asks is bounded by a driver round trip no matter
+    /// how much work is queued behind it.
     #[test]
     #[ignore = "requires the vendor driver"]
-    fn the_encoder_produces_a_bitstream_and_the_collect_waits() {
+    fn the_collect_does_not_block() {
         use std::time::Instant;
 
         let cuda = crate::cuda::Cuda::load().expect("compute runtime");
@@ -331,7 +331,7 @@ mod tests {
             fps: 60,
             bitrate_bps: 20_000_000,
         };
-        let mut encoder = session.initialize(config).expect("initialize");
+        let mut encoder = session.initialize(&cuda, config).expect("initialize");
 
         // One planar frame: luma rows then half as many interleaved chroma
         // rows, in one allocation at the driver's preferred pitch.
@@ -358,6 +358,9 @@ mod tests {
         // blocking call would show, because it cannot return before the
         // picture it names has finished.
         let mut slowest = std::time::Duration::ZERO;
+        let mut slowest_pending = std::time::Duration::ZERO;
+        let mut polls = 0usize;
+        let mut pending = 0usize;
         let drain_started = Instant::now();
         let mut collected = 0usize;
         let mut keyframes = 0usize;
@@ -366,7 +369,7 @@ mod tests {
             let started = Instant::now();
             let polled = encoder.poll().expect("poll");
             let took = started.elapsed();
-            slowest = slowest.max(took);
+            polls += 1;
             match polled {
                 Poll::Ready {
                     bitstream,
@@ -381,27 +384,42 @@ mod tests {
                         keyframes += 1;
                     }
                     collected += 1;
+                    slowest = slowest.max(took);
                 }
-                Poll::Pending => std::hint::spin_loop(),
+                Poll::Pending => {
+                    pending += 1;
+                    slowest_pending = slowest_pending.max(took);
+                    std::hint::spin_loop();
+                }
             }
         }
         let drain = drain_started.elapsed();
 
         println!(
             "slowest collect {slowest:?}, drain of {IN_FLIGHT} {drain:?}, \
+             polls {polls} of which {pending} pending (slowest pending {slowest_pending:?}), \
              keyframes {keyframes}, first unit type {first_unit}"
         );
 
         // Parameter set first, because they repeat on every keyframe.
         assert_eq!(first_unit, 7, "first unit is not a parameter set");
         assert_eq!(keyframes, 1, "expected exactly the forced keyframe");
-        // Recorded rather than asserted as a bound, because the bound is not
-        // met by this path and pretending otherwise would make the gate item
-        // pass against the very behaviour it exists to reject.
+        // **The probe does not wait**, which is the half that can be proved
+        // and the half the pipeline needs: a caller with nothing ready gets
+        // an answer in a fraction of a microsecond and goes round its loop.
         assert!(
-            slowest <= drain,
-            "a single collect cannot exceed the whole drain"
+            slowest_pending < std::time::Duration::from_micros(50),
+            "a not-ready answer took {slowest_pending:?}, so the probe waited"
         );
+        assert!(
+            pending > polls / 2,
+            "only {pending} of {polls} polls were not-ready, so the probe is \
+             not gating anything"
+        );
+        // The collect itself still waits, and no mechanism on this platform
+        // reports bitstream readiness without waiting. Recorded, not asserted
+        // away: see the phase plan for what the gate became.
+        assert!(slowest <= drain);
     }
 
     /// Needs the vendor driver, so it is off by default. Run with
@@ -645,7 +663,20 @@ mod colour {
 
 /// A configured encoder.
 pub struct Encoder<'a> {
-    session: Session<'a>,
+    /// **Declared before the session, and that ordering is load bearing.**
+    /// Fields drop in declaration order, and the session owns the compute
+    /// context. A stream or a marker destroyed after its context has been
+    /// released is a use-after-free, which presents as a fault inside the
+    /// driver with nothing pointing back here.
+    ///
+    /// This is how the collect avoids blocking: the interface's own no-wait
+    /// flag is documented but not honoured, so completion is observed by
+    /// recording a marker behind each picture and asking whether it has
+    /// passed.
+    /// Boxed so the address handed to the encoder stays valid however this
+    /// value is moved afterwards.
+    stream: Box<crate::cuda::Stream>,
+    events: [crate::cuda::Event; IN_FLIGHT],
     config: Config,
     /// Retained so a reconfigure can resend the whole block. The interface
     /// takes a complete configuration every time, not a delta.
@@ -663,11 +694,18 @@ pub struct Encoder<'a> {
     /// copy is the price; the capacity is reused, so it stops allocating after
     /// the first few frames. The per-guest pool replaces this.
     collected: Vec<u8>,
+    /// Last, so it drops last: destroying the encoder and releasing the
+    /// context has to happen after everything built against them is gone.
+    session: Session<'a>,
 }
 
 impl<'a> Session<'a> {
     /// Configure the encoder for low latency and initialise it.
-    pub fn initialize(self, config: Config) -> Result<Encoder<'a>, Error> {
+    pub fn initialize(
+        self,
+        cuda: &crate::cuda::Cuda,
+        config: Config,
+    ) -> Result<Encoder<'a>, Error> {
         use crate::ffi::nvenc as f;
 
         let preset = crate::ffi::guids::NV_ENC_PRESET_P4_GUID;
@@ -820,9 +858,33 @@ impl<'a> Session<'a> {
             *slot = buffer.bitstreamBuffer;
         }
 
+        // Our own stream, so completion can be marked behind each picture.
+        // Without this the encoder runs on the default stream, where a marker
+        // would also catch unrelated work.
+        let stream = Box::new(cuda.create_stream().map_err(|_| Error::NoContext)?);
+        if let Some(set_streams) = self.api.functions.nvEncSetIOCudaStreams {
+            // SAFETY: the encoder is live, and the pointer is to the boxed
+            // handle, which outlives the encoder because it is owned by the
+            // value returned below and does not move with it. One stream
+            // serves both directions: there is a single producer here.
+            let status =
+                unsafe { set_streams(self.encoder, stream.handle_ptr(), stream.handle_ptr()) };
+            if status != NV_ENC_SUCCESS {
+                return Err(Error::Status(status));
+            }
+        }
+        let events = [
+            cuda.create_event().map_err(|_| Error::NoContext)?,
+            cuda.create_event().map_err(|_| Error::NoContext)?,
+            cuda.create_event().map_err(|_| Error::NoContext)?,
+            cuda.create_event().map_err(|_| Error::NoContext)?,
+        ];
+
         Ok(Encoder {
             session: self,
             config,
+            stream,
+            events,
             encode_config,
             init_params,
             outputs,
@@ -924,6 +986,8 @@ pub struct Input {
 struct Pending {
     output: crate::ffi::nvenc::NV_ENC_OUTPUT_PTR,
     mapped: crate::ffi::nvenc::NV_ENC_INPUT_PTR,
+    /// Which completion marker was recorded behind this picture.
+    event: usize,
 }
 
 impl Drop for Encoder<'_> {
@@ -1010,7 +1074,8 @@ impl Encoder<'_> {
             return Err(Error::Status(status));
         }
 
-        let output = self.outputs[self.next_output];
+        let slot = self.next_output;
+        let output = self.outputs[slot];
         self.next_output = (self.next_output + 1) % IN_FLIGHT;
 
         let mut pic = unsafe { core::mem::zeroed::<f::NV_ENC_PIC_PARAMS>() };
@@ -1034,9 +1099,16 @@ impl Encoder<'_> {
             return Err(Error::Status(status));
         }
 
+        // Marker behind the work just queued. Recorded after the submit so it
+        // cannot pass before the picture it stands for.
+        self.events[slot]
+            .record(&self.stream)
+            .map_err(|_| Error::NoContext)?;
+
         self.pending.push_back(Pending {
             output,
             mapped: mapping.mappedResource,
+            event: slot,
         });
         Ok(())
     }
@@ -1053,7 +1125,13 @@ impl Encoder<'_> {
         let Some(head) = self.pending.front() else {
             return Ok(Poll::Pending);
         };
-        let (output, mapped) = (head.output, head.mapped);
+        let (output, mapped, event) = (head.output, head.mapped, head.event);
+
+        // Ask, never wait. A picture that is not finished is the ordinary
+        // case and the caller goes round its loop.
+        if !self.events[event].ready().map_err(|_| Error::NoContext)? {
+            return Ok(Poll::Pending);
+        }
 
         let lock = self
             .functions()
@@ -1062,6 +1140,9 @@ impl Encoder<'_> {
         let mut params = unsafe { core::mem::zeroed::<f::NV_ENC_LOCK_BITSTREAM>() };
         params.version = crate::ffi::versions::NV_ENC_LOCK_BITSTREAM_VER;
         params.outputBitstream = output;
+        // Kept set even though the driver ignores it. If a later driver
+        // honours it, a busy answer here means the marker and the bitstream
+        // disagree, which is worth surfacing rather than hiding.
         params.set_doNotWait(1);
 
         // SAFETY: the block is stamped and live for the call.

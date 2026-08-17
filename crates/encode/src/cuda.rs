@@ -20,7 +20,10 @@ use core::ffi::{CStr, c_char, c_int, c_uint};
 
 use lowlat_common::dynlib::Library;
 
-use crate::ffi::cuda::{CUDA_SUCCESS, CUcontext, CUdevice, CUdeviceptr, CUresult};
+use crate::ffi::cuda::{
+    CU_EVENT_DISABLE_TIMING, CUDA_ERROR_NOT_READY, CUDA_SUCCESS, CUcontext, CUdevice, CUdeviceptr,
+    CUevent, CUresult, CUstream,
+};
 
 /// Versioned first, as with the encoder runtime.
 const SONAMES: [&CStr; 2] = [c"libcuda.so.1", c"libcuda.so"];
@@ -37,6 +40,12 @@ type MemsetD8 = unsafe extern "C" fn(CUdeviceptr, u8, usize) -> CUresult;
 type PrimaryCtxRetain = unsafe extern "C" fn(*mut CUcontext, CUdevice) -> CUresult;
 type PrimaryCtxRelease = unsafe extern "C" fn(CUdevice) -> CUresult;
 type CtxPushCurrent = unsafe extern "C" fn(CUcontext) -> CUresult;
+type StreamCreate = unsafe extern "C" fn(*mut CUstream, c_uint) -> CUresult;
+type StreamDestroy = unsafe extern "C" fn(CUstream) -> CUresult;
+type EventCreate = unsafe extern "C" fn(*mut CUevent, c_uint) -> CUresult;
+type EventDestroy = unsafe extern "C" fn(CUevent) -> CUresult;
+type EventRecord = unsafe extern "C" fn(CUevent, CUstream) -> CUresult;
+type EventQuery = unsafe extern "C" fn(CUevent) -> CUresult;
 
 /// Why the runtime could not be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -210,6 +219,12 @@ pub struct Cuda {
     mem_alloc_pitch: MemAllocPitch,
     mem_free: MemFree,
     memset_d8: MemsetD8,
+    stream_create: StreamCreate,
+    stream_destroy: StreamDestroy,
+    event_create: EventCreate,
+    event_destroy: EventDestroy,
+    event_record: EventRecord,
+    event_query: EventQuery,
     /// Last, so it outlives the addresses taken from it.
     _library: Library,
 }
@@ -253,6 +268,24 @@ impl Cuda {
                     .ok_or(Error::MissingSymbol)?,
                 memset_d8: library
                     .symbol(c"cuMemsetD8_v2")
+                    .ok_or(Error::MissingSymbol)?,
+                stream_create: library
+                    .symbol(c"cuStreamCreate")
+                    .ok_or(Error::MissingSymbol)?,
+                stream_destroy: library
+                    .symbol(c"cuStreamDestroy_v2")
+                    .ok_or(Error::MissingSymbol)?,
+                event_create: library
+                    .symbol(c"cuEventCreate")
+                    .ok_or(Error::MissingSymbol)?,
+                event_destroy: library
+                    .symbol(c"cuEventDestroy_v2")
+                    .ok_or(Error::MissingSymbol)?,
+                event_record: library
+                    .symbol(c"cuEventRecord")
+                    .ok_or(Error::MissingSymbol)?,
+                event_query: library
+                    .symbol(c"cuEventQuery")
                     .ok_or(Error::MissingSymbol)?,
                 _library: library,
             }
@@ -417,6 +450,117 @@ impl Cuda {
         // SAFETY: the caller's count is bounded by the allocation it came
         // from; the pointer is live for the life of the buffer.
         check(unsafe { (self.memset_d8)(buffer.ptr, value, count) })
+    }
+}
+
+/// A command stream the encoder is told to use.
+///
+/// Giving the encoder our own stream is what makes completion observable: work
+/// submitted to a stream can have an event recorded behind it, and that event
+/// can be asked whether it has passed without waiting for it.
+#[derive(Debug)]
+pub struct Stream {
+    raw: CUstream,
+    destroy: StreamDestroy,
+}
+
+// SAFETY: a stream belongs to its context, not to a thread.
+unsafe impl Send for Stream {}
+
+impl Stream {
+    pub fn raw(&self) -> CUstream {
+        self.raw
+    }
+
+    /// The address of the handle, not the handle.
+    ///
+    /// The encoder's stream setter takes a **pointer to** a stream, which is
+    /// easy to misread: passing the handle instead makes the driver
+    /// dereference a stream as though it were memory, and it faults inside the
+    /// driver with nothing pointing back at the call. The address must also
+    /// stay put for as long as the encoder holds it, so callers keep the
+    /// stream somewhere that does not move.
+    pub fn handle_ptr(&self) -> *mut core::ffi::c_void {
+        (&raw const self.raw).cast::<core::ffi::c_void>().cast_mut()
+    }
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        // SAFETY: created once, destroyed once.
+        unsafe { (self.destroy)(self.raw) };
+    }
+}
+
+/// A marker recorded into a stream, which can be tested without blocking.
+#[derive(Debug)]
+pub struct Event {
+    raw: CUevent,
+    record: EventRecord,
+    query: EventQuery,
+    destroy: EventDestroy,
+}
+
+// SAFETY: an event belongs to its context, not to a thread.
+unsafe impl Send for Event {}
+
+impl Event {
+    /// Place this event behind everything already submitted to `stream`.
+    pub fn record(&self, stream: &Stream) -> Result<()> {
+        // SAFETY: both handles are valid for the life of their owners.
+        check(unsafe { (self.record)(self.raw, stream.raw) })
+    }
+
+    /// Has the recorded point been reached?
+    ///
+    /// **Does not wait.** A not-ready answer is the ordinary case and not an
+    /// error, which is the whole reason this exists: it is the only completion
+    /// signal on this platform that can be asked rather than waited on.
+    pub fn ready(&self) -> Result<bool> {
+        // SAFETY: the handle is valid for the life of `self`.
+        let status = unsafe { (self.query)(self.raw) };
+        match status {
+            CUDA_SUCCESS => Ok(true),
+            CUDA_ERROR_NOT_READY => Ok(false),
+            other => Err(Error::Status(other)),
+        }
+    }
+}
+
+impl Drop for Event {
+    fn drop(&mut self) {
+        // SAFETY: created once, destroyed once.
+        unsafe { (self.destroy)(self.raw) };
+    }
+}
+
+impl Cuda {
+    /// A stream to hand to the encoder.
+    pub fn create_stream(&self) -> Result<Stream> {
+        let mut raw: CUstream = core::ptr::null_mut();
+        // SAFETY: the out pointer is to a live local. Flag zero is the
+        // default, which orders against the legacy stream; the encoder is the
+        // only producer here so nothing weaker is needed.
+        check(unsafe { (self.stream_create)(&raw mut raw, 0) })?;
+        Ok(Stream {
+            raw,
+            destroy: self.stream_destroy,
+        })
+    }
+
+    /// An event for completion only.
+    pub fn create_event(&self) -> Result<Event> {
+        let mut raw: CUevent = core::ptr::null_mut();
+        // SAFETY: the out pointer is to a live local. Timing is disabled
+        // because only the fact of completion is wanted, and keeping it costs
+        // a synchronisation the query would otherwise not need.
+        check(unsafe { (self.event_create)(&raw mut raw, CU_EVENT_DISABLE_TIMING) })?;
+        Ok(Event {
+            raw,
+            record: self.event_record,
+            query: self.event_query,
+            destroy: self.event_destroy,
+        })
     }
 }
 

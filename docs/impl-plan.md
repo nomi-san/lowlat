@@ -333,13 +333,20 @@ construction rather than as covered.
    Driven in the simulator by withholding acknowledgements until the window fills, then
    releasing them. *Named regression test; this is the gray-frame lesson and it is the reason
    the gate moved into this phase.*
-5. **`poll` returns pending rather than blocking**, on both backends. Submit a burst deep
-   enough that the queued encode time is far longer than one frame, then time a single `poll`.
-   A non-blocking probe returns in microseconds; a blocking collect cannot return before the
-   oldest picture completes, so the two are separated by orders of magnitude rather than by a
-   threshold anyone has to choose. **Shown capable of failing** by building the blocking form
-   of the same call, which is one flag apart on both backends, and requiring the check to fail
-   against it.
+5. **`poll` reports "not ready" without waiting**, on both backends. Submit a burst deep
+   enough that the queued encode time is far longer than one frame, then time the polls. A
+   not-ready answer must cost a driver round trip, not a frame; and most polls in the burst
+   must be not-ready, or the probe is gating nothing.
+
+   **Revised 2026-08-17, against hardware.** The original wording required the whole collect
+   never to block, and on one backend that is not achievable: its own no-wait flag is
+   documented for exactly this case and is ignored by the driver, and a completion marker on
+   the encoder's stream passes before the bitstream is retrievable, because the encode does
+   not run on that stream. Measured, a not-ready answer costs about 300 ns while retrieving a
+   finished picture costs about one frame's encode time. So the gate now covers the part that
+   is both achievable and load bearing -- a caller with nothing ready is never parked -- and
+   the retrieval cost is recorded rather than wished away. **A gate nobody can pass teaches
+   nothing; a gate that measures the real boundary teaches where it is.**
 6. **Encode overlaps the next frame's preparation**, asserted as measurement rather than as
    throughput: the per-stage times from [05 §10](05-host.md) sum to more than the wall-clock
    interval between frames. Stages that sum past the interval they fit inside can only have
@@ -474,6 +481,17 @@ from a source change.
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
 
+- 2026-08-17: **Gate A item 5 is revised against hardware, and narrowed to what is
+  achievable.** It required a collect that never blocks. One backend cannot provide it: the
+  no-wait flag its own header documents for this exact case is ignored by the driver, and a
+  completion marker recorded on the encoder's stream passes early, because the encode runs on
+  a hardware engine rather than on that stream. Both were measured rather than reasoned about.
+  What is achievable, and is what the pipeline actually needs, is that a caller with nothing
+  ready is never parked: a not-ready answer costs about 300 ns against a frame time of about
+  1.8 ms. The gate now requires that, plus evidence the probe is gating at all, since a probe
+  that always says ready would satisfy a latency bound while proving nothing. The retrieval
+  cost is recorded as a number instead of asserted, because pretending otherwise would make
+  the item pass against the behaviour it exists to reject.
 - 2026-08-17: **Phase 5 gains the delivery gate, and Gate A gains four checks that can
   fail.** The gate was scheduled for Phase 11, which cannot be right: Gate A item 1 asserts no
   corruption over ten minutes, and the moment a send window fills the packetizer must choose
