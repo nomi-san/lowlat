@@ -417,18 +417,35 @@ when it must not.
 - [ ] HEVC encode path and the two-place capability signalling
   ([01 §11.3](01-protocol.md)).
 
-**Gate:** a stock client negotiates and decodes HEVC, and both codecs are selectable.
+- [ ] **The refusal path for a seat that cannot decode the session's codec** (D11): read the
+  capability from session initialization, and disconnect with a status before any video is sent.
 
-**The third clause was removed, 2026-08-17.** It read "a client without HEVC falls back to
-H.264 without operator intervention", and **one encode serves every guest**
-([05 §6](05-host.md)), so there is no per-guest fallback to have: a session has one codec at a
-time and every seat gets it. The gate as written could only have been passed by running a
-second encoder, which contradicts the design it was meant to verify. What replaces it is a
-decision this phase has to make and state -- whether a guest that cannot decode the session's
-codec is refused at admission, or whether its arrival downgrades the session for everyone --
-and the gate is written from that decision rather than assuming an answer. The wire can express
-either: the encoder generation counter ([01 §11.3](01-protocol.md)) increments on reconfigure
-and every guest sees it.
+**Gate:**
+
+1. A stock client negotiates and decodes HEVC, and both codecs are selectable.
+2. **A guest that cannot decode the session's codec is disconnected with a status, and no video
+   is ever sent to it.** Observed against a stock client: the disconnect arrives, the client
+   reports it, and the other guests' streams are undisturbed across the whole episode.
+
+**The original third clause was removed, 2026-08-17.** It read "a client without HEVC falls
+back to H.264 without operator intervention", and **one encode serves every guest**
+([05 §6](05-host.md)), so there is no per-guest fallback to have. The gate as written could
+only have been passed by running a second encoder, which contradicts the design it was meant to
+verify. D11 settles the question the other way and this gate is written from it.
+
+**Where the refusal happens is fixed by the protocol, not chosen.** Codec capability does not
+arrive with the offer; it arrives in session initialization ([01 §11.5](01-protocol.md)), which
+is opcode 11 on the media path **after** connectivity has completed. So a signalling refusal is
+not available -- at answer time we do not yet know what the peer can decode. The disconnect is
+sent instead in the window between initialization and the first video message, which is the
+first moment the capability is known and the last moment before anything has been sent that the
+peer cannot use.
+
+**Open before this gate can be written as a number.** Opcode 10 carries a status
+([01 §11.1](01-protocol.md)) and **the values it takes are not yet known**. We must send one the
+stock client already renders rather than inventing a value, so the enumeration has to be read
+before the disconnect can name a reason. Until then the refusal is expressible but its status
+is not chosen.
 
 ---
 
