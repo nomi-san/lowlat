@@ -318,7 +318,9 @@ construction rather than as covered.
 - [ ] Session initialization: accept the guest's preferences and encoder configuration, honour
   the 5-second deadline ([01 §12](01-protocol.md)), and emit the encode-latency and encoder
   generation messages ([01 §11.2](01-protocol.md)).
-- [ ] Packetizer and the video message framing ([01 §11.3](01-protocol.md)).
+- [x] Packetizer and the video message framing ([01 §11.3](01-protocol.md)). *Every recorded
+  video header re-emits byte for byte and reframes to the same fragment count, which is most of
+  Gate A item 2; writing the rotation zero-based fails it.*
 - [ ] Congestion controller ([01 §10](01-protocol.md)) driving encoder bitrate, ticked once per
   guest per frame from the encode loop, **each guest's ceiling being the configured rate divided
   by the active count**, and the rate applied being the minimum across guests

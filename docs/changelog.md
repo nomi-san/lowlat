@@ -51,6 +51,28 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   than keeping a second copy in step.
 - The per-guest delivery gate: the window ceiling, the skip-until-keyframe
   latch, the running-maximum retest, and a throttled global keyframe.
+- The video packetiser: a stream's fixed facts, the ten-byte header ahead
+  of each access unit, and the message the send ring takes.
+
+**Notes on the packetiser**
+
+- **Parsing proves we can read a peer; re-emitting proves a peer could read
+  us.** The corpus replay now takes every recorded video header, re-encodes it
+  with our own writer, and requires the bytes back byte for byte -- 4883 of
+  them. It then reframes the message and requires the fragment count to match
+  what the recording actually used. A field written at the wrong offset, in the
+  wrong endianness, or with the rotation off by one fails there rather than in
+  a client that renders nothing and says why.
+- **Shown capable of failing.** Writing the rotation zero-based, which is the
+  documented trap, fails the comparison against the recording.
+- **Almost nothing about a video header is per frame.** Dimensions, rotation
+  and the generation counter are fixed for a stream and only the keyframe flag
+  moves, so the packetiser is a value that outlives a frame rather than a
+  function taking six arguments that could each be got wrong per call.
+- **The generation counter moves only on reconfiguration**, never per frame,
+  and a bitrate change is not a reconfiguration: it neither reinitialises the
+  encoder nor changes what a decoder must do. A test frames fifty pictures and
+  requires the counter not to move.
 
 **Notes on the delivery gate**
 

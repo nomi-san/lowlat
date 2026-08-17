@@ -134,6 +134,8 @@ struct Counts {
     reassembled: u64,
     control_messages: u64,
     video_messages: u64,
+    /// Recorded video messages whose header we re-emitted byte for byte.
+    video_reemitted: u64,
     keyframes: u64,
 }
 
@@ -334,6 +336,48 @@ fn replays_a_recorded_session_byte_for_byte() {
                             header.width,
                             header.height
                         );
+
+                        // **What we would emit for this frame, against what
+                        // was recorded.** Parsing proves we can read a peer;
+                        // this proves a peer could read us, which is the half
+                        // that decides whether anything renders. A field we
+                        // write at the wrong offset, in the wrong endianness,
+                        // or with the rotation off by one lands here rather
+                        // than in a client showing nothing.
+                        let mut ours = [0u8; video::VIDEO_HEADER_LEN];
+                        let written =
+                            video::encode(&mut ours, &header).expect("re-encode the header");
+                        assert_eq!(written, video::VIDEO_HEADER_LEN);
+                        assert_eq!(
+                            ours.as_slice(),
+                            content
+                                .get(..video::VIDEO_HEADER_LEN)
+                                .expect("a header's worth"),
+                            "our video header differs from the recorded one"
+                        );
+
+                        // The framing arithmetic a peer's reassembler runs.
+                        // The recording fragmented this message at the same
+                        // body capacity, so the counts have to agree.
+                        let payload = content
+                            .get(video::VIDEO_HEADER_LEN..)
+                            .expect("a bitstream after the header");
+                        let framed = message::Message::new(&ours, payload).expect("frame it");
+                        assert_eq!(
+                            framed.total_len() as usize,
+                            content.len(),
+                            "the length prefix would not cover this message"
+                        );
+                        assert_eq!(
+                            framed.fragment_count(session.body_capacity),
+                            message::fragment_count(
+                                u32::try_from(content.len()).expect("message length"),
+                                session.body_capacity
+                            ),
+                            "our fragmentation differs from the recording's"
+                        );
+                        counts.video_reemitted += 1;
+
                         if video::is_keyframe(content, video::Codec::H264) {
                             counts.keyframes += 1;
                         }
@@ -357,8 +401,13 @@ fn replays_a_recorded_session_byte_for_byte() {
         counts.resyncs
     );
     eprintln!(
-        "rings:  {} reassembled, {} control, {} video, {} keyframes",
-        counts.reassembled, counts.control_messages, counts.video_messages, counts.keyframes
+        "rings:  {} reassembled, {} control, {} video ({} re-emitted byte for byte), \
+         {} keyframes",
+        counts.reassembled,
+        counts.control_messages,
+        counts.video_messages,
+        counts.video_reemitted,
+        counts.keyframes
     );
 
     assert!(counts.wire > 1000, "corpus looks empty");
@@ -372,6 +421,10 @@ fn replays_a_recorded_session_byte_for_byte() {
         "the ring and the framing walk disagree on how many messages there were"
     );
     assert!(counts.video_messages > 100, "no video reassembled");
+    assert_eq!(
+        counts.video_reemitted, counts.video_messages,
+        "a recorded video message was not re-emitted byte for byte"
+    );
     assert!(counts.keyframes > 0, "no keyframe classified");
 }
 
