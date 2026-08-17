@@ -114,6 +114,14 @@ struct Seat {
     /// rather than a scaled integer, because the controller takes a float and
     /// a fixed-point round trip would quietly change what it is given.
     measured_bits: AtomicU32,
+    /// A refresh this guest asked for outright.
+    ///
+    /// **A peer that cannot decode says so, and it is the only party that
+    /// can.** Its decoder has failed on something the wire delivered intact,
+    /// and it recovers by asking for a picture with no history behind it.
+    /// Ignoring the request leaves it failing on every frame until it gives
+    /// up, which from this side looks like a peer that simply stopped.
+    refresh: AtomicU32,
     /// Frames this guest lost after the gate had already admitted them.
     ///
     /// **The gate lives on the loop's thread, so a guest cannot latch itself.**
@@ -131,6 +139,7 @@ impl Seat {
             stale: AtomicU32::new(0),
             measured_bits: AtomicU32::new(0),
             missed: AtomicU32::new(0),
+            refresh: AtomicU32::new(0),
         }
     }
 }
@@ -338,6 +347,7 @@ impl Seats {
                 seat.stale.store(0, Ordering::Relaxed);
                 seat.measured_bits.store(0, Ordering::Relaxed);
                 seat.missed.store(0, Ordering::Relaxed);
+                seat.refresh.store(0, Ordering::Relaxed);
                 if joins.send(Join { seat: index, wake }).is_err() {
                     seat.state.store(seat_state::FREE, Ordering::Release);
                     return None;
@@ -394,6 +404,17 @@ impl SeatHold {
     /// What the encode-latency message carries, once a guest has smoothed it.
     pub fn encode_latency_ms(&self) -> f64 {
         f64::from(self.shared.encode_us.load(Ordering::Relaxed)) / 1000.0
+    }
+
+    /// This guest asked for a refresh.
+    ///
+    /// Taken by the loop on its next frame. It goes through the gate's
+    /// throttle like every other request, so a peer failing on every frame
+    /// cannot turn its own recovery into a refresh per frame.
+    pub fn request_refresh(&self) {
+        if let Some(seat) = self.shared.seats.get(self.index) {
+            seat.refresh.store(1, Ordering::Relaxed);
+        }
     }
 
     /// A frame the gate admitted did not reach the wire.
@@ -638,6 +659,16 @@ fn encode_loop<E: Encoder>(
                 encoder,
             );
 
+            // **A peer that cannot decode is the only party that knows.** Its
+            // decoder has failed on something the wire delivered intact, and
+            // the only recovery is a picture with no history behind it.
+            // Throttled like every other request, so a peer failing on every
+            // frame cannot ask for one per frame.
+            if refresh_asked(shared, &active) {
+                let asked_at = lowlat_common::clock::elapsed_ms(started);
+                force_keyframe |= gate.request_keyframe(asked_at) == Keyframe::Request;
+            }
+
             let submitted_at = lowlat_common::clock::Time::now();
             if encoder.submit(&frame, force_keyframe).is_ok() {
                 force_keyframe = false;
@@ -725,6 +756,20 @@ fn tick_rate<E: Encoder>(
     }
 }
 
+/// Whether any guest has asked for a refresh, clearing the requests.
+fn refresh_asked(shared: &Shared, active: &[Active]) -> bool {
+    let mut asked = false;
+    for entry in active {
+        if let Some(seat) = shared.seats.get(entry.seat) {
+            asked |= seat.refresh.swap(0, Ordering::Relaxed) != 0;
+        }
+    }
+    asked
+}
+
+/// Promote the guests that have arrived and retire the ones that have gone.
+///
+/// Returns whether the guest count moved, because that is the event a
 /// controller has to be told about rather than discovering on a tick.
 fn admit_and_retire(
     shared: &Shared,
@@ -1246,6 +1291,46 @@ mod tests {
             "the first frame a joining guest received was not a refresh"
         );
         println!("received {received} frames, {bytes} bytes");
+    }
+
+    /// Write what a seated guest actually receives, so the exact bytes can be
+    /// put through an independent decoder.
+    ///
+    /// Needs a render node, so it is off by default.
+    #[test]
+    #[ignore = "requires a render node"]
+    fn dump_what_a_guest_receives() {
+        let stream = Stream::start(Config {
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            configured_mbps: 10.0,
+            min_mbps: 1.0,
+        });
+        let wake = lowlat_net::Wake::new().expect("wake");
+        let seat = stream
+            .seats()
+            .take(wake.handle().expect("handle"))
+            .expect("a free seat");
+
+        let mut out = Vec::new();
+        let mut sizes = Vec::new();
+        until_within(30_000.0, "frames", || {
+            while let Some(frame) = seat.next_frame() {
+                sizes.push((frame.bytes().len(), frame.keyframe()));
+                out.extend_from_slice(frame.bytes());
+            }
+            sizes.len() >= 400
+        });
+        std::fs::write("/tmp/lowlat-seat.h264", &out).expect("write");
+        // One access-unit length per line, so a consumer can feed a decoder
+        // the way a guest's loop does rather than as one stream.
+        let index: String = sizes.iter().map(|(len, _)| format!("{len}\n")).collect();
+        std::fs::write("/tmp/lowlat-seat.idx", index).expect("write index");
+        println!("wrote {} bytes, {} access units", out.len(), sizes.len());
+        for (at, (len, key)) in sizes.iter().take(6).enumerate() {
+            println!("  unit {at}: {len} bytes, keyframe {key}");
+        }
     }
 
     /// Run the real pipeline at `fps` until it has reported, and print the

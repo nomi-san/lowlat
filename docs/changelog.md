@@ -70,6 +70,34 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - `lowlat-host::timing`: per-stage percentiles, recorded as a store into a
   fixed ring and sorted only where a report is asked for.
 
+- A guest's refresh request is honoured: a peer that cannot decode asks for a
+  picture with no history behind it, and the request now reaches the encoder
+  through the gate's throttle.
+- Live diagnostics on a streaming guest: what it declared, what it is being
+  sent, and what it is still sending back.
+
+**Notes on the first stock client to render our frames**
+
+- **The session was keyed from the media key alone**, discarding the four-byte
+  nonce prefix that follows it, so every record we sealed was undecryptable by
+  the peer and every record it sent failed our tag check. It presents as a path
+  that establishes and then carries nothing, which is indistinguishable from a
+  loop that was never wired up. The constructor used documents itself as being
+  for fixtures, and the seam was its only non-fixture caller.
+- **No test could have caught it**, and that is worth stating rather than
+  regretting: every test builds both endpoints the same way, so the two agreed
+  with each other and proved nothing about the prefix.
+- **A peer builds one decoder from what it declared** and never switches on
+  what arrives, so a guest asking for a codec this stream does not produce
+  fails every frame and reports a decode error rather than a mismatch. Said
+  plainly in the log now.
+- **A peer that cannot decode asks for a refresh, and we were dropping the
+  request.** It was parsed and thrown away, so the only recovery a peer has was
+  dead against us.
+- **Every frame we have sent fits in a single fragment**: median 129 bytes,
+  largest 868, over four hundred access units. The multi-fragment path is
+  covered by tests and by the corpus comparison and has never met a real peer.
+
 **Notes on the timing, and the loop shape it forced**
 
 - **The loop had to be restructured before it could be measured.** It

@@ -23,7 +23,7 @@ use lowlat_core::channel::{RecvRing, SlotMeta};
 use lowlat_core::conn::{Conn, Credentials};
 use lowlat_core::control::{self, CONTROL_CHANNEL};
 use lowlat_core::endpoint::Endpoint;
-use lowlat_core::envelope::{ENVELOPE_LEN, Envelope};
+use lowlat_core::envelope::{Cipher, ENVELOPE_LEN, Envelope};
 use lowlat_core::packet::HEADER_LEN;
 use lowlat_core::send::{SendRing, SendSlot};
 use lowlat_core::session::Session;
@@ -75,6 +75,12 @@ const MAX_INBOUND: usize = 64 * 1024;
 /// How often the loop reports what it has gathered, in passes. Cheap, and only
 /// reads state the loop already owns.
 const REPORT_EVERY: u32 = 16;
+
+/// How often a streaming guest says how it is doing, in milliseconds.
+const PROGRESS_MS: f64 = 2000.0;
+
+/// A 256-bit key and the four-byte nonce prefix that follows it.
+const MATERIAL_LEN: usize = 36;
 
 /// What the application must forward to the peer, or act on.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -333,8 +339,22 @@ impl Admission {
 
         let local = lowlat_crypto::credentials().map_err(|_| Error::Crypto)?;
         let seed = lowlat_crypto::transaction_seed().map_err(|_| Error::Crypto)?;
-        let (key, _prefix) =
+        // **Key and nonce prefix together, and both are needed.** The nonce is
+        // the credential's four-byte prefix followed by the counter, never
+        // four zeros, so a session built from the key alone seals records no
+        // peer can open and rejects every record a peer sends. That looks
+        // exactly like a path that established and carries nothing.
+        let (key, prefix) =
             lowlat_crypto::key_material(&local.aes256).map_err(|_| Error::Crypto)?;
+        let mut material = [0u8; MATERIAL_LEN];
+        material
+            .get_mut(..key.len())
+            .ok_or(Error::Crypto)?
+            .copy_from_slice(&key);
+        material
+            .get_mut(key.len()..)
+            .ok_or(Error::Crypto)?
+            .copy_from_slice(&prefix);
 
         // Walks from the base, so a second concurrent guest lands on the next
         // free port rather than failing to bind at all.
@@ -365,7 +385,7 @@ impl Admission {
                     arrivals,
                     ours,
                     theirs,
-                    key,
+                    material,
                     seed,
                     seats,
                     video,
@@ -436,7 +456,8 @@ struct Attached {
     arrivals: mpsc::Receiver<SocketAddr>,
     ours: (String, String),
     theirs: (String, String),
-    key: [u8; 32],
+    /// The 256-bit key and the four-byte nonce prefix that follows it.
+    material: [u8; MATERIAL_LEN],
     seed: [u8; 16],
     /// A way onto the stream, taken once this guest is streamable.
     seats: Option<Seats>,
@@ -480,6 +501,7 @@ fn drain_control(
     session: &mut Session<'_>,
     negotiation: &mut Negotiation,
     inbound: &mut [u8],
+    count: &mut u64,
 ) -> Result<(), Outcome> {
     loop {
         let Some(taken) = session.take_message(CONTROL_CHANNEL, inbound) else {
@@ -488,6 +510,9 @@ fn drain_control(
         let Ok(len) = taken else {
             return Err(Outcome::ControlStalled);
         };
+        // Counted where it is consumed, so the figure says what the peer sent
+        // rather than what parsed.
+        *count += 1;
         // A body we cannot parse is skipped rather than fatal: it has already
         // been consumed, so the channel is still moving.
         let Some(content) = inbound.get(..len) else {
@@ -499,6 +524,19 @@ fn drain_control(
         // Input is the other thing on this channel and belongs to Phase 7.
         // Until then an opcode the negotiation does not want is dropped.
         let _ = negotiation.on_control(&message);
+    }
+}
+
+/// Pass on a refresh the peer asked for.
+///
+/// **Taken rather than read**, so one request produces one refresh however
+/// many times the loop passes before the encoder acts on it.
+fn forward_refresh(negotiation: &mut Negotiation, seat: Option<&SeatHold>) {
+    if negotiation.take_force_refresh()
+        && let Some(seat) = seat
+    {
+        lowlat_common::log_info!("guest: peer asked for a refresh");
+        seat.request_refresh();
     }
 }
 
@@ -515,7 +553,8 @@ fn send_frames(
     seat: &SeatHold,
     packetiser: &mut Packetiser,
     negotiation: &mut Negotiation,
-) {
+) -> u64 {
+    let mut sent = 0u64;
     while let Some(frame) = seat.next_frame() {
         let keyframe = frame.keyframe();
         let Some(header) = packetiser.header(keyframe) else {
@@ -533,6 +572,7 @@ fn send_frames(
         // What the frame owes the peer beyond the picture. Both are cadences
         // rather than per-frame traffic: the latency figure every thirtieth
         // frame, the generation once after an initialisation.
+        sent += 1;
         let reports = negotiation.on_frame(seat.encode_latency_ms());
         if let Some(message) = reports.latency_message(0) {
             send_control(session, &message);
@@ -541,6 +581,7 @@ fn send_frames(
             send_control(session, &message);
         }
     }
+    sent
 }
 
 /// Queue one control message.
@@ -615,7 +656,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     let mut video_send_meta = vec![SendSlot::default(); VIDEO_SEND_SLOTS];
     let mut inbound = vec![0u8; MAX_INBOUND];
 
-    let Ok(envelope) = Envelope::from_key(&args.key) else {
+    let Ok(envelope) = Envelope::from_credential(&args.material, Cipher::Aes256) else {
         return;
     };
     let mut session = Session::new(envelope, 1, 0.0);
@@ -670,6 +711,10 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         )
     });
     let mut throughput = Throughput::default();
+    let mut declared = false;
+    let mut inbound_messages: u64 = 0;
+    let mut sent: u64 = 0;
+    let mut reported_ms = 0.0f64;
     let mut pass: u32 = 0;
 
     while !running.stopping() {
@@ -680,6 +725,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         let seated = seat.as_ref();
         let mut framing = packetiser.as_mut();
         let mut declaring = negotiation.as_mut();
+        let outbound = &mut sent;
         let Ok(_) = shell.turn(now, |endpoint| {
             while let Ok(addr) = arrivals.try_recv() {
                 let _ = endpoint.conn().add_candidate(addr);
@@ -687,7 +733,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             if let (Some(seat), Some(packetiser), Some(negotiation)) =
                 (seated, framing.as_deref_mut(), declaring.as_deref_mut())
             {
-                send_frames(endpoint.session(), seat, packetiser, negotiation);
+                *outbound += send_frames(endpoint.session(), seat, packetiser, negotiation);
             }
         }) else {
             break;
@@ -697,14 +743,22 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         // deadline and input has a human waiting on it, so neither may sit in a
         // ring until a counter comes round.
         if let Some(negotiation) = negotiation.as_mut()
-            && let Err(outcome) =
-                drain_control(shell.endpoint().session(), negotiation, &mut inbound)
+            && let Err(outcome) = drain_control(
+                shell.endpoint().session(),
+                negotiation,
+                &mut inbound,
+                &mut inbound_messages,
+            )
         {
             let _ = args.emit.send(Event::Ended {
                 attempt: args.attempt_id.clone(),
                 outcome,
             });
             return;
+        }
+
+        if let Some(negotiation) = negotiation.as_mut() {
+            forward_refresh(negotiation, seat.as_ref());
         }
 
         // The path first, then the declaration it carries. A transition seen a
@@ -736,6 +790,38 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 outcome: Outcome::NeverDeclared,
             });
             return;
+        }
+
+        // What the peer said it can decode, once, where a live run can see
+        // it. A stream that renders nothing is diagnosed from here first.
+        if !declared && let Some(asked) = negotiation.as_ref().and_then(Negotiation::asked) {
+            declared = true;
+            lowlat_common::log_info!(
+                "guest: declared attempt={} max_w={} max_h={} res={}x{} fps={} flags={:#x}",
+                args.attempt_id,
+                asked.max_width,
+                asked.max_height,
+                asked.resolution_x,
+                asked.resolution_y,
+                asked.refresh_rate,
+                asked.flags
+            );
+            // **A peer builds one decoder, from what it declared.** It does
+            // not switch on what arrives, so a guest that asked for a codec
+            // this stream does not produce will fail to decode every frame it
+            // is sent and report a decode error rather than a mismatch. Said
+            // plainly here, because from the wire alone it looks like a
+            // corrupt stream.
+            if asked.hevc() || asked.color444() || asked.ten_bit() {
+                lowlat_common::log_warn!(
+                    "guest: attempt={} asked for hevc={} 444={} 10bit={}, and this stream is \
+                     h264 8-bit 4:2:0; nothing it is sent will decode",
+                    args.attempt_id,
+                    u8::from(asked.hevc()),
+                    u8::from(asked.color444()),
+                    u8::from(asked.ten_bit())
+                );
+            }
         }
 
         // **A seat is taken when the guest becomes streamable, not when it
@@ -779,7 +865,30 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             && let Some((window, stale, bytes)) =
                 shell.endpoint().session().send_pressure(VIDEO_CHANNEL)
         {
-            seat.report(window, stale, throughput.sample(bytes, now));
+            let measured = throughput.sample(bytes, now);
+            seat.report(window, stale, measured);
+
+            // **The line a live run is read from.** Frames leaving, the window
+            // the gate is judging, and what the path is actually carrying: a
+            // stream that stops is one of the three going flat.
+            if now - reported_ms >= PROGRESS_MS {
+                reported_ms = now;
+                // **What the peer is still doing, not only what we are.** A
+                // guest that stops acknowledging while its own messages keep
+                // arriving is alive and has stopped reading; one that goes
+                // silent both ways has torn the session down. The two have
+                // different causes and the log has to tell them apart.
+                let rx = shell
+                    .endpoint()
+                    .session()
+                    .recv_cumulative(CONTROL_CHANNEL)
+                    .unwrap_or(0);
+                lowlat_common::log_info!(
+                    "guest: attempt={} frames={sent} window={window} stale={stale} mbps={measured:.2} encode_ms={:.2} rx_frag={rx} rx_msg={inbound_messages}",
+                    args.attempt_id,
+                    seat.encode_latency_ms()
+                );
+            }
         }
 
         pass = pass.wrapping_add(1);
@@ -1240,7 +1349,7 @@ mod geometry {
 
         let mut negotiation = Negotiation::opened(0.0);
         let mut inbound = vec![0u8; MAX_INBOUND];
-        drain_control(&mut ours, &mut negotiation, &mut inbound).expect("drained");
+        drain_control(&mut ours, &mut negotiation, &mut inbound, &mut 0).expect("drained");
 
         assert!(
             negotiation.ready(),
@@ -1362,7 +1471,7 @@ mod geometry {
         // real buffer is sized to avoid.
         let mut inbound = vec![0u8; 1024];
         assert_eq!(
-            drain_control(&mut ours, &mut negotiation, &mut inbound),
+            drain_control(&mut ours, &mut negotiation, &mut inbound, &mut 0),
             Err(Outcome::ControlStalled),
             "a message that cannot be taken was not reported"
         );

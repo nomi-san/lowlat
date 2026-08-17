@@ -344,8 +344,24 @@ refresh that recovers it.
 
 0. Both hardware backends encode the same synthetic source, so the trait is shaped by two
    implementations rather than one.
-1. **A stock client connects and renders our synthetic frames**, 1080p60, for 10 minutes, with
-   no corruption and no freeze beyond the loss budget.
+1. [~] **A stock client connects and renders our synthetic frames**, 1080p60, for 10 minutes, with
+   no corruption and no freeze beyond the loss budget. *A stock client rendered our frames on
+   2026-08-17. The ten-minute soak and the corruption and freeze budgets are still to be run,
+   so this is first light rather than the closed item.*
+
+   **Three faults stood between the loop and a picture, and only the first was ours.**
+
+   - **The session was keyed from the media key alone, discarding the four-byte nonce prefix
+     that follows it.** Every record we sealed was undecryptable by the peer and every record
+     it sent failed our tag check, which presents as a path that establishes and carries
+     nothing. The constructor used says in its own documentation that it is for fixtures and
+     that a real session always carries a prefix; the seam was its only non-fixture caller.
+   - **A peer builds one decoder from what it declared and never switches on what arrives.** A
+     client declaring the codec we do not produce fails every frame and reports a decode error
+     rather than a mismatch, so the host now says so plainly in its log.
+   - **One decoder backend refuses our stream where two others accept it.** Same bytes, same
+     client, same machine: the vendor backend fails and the software one renders. See the note
+     below, because this is a real divergence rather than a peer defect.
 2. **Our emitted video stream is structurally indistinguishable from the session corpus.**
    Header layout, fragment sizing, message framing, and flags checked offline against the
    corpus, and our initialization parser accepts the corpus's client messages verbatim.
@@ -410,6 +426,20 @@ refresh that recovers it.
    and publish is a copy and a counter. **The tighter budget this gate defers can now be set
    from a number**: one frame interval is 16.667 ms, the pipeline uses a fifth of it, and the
    figure to defend as capture and conversion arrive is the 3.9 ms tail rather than the floor.
+
+**Open, found against a stock client, 2026-08-17.** One decoder backend refuses our stream
+where the software one renders it. Our parameter sets differ from a recorded peer's in five
+places, and two of them are the kind a strict decoder cares about: **picture order counts are
+sent explicitly where the reference derives them from the frame number**, and our frame number
+field is eight bits where the reference uses four. The reference's choice removes a wrapping
+counter from every slice header. Wire compatibility is bug-for-bug, so the divergence is worth
+closing on its own terms; that it is also the most likely explanation for the backend that
+refuses us is what moves it up the list. The other three differences -- a constraint flag, the
+video format code, and the declared time scale -- are cosmetic and recorded for completeness.
+
+**Also open: every frame we have ever sent fits in one fragment.** Median 129 bytes, largest
+868, across four hundred access units of synthetic content. The multi-fragment path is covered
+by tests and by the corpus comparison, and has never run against a real peer.
 
 **Open, found by running both backends over one source, 2026-08-17.** The vendor backend spends
 **2.4 MB on its first picture where the open-stack one spends 513 bytes**, for identical input at
