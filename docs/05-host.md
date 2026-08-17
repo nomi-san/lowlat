@@ -144,6 +144,13 @@ biggest structural mistake available here: a serialized acquire, convert, encode
 70 to 80 fps against a 120 fps target. Encode must overlap the next acquire, so the trait
 cannot express the serialized form.
 
+- **The quantiser floor is a latency control, not a picture setting**, and it reads backwards
+  until the chain is spelled out. A lower floor lets the encoder spend more bits refining a
+  frame; more bits is a larger frame; a larger frame is more packets; more packets is longer on
+  the wire and longer in every queue between here and the far side. Below about **5** the extra
+  bits buy nothing the eye resolves, so they are spent purely on delay. **5 is therefore the
+  lowest-latency setting rather than the lowest-quality one**, and it is the default for a
+  product whose first goal is latency. Raising it trades visible sharpness for smaller frames.
 - **`reconfigure` changes bitrate live.** It never reinitializes the encoder and never emits a
   keyframe. Congestion response happens many times a minute (§5); an encoder reinitialization
   at that cadence would be visible as a stutter every time the network hiccuped.

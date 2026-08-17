@@ -285,6 +285,7 @@ mod tests {
                 height: 1080,
                 fps: 60,
                 bitrate_bps: 20_000_000,
+                min_qp: DEFAULT_MIN_QP,
             };
             let mut encoder = session.initialize(&cuda, config).expect("initialize");
             assert_eq!(encoder.config().bitrate_bps, 20_000_000);
@@ -330,6 +331,7 @@ mod tests {
             height: 1080,
             fps: 60,
             bitrate_bps: 20_000_000,
+            min_qp: DEFAULT_MIN_QP,
         };
         let mut encoder = session.initialize(&cuda, config).expect("initialize");
 
@@ -643,7 +645,23 @@ pub struct Config {
     pub height: u32,
     pub fps: u32,
     pub bitrate_bps: u32,
+    /// Floor on the quantiser, which is a **latency control rather than a
+    /// quality one**, and reads backwards until you see why.
+    ///
+    /// A lower floor lets the encoder spend more bits refining a frame. More
+    /// bits is a larger frame, a larger frame is more packets, and more
+    /// packets is longer on the wire and longer in every queue between here
+    /// and the far side. Below about five the extra bits buy nothing the eye
+    /// resolves, so they are spent purely on delay.
+    ///
+    /// Five is therefore the lowest-latency setting rather than the lowest
+    /// quality one, and it is the default for a product whose first goal is
+    /// latency. Raising it trades visible sharpness for smaller frames.
+    pub min_qp: u32,
 }
+
+/// The floor that buys latency without costing anything the eye resolves.
+pub const DEFAULT_MIN_QP: u32 = 5;
 
 /// Colour signalling, from [05 §3.1](../../../docs/05-host.md).
 ///

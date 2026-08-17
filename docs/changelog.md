@@ -127,6 +127,13 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   it knows. Compiling against a header older than the installed runtime is the
   safe direction either way; only the reason differs, and writing down which
   reason applies is what stops the next person applying the wrong rule.
+- **The quantiser floor is a latency control and reads backwards.** A lower
+  floor lets the encoder spend more bits on a frame, and more bits is a larger
+  frame, more packets, and longer in every queue between here and the far side.
+  Below about five those bits buy nothing the eye resolves, so they are spent
+  purely on delay. The setting with the *higher* floor is therefore the
+  lowest-latency one, which is the opposite of how a quality knob reads, and it
+  is the default here because latency is this product's first goal.
 - **An unsupported attribute reports a sentinel, not zero.** Reading the
   interface's not-supported marker as a bit set makes every bit read as set,
   which turns "this device does nothing" into "this device does everything".
