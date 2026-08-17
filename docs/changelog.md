@@ -86,6 +86,30 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - The refresh picture's cost, measured at each quantiser floor, as a test
   rather than as a remembered figure.
 
+- A band of unpredictable detail in the synthetic source, off by default, so a
+  frame can be made large enough to need more than one fragment.
+- The frame rate is declared to the encoder, which is what a bitrate is spent
+  at and was never being said.
+
+**Notes on the frames that never fragmented**
+
+- **Every message we had ever sent fit in one fragment**, so the fragmenting
+  path, a peer's reassembly and the window arithmetic had never met a message
+  that had to be split. Resolution does not fix it: a bar on a flat field is
+  trivially compressible at any size. The source now takes a band of detail
+  derived from the frame index, which an encoder cannot predict from the frame
+  before it.
+- **Off by default, and that is deliberate.** Every latency figure and every
+  refresh size on record was measured against the flat picture; content that
+  changed underneath them would invalidate them silently.
+- **It found a defect on its first run.** The stream ran at exactly twice its
+  configured rate at every setting. The encoder was never told the frame rate,
+  so it budgeted bits for its default of thirty frames a second and received
+  sixty. A congestion controller actuating through that is wrong by the same
+  factor and would push a path into loss while believing it was inside budget.
+  The flat picture could never have shown it: at a tenth of a megabit nothing
+  was near the target.
+
 **Notes on a burst that never existed**
 
 - **The vendor backend's 2.4 MB refresh was a length, not a picture.** A

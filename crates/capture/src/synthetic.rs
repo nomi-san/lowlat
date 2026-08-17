@@ -31,6 +31,12 @@ const BLOCK_CR: u8 = 90;
 
 /// How wide the moving bar is, in luma samples.
 const BAR_WIDTH: usize = 64;
+
+/// Mixing constants for the detail band. Odd and large, so neighbouring
+/// samples do not correlate and the encoder cannot predict one from another.
+const MIX_X: u32 = 2_654_435_761;
+const MIX_Y: u32 = 40_503;
+const MIX_INDEX: u32 = 2_246_822_519;
 /// How far it travels per frame. **Deliberately not a divisor of common
 /// widths**, so the pattern does not land on the same columns every few
 /// frames and hide a rounding fault in the position.
@@ -56,6 +62,7 @@ pub struct Synthetic {
     chroma: Vec<u8>,
     chroma_stride: usize,
     index: u64,
+    detail_rows: usize,
 }
 
 impl core::fmt::Debug for Synthetic {
@@ -88,8 +95,31 @@ impl Synthetic {
             chroma: vec![NEUTRAL_CHROMA; chroma_stride * chroma_rows],
             chroma_stride,
             index: 0,
+            detail_rows: 0,
         };
         source.paint_chroma();
+        source
+    }
+
+    /// The same source with a band of unpredictable detail across the top.
+    ///
+    /// **A flat picture tests nothing downstream of the encoder.** A bar on a
+    /// flat field codes to a few hundred bytes at any resolution, so every
+    /// message fits one fragment and the fragmenting path, the reassembly a
+    /// peer runs, and the window arithmetic never meet a message they have to
+    /// split. This band is a function of the frame index, so it cannot be
+    /// predicted from the frame before it and the encoder has to spend bits.
+    ///
+    /// **It sits at the top, clear of the row the frame checker samples**, so
+    /// the content contract the bar carries is untouched.
+    ///
+    /// Zero rows is the flat source, and that is the default everywhere: the
+    /// latency figures and the refresh sizes on record were measured against
+    /// it, and content that changes underneath them would invalidate them
+    /// silently.
+    pub fn with_detail(width: u32, height: u32, detail_rows: u32) -> Self {
+        let mut source = Self::new(width, height);
+        source.detail_rows = usize::try_from(detail_rows).unwrap_or(0).min(source.height);
         source
     }
 
@@ -109,6 +139,47 @@ impl Synthetic {
                     pair[0] = BLOCK_CB;
                     pair[1] = BLOCK_CR;
                 }
+            }
+        }
+    }
+
+    /// Rows of unpredictable detail this source paints, from the top.
+    pub fn detail_rows(&self) -> usize {
+        self.detail_rows
+    }
+
+    /// Fill the detail band for one frame.
+    ///
+    /// A cheap mix of the coordinates and the index. It only has to be
+    /// unpredictable to an encoder, not to a cryptographer, and it has to be
+    /// a pure function of the index so a checker can still reproduce it.
+    fn paint_detail(&mut self, index: u64) {
+        let rows = self.detail_rows.min(self.height);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "the low word is the whole of what is wanted from the index"
+        )]
+        let seed = (index as u32).wrapping_mul(MIX_INDEX);
+        for row in 0..rows {
+            let start = row * self.width;
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "a row index inside a picture"
+            )]
+            let row_mix = (row as u32).wrapping_mul(MIX_Y) ^ seed;
+            let Some(line) = self.luma.get_mut(start..start + self.width) else {
+                return;
+            };
+            for (column, sample) in line.iter_mut().enumerate() {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    reason = "a column index inside a picture"
+                )]
+                let mix = (column as u32).wrapping_mul(MIX_X) ^ row_mix;
+                // Kept inside the limited range the wire uses, like the rest
+                // of the picture. The mask takes a byte from the middle of the
+                // word, where the mixing has spread the input furthest.
+                *sample = 16 + u8::try_from((mix >> 13) & 0xFF).unwrap_or(0) % 220;
             }
         }
     }
@@ -145,6 +216,7 @@ impl Synthetic {
 
     fn draw(&mut self, index: u64) {
         self.luma.fill(BACKGROUND_LUMA);
+        self.paint_detail(index);
         let start_column =
             usize::try_from(bar_x(index, u32::try_from(self.width).unwrap_or(0))).unwrap_or(0);
         for row in 0..self.height {

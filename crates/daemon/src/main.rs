@@ -33,8 +33,8 @@ const DEFAULT_PORT: u16 = 9000;
 /// Reflexive server, for discovering our own mapped address.
 const DEFAULT_STUN: &str = "74.125.250.129:19302";
 
-/// What the stream produces. Fixed: the guest declares what it can decode and
-/// the host is authoritative over all of it, so a declaration is a request.
+/// What the stream produces by default. The guest declares what it can decode
+/// and the host is authoritative over all of it, so a declaration is a request.
 const WIDTH: u32 = 1920;
 const HEIGHT: u32 = 1080;
 const FPS: u32 = 60;
@@ -174,17 +174,32 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let bitrate_mbps: f64 = flag("--bitrate")
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_BITRATE_MBPS);
+    // The size the stream runs at. A larger one is how a frame is made big
+    // enough to need more than one fragment, which is the whole of the
+    // reassembly path a peer runs and the part a small synthetic picture never
+    // reaches.
+    let width: u32 = flag("--width")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(WIDTH);
+    let height: u32 = flag("--height")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(HEIGHT);
+    // Rows of unpredictable detail in the synthetic picture. Zero is the flat
+    // picture; a band makes frames large enough to need more than one
+    // fragment, which is the only way a peer's reassembly is exercised.
+    let detail_rows: u32 = flag("--detail").and_then(|v| v.parse().ok()).unwrap_or(0);
 
     let mut seam = Admission::new(Config {
         base_port,
         max_guests: MAX_GUESTS as usize,
         servers: vec![stun],
         stream: Some(lowlat::stream::Config {
-            width: WIDTH,
-            height: HEIGHT,
+            width,
+            height,
             fps: FPS,
             configured_mbps: bitrate_mbps,
             min_mbps: MIN_BITRATE_MBPS,
+            detail_rows,
         }),
     });
 

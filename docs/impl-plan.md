@@ -459,9 +459,24 @@ closing on its own terms; that it is also the most likely explanation for the ba
 refuses us is what moves it up the list. The other three differences -- a constraint flag, the
 video format code, and the declared time scale -- are cosmetic and recorded for completeness.
 
-**Also open: every frame we have ever sent fits in one fragment.** Median 129 bytes, largest
-868, across four hundred access units of synthetic content. The multi-fragment path is covered
-by tests and by the corpus comparison, and has never run against a real peer.
+**Closed 2026-08-18: the multi-fragment path now runs against a real peer.** Until this the
+synthetic picture coded to a few hundred bytes at any resolution, so every message we had ever
+sent fit one fragment and the fragmenting path, a peer's reassembly, and the window arithmetic
+had never met a message that had to be split. Raising the resolution does not help -- a bar on a
+flat field is trivially compressible at any size -- so the source gained a band of detail
+derived from the frame index, off by default and clear of the row the frame checker samples.
+
+With 200 rows of it: every message spans more than one fragment, the largest is 112 of them, and
+a stock client renders the result at 60 fps with zero loss, zero retransmissions and a send
+window of zero.
+
+**It found a real defect immediately.** The stream ran at exactly twice its configured rate,
+at every setting: 3 Mbps produced 6.6, 10 produced 20.1, 30 produced 59.3. The encoder was never
+told the frame rate, so it budgeted bits for the driver's default of thirty frames a second and
+received sixty. A congestion controller actuating through that is wrong by the same factor and
+would drive a path into loss while believing it was well inside budget. **The flat picture could
+not have shown it**: at a tenth of a megabit nothing was ever near the target. Ten megabits now
+measures ten.
 
 **Closed by measurement, 2026-08-18.** This section carried an open question: the vendor
 backend was said to spend 2.4 MB on its first picture where the open-stack one spends 513

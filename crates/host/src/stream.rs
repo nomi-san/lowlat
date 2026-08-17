@@ -247,6 +247,13 @@ pub struct Config {
     pub configured_mbps: f64,
     /// The floor a controller may not descend below.
     pub min_mbps: f64,
+    /// Rows of unpredictable detail the source paints, from the top.
+    ///
+    /// **Zero is the flat picture every recorded measurement was taken
+    /// against.** A nonzero band makes frames large enough to need more than
+    /// one fragment, which is the only way the fragmenting path here and the
+    /// reassembly a peer runs are exercised together.
+    pub detail_rows: u32,
 }
 
 /// The running loop, and the handle the seam holds it by.
@@ -548,7 +555,7 @@ fn encode_loop<E: Encoder>(
     config: Config,
     encoder: &mut E,
 ) {
-    let mut source = Synthetic::new(config.width, config.height);
+    let mut source = Synthetic::with_detail(config.width, config.height, config.detail_rows);
     let mut gate = Gate::new();
     let mut budget = Budget::new(config.configured_mbps, config.min_mbps);
     let mut stages = Stages::default();
@@ -1101,6 +1108,7 @@ mod tests {
                 fps: 240,
                 configured_mbps: 10.0,
                 min_mbps: 1.0,
+                detail_rows: 0,
             };
             let shared = Arc::new(Shared {
                 seats: core::array::from_fn(|_| Seat::new()),
@@ -1254,6 +1262,7 @@ mod tests {
             fps: 60,
             configured_mbps: 10.0,
             min_mbps: 1.0,
+            detail_rows: 0,
         });
         let wake = lowlat_net::Wake::new().expect("wake");
         let seat = stream
@@ -1300,12 +1309,17 @@ mod tests {
     #[test]
     #[ignore = "requires a render node"]
     fn dump_what_a_guest_receives() {
+        let rows: u32 = std::env::var("LOWLAT_DETAIL_ROWS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
         let stream = Stream::start(Config {
             width: 1920,
             height: 1080,
             fps: 60,
             configured_mbps: 10.0,
             min_mbps: 1.0,
+            detail_rows: rows,
         });
         let wake = lowlat_net::Wake::new().expect("wake");
         let seat = stream
@@ -1327,7 +1341,17 @@ mod tests {
         // the way a guest's loop does rather than as one stream.
         let index: String = sizes.iter().map(|(len, _)| format!("{len}\n")).collect();
         std::fs::write("/tmp/lowlat-seat.idx", index).expect("write index");
-        println!("wrote {} bytes, {} access units", out.len(), sizes.len());
+        let body = 1193usize;
+        let fragments = |len: usize| (len + 10 + 4).div_ceil(body);
+        let multi = sizes.iter().filter(|(len, _)| fragments(*len) > 1).count();
+        let largest = sizes.iter().map(|(len, _)| *len).max().unwrap_or(0);
+        println!(
+            "detail_rows={rows}: {} units, {} bytes, largest {largest} ({} fragments), \
+             {multi} need more than one fragment",
+            sizes.len(),
+            out.len(),
+            fragments(largest)
+        );
         for (at, (len, key)) in sizes.iter().take(6).enumerate() {
             println!("  unit {at}: {len} bytes, keyframe {key}");
         }
@@ -1342,6 +1366,7 @@ mod tests {
             fps,
             configured_mbps: 10.0,
             min_mbps: 1.0,
+            detail_rows: 0,
         });
         let wake = lowlat_net::Wake::new().expect("wake");
         let seat = stream

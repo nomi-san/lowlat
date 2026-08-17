@@ -1307,6 +1307,31 @@ impl Encoder<'_> {
         rate.rate.window_size = 1000;
         let rate_buffer = self.buffer(crate::ffi::va::VAEncMiscParameterBufferType, &rate)?;
 
+        // **A rate is meaningless without the rate it is spent at**, and the
+        // driver does not learn the frame rate from anywhere else. Left unset
+        // it uses its own default, which is half what this pipeline runs at,
+        // so it budgets bits for thirty frames and receives sixty: the stream
+        // comes out at exactly twice its target, tracking the setting
+        // faithfully and overshooting it by a factor of two at every value.
+        // A congestion controller actuating through that is wrong by the same
+        // factor, and pushes a path into loss while believing it is well
+        // inside the budget.
+        #[repr(C)]
+        struct FrameRate {
+            header: crate::ffi::va::VAEncMiscParameterBuffer,
+            rate: crate::ffi::va::VAEncMiscParameterFrameRate,
+        }
+        // SAFETY: a plain-data header followed by its payload, which is the
+        // layout the interface specifies. All-zero is a valid value of every
+        // field and the ones that matter are set below.
+        let mut fps = unsafe { core::mem::zeroed::<FrameRate>() };
+        fps.header.type_ = crate::ffi::va::VAEncMiscParameterTypeFrameRate;
+        // Numerator in the low half, denominator in the high half. A zero
+        // denominator is read as one, but it is written out because a field
+        // that happens to work when left zero is one nobody checks.
+        fps.rate.framerate = self.params.fps | (1 << 16);
+        let fps_buffer = self.buffer(crate::ffi::va::VAEncMiscParameterBufferType, &fps)?;
+
         // **Both parameter sets go into one header of sequence type, and the
         // picture type is never used at all.** The interface names a type per
         // set, which invites one header each; a working encoder on this driver
@@ -1445,7 +1470,7 @@ impl Encoder<'_> {
         // field widths the slice header is then read with, and the picture
         // buffer decides which fields the slice header is expected to carry at
         // all, so both precede it.
-        let mut buffers = [0 as VABufferID; 8];
+        let mut buffers = [0 as VABufferID; 9];
         let mut used = 0usize;
         {
             let mut push = |id: VABufferID| {
@@ -1456,6 +1481,7 @@ impl Encoder<'_> {
             };
             push(seq_buffer);
             push(rate_buffer);
+            push(fps_buffer);
             if let Some((head, data)) = sets_packed {
                 push(head);
                 push(data);
