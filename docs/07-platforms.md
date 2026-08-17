@@ -142,11 +142,34 @@ design as written:
 needs the card node plus the elevated capability, which settles the privilege question in
 §6.
 
-### §3.2 What is still open
+### §3.2 Result on the second vendor, measured 2026-08-17
 
-The result is one vendor. The proprietary driver is unmeasured and remains the risk it always
-was, but it is no longer on the critical path, because the primary Linux target is the open
-stack.
+**Export works there too.** Probed with the same program on the development workstation, whose
+display is driven by a discrete GPU on that vendor's **open kernel modules** (610.57.04),
+2560x1440 under the same compositor:
+
+| Step | Result |
+|---|---|
+| modesetting interface | present; the compositor is running on it |
+| enumerate pipeline, fetch framebuffer | works, with the elevated capability |
+| export as a shareable buffer | **works** |
+
+The buffer differs from §3.1's in a way the import path has to handle, and it is the opposite
+of what the first result led us to expect:
+
+- **One buffer, not three.** The primary framebuffer reports a single buffer with a pitch that
+  is exactly the width times four. The multi-buffer, differing-pitch case in §3.1 is one
+  vendor's compression scheme, not a general property of scanout.
+- **A vendor tiling modifier, and allocation padded past the visible height.** The exported
+  size divides out to more rows than the display has, so the buffer is tiled rather than
+  linear. It cannot be read as a plain image at its pitch.
+- **10-bit again, on completely different hardware.** The same packed 32-bit 10-bit-per-channel
+  format as §3.1. Two vendors, two drivers, one conclusion: **treat 10-bit scanout as the
+  normal case rather than the exception**, which is what D7 already assumes.
+
+So both entries in §11's export row are now closed for the drivers that matter here. What
+remains unmeasured is that vendor's **classic** kernel module, which this machine does not run
+and which is not on the path to Gate B.
 
 The virtual-display control could not run: the software virtual driver is not built for this
 kernel. §2.2's claim is therefore untested, and now less load-bearing.
@@ -287,16 +310,17 @@ None of this reaches the protocol core, the IO shell's logic, or the public API.
 
 | Item | Status |
 |---|---|
-| framebuffer export, open driver | **closed**: works, read-only (§3.1) |
+| framebuffer export, open stack | **closed**: works, read-only (§3.1) |
+| framebuffer export, second vendor | **closed**: works, single tiled buffer (§3.2) |
 | capture backend | **closed**: scanout |
 | frame variant | **closed**: multi-plane, modifier-bearing, 10-bit capable |
 | process topology | **closed**: system service, session helpers optional (§5) |
 | privilege requirement | **closed**: card node plus the elevated capability |
 | pointer-hidden signal source | open: needs the session-side probe (§2.1) |
-| framebuffer export, proprietary driver | open, no longer on the critical path |
+| framebuffer export, classic module of the second vendor | open, not run here, off the path |
 | virtual display | open: the software virtual driver is absent from this kernel |
 | audio capture surface | open, Phase 10 |
 
-Six of the nine closed by one probe, run before Phase 0 rather than at Phase 9. The three that
-remain are all narrower than the questions they replaced.
-part of Phase 9.
+Six of the nine were closed by one probe, run before Phase 0 rather than at Phase 9. A second
+run of the same probe on different hardware closed the seventh (§3.2). The rest are all
+narrower than the questions they replaced.

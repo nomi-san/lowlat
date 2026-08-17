@@ -289,14 +289,31 @@ construction rather than as covered.
 ## Phase 5 - Encoder and Gate A
 
 - [ ] `lowlat-encode` trait: asynchronous submit and poll, force keyframe, live bitrate
-  reconfigure that never reinitializes.
+  reconfigure that never reinitializes. **`poll` never blocks**, which is a real constraint on
+  both backends rather than a preference; see the note below.
 - [ ] **VAAPI backend**, H.264, 8-bit 4:2:0, low-latency parameters. First, not later: it is the
   encoder on the primary Linux target and on the machine this is tested against
   ([07 §3.1](07-platforms.md)).
 - [ ] NVENC backend, same trait, same parameters.
-- [ ] `lowlat-capture` trait plus the synthetic frame source.
-- [ ] Packetizer and the control opcodes streaming requires.
-- [ ] Congestion controller ([01 §10](01-protocol.md)) driving encoder bitrate.
+- [ ] `lowlat-capture` trait plus the synthetic frame source, emitting planar frames directly so
+  no conversion stage is needed before Phase 9.
+- [ ] **Frame pool and per-guest publish ring.** One encode serves every guest, and a backend's
+  bitstream is only valid until its next poll, so the collected frame is copied once into a
+  preallocated pool slot and the slot index is published on a bounded ring per guest, released
+  by refcount after packetization. This is the first cross-thread handoff added since
+  [Phase 0](#phase-0---workspace-and-common) and carries that phase's model-checking obligation.
+- [ ] **Per-guest delivery gate** ([05 §6](05-host.md)): the window ceiling test, the
+  skip-until-keyframe latch, the running-maximum retest that releases a skipping guest, and a
+  throttled global keyframe. A fresh guest starts pending, which is what produces its join
+  keyframe rather than a separate arrangement.
+- [ ] Two-channel ring geometry per guest, sized from the largest frame the stream can produce
+  rather than from control traffic.
+- [ ] Session initialization: accept the guest's preferences and encoder configuration, honour
+  the 5-second deadline ([01 §12](01-protocol.md)), and emit the encode-latency and encoder
+  generation messages ([01 §11.2](01-protocol.md)).
+- [ ] Packetizer and the video message framing ([01 §11.3](01-protocol.md)).
+- [ ] Congestion controller ([01 §10](01-protocol.md)) driving encoder bitrate, ticked once per
+  guest per frame from the encode loop and applied as the minimum across guests.
 
 **Gate A:**
 
@@ -304,9 +321,43 @@ construction rather than as covered.
    implementations rather than one.
 1. **A stock client connects and renders our synthetic frames**, 1080p60, for 10 minutes, with
    no corruption and no freeze beyond the loss budget.
-2. Bitrate reconfigure is observed live with no keyframe and no reinitialization.
-3. Encode submit and the next frame's preparation overlap; the pipeline is not serialized.
-4. Reported end-to-end latency is within the stage budget.
+2. **Our emitted video stream is structurally indistinguishable from the session corpus.**
+   Header layout, fragment sizing, message framing, and flags checked offline against the
+   corpus, and our initialization parser accepts the corpus's client messages verbatim.
+   *This runs without hardware and without a peer, and it is what makes item 1 diagnosable: a
+   client that renders nothing after this passes has a negotiation fault, not a framing one.*
+3. **Zero keyframes across a bitrate reconfigure**, counted at the encoder over a run that
+   forces repeated rate changes, and the encoder is not reinitialized. This replaces
+   "reconfigure is observed live", which named no observation and could not fail.
+4. **A guest that is starved and recovers never receives a dependent frame across the gap.**
+   Driven in the simulator by withholding acknowledgements until the window fills, then
+   releasing them. *Named regression test; this is the gray-frame lesson and it is the reason
+   the gate moved into this phase.*
+5. **`poll` returns pending rather than blocking**, on both backends. Submit a burst deep
+   enough that the queued encode time is far longer than one frame, then time a single `poll`.
+   A non-blocking probe returns in microseconds; a blocking collect cannot return before the
+   oldest picture completes, so the two are separated by orders of magnitude rather than by a
+   threshold anyone has to choose. **Shown capable of failing** by building the blocking form
+   of the same call, which is one flag apart on both backends, and requiring the check to fail
+   against it.
+6. **Encode overlaps the next frame's preparation**, asserted as measurement rather than as
+   throughput: the per-stage times from [05 §10](05-host.md) sum to more than the wall-clock
+   interval between frames. Stages that sum past the interval they fit inside can only have
+   run concurrently. *A frame-rate target proves nothing here: the hardware on this machine
+   encodes 1080p far faster than 60 fps, so a fully serialized pipeline would hold the frame
+   rate and pass. The lesson behind this gate came from a 120 fps target, and the arithmetic,
+   not the frame rate, is what carries it to 60.*
+7. Every stage in [05 §10](05-host.md) reports p50, p95 and p99, and the host-side stages sum
+   to less than one frame interval at the negotiated rate. A pipeline that cannot clear a frame
+   within a frame interval cannot hold the frame rate, so this is the floor rather than the
+   target; a tighter budget is set once the first measurement exists.
+
+**Note on the non-blocking poll.** Neither backend offers a completion callback on this
+platform. Both offer a non-blocking probe -- a surface status query before mapping the coded
+buffer on one, a no-wait flag on the bitstream lock on the other -- and the trait is only
+honest if that path is the one taken. Building against the blocking form and adding depth to
+hide it produces a pipeline that stalls the moment the encoder falls behind, which is exactly
+when it must not.
 
 ---
 
@@ -423,6 +474,24 @@ from a source change.
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
 
+- 2026-08-17: **Phase 5 gains the delivery gate, and Gate A gains four checks that can
+  fail.** The gate was scheduled for Phase 11, which cannot be right: Gate A item 1 asserts no
+  corruption over ten minutes, and the moment a send window fills the packetizer must choose
+  between blocking the drain and breaking a reference chain. Both are already forbidden, so
+  the third answer -- skip this guest and latch until the next keyframe -- is not a
+  multi-guest refinement but the only defined behaviour, and a fresh guest starting in that
+  latched state is also what produces its join keyframe. Phase 11 keeps what is genuinely
+  multi-guest: consensus actuators, the acquire-time frame gate, and the degraded-guest event.
+  Three items were added alongside it because they are load bearing and were unwritten: the
+  frame pool and per-guest publish ring, which is the first cross-thread handoff since Phase 0
+  and inherits its model-checking obligation; ring geometry sized from the largest frame the
+  stream can produce, since the corpus's largest video message needs more slots than the
+  provisional ring has; and the session-initialization exchange, without which nothing
+  streams. **Two gate items could not fail as written.** "Reconfigure observed live" is now a
+  keyframe count of zero across forced rate changes, and the end-to-end item, which cited a
+  budget that exists in no document, is now the frame interval as a floor with the real budget
+  set from the first measurement. The corpus check is new and is the one that runs with no
+  hardware and no peer, which is what makes the live run diagnosable rather than a guess.
 - 2026-08-17: Phase 4 closed. Five gates, all against a stock client on a real
   service. The phase's lasting finding is not in the gates: a connection that
   drops every two minutes and reconnects inside a second looks identical, from

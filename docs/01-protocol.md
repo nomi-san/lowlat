@@ -344,9 +344,23 @@ The resulting rate actuates the **encoder bitrate** through a live reconfigure. 
 pace the socket. The reconfigure MUST NOT reinitialize the encoder and MUST NOT force a
 keyframe.
 
+**A tick is a frame, not a timer.** The controller runs once per guest per encoded frame, from
+the pipeline that produced the frame. That fixes the periods above in wall-clock terms: at 60
+frames per second the 30 clean ticks between increases are half a second and the 60 congested
+ticks between decreases are one second. Ticking it from a timer instead decouples the rate from
+the thing the rate actuates, and ticking it per channel from a receive path makes the period
+depend on inbound traffic.
+
 Throughput is measured over the interval between ticks and requires **fractional millisecond**
 resolution. Quantizing the interval to whole milliseconds silently skips the peak update
-whenever it rounds to zero.
+whenever it rounds to zero. The quantity measured is bytes sent on that channel since the
+previous increase tick, and the unit is **mebibits per second**: bytes times eight, divided by
+1048576, divided by the interval in seconds. Dividing by 1000000 instead reads about five
+percent high, which is a silent bias in the peak the controller creeps back toward.
+
+With more than one guest, the rate applied to the encoder is the **minimum** across guests, and
+it is applied only when it moves by more than 0.01 Mbps, so a rate that oscillates in the noise
+does not produce a reconfigure per frame.
 
 ## §11 Control messages
 
@@ -390,9 +404,28 @@ length **includes the terminator**; omitting it causes a silent parse failure on
 | 16 | input blocked | 1 blocked, 0 unblocked | later |
 | 17 | user data | length, sub-id, 0, plus body | v1 |
 | 20 | rumble | pad, large motor, small motor | deferred |
-| 21 | encode latency | 0, microseconds, stream | v1 |
+| 21 | encode latency | 1, microseconds, stream | v1 |
 | 25 | guest list | JSON body | later |
 | 28 | host mode | mode | later |
+| 29 | encoder generation | stream, generation, 0 | v1 |
+| 34 | frame timing | 0, stream, 0, plus 16-byte body | diagnostic |
+
+Three of these have cadences rather than triggers, and the cadences are counted in frames:
+encode latency every 30th frame, the guest list every 120th and only from stream 0.
+
+**Opcode 21's first argument is 1, not 0.** The value it carries is an exponentially weighted
+average of capture to bitstream-collected, `latency = 0.9 * latency + 0.1 * sample`, converted
+to microseconds at emission.
+
+**Opcode 29 announces an encoder generation**, carrying the same value the video header's frame
+identifier will report (§11.3). It is emitted on the frame following an encoder
+initialization, which is how a peer learns the reference chain restarted rather than inferring
+it.
+
+**Opcode 34 is per-frame timing telemetry** behind a diagnostic flag, so an ordinary session
+never emits it: four big-endian floats covering loop start to encode complete, capture start to
+encode start, the frame interval, and the encode duration. Documented so its arrival is not
+mistaken for something else.
 
 Cursor images on the wire are **PNG, not raw pixels**. Cursor position is in stream space and
 requires the host-to-client transform, including a width and height swap on rotated displays.

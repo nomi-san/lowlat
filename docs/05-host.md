@@ -134,9 +134,21 @@ Policy, exposed as host configuration:
 | latency (default) | yield frame rate early, hold bitrate; smallest queues |
 | quality | hold frame rate, cut bitrate first; for desktop and cinematic work |
 
-Global actuators fire on **consensus only**. The gate requires every guest to be pressured;
-the bitrate controller follows the healthy majority. One chronically slow guest must never
-degrade the others; it self-paces through §6 instead.
+The two actuators aggregate differently, and the difference is not an inconsistency.
+
+**The frame gate requires every guest to be pressured.** Skipping the acquire helps nobody if
+one guest can still take the frame, so it fires on unanimity.
+
+**The bitrate is the minimum across guests**, applied only when it moves by more than 0.01
+Mbps so noise does not produce a reconfigure per frame. Which means a chronically slow guest
+*does* pull everyone's rate down, and that is the intended behaviour rather than a flaw in the
+aggregation: the rate is what the transport can actually carry, and sending a guest more than
+that produces loss, not quality. What the slow guest must not do is break the others' streams,
+and it cannot, because delivery is decided per guest in §6.
+
+Stating it as "follow the healthy majority" was wrong on both counts. A majority rule leaves
+the minority receiving a rate its path cannot carry, and there is no majority at all in the
+single-guest case that v1 actually ships.
 
 ## §6 Multi-guest delivery
 
@@ -144,16 +156,47 @@ v1 policy is single-guest simple, but the data model is multi-guest from the fir
 ([00-overview.md](00-overview.md) D10).
 
 ```
-on encoded frame F, keyframe K:
+on encoded frame F, fragment count N, keyframe K:
+    largest = max(largest, N)                   // session high-water mark, not this frame
+    want_keyframe = false
     for each guest G:
-        if G.pending_keyframe and not K:    continue
-        if G.window_free < estimate(F) * 2:
-            G.mark_skipping()               // latches pending_keyframe
+        if G.pending_keyframe:
+            if not K:
+                // Ask for one once the window could hold the biggest frame yet seen.
+                want_keyframe |= G.outstanding + largest <= ceiling(G.rate)
+                continue
+            if G.outstanding + N > ceiling(G.rate):  continue
+            G.packetize(F)
+            G.pending_keyframe = false          // the only place this clears
+            continue
+        if G.outstanding + N > ceiling(G.rate):
+            G.mark_skipping()                   // latches pending_keyframe
             continue
         G.packetize(F)
-    if any guest is skipping and has drained, and the throttle allows:
+    if want_keyframe and the throttle allows:
         encoder.force_keyframe_next()
 ```
+
+**The room test is an absolute ceiling on outstanding fragments, not a proportional margin.**
+
+| Configured rate | Ceiling, fragments |
+|---|---|
+| below 20 Mbps | 1500 |
+| 20 to under 30 Mbps | 2500 |
+| 30 Mbps and above | 4000 |
+
+The top step is the peer's ring depth ([01 §7](01-protocol.md)), so the highest rate is allowed
+to fill the peer's ring and no rate is allowed past it. A proportional margin such as "free
+slots must exceed twice the frame" is the shape this section carried before it was measured,
+and it is wrong in both directions: it refuses frames at low occupancy on a deep window, and it
+admits them when the window is nearly full because the remaining room still happens to be twice
+a small frame.
+
+**A skipping guest is retested against the largest frame the session has produced**, not
+against the frame in hand. Testing against the current frame lets a guest out of the cascade on
+a small predicted frame, whereupon the keyframe it needs does not fit, the keyframe grant is
+spent, and every guest pays the bitrate spike for a recovery that did not happen. The
+high-water mark costs one integer and removes the whole failure.
 
 **The cascade is the invariant.** A guest that misses one frame must miss every frame until
 the next keyframe. Dropping a single dependent frame breaks the reference chain silently: the
@@ -318,8 +361,20 @@ forced and why, reconfigures applied, encoder queue depth, conversion ring occup
 local and actuates encoder bitrate through a live reconfigure; input arrives as usage codes and
 stream-space coordinates.
 
+**Measured, and previously misdescribed here:** the delivery rules in §6 -- the ceiling table,
+the high-water retest, and the latch -- and the aggregation in §5. All four were written as
+design choices and two of them were wrong. They are now stated as the constants they are.
+
 **Ours by design:** the capture and encoder trait shapes, the conversion strategy, the frame
-gate, the fan-out policy in §6, and everything in §10.
+gate's unanimity rule, the choice of a forced keyframe over an encoder restart for recovery,
+and everything in §10.
+
+**A note on that last one**, because it is a deliberate divergence rather than an omission. The
+invariant -- a guest resuming after a gap never receives a dependent frame -- can be satisfied
+either by forcing a keyframe or by restarting the encoder, since a restart emits one anyway. A
+restart also costs orders of magnitude more, and it self-throttles only because it is slow. We
+force the keyframe and throttle it explicitly at roughly twice a second, which reaches the same
+invariant at a cost that does not have to be hidden.
 
 **Pending, and deliberately not yet decided:** the capture backend and therefore the concrete
 frame variant, the audio capture surface, and whether dirty rectangles earn their complexity.
