@@ -58,3 +58,6 @@ pub(crate) mod cuda;
 
 #[allow(dead_code, non_upper_case_globals, unreachable_pub)]
 pub(crate) mod guids;
+
+#[allow(dead_code, non_upper_case_globals, unreachable_pub)]
+pub(crate) mod versions;
