@@ -24,6 +24,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   second backend's runtime loading, display binding and profile query.
 - The second backend's capability query, encode configuration, surface pool and
   context.
+- A bit-level writer for parameter sets: exponential-Golomb, fixed-width
+  fields, trailing bits, and start-code escaping.
 
 **Notes**
 
@@ -127,6 +129,26 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   it knows. Compiling against a header older than the installed runtime is the
   safe direction either way; only the reason differs, and writing down which
   reason applies is what stops the next person applying the wrong rule.
+- **One backend has nowhere to put the colour description.** Its sequence
+  parameters carry a single aspect-ratio flag and no colour fields at all,
+  where the other takes primaries, matrix, transfer and range as ordinary
+  structure fields. Since the description is required and not optional, that
+  backend has to write its own parameter set and hand it over as a packed
+  header. This is why the packed-header attribute was worth asking about, and
+  why the answer only arrived by looking at the structures rather than at the
+  capability.
+- **Start-code escaping is the kind of fault that arrives with content.** A
+  payload may not contain a start code, so a run of two zeros followed by a low
+  byte needs a marker inserted. Omit it and the stream decodes correctly until
+  the day the encoded data happens to contain the pattern, which attributes
+  itself to anything but the writer. Every byte that can end a start code is
+  covered by a test, and the zero run restarts after each insertion.
+- **The parameter-set writer is testable without hardware**, because the coding
+  is fixed by the standard rather than by a vendor. Its expectations are the
+  standard's own code table written as bit strings, not values captured from a
+  device, so they can be checked by eye. Both halves were shown capable of
+  failing: reversing the bit order fails four of the eight, and removing the
+  escaping fails three, and no test overlaps both.
 - **The quantiser floor is a latency control and reads backwards.** A lower
   floor lets the encoder spend more bits on a frame, and more bits is a larger
   frame, more packets, and longer in every queue between here and the far side.
