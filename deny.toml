@@ -30,6 +30,13 @@ allow = [
     "ISC",
     "Unicode-3.0",
     "Zlib",
+    # **A data licence, not a code one.** It covers the Mozilla root
+    # certificate store that `webpki-roots` ships, which is what the signaling
+    # client verifies the service's certificate against. Permissive: version
+    # 2.0 drops the attribution requirement version 1.0 carried, imposes no
+    # condition on what is built from the data, and is not copyleft, so it does
+    # not touch the rule this file exists for.
+    "CDLA-Permissive-2.0",
 ]
 
 [bans]
