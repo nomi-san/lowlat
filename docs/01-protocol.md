@@ -483,11 +483,42 @@ The connecting side sends opcode 11 with a JSON body declaring its preferences: 
 resolution, codec capability, colour mode, and feature flags. The host is authoritative and
 may ignore any of it (D8).
 
+The message's own arguments are not empty: **argument 0 is the body length including the
+terminating NUL**, and the other two are zero. The body is a NUL-terminated JSON object with
+exactly these eight keys, in this order:
+
+```
+_version  _max_w  _max_h  _flags  resolutionX  resolutionY  mediaContainer  refreshRate
+```
+
+**Only `_version` is mandatory and it must be 1.** Every other key has a default, so a missing
+one is a default rather than a refusal. Two of them carry sentinels rather than sizes:
+`_max_w` and `_max_h` arrive as 60000 to mean **no limit**, and `resolutionX` and `resolutionY`
+arrive as 0 to mean **no preference**. A host reading either as a dimension tries to encode a
+picture nobody asked for.
+
+**Do not add keys.** Peers exist that behave differently when the object carries more than these
+eight, taking different encoder-warmup or session-setup paths, so a host must not require extras
+and a client must not send them.
+
 Codec selection is carried in two places and **both are required**. The capability bit in the
 init flags declares support; opcode 13 argument 1 must also carry the video flags. Setting
-only one produces a stream the peer will not decode. Colour depth uses a base flag that is
-always set, with an additional bit selecting 10-bit. 10-bit and 4:4:4 are reserved and unused
-in v1 (D7).
+only one produces a stream the peer will not decode. Opcode 13's other arguments are the stream
+index in argument 0 and a reinitialization request in argument 2, which is what forces the next
+picture to be a refresh.
+
+The flag bits:
+
+| Bit | Mask | Meaning |
+|---|---|---|
+| 0 | `0x01` | HEVC |
+| 1 | `0x02` | 4:4:4 chroma, which implies HEVC |
+| 3 | `0x08` | base flag, **always set** |
+| 4 | `0x10` | 10-bit, which implies HEVC |
+
+**Bit 2 is not 10-bit**, and reading it as such is a mistake that has been made. The base flag at
+bit 3 is set on every offer, so `_flags` of 8 alone is the ordinary case: H.264, 8-bit, 4:2:0.
+10-bit and 4:4:4 are reserved and unused in v1 (D7).
 
 ## §12 Session lifecycle
 
