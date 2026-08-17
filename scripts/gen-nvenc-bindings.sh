@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Regenerate the encoder FFI bindings from the vendored headers.
 #
+# Covers both vendored interfaces: the codec one and the display one.
+#
 # Run by hand, never from a build script: the generated files are committed so
 # that no build machine needs a C toolchain. See third_party/nvcodec/PROVENANCE.md.
 #
@@ -28,6 +30,11 @@ common=(
     --no-doc-comments
     --no-prepend-enum-name
     --merge-extern-blocks
+    # The workspace denies unsafe operations that are not inside an explicit
+    # unsafe block, including within an unsafe function. Generated helpers for
+    # trailing arrays would otherwise trip it, and satisfying the lint is
+    # better than exempting the file from it.
+    --wrap-unsafe-ops
 )
 
 # Types and enum constants only. Functions are deliberately excluded: the
@@ -105,6 +112,29 @@ if count == 0:
 open(dst, "w", encoding="ascii").write("\n".join(lines) + "\n")
 print("  %d identifiers" % count)
 PY
+
+# The display interface next door. No functions for the same reason: the
+# libraries are opened at runtime, and an extern block would make a missing
+# driver a failed start.
+echo "generating display bindings"
+#
+# The header declares every codec the interface has ever supported, which is
+# an order of magnitude more than we call. The families below are blocked by
+# name rather than trimmed by hand, so a regeneration cannot quietly grow.
+bindgen "$root/third_party/libva/include/va/va_drm.h" \
+    "${common[@]}" \
+    --allowlist-type 'VA.*' \
+    --allowlist-type '_VA.*' \
+    --allowlist-var 'VA_.*' \
+    --blocklist-item '.*AV1.*' \
+    --blocklist-item '.*VP8.*' \
+    --blocklist-item '.*VP9.*' \
+    --blocklist-item '.*JPEG.*' \
+    --blocklist-item '.*MPEG.*' \
+    --blocklist-item '.*FEI.*' \
+    --blocklist-item '.*Prot(ected)?.*' \
+    -o "$out/va.rs" \
+    -- -I "$root/third_party/libva/include"
 
 # Struct version stamps. These are defined through a function-like macro, which
 # a binding generator cannot evaluate, so none of them survive generation. Every

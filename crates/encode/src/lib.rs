@@ -8,3 +8,4 @@
 pub mod cuda;
 mod ffi;
 pub mod nvenc;
+pub mod vaapi;

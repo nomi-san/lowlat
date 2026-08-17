@@ -10,6 +10,8 @@ authors.workspace = true
 
 [dependencies]
 lowlat-common.workspace = true
+# Opening the render node. No wrapper crate: one open and one close.
+libc.workspace = true
 lowlat-capture.workspace = true
 
 [lints]

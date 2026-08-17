@@ -61,3 +61,20 @@ pub(crate) mod guids;
 
 #[allow(dead_code, non_upper_case_globals, unreachable_pub)]
 pub(crate) mod versions;
+
+#[allow(
+    dead_code,
+    unused_imports,
+    unnecessary_transmutes,
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    missing_debug_implementations,
+    unreachable_pub,
+    clippy::all,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::float_cmp,
+    clippy::useless_transmute
+)]
+pub(crate) mod va;

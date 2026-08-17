@@ -20,6 +20,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   wire requires, and changing its bitrate live.
 - Registering an input surface, submitting a picture, and collecting the
   encoded access unit.
+- Vendored display headers under `third_party/libva/`, their bindings, and the
+  second backend's runtime loading, display binding and profile query.
 
 **Notes**
 
@@ -115,6 +117,24 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   interface copies the configuration during the call, and the block it named is
   a local about to be moved into the returned value, so retaining it would
   leave a dangling pointer in a structure that is reused on every reconfigure.
+- **The second backend pins its headers the opposite way round, and for a
+  reason.** The codec interface stamps a version into every structure and an
+  older driver rejects a newer stamp, so that pin has to be low. This one has
+  no stamp, passes buffer sizes explicitly at every call, and grows its
+  structures by appending, so a driver older than the header reads the prefix
+  it knows. Compiling against a header older than the installed runtime is the
+  safe direction either way; only the reason differs, and writing down which
+  reason applies is what stops the next person applying the wrong rule.
+- **A profile is not an encoder.** A device may decode a codec and not encode
+  it, and both are entry points against the same profile, so the query asks for
+  the encode entry point specifically. The test asserts the refusal as well as
+  the answer: a profile the driver cannot encode must come back empty, or the
+  positive result proves nothing.
+- **Generated code satisfies the safety lint rather than being exempted from
+  it.** Trailing-array helpers perform unsafe operations inside unsafe
+  functions, which the workspace denies. The generator now wraps them, which is
+  a flag; adding the lint to the module's allow list would have been a flag
+  too, and would have quietly widened what the crate permits.
 - **There is no way to learn a picture is finished without waiting for it.**
   Two mechanisms were tried and measured. The interface's own no-wait flag is
   documented for exactly this case and is ignored by the driver. A completion

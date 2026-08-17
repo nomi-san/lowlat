@@ -338,6 +338,7 @@ dependencies = [
 name = "lowlat-encode"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "lowlat-capture",
  "lowlat-common",
 ]
