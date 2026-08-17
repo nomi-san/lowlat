@@ -101,6 +101,31 @@ impl Controller {
         }
     }
 
+    /// Move the bounds, because the budget they came from changed.
+    ///
+    /// **The ceiling is not a constant of the session.** It is the configured
+    /// rate divided by the guests sharing the stream, so a guest arriving or
+    /// leaving moves it for everyone. The current rate is pulled down to the
+    /// new ceiling rather than left above it, and the reset is armed so the
+    /// next increase snaps to the floor and climbs from there rather than
+    /// resuming from a rate that no longer applies.
+    pub fn set_bounds(&mut self, min_mbps: f64, max_mbps: f64) {
+        self.min_mbps = min_mbps;
+        self.max_mbps = max_mbps;
+        if self.current_mbps > max_mbps {
+            self.current_mbps = max_mbps;
+        }
+        if self.peak_mbps > max_mbps {
+            self.peak_mbps = max_mbps;
+        }
+        self.reset_pending = true;
+    }
+
+    /// The ceiling currently in force.
+    pub fn max_mbps(&self) -> f64 {
+        self.max_mbps
+    }
+
     /// How many times the rate has been cut. Surfaced for diagnostics.
     pub fn total_decreases(&self) -> u32 {
         self.total_decreases

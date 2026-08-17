@@ -57,6 +57,30 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   and its flag bits, allocation free.
 - Session negotiation in the host: the five-second deadline, the encoder
   configuration message, and the encode-latency and generation cadences.
+- The bitrate budget: a ceiling divided by the guests on a stream, the
+  minimum across their controllers, and a deadband before reconfiguring.
+
+**Notes on the bitrate budget**
+
+- **Two aggregations compose and they do different jobs.** Each guest's ceiling
+  is the configured rate divided by the guests on its stream, which bounds what
+  the host can send in total; the rate applied is the minimum of what their
+  controllers return, which bounds it to what the slowest path carries. Each
+  has its own test, and breaking either fails only its own.
+- **The slowest guest does pull everyone down, and that is intended.** The rate
+  is what the transport can actually carry, and sending a guest more than that
+  produces loss rather than quality. What the slow guest must not do is break
+  the others' streams, and it cannot: delivery is decided per guest by the
+  gate.
+- **A guest arriving and the operator changing the rate are the same event.**
+  Both move a ceiling, and a controller has to be told rather than discovering
+  it, because the rate it is holding may already be above the new one.
+- **The tick is the frame.** The controller's periods are counted in ticks, so
+  at sixty a second its thirty clean ticks are half a second. Ticking it from a
+  timer would silently change what those numbers mean.
+- **The deadband is what stops a reconfigure per frame.** Removing it fails its
+  test, which is the point of having one for a behaviour whose absence is
+  otherwise invisible.
 
 **Notes on session initialization**
 

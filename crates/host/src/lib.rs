@@ -8,6 +8,7 @@
 pub mod admission;
 pub mod frames;
 pub mod gate;
+pub mod rate;
 pub mod session;
 pub mod video;
 
