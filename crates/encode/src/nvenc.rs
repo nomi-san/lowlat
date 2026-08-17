@@ -335,23 +335,19 @@ mod tests {
         };
         let mut encoder = session.initialize(&cuda, config).expect("initialize");
 
-        // One planar frame: luma rows then half as many interleaved chroma
-        // rows, in one allocation at the driver's preferred pitch.
-        let rows = (config.height + config.height / 2) as usize;
-        let buffer = cuda
-            .alloc_pitch(config.width as usize, rows)
-            .expect("allocate");
-        cuda.fill(&buffer, 0x80, buffer.pitch() * rows)
-            .expect("fill");
-        let input = encoder.register(&buffer).expect("register");
+        // The same generator the other backend encodes, so the two are
+        // comparable rather than merely both working.
+        let mut source = lowlat_capture::synthetic::Synthetic::new(config.width, config.height);
 
         // Fill the queue. The first is forced to a keyframe; the rest are not.
         for index in 0..IN_FLIGHT {
-            encoder.submit(&input, index == 0).expect("submit");
+            encoder
+                .submit(&source.acquire(), index == 0)
+                .expect("submit");
         }
         assert_eq!(encoder.in_flight(), IN_FLIGHT);
         assert_eq!(
-            encoder.submit(&input, false).unwrap_err(),
+            encoder.submit(&source.acquire(), false).unwrap_err(),
             Error::QueueFull,
             "the queue accepted more than it holds"
         );
@@ -367,6 +363,7 @@ mod tests {
         let mut collected = 0usize;
         let mut keyframes = 0usize;
         let mut first_unit = 0u8;
+        let mut stream = Vec::new();
         while collected < IN_FLIGHT {
             let started = Instant::now();
             let polled = encoder.poll().expect("poll");
@@ -382,6 +379,7 @@ mod tests {
                         assert_eq!(&bitstream[..4], &[0, 0, 0, 1], "no start code");
                         first_unit = bitstream[4] & 0x1F;
                     }
+                    stream.extend_from_slice(bitstream);
                     if keyframe {
                         keyframes += 1;
                     }
@@ -422,6 +420,15 @@ mod tests {
         // reports bitstream readiness without waiting. Recorded, not asserted
         // away: see the phase plan for what the gate became.
         assert!(slowest <= drain);
+
+        // Written where an independent decoder can be pointed at it. The
+        // generator's content is a function of the frame index, so what comes
+        // out can be checked against what went in without either side sharing
+        // state with the other.
+        if let Ok(path) = std::env::var("LOWLAT_DUMP") {
+            std::fs::write(&path, &stream).expect("write");
+            println!("wrote {path}, {} bytes", stream.len());
+        }
     }
 
     /// Needs the vendor driver, so it is off by default. Run with
@@ -703,6 +710,12 @@ pub struct Encoder<'a> {
     /// One output buffer per in-flight picture, allocated once.
     outputs: [crate::ffi::nvenc::NV_ENC_OUTPUT_PTR; IN_FLIGHT],
     next_output: usize,
+    /// **One input surface per in-flight picture**, allocated and registered
+    /// once. Sharing one across the queue means a submit overwrites a picture
+    /// the hardware has not finished reading, so the encoder produces the
+    /// newest content under an older picture's timestamp. Declared before the
+    /// session so the allocations are freed while the context still exists.
+    inputs: Vec<InputSlot>,
     /// Submitted and not yet collected, oldest first.
     pending: std::collections::VecDeque<Pending>,
     /// Where a collected access unit is copied to.
@@ -898,7 +911,7 @@ impl<'a> Session<'a> {
             cuda.create_event().map_err(|_| Error::NoContext)?,
         ];
 
-        Ok(Encoder {
+        let mut encoder = Encoder {
             session: self,
             config,
             stream,
@@ -907,9 +920,12 @@ impl<'a> Session<'a> {
             init_params,
             outputs,
             next_output: 0,
+            inputs: Vec::with_capacity(IN_FLIGHT),
             pending: std::collections::VecDeque::with_capacity(IN_FLIGHT),
             collected: Vec::new(),
-        })
+        };
+        encoder.allocate_inputs(cuda)?;
+        Ok(encoder)
     }
 }
 
@@ -1000,6 +1016,16 @@ pub struct Input {
     pitch: u32,
 }
 
+/// One slot of the input pool: the allocation and its registration.
+///
+/// The buffer is declared first so it is freed before the registration that
+/// names it is dropped.
+#[derive(Debug)]
+struct InputSlot {
+    buffer: crate::cuda::DeviceBuffer,
+    input: Input,
+}
+
 #[derive(Debug)]
 struct Pending {
     output: crate::ffi::nvenc::NV_ENC_OUTPUT_PTR,
@@ -1028,12 +1054,63 @@ impl Drop for Encoder<'_> {
                 }
             }
         }
+        // Before the allocations they name are freed, which happens when the
+        // pool drops immediately after this.
+        if let Some(unregister) = functions.nvEncUnregisterResource {
+            for held in &self.inputs {
+                // SAFETY: each came from a successful register at initialise.
+                unsafe { unregister(self.session.encoder, held.input.registered) };
+            }
+        }
     }
 }
 
 impl Encoder<'_> {
     fn functions(&self) -> &crate::ffi::nvenc::NV_ENCODE_API_FUNCTION_LIST {
         &self.session.api.functions
+    }
+
+    /// Write a frame into one slot of the input pool.
+    ///
+    /// The two planes are one allocation: luma at row zero, chroma directly
+    /// after the last luma row. That is the layout the format declared at
+    /// registration means, and the encoder derives the chroma offset from the
+    /// height it was given rather than being told separately.
+    fn upload(&self, slot: usize, frame: &lowlat_capture::Frame<'_>) -> Result<(), Error> {
+        let held = self.inputs.get(slot).ok_or(Error::NoContext)?;
+        let width = usize::try_from(frame.width).unwrap_or(0);
+        let rows = usize::try_from(frame.height).unwrap_or(0);
+
+        held.buffer
+            .write_rows(0, frame.luma.bytes, frame.luma.stride, width, rows)
+            .map_err(|_| Error::NoContext)?;
+        held.buffer
+            .write_rows(
+                rows,
+                frame.chroma.bytes,
+                frame.chroma.stride,
+                width.div_ceil(2) * 2,
+                rows.div_ceil(2),
+            )
+            .map_err(|_| Error::NoContext)
+    }
+
+    /// Allocate and register the input pool, one surface per in-flight
+    /// picture.
+    fn allocate_inputs(&mut self, cuda: &crate::cuda::Cuda) -> Result<(), Error> {
+        // One planar frame per allocation: luma rows, then half as many rows
+        // of interleaved chroma, at the driver's preferred pitch.
+        let width = usize::try_from(self.config.width).unwrap_or(0);
+        let rows =
+            usize::try_from(self.config.height + self.config.height.div_ceil(2)).unwrap_or(0);
+        for _ in 0..IN_FLIGHT {
+            let buffer = cuda
+                .alloc_pitch(width, rows)
+                .map_err(|_| Error::NoContext)?;
+            let input = self.register(&buffer)?;
+            self.inputs.push(InputSlot { buffer, input });
+        }
+        Ok(())
     }
 
     /// Register a device allocation holding one planar frame.
@@ -1068,11 +1145,25 @@ impl Encoder<'_> {
     }
 
     /// Hand a frame to the hardware. Returns as soon as it is queued.
-    pub fn submit(&mut self, input: &Input, force_keyframe: bool) -> Result<(), Error> {
+    pub fn submit(
+        &mut self,
+        frame: &lowlat_capture::Frame<'_>,
+        force_keyframe: bool,
+    ) -> Result<(), Error> {
         use crate::ffi::nvenc as f;
         if self.pending.len() >= IN_FLIGHT {
             return Err(Error::QueueFull);
         }
+
+        // The slot is only reused once its picture has been collected, which
+        // is what the check above enforces, so this cannot land on a surface
+        // the hardware is still reading.
+        let slot = self.next_output;
+        self.upload(slot, frame)?;
+        let (registered, width, height, pitch) = {
+            let held = &self.inputs.get(slot).ok_or(Error::NoContext)?.input;
+            (held.registered, held.width, held.height, held.pitch)
+        };
 
         let map = self
             .functions()
@@ -1085,22 +1176,21 @@ impl Encoder<'_> {
 
         let mut mapping = unsafe { core::mem::zeroed::<f::NV_ENC_MAP_INPUT_RESOURCE>() };
         mapping.version = crate::ffi::versions::NV_ENC_MAP_INPUT_RESOURCE_VER;
-        mapping.registeredResource = input.registered;
+        mapping.registeredResource = registered;
         // SAFETY: the block is stamped and live for the call.
         let status = unsafe { map(self.session.encoder, &raw mut mapping) };
         if status != NV_ENC_SUCCESS {
             return Err(Error::Status(status));
         }
 
-        let slot = self.next_output;
         let output = self.outputs[slot];
         self.next_output = (self.next_output + 1) % IN_FLIGHT;
 
         let mut pic = unsafe { core::mem::zeroed::<f::NV_ENC_PIC_PARAMS>() };
         pic.version = crate::ffi::versions::NV_ENC_PIC_PARAMS_VER;
-        pic.inputWidth = input.width;
-        pic.inputHeight = input.height;
-        pic.inputPitch = input.pitch;
+        pic.inputWidth = width;
+        pic.inputHeight = height;
+        pic.inputPitch = pitch;
         pic.inputBuffer = mapping.mappedResource;
         pic.outputBitstream = output;
         pic.bufferFmt = mapping.mappedBufferFmt;

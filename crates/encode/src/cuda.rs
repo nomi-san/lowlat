@@ -37,6 +37,7 @@ type MemAllocPitch =
     unsafe extern "C" fn(*mut CUdeviceptr, *mut usize, usize, usize, c_uint) -> CUresult;
 type MemFree = unsafe extern "C" fn(CUdeviceptr) -> CUresult;
 type MemsetD8 = unsafe extern "C" fn(CUdeviceptr, u8, usize) -> CUresult;
+type Memcpy2D = unsafe extern "C" fn(*const crate::ffi::cuda::CUDA_MEMCPY2D) -> CUresult;
 type PrimaryCtxRetain = unsafe extern "C" fn(*mut CUcontext, CUdevice) -> CUresult;
 type PrimaryCtxRelease = unsafe extern "C" fn(CUdevice) -> CUresult;
 type CtxPushCurrent = unsafe extern "C" fn(CUcontext) -> CUresult;
@@ -63,6 +64,11 @@ pub enum Error {
     NoSuchDevice(PciAddress),
     /// The runtime is present but reports no devices at all.
     NoDevices,
+    /// A copy was asked for more rows than the source holds. Ours to get
+    /// right, so it is refused rather than clamped: a clamp would upload a
+    /// partial picture and the fault would show as torn output rather than
+    /// as an error.
+    SourceTooSmall,
 }
 
 impl core::fmt::Display for Error {
@@ -75,6 +81,7 @@ impl core::fmt::Display for Error {
                 write!(f, "no compute device at {address}")
             }
             Self::NoDevices => f.write_str("compute runtime reports no devices"),
+            Self::SourceTooSmall => f.write_str("source holds fewer rows than the copy needs"),
         }
     }
 }
@@ -219,6 +226,7 @@ pub struct Cuda {
     mem_alloc_pitch: MemAllocPitch,
     mem_free: MemFree,
     memset_d8: MemsetD8,
+    memcpy_2d: Memcpy2D,
     stream_create: StreamCreate,
     stream_destroy: StreamDestroy,
     event_create: EventCreate,
@@ -268,6 +276,9 @@ impl Cuda {
                     .ok_or(Error::MissingSymbol)?,
                 memset_d8: library
                     .symbol(c"cuMemsetD8_v2")
+                    .ok_or(Error::MissingSymbol)?,
+                memcpy_2d: library
+                    .symbol(c"cuMemcpy2D_v2")
                     .ok_or(Error::MissingSymbol)?,
                 stream_create: library
                     .symbol(c"cuStreamCreate")
@@ -407,6 +418,9 @@ pub struct DeviceBuffer {
     ptr: CUdeviceptr,
     pitch: usize,
     free: MemFree,
+    /// Carried with the buffer for the same reason `free` is: an owner of one
+    /// can then write into it without also holding the runtime.
+    copy: Memcpy2D,
 }
 
 // SAFETY: a device allocation belongs to its context, not to a thread.
@@ -419,6 +433,53 @@ impl DeviceBuffer {
 
     pub fn pitch(&self) -> usize {
         self.pitch
+    }
+
+    /// Copy rows of host memory into this allocation, starting at `dst_row`.
+    ///
+    /// **Both sides keep their own stride.** A device allocation is padded to
+    /// the driver's alignment and a host frame is not, so one flat copy would
+    /// be right only by coincidence; every row after the first would land
+    /// progressively further from where it belongs, which shows as a picture
+    /// sheared rather than as an error.
+    ///
+    /// Synchronous with respect to the caller's memory: the copy is staged
+    /// out of pageable host memory, so `source` may be overwritten as soon as
+    /// this returns.
+    pub fn write_rows(
+        &self,
+        dst_row: usize,
+        source: &[u8],
+        src_pitch: usize,
+        row_bytes: usize,
+        rows: usize,
+    ) -> Result<()> {
+        if rows == 0 || row_bytes == 0 {
+            return Ok(());
+        }
+        // The final row need not be padded out, so the requirement is every
+        // row but the last at full pitch, plus the bytes actually read from
+        // the last one.
+        if src_pitch < row_bytes || source.len() < (rows - 1) * src_pitch + row_bytes {
+            return Err(Error::SourceTooSmall);
+        }
+
+        // SAFETY: plain data, whose only pointers are the two set below and
+        // both are live for the call.
+        let mut copy = unsafe { core::mem::zeroed::<crate::ffi::cuda::CUDA_MEMCPY2D>() };
+        copy.srcMemoryType = crate::ffi::cuda::CU_MEMORYTYPE_HOST;
+        copy.srcHost = source.as_ptr().cast();
+        copy.srcPitch = src_pitch;
+        copy.dstMemoryType = crate::ffi::cuda::CU_MEMORYTYPE_DEVICE;
+        copy.dstDevice = self.ptr;
+        copy.dstPitch = self.pitch;
+        copy.dstY = dst_row;
+        copy.WidthInBytes = row_bytes;
+        copy.Height = rows;
+
+        // SAFETY: the descriptor is live for the call, and both sides are
+        // bounded above.
+        check(unsafe { (self.copy)(&raw const copy) })
     }
 }
 
@@ -442,6 +503,7 @@ impl Cuda {
             ptr,
             pitch,
             free: self.mem_free,
+            copy: self.memcpy_2d,
         })
     }
 

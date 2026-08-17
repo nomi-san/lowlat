@@ -295,8 +295,8 @@ construction rather than as covered.
   encoder on the primary Linux target and on the machine this is tested against
   ([07 §3.1](07-platforms.md)).
 - [ ] NVENC backend, same trait, same parameters.
-- [ ] `lowlat-capture` trait plus the synthetic frame source, emitting planar frames directly so
-  no conversion stage is needed before Phase 9.
+- [x] `lowlat-capture` synthetic frame source, emitting planar frames directly so no conversion
+  stage is needed before Phase 9. **The trait is deferred to Phase 9**; see the note on ordering.
 - [ ] **Frame pool and per-guest publish ring.** One encode serves every guest, and a backend's
   bitstream is only valid until its next poll, so the collected frame is copied once into a
   preallocated pool slot and the slot index is published on a bounded ring per guest, released
@@ -358,6 +358,29 @@ construction rather than as covered.
    to less than one frame interval at the negotiated rate. A pipeline that cannot clear a frame
    within a frame interval cannot hold the frame rate, so this is the floor rather than the
    target; a tighter budget is set once the first measurement exists.
+
+**Note on ordering, 2026-08-17.** The frame source was built before the encoder trait, which
+inverts the order the items are listed in. The trait's shape is already settled by
+[05 §4](05-host.md); what was not settled is what a frame *is* at this boundary, and that is
+the only part of the trait a second implementation could still have moved. Writing the trait
+first would have fixed the frame type against two backends that took no frame at all, which is
+the degeneracy having two backends exists to prevent. Both now take the same frames, so the
+trait can be written against something real.
+
+**Note on the frame variant, 2026-08-17.** [05 §2](05-host.md) requires a captured frame to
+move as a device handle and never as bytes, and the synthetic source produces system memory
+instead. That is a deliberate narrowing rather than a readback creeping in. The rule protects
+frames that arrive from a compositor already resident on a device; nothing is captured yet, and
+a generator's output has to reach **both** hardware backends, which on a machine with two
+vendors' parts are two devices sharing no allocation. No single device handle can satisfy that.
+Each backend uploads into its own surfaces, the upload is explicit and per backend, and it
+disappears when real capture arrives carrying a handle of its own.
+
+Two pieces of the trait shapes in [05 §2](05-host.md) and [05 §4](05-host.md) are deferred with
+their second implementations, rather than being written against nothing: `cursor_state` and the
+acquire outcomes other than a frame, which only a real capture backend can produce, and
+`accepts`/`FrameVariant`, which needs a second variant before a match against it can mean
+anything.
 
 **Note on the non-blocking poll.** Neither backend offers a completion callback on this
 platform. Both offer a non-blocking probe -- a surface status query before mapping the coded

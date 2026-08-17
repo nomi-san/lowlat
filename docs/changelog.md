@@ -31,6 +31,14 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - The second backend's encode path: a picture is submitted, the parameter sets
   and the slice header travel with it as packed headers, and a finished picture
   is collected as a probe rather than a wait.
+- Live bitrate change on the second backend, carried with each picture, so it
+  reinitialises nothing and forces no refresh.
+- `lowlat-capture`: the synthetic frame source, planar 4:2:0 with a moving bar
+  and a static colour block, and the frame type both encode backends take.
+- Upload paths on both backends, each writing a frame into its own input
+  surfaces at the surface's own stride.
+- `scripts/check-encoded-frames.py`, which decodes a dump and checks each
+  picture against the frame index that produced it.
 
 **Notes**
 
@@ -54,6 +62,27 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   it, but the rate-control parameter is what makes it true. This is what the
   congestion actuator will drive, so a rate that is quietly ignored would have
   been discovered much later and at much greater cost.
+- **The source's content is a function of the frame index, and that is what
+  makes an encoder checkable.** A bar whose left edge is `index * step` can be
+  found in a decoded picture by a checker that shares nothing with the
+  producer but the frame number, with an independent decoder in between. That
+  catches what a structural check cannot: a wrong upload stride shears the
+  picture, a wrong plane offset moves or destroys the bar, and an off-by-one
+  in ordering shows as a bar one step out -- all of which otherwise produce a
+  stream that parses, decodes, and reports the right resolution. The two
+  chroma components of the static block deliberately differ, because equal
+  ones survive being written in the wrong order.
+- **Noise would have been the wrong content.** It is incompressible, so every
+  frame arrives at the rate ceiling and nothing about rate control behaves as
+  it will in production; it cannot be checked without reproducing the exact
+  generator, which lossy coding defeats anyway; and it offers motion search
+  nothing to track, so every picture is effectively intra and the predicted
+  path is never exercised. Worth having later as a worst-case size stress, not
+  as the default.
+- **One input surface per in-flight picture, on both backends.** One surface
+  shared across a queue is overwritten while the hardware is still reading it,
+  so the encoder emits the newest content under an older picture's timestamp:
+  output that decodes cleanly and is wrong, with no error anywhere.
 - **Parameter buffers are the caller's to release.** They are read while the
   picture is being assembled and are not consumed by it, so the eight a picture
   carries accumulate for the life of the context until they are destroyed

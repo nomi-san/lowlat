@@ -96,6 +96,12 @@ type RenderPicture =
     unsafe extern "C" fn(VADisplay, VAContextID, *mut VABufferID, c_int) -> VAStatus;
 type EndPicture = unsafe extern "C" fn(VADisplay, VAContextID) -> VAStatus;
 type SyncSurface = unsafe extern "C" fn(VADisplay, VASurfaceID) -> VAStatus;
+/// Address a surface's own storage rather than allocating a second copy of
+/// it. The alternative pair creates an image and copies into the surface,
+/// which is a whole frame of memory traffic per picture to avoid asking.
+type DeriveImage =
+    unsafe extern "C" fn(VADisplay, VASurfaceID, *mut crate::ffi::va::VAImage) -> VAStatus;
+type DestroyImage = unsafe extern "C" fn(VADisplay, crate::ffi::va::VAImageID) -> VAStatus;
 /// Present from interface 1.15 onward, and the reason the collect can be a
 /// probe rather than a wait. Absent on an older runtime, where the surface
 /// sync above is the only option and it blocks.
@@ -120,6 +126,11 @@ pub enum Error {
     /// The driver has no encode entry point for any codec we speak. A decode
     /// only device reaches here, and it is a refusal rather than a fault.
     NoEncoder,
+    /// A surface was offered in a layout this backend does not write, or its
+    /// reported extent does not cover the frame. Refused rather than filled
+    /// in on a guess, because a wrong guess is a picture that decodes to
+    /// something plausible and wrong.
+    UnsupportedLayout,
 }
 
 impl core::fmt::Display for Error {
@@ -131,6 +142,7 @@ impl core::fmt::Display for Error {
             Self::Status(status) => write!(f, "display runtime returned status {status}"),
             Self::QueueFull => f.write_str("every surface is in flight"),
             Self::NoEncoder => f.write_str("device offers no encode entry point"),
+            Self::UnsupportedLayout => f.write_str("surface layout cannot be written"),
         }
     }
 }
@@ -193,6 +205,8 @@ pub struct Vaapi {
     render_picture: RenderPicture,
     end_picture: EndPicture,
     sync_surface: SyncSurface,
+    derive_image: DeriveImage,
+    destroy_image: DestroyImage,
     /// Optional: an older runtime does not export it.
     sync_buffer: Option<SyncBuffer>,
     get_display_drm: GetDisplayDrm,
@@ -274,6 +288,10 @@ impl Vaapi {
                     .ok_or(Error::MissingSymbol)?,
                 end_picture: libva.symbol(c"vaEndPicture").ok_or(Error::MissingSymbol)?,
                 sync_surface: libva.symbol(c"vaSyncSurface").ok_or(Error::MissingSymbol)?,
+                derive_image: libva.symbol(c"vaDeriveImage").ok_or(Error::MissingSymbol)?,
+                destroy_image: libva
+                    .symbol(c"vaDestroyImage")
+                    .ok_or(Error::MissingSymbol)?,
                 // Absent before interface 1.15, and its absence is a
                 // capability question rather than a fault.
                 sync_buffer: libva.symbol(c"vaSyncBuffer"),
@@ -525,6 +543,7 @@ mod tests {
         };
         let mut encoder = context.encoder(params, 20_000_000).expect("encoder");
         println!("collect is a probe: {}", encoder.collect_is_a_probe());
+        let mut source = lowlat_capture::synthetic::Synthetic::new(1920, 1080);
 
         let mut stream = Vec::new();
         let mut slowest_pending = std::time::Duration::ZERO;
@@ -539,7 +558,7 @@ mod tests {
             .and_then(|v| v.parse().ok())
             .unwrap_or(4);
         for _ in 0..burst {
-            encoder.submit().expect("submit");
+            encoder.submit(&source.acquire()).expect("submit");
         }
         // **More pictures than the pool is deep**, so the run refills behind
         // the drain. At four the queue is filled once and emptied once, and
@@ -552,7 +571,7 @@ mod tests {
         let mut submitted = burst;
         while collected < PICTURES {
             if submitted < PICTURES && encoder.in_flight() < burst {
-                encoder.submit().expect("submit");
+                encoder.submit(&source.acquire()).expect("submit");
                 submitted += 1;
             }
             let started = Instant::now();
@@ -916,6 +935,35 @@ impl Drop for Context<'_> {
     }
 }
 
+/// Copy `rows` of `row_bytes` into a destination laid out at its own stride.
+///
+/// Both sides are walked by their own stride, which is the whole reason this
+/// is a row loop rather than one copy.
+fn copy_plane(
+    destination: &mut [u8],
+    offset: usize,
+    stride: usize,
+    source: lowlat_capture::Plane<'_>,
+    row_bytes: usize,
+    rows: usize,
+) -> Result<()> {
+    if stride < row_bytes {
+        return Err(Error::UnsupportedLayout);
+    }
+    for row in 0..rows {
+        let from = source
+            .row(row)
+            .and_then(|full| full.get(..row_bytes))
+            .ok_or(Error::UnsupportedLayout)?;
+        let at = offset + row * stride;
+        let into = destination
+            .get_mut(at..at + row_bytes)
+            .ok_or(Error::UnsupportedLayout)?;
+        into.copy_from_slice(from);
+    }
+    Ok(())
+}
+
 /// What a collect found.
 #[derive(Debug)]
 pub enum Poll<'a> {
@@ -1062,13 +1110,89 @@ impl Encoder<'_> {
         Ok((head, data))
     }
 
+    /// Write a frame into one of our input surfaces.
+    ///
+    /// **The surface's own strides are used, never the frame's.** A driver
+    /// lays a surface out to its own alignment, and the two chroma rows are
+    /// not necessarily where a tightly packed frame would put them. Walking
+    /// the destination by the source's stride reads correctly for the first
+    /// row and drifts further out of line with every row after it, which
+    /// looks like a skew or a shear rather than like a stride fault.
+    fn upload(&self, surface: VASurfaceID, frame: &lowlat_capture::Frame<'_>) -> Result<()> {
+        // SAFETY: plain data, filled by the call below.
+        let mut image = unsafe { core::mem::zeroed::<crate::ffi::va::VAImage>() };
+        // SAFETY: the surface is live and the output is a live local.
+        let status = unsafe { (self.va().derive_image)(self.display(), surface, &raw mut image) };
+        self.va().check(status)?;
+
+        let result = self.write_image(&image, frame);
+
+        // SAFETY: derived above; released once whether or not the write
+        // succeeded, or the surface stays mapped for the life of the display.
+        unsafe { (self.va().destroy_image)(self.display(), image.image_id) };
+        result
+    }
+
+    fn write_image(
+        &self,
+        image: &crate::ffi::va::VAImage,
+        frame: &lowlat_capture::Frame<'_>,
+    ) -> Result<()> {
+        // Two planes, luma then interleaved chroma. A driver offering some
+        // other layout is refused rather than filled in wrongly.
+        if image.num_planes < 2 || image.format.fourcc != crate::ffi::va::VA_FOURCC_NV12 {
+            return Err(Error::UnsupportedLayout);
+        }
+
+        let mut mapped: *mut core::ffi::c_void = core::ptr::null_mut();
+        // SAFETY: the image's buffer is live until the image is destroyed.
+        let status = unsafe { (self.va().map_buffer)(self.display(), image.buf, &raw mut mapped) };
+        self.va().check(status)?;
+        if mapped.is_null() {
+            return Err(Error::UnsupportedLayout);
+        }
+
+        // SAFETY: the interface reports `data_size` writable bytes at the
+        // mapped address, and nothing else aliases them while mapped.
+        let destination = unsafe {
+            core::slice::from_raw_parts_mut(
+                mapped.cast::<u8>(),
+                usize::try_from(image.data_size).unwrap_or(0),
+            )
+        };
+
+        let rows = usize::try_from(frame.height).unwrap_or(0);
+        let result = copy_plane(
+            destination,
+            usize::try_from(image.offsets[0]).unwrap_or(0),
+            usize::try_from(image.pitches[0]).unwrap_or(0),
+            frame.luma,
+            usize::try_from(frame.width).unwrap_or(0),
+            rows,
+        )
+        .and_then(|()| {
+            copy_plane(
+                destination,
+                usize::try_from(image.offsets[1]).unwrap_or(0),
+                usize::try_from(image.pitches[1]).unwrap_or(0),
+                frame.chroma,
+                usize::try_from(frame.width.div_ceil(2) * 2).unwrap_or(0),
+                rows.div_ceil(2),
+            )
+        });
+
+        // SAFETY: balances the map above.
+        unsafe { (self.va().unmap_buffer)(self.display(), image.buf) };
+        result
+    }
+
     /// Encode one picture. Returns as soon as it is queued.
     ///
     /// Every picture here is a keyframe for now: the reference-picture
     /// bookkeeping a predicted picture needs is the next piece, and shipping a
     /// half-correct reference list would produce a stream that decodes into
     /// progressively wrong output rather than failing.
-    pub fn submit(&mut self) -> Result<()> {
+    pub fn submit(&mut self, frame: &lowlat_capture::Frame<'_>) -> Result<()> {
         if self.pending.len() >= self.coded.len() {
             return Err(Error::QueueFull);
         }
@@ -1077,6 +1201,12 @@ impl Encoder<'_> {
         let input = *self.context.surfaces.get(slot).ok_or(Error::NoEncoder)?;
         let recon = *self.context.recon.get(slot).ok_or(Error::NoEncoder)?;
         let coded = self.coded[slot];
+
+        // **One input surface per slot, so this cannot overwrite a picture
+        // that is still being encoded.** The slot is only reused once its
+        // picture has been collected, which is what the queue-full check
+        // above enforces.
+        self.upload(input, frame)?;
 
         // The picture is read from the input surface and reconstructed into
         // its counterpart. The two are never the same surface.
