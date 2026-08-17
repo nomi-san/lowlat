@@ -9,6 +9,7 @@ pub mod bitstream;
 pub mod cuda;
 mod ffi;
 pub mod h264;
+pub mod h265;
 pub mod nvenc;
 pub mod vaapi;
 
