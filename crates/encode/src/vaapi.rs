@@ -541,11 +541,17 @@ mod tests {
         for _ in 0..burst {
             encoder.submit().expect("submit");
         }
+        // **More pictures than the pool is deep**, so the run refills behind
+        // the drain. At four the queue is filled once and emptied once, and
+        // anything that only affects a later submission -- a rate change, for
+        // one -- silently affects nothing at all.
+        const PICTURES: usize = 8;
+
         let drain_started = Instant::now();
         let mut collected = 0usize;
         let mut submitted = burst;
-        while collected < 4 {
-            if submitted < 4 && encoder.in_flight() < burst {
+        while collected < PICTURES {
+            if submitted < PICTURES && encoder.in_flight() < burst {
                 encoder.submit().expect("submit");
                 submitted += 1;
             }
@@ -565,10 +571,19 @@ mod tests {
                     std::hint::spin_loop();
                 }
             }
+
+            // The rate moves mid-run. **What this proves is that the encoder
+            // keeps producing valid pictures across the change**, not that no
+            // refresh was emitted: every picture here is a refresh already, so
+            // the gate wanting zero keyframes across a reconfigure cannot be
+            // stated on this backend until predicted pictures exist.
+            if collected == 2 {
+                encoder.reconfigure(10_000_000);
+            }
         }
         let drain = drain_started.elapsed();
         println!(
-            "drain of 4 {drain:?}, polls {polls} of which {pending} pending \
+            "drain of {collected} {drain:?}, polls {polls} of which {pending} pending \
              (slowest pending {slowest_pending:?}), {} bytes",
             stream.len()
         );
@@ -1316,6 +1331,18 @@ impl Encoder<'_> {
         Ok(Poll::Ready {
             bitstream: &self.collected,
         })
+    }
+
+    /// Change the rate every picture from the next one onward is encoded at.
+    ///
+    /// **Neither reinitialises the encoder nor forces a refresh**, and cannot
+    /// fail, because the rate is not encoder state here: it travels with each
+    /// picture, so changing it is only a question of what the next picture
+    /// carries. The congestion controller moves this many times a minute, and
+    /// a reinitialisation at that cadence would be visible as a stutter every
+    /// time the network hiccuped.
+    pub fn reconfigure(&mut self, bitrate_bps: u32) {
+        self.bitrate_bps = bitrate_bps;
     }
 
     /// True when the collect can ask rather than wait.
