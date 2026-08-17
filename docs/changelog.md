@@ -49,6 +49,32 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - `lowlat-common::sync` made public, so a second crate building a
   cross-thread handoff shares the shim the model check swaps out rather
   than keeping a second copy in step.
+- The per-guest delivery gate: the window ceiling, the skip-until-keyframe
+  latch, the running-maximum retest, and a throttled global keyframe.
+
+**Notes on the delivery gate**
+
+- **The cascade is the invariant and the latch is how it is kept.** A guest
+  that misses one frame must miss every frame until a keyframe. Delivering a
+  single dependent frame across the gap breaks the reference chain silently:
+  the decoder keeps going and produces progressively wrong output rather than
+  failing, which is the gray-frame failure. The regression test starves a
+  guest, drains its window completely, and asserts every predicted frame is
+  still withheld -- it fails the moment the latch is removed.
+- **The wrong thing is unsayable.** There is no operation that withholds one
+  frame without marking the guest pending, and a caller is told only which
+  guests take the frame, never which were withheld from. An interface that
+  exposed the other half would eventually have it called.
+- **A skipping guest is retested against the largest frame the session has
+  produced**, not the frame in hand. Testing against the frame in hand lets a
+  guest out of the cascade on a small predicted frame, whereupon the keyframe
+  it actually needs does not fit, the throttled grant is spent, and every guest
+  pays the spike for a recovery that did not happen. Its own test fails, and
+  only it fails, when the comparison is swapped.
+- **A joining guest starts pending**, which is what produces its join keyframe.
+  Nothing separate arranges one: a guest that has received nothing is in the
+  same position as a guest that has fallen out of the chain, so it is the same
+  state rather than a second one to keep in step.
 
 **Notes on the collect block**
 

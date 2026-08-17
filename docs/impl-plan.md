@@ -307,10 +307,12 @@ construction rather than as covered.
   preallocated pool slot and the slot index is published on a bounded ring per guest, released
   by refcount after packetization. This is the first cross-thread handoff added since
   [Phase 0](#phase-0---workspace-and-common) and carries that phase's model-checking obligation.
-- [ ] **Per-guest delivery gate** ([05 §6](05-host.md)): the window ceiling test, the
+- [x] **Per-guest delivery gate** ([05 §6](05-host.md)): the window ceiling test, the
   skip-until-keyframe latch, the running-maximum retest that releases a skipping guest, and a
   throttled global keyframe. A fresh guest starts pending, which is what produces its join
-  keyframe rather than a separate arrangement.
+  keyframe rather than a separate arrangement. *Gate A item 4's named regression test lives
+  here and was shown capable of failing: removing the latch fails it, and swapping the retest
+  to the frame in hand fails that test alone.*
 - [ ] Two-channel ring geometry per guest, sized from the largest frame the stream can produce
   rather than from control traffic.
 - [ ] Session initialization: accept the guest's preferences and encoder configuration, honour
