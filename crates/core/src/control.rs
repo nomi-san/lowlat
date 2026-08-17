@@ -49,6 +49,9 @@ pub mod op {
     pub const ENCODE_LATENCY: u8 = 21;
     pub const GUEST_LIST: u8 = 25;
     pub const HOST_MODE: u8 = 28;
+    /// Announces the generation the video header's frame identifier will carry,
+    /// on the frame after an encoder initialization.
+    pub const ENCODER_GENERATION: u8 = 29;
 
     /// Short name for logs. Never allocates; unknown opcodes render as
     /// `"unknown"` and the numeric value should be logged alongside.
@@ -74,6 +77,7 @@ pub mod op {
             GUEST_LIST => "guest-list",
             MOUSE_MOTION_STREAM => "mouse-motion-stream",
             HOST_MODE => "host-mode",
+            ENCODER_GENERATION => "encoder-generation",
             PEN_TOUCH => "pen-touch",
             _ => "unknown",
         }

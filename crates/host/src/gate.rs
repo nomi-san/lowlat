@@ -16,8 +16,6 @@
 //! guests were withheld from -- it is told only which ones take the frame. A
 //! gate that exposed the other half would eventually have it called.
 
-use lowlat_common::clock::{Time, diff_ms};
-
 /// The compile-time cap from docs/00-overview.md D10. Ring memory scales per
 /// guest, so this bounds it.
 pub const MAX_GUESTS: usize = 16;
@@ -111,7 +109,11 @@ pub struct Gate {
     /// not happen.
     largest: u32,
     /// When a keyframe was last asked for, so the throttle can refuse.
-    last_request: Option<Time>,
+    ///
+    /// **Milliseconds, passed in.** Time is a parameter here as it is in the
+    /// core, so the interval is testable rather than a test that sleeps half
+    /// a second to find out whether it elapsed.
+    last_request_ms: Option<f64>,
 }
 
 impl Default for Gate {
@@ -124,7 +126,7 @@ impl Gate {
     pub fn new() -> Self {
         Self {
             largest: 0,
-            last_request: None,
+            last_request_ms: None,
         }
     }
 
@@ -141,13 +143,13 @@ impl Gate {
     /// which is what keeps the cascade from being bypassed by a caller that
     /// forgets.
     ///
-    /// `now` is passed rather than read so the throttle is testable without a
-    /// clock.
+    /// `now_ms` is passed rather than read so the throttle is testable without
+    /// a clock.
     pub fn admit(
         &mut self,
         fragments: u32,
         keyframe: bool,
-        now: Time,
+        now_ms: f64,
         guests: &mut [Guest],
         mut deliver: impl FnMut(usize),
     ) -> Keyframe {
@@ -185,18 +187,18 @@ impl Gate {
             deliver(index);
         }
 
-        if wanted && self.throttle_allows(now) {
-            self.last_request = Some(now);
+        if wanted && self.throttle_allows(now_ms) {
+            self.last_request_ms = Some(now_ms);
             Keyframe::Request
         } else {
             Keyframe::NotNeeded
         }
     }
 
-    fn throttle_allows(&self, now: Time) -> bool {
-        match self.last_request {
+    fn throttle_allows(&self, now_ms: f64) -> bool {
+        match self.last_request_ms {
             None => true,
-            Some(last) => diff_ms(last, now) >= KEYFRAME_INTERVAL_MS,
+            Some(last) => now_ms - last >= KEYFRAME_INTERVAL_MS,
         }
     }
 }
@@ -211,11 +213,13 @@ mod tests {
         gate: &mut Gate,
         fragments: u32,
         keyframe: bool,
-        now: Time,
+        now_ms: f64,
         guests: &mut [Guest],
     ) -> (Vec<usize>, Keyframe) {
         let mut took = Vec::new();
-        let request = gate.admit(fragments, keyframe, now, guests, |index| took.push(index));
+        let request = gate.admit(fragments, keyframe, now_ms, guests, |index| {
+            took.push(index)
+        });
         (took, request)
     }
 
@@ -234,7 +238,7 @@ mod tests {
     fn a_joining_guest_waits_for_a_keyframe_and_takes_the_first_that_fits() {
         let mut gate = Gate::new();
         let mut guests = [Guest::joining(20.0)];
-        let now = Time::now();
+        let now = 0.0;
 
         // Predicted frames are not for a guest with no reference chain.
         let (took, _) = pass(&mut gate, 10, false, now, &mut guests);
@@ -263,7 +267,7 @@ mod tests {
     fn a_starved_guest_that_recovers_never_receives_a_dependent_frame() {
         let mut gate = Gate::new();
         let mut guests = [Guest::joining(20.0)];
-        let now = Time::now();
+        let now = 0.0;
 
         // Get it into the chain first.
         pass(&mut gate, 40, true, now, &mut guests);
@@ -301,7 +305,7 @@ mod tests {
     fn the_retest_uses_the_high_water_mark_not_the_frame_in_hand() {
         let mut gate = Gate::new();
         let mut guests = [Guest::joining(20.0)];
-        let now = Time::now();
+        let now = 0.0;
 
         // A big keyframe sets the mark, and the guest takes it.
         pass(&mut gate, 2000, true, now, &mut guests);
@@ -332,7 +336,7 @@ mod tests {
     fn skipping_is_per_guest_and_one_guest_falling_out_does_not_stop_another() {
         let mut gate = Gate::new();
         let mut guests = [Guest::joining(20.0), Guest::joining(20.0)];
-        let now = Time::now();
+        let now = 0.0;
         pass(&mut gate, 40, true, now, &mut guests);
 
         guests[0].set_outstanding(2490);
@@ -350,7 +354,7 @@ mod tests {
     fn the_keyframe_request_is_throttled() {
         let mut gate = Gate::new();
         let mut guests = [Guest::joining(20.0)];
-        let start = Time::now();
+        let start = 0.0;
 
         pass(&mut gate, 100, true, start, &mut guests);
         guests[0].set_outstanding(2490);
@@ -360,11 +364,21 @@ mod tests {
         // The first ask is granted.
         let (_, request) = pass(&mut gate, 5, false, start, &mut guests);
         assert_eq!(request, Keyframe::Request);
-        // Immediately after, refused, however many frames ask.
-        for _ in 0..10 {
-            let (_, request) = pass(&mut gate, 5, false, start, &mut guests);
-            assert_eq!(request, Keyframe::NotNeeded, "the throttle let one past");
+        // Refused for the whole interval, however many frames ask. At sixty a
+        // second that is thirty asks, so a throttle that leaked would show.
+        for frame in 1..30u32 {
+            let at = start + f64::from(frame) * (1000.0 / 60.0);
+            let (_, request) = pass(&mut gate, 5, false, at, &mut guests);
+            assert_eq!(
+                request,
+                Keyframe::NotNeeded,
+                "the throttle let one past at frame {frame}"
+            );
         }
+        // **And granted once the interval has actually passed**, which is the
+        // half a clock-free test could never reach before.
+        let (_, request) = pass(&mut gate, 5, false, start + 500.0, &mut guests);
+        assert_eq!(request, Keyframe::Request, "the throttle never reopened");
     }
 
     /// A keyframe that does not fit leaves the guest pending. Delivering it
@@ -374,7 +388,7 @@ mod tests {
     fn a_keyframe_too_big_for_the_window_neither_delivers_nor_clears() {
         let mut gate = Gate::new();
         let mut guests = [Guest::joining(20.0)];
-        let now = Time::now();
+        let now = 0.0;
 
         guests[0].set_outstanding(2400);
         let (took, _) = pass(&mut gate, 500, true, now, &mut guests);
@@ -393,7 +407,7 @@ mod tests {
     #[test]
     fn no_guests_is_not_a_special_case() {
         let mut gate = Gate::new();
-        let now = Time::now();
+        let now = 0.0;
         let (took, request) = pass(&mut gate, 10, true, now, &mut []);
         assert!(took.is_empty());
         assert_eq!(request, Keyframe::NotNeeded);

@@ -28,7 +28,7 @@ use lowlat_core::envelope::{Cipher, Envelope};
 use lowlat_core::message;
 use lowlat_core::packet::{self, Packet};
 use lowlat_core::session::Session;
-use lowlat_core::{control, video};
+use lowlat_core::{control, init, video};
 
 const MAGIC: &[u8; 8] = b"P2PWIRE1";
 const STAGE_WIRE: u8 = 0;
@@ -481,12 +481,44 @@ fn a_full_session_replays_the_received_direction() {
     let mut delivered = 0u64;
     let mut per_channel = [0u64; TRACKED as usize];
     let mut datagrams = 0u64;
+    let mut inits_accepted = 0u64;
 
     while let Some(record) = read_record(&mut reader) {
-        // The peer's own acknowledgements name the frontier it reached.
+        // The peer's own acknowledgements name the frontier it reached, and
+        // the same direction carries its initialization.
         if record.dir == 1 && record.stage == STAGE_CLEARTEXT {
-            if let Ok(Packet::Ack(ack)) = packet::parse(&record.data) {
-                peer_claim = Some(ack.cumulative);
+            match packet::parse(&record.data) {
+                Ok(Packet::Ack(ack)) => peer_claim = Some(ack.cumulative),
+                Ok(Packet::Data(data)) if data.channel == control::CONTROL_CHANNEL => {
+                    // **The recorded initialization, parsed by the code that
+                    // will meet a real one.** It arrives whole in one
+                    // fragment, so nothing needs reassembling to reach it.
+                    // A fixture we wrote would only prove the parser agrees
+                    // with us; this is what a peer actually sent.
+                    if let Some(content) = data.body.get(message::LENGTH_PREFIX_LEN..)
+                        && let Ok(parsed) = control::parse(content)
+                        && parsed.opcode == control::op::INIT
+                    {
+                        let asked = init::parse(parsed.body)
+                            .expect("the recorded initialization was refused");
+                        assert_eq!(asked.version, init::VERSION);
+                        assert_eq!(
+                            parsed.a0 as usize,
+                            parsed.body.len(),
+                            "argument 0 is not the body length"
+                        );
+                        assert!(
+                            !asked.has_size_limit(),
+                            "the no-limit sentinel was read as a limit"
+                        );
+                        assert!(
+                            asked.flags & init::FLAG_BASE != 0,
+                            "the base flag was absent from a real offer"
+                        );
+                        inits_accepted += 1;
+                    }
+                }
+                _ => {}
             }
             continue;
         }
@@ -524,7 +556,14 @@ fn a_full_session_replays_the_received_direction() {
 
     // The smoothed round trip stays zero here by construction: this replay has
     // no uplink, so no acknowledgement of ours is ever returned to sample.
-    eprintln!("session: {datagrams} datagrams in, {delivered} messages out {per_channel:?}");
+    eprintln!(
+        "session: {datagrams} datagrams in, {delivered} messages out {per_channel:?}, \
+         {inits_accepted} initialisation accepted"
+    );
+    assert_eq!(
+        inits_accepted, 1,
+        "the recording's initialization was not found and parsed"
+    );
 
     let claim = peer_claim.expect("the recording contained no peer acknowledgement");
     for channel in 0..TRACKED {

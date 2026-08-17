@@ -8,6 +8,7 @@
 pub mod admission;
 pub mod frames;
 pub mod gate;
+pub mod session;
 pub mod video;
 
 pub use admission::{Admission, Config, Event, HostCredentials, Outcome, Peer};

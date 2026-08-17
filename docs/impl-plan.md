@@ -315,9 +315,10 @@ construction rather than as covered.
   to the frame in hand fails that test alone.*
 - [ ] Two-channel ring geometry per guest, sized from the largest frame the stream can produce
   rather than from control traffic.
-- [ ] Session initialization: accept the guest's preferences and encoder configuration, honour
+- [x] Session initialization: accept the guest's preferences and encoder configuration, honour
   the 5-second deadline ([01 §12](01-protocol.md)), and emit the encode-latency and encoder
-  generation messages ([01 §11.2](01-protocol.md)).
+  generation messages ([01 §11.2](01-protocol.md)). *The recording's own initialization is
+  parsed in the replay, which is the rest of Gate A item 2.*
 - [x] Packetizer and the video message framing ([01 §11.3](01-protocol.md)). *Every recorded
   video header re-emits byte for byte and reframes to the same fragment count, which is most of
   Gate A item 2; writing the rotation zero-based fails it.*

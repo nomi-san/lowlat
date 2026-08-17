@@ -46,6 +46,7 @@ pub mod demux;
 pub mod endpoint;
 pub mod envelope;
 pub mod error;
+pub mod init;
 pub mod message;
 pub mod packet;
 pub mod pmtu;

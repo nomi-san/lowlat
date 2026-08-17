@@ -53,6 +53,32 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   latch, the running-maximum retest, and a throttled global keyframe.
 - The video packetiser: a stream's fixed facts, the ten-byte header ahead
   of each access unit, and the message the send ring takes.
+- The initialization parser in the core: the eight-key body, its sentinels
+  and its flag bits, allocation free.
+- Session negotiation in the host: the five-second deadline, the encoder
+  configuration message, and the encode-latency and generation cadences.
+
+**Notes on session initialization**
+
+- **The recorded initialization is parsed by the code that will meet a real
+  one.** The replay finds the message a stock client actually sent, runs the
+  parser on it, and checks that argument 0 really is the body length. A fixture
+  we wrote would only prove the parser agrees with the writer.
+- **Two of the fields are sentinels, not measurements.** A maximum size of
+  60000 means no limit and a resolution of zero means no preference; a host
+  taking either literally tries to encode a picture nobody asked for.
+- **Only the version is mandatory.** Everything else defaults, and unknown keys
+  are ignored rather than refused: peers send different objects, and requiring
+  a shape refuses them over fields nothing reads.
+- **A body that will not parse leaves the guest on the clock** rather than
+  admitting it or abandoning it early. It is the same position as a guest that
+  has not spoken, and the deadline already covers that.
+- **Time is a parameter, as it is in the core.** Both this and the delivery
+  gate previously took a clock reading, which made two of their tests unable to
+  reach the case that mattered: nothing could advance five seconds, or half a
+  second, without sleeping. The deadline and the keyframe throttle are now
+  driven by a millisecond figure, and both tests check the far side of the
+  interval rather than only the near one.
 
 **Notes on the packetiser**
 
