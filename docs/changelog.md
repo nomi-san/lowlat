@@ -26,6 +26,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   context.
 - A bit-level writer for parameter sets: exponential-Golomb, fixed-width
   fields, trailing bits, and start-code escaping.
+- The sequence and picture parameter sets themselves, carrying the colour
+  description one backend has no other way to state.
 
 **Notes**
 
@@ -129,6 +131,19 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   it knows. Compiling against a header older than the installed runtime is the
   safe direction either way; only the reason differs, and writing down which
   reason applies is what stops the next person applying the wrong rule.
+- **Cropping is measured in chroma samples, not pixels.** A coded picture is a
+  whole number of macroblocks, so 1080 rows are coded as 1088 and eight rows
+  are cropped -- but the field takes four, because each unit is two rows at
+  4:2:0. Writing pixels crops twice what was intended, on every decoder, and it
+  presents as a capture bug rather than as a parameter-set one.
+- **The parameter-set tests check structure, not meaning, and that distinction
+  is worth keeping visible.** They agree with the writer because both came from
+  one reading of the standard, so they would agree just as well if that reading
+  were wrong. Nothing yet proves a decoder reads the colour description as
+  intended, and a parameter set alone cannot be used to find out: a decoder
+  reports nothing about a stream containing no picture. The check arrives with
+  the first frame this backend encodes, and the dumper that will perform it is
+  in place rather than left to be remembered.
 - **One backend has nowhere to put the colour description.** Its sequence
   parameters carry a single aspect-ratio flag and no colour fields at all,
   where the other takes primaries, matrix, transfer and range as ordinary
