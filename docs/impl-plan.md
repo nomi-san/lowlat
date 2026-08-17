@@ -298,7 +298,8 @@ construction rather than as covered.
   ([07 §3.1](07-platforms.md)). *Refresh and predicted pictures, one reference, parameter sets
   travelling with a refresh; content verified against the source frame by frame through an
   independent decoder.*
-- [ ] NVENC backend, same trait, same parameters.
+- [x] NVENC backend, same trait, same parameters. *Collect block audited on every hardware run
+  rather than trusted; the length it reports is the length that was coded.*
 - [x] `lowlat-capture` synthetic frame source, emitting planar frames directly so no conversion
   stage is needed before Phase 9. **The trait is deferred to Phase 9**; see the note on ordering.
 - [x] **Frame pool and per-guest publish ring.** One encode serves every guest, and a backend's
