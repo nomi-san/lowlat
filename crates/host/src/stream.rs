@@ -237,9 +237,35 @@ impl TimingCells {
     }
 }
 
+/// Which bitstream the stream produces.
+///
+/// **One encode serves every guest**, so this is a property of the stream
+/// chosen before anyone connects, not something negotiated per guest. A peer
+/// that cannot decode it has to be refused rather than accommodated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Codec {
+    H264,
+    H265,
+}
+
+/// Which encoder produces it.
+///
+/// Both implement the same trait and one loop drives either. The choice is a
+/// deployment one: what the machine has, and which vendor's driver is less
+/// unhappy on it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Backend {
+    /// The open stack, through the render node.
+    Open,
+    /// The vendor's encoder, through its own runtime.
+    Vendor,
+}
+
 /// How the stream is configured. Fixed for its lifetime.
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
+    pub codec: Codec,
+    pub backend: Backend,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
@@ -486,6 +512,33 @@ fn run(shared: &Shared, arrivals: &mpsc::Receiver<Join>, config: Config) {
         std::thread::sleep(IDLE_WAIT);
     }
 
+    lowlat_common::log_info!(
+        "stream: encoding w={} h={} fps={} ceiling_mbps={:.1} codec={:?} backend={:?}",
+        config.width,
+        config.height,
+        config.fps,
+        config.configured_mbps,
+        config.codec,
+        config.backend
+    );
+
+    // **The construction differs and the loop does not.** Each backend owns a
+    // device, a context and an encoder whose lifetimes nest, so they are built
+    // here and the same generic loop is handed whichever one exists.
+    match config.backend {
+        Backend::Open => run_open(shared, arrivals, config),
+        Backend::Vendor => run_vendor(shared, arrivals, config),
+    }
+}
+
+fn run_open(shared: &Shared, arrivals: &mpsc::Receiver<Join>, config: Config) {
+    if config.codec == Codec::H265 {
+        // The parameter sets for this codec are written by hand on this
+        // backend and are not written yet. Said plainly rather than
+        // configuring an encoder that would emit a stream nothing decodes.
+        lowlat_common::log_error!("stream: the open backend has no h265 path yet");
+        return;
+    }
     let Ok(display) = lowlat_encode::vaapi::Vaapi::load() else {
         lowlat_common::log_error!("stream: display runtime unavailable, nothing will encode");
         return;
@@ -512,25 +565,64 @@ fn run(shared: &Shared, arrivals: &mpsc::Receiver<Join>, config: Config) {
         log2_max_poc_lsb_minus4: 4,
         max_num_ref_frames: 1,
     };
+    let Ok(mut encoder) = context.encoder(params, start_bps(config)) else {
+        lowlat_common::log_error!("stream: encoder could not be configured");
+        return;
+    };
+    encode_loop(shared, arrivals, config, &mut encoder);
+}
+
+fn run_vendor(shared: &Shared, arrivals: &mpsc::Receiver<Join>, config: Config) {
+    let Ok(cuda) = lowlat_encode::cuda::Cuda::load() else {
+        lowlat_common::log_error!("stream: compute runtime unavailable, nothing will encode");
+        return;
+    };
+    let Ok(device) = cuda.any_device() else {
+        lowlat_common::log_error!("stream: no compute device");
+        return;
+    };
+    let Ok(compute) = cuda.retain_primary(&device) else {
+        lowlat_common::log_error!("stream: compute context could not be retained");
+        return;
+    };
+    let Ok(api) = lowlat_encode::nvenc::Api::load() else {
+        lowlat_common::log_error!("stream: encoder runtime unavailable");
+        return;
+    };
+    let Ok(session) = api.open_session(compute) else {
+        lowlat_common::log_error!("stream: encode session could not be opened");
+        return;
+    };
+    let Ok(mut encoder) = session.initialize(
+        &cuda,
+        lowlat_encode::nvenc::Config {
+            codec: match config.codec {
+                Codec::H264 => lowlat_encode::nvenc::Codec::H264,
+                Codec::H265 => lowlat_encode::nvenc::Codec::H265,
+            },
+            width: config.width,
+            height: config.height,
+            fps: config.fps,
+            bitrate_bps: start_bps(config),
+            min_qp: lowlat_encode::nvenc::DEFAULT_MIN_QP,
+        },
+    ) else {
+        lowlat_common::log_error!("stream: encoder could not be configured");
+        return;
+    };
+    encode_loop(shared, arrivals, config, &mut encoder);
+}
+
+/// The rate an encoder opens at, before the controller has said anything.
+fn start_bps(config: Config) -> u32 {
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         reason = "a configured bitrate in megabits, well inside u32 as bits per second"
     )]
-    let start_bps = (config.configured_mbps * 1_000_000.0) as u32;
-    let Ok(mut encoder) = context.encoder(params, start_bps) else {
-        lowlat_common::log_error!("stream: encoder could not be configured");
-        return;
-    };
-
-    lowlat_common::log_info!(
-        "stream: encoding w={} h={} fps={} ceiling_mbps={:.1}",
-        config.width,
-        config.height,
-        config.fps,
-        config.configured_mbps
-    );
-    encode_loop(shared, arrivals, config, &mut encoder);
+    {
+        (config.configured_mbps * 1_000_000.0) as u32
+    }
 }
 
 /// How long the loop sleeps while no guest is seated.
@@ -1113,6 +1205,8 @@ mod tests {
                 width: 320,
                 height: 240,
                 fps: 240,
+                codec: Codec::H264,
+                backend: Backend::Open,
                 configured_mbps: 10.0,
                 min_mbps: 1.0,
                 rotation: lowlat_core::video::Rotation::None,
@@ -1268,6 +1362,8 @@ mod tests {
             width: 1920,
             height: 1080,
             fps: 60,
+            codec: Codec::H264,
+            backend: Backend::Open,
             configured_mbps: 10.0,
             min_mbps: 1.0,
             rotation: lowlat_core::video::Rotation::None,
@@ -1326,6 +1422,8 @@ mod tests {
             width: 1920,
             height: 1080,
             fps: 60,
+            codec: Codec::H264,
+            backend: Backend::Open,
             configured_mbps: 10.0,
             min_mbps: 1.0,
             rotation: lowlat_core::video::Rotation::None,
@@ -1374,6 +1472,8 @@ mod tests {
             width: 1920,
             height: 1080,
             fps,
+            codec: Codec::H264,
+            backend: Backend::Open,
             configured_mbps: 10.0,
             min_mbps: 1.0,
             rotation: lowlat_core::video::Rotation::None,

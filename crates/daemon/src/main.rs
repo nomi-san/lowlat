@@ -191,6 +191,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // **One-based, because zero means unspecified rather than upright.** The
     // coded picture stays landscape whatever this says; a quarter turn changes
     // what the peer presents and what it maps pointer coordinates against.
+    // **One encode serves every guest**, so the codec is chosen here and not
+    // negotiated per guest. A peer that cannot decode it has to be refused
+    // rather than accommodated, which is the phase 6 refusal path.
+    let codec = match flag("--codec").as_deref() {
+        Some("hevc" | "h265") => lowlat::stream::Codec::H265,
+        _ => lowlat::stream::Codec::H264,
+    };
+    let backend = match flag("--encoder").as_deref() {
+        Some("vendor" | "nvenc") => lowlat::stream::Backend::Vendor,
+        _ => lowlat::stream::Backend::Open,
+    };
     let rotation = match flag("--rotate").as_deref() {
         Some("90") => lowlat::video::Rotation::Deg90,
         Some("180") => lowlat::video::Rotation::Deg180,
@@ -203,6 +214,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         max_guests: MAX_GUESTS as usize,
         servers: vec![stun],
         stream: Some(lowlat::stream::Config {
+            codec,
+            backend,
             width,
             height,
             fps: FPS,

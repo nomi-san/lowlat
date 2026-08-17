@@ -3,7 +3,28 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
-## 5: encoder and Gate A (in progress)
+## 6: HEVC (in progress)
+
+**Added**
+
+- The codec and the encoder backend are chosen at startup and drive the same
+  loop, so a stream can be HEVC on the vendor backend without a second
+  pipeline. A stock client decodes it at 60 fps.
+- The open backend refuses HEVC with a log line rather than configuring an
+  encoder whose parameter sets it cannot yet write.
+
+**Notes**
+
+- **The trait paid for itself here.** One generic loop already drove two
+  backends; adding a second codec was selection, not a pipeline.
+- **A guest that declared H.264 decoded the HEVC stream, and that proves
+  less than it appears.** The client used for the run sniffs the first
+  parameter set and reconfigures its decoder. A peer without that sniff
+  builds the decoder it declared and fails every picture, which is the same
+  failure this project has already spent a day on from the other side. The
+  refusal path is still required.
+
+## 5: encoder and Gate A (closed 2026-08-18)
 
 **Added**
 

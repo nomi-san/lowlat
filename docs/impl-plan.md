@@ -547,15 +547,32 @@ when it must not.
 
 ## Phase 6 - HEVC
 
-- [ ] HEVC encode path and the two-place capability signalling
-  ([01 §11.3](01-protocol.md)).
+- [x] HEVC encode path on the vendor backend, and the codec and encoder chosen at startup
+  rather than per guest, because one encode serves every guest. *A stock client decodes it:
+  1920x1080 H265 at 60 fps, decode 1.2 ms, zero loss, and encode 2.6 ms against H.264's 3.3.
+  Reached by selection rather than by a second pipeline -- the encoder trait means one generic
+  loop drives either backend and either codec.*
+- [ ] HEVC on the open backend. Its parameter sets are written by hand, so this needs a video
+  parameter set, a sequence set and a picture set of its own, plus that codec's sequence,
+  picture and slice buffers. The backend refuses the codec with a log line until then rather
+  than configuring an encoder whose output nothing decodes.
+- [ ] The two-place capability signalling ([01 §11.3](01-protocol.md)).
 
 - [ ] **The refusal path for a seat that cannot decode the session's codec** (D11): read the
   capability from session initialization, and disconnect with a status before any video is sent.
 
 **Gate:**
 
-1. A stock client negotiates and decodes HEVC, and both codecs are selectable.
+1. [~] A stock client negotiates and decodes HEVC, and both codecs are selectable. *Decoded, on
+   the vendor backend, and both codecs are selectable there. The negotiation half is not done:
+   the codec is chosen at startup and no guest is consulted, which is what gate 2 is for.*
+
+   **A test that looked like a pass and was not.** A client declaring H.264 also decoded the
+   HEVC stream, which appears to make the refusal path unnecessary. It does not: the client
+   used for that run sniffs the first parameter set and reconfigures its decoder, a behaviour
+   it carries because a host can change codec underneath it. A peer without that sniff builds
+   the decoder it declared and fails every picture, which is exactly the failure this project
+   spent a day on from the other direction. The refusal is still required.
 2. **A guest that cannot decode the session's codec is disconnected with a status, and no video
    is ever sent to it.** Observed against a stock client: the disconnect arrives, the client
    reports it, and the other guests' streams are undisturbed across the whole episode.
