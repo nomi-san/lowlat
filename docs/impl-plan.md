@@ -301,7 +301,7 @@ construction rather than as covered.
 - [ ] NVENC backend, same trait, same parameters.
 - [x] `lowlat-capture` synthetic frame source, emitting planar frames directly so no conversion
   stage is needed before Phase 9. **The trait is deferred to Phase 9**; see the note on ordering.
-- [ ] **Frame pool and per-guest publish ring.** One encode serves every guest, and a backend's
+- [x] **Frame pool and per-guest publish ring.** One encode serves every guest, and a backend's
   bitstream is only valid until its next poll, so the collected frame is copied once into a
   preallocated pool slot and the slot index is published on a bounded ring per guest, released
   by refcount after packetization. This is the first cross-thread handoff added since

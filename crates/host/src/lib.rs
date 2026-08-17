@@ -6,5 +6,6 @@
 // Phase 8 lands the ABI. Phases 4 through 7 land the orchestration.
 
 pub mod admission;
+pub mod frames;
 
 pub use admission::{Admission, Config, Event, HostCredentials, Outcome, Peer};

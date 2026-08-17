@@ -44,6 +44,32 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - Predicted pictures on the second backend: reference bookkeeping, the
   slice header for both picture kinds, and parameter sets that travel
   with a refresh rather than with every picture.
+- The encoded-frame pool: fixed slots, one copy per frame however many
+  guests take it, and a hold per guest that releases itself.
+- `lowlat-common::sync` made public, so a second crate building a
+  cross-thread handoff shares the shim the model check swaps out rather
+  than keeping a second copy in step.
+
+**Notes on the frame pool**
+
+- **The refcount is the only thing that says a slot is reusable**, and it
+  is the first cross-thread handoff in the workspace outside the shared
+  primitives, so it carries phase 0's obligation: model checked under
+  `loom`, and **shown capable of failing**. Weakening the release on a
+  guest's decrement and the acquire on the producer's search makes `loom`
+  report a causality violation on concurrent access to the frame storage;
+  restoring them makes it pass. A model check that cannot fail proves
+  nothing about the orderings it is supposed to be exercising.
+- **The count is raised before any index is pushed.** Raising it after
+  would let the first guest finish and take the slot to zero while later
+  guests were still being handed the same index, and the producer would
+  then be free to overwrite a frame nobody had sent yet. A ring that
+  refuses the index gives its hold straight back, or the pool bleeds one
+  slot per congested guest until it stops entirely.
+- **One place releases the writer's own hold.** Publishing and abandoning
+  both end in the same drop, so neither path can release twice -- which
+  the first version did, and which handed slots back while a guest still
+  held them.
 
 **Notes on predicted pictures**
 

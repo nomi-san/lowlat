@@ -16,4 +16,4 @@ pub mod wait;
 #[cfg(feature = "alloc-counter")]
 pub mod alloc_counter;
 
-mod sync;
+pub mod sync;

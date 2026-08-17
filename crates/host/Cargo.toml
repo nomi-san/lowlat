@@ -22,5 +22,8 @@ lowlat-capture.workspace = true
 lowlat-encode.workspace = true
 lowlat-inject.workspace = true
 
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
 [lints]
 workspace = true
