@@ -199,17 +199,39 @@ The two actuators aggregate differently, and the difference is not an inconsiste
 **The frame gate requires every guest to be pressured.** Skipping the acquire helps nobody if
 one guest can still take the frame, so it fires on unanimity.
 
-**The configured bitrate is a budget for the host's uplink, not a per-guest allowance.** Every
-guest receives the same encoded stream, so N guests cost N times the encoded rate on the way
-out. The ceiling handed to each guest's controller is therefore the configured rate divided by
-the number of active streams, and the controller works downward from there. Skipping that
-division does not oversubscribe one guest; it oversubscribes the host, by a factor of the guest
-count, and the loss that follows lands on all of them at once.
+**The configured bitrate is a ceiling, not a rate, and not a quality setting.** It bounds what
+the controller may climb to; the controller's own answer is what the encoder is actually told to
+target. On a healthy path the controller sits at the ceiling and the picture is as good as the
+ceiling allows, which is why raising it improves quality. On a congested path the controller sits
+well below it and raising it changes nothing. Both are the same mechanism seen from either side
+of the constraint.
+
+It is also a budget for the host's uplink rather than a per-guest allowance. Every guest receives
+the same encoded stream, so N guests cost N times the encoded rate on the way out. **The ceiling
+handed to each guest's controller is the configured rate divided by the number of guests
+receiving that stream.** Skipping that division does not oversubscribe one guest; it
+oversubscribes the host by a factor of the guest count, and the loss lands on all of them at
+once.
 
 So the two aggregations compose: **each guest's ceiling is the configured rate divided by the
-active count, and the rate actually applied is the minimum of what the guests' controllers
-return.** One term bounds what the host can send in total, the other bounds what the slowest
-path can carry.
+count of guests on its stream, and the rate actually applied is the minimum of what the guests'
+controllers return.** One term bounds what the host can send in total, the other bounds what the
+slowest path can carry.
+
+**A live change to the ceiling is application protocol, not SDK protocol.** Peers exist that
+ask their host to change the rate mid-session, and to switch which output is captured, by
+sending user data with a sub-identifier and a body the SDK never looks inside
+([01 §11.1](01-protocol.md) calls user data an opaque pass through). That is the right layer for
+it: the SDK hands the payload up and the application decides, because the request is a policy
+question about what the operator permits rather than a protocol one. What the SDK owes is that
+the change applies **live** -- `reconfigure` with no reinitialization and no forced refresh --
+which is already required of it here and in [01 §10](01-protocol.md). Nothing about this is a
+congestion feedback message, and none may be invented (§5 opening).
+
+**Raising the ceiling costs latency, and the chain is the same one the quantiser floor runs.**
+More bits is a larger frame, a larger frame is more packets, and more packets is longer on the
+wire and longer in every queue between here and the far side. So the setting trades picture
+against delay in both directions, and a host whose first goal is latency defaults it low.
 
 **The bitrate is the minimum across guests**, applied only when it moves by more than 0.01
 Mbps so noise does not produce a reconfigure per frame. Which means a chronically slow guest

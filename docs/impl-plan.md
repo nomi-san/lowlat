@@ -324,7 +324,7 @@ construction rather than as covered.
   Gate A item 2; writing the rotation zero-based fails it.*
 - [ ] Congestion controller ([01 §10](01-protocol.md)) driving encoder bitrate, ticked once per
   guest per frame from the encode loop, **each guest's ceiling being the configured rate divided
-  by the active count**, and the rate applied being the minimum across guests
+  by the count of guests on that stream**, and the rate applied being the minimum across guests
   ([05 §5](05-host.md)).
 
 **Gate A:**
