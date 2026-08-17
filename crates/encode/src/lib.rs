@@ -4,3 +4,5 @@
 //! See docs/05-host.md section 4.
 
 // Phase 5 lands the hardware backend; Phase 11 the software one.
+
+mod ffi;
