@@ -346,9 +346,9 @@ construction rather than as covered.
 
    **Revised 2026-08-17, against hardware.** The original wording required the whole collect
    never to block, and on one backend that is not achievable: its own no-wait flag is
-   documented for exactly this case and is ignored by the driver, and a completion marker on
-   the encoder's stream passes before the bitstream is retrievable, because the encode does
-   not run on that stream. Measured, a not-ready answer costs about 300 ns while retrieving a
+   documented for exactly this case and **is worse than useless** -- see the correction below
+   -- and a completion marker on the encoder's stream passes before the bitstream is
+   retrievable, because the encode does not run on that stream. Measured, a not-ready answer costs about 300 ns while retrieving a
    finished picture costs about one frame's encode time. So the gate now covers the part that
    is both achievable and load bearing -- a caller with nothing ready is never parked -- and
    the retrieval cost is recorded rather than wished away. **A gate nobody can pass teaches
@@ -404,9 +404,9 @@ acquire outcomes other than a frame, which only a real capture backend can produ
 anything.
 
 **Note on the non-blocking poll.** Neither backend offers a completion callback on this
-platform. Both offer a non-blocking probe -- a surface status query before mapping the coded
-buffer on one, a no-wait flag on the bitstream lock on the other -- and the trait is only
-honest if that path is the one taken. Building against the blocking form and adding depth to
+platform. One offers a usable non-blocking probe, a surface status query before mapping the
+coded buffer. **The other's no-wait flag on the bitstream lock must not be used at all**; see
+the correction below. The trait is only honest if the probing is done where it can be. Building against the blocking form and adding depth to
 hide it produces a pipeline that stalls the moment the encoder falls behind, which is exactly
 when it must not.
 
@@ -552,9 +552,18 @@ from a source change.
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
 
+- 2026-08-17: **Correction to the entry below: the no-wait flag is not ignored, it answers
+  wrongly.** Recorded first as "ignored by the driver", which was measured from the outside and
+  read one way too kindly. Set, the lock returns success on a block the driver has not finished
+  writing: the coded bytes are in place and the length is not. That produced a refresh picture
+  claiming megabytes it had not coded and a slice count that was noise, both of which were taken
+  for driver defects for a day. **A flag that is ignored is harmless and invites a retry on a
+  newer driver; a flag that returns a wrong answer must never be set.** It also buys nothing:
+  measured both ways the lock costs the same 0.7 to 1.8 ms. The narrowing below still stands,
+  because the collect still cannot be made non-blocking -- only the reason changes.
 - 2026-08-17: **Gate A item 5 is revised against hardware, and narrowed to what is
   achievable.** It required a collect that never blocks. One backend cannot provide it: the
-  no-wait flag its own header documents for this exact case is ignored by the driver, and a
+  no-wait flag its own header documents for this exact case cannot be used, and a
   completion marker recorded on the encoder's stream passes early, because the encode runs on
   a hardware engine rather than on that stream. Both were measured rather than reasoned about.
   What is achievable, and is what the pipeline actually needs, is that a caller with nothing

@@ -687,6 +687,65 @@ mod colour {
     pub(super) const FULL_RANGE: u32 = 0;
 }
 
+/// The picture kind the driver reported for a collected access unit.
+///
+/// `Other` is kept raw rather than folded into a named variant, because a
+/// block read at the wrong offset produces exactly that and it has to stay
+/// visible as itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Picture {
+    Idr,
+    I,
+    P,
+    /// Predicted, and referenced by nothing. The gate may drop it.
+    NonRefP,
+    B,
+    Other(u32),
+}
+
+impl Picture {
+    fn from_raw(raw: u32) -> Self {
+        use crate::ffi::nvenc as f;
+        match raw {
+            f::NV_ENC_PIC_TYPE_IDR => Self::Idr,
+            f::NV_ENC_PIC_TYPE_I => Self::I,
+            f::NV_ENC_PIC_TYPE_P => Self::P,
+            f::NV_ENC_PIC_TYPE_NONREF_P => Self::NonRefP,
+            f::NV_ENC_PIC_TYPE_B => Self::B,
+            other => Self::Other(other),
+        }
+    }
+}
+
+/// Everything the driver wrote into the collect block beside the bytes.
+///
+/// **The size is the field under suspicion, and the rest are here to judge
+/// it.** A refresh picture reports a length two and a half megabytes past
+/// where its last non-zero byte sits, and from outside that has two
+/// explanations which look identical: the encoder appended that many bytes,
+/// or the block is being read at offsets the driver did not write to. The
+/// headers are pinned several revisions below the driver that answers them,
+/// so the second is not idle worry.
+///
+/// The neighbouring fields settle it. A picture kind, a quantiser and a
+/// macroblock count that are all independently plausible cannot come out of a
+/// block read at the wrong offsets. That matters beyond the size: the delivery
+/// gate is about to depend on the picture kind, and the packetiser on the
+/// slice count.
+#[derive(Debug, Clone, Copy)]
+pub struct LockReport {
+    /// The length the driver claims, which is the length that was copied.
+    pub size: u32,
+    pub picture: Picture,
+    /// One is a whole frame. Nothing here ever encodes a field.
+    pub picture_struct: u32,
+    pub frame_avg_qp: u32,
+    /// Counts from zero in collect order, though nothing sets it on submit.
+    /// It is what ties a block to the picture it describes.
+    pub frame_idx: u32,
+    pub num_slices: u32,
+}
+
 /// A configured encoder.
 pub struct Encoder<'a> {
     /// **Declared before the session, and that ordering is load bearing.**
@@ -726,6 +785,8 @@ pub struct Encoder<'a> {
     /// copy is the price; the capacity is reused, so it stops allocating after
     /// the first few frames. The per-guest pool replaces this.
     collected: Vec<u8>,
+    /// The block the last collect returned. None until one has.
+    last_lock: Option<LockReport>,
     /// Last, so it drops last: destroying the encoder and releasing the
     /// context has to happen after everything built against them is gone.
     session: Session<'a>,
@@ -950,6 +1011,7 @@ impl<'a> Session<'a> {
             inputs: Vec::with_capacity(IN_FLIGHT),
             pending: std::collections::VecDeque::with_capacity(IN_FLIGHT),
             collected: Vec::new(),
+            last_lock: None,
         };
         encoder.allocate_inputs(cuda)?;
         Ok(encoder)
@@ -1240,11 +1302,17 @@ impl Encoder<'_> {
 
     /// Collect a finished access unit, or report that none is ready.
     ///
-    /// **Never blocks.** The hardware offers no completion object on this
-    /// platform, so the lock is taken in its no-wait form and a busy answer is
-    /// reported as pending. Taking the blocking form and hiding it behind
-    /// queue depth would turn "the encoder fell behind" into "the pipeline
-    /// thread is stopped", at exactly the moment that must not happen.
+    /// **Asking costs nothing; retrieving costs about a millisecond, and no
+    /// setting on this platform changes that.** The marker keeps the ordinary
+    /// case cheap: nothing ready is answered in a few hundred nanoseconds
+    /// without touching the driver, which is what stops a poll loop from
+    /// parking on a picture that has not been encoded yet.
+    ///
+    /// Once the marker has passed, the lock takes 0.7 to 1.8 ms, because the
+    /// marker is recorded on a compute stream while the encode runs on a
+    /// separate engine, so it passes before the picture is finished. The lock
+    /// covers the rest of that wait. **The interface's no-wait flag does not
+    /// avoid it** -- see where it is set below.
     pub fn poll(&mut self) -> Result<Poll<'_>, Error> {
         use crate::ffi::nvenc as f;
         let Some(head) = self.pending.front() else {
@@ -1265,19 +1333,39 @@ impl Encoder<'_> {
         let mut params = unsafe { core::mem::zeroed::<f::NV_ENC_LOCK_BITSTREAM>() };
         params.version = crate::ffi::versions::NV_ENC_LOCK_BITSTREAM_VER;
         params.outputBitstream = output;
-        // Kept set even though the driver ignores it. If a later driver
-        // honours it, a busy answer here means the marker and the bitstream
-        // disagree, which is worth surfacing rather than hiding.
-        params.set_doNotWait(1);
+        // **Must be zero. The driver does not ignore this flag, and it does
+        // not report a busy lock either: set, it returns success on a block it
+        // has not finished writing.** The bytes are there and the length is
+        // not, so a refresh picture came back claiming megabytes when it had
+        // coded a few hundred bytes, and the slice count came back as noise.
+        // Both were read as driver defects for a while. They are one race, and
+        // it is ours.
+        //
+        // It buys nothing to run that risk. Measured either way, the lock
+        // costs the same 0.7 to 1.8 ms; set, it returned early exactly once in
+        // eight pictures, and that one answer was the wrong one.
+        params.set_doNotWait(0);
 
         // SAFETY: the block is stamped and live for the call.
         let status = unsafe { lock(self.session.encoder, &raw mut params) };
+        // Unreachable while the flag above is zero. Kept as one comparison
+        // rather than removed, because it is the honest handling if it ever
+        // is not, and it costs nothing.
         if status == f::NV_ENC_ERR_LOCK_BUSY {
             return Ok(Poll::Pending);
         }
         if status != NV_ENC_SUCCESS {
             return Err(Error::Status(status));
         }
+
+        self.last_lock = Some(LockReport {
+            size: params.bitstreamSizeInBytes,
+            picture: Picture::from_raw(params.pictureType),
+            picture_struct: params.pictureStruct,
+            frame_avg_qp: params.frameAvgQP,
+            frame_idx: params.frameIdx,
+            num_slices: params.numSlices,
+        });
 
         let len = params.bitstreamSizeInBytes as usize;
         // SAFETY: the interface reports a pointer to `len` readable bytes,
@@ -1310,6 +1398,11 @@ impl Encoder<'_> {
     /// How many pictures are queued but not collected.
     pub fn in_flight(&self) -> usize {
         self.pending.len()
+    }
+
+    /// The block the last collect returned. See [`LockReport`].
+    pub fn last_lock(&self) -> Option<LockReport> {
+        self.last_lock
     }
 }
 

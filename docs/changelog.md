@@ -50,6 +50,23 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   cross-thread handoff shares the shim the model check swaps out rather
   than keeping a second copy in step.
 
+**Notes on the collect block**
+
+- **Reading one field wrongly is invisible; reading four is not.** The block
+  is audited on every hardware run rather than trusted: the picture kind
+  against the one refresh that was asked for, the frame index against the
+  collect order, the quantiser against the range the codec has, the structure
+  against a whole frame, and the length against the last byte that was
+  actually coded. A block read at offsets the driver did not write does not
+  land on five right answers at once, and each of them is something the pool
+  or the packetiser is about to depend on.
+- **The length assertion is the regression test for the race above**, and the
+  slice count is its early warning. The count is the more sensitive of the
+  two, so it is checked on every picture rather than only where it failed.
+- **What was measured and proved nothing is gone.** The macroblock counts and
+  the timestamp echoes stay zero under this configuration, and a field that
+  cannot move cannot witness anything.
+
 **Notes on the frame pool**
 
 - **The refcount is the only thing that says a slot is reusable**, and it
@@ -92,6 +109,17 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 **Fixed**
 
+- **The collect asked the driver not to wait, and the driver answered
+  anyway.** `NV_ENC_LOCK_BITSTREAM::doNotWait` neither is ignored nor reports
+  a busy lock: set, it returns success on a block the driver has not finished
+  writing, with the coded bytes in place and the length not. A refresh picture
+  came back claiming megabytes it had never coded, and the slice count came
+  back as noise. Both were taken for driver defects for a day; they are one
+  race, and it was ours. **A flag that is ignored is harmless and invites a
+  retry on a newer driver; a flag that answers wrongly must never be set.**
+  Clearing it costs nothing measurable -- the lock takes the same 0.7 to
+  1.8 ms either way, and the caller is still never parked, because what gates
+  the lock is a completion marker rather than the flag.
 - **The quantiser floor was configured but never applied.** It was added to
   the configuration block, documented, and given a default, and nothing ever
   wrote it to the rate controller. The change that added it was verified by

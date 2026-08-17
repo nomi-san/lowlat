@@ -94,9 +94,14 @@ mod tests {
         height: u32,
         frames: usize,
         depth: usize,
+        // Called once per collected unit, after the borrow the collect
+        // handed out has ended, so it can ask the encoder what else that
+        // collect reported. A backend with nothing to add passes a no-op.
+        mut observe: impl FnMut(&E, usize, &[u8]),
     ) -> (Vec<u8>, usize) {
         let mut source = lowlat_capture::synthetic::Synthetic::new(width, height);
         let mut stream = Vec::new();
+        let mut unit = Vec::new();
         let (mut submitted, mut collected, mut keyframes) = (0usize, 0usize, 0usize);
 
         while collected < frames {
@@ -114,16 +119,120 @@ mod tests {
                     keyframe,
                 } => {
                     assert!(!bitstream.is_empty(), "an empty access unit");
-                    stream.extend_from_slice(bitstream);
+                    unit.clear();
+                    unit.extend_from_slice(bitstream);
                     if keyframe {
                         keyframes += 1;
                     }
-                    collected += 1;
                 }
-                Poll::Pending => std::hint::spin_loop(),
+                Poll::Pending => {
+                    std::hint::spin_loop();
+                    continue;
+                }
             }
+            observe(encoder, collected, &unit);
+            stream.extend_from_slice(&unit);
+            collected += 1;
         }
         (stream, keyframes)
+    }
+
+    /// Check the vendor backend's collect block against the bytes it
+    /// describes.
+    ///
+    /// **The collect used to race the encoder, and this is what stops it
+    /// coming back.** A refresh picture reported megabytes it had not coded
+    /// and the slice count came back as noise, both because the block was
+    /// read before the driver had finished writing it. From the bytes alone
+    /// that is invisible: a fresh output buffer is already zero, so a length
+    /// past the picture looks exactly like a picture with zeros after it.
+    ///
+    /// Every assertion below is a way for that race to show itself. The
+    /// picture kind and the quantiser say the block is being read where the
+    /// driver writes; the slice count and the trailing span say it is being
+    /// read after the driver is done.
+    fn audit_collect(index: usize, unit: &[u8], report: nvenc::LockReport) {
+        // A well formed unit cannot end in a zero byte: the trailing bits put
+        // a stop bit in the last one, and escaping forbids three zeros inside
+        // a payload. So anything after this offset was appended.
+        let last_set = unit.iter().rposition(|&byte| byte != 0);
+        let trailing = last_set.map_or(unit.len(), |at| unit.len() - at - 1);
+
+        println!(
+            "  picture {index}: {} bytes, {} coded, {} trailing, {:?} qp {}",
+            unit.len(),
+            last_set.map_or(0, |at| at + 1),
+            trailing,
+            report.picture,
+            report.frame_avg_qp
+        );
+
+        // The forced refresh is the first picture and the encoder is left to
+        // choose the rest. A block read at the wrong offsets does not land on
+        // the kind that was asked for.
+        if index == 0 {
+            assert_eq!(
+                report.picture,
+                nvenc::Picture::Idr,
+                "the forced refresh did not come back as one, so the collect \
+                 block is not being read where the driver wrote it"
+            );
+        } else {
+            assert!(
+                matches!(report.picture, nvenc::Picture::P | nvenc::Picture::NonRefP),
+                "picture {index} came back as {:?}, which is neither predicted \
+                 kind and so is not a picture kind at all",
+                report.picture
+            );
+        }
+        assert_eq!(report.picture_struct, 1, "a picture that is not one frame");
+        // **What ties this block to the picture it is supposed to describe.**
+        // Nothing sets it on submit, so the driver counting it in collect
+        // order is the one field that says the two are the same picture. A
+        // pool slot filled from a block belonging to a different frame is not
+        // something anything downstream could detect.
+        assert_eq!(
+            u32::try_from(index).unwrap_or(u32::MAX),
+            report.frame_idx,
+            "the block describes a different picture from the one collected"
+        );
+        assert!(
+            (1..=51).contains(&report.frame_avg_qp),
+            "quantiser {} is outside the range the codec has, so the field is \
+             not the quantiser",
+            report.frame_avg_qp
+        );
+        // **This is the sensitive one, so it is asserted everywhere.** The
+        // slice count was noise on the final collect of every run until the
+        // collect stopped reading a block the driver had not finished
+        // writing, and it was noise for the same reason the refresh picture
+        // claimed megabytes it had not coded. Both went away together.
+        //
+        // So a count that is not one now means the collect is racing the
+        // encoder again, and this catches it one picture after it starts
+        // rather than in a packetiser splitting a unit on a count out of
+        // nowhere.
+        //
+        // The interface only promises the field when slice offsets are asked
+        // for, which we do not do. If this ever fails on a different driver,
+        // rule that out before suspecting the collect.
+        assert_eq!(
+            report.num_slices, 1,
+            "picture {index} reports {} slices, where every configured picture \
+             is one",
+            report.num_slices
+        );
+
+        // The length has to be the coded length, with nothing after it. Not a
+        // style check: the buffers are reused, so a length past the picture
+        // hands the caller whatever the buffer held last, and the caller
+        // cannot tell.
+        assert_eq!(
+            trailing, 0,
+            "picture {index} reports {} bytes past its last coded byte, which \
+             is the buffer's previous contents",
+            trailing
+        );
     }
 
     /// Count access units of one type, by start code.
@@ -177,8 +286,18 @@ mod tests {
                 },
             )
             .expect("initialize");
-        let (vendor_stream, vendor_keyframes) =
-            encode_run(&mut vendor, WIDTH, HEIGHT, FRAMES, DEPTH);
+        println!("vendor collect blocks:");
+        let (vendor_stream, vendor_keyframes) = encode_run(
+            &mut vendor,
+            WIDTH,
+            HEIGHT,
+            FRAMES,
+            DEPTH,
+            |encoder, index, unit| {
+                let report = encoder.last_lock().expect("a collect reported nothing");
+                audit_collect(index, unit, report);
+            },
+        );
 
         let va = vaapi::Vaapi::load().expect("display runtime");
         let display = va.open(c"/dev/dri/renderD128").expect("render node");
@@ -187,7 +306,8 @@ mod tests {
             .create_context(caps, WIDTH, HEIGHT, DEPTH)
             .expect("context");
         let mut open = context.encoder(params, 20_000_000).expect("encoder");
-        let (open_stream, open_keyframes) = encode_run(&mut open, WIDTH, HEIGHT, FRAMES, DEPTH);
+        let (open_stream, open_keyframes) =
+            encode_run(&mut open, WIDTH, HEIGHT, FRAMES, DEPTH, |_, _, _| {});
 
         for (name, stream, keyframes) in [
             ("vendor", &vendor_stream, vendor_keyframes),
