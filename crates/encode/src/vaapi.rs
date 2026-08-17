@@ -539,8 +539,13 @@ mod tests {
             height: 1080,
             fps: 60,
             level_idc: 42,
-            log2_max_frame_num_minus4: 0,
-            log2_max_poc_lsb_minus4: 0,
+            // **Not zero, deliberately.** These size fixed-width fields in
+            // every slice header, so a value the writer and the sequence set
+            // disagree on shifts everything after them. Zero would wrap the
+            // frame number every sixteen pictures and hide that; four is what
+            // a real stream uses and exercises the width plumbing.
+            log2_max_frame_num_minus4: 4,
+            log2_max_poc_lsb_minus4: 4,
             max_num_ref_frames: 1,
         };
         let mut encoder = context.encoder(params, 20_000_000).expect("encoder");
@@ -560,7 +565,7 @@ mod tests {
             .and_then(|v| v.parse().ok())
             .unwrap_or(4);
         for _ in 0..burst {
-            encoder.submit(&source.acquire()).expect("submit");
+            encoder.submit(&source.acquire(), false).expect("submit");
         }
         // **More pictures than the pool is deep**, so the run refills behind
         // the drain. At four the queue is filled once and emptied once, and
@@ -573,7 +578,7 @@ mod tests {
         let mut submitted = burst;
         while collected < PICTURES {
             if submitted < PICTURES && encoder.in_flight() < burst {
-                encoder.submit(&source.acquire()).expect("submit");
+                encoder.submit(&source.acquire(), false).expect("submit");
                 submitted += 1;
             }
             let started = Instant::now();
@@ -593,11 +598,10 @@ mod tests {
                 }
             }
 
-            // The rate moves mid-run. **What this proves is that the encoder
-            // keeps producing valid pictures across the change**, not that no
-            // refresh was emitted: every picture here is a refresh already, so
-            // the gate wanting zero keyframes across a reconfigure cannot be
-            // stated on this backend until predicted pictures exist.
+            // The rate moves mid-run, and the assertions above are what make
+            // it mean something: exactly one refresh in the whole run, so a
+            // reconfigure that forced one would be caught here rather than
+            // merely described.
             if collected == 2 {
                 encoder.reconfigure(10_000_000);
             }
@@ -628,9 +632,18 @@ mod tests {
                 units[usize::from(window[3] & 0x1F)] += 1;
             }
         }
-        assert_eq!(units[7], collected, "a sequence set per picture");
-        assert_eq!(units[8], collected, "a picture set per picture");
-        assert_eq!(units[5], collected, "a refresh slice per picture");
+        // **One refresh, and the rest predicted.** A backend that refreshed
+        // every picture would pass a count of slices and fail this.
+        assert_eq!(units[5], 1, "more than the one unavoidable refresh");
+        assert_eq!(units[1], collected - 1, "the rest are not predicted slices");
+        assert_eq!(
+            units[7], 1,
+            "a sequence set travelled with a predicted picture"
+        );
+        assert_eq!(
+            units[8], 1,
+            "a picture set travelled with a predicted picture"
+        );
 
         let path = std::env::var("LOWLAT_DUMP").unwrap_or_else(|_| "/tmp/vaapi.h264".into());
         std::fs::write(&path, &stream).expect("write");
@@ -971,6 +984,9 @@ fn copy_plane(
 struct InFlight {
     surface: VASurfaceID,
     coded: VABufferID,
+    /// Answered from what was submitted rather than sniffed back out of the
+    /// bitstream, which is the only place it is known without parsing.
+    keyframe: bool,
 }
 
 /// An encoder over a context.
@@ -985,6 +1001,23 @@ pub struct Encoder<'a> {
     pending: std::collections::VecDeque<InFlight>,
     idr_pic_id: u16,
     collected: Vec<u8>,
+    /// Counts reference pictures since the last refresh, wrapping at what the
+    /// sequence parameters declared.
+    frame_num: u32,
+    /// The one picture a predicted picture is allowed to reference.
+    ///
+    /// `None` before anything has been encoded, which is what makes the first
+    /// picture a refresh whether or not one was asked for: there is nothing to
+    /// predict from.
+    reference: Option<Reference>,
+}
+
+/// A picture an encode may reference, as the driver needs to see it.
+#[derive(Debug, Clone, Copy)]
+struct Reference {
+    surface: VASurfaceID,
+    frame_num: u32,
+    poc: u32,
 }
 
 impl<'a> Context<'a> {
@@ -1032,6 +1065,8 @@ impl<'a> Context<'a> {
             pending: std::collections::VecDeque::new(),
             idr_pic_id: 0,
             collected: Vec::new(),
+            frame_num: 0,
+            reference: None,
         })
     }
 }
@@ -1184,10 +1219,19 @@ impl Encoder<'_> {
     /// bookkeeping a predicted picture needs is the next piece, and shipping a
     /// half-correct reference list would produce a stream that decodes into
     /// progressively wrong output rather than failing.
-    pub fn submit(&mut self, frame: &lowlat_capture::Frame<'_>) -> Result<()> {
+    pub fn submit(
+        &mut self,
+        frame: &lowlat_capture::Frame<'_>,
+        force_keyframe: bool,
+    ) -> Result<()> {
         if self.pending.len() >= self.coded.len() {
             return Err(Error::QueueFull);
         }
+        // **A refresh when asked for, and whenever there is nothing to predict
+        // from.** The second half is not a special case for the first picture:
+        // it is the same rule, because a reference we do not hold is one we
+        // cannot point at.
+        let refresh = force_keyframe || self.reference.is_none();
         let slot = self.next;
         self.next = (self.next + 1) % self.coded.len();
         let input = *self.context.surfaces.get(slot).ok_or(Error::NoEncoder)?;
@@ -1210,12 +1254,13 @@ impl Encoder<'_> {
         let mut seq =
             unsafe { core::mem::zeroed::<crate::ffi::va::VAEncSequenceParameterBufferH264>() };
         seq.level_idc = u8::try_from(self.params.level_idc).unwrap_or(42);
-        // The sequence has to declare the same thing the pictures do. Every
-        // picture here is an instantaneous refresh, so the refresh period is
-        // one; leaving it zero says "never" while each picture says "now", and
-        // the driver acts on the sequence's answer.
-        seq.intra_period = 1;
-        seq.intra_idr_period = 1;
+        // **Refreshes happen on request, not on a schedule.** Zero is the
+        // interface's way of saying no period applies; a period of one would
+        // declare every picture a refresh, which is what this backend used to
+        // do and what the delivery gate exists to decide instead. One picture
+        // between predicted pictures, because there are no bidirectional ones.
+        seq.intra_period = 0;
+        seq.intra_idr_period = 0;
         seq.ip_period = 1;
         seq.bits_per_second = self.bitrate_bps;
         seq.max_num_ref_frames = self.params.max_num_ref_frames;
@@ -1267,24 +1312,48 @@ impl Encoder<'_> {
         // set, which invites one header each; a working encoder on this driver
         // sends them together and never sends the picture type, and sending it
         // is what the driver faults on while assembling the stream.
+        // **Only with a refresh.** A parameter set is what makes a refresh
+        // decodable on its own, so it travels with one and a guest that joins
+        // mid-stream needs no separate out-of-band step. Repeating it on a
+        // predicted picture is bytes on the wire that change nothing.
         let mut sets = [0u8; 384];
-        let sps_len =
-            crate::h264::sequence_parameter_set(&self.params, &mut sets).ok_or(Error::NoEncoder)?;
-        let pps_len =
-            crate::h264::picture_parameter_set(sets.get_mut(sps_len..).ok_or(Error::NoEncoder)?)
+        let sets_len = if refresh {
+            let sps_len = crate::h264::sequence_parameter_set(&self.params, &mut sets)
                 .ok_or(Error::NoEncoder)?;
-        let sets_len = sps_len + pps_len;
-        let (sets_head, sets_data) = self.packed(
-            crate::ffi::va::VAEncPackedHeaderSequence,
-            &sets[..sets_len],
-            sets_len * 8,
-        )?;
+            let pps_len = crate::h264::picture_parameter_set(
+                sets.get_mut(sps_len..).ok_or(Error::NoEncoder)?,
+            )
+            .ok_or(Error::NoEncoder)?;
+            sps_len + pps_len
+        } else {
+            0
+        };
+        let sets_packed = if refresh {
+            Some(self.packed(
+                crate::ffi::va::VAEncPackedHeaderSequence,
+                &sets[..sets_len],
+                sets_len * 8,
+            )?)
+        } else {
+            None
+        };
 
         let mut pic =
             unsafe { core::mem::zeroed::<crate::ffi::va::VAEncPictureParameterBufferH264>() };
+        // A refresh restarts both counters by definition. A predicted picture
+        // advances the frame number and takes twice it as its order count,
+        // which is the convention when every picture is a reference and output
+        // order is coding order.
+        let frame_num = if refresh {
+            0
+        } else {
+            (self.frame_num + 1) % (1 << (self.params.log2_max_frame_num_minus4 + 4))
+        };
+        let poc = (frame_num * 2) % (1 << (self.params.log2_max_poc_lsb_minus4 + 4));
+
         pic.CurrPic.picture_id = recon;
-        pic.CurrPic.frame_idx = 0;
-        pic.CurrPic.TopFieldOrderCnt = 0;
+        pic.CurrPic.frame_idx = frame_num;
+        pic.CurrPic.TopFieldOrderCnt = i32::try_from(poc).unwrap_or(0);
         pic.CurrPic.BottomFieldOrderCnt = pic.CurrPic.TopFieldOrderCnt;
         // Unused entries must be marked invalid, not left zero: zero is a
         // valid surface identifier and the driver would follow it.
@@ -1292,13 +1361,26 @@ impl Encoder<'_> {
             entry.picture_id = crate::ffi::va::VA_INVALID_SURFACE;
             entry.flags = crate::ffi::va::VA_PICTURE_H264_INVALID;
         }
+        // **The reference has to be named here even though the slice names it
+        // too.** This list is what the driver keeps its reference store from;
+        // a picture missing from it is one the driver is entitled to release,
+        // and it will, while the slice below still points at it.
+        if let (false, Some(reference)) = (refresh, self.reference) {
+            if let Some(entry) = pic.ReferenceFrames.first_mut() {
+                entry.picture_id = reference.surface;
+                entry.frame_idx = reference.frame_num;
+                entry.TopFieldOrderCnt = i32::try_from(reference.poc).unwrap_or(0);
+                entry.BottomFieldOrderCnt = entry.TopFieldOrderCnt;
+                entry.flags = crate::ffi::va::VA_PICTURE_H264_SHORT_TERM_REFERENCE;
+            }
+        }
         pic.coded_buf = coded;
-        pic.frame_num = 0;
+        pic.frame_num = u16::try_from(frame_num).unwrap_or(0);
         pic.pic_init_qp = 26;
         // SAFETY: as above, a zeroed union accessed only through one view.
         unsafe {
             let bits = &mut pic.pic_fields.bits;
-            bits.set_idr_pic_flag(1);
+            bits.set_idr_pic_flag(u32::from(refresh));
             bits.set_reference_pic_flag(1);
             bits.set_entropy_coding_mode_flag(1);
             bits.set_deblocking_filter_control_present_flag(1);
@@ -1309,13 +1391,14 @@ impl Encoder<'_> {
         let mut slice =
             unsafe { core::mem::zeroed::<crate::ffi::va::VAEncSliceParameterBufferH264>() };
         slice.num_macroblocks = self.params.width.div_ceil(16) * self.params.height.div_ceil(16);
-        // Two is an intra slice; the predicted types come with the reference
-        // bookkeeping.
-        slice.slice_type = 2;
+        // Two is intra, zero is predicted. Both are the plain forms; the
+        // values above four assert the whole picture has this type, and the
+        // packed header carries those.
+        slice.slice_type = if refresh { 2 } else { 0 };
         // Alternates so two consecutive refreshes are distinguishable, which
         // is what the field is for.
         slice.idr_pic_id = self.idr_pic_id;
-        slice.pic_order_cnt_lsb = 0;
+        slice.pic_order_cnt_lsb = u16::try_from(poc).unwrap_or(0);
         for entry in slice
             .RefPicList0
             .iter_mut()
@@ -1324,6 +1407,15 @@ impl Encoder<'_> {
             entry.picture_id = crate::ffi::va::VA_INVALID_SURFACE;
             entry.flags = crate::ffi::va::VA_PICTURE_H264_INVALID;
         }
+        if let (false, Some(reference)) = (refresh, self.reference) {
+            if let Some(entry) = slice.RefPicList0.first_mut() {
+                entry.picture_id = reference.surface;
+                entry.frame_idx = reference.frame_num;
+                entry.TopFieldOrderCnt = i32::try_from(reference.poc).unwrap_or(0);
+                entry.BottomFieldOrderCnt = entry.TopFieldOrderCnt;
+                entry.flags = crate::ffi::va::VA_PICTURE_H264_SHORT_TERM_REFERENCE;
+            }
+        }
         let slice_buffer = self.buffer(crate::ffi::va::VAEncSliceParameterBufferType, &slice)?;
 
         // **The driver expects one of these per picture once packed headers
@@ -1331,8 +1423,18 @@ impl Encoder<'_> {
         // stream cannot be assembled, which is a fault inside the driver
         // rather than a status.
         let mut header = [0u8; 64];
+        let kind = if refresh {
+            crate::h264::Picture::Refresh {
+                idr_pic_id: u32::from(self.idr_pic_id),
+            }
+        } else {
+            crate::h264::Picture::Predicted {
+                frame_num,
+                poc_lsb: poc,
+            }
+        };
         let written =
-            crate::h264::idr_slice_header(&self.params, &mut header).ok_or(Error::NoEncoder)?;
+            crate::h264::slice_header(&self.params, kind, &mut header).ok_or(Error::NoEncoder)?;
         let (header_head, header_data) = self.packed(
             crate::ffi::va::VAEncPackedHeaderSlice,
             &header[..written.bytes_written],
@@ -1343,16 +1445,27 @@ impl Encoder<'_> {
         // field widths the slice header is then read with, and the picture
         // buffer decides which fields the slice header is expected to carry at
         // all, so both precede it.
-        let mut buffers = [
-            seq_buffer,
-            rate_buffer,
-            sets_head,
-            sets_data,
-            pic_buffer,
-            slice_buffer,
-            header_head,
-            header_data,
-        ];
+        let mut buffers = [0 as VABufferID; 8];
+        let mut used = 0usize;
+        {
+            let mut push = |id: VABufferID| {
+                if let Some(slot) = buffers.get_mut(used) {
+                    *slot = id;
+                    used += 1;
+                }
+            };
+            push(seq_buffer);
+            push(rate_buffer);
+            if let Some((head, data)) = sets_packed {
+                push(head);
+                push(data);
+            }
+            push(pic_buffer);
+            push(slice_buffer);
+            push(header_head);
+            push(header_data);
+        }
+        let buffers = buffers.get_mut(..used).ok_or(Error::NoEncoder)?;
 
         // SAFETY: the list is readable for its length.
         let status = unsafe {
@@ -1374,10 +1487,10 @@ impl Encoder<'_> {
         // accumulate for the life of the context, eight per picture. Released
         // on the failing paths too, because a render that got as far as a
         // status still consumed them.
-        for id in buffers {
+        for id in buffers.iter() {
             // SAFETY: each came from a successful create above and is
             // destroyed once.
-            unsafe { (self.va().destroy_buffer)(self.display(), id) };
+            unsafe { (self.va().destroy_buffer)(self.display(), *id) };
         }
         rendered?;
         ended?;
@@ -1389,10 +1502,22 @@ impl Encoder<'_> {
         // contradictory things, and the driver acts on the contradiction
         // rather than rejecting it. Both counters start moving when predicted
         // pictures do.
-        self.idr_pic_id ^= 1;
+        if refresh {
+            self.idr_pic_id ^= 1;
+        }
+        self.frame_num = frame_num;
+        // The picture just submitted becomes what the next one predicts from.
+        // Only one is kept, which is what the sequence parameters declared and
+        // what the sliding-window marking in the slice header implements.
+        self.reference = Some(Reference {
+            surface: recon,
+            frame_num,
+            poc,
+        });
         self.pending.push_back(InFlight {
             surface: input,
             coded,
+            keyframe: refresh,
         });
         Ok(())
     }
@@ -1408,7 +1533,7 @@ impl Encoder<'_> {
         let Some(head) = self.pending.front() else {
             return Ok(Poll::Pending);
         };
-        let (surface, coded) = (head.surface, head.coded);
+        let (surface, coded, keyframe) = (head.surface, head.coded, head.keyframe);
 
         if let Some(sync) = self.va().sync_buffer {
             // SAFETY: the buffer is live. Zero timeout: ask, do not wait.
@@ -1452,11 +1577,7 @@ impl Encoder<'_> {
 
         Ok(Poll::Ready {
             bitstream: &self.collected,
-            // **Every picture this backend produces is an instantaneous
-            // refresh**, so this is not a placeholder: it is the truth until
-            // predicted pictures exist, and it stops being constant in the
-            // same change that makes them.
-            keyframe: true,
+            keyframe,
         })
     }
 
@@ -1485,13 +1606,8 @@ impl Encoder<'_> {
 impl EncoderTrait for Encoder<'_> {
     type Error = Error;
 
-    /// **The refresh request is accepted and has no effect**, because every
-    /// picture here is already an instantaneous refresh. That satisfies the
-    /// request rather than ignoring it: a caller asking for a keyframe gets
-    /// one. What it does not yet do is honour the *absence* of the request,
-    /// which costs bitrate and is what predicted pictures fix.
-    fn submit(&mut self, frame: &lowlat_capture::Frame<'_>, _force_keyframe: bool) -> Result<()> {
-        Encoder::submit(self, frame)
+    fn submit(&mut self, frame: &lowlat_capture::Frame<'_>, force_keyframe: bool) -> Result<()> {
+        Encoder::submit(self, frame, force_keyframe)
     }
 
     fn poll(&mut self) -> Result<Poll<'_>> {

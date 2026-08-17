@@ -154,8 +154,8 @@ mod tests {
             height: HEIGHT,
             fps: 60,
             level_idc: 42,
-            log2_max_frame_num_minus4: 0,
-            log2_max_poc_lsb_minus4: 0,
+            log2_max_frame_num_minus4: 4,
+            log2_max_poc_lsb_minus4: 4,
             max_num_ref_frames: 1,
         };
 
@@ -220,8 +220,12 @@ mod tests {
 
         // The forced picture is the first one either way. Beyond that the two
         // differ honestly: one still refreshes every picture and says so.
+        // **Both honour the absence of a request now**, which is what makes
+        // the reconfigure gate statable at all: a backend refreshing every
+        // picture would satisfy any keyframe assertion trivially.
         assert_eq!(
-            vendor_keyframes, 1,
+            (vendor_keyframes, open_keyframes),
+            (1, 1),
             "a backend that honours the absence of a request emitted extras"
         );
     }

@@ -293,9 +293,11 @@ construction rather than as covered.
   both backends rather than a preference; see the note below. *Both backends implement it and a
   single generic loop drives both, so a difference either one still carried in its shape would
   be a compile error rather than an interface describing whichever was written first.*
-- [ ] **VAAPI backend**, H.264, 8-bit 4:2:0, low-latency parameters. First, not later: it is the
+- [x] **VAAPI backend**, H.264, 8-bit 4:2:0, low-latency parameters. First, not later: it is the
   encoder on the primary Linux target and on the machine this is tested against
-  ([07 §3.1](07-platforms.md)).
+  ([07 §3.1](07-platforms.md)). *Refresh and predicted pictures, one reference, parameter sets
+  travelling with a refresh; content verified against the source frame by frame through an
+  independent decoder.*
 - [ ] NVENC backend, same trait, same parameters.
 - [x] `lowlat-capture` synthetic frame source, emitting planar frames directly so no conversion
   stage is needed before Phase 9. **The trait is deferred to Phase 9**; see the note on ordering.

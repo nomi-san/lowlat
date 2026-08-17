@@ -288,30 +288,79 @@ pub struct SliceHeader {
     pub bit_length: usize,
 }
 
-/// Write the slice header for an instantaneous refresh.
+/// Which kind of picture a slice belongs to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Picture {
+    /// An instantaneous refresh: decodable alone, and it resets both counters.
+    Refresh { idr_pic_id: u32 },
+    /// Predicted from one earlier picture.
+    Predicted { frame_num: u32, poc_lsb: u32 },
+}
+
+/// Write the slice header for one picture.
 ///
-/// The only slice type produced so far, because predicted slices need the
-/// reference bookkeeping that is not written yet.
-pub fn idr_slice_header(params: &Params, out: &mut [u8]) -> Option<SliceHeader> {
+/// **Which fields are present depends on the picture kind**, and a driver
+/// assembling around this header decides the same question from the picture
+/// parameters it was given rather than from these bytes. The two answers have
+/// to agree: a refresh carries an identifier that a predicted picture does
+/// not, so disagreeing shifts every field after it and the slice data starts
+/// on the wrong bit.
+pub fn slice_header(params: &Params, picture: Picture, out: &mut [u8]) -> Option<SliceHeader> {
     let mut raw = [0u8; 64];
     let mut w = BitWriter::new(&mut raw);
 
     w.ue(0); // first macroblock in this slice
-    // Seven rather than two: the values above four assert that **every** slice
-    // in the picture has this type, which is what lets a decoder know the
-    // picture is entirely intra without reading the rest.
-    w.ue(7);
+    // The values above four assert that **every** slice in the picture has
+    // this type, which lets a decoder classify the picture without reading the
+    // rest of it.
+    match picture {
+        Picture::Refresh { .. } => w.ue(7),
+        Picture::Predicted { .. } => w.ue(5),
+    };
     w.ue(0); // the picture parameter set to use
 
     // Fixed width, and the width is what the sequence parameters declared. Get
     // this wrong and every field after it is read at the wrong offset.
-    w.bits(0, params.log2_max_frame_num_minus4 + 4);
-    w.ue(0); // this refresh's identifier
-    w.bits(0, params.log2_max_poc_lsb_minus4 + 4);
+    let frame_num = match picture {
+        Picture::Refresh { .. } => 0,
+        Picture::Predicted { frame_num, .. } => frame_num,
+    };
+    w.bits(frame_num, params.log2_max_frame_num_minus4 + 4);
+    if let Picture::Refresh { idr_pic_id } = picture {
+        w.ue(idr_pic_id);
+    }
+    let poc_lsb = match picture {
+        Picture::Refresh { .. } => 0,
+        Picture::Predicted { poc_lsb, .. } => poc_lsb,
+    };
+    w.bits(poc_lsb, params.log2_max_poc_lsb_minus4 + 4);
 
-    // Reference picture marking, present because this slice is a reference.
-    w.bit(false); // earlier pictures may still be output
-    w.bit(false); // not a long-term reference
+    if let Picture::Predicted { .. } = picture {
+        // One reference, which is what the picture parameter set already
+        // defaults to, so the override is not needed.
+        w.bit(false); // no override of the active reference count
+        w.bit(false); // the default list order is the one we want
+    }
+
+    // Reference picture marking, present because every slice here is itself a
+    // reference.
+    match picture {
+        Picture::Refresh { .. } => {
+            w.bit(false); // earlier pictures may still be output
+            w.bit(false); // not a long-term reference
+        }
+        // Sliding window: the oldest reference retires on its own, which is
+        // the whole policy needed while only one is kept.
+        Picture::Predicted { .. } => {
+            w.bit(false);
+        }
+    }
+
+    // Arithmetic coding needs an initialisation index on predicted slices, and
+    // must not carry one on intra slices.
+    if let Picture::Predicted { .. } = picture {
+        w.ue(0);
+    }
 
     w.se(0); // no quantiser offset from the picture's initial value
 
@@ -325,8 +374,13 @@ pub fn idr_slice_header(params: &Params, out: &mut [u8]) -> Option<SliceHeader> 
     let bit_length = w.bit_len();
     let payload = w.finish();
 
-    // Reference-marked, type five: a slice of an instantaneous refresh.
-    let bytes_written = emit(0x65, payload, out)?;
+    // Reference-marked either way. Type five is a refresh slice; type one is
+    // an ordinary one.
+    let header = match picture {
+        Picture::Refresh { .. } => 0x65,
+        Picture::Predicted { .. } => 0x41,
+    };
+    let bytes_written = emit(header, payload, out)?;
     Some(SliceHeader {
         bytes_written,
         // The start code and unit header precede the payload and count toward

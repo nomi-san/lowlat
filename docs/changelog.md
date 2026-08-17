@@ -41,6 +41,28 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   picture against the frame index that produced it.
 - The encoder trait, and one shared collect result, with both hardware
   backends implementing it and one generic loop driving both.
+- Predicted pictures on the second backend: reference bookkeeping, the
+  slice header for both picture kinds, and parameter sets that travel
+  with a refresh rather than with every picture.
+
+**Notes on predicted pictures**
+
+- **A refresh happens on request, or when there is nothing to predict
+  from.** The second half is not a special case for the first picture; it
+  is the same rule, because a reference we do not hold is one we cannot
+  point at. That is what makes the refresh request meaningful on this
+  backend at last, and with it the gate asking for zero keyframes across
+  a bitrate change becomes statable: a backend that refreshed every
+  picture would have satisfied any keyframe assertion trivially.
+- **The reference is named twice and both are load bearing.** The slice
+  points at it, and the picture parameters list it separately. A picture
+  missing from that list is one the driver is entitled to release, and it
+  will, while the slice still points at it.
+- **The counter widths are exercised at a real value rather than zero.**
+  They size fixed-width fields in every slice header, so a width the
+  writer and the sequence set disagree on shifts every field after it.
+  Zero would also wrap the frame number every sixteen pictures, which
+  hides the question rather than answering it.
 
 **Fixed**
 
