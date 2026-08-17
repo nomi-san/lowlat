@@ -67,6 +67,32 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - The two cadences a stream owes its peer, sent from the guest that carries
   them: the encode latency every thirtieth frame, and the encoder generation
   once, on the frame after the encoder is ready.
+- `lowlat-host::timing`: per-stage percentiles, recorded as a store into a
+  fixed ring and sorted only where a report is asked for.
+
+**Notes on the timing, and the loop shape it forced**
+
+- **The loop had to be restructured before it could be measured.** It
+  submitted a frame and then waited for it, which is serialised by
+  construction: nothing prepares the next frame while the hardware works, and
+  the pipeline caps at one frame per encode however fast the encoder is. It
+  now has two deadlines -- a poll for finished pictures and a frame clock for
+  new ones -- so an encode overlaps the acquire and submit behind it and a
+  picture leaves within a poll of being ready.
+- **The measurement is what showed the difference is real**, and it is the
+  arithmetic rather than the frame rate that carries it: stages sum to 10.670
+  ms across a 2.665 ms interval unpaced, and holding one picture in flight
+  instead of four collapses that to 3.064 ms of stages inside a 3.066 ms
+  interval.
+- **A stamp per picture, not one for the loop.** With more than one picture in
+  flight the one that comes back is not the one that went in last, so a single
+  stamp would report the wrong frame's latency for every frame after the
+  first.
+- **Percentiles, never averages**, and nearest rank rather than interpolated,
+  so the figure reported is one an actual frame took. Its own test uses two
+  slow samples in a hundred rather than one, because one lands exactly on the
+  p99 boundary and says nothing either way -- the sort of check that looks
+  like a measurement and is an arithmetic accident.
 
 **Notes on the encode loop**
 

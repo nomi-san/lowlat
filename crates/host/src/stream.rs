@@ -44,6 +44,7 @@ use lowlat_net::WakeHandle;
 
 use crate::frames::{self, Pool};
 use crate::gate::{self, Gate, Keyframe};
+use crate::timing::{Report, Stages};
 use lowlat_core::congestion::Controller;
 
 use crate::rate::{Budget, Sample};
@@ -81,6 +82,12 @@ const POOL_SLOTS: usize = 4;
 /// what needs pacing; the sleep is there so the thread is not spinning while
 /// the hardware works.
 const COLLECT_WAIT: std::time::Duration = std::time::Duration::from_millis(1);
+
+/// The same figure as a number, for comparing against a remaining interval.
+const POLL_MS: f64 = 1.0;
+
+/// Frames between one timing report and the next. Ten seconds at sixty.
+const REPORT_FRAMES: u32 = 600;
 
 /// What a seat is doing. See the module note; each transition has one owner.
 mod seat_state {
@@ -151,8 +158,74 @@ struct Shared {
     /// its own smoothed figure, because the cadence that reports it is per
     /// guest.
     encode_us: AtomicU32,
+    /// The last published stage report, so a caller can read the numbers
+    /// without reaching into the thread that produces them.
+    timing: TimingCells,
     /// Raised to end the loop; the loop checks it once per frame.
     stopping: AtomicU32,
+}
+
+/// A stage report, in microseconds, published as plain atomics.
+///
+/// Twelve independent stores rather than one snapshot, which means a reader
+/// can catch a report half written. That is deliberate: the alternative is a
+/// lock on the path that produces frames, and the cost of a torn report is a
+/// percentile from two adjacent reports rather than one, in a figure that is
+/// already a rolling estimate.
+#[derive(Debug, Default)]
+struct TimingCells {
+    cells: [AtomicU32; 12],
+}
+
+impl TimingCells {
+    fn publish(&self, report: &Report) {
+        let values = [
+            report.acquire.p50,
+            report.acquire.p95,
+            report.acquire.p99,
+            report.encode.p50,
+            report.encode.p95,
+            report.encode.p99,
+            report.publish.p50,
+            report.publish.p95,
+            report.publish.p99,
+            report.interval.p50,
+            report.interval.p95,
+            report.interval.p99,
+        ];
+        for (cell, value) in self.cells.iter().zip(values) {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a stage duration clamped to the range before conversion"
+            )]
+            cell.store(
+                (value * 1000.0).clamp(0.0, f64::from(u32::MAX)) as u32,
+                Ordering::Relaxed,
+            );
+        }
+    }
+
+    fn read(&self) -> Report {
+        let mut ms = [0.0f64; 12];
+        for (at, cell) in self.cells.iter().enumerate() {
+            if let Some(slot) = ms.get_mut(at) {
+                *slot = f64::from(cell.load(Ordering::Relaxed)) / 1000.0;
+            }
+        }
+        let stage = |at: usize| crate::timing::Percentiles {
+            p50: ms.get(at).copied().unwrap_or(0.0),
+            p95: ms.get(at + 1).copied().unwrap_or(0.0),
+            p99: ms.get(at + 2).copied().unwrap_or(0.0),
+            count: 0,
+        };
+        Report {
+            acquire: stage(0),
+            encode: stage(3),
+            publish: stage(6),
+            interval: stage(9),
+        }
+    }
 }
 
 /// How the stream is configured. Fixed for its lifetime.
@@ -187,6 +260,7 @@ impl Stream {
             seats: core::array::from_fn(|_| Seat::new()),
             pool: Pool::new(POOL_SLOTS, max_frame_bytes()),
             encode_us: AtomicU32::new(0),
+            timing: TimingCells::default(),
             stopping: AtomicU32::new(0),
         });
         let (joins, arrivals) = mpsc::channel();
@@ -200,6 +274,14 @@ impl Stream {
             joins: Some(joins),
             thread,
         }
+    }
+
+    /// The last stage report the loop published.
+    ///
+    /// Zero until the first report is due, which is what makes a reader that
+    /// checks the count rather than the values necessary.
+    pub fn timings(&self) -> Report {
+        self.shared.timing.read()
     }
 
     /// A handle for one guest's thread.
@@ -431,6 +513,14 @@ fn occupied(shared: &Shared) -> bool {
 
 /// The frame loop, written against the trait rather than a backend, so the
 /// second implementation is a construction change and not a second loop.
+///
+/// **Two deadlines, not one.** A loop that submits a frame and then waits for
+/// it is serialised: nothing prepares the next frame while the hardware works,
+/// and the pipeline caps at one frame per encode however fast the encoder is.
+/// This one asks the encoder for a finished picture on every pass and reaches
+/// for a new frame when the frame clock says so, so an encode overlaps the
+/// acquire and the submit behind it, and a picture leaves within a poll of
+/// being ready rather than at the next frame boundary.
 fn encode_loop<E: Encoder>(
     shared: &Shared,
     arrivals: &mpsc::Receiver<Join>,
@@ -440,6 +530,7 @@ fn encode_loop<E: Encoder>(
     let mut source = Synthetic::new(config.width, config.height);
     let mut gate = Gate::new();
     let mut budget = Budget::new(config.configured_mbps, config.min_mbps);
+    let mut stages = Stages::default();
 
     // Compact and parallel: one entry per streaming guest, in no particular
     // order. Compaction happens on join and leave, which are rare, so the
@@ -448,21 +539,28 @@ fn encode_loop<E: Encoder>(
     let mut guests: Vec<gate::Guest> = Vec::with_capacity(MAX_SEATS);
     let mut controllers: Vec<Controller> = Vec::with_capacity(MAX_SEATS);
     let mut samples: Vec<Sample> = Vec::with_capacity(MAX_SEATS);
+    // When each picture still inside the encoder was captured and submitted,
+    // oldest first. **A stamp per picture, not one for the loop**: with more
+    // than one in flight, the picture that comes back is not the one that
+    // went in last, and a single stamp would report the wrong frame's latency
+    // for every frame after the first.
+    let mut in_flight: std::collections::VecDeque<(
+        lowlat_common::clock::Time,
+        lowlat_common::clock::Time,
+    )> = std::collections::VecDeque::with_capacity(ENCODE_DEPTH + 1);
 
     let started = lowlat_common::clock::Time::now();
     let interval_ms = 1000.0 / f64::from(config.fps.max(1));
-    let mut deadline_ms = 0.0f64;
+    let mut next_frame_ms = 0.0f64;
+    let mut previous_submit: Option<lowlat_common::clock::Time> = None;
     let mut force_keyframe = false;
+    let mut since_report = 0u32;
 
     loop {
         if shared.stopping.load(Ordering::Acquire) != 0 {
             return;
         }
 
-        // **Before the gate, and only here.** The set of guests a frame is
-        // delivered to is fixed for that frame, so a guest that arrives while
-        // one is in flight waits for the next rather than receiving a
-        // predicted frame it cannot decode.
         let moved = admit_and_retire(
             shared,
             arrivals,
@@ -492,90 +590,141 @@ fn encode_loop<E: Encoder>(
         }
         if active.is_empty() {
             std::thread::sleep(IDLE_WAIT);
-            deadline_ms = lowlat_common::clock::elapsed_ms(started);
+            next_frame_ms = lowlat_common::clock::elapsed_ms(started);
             continue;
         }
 
-        // Pace. The deadline advances by the interval rather than from now, so
-        // the frame clock does not drift, and it is pulled forward after a
-        // stall rather than trying to catch up on a burst nobody can use.
-        let now_ms = lowlat_common::clock::elapsed_ms(started);
-        if deadline_ms > now_ms {
-            lowlat_common::clock::precise_sleep(std::time::Duration::from_secs_f64(
-                (deadline_ms - now_ms) / 1000.0,
-            ));
-        }
-        let now_ms = lowlat_common::clock::elapsed_ms(started);
-        deadline_ms = if deadline_ms + interval_ms < now_ms {
-            now_ms + interval_ms
-        } else {
-            deadline_ms + interval_ms
-        };
-
-        let frame = source.acquire();
-        let captured_at = frame.captured_at;
-        if encoder.submit(&frame, force_keyframe).is_err() {
-            // Queue full is back pressure rather than a fault: collect below
-            // and the next frame goes in.
-            continue;
-        }
-        force_keyframe = false;
-
-        // **Between the submit and the collect**, which is the whole reason
-        // the trait separates them: this is real work overlapping the encode
-        // rather than a loop waiting on it.
-        samples.clear();
-        for entry in &active {
-            let Some(seat) = shared.seats.get(entry.seat) else {
-                continue;
-            };
-            let window = seat.window.load(Ordering::Relaxed);
-            samples.push(Sample {
-                window,
-                stale: seat.stale.load(Ordering::Relaxed),
-                measured_mbps: f64::from(f32::from_bits(
-                    seat.measured_bits.load(Ordering::Relaxed),
-                )),
-            });
-        }
-        for ((guest, sample), entry) in guests.iter_mut().zip(samples.iter()).zip(active.iter()) {
-            guest.set_outstanding(sample.window);
-            // A frame the transport refused after the gate admitted it. The
-            // count is taken rather than read, so one loss latches once.
-            if let Some(seat) = shared.seats.get(entry.seat)
-                && seat.missed.swap(0, Ordering::Relaxed) != 0
-            {
-                guest.mark_skipping();
-            }
-        }
-        if let Some(rate_mbps) = budget.tick(&mut controllers, &samples) {
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "a rate the controller has already clamped to its bounds"
-            )]
-            let bps = (rate_mbps * 1_000_000.0) as u32;
-            // A live change. It reinitialises nothing and forces no refresh,
-            // which is what keeps the stream unbroken across a reconfigure.
-            let _ = encoder.reconfigure(bps);
-        }
-
+        // Anything the hardware finished while this loop was elsewhere. Never
+        // waits: a picture that is not ready costs a driver round trip and the
+        // loop goes on to the frame clock.
         force_keyframe |= collect(
             shared,
             encoder,
             &mut gate,
             &active,
             &mut guests,
-            captured_at,
-            deadline_ms,
+            &mut in_flight,
+            &mut stages,
             started,
         );
+
+        let now_ms = lowlat_common::clock::elapsed_ms(started);
+        if now_ms >= next_frame_ms {
+            // The deadline advances by the interval rather than from now, so
+            // the frame clock does not drift, and it is pulled forward after a
+            // stall rather than catching up in a burst nobody can use.
+            next_frame_ms = if next_frame_ms + interval_ms < now_ms {
+                now_ms + interval_ms
+            } else {
+                next_frame_ms + interval_ms
+            };
+
+            let began = lowlat_common::clock::Time::now();
+            let frame = source.acquire();
+            let captured_at = frame.captured_at;
+            stages
+                .acquire
+                .record(lowlat_common::clock::diff_ms(began, captured_at));
+
+            // **The tick is the frame.** The controller counts its periods in
+            // ticks, so this belongs here and not on the poll pass.
+            tick_rate(
+                shared,
+                &active,
+                &mut guests,
+                &mut controllers,
+                &mut samples,
+                &mut budget,
+                encoder,
+            );
+
+            let submitted_at = lowlat_common::clock::Time::now();
+            if encoder.submit(&frame, force_keyframe).is_ok() {
+                force_keyframe = false;
+                if let Some(previous) = previous_submit {
+                    stages
+                        .interval
+                        .record(lowlat_common::clock::diff_ms(previous, submitted_at));
+                }
+                previous_submit = Some(submitted_at);
+                in_flight.push_back((captured_at, submitted_at));
+
+                since_report += 1;
+                if since_report >= REPORT_FRAMES {
+                    since_report = 0;
+                    shared.timing.publish(&stages.report());
+                }
+            }
+            // A refusal is the encoder holding as many pictures as it will:
+            // back pressure rather than a fault, and the next frame goes in
+            // once a collect has made room.
+        }
+
+        // Wait for the sooner of the next frame and the next poll. **A
+        // millisecond is the floor**, because anything shorter asked of the
+        // scheduler is a busy wait with extra steps; the final approach to a
+        // frame deadline is the one place an accurate landing is worth its
+        // spin, and it happens once per frame rather than once per poll.
+        let remaining = next_frame_ms - lowlat_common::clock::elapsed_ms(started);
+        if remaining > POLL_MS * 2.0 {
+            std::thread::sleep(COLLECT_WAIT);
+        } else if remaining > 0.0 {
+            lowlat_common::clock::precise_sleep(std::time::Duration::from_secs_f64(
+                remaining / 1000.0,
+            ));
+        }
     }
 }
 
-/// Promote the guests that have arrived and retire the ones that have gone.
-///
-/// Returns whether the guest count moved, because that is the event a
+/// One pass of the controller over every guest, and the reconfigure it asks
+/// for.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one call site, lifted out of the loop for legibility alone"
+)]
+fn tick_rate<E: Encoder>(
+    shared: &Shared,
+    active: &[Active],
+    guests: &mut [gate::Guest],
+    controllers: &mut [Controller],
+    samples: &mut Vec<Sample>,
+    budget: &mut Budget,
+    encoder: &mut E,
+) {
+    samples.clear();
+    for entry in active {
+        let Some(seat) = shared.seats.get(entry.seat) else {
+            continue;
+        };
+        samples.push(Sample {
+            window: seat.window.load(Ordering::Relaxed),
+            stale: seat.stale.load(Ordering::Relaxed),
+            measured_mbps: f64::from(f32::from_bits(seat.measured_bits.load(Ordering::Relaxed))),
+        });
+    }
+    for ((guest, sample), entry) in guests.iter_mut().zip(samples.iter()).zip(active.iter()) {
+        guest.set_outstanding(sample.window);
+        // A frame the transport refused after the gate admitted it. The count
+        // is taken rather than read, so one loss latches once.
+        if let Some(seat) = shared.seats.get(entry.seat)
+            && seat.missed.swap(0, Ordering::Relaxed) != 0
+        {
+            guest.mark_skipping();
+        }
+    }
+    if let Some(rate_mbps) = budget.tick(controllers, samples) {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a rate the controller has already clamped to its bounds"
+        )]
+        let bps = (rate_mbps * 1_000_000.0) as u32;
+        // A live change. It reinitialises nothing and forces no refresh, which
+        // is what keeps the stream unbroken across a reconfigure.
+        let _ = encoder.reconfigure(bps);
+    }
+}
+
 /// controller has to be told about rather than discovering on a tick.
 fn admit_and_retire(
     shared: &Shared,
@@ -644,12 +793,9 @@ fn release(seat: &Seat, pool: &Pool) {
 
 /// Take whatever the encoder has finished, and deliver each picture.
 ///
-/// Returns whether a keyframe was asked for.
-///
-/// **Drains rather than taking one.** Submitting one picture and collecting
-/// one holds whatever backlog it starts with forever, so a picture that misses
-/// its deadline once would cost a frame of latency for the rest of the
-/// session. Draining gives that frame back on the next pass that has room.
+/// Returns whether a keyframe was asked for. **Never waits.** A picture that
+/// is not ready costs a driver round trip and the caller goes on to its frame
+/// clock; waiting here is what would serialise the pipeline.
 #[allow(
     clippy::too_many_arguments,
     reason = "one call site; a struct here would only rename the arguments"
@@ -660,32 +806,50 @@ fn collect<E: Encoder>(
     gate: &mut Gate,
     active: &[Active],
     guests: &mut [gate::Guest],
-    captured_at: lowlat_common::clock::Time,
-    deadline_ms: f64,
+    in_flight: &mut std::collections::VecDeque<(
+        lowlat_common::clock::Time,
+        lowlat_common::clock::Time,
+    )>,
+    stages: &mut Stages,
     started: lowlat_common::clock::Time,
 ) -> bool {
     let mut wanted = false;
-    let mut delivered = 0usize;
     loop {
         match encoder.poll() {
             Err(_) => {
                 lowlat_common::log_error!("stream: collect failed");
                 return wanted;
             }
-            Ok(Poll::Pending) => {
-                // Nothing more this pass. The wait is bounded by the frame
-                // deadline, so a slow encode costs its own frame and not the
-                // ones behind it.
-                if delivered > 0 || lowlat_common::clock::elapsed_ms(started) >= deadline_ms {
-                    return wanted;
-                }
-                std::thread::sleep(COLLECT_WAIT);
-            }
+            Ok(Poll::Pending) => return wanted,
             Ok(Poll::Ready {
                 bitstream,
                 keyframe,
             }) => {
                 let len = bitstream.len();
+                let collected_at = lowlat_common::clock::Time::now();
+                // The oldest picture in the encoder is the one that came back.
+                let (captured_at, submitted_at) = in_flight
+                    .pop_front()
+                    .unwrap_or((collected_at, collected_at));
+                stages
+                    .encode
+                    .record(lowlat_common::clock::diff_ms(submitted_at, collected_at));
+                // Stamped against the capture, which is what every latency
+                // figure in docs/05-host.md section 10 is measured from. A
+                // stage that restamps it destroys the measurement rather than
+                // merely losing it.
+                let elapsed_us = lowlat_common::clock::diff_ms(captured_at, collected_at) * 1000.0;
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "clamped to the range before the conversion"
+                )]
+                shared.encode_us.store(
+                    elapsed_us.clamp(0.0, f64::from(u32::MAX)) as u32,
+                    Ordering::Relaxed,
+                );
+
+                let now_ms = lowlat_common::clock::elapsed_ms(started);
                 let Some(mut writer) = shared.pool.acquire() else {
                     // Every slot is still held, so every guest is behind. The
                     // frame is dropped for all of them, and they are latched:
@@ -695,7 +859,6 @@ fn collect<E: Encoder>(
                     // **And the refresh is asked for here**, because the pass
                     // that would otherwise ask is the one that just failed to
                     // take a slot.
-                    let now_ms = lowlat_common::clock::elapsed_ms(started);
                     for guest in guests.iter_mut() {
                         guest.mark_skipping();
                     }
@@ -709,7 +872,6 @@ fn collect<E: Encoder>(
                     lowlat_common::log_error!(
                         "stream: coded frame exceeds the pool slot, bytes={len}"
                     );
-                    let now_ms = lowlat_common::clock::elapsed_ms(started);
                     for guest in guests.iter_mut() {
                         guest.mark_skipping();
                     }
@@ -717,24 +879,6 @@ fn collect<E: Encoder>(
                     return wanted;
                 }
 
-                // Stamped against the capture, which is what every latency
-                // figure in docs/05-host.md section 10 is measured from. A
-                // stage that restamps it destroys the measurement rather than
-                // merely losing it.
-                let elapsed_us =
-                    lowlat_common::clock::diff_ms(captured_at, lowlat_common::clock::Time::now())
-                        * 1000.0;
-                #[allow(
-                    clippy::cast_possible_truncation,
-                    clippy::cast_sign_loss,
-                    reason = "clamped to the range before the conversion"
-                )]
-                shared.encode_us.store(
-                    elapsed_us.clamp(0.0, f64::from(u32::MAX)) as u32,
-                    Ordering::Relaxed,
-                );
-
-                let now_ms = lowlat_common::clock::elapsed_ms(started);
                 let mut picked = [0usize; MAX_SEATS];
                 let mut count = 0usize;
                 let request = gate.admit(fragments_for(len), keyframe, now_ms, guests, |index| {
@@ -745,13 +889,15 @@ fn collect<E: Encoder>(
                 });
                 wanted |= request == Keyframe::Request;
                 deliver(shared, active, &picked, count, guests, writer, keyframe);
-                delivered += 1;
+                stages.publish.record(lowlat_common::clock::diff_ms(
+                    collected_at,
+                    lowlat_common::clock::Time::now(),
+                ));
             }
         }
     }
 }
 
-/// Publish one frame to the guests the gate admitted, and wake them.
 fn deliver(
     shared: &Shared,
     active: &[Active],
@@ -915,6 +1061,7 @@ mod tests {
                 seats: core::array::from_fn(|_| Seat::new()),
                 pool: Pool::new(slots, max_frame_bytes()),
                 encode_us: AtomicU32::new(0),
+                timing: TimingCells::default(),
                 stopping: AtomicU32::new(0),
             });
             let (joins, arrivals) = mpsc::channel();
@@ -953,11 +1100,16 @@ mod tests {
 
     /// Spin until `predicate` holds or the budget runs out, so a test reports
     /// what it was waiting for rather than hanging.
-    fn until(what: &str, mut predicate: impl FnMut() -> bool) {
+    fn until(what: &str, predicate: impl FnMut() -> bool) {
+        until_within(5000.0, what, predicate);
+    }
+
+    /// The same with the budget stated, for runs whose length is the point.
+    fn until_within(budget_ms: f64, what: &str, mut predicate: impl FnMut() -> bool) {
         let began = lowlat_common::clock::Time::now();
         while !predicate() {
             assert!(
-                lowlat_common::clock::elapsed_ms(began) < 5000.0,
+                lowlat_common::clock::elapsed_ms(began) < budget_ms,
                 "timed out waiting for {what}"
             );
             std::thread::sleep(std::time::Duration::from_millis(1));
@@ -1094,6 +1246,116 @@ mod tests {
             "the first frame a joining guest received was not a refresh"
         );
         println!("received {received} frames, {bytes} bytes");
+    }
+
+    /// Run the real pipeline at `fps` until it has reported, and print the
+    /// table docs/05-host.md section 10 asks for.
+    fn measure(fps: u32, frames: usize) -> Report {
+        let stream = Stream::start(Config {
+            width: 1920,
+            height: 1080,
+            fps,
+            configured_mbps: 10.0,
+            min_mbps: 1.0,
+        });
+        let wake = lowlat_net::Wake::new().expect("wake");
+        let seat = stream
+            .seats()
+            .take(wake.handle().expect("handle"))
+            .expect("a free seat");
+
+        let mut received = 0usize;
+        // Long enough for the report to be due at the paced rate, which is
+        // ten seconds of frames plus the margin a first refresh costs.
+        let budget = 4.0 * 1000.0 * frames as f64 / f64::from(fps.max(1)) + 5000.0;
+        until_within(budget, "the run to finish", || {
+            while seat.next_frame().is_some() {
+                received += 1;
+            }
+            // The report is published on a frame count, so a run shorter than
+            // that reads zeros.
+            received >= frames && stream.timings().encode.p50 > 0.0
+        });
+
+        let report = stream.timings();
+        println!("  fps target {fps}, {received} frames");
+        for (name, stage) in [
+            ("acquire ", report.acquire),
+            ("encode  ", report.encode),
+            ("publish ", report.publish),
+            ("interval", report.interval),
+        ] {
+            println!(
+                "    {name}  p50 {:7.3} ms  p95 {:7.3} ms  p99 {:7.3} ms",
+                stage.p50, stage.p95, stage.p99
+            );
+        }
+        println!(
+            "    host stages p50 {:.3} ms, p99 {:.3} ms",
+            report.host_p50(),
+            report.host_p99()
+        );
+        report
+    }
+
+    /// **Gate A item 7.** Every stage reports its percentiles, and the
+    /// host-side stages sum to less than one frame interval at the negotiated
+    /// rate. A pipeline that cannot clear a frame within a frame interval
+    /// cannot hold the frame rate, so this is the floor rather than a target.
+    ///
+    /// Needs a render node, so it is off by default.
+    #[test]
+    #[ignore = "requires a render node"]
+    fn the_host_stages_clear_a_frame_within_a_frame_interval() {
+        let report = measure(60, REPORT_FRAMES as usize + 60);
+        let interval = 1000.0 / 60.0;
+
+        assert!(
+            report.acquire.p50 > 0.0,
+            "the acquire stage reported nothing"
+        );
+        assert!(report.encode.p50 > 0.0, "the encode stage reported nothing");
+        assert!(
+            report.host_p50() < interval,
+            "the host stages take {:.3} ms at the median, past a {interval:.3} ms frame",
+            report.host_p50()
+        );
+        assert!(
+            report.host_p99() < interval,
+            "the host stages take {:.3} ms at p99, past a {interval:.3} ms frame",
+            report.host_p99()
+        );
+    }
+
+    /// **Gate A item 6.** The per-stage times sum to more than the wall-clock
+    /// interval between frames, and stages that sum past the interval they fit
+    /// inside can only have run concurrently.
+    ///
+    /// **Measured unpaced.** At sixty frames a second on this hardware the
+    /// pipeline idles most of the interval, so the sum is under it whether the
+    /// stages overlap or not and the arithmetic proves nothing. Removing the
+    /// frame clock makes the interval the pipeline's own throughput, which is
+    /// where the question has an answer: a serialised loop's interval is the
+    /// sum of its stages, and an overlapped one's is the longest of them.
+    ///
+    /// Needs a render node, so it is off by default.
+    #[test]
+    #[ignore = "requires a render node"]
+    fn encode_overlaps_the_next_frames_preparation() {
+        let report = measure(100_000, REPORT_FRAMES as usize + 60);
+        let stages = report.acquire.p50 + report.encode.p50 + report.publish.p50;
+
+        assert!(
+            stages > report.interval.p50,
+            "stages sum to {stages:.3} ms inside a {:.3} ms interval, which is what a \
+             serialised pipeline looks like",
+            report.interval.p50
+        );
+        println!(
+            "    stages {stages:.3} ms across a {:.3} ms interval, overlap {:.3} ms",
+            report.interval.p50,
+            stages - report.interval.p50
+        );
     }
 
     /// The pool slot and the send ring are sized from the same arithmetic, so

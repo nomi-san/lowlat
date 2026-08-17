@@ -96,8 +96,9 @@ mod tests {
         depth: usize,
         // Called once per collected unit, after the borrow the collect
         // handed out has ended, so it can ask the encoder what else that
-        // collect reported. A backend with nothing to add passes a no-op.
-        mut observe: impl FnMut(&E, usize, &[u8]),
+        // collect reported, or change its rate. A backend with nothing to add
+        // passes a no-op.
+        mut observe: impl FnMut(&mut E, usize, &[u8]),
     ) -> (Vec<u8>, usize) {
         let mut source = lowlat_capture::synthetic::Synthetic::new(width, height);
         let mut stream = Vec::new();
@@ -244,6 +245,127 @@ mod tests {
             .windows(4)
             .filter(|window| window[..3] == [0, 0, 1] && window[3] & 0x1F == kind)
             .count()
+    }
+
+    /// **Gate A item 3.** A bitrate change reconfigures the encoder live: no
+    /// keyframe crosses it, and nothing is reinitialised.
+    ///
+    /// The congestion controller moves the rate many times a minute. A
+    /// backend that answered a rate change with a refresh would put a
+    /// bitrate spike and a visible stutter in the stream every time the
+    /// network hiccuped, which is the opposite of what the change is for.
+    ///
+    /// **Counted at the encoder, not inferred.** Both the flag each backend
+    /// reports and the start codes in the bitstream are counted, because a
+    /// backend could report the flag correctly and still code a refresh.
+    ///
+    /// Needs both drivers, so it is off by default. Run with
+    /// `cargo test -p lowlat-encode -- --ignored no_keyframe`.
+    #[test]
+    #[ignore = "requires both vendors' drivers"]
+    fn no_keyframe_crosses_a_bitrate_change() {
+        const WIDTH: u32 = 1920;
+        const HEIGHT: u32 = 1080;
+        const FRAMES: usize = 120;
+        const DEPTH: usize = 4;
+
+        // A rate that moves on every picture, across the whole range the
+        // controller can reach. A single change could be answered correctly by
+        // accident; a hundred cannot.
+        let rate_for = |index: usize| -> u32 {
+            let step = u32::try_from(index % 20).unwrap_or(0);
+            2_000_000 + step * 2_000_000
+        };
+
+        let params = h264::Params {
+            width: WIDTH,
+            height: HEIGHT,
+            fps: 60,
+            level_idc: 42,
+            log2_max_frame_num_minus4: 4,
+            log2_max_poc_lsb_minus4: 4,
+            max_num_ref_frames: 1,
+        };
+
+        let cuda = cuda::Cuda::load().expect("compute runtime");
+        let device = cuda.any_device().expect("a device");
+        let compute = cuda.retain_primary(&device).expect("context");
+        let api = nvenc::Api::load().expect("encoder runtime");
+        let session = api.open_session(compute).expect("session");
+        let mut vendor = session
+            .initialize(
+                &cuda,
+                nvenc::Config {
+                    codec: nvenc::Codec::H264,
+                    width: WIDTH,
+                    height: HEIGHT,
+                    fps: 60,
+                    bitrate_bps: 20_000_000,
+                    min_qp: nvenc::DEFAULT_MIN_QP,
+                },
+            )
+            .expect("initialize");
+        let (vendor_stream, vendor_keyframes) = encode_run(
+            &mut vendor,
+            WIDTH,
+            HEIGHT,
+            FRAMES,
+            DEPTH,
+            |encoder, index, _| {
+                // Through the trait explicitly: a backend may carry an
+                // inherent method of the same name, and the one under test is
+                // the one the loop calls.
+                Encoder::reconfigure(encoder, rate_for(index)).expect("reconfigure");
+            },
+        );
+
+        let va = vaapi::Vaapi::load().expect("display runtime");
+        let display = va.open(c"/dev/dri/renderD128").expect("render node");
+        let caps = display.caps(vaapi::Codec::H264).expect("caps");
+        let context = display
+            .create_context(caps, WIDTH, HEIGHT, DEPTH)
+            .expect("context");
+        let mut open = context.encoder(params, 20_000_000).expect("encoder");
+        let (open_stream, open_keyframes) = encode_run(
+            &mut open,
+            WIDTH,
+            HEIGHT,
+            FRAMES,
+            DEPTH,
+            |encoder, index, _| {
+                // Through the trait explicitly: a backend may carry an
+                // inherent method of the same name, and the one under test is
+                // the one the loop calls.
+                Encoder::reconfigure(encoder, rate_for(index)).expect("reconfigure");
+            },
+        );
+
+        for (name, stream, reported) in [
+            ("vendor", &vendor_stream, vendor_keyframes),
+            ("open", &open_stream, open_keyframes),
+        ] {
+            let coded = units_of(stream, 5);
+            let pictures = coded + units_of(stream, 1);
+            println!(
+                "{name}: {} bytes, {pictures} pictures, {coded} coded refreshes, {reported} reported",
+                stream.len()
+            );
+            assert_eq!(pictures, FRAMES, "{name} produced the wrong picture count");
+            // **One, and it is the forced first picture.** Any refresh after
+            // that one crossed a rate change.
+            assert_eq!(
+                coded,
+                1,
+                "{name} coded {coded} refreshes across {} rate changes",
+                FRAMES - 1
+            );
+            assert_eq!(
+                reported,
+                1,
+                "{name} reported {reported} keyframes across {} rate changes",
+                FRAMES - 1
+            );
+        }
     }
 
     /// Both hardware backends, one generic loop, one source.

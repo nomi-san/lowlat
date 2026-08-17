@@ -351,9 +351,13 @@ refresh that recovers it.
    corpus, and our initialization parser accepts the corpus's client messages verbatim.
    *This runs without hardware and without a peer, and it is what makes item 1 diagnosable: a
    client that renders nothing after this passes has a negotiation fault, not a framing one.*
-3. **Zero keyframes across a bitrate reconfigure**, counted at the encoder over a run that
+3. [x] **Zero keyframes across a bitrate reconfigure**, counted at the encoder over a run that
    forces repeated rate changes, and the encoder is not reinitialized. This replaces
-   "reconfigure is observed live", which named no observation and could not fail.
+   "reconfigure is observed live", which named no observation and could not fail. *120
+   pictures and 119 rate changes on each backend, spanning 2 to 40 Mbps: exactly one coded
+   refresh, the forced first picture, and one reported. Counted both ways, because a backend
+   could report the flag correctly and still code a refresh. Forcing a refresh every thirtieth
+   picture fails it.*
 4. **A guest that is starved and recovers never receives a dependent frame across the gap.**
    Driven in the simulator by withholding acknowledgements until the window fills, then
    releasing them. *Named regression test; this is the gray-frame lesson and it is the reason
@@ -372,17 +376,40 @@ refresh that recovers it.
    is both achievable and load bearing -- a caller with nothing ready is never parked -- and
    the retrieval cost is recorded rather than wished away. **A gate nobody can pass teaches
    nothing; a gate that measures the real boundary teaches where it is.**
-6. **Encode overlaps the next frame's preparation**, asserted as measurement rather than as
+6. [x] **Encode overlaps the next frame's preparation**, asserted as measurement rather than as
    throughput: the per-stage times from [05 §10](05-host.md) sum to more than the wall-clock
    interval between frames. Stages that sum past the interval they fit inside can only have
    run concurrently. *A frame-rate target proves nothing here: the hardware on this machine
    encodes 1080p far faster than 60 fps, so a fully serialized pipeline would hold the frame
    rate and pass. The lesson behind this gate came from a 120 fps target, and the arithmetic,
    not the frame rate, is what carries it to 60.*
-7. Every stage in [05 §10](05-host.md) reports p50, p95 and p99, and the host-side stages sum
+
+   **Measured unpaced, 2026-08-17**, because at 60 fps the pipeline idles most of the interval
+   and the sum is under it whether the stages overlap or not. With the frame clock removed the
+   interval is the pipeline's own throughput, which is where the question has an answer:
+   stages sum to **10.670 ms across a 2.665 ms interval, 8.005 ms of overlap**, 375 pictures a
+   second. Holding one picture in flight instead of four fails it, and prints the serialized
+   shape exactly -- 3.064 ms of stages inside a 3.066 ms interval.
+7. [x] Every stage in [05 §10](05-host.md) reports p50, p95 and p99, and the host-side stages sum
    to less than one frame interval at the negotiated rate. A pipeline that cannot clear a frame
    within a frame interval cannot hold the frame rate, so this is the floor rather than the
    target; a tighter budget is set once the first measurement exists.
+
+   **Measured 2026-08-17**, 1080p60 on the open-stack backend, 660 frames:
+
+   | Stage | p50 | p95 | p99 |
+   |---|---|---|---|
+   | acquire | 0.100 ms | 0.110 ms | 0.150 ms |
+   | encode | 3.311 ms | 3.349 ms | 3.723 ms |
+   | publish | 0.000 ms | 0.001 ms | 0.001 ms |
+   | interval | 16.666 ms | 16.678 ms | 16.690 ms |
+
+   **Host stages 3.411 ms at p50 and 3.874 ms at p99**, against a 16.667 ms frame: four times
+   the headroom the floor asks for. The frame clock holds to 24 us of jitter at p99. Encode is
+   the whole budget; the acquire is a generator and will grow when real capture replaces it,
+   and publish is a copy and a counter. **The tighter budget this gate defers can now be set
+   from a number**: one frame interval is 16.667 ms, the pipeline uses a fifth of it, and the
+   figure to defend as capture and conversion arrive is the 3.9 ms tail rather than the floor.
 
 **Open, found by running both backends over one source, 2026-08-17.** The vendor backend spends
 **2.4 MB on its first picture where the open-stack one spends 513 bytes**, for identical input at

@@ -11,6 +11,7 @@ pub mod gate;
 pub mod rate;
 pub mod session;
 pub mod stream;
+pub mod timing;
 pub mod video;
 
 pub use admission::{Admission, Config, Event, HostCredentials, Outcome, Peer};
