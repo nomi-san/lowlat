@@ -11,6 +11,9 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   generated from them into `lowlat-encode`. No crate dependency is added.
 - `lowlat-common::dynlib`: opening a shared library at runtime and resolving
   symbols from it, one implementation per platform.
+- Loading the encoder runtime, with the interface version checked once at load.
+- Loading the compute runtime, enumerating devices by bus address, and
+  retaining a primary context.
 
 **Notes**
 
@@ -54,6 +57,21 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   nothing fails four of the five; making every symbol resolve fails exactly the
   one written to catch it, and no other. A pair that cannot both pass under a
   broken implementation is the point.
+- **The compute device is selected by bus address and a miss is an error.** A
+  machine with two GPUs has the frame source on exactly one of them, and
+  encoding on the other moves every frame across the bus, which is a readback
+  under another name and which section 4 of the host document requires to be
+  chosen rather than discovered. There is no fallback to another device,
+  because that failure would surface as a latency figure rather than as an
+  error. The address is read at construction and never stored: enumeration
+  order is not stable across driver reloads and neither is which card drives
+  the display.
+- **The selection test proves itself the same way the loader's does.** On a
+  machine with one compute device, matching the display's address cannot
+  distinguish a correct implementation from one that ignores the address
+  entirely. What distinguishes them is the second assertion, that an address
+  belonging to no device is refused: an implementation returning the first
+  device regardless would satisfy the first check and fail that one.
 
 ## 4: signaling (in progress)
 

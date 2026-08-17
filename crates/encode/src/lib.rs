@@ -5,5 +5,6 @@
 
 // Phase 5 lands the hardware backend; Phase 11 the software one.
 
+pub mod cuda;
 mod ffi;
 pub mod nvenc;

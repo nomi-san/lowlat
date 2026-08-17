@@ -1,0 +1,414 @@
+//! The compute runtime the encoder opens its session against.
+//!
+//! On this platform the encoder takes a compute device rather than a graphics
+//! one, so a context has to exist before a session can. Loaded at runtime for
+//! the same reason as the encoder itself (docs/07-platforms.md section 8).
+//!
+//! **Device selection is by address, and a miss is an error.** A machine with
+//! more than one GPU has more than one compute device, and the frame source
+//! lives on exactly one of them: the one driving the display. Encoding on the
+//! other means moving every frame across the bus, which is a readback by
+//! another name, and docs/05-host.md section 4 requires that to be chosen
+//! rather than discovered. So the caller names the device it needs and this
+//! module refuses rather than substituting.
+//!
+//! The address is discovered at construction and never stored. Enumeration
+//! order is not stable across driver reloads, and neither is the display's
+//! attachment.
+
+use core::ffi::{CStr, c_char, c_int, c_uint};
+
+use lowlat_common::dynlib::Library;
+
+use crate::ffi::cuda::{CUDA_SUCCESS, CUcontext, CUdevice, CUresult};
+
+/// Versioned first, as with the encoder runtime.
+const SONAMES: [&CStr; 2] = [c"libcuda.so.1", c"libcuda.so"];
+
+type Init = unsafe extern "C" fn(c_uint) -> CUresult;
+type DeviceGetCount = unsafe extern "C" fn(*mut c_int) -> CUresult;
+type DeviceGet = unsafe extern "C" fn(*mut CUdevice, c_int) -> CUresult;
+type DeviceGetName = unsafe extern "C" fn(*mut c_char, c_int, CUdevice) -> CUresult;
+type DeviceGetPciBusId = unsafe extern "C" fn(*mut c_char, c_int, CUdevice) -> CUresult;
+type PrimaryCtxRetain = unsafe extern "C" fn(*mut CUcontext, CUdevice) -> CUresult;
+type PrimaryCtxRelease = unsafe extern "C" fn(CUdevice) -> CUresult;
+
+/// Why the runtime could not be used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Error {
+    /// No such library, which is the ordinary case without the hardware.
+    Unavailable,
+    /// Loaded, but missing an entry point it must export.
+    MissingSymbol,
+    /// A call failed. The code is carried rather than a message, because a
+    /// message would mean either allocating or holding a driver pointer.
+    Status(CUresult),
+    /// No device at the requested address. **Never substituted**: encoding on
+    /// a device the frames do not live on is a silent per-frame copy.
+    NoSuchDevice(PciAddress),
+    /// The runtime is present but reports no devices at all.
+    NoDevices,
+}
+
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Unavailable => f.write_str("compute runtime not present"),
+            Self::MissingSymbol => f.write_str("compute runtime is missing an entry point"),
+            Self::Status(status) => write!(f, "compute runtime returned status {status}"),
+            Self::NoSuchDevice(address) => {
+                write!(f, "no compute device at {address}")
+            }
+            Self::NoDevices => f.write_str("compute runtime reports no devices"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+type Result<T> = core::result::Result<T, Error>;
+
+fn check(status: CUresult) -> Result<()> {
+    if status == CUDA_SUCCESS {
+        Ok(())
+    } else {
+        Err(Error::Status(status))
+    }
+}
+
+/// A device's bus address, as both the compute runtime and the display stack
+/// render it: `0000:01:00.0`.
+///
+/// Fixed storage and no allocation, so it can be compared on any path. Held as
+/// written by the runtime and compared case-insensitively, because the two
+/// sources that produce it are not required to agree on case.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct PciAddress {
+    text: [u8; Self::CAPACITY],
+    len: usize,
+}
+
+impl PciAddress {
+    const CAPACITY: usize = 20;
+
+    /// Parse from text, lowercasing as it goes. Returns `None` if it is longer
+    /// than any real address.
+    pub fn parse(text: &str) -> Option<Self> {
+        let bytes = text.trim().as_bytes();
+        if bytes.is_empty() || bytes.len() > Self::CAPACITY {
+            return None;
+        }
+        let mut stored = [0u8; Self::CAPACITY];
+        for (slot, byte) in stored.iter_mut().zip(bytes) {
+            *slot = byte.to_ascii_lowercase();
+        }
+        Some(Self {
+            text: stored,
+            len: bytes.len(),
+        })
+    }
+
+    pub fn as_str(&self) -> &str {
+        // The bytes came from a `&str` or from an ASCII buffer the runtime
+        // wrote, so this cannot fail; an empty string is a better answer here
+        // than a panic on a diagnostic path.
+        core::str::from_utf8(&self.text[..self.len]).unwrap_or("")
+    }
+}
+
+impl core::fmt::Display for PciAddress {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl core::fmt::Debug for PciAddress {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "PciAddress({})", self.as_str())
+    }
+}
+
+/// One compute device.
+#[derive(Debug, Clone, Copy)]
+pub struct Device {
+    handle: CUdevice,
+    address: PciAddress,
+}
+
+impl Device {
+    pub fn address(&self) -> PciAddress {
+        self.address
+    }
+}
+
+/// A retained primary context on one device.
+///
+/// The primary context is shared with everything else in the process that
+/// touches the same device, which is what the encoder and any future import
+/// path both want; creating a private one instead would put our buffers in a
+/// context nothing else can reach.
+#[derive(Debug)]
+pub struct Context {
+    raw: CUcontext,
+    device: CUdevice,
+    release: PrimaryCtxRelease,
+}
+
+// SAFETY: a context is usable from any thread, and this type only hands out
+// the raw handle. Sending one is what lets the encoder be built where the
+// pipeline is assembled and run on the encode thread.
+unsafe impl Send for Context {}
+
+impl Context {
+    /// The raw handle, for the encoder session.
+    pub fn raw(&self) -> CUcontext {
+        self.raw
+    }
+}
+
+impl Drop for Context {
+    fn drop(&mut self) {
+        // SAFETY: balanced against the retain that produced it, once, because
+        // this type is neither `Copy` nor `Clone`.
+        unsafe { (self.release)(self.device) };
+    }
+}
+
+/// The loaded compute runtime.
+#[derive(Debug)]
+pub struct Cuda {
+    device_get_count: DeviceGetCount,
+    device_get: DeviceGet,
+    device_get_name: DeviceGetName,
+    device_get_pci_bus_id: DeviceGetPciBusId,
+    primary_ctx_retain: PrimaryCtxRetain,
+    primary_ctx_release: PrimaryCtxRelease,
+    /// Last, so it outlives the addresses taken from it.
+    _library: Library,
+}
+
+impl Cuda {
+    /// Open the runtime and initialise it.
+    pub fn load() -> Result<Self> {
+        let library = Library::open_first(&SONAMES).ok_or(Error::Unavailable)?;
+
+        // SAFETY: every signature is transcribed from the vendored header, and
+        // the symbol names are the ones that header's own loader uses, which
+        // matters because several of these carry a version suffix in the
+        // library that the documented name does not show.
+        let loaded = unsafe {
+            let init: Init = library.symbol(c"cuInit").ok_or(Error::MissingSymbol)?;
+            Self {
+                device_get_count: library
+                    .symbol(c"cuDeviceGetCount")
+                    .ok_or(Error::MissingSymbol)?,
+                device_get: library.symbol(c"cuDeviceGet").ok_or(Error::MissingSymbol)?,
+                device_get_name: library
+                    .symbol(c"cuDeviceGetName")
+                    .ok_or(Error::MissingSymbol)?,
+                device_get_pci_bus_id: library
+                    .symbol(c"cuDeviceGetPCIBusId")
+                    .ok_or(Error::MissingSymbol)?,
+                primary_ctx_retain: library
+                    .symbol(c"cuDevicePrimaryCtxRetain")
+                    .ok_or(Error::MissingSymbol)?,
+                primary_ctx_release: library
+                    .symbol(c"cuDevicePrimaryCtxRelease")
+                    .ok_or(Error::MissingSymbol)?,
+                _library: library,
+            }
+            .initialised(init)?
+        };
+        Ok(loaded)
+    }
+
+    /// # Safety
+    ///
+    /// `init` must be this library's initialiser.
+    unsafe fn initialised(self, init: Init) -> Result<Self> {
+        // SAFETY: the caller guarantees the pointer; the flags argument is
+        // documented as reserved and must be zero.
+        check(unsafe { init(0) })?;
+        Ok(self)
+    }
+
+    /// How many devices the runtime can see.
+    pub fn device_count(&self) -> Result<u32> {
+        let mut count: c_int = 0;
+        // SAFETY: the pointer is to a live local for the duration of the call.
+        check(unsafe { (self.device_get_count)(&raw mut count) })?;
+        Ok(count.max(0).unsigned_abs())
+    }
+
+    /// The device at an enumeration position.
+    ///
+    /// **The position is not an identity.** It moves across driver reloads,
+    /// which is why the address travels with the device and selection is by
+    /// address rather than by index.
+    pub fn device(&self, ordinal: u32) -> Result<Device> {
+        let ordinal = c_int::try_from(ordinal).map_err(|_| Error::NoDevices)?;
+        let mut handle: CUdevice = 0;
+        // SAFETY: the pointer is to a live local for the duration of the call.
+        check(unsafe { (self.device_get)(&raw mut handle, ordinal) })?;
+
+        let mut buffer = [0u8; PciAddress::CAPACITY];
+        // SAFETY: the buffer is writable for the length passed, and the
+        // runtime writes a NUL-terminated string within it.
+        check(unsafe {
+            (self.device_get_pci_bus_id)(
+                buffer.as_mut_ptr().cast::<c_char>(),
+                c_int::try_from(buffer.len()).unwrap_or(c_int::MAX),
+                handle,
+            )
+        })?;
+        let text = CStr::from_bytes_until_nul(&buffer)
+            .ok()
+            .and_then(|text| text.to_str().ok())
+            .ok_or(Error::NoDevices)?;
+        let address = PciAddress::parse(text).ok_or(Error::NoDevices)?;
+
+        Ok(Device { handle, address })
+    }
+
+    /// A device's model name, for a log line at startup.
+    pub fn device_name(&self, device: &Device, out: &mut [u8; 96]) -> Result<usize> {
+        // SAFETY: the buffer is writable for the length passed.
+        check(unsafe {
+            (self.device_get_name)(
+                out.as_mut_ptr().cast::<c_char>(),
+                c_int::try_from(out.len()).unwrap_or(c_int::MAX),
+                device.handle,
+            )
+        })?;
+        Ok(out.iter().position(|byte| *byte == 0).unwrap_or(out.len()))
+    }
+
+    /// The device at `address`, or an error.
+    ///
+    /// **There is no fallback.** Substituting another device would put the
+    /// encoder somewhere the frames are not, which costs a copy across the bus
+    /// on every frame and would be discovered as a latency figure rather than
+    /// as a failure.
+    pub fn device_at(&self, address: PciAddress) -> Result<Device> {
+        for ordinal in 0..self.device_count()? {
+            let device = self.device(ordinal)?;
+            if device.address == address {
+                return Ok(device);
+            }
+        }
+        Err(Error::NoSuchDevice(address))
+    }
+
+    /// The first device, for a pipeline with no frame source to be near.
+    ///
+    /// Only correct while the source is synthetic. Anything reading a real
+    /// display must use [`Self::device_at`], because on a machine with two
+    /// GPUs the first device is not reliably the one driving the screen.
+    pub fn any_device(&self) -> Result<Device> {
+        if self.device_count()? == 0 {
+            return Err(Error::NoDevices);
+        }
+        self.device(0)
+    }
+
+    /// Retain the device's primary context.
+    pub fn retain_primary(&self, device: &Device) -> Result<Context> {
+        let mut raw: CUcontext = core::ptr::null_mut();
+        // SAFETY: the pointer is to a live local for the duration of the call.
+        check(unsafe { (self.primary_ctx_retain)(&raw mut raw, device.handle) })?;
+        Ok(Context {
+            raw,
+            device: device.handle,
+            release: self.primary_ctx_release,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_address_round_trips_and_normalises_case() {
+        let lower = PciAddress::parse("0000:01:00.0").expect("parse");
+        let upper = PciAddress::parse("0000:01:00.0".to_uppercase().as_str()).expect("parse");
+        assert_eq!(lower, upper, "case decided equality");
+        assert_eq!(lower.as_str(), "0000:01:00.0");
+    }
+
+    #[test]
+    fn an_address_rejects_what_cannot_be_one() {
+        assert!(PciAddress::parse("").is_none());
+        assert!(PciAddress::parse(&"0".repeat(PciAddress::CAPACITY + 1)).is_none());
+        // Two different devices must not compare equal.
+        assert_ne!(
+            PciAddress::parse("0000:01:00.0"),
+            PciAddress::parse("0000:10:00.0")
+        );
+    }
+
+    /// The address of whichever card is driving a connected output, read from
+    /// the kernel rather than assumed. Returns `None` on a machine with no
+    /// display, which is where most of continuous integration runs.
+    fn display_address() -> Option<PciAddress> {
+        let entries = std::fs::read_dir("/sys/class/drm").ok()?;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let status = std::fs::read_to_string(path.join("status")).unwrap_or_default();
+            if status.trim() != "connected" {
+                continue;
+            }
+            // card1-DP-4 -> card1 -> its device link, whose name is the address.
+            let name = entry.file_name();
+            let card = name.to_str()?.split('-').next()?.to_string();
+            let link = std::fs::canonicalize(format!("/sys/class/drm/{card}/device")).ok()?;
+            return PciAddress::parse(link.file_name()?.to_str()?);
+        }
+        None
+    }
+
+    /// Needs the vendor driver, so it is off by default. Run with
+    /// `cargo test -p lowlat-encode -- --ignored`.
+    #[test]
+    #[ignore = "requires the vendor driver"]
+    fn the_selected_device_is_the_one_driving_the_display() {
+        let cuda = Cuda::load().expect("compute runtime did not load");
+        let count = cuda.device_count().expect("device count");
+        assert!(count > 0, "runtime loaded but reports no devices");
+
+        for ordinal in 0..count {
+            let device = cuda.device(ordinal).expect("device");
+            let mut name = [0u8; 96];
+            let len = cuda.device_name(&device, &mut name).expect("name");
+            println!(
+                "device {ordinal}: {} at {}",
+                String::from_utf8_lossy(&name[..len]),
+                device.address()
+            );
+        }
+
+        let Some(display) = display_address() else {
+            println!("no connected output; selection by address not exercised");
+            return;
+        };
+        println!("display is at {display}");
+
+        let device = cuda
+            .device_at(display)
+            .expect("no compute device at the display's address");
+        assert_eq!(device.address(), display);
+
+        let context = cuda.retain_primary(&device).expect("primary context");
+        assert!(!context.raw().is_null());
+
+        // The refusal is the half worth proving: an address that exists on the
+        // machine but belongs to another device must not silently succeed.
+        let absent = PciAddress::parse("ffff:ff:ff.f").expect("parse");
+        assert_eq!(
+            cuda.device_at(absent).unwrap_err(),
+            Error::NoSuchDevice(absent),
+            "selection fell back to another device"
+        );
+    }
+}
