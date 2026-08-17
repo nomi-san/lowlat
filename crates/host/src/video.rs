@@ -10,7 +10,8 @@
 //! outlives a frame rather than a function that takes six arguments.
 
 use lowlat_core::message::Message;
-use lowlat_core::video::{Rotation, VIDEO_HEADER_LEN, VideoHeader, encode};
+pub use lowlat_core::video::Rotation;
+use lowlat_core::video::{VIDEO_HEADER_LEN, VideoHeader, encode};
 
 /// One stream's fixed facts, and the header buffer they are written into.
 #[derive(Debug)]

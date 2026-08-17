@@ -188,6 +188,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // picture; a band makes frames large enough to need more than one
     // fragment, which is the only way a peer's reassembly is exercised.
     let detail_rows: u32 = flag("--detail").and_then(|v| v.parse().ok()).unwrap_or(0);
+    // **One-based, because zero means unspecified rather than upright.** The
+    // coded picture stays landscape whatever this says; a quarter turn changes
+    // what the peer presents and what it maps pointer coordinates against.
+    let rotation = match flag("--rotate").as_deref() {
+        Some("90") => lowlat::video::Rotation::Deg90,
+        Some("180") => lowlat::video::Rotation::Deg180,
+        Some("270") => lowlat::video::Rotation::Deg270,
+        _ => lowlat::video::Rotation::None,
+    };
 
     let mut seam = Admission::new(Config {
         base_port,
@@ -199,6 +208,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             fps: FPS,
             configured_mbps: bitrate_mbps,
             min_mbps: MIN_BITRATE_MBPS,
+            rotation,
             detail_rows,
         }),
     });

@@ -247,6 +247,13 @@ pub struct Config {
     pub configured_mbps: f64,
     /// The floor a controller may not descend below.
     pub min_mbps: f64,
+    /// How the display this stream shows is oriented.
+    ///
+    /// **The coded picture never rotates.** A quarter turn changes what a peer
+    /// presents and what it maps pointer coordinates against, and leaves the
+    /// bitstream landscape, so this travels in the header rather than through
+    /// the encoder.
+    pub rotation: lowlat_core::video::Rotation,
     /// Rows of unpredictable detail the source paints, from the top.
     ///
     /// **Zero is the flat picture every recorded measurement was taken
@@ -1108,6 +1115,7 @@ mod tests {
                 fps: 240,
                 configured_mbps: 10.0,
                 min_mbps: 1.0,
+                rotation: lowlat_core::video::Rotation::None,
                 detail_rows: 0,
             };
             let shared = Arc::new(Shared {
@@ -1262,6 +1270,7 @@ mod tests {
             fps: 60,
             configured_mbps: 10.0,
             min_mbps: 1.0,
+            rotation: lowlat_core::video::Rotation::None,
             detail_rows: 0,
         });
         let wake = lowlat_net::Wake::new().expect("wake");
@@ -1319,6 +1328,7 @@ mod tests {
             fps: 60,
             configured_mbps: 10.0,
             min_mbps: 1.0,
+            rotation: lowlat_core::video::Rotation::None,
             detail_rows: rows,
         });
         let wake = lowlat_net::Wake::new().expect("wake");
@@ -1366,6 +1376,7 @@ mod tests {
             fps,
             configured_mbps: 10.0,
             min_mbps: 1.0,
+            rotation: lowlat_core::video::Rotation::None,
             detail_rows: 0,
         });
         let wake = lowlat_net::Wake::new().expect("wake");

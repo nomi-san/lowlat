@@ -380,7 +380,7 @@ impl Admission {
         let emit = self.emit.clone();
         let servers = self.config.servers.clone();
         let seats = self.stream.as_ref().map(Stream::seats);
-        let video = self.config.stream.map(|s| (s.width, s.height));
+        let video = self.config.stream.map(|s| (s.width, s.height, s.rotation));
         let ours = (local.ufrag.clone(), local.pwd.clone());
         let theirs = (attempt.peer.ufrag.clone(), attempt.peer.pwd.clone());
 
@@ -470,8 +470,9 @@ struct Attached {
     seed: [u8; 16],
     /// A way onto the stream, taken once this guest is streamable.
     seats: Option<Seats>,
-    /// The stream's dimensions, which the video header carries.
-    video: Option<(u32, u32)>,
+    /// The stream's dimensions and orientation, which the video header
+    /// carries.
+    video: Option<(u32, u32, lowlat_core::video::Rotation)>,
 }
 
 /// Lend one channel's receive storage to the session.
@@ -717,11 +718,11 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     // A place on the stream, taken once this guest has declared itself. Held
     // for the rest of the session and given back by dropping it.
     let mut seat: Option<SeatHold> = None;
-    let mut packetiser = args.video.map(|(width, height)| {
+    let mut packetiser = args.video.map(|(width, height, rotation)| {
         Packetiser::new(
             u16::try_from(width).unwrap_or(u16::MAX),
             u16::try_from(height).unwrap_or(u16::MAX),
-            lowlat_core::video::Rotation::None,
+            rotation,
         )
     });
     let mut throughput = Throughput::default();
