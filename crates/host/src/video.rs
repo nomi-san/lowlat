@@ -62,21 +62,27 @@ impl Packetiser {
         self.header.frame_id = self.header.frame_id.wrapping_add(1);
     }
 
-    /// Frame a coded access unit for sending.
-    ///
-    /// The returned message borrows both the header written here and the
-    /// caller's bitstream, so it must be enqueued before the next frame is
-    /// framed.
+    /// The header for one coded access unit, ready to precede it on the wire.
     ///
     /// **The keyframe flag is set when it is true.** Peers leave it clear on
     /// every frame including keyframes, so a receiver cannot rely on it and
     /// ours sniffs the bitstream instead. Setting it is still right: it is
     /// strictly more informative and costs nothing, and a peer that does read
     /// it is better served.
-    pub fn frame<'a>(&'a mut self, bitstream: &'a [u8], keyframe: bool) -> Option<Message<'a>> {
+    pub fn header(&mut self, keyframe: bool) -> Option<&[u8]> {
         self.header.keyframe = keyframe;
         encode(&mut self.bytes, &self.header).ok()?;
-        Message::new(&self.bytes, bitstream).ok()
+        Some(&self.bytes)
+    }
+
+    /// Frame a coded access unit for sending.
+    ///
+    /// The returned message borrows both the header written here and the
+    /// caller's bitstream, so it must be enqueued before the next frame is
+    /// framed.
+    pub fn frame<'a>(&'a mut self, bitstream: &'a [u8], keyframe: bool) -> Option<Message<'a>> {
+        let header = self.header(keyframe)?;
+        Message::new(header, bitstream).ok()
     }
 }
 

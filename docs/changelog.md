@@ -62,6 +62,47 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - Two-channel ring geometry per guest, sized from the largest frame the stream
   can produce, and the control channel a guest declares itself on.
 
+- The encode loop: one capture and one encode serving every guest, the seats
+  guests take on it, and the daemon wiring that starts it.
+
+**Notes on the encode loop**
+
+- **The loop is written against the encoder trait**, so the second backend is
+  a construction change rather than a second loop, and the tests drive the
+  same code through a fake encoder with no device and no hardware latency.
+- **A seat has four states and each transition has one owner**, which is what
+  keeps the handoff lock free. The loop promotes a claimed seat at the top of
+  a frame, before the gate runs, so the guests a frame goes to are fixed for
+  that frame and a guest arriving mid-frame waits for the next one rather than
+  being handed a predicted frame it cannot decode.
+- **The loop empties a leaving guest's ring, and only the loop can.** The
+  guest stops touching it before marking the seat, so a push already in flight
+  lands after that; every index dropped instead is a pool slot that never
+  comes back, and one leak per session exhausts a host.
+- **A frame a guest did not get is a broken reference chain whatever the
+  reason.** Three ways to lose one, and each latches the guest and reaches the
+  refresh that recovers it: the room test refusing, a publish ring that is
+  full, and no pool slot free. The last needed a new entry point, because the
+  pass that would otherwise ask for the refresh is the one that could not take
+  a slot. Removing any of the three fails its own test and no other.
+- **`publish` reports which rings took the frame, not how many.** A count
+  leaves the caller knowing a frame was lost and unable to latch the guest
+  that lost it, which is the silent form of the failure the gate exists to
+  prevent.
+- **The pool is deliberately smaller than the guests could hold between
+  them.** Sizing it so exhaustion is impossible costs a slot per guest per
+  queued frame at the width of the largest frame a window can carry, which is
+  tens of megabytes for guests that need none of it. Exhaustion is back
+  pressure with a defined answer instead.
+- **The send ring counts bytes now**, because the rate controller's peak is
+  tracked from measured throughput and a controller fed zero collapses to its
+  floor on the first congestion rather than to a fraction of what the path was
+  carrying. Mebibits per second over an interval of at least half a second,
+  which is also the period the controller increases on.
+- **The gate's ceiling is the divided rate, not the configured one.** A second
+  guest halves both what a guest may send and the window it is measured
+  against.
+
 **Notes on the ring geometry and the control channel**
 
 - **The control channel was not attached at all**, so a peer's declaration was

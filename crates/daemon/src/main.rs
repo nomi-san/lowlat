@@ -33,6 +33,20 @@ const DEFAULT_PORT: u16 = 9000;
 /// Reflexive server, for discovering our own mapped address.
 const DEFAULT_STUN: &str = "74.125.250.129:19302";
 
+/// What the stream produces. Fixed: the guest declares what it can decode and
+/// the host is authoritative over all of it, so a declaration is a request.
+const WIDTH: u32 = 1920;
+const HEIGHT: u32 = 1080;
+const FPS: u32 = 60;
+
+/// The bitrate ceiling, in megabits per second, before it is divided among the
+/// guests on the stream. Ten is the documented default, and higher values buy
+/// picture at the cost of latency.
+const DEFAULT_BITRATE_MBPS: f64 = 10.0;
+
+/// The floor a controller may not descend below.
+const MIN_BITRATE_MBPS: f64 = 1.0;
+
 /// How long the loop waits when neither side has anything, before draining the
 /// seam again. Signaling carries no media and is on no hot path; a candidate
 /// noticed this late is invisible against a wide-area round trip.
@@ -157,10 +171,21 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .parse()
         .map_err(|_| "LOWLAT_STUN is not an address")?;
 
+    let bitrate_mbps: f64 = flag("--bitrate")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(DEFAULT_BITRATE_MBPS);
+
     let mut seam = Admission::new(Config {
         base_port,
         max_guests: MAX_GUESTS as usize,
         servers: vec![stun],
+        stream: Some(lowlat::stream::Config {
+            width: WIDTH,
+            height: HEIGHT,
+            fps: FPS,
+            configured_mbps: bitrate_mbps,
+            min_mbps: MIN_BITRATE_MBPS,
+        }),
     });
 
     let params = Connect {
@@ -185,7 +210,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         match Client::connect(&params).await {
             Ok(client) => {
                 backoff.reset();
-                let quit = session_loop(
+                // **An error inside a session reconnects rather than exits.**
+                // A host that quits on one bad frame from the service takes
+                // every established guest down with it, and the guests are the
+                // thing this process exists to serve. The connection is the
+                // recoverable part; losing it is what the loop already handles.
+                match session_loop(
                     client,
                     &mut seam,
                     &mut peers,
@@ -194,11 +224,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     local,
                     reject_all,
                 )
-                .await?;
-                if quit {
-                    return Ok(());
+                .await
+                {
+                    Ok(true) => return Ok(()),
+                    Ok(false) => println!("lowlatd: signaling closed"),
+                    Err(error) => println!("lowlatd: session failed: {error}"),
                 }
-                println!("lowlatd: signaling closed");
             }
             Err(error) => println!("lowlatd: connect failed: {error}"),
         }

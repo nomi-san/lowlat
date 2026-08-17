@@ -141,6 +141,17 @@ impl Pool {
         slot.holders.fetch_sub(1, Ordering::Release);
     }
 
+    /// Slots the producer could take right now. Observability for the tests
+    /// that assert every hold comes back, which is the invariant the whole
+    /// type rests on.
+    #[cfg(test)]
+    pub(crate) fn free_slots(&self) -> usize {
+        self.slots
+            .iter()
+            .filter(|slot| slot.holders.load(Ordering::Acquire) == 0)
+            .count()
+    }
+
     /// How many guests still hold a slot. Observability for the tests that
     /// assert the count returns to zero, which is the invariant the whole
     /// type rests on.
@@ -188,14 +199,24 @@ impl Writer<'_> {
         })
     }
 
-    /// Publish to every ring that will take it, and report how many did.
+    /// Publish to every ring that will take it, and report **which ones did**,
+    /// as a bit per ring in the order they were given.
+    ///
+    /// **A count would not be enough.** A ring that refuses is a guest that
+    /// missed a frame, and a guest that misses one frame must miss every frame
+    /// until a keyframe; the caller can only latch the right guest if it is
+    /// told which one. Returning how many took it leaves the caller knowing a
+    /// frame was lost and unable to act on it, which is the silent form of the
+    /// failure the delivery gate exists to prevent.
     ///
     /// **The count is raised before any index is pushed.** Raising it after
     /// would let the first guest finish and release the slot to zero while
     /// later guests were still being handed the same index, and the producer
     /// would then be free to overwrite a frame that had not been sent yet.
     /// A ring that refuses gives its hold straight back.
-    pub fn publish<const D: usize>(self, keyframe: bool, rings: &[&Ring<u32, D>]) -> usize {
+    ///
+    /// At most 32 rings, which is twice the guest cap.
+    pub fn publish<const D: usize>(self, keyframe: bool, rings: &[&Ring<u32, D>]) -> u32 {
         let Some(slot) = self.pool.slots.get(self.index) else {
             return 0;
         };
@@ -204,10 +225,10 @@ impl Writer<'_> {
         slot.holders.fetch_add(rings.len(), Ordering::Relaxed);
 
         let index = u32::try_from(self.index).unwrap_or(u32::MAX);
-        let mut taken = 0usize;
-        for ring in rings {
+        let mut taken = 0u32;
+        for (at, ring) in rings.iter().enumerate() {
             if ring.push(index).is_ok() {
-                taken += 1;
+                taken |= 1u32 << (at % 32);
             } else {
                 // It never arrived, so the hold raised for it is given back.
                 // A full ring is the gate's business, not the pool's.
@@ -290,7 +311,7 @@ mod tests {
 
         let mut writer = pool.acquire().expect("a free slot");
         assert!(writer.fill(b"a frame"));
-        assert_eq!(writer.publish(true, &[&one, &two]), 2);
+        assert_eq!(writer.publish(true, &[&one, &two]), 0b11);
 
         // Still held by both guests, so the producer cannot have it back.
         assert_eq!(pool.holders(0), 2);
@@ -316,7 +337,7 @@ mod tests {
 
         let mut writer = pool.acquire().expect("a free slot");
         assert!(writer.fill(b"one copy"));
-        assert_eq!(writer.publish(false, &borrowed), 3);
+        assert_eq!(writer.publish(false, &borrowed), 0b111);
 
         let held: Vec<_> = rings
             .iter()
@@ -400,7 +421,7 @@ mod loom_tests {
 
             let mut writer = pool.acquire().expect("a free slot");
             assert!(writer.fill(&[1, 1, 1, 1]));
-            assert_eq!(writer.publish(false, &[&ring]), 1);
+            assert_eq!(writer.publish(false, &[&ring]), 0b1);
 
             let consumer = {
                 let pool = pool.clone();

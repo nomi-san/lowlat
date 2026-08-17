@@ -77,6 +77,18 @@ impl Guest {
         self.pending_keyframe
     }
 
+    /// This guest missed a frame for a reason the room test cannot see.
+    ///
+    /// **The only way to say a frame was withheld**, and it latches, which is
+    /// the point: a caller that drops a frame for its own reasons -- no pool
+    /// slot free, a publish ring that refused -- has broken the reference
+    /// chain exactly as a full window does, and the recovery is the same. An
+    /// operation that skipped one frame without this would eventually be
+    /// called.
+    pub fn mark_skipping(&mut self) {
+        self.pending_keyframe = true;
+    }
+
     /// The configured rate changed, so the ceiling moves with it.
     pub fn set_rate(&mut self, rate_mbps: f32) {
         self.ceiling = ceiling(rate_mbps);
@@ -187,12 +199,27 @@ impl Gate {
             deliver(index);
         }
 
-        if wanted && self.throttle_allows(now_ms) {
-            self.last_request_ms = Some(now_ms);
-            Keyframe::Request
+        if wanted {
+            self.request_keyframe(now_ms)
         } else {
             Keyframe::NotNeeded
         }
+    }
+
+    /// Ask for a refresh outside a delivery pass, subject to the same throttle.
+    ///
+    /// **Every dropped frame has to reach recovery, not only the ones the room
+    /// test refuses.** A frame lost because no pool slot was free latches its
+    /// guests exactly as a full window does, and there is no delivery pass to
+    /// carry the request: the pass that would make it is the one that could
+    /// not take a slot. Without this a guest latched that way waits for a
+    /// keyframe nothing will ever ask for.
+    pub fn request_keyframe(&mut self, now_ms: f64) -> Keyframe {
+        if !self.throttle_allows(now_ms) {
+            return Keyframe::NotNeeded;
+        }
+        self.last_request_ms = Some(now_ms);
+        Keyframe::Request
     }
 
     fn throttle_allows(&self, now_ms: f64) -> bool {

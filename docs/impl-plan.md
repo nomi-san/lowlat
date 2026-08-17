@@ -332,6 +332,14 @@ construction rather than as covered.
   ([05 §5](05-host.md)). *Each of the three behaviours fails its own test when removed: the
   division, the minimum, and the deadband.*
 
+**The loop that joins them, 2026-08-17.** Every item above existed and nothing called
+them in order. `lowlat-host` gains `stream`: the capture and encode loop, the seats guests
+take on it, and the lifecycle that starts an encoder on the first guest and holds none
+before that. `lowlatd` gains the two dependencies and starts one stream. The loop is
+generic over the encoder trait, so its tests drive it through a fake encoder with no
+device, and the three ways a frame can be lost each latch their guest and each ask for the
+refresh that recovers it.
+
 **Gate A:**
 
 0. Both hardware backends encode the same synthetic source, so the trait is shaped by two

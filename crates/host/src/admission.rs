@@ -30,6 +30,8 @@ use lowlat_core::session::Session;
 use lowlat_net::{Guest, Shell, Socket, Wake};
 
 use crate::session::{Negotiation, State};
+use crate::stream::{SeatHold, Seats, Stream};
+use crate::video::Packetiser;
 
 /// Video, stream 0. See docs/01-protocol.md section 6.
 const VIDEO_CHANNEL: u8 = 1;
@@ -195,6 +197,10 @@ pub struct Config {
     pub max_guests: usize,
     /// Reflexive servers, consulted for our own mapped address.
     pub servers: Vec<SocketAddr>,
+    /// The media stream every guest is served from, or `None` for a host that
+    /// admits guests and sends them nothing. Absent is what the seam's own
+    /// tests use, so they need neither a thread nor a device.
+    pub stream: Option<crate::stream::Config>,
 }
 
 /// How many withdrawn attempts are remembered.
@@ -219,6 +225,9 @@ struct Attempt {
 #[derive(Debug)]
 pub struct Admission {
     config: Config,
+    /// Started once, here, because every guest is served from the same encode
+    /// (docs/05-host.md section 1) and the seam is what outlives them all.
+    stream: Option<Stream>,
     attempts: HashMap<String, Attempt>,
     /// Attempts withdrawn before they were ever registered.
     withdrawn: Vec<String>,
@@ -239,8 +248,10 @@ impl core::fmt::Debug for Attempt {
 impl Admission {
     pub fn new(config: Config) -> Self {
         let (emit, events) = mpsc::channel();
+        let stream = config.stream.map(Stream::start);
         Self {
             config,
+            stream,
             attempts: HashMap::new(),
             withdrawn: Vec::new(),
             events,
@@ -339,6 +350,8 @@ impl Admission {
         let attempt_id = id.to_string();
         let emit = self.emit.clone();
         let servers = self.config.servers.clone();
+        let seats = self.stream.as_ref().map(Stream::seats);
+        let video = self.config.stream.map(|s| (s.width, s.height));
         let ours = (local.ufrag.clone(), local.pwd.clone());
         let theirs = (attempt.peer.ufrag.clone(), attempt.peer.pwd.clone());
 
@@ -354,6 +367,8 @@ impl Admission {
                     theirs,
                     key,
                     seed,
+                    seats,
+                    video,
                 },
                 wake,
                 running,
@@ -423,6 +438,10 @@ struct Attached {
     theirs: (String, String),
     key: [u8; 32],
     seed: [u8; 16],
+    /// A way onto the stream, taken once this guest is streamable.
+    seats: Option<Seats>,
+    /// The stream's dimensions, which the video header carries.
+    video: Option<(u32, u32)>,
 }
 
 /// Lend one channel's receive storage to the session.
@@ -480,6 +499,69 @@ fn drain_control(
         // Input is the other thing on this channel and belongs to Phase 7.
         // Until then an opcode the negotiation does not want is dropped.
         let _ = negotiation.on_control(&message);
+    }
+}
+
+/// Queue everything the stream has published to this guest.
+///
+/// **A refusal is a lost frame and it is reported, never swallowed.** The gate
+/// admitted this frame against a window it read one frame ago, so a transport
+/// that has moved since can still refuse it; the whole message is refused
+/// rather than truncated, so the next predicted frame would reference a
+/// picture the peer never received. Only the gate may latch, and the gate is
+/// on the stream's thread, so the guest says so and the stream acts on it.
+fn send_frames(session: &mut Session<'_>, seat: &SeatHold, packetiser: &mut Packetiser) {
+    while let Some(frame) = seat.next_frame() {
+        let keyframe = frame.keyframe();
+        let Some(header) = packetiser.header(keyframe) else {
+            seat.missed_frame();
+            continue;
+        };
+        if session
+            .send_message(VIDEO_CHANNEL, header, frame.bytes())
+            .is_err()
+        {
+            seat.missed_frame();
+        }
+    }
+}
+
+/// Throughput on the video channel, as the rate controller wants it.
+///
+/// **Mebibits per second over a measured interval**, and the interval has to
+/// be long enough to mean something: sampled every pass, most intervals are a
+/// fraction of a millisecond and the figure is noise. Held between recomputes
+/// rather than reported as zero, because zero is a claim the path carried
+/// nothing.
+#[derive(Debug, Default)]
+struct Throughput {
+    last_bytes: u64,
+    last_ms: f64,
+    mbps: f64,
+}
+
+impl Throughput {
+    /// The shortest interval worth dividing by. Half a second is also the
+    /// period the controller's increase runs on at sixty frames a second.
+    const INTERVAL_MS: f64 = 500.0;
+
+    fn sample(&mut self, bytes: u64, now_ms: f64) -> f64 {
+        let elapsed = now_ms - self.last_ms;
+        if elapsed < Self::INTERVAL_MS {
+            return self.mbps;
+        }
+        let moved = bytes.saturating_sub(self.last_bytes);
+        // Mebibits, not megabits. The controller's peak is compared against
+        // this, so the unit has to be the one it was tuned in.
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a byte count over half a second; f64 is exact far past it"
+        )]
+        let bits = (moved * 8) as f64;
+        self.mbps = bits / 1_048_576.0 / (elapsed / 1000.0);
+        self.last_bytes = bytes;
+        self.last_ms = now_ms;
+        self.mbps
     }
 }
 
@@ -544,6 +626,17 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     // that, because the five-second deadline runs from there and not from
     // approval: a peer cannot declare itself over a path it does not have.
     let mut negotiation: Option<Negotiation> = None;
+    // A place on the stream, taken once this guest has declared itself. Held
+    // for the rest of the session and given back by dropping it.
+    let mut seat: Option<SeatHold> = None;
+    let mut packetiser = args.video.map(|(width, height)| {
+        Packetiser::new(
+            u16::try_from(width).unwrap_or(u16::MAX),
+            u16::try_from(height).unwrap_or(u16::MAX),
+            lowlat_core::video::Rotation::None,
+        )
+    });
+    let mut throughput = Throughput::default();
     let mut pass: u32 = 0;
 
     while !running.stopping() {
@@ -551,9 +644,14 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         // Candidates are injected where the application's work is pulled, after
         // the wake has been taken, so nothing enqueued from here on is lost.
         let arrivals = &args.arrivals;
+        let seated = seat.as_ref();
+        let mut framing = packetiser.as_mut();
         let Ok(_) = shell.turn(now, |endpoint| {
             while let Ok(addr) = arrivals.try_recv() {
                 let _ = endpoint.conn().add_candidate(addr);
+            }
+            if let (Some(seat), Some(packetiser)) = (seated, framing.as_deref_mut()) {
+                send_frames(endpoint.session(), seat, packetiser);
             }
         }) else {
             break;
@@ -602,6 +700,30 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 outcome: Outcome::NeverDeclared,
             });
             return;
+        }
+
+        // **A seat is taken when the guest becomes streamable, not when it
+        // connects.** A seat held by a peer that has not declared itself is a
+        // share of the bitrate budget spent on something that may never
+        // decode a frame.
+        if seat.is_none()
+            && negotiation.as_ref().is_some_and(Negotiation::ready)
+            && let Some(seats) = args.seats.as_ref()
+            && let Ok(handle) = shell.wake_handle()
+        {
+            seat = seats.take(handle);
+            if seat.is_none() {
+                lowlat_common::log_warn!("guest: no seat free, streaming nothing");
+            }
+        }
+
+        // What the stream's controller and gate are steered by. Cheap, and it
+        // reads state this loop already owns.
+        if let Some(seat) = seat.as_ref()
+            && let Some((window, stale, bytes)) =
+                shell.endpoint().session().send_pressure(VIDEO_CHANNEL)
+        {
+            seat.report(window, stale, throughput.sample(bytes, now));
         }
 
         pass = pass.wrapping_add(1);
@@ -664,6 +786,7 @@ mod tests {
             base_port: 0,
             max_guests,
             servers: Vec::new(),
+            stream: None,
         })
     }
 
@@ -744,6 +867,7 @@ mod tests {
             base_port: base,
             max_guests: 4,
             servers: Vec::new(),
+            stream: None,
         });
         seam.new_attempt("a", peer()).expect("register a");
         seam.new_attempt("b", peer()).expect("register b");
@@ -1081,6 +1205,7 @@ mod reclamation {
             base_port: base,
             max_guests: 4,
             servers: Vec::new(),
+            stream: None,
         });
 
         let mut ports = Vec::new();

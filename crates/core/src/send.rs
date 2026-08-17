@@ -79,6 +79,12 @@ pub struct SendRing<'a> {
     nack_below: Option<u32>,
     outstanding: u32,
     stale: u32,
+    /// Payload bytes handed to the wire, retransmissions included.
+    ///
+    /// **Retransmissions count**, because this measures what the path was made
+    /// to carry rather than what was usefully delivered, and the rate
+    /// controller is deciding how much more the path can take.
+    bytes_sent: u64,
 }
 
 impl<'a> SendRing<'a> {
@@ -106,6 +112,7 @@ impl<'a> SendRing<'a> {
             nack_below: None,
             outstanding: 0,
             stale: 0,
+            bytes_sent: 0,
         })
     }
 
@@ -131,6 +138,17 @@ impl<'a> SendRing<'a> {
     /// Stale count from the last completed scan. Feeds the controller.
     pub fn stale(&self) -> u32 {
         self.stale
+    }
+
+    /// Payload bytes sent on this channel since the ring was created.
+    ///
+    /// The controller's throughput measurement is a difference of two of
+    /// these over a known interval, which is why the counter is cumulative and
+    /// never reset: a counter the reader clears cannot be read by two readers,
+    /// and a rate derived from a cleared counter loses whatever arrived
+    /// between the read and the clear.
+    pub fn bytes_sent(&self) -> u64 {
+        self.bytes_sent
     }
 
     /// Next sequence that will be assigned.
@@ -307,6 +325,7 @@ impl<'a> SendRing<'a> {
             }
             entry.last_sent_ms = now_ms;
             self.outstanding = self.outstanding.saturating_add(1);
+            self.bytes_sent = self.bytes_sent.saturating_add(u64::from(slot.len));
 
             self.classify(index, now_ms, srtt_ms, level);
             self.cursor = self.cursor.wrapping_add(1);

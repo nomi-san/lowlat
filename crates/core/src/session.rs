@@ -144,6 +144,18 @@ impl<'a> Session<'a> {
         }
     }
 
+    /// One channel's send pressure: the outstanding window, the stale count
+    /// from the last scan, and the payload bytes sent so far.
+    ///
+    /// **The window is `send_next - send_base`**, which is what both the
+    /// congestion controller and the delivery gate's room test are defined
+    /// against. It is not [`crate::send::SendRing::outstanding`], which counts
+    /// what a single scan released and is bounded by the per-channel cap.
+    pub fn send_pressure(&self, channel: u8) -> Option<(u32, u32, u64)> {
+        let ring = self.send.get(channel as usize)?.as_ref()?;
+        Some((ring.in_flight(), ring.stale(), ring.bytes_sent()))
+    }
+
     /// Contiguous frontier on `channel`: what we would acknowledge.
     pub fn recv_cumulative(&self, channel: u8) -> Option<u32> {
         Some(self.recv.get(channel as usize)?.as_ref()?.cumulative_ack())
