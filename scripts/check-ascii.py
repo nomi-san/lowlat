@@ -87,6 +87,11 @@ def wanted(path):
     return os.path.splitext(path)[1] in EXTENSIONS
 
 
+def skipped(path):
+    """True for a path inside a directory the rule does not cover."""
+    return any(part in SKIP_DIRS for part in path.replace(os.sep, "/").split("/"))
+
+
 def tracked_files():
     try:
         out = subprocess.run(
@@ -94,7 +99,12 @@ def tracked_files():
         ).stdout
     except (subprocess.CalledProcessError, FileNotFoundError):
         return walk_files(".")
-    return [p for p in out.splitlines() if p]
+    # SKIP_DIRS has to be applied here as well as in the walk. It was not, and
+    # nothing noticed while the only vendored code was a submodule, which lists
+    # as a single entry rather than as its contents. The first vendored file
+    # tracked directly turned an upstream header's typography into a failure of
+    # our own rule, which covers what we write and not what we carry.
+    return [p for p in out.splitlines() if p and not skipped(p)]
 
 
 def walk_files(root):

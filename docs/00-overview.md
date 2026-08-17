@@ -53,7 +53,8 @@ and to Rust.
 ## Crate map
 
 ```
-lowlat-common    clock, futex wait, SPSC rings, byteorder, RFC 1982 seq, log
+lowlat-common    clock, futex wait, SPSC rings, byteorder, RFC 1982 seq, log,
+                 runtime library loading
 lowlat-core      no_std sans-IO: wire, channels, rings, crypto, recovery, NAT, ICE, STUN, TURN
 lowlat-crypto    credentials, key material, and the only source of randomness
 lowlat-net       IO shell: sockets, threads, timers, wakeups

@@ -6,6 +6,7 @@
 
 pub mod bytes;
 pub mod clock;
+pub mod dynlib;
 pub mod log;
 // RFC 1982 sequence arithmetic lives in `lowlat-core`: it is protocol
 // semantics, and the core cannot reach it here because this crate is std.

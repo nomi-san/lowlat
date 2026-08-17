@@ -3,6 +3,58 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 5: encoder and Gate A (in progress)
+
+**Added**
+
+- Vendored codec headers under `third_party/nvcodec/`, and the encoder FFI
+  generated from them into `lowlat-encode`. No crate dependency is added.
+- `lowlat-common::dynlib`: opening a shared library at runtime and resolving
+  symbols from it, one implementation per platform.
+
+**Notes**
+
+- **The vendored headers are pinned to an old interface version on purpose.**
+  Every encoder structure carries a version stamp taken from the header it was
+  compiled against, and the compatibility runs one way: a newer driver accepts
+  an older stamp, an older driver rejects a newer one on every call and reports
+  only that the version is invalid. So the header chooses the binary's minimum
+  driver. Pinning to the newest available would have floored us above what
+  current distributions ship. Every feature the backend needs was checked
+  present in the older header before the pin was taken.
+- **The bindings are generated, and committed rather than built.** Generated,
+  because the structures are version-stamped and bitfield-heavy and a
+  hand-transcription error is not a compile error but a runtime status code
+  with nothing pointing at its cause. Committed, because a build script would
+  put a C toolchain on every build machine and in continuous integration, which
+  installs nothing today. The generated output carries its own gate: forty-two
+  compile-time assertions of size, alignment and every field offset, so
+  building is the check.
+- **Codec and preset identifiers cannot be linked against.** They are
+  file-static constants in the header, so no exported symbol exists for any of
+  them, and a generator renders each as an extern static -- a reference that
+  can never resolve. They are emitted as constants instead, produced from the
+  header text so that nothing is hand-copied.
+- **A group-level lint allow loses to an explicitly configured lint**, on
+  either side of the command line. Allowing the whole lint group over generated
+  code left two hundred errors standing; the entries are named individually.
+- **No function is declared in the generated output.** The libraries are opened
+  at runtime, so an extern block would turn a missing driver into a failed
+  start instead of a missing backend.
+- **The loader lives in the common crate, not beside its first caller.** It is
+  the piece that differs per platform while everything above it does not, and
+  that crate is the only one in the workspace containing `unsafe`, which keeps
+  that obligation in one auditable place.
+- **Symbols resolve eagerly and privately.** Eagerly, so a library whose own
+  dependencies are missing fails at open where a caller can fall back, rather
+  than at the first call through a function pointer. Privately, because this
+  ships inside a shared library loaded into other processes and publishing a
+  vendor runtime's symbols can capture lookups never meant for us.
+- **Both loader tests were shown capable of failing.** Making the open return
+  nothing fails four of the five; making every symbol resolve fails exactly the
+  one written to catch it, and no other. A pair that cannot both pass under a
+  broken implementation is the point.
+
 ## 4: signaling (in progress)
 
 **Added**
