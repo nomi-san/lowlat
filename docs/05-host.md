@@ -76,6 +76,59 @@ Encoders want a planar format. Captures deliver packed. The conversion is ours.
 - Conversion runs on the same device as capture and encode. A cross-device path means a
   readback, which §4 forbids implicitly.
 
+### §3.1 The colour matrix is fixed
+
+**Coefficients are BT.709 and are not negotiable.** `kr = 0.2126`, `kb = 0.0722`, so
+`kg = 0.7152`. The forward transform the conversion owes is:
+
+```
+y = kr*r + kg*g + kb*b
+u = (b - y) / (2 - 2*kb)      // 1.8556
+v = (r - y) / (2 - 2*kr)      // 1.5748
+```
+
+followed by the range encoding below.
+
+**A receiver applies the inverse unconditionally**, with no signal in either direction saying
+which matrix was used and no path that selects a different one. Emitting BT.601 therefore
+produces a stream that decodes perfectly and renders with the wrong colour: shifted skin tones
+and greens, on every platform at once. There is nothing to notice it, so it presents as a
+complaint about picture quality and gets attributed to the encoder or the bitrate.
+
+**Range is limited, measured from a recorded stream.** The parameter set of a real 1080p60
+session declares `yuv420p`, limited range, BT.709 primaries, matrix and transfer. So the far
+side's renderer supporting a full-range path says only that it can be told to use one, not
+that anything asks it to. Limited range is:
+
+```
+y = y * (219/255) + 16/255
+u = u * (224/255) + 128/255
+v = v * (224/255) + 128/255
+```
+
+with `64/1023`, `876/1023` and `512/1023`, `896/1023` for the 10-bit form. Full range applies
+the chroma offset alone and leaves luma untouched. **Getting the range wrong is a subtler fault
+than getting the matrix wrong** -- black lifts to dark grey and white clips, which reads as a
+washed-out picture rather than as a colour error, so it is easy to mistake for a contrast
+setting.
+
+**Say all of it in the bitstream as well.** The recorded stream carries a complete video signal
+type and colour description in its parameter set, so the encoder must emit the same: signal
+type present, full range clear, and primaries, matrix and transfer all BT.709. Doing the
+conversion correctly and then leaving the description absent produces a stream that any
+decoder is entitled to interpret with a different matrix, and some do.
+
+**Depth is 8-bit, also measured.** The same recording is `yuv420p` throughout. A 10-bit capture
+path is still required ([07 §3.1](07-platforms.md)) because that is what the display hands us,
+but it is converted down and the wire carries 8-bit. Nothing observed streams 10-bit, and the
+reserved flag bits stay reserved (D7).
+
+**Chroma is averaged over each 2x2 block on the way out.** This is worth stating because the
+reverse direction is free and invites the assumption that this one is too: a decoder samples
+the chroma plane at the luma coordinate and gets its upsample from the hardware sampler at no
+cost. Writing subsampled data has no such shortcut. The two output planes are different
+resolutions and the average is ours to compute.
+
 ## §4 Encode
 
 ```
