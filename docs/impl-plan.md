@@ -463,20 +463,33 @@ video format code, and the declared time scale -- are cosmetic and recorded for 
 868, across four hundred access units of synthetic content. The multi-fragment path is covered
 by tests and by the corpus comparison, and has never run against a real peer.
 
-**Open, found by running both backends over one source, 2026-08-17.** The vendor backend spends
-**2.4 MB on its first picture where the open-stack one spends 513 bytes**, for identical input at
-the same target rate, and another encoder driving the same interface on the same hardware and the
-same frames spends 680 bytes. Both decode bit-exact, so this is cost rather than corruption: the
-refresh is coded at quantiser 9 where the reference reaches the same result at 22. The rate
-controller is not constraining that picture, and at 60 frames per second a 2.4 MB refresh is
-roughly 2000 packets in one frame interval -- the exact burst shape that has already cost this
-project a receive-buffer lesson, so it must be understood before Gate A rather than tuned around.
+**Closed by measurement, 2026-08-18.** This section carried an open question: the vendor
+backend was said to spend 2.4 MB on its first picture where the open-stack one spends 513
+bytes, and the plan required understanding it before Gate A because at sixty frames a second a
+2.4 MB refresh is roughly 2000 packets in one frame interval and exceeds the delivery gate's
+own ceiling at ordinary rates.
 
-Ruled out by measurement, so they are not re-tried: the quantiser floor, which was genuinely
-unapplied and is now applied and moved the figure by six percent; the rate-control buffer
-override, which changes nothing when removed; and the forced-refresh flag, which changes nothing
-when withheld. **Raising the floor would shrink the picture and hide the question**, which is why
-it has not been done.
+**There were never 2.4 MB of coded bits.** The figure was a length reported by a collect that
+raced the driver, and the same picture had six hundred and fifty-one bytes in it. The race was
+found and fixed the following day; this paragraph was simply never revised, so a fixed defect
+stood as a gate condition for a day.
+
+Measured now, at 1080p, 20 Mbps target, identical synthetic input:
+
+| Quantiser floor | Refresh | Predicted mean |
+|---|---|---|
+| 5, the default | 651 bytes | 793 bytes |
+| 10 | 651 bytes | 553 bytes |
+| 22 | 499 bytes | 184 bytes |
+
+A raw frame at this size is 3110400 bytes, so the refresh is under a thousandth of one. There
+is no burst to design around. **The floor is the only bound that moves anything**: a ceiling
+and an initial quantiser were both swept and neither changed the refresh or its quantiser, so
+neither is configured -- a knob that does nothing invites tuning that does nothing.
+
+The lesson is not about the encoder. **A number that has never been re-measured is a memory,
+and this one gated a phase for a day after it stopped being true.** The measurement now lives
+in the test suite rather than in a paragraph.
 
 **Note on ordering, 2026-08-17.** The frame source was built before the encoder trait, which
 inverts the order the items are listed in. The trait's shape is already settled by

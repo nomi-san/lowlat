@@ -878,6 +878,11 @@ impl<'a> Session<'a> {
         rc.minQP.qpIntra = config.min_qp;
         rc.minQP.qpInterP = config.min_qp;
         rc.minQP.qpInterB = config.min_qp;
+        // **A ceiling and an initial quantiser were tried and neither moves
+        // anything measurable here**, so neither is configured. See the note
+        // on the floor: it is the only one of the three that changes the
+        // picture, and a knob that does nothing invites tuning that does
+        // nothing.
         // Frames nothing references can be dropped by the gate without
         // breaking anyone's reference chain.
         rc.set_enableNonRefP(1);

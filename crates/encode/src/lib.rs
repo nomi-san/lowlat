@@ -368,6 +368,82 @@ mod tests {
         }
     }
 
+    /// What the refresh actually costs, at each quantiser floor.
+    ///
+    /// **This is the standing measurement behind a burst that was reported and
+    /// never existed.** The refresh was believed to cost megabytes, which at
+    /// sixty frames a second would be a burst of roughly two thousand packets
+    /// in one frame interval and would exceed the delivery gate's own ceiling
+    /// at ordinary rates. It was a length reported by a collect that raced the
+    /// driver: the picture was six hundred and fifty-one bytes all along.
+    /// Measured here so the claim is a number rather than a memory.
+    ///
+    /// Needs the vendor driver. Run with
+    /// `cargo test -p lowlat-encode --release -- --ignored the_refresh`.
+    #[test]
+    #[ignore = "requires the vendor driver"]
+    fn the_refresh_cost_under_each_bound() {
+        const WIDTH: u32 = 1920;
+        const HEIGHT: u32 = 1080;
+        const FRAMES: usize = 12;
+        // Uncompressed, for scale: a picture that approaches this is not being
+        // compressed in any useful sense.
+        let raw = WIDTH as usize * HEIGHT as usize * 3 / 2;
+
+        // **A ceiling and an initial quantiser were swept here too and moved
+        // nothing**: the refresh stayed 650 bytes at quantiser 8 whatever
+        // either was set to. They are not configured and this no longer sweeps
+        // them; the floor is the only one of the three that changes anything.
+        let cases: [(&str, u32); 3] = [("floor 5", 5), ("floor 10", 10), ("floor 22", 22)];
+
+        println!("raw 4:2:0 frame is {raw} bytes");
+        for (name, min_qp) in cases {
+            let cuda = cuda::Cuda::load().expect("compute runtime");
+            let device = cuda.any_device().expect("a device");
+            let compute = cuda.retain_primary(&device).expect("context");
+            let api = nvenc::Api::load().expect("encoder runtime");
+            let session = api.open_session(compute).expect("session");
+            let mut encoder = session
+                .initialize(
+                    &cuda,
+                    nvenc::Config {
+                        codec: nvenc::Codec::H264,
+                        width: WIDTH,
+                        height: HEIGHT,
+                        fps: 60,
+                        bitrate_bps: 20_000_000,
+                        min_qp,
+                    },
+                )
+                .expect("initialize");
+
+            let mut first = 0usize;
+            let mut rest = 0usize;
+            let mut qp_first = 0u32;
+            let (_stream, _keyframes) = encode_run(
+                &mut encoder,
+                WIDTH,
+                HEIGHT,
+                FRAMES,
+                4,
+                |encoder, index, unit| {
+                    if index == 0 {
+                        first = unit.len();
+                        qp_first = encoder.last_lock().map_or(0, |r| r.frame_avg_qp);
+                    } else {
+                        rest += unit.len();
+                    }
+                },
+            );
+            println!(
+                "  {name:<24} refresh {first:>8} bytes ({:>5.1}% of raw, qp {qp_first:>2}), \
+                 predicted mean {:>6} bytes",
+                100.0 * first as f64 / raw as f64,
+                rest / (FRAMES - 1)
+            );
+        }
+    }
+
     /// Both hardware backends, one generic loop, one source.
     ///
     /// Needs both drivers, so it is off by default. Run with

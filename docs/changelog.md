@@ -83,6 +83,22 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - The video header's third flag bit is the colour depth, not a keyframe
   marker, and we no longer set it.
 
+- The refresh picture's cost, measured at each quantiser floor, as a test
+  rather than as a remembered figure.
+
+**Notes on a burst that never existed**
+
+- **The vendor backend's 2.4 MB refresh was a length, not a picture.** A
+  collect racing the driver reported a size the encoder had not written; the
+  same picture held 651 bytes. The race was found and fixed the following day
+  and the plan paragraph was never revised, so a fixed defect stood as a gate
+  condition. Measured now: 651 bytes against a raw frame of 3110400, under a
+  thousandth.
+- **The floor is the only bound that moves anything.** A quantiser ceiling and
+  an initial quantiser were both swept and neither changed the refresh or the
+  quantiser it was coded at, so neither is configured.
+- A number nobody re-measures is a memory. This one is a test now.
+
 **Notes on the flag that was not a keyframe**
 
 - **A peer built a ten-bit decoder for our eight-bit stream and failed every
