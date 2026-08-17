@@ -288,6 +288,13 @@ construction rather than as covered.
 
 ## Phase 5 - Encoder and Gate A
 
+**Gate passed 2026-08-18.** All eight items, a stock client rendering for ten minutes, and the
+two open questions this phase carried closed by measurement rather than argument: the refresh
+burst never existed, and the fragmenting path now runs against a real peer. Three defects stood
+between the loop and a picture and two were ours -- a session keyed without its nonce prefix, a
+video flag set that names the colour depth, and a peer's refresh request dropped. None of them
+could have been found without a peer we do not control.
+
 - [x] `lowlat-encode` trait: asynchronous submit and poll, force keyframe, live bitrate
   reconfigure that never reinitializes. **`poll` never blocks**, which is a real constraint on
   both backends rather than a preference; see the note below. *Both backends implement it and a
