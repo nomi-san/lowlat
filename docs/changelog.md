@@ -14,6 +14,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - Loading the encoder runtime, with the interface version checked once at load.
 - Loading the compute runtime, enumerating devices by bus address, and
   retaining a primary context.
+- Opening an encode session against that context, and querying what the
+  hardware will actually do.
 
 **Notes**
 
@@ -66,6 +68,24 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   error. The address is read at construction and never stored: enumeration
   order is not stable across driver reloads and neither is which card drives
   the display.
+- **The hardware settled the phase's open question: there is no asynchronous
+  completion on this platform.** The capability reports absent for both codecs,
+  so a completion object cannot be waited on and the collect has exactly two
+  honest options: the non-blocking form of the bitstream lock, or a compute
+  event recorded on the encoder's own stream. A blocking collect padded with
+  queue depth is the third option and is the one to avoid, because it converts
+  "the encoder fell behind" into "the pipeline thread is stopped", which is the
+  one moment it must not be. The gate item that requires a non-blocking poll is
+  therefore load bearing rather than defensive.
+- **Live bitrate change is supported, so the congestion actuator can exist.**
+  Asked rather than assumed, because the only actuator the design has would
+  otherwise be unimplementable and the gate that counts keyframes across a rate
+  change could never pass.
+- **The encoder accepts packed colour formats directly.** That is the internal
+  conversion the pipeline exists to avoid, and its availability is exactly why
+  the rule against it has to be explicit: it is the easy path and it is
+  measurably worse. The planar format the conversion targets is accepted too,
+  which is what makes the rule followable.
 - **The selection test proves itself the same way the loader's does.** On a
   machine with one compute device, matching the display's address cannot
   distinguish a correct implementation from one that ignores the address
