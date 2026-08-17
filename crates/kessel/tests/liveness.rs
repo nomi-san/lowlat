@@ -67,3 +67,56 @@ async fn an_idle_connection_keeps_itself_alive() {
         "an idle connection sent nothing, so an edge would close it as idle"
     );
 }
+
+/// A peer that stops answering is noticed, even though the socket stays open.
+/// *Named regression test.*
+///
+/// This is the state a running host was found in after ten hours: the
+/// connection `ESTAB` with bytes stuck in its send queue, keepalives going out,
+/// nothing coming back, and not one drop logged. The kernel keeps retrying a
+/// dead peer for a long time and reports nothing, so **sending a keepalive
+/// without expecting an answer detects nothing at all** -- it only makes the
+/// silence look like traffic.
+///
+/// The connection must surface as closed so the layer above reconnects.
+#[tokio::test]
+async fn a_peer_that_stops_answering_is_noticed() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let port = listener.local_addr().expect("addr").port();
+
+    // Accepts, completes the handshake, then never says anything again and
+    // never closes. Holding the socket is the whole point.
+    let server = tokio::spawn(async move {
+        let Ok((stream, _)) = listener.accept().await else {
+            return;
+        };
+        let Ok(socket) = tokio_tungstenite::accept_async(stream).await else {
+            return;
+        };
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        drop(socket);
+    });
+
+    let mut client = Client::connect(&Connect {
+        server: format!("ws://127.0.0.1:{port}"),
+        session_id: "session".to_string(),
+        role: Role::Host,
+        build: "test".to_string(),
+        sdk_version: 1,
+        keepalive: Duration::from_millis(200),
+    })
+    .await
+    .expect("connect");
+
+    // Two missed replies past a 200 ms interval is under a second; the budget
+    // is generous so the test is not measuring the scheduler.
+    let closed = tokio::time::timeout(Duration::from_secs(10), client.recv())
+        .await
+        .expect("the connection never surfaced as closed, so nothing would reconnect");
+
+    assert!(
+        closed.is_none(),
+        "a silent peer produced a message instead of a closed connection"
+    );
+    server.abort();
+}

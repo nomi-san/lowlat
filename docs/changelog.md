@@ -82,6 +82,13 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - **Two inbound actions were being dropped silently**: the service's close,
   whose reason is the only thing separating a bad session from an unknown host,
   and an opaque passthrough channel no schema lists. Both are reported now.
+- **A keepalive without a deadline detects nothing; it only makes silence look
+  like traffic.** A connection whose peer has gone stays established locally for
+  as long as the kernel keeps retrying, so writes queue and nothing reports a
+  fault. Found at ten hours: the socket up, bytes stuck in its send queue, a
+  ping leaving every thirty seconds, no reply to any of them, and not one drop
+  logged. Anything inbound now counts as a sign of life and two missed replies
+  end the connection, which is the only thing that will ever notice.
 - **Silence is not a stable state for a connection, and answering pings is not
   enough.** A host with nothing to say has to put something on the wire itself,
   on a schedule, because the path to the service closes an idle websocket after

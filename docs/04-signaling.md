@@ -59,6 +59,13 @@ A host that gets this wrong still works, which is what makes it worth stating. I
 reconnects every couple of minutes, and a reconnect fast enough to stay in the listing hides it
 completely.
 
+**The keepalive needs a deadline or it detects nothing.** A peer that goes away without closing
+leaves the connection established locally for as long as the kernel keeps retrying, so
+keepalives queue and no error is ever reported. Treat the connection as dead when nothing has
+arrived for two intervals, counting any inbound frame as a sign of life. Without this, a
+keepalive makes silence look like traffic and the connection never recovers, because nothing
+below is going to raise an error and nothing above is going to ask.
+
 Reconnection uses bounded exponential backoff with jitter. A reconnect re-sends the
 advertisement (§6) but does not resurrect in-flight attempts, which the peer has already
 abandoned.

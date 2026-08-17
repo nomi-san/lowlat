@@ -7,7 +7,10 @@
 //! Liveness is the connection. The service treats a dropped connection as the
 //! host going away, which is why nothing here sends a heartbeat.
 
+use core::sync::atomic::{AtomicU64, Ordering};
 use core::time::Duration;
+use std::sync::Arc;
+use std::time::Instant;
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
@@ -59,6 +62,19 @@ pub struct Client {
 /// two minutes and only survives because it reconnects. Answering the edge's
 /// own pings does not help; the traffic has to come from here.
 pub const KEEPALIVE: Duration = Duration::from_secs(30);
+
+/// How long a connection may go without hearing anything before it is treated
+/// as dead.
+///
+/// **Sending a keepalive is only half of one.** A connection whose peer has
+/// gone stays `ESTAB` locally for as long as the kernel keeps retrying, so
+/// writes queue and nothing reports a fault: observed at ten hours with bytes
+/// stuck in the send queue and not one drop logged. What makes the keepalive
+/// mean something is expecting an answer to it.
+///
+/// Two missed replies, so a single lost frame does not tear down a connection
+/// that is merely slow.
+const SILENCE_LIMIT: u32 = 2;
 
 /// Everything the upgrade needs.
 #[derive(Debug, Clone)]
@@ -125,27 +141,21 @@ impl Client {
             let _ = sink.close().await;
         });
 
-        // The keepalive. A connection carrying no messages still has to put
-        // something on the wire, or the edge in front of the service closes it
-        // as idle.
-        let heartbeat = out_tx.clone();
-        let interval = params.keepalive;
-        tokio::spawn(async move {
-            let mut tick = tokio::time::interval(interval);
-            tick.tick().await;
-            loop {
-                tick.tick().await;
-                if heartbeat.send(Frame::Ping(Vec::new())).is_err() {
-                    return;
-                }
-            }
-        });
+        // Anything inbound counts as a sign of life, not just a pong: a
+        // connection carrying real messages is evidently alive.
+        let epoch = Instant::now();
+        let last_seen = Arc::new(AtomicU64::new(0));
+        let seen_by_reader = Arc::clone(&last_seen);
 
         // The one reader. A frame that is not JSON we understand is dropped:
         // the service is entitled to add actions, and an unknown one is not an
         // error on our side.
-        tokio::spawn(async move {
+        let reader = tokio::spawn(async move {
             while let Some(frame) = source.next().await {
+                seen_by_reader.store(
+                    u64::try_from(epoch.elapsed().as_millis()).unwrap_or(u64::MAX),
+                    Ordering::Relaxed,
+                );
                 let text = match frame {
                     Ok(Frame::Text(text)) => text,
                     // **A ping must be answered explicitly.** The library
@@ -175,6 +185,37 @@ impl Client {
                 }
             }
             lowlat_common::log_info!("kessel: reader ended");
+        });
+
+        // The keepalive, and the deadline that gives it meaning. A connection
+        // carrying no messages still has to put something on the wire or the
+        // edge in front of the service closes it as idle; and if the answers
+        // stop coming back, this is the only thing that will ever notice.
+        let heartbeat = out_tx.clone();
+        let interval = params.keepalive;
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(interval);
+            tick.tick().await;
+            loop {
+                tick.tick().await;
+                if heartbeat.send(Frame::Ping(Vec::new())).is_err() {
+                    return;
+                }
+                let quiet = u64::try_from(epoch.elapsed().as_millis())
+                    .unwrap_or(u64::MAX)
+                    .saturating_sub(last_seen.load(Ordering::Relaxed));
+                let limit = u64::try_from(interval.as_millis())
+                    .unwrap_or(u64::MAX)
+                    .saturating_mul(u64::from(SILENCE_LIMIT));
+                if quiet > limit {
+                    lowlat_common::log_warn!("kessel: no reply for {quiet} ms, dropping");
+                    // Ends the reader, which drops the inbound sender, which is
+                    // what surfaces as a closed connection to the caller. The
+                    // socket itself may stay ESTAB for many more minutes.
+                    reader.abort();
+                    return;
+                }
+            }
         });
 
         Ok(Self {
