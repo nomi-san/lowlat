@@ -22,6 +22,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   encoded access unit.
 - Vendored display headers under `third_party/libva/`, their bindings, and the
   second backend's runtime loading, display binding and profile query.
+- The second backend's capability query, encode configuration, surface pool and
+  context.
 
 **Notes**
 
@@ -125,6 +127,16 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   it knows. Compiling against a header older than the installed runtime is the
   safe direction either way; only the reason differs, and writing down which
   reason applies is what stops the next person applying the wrong rule.
+- **An unsupported attribute reports a sentinel, not zero.** Reading the
+  interface's not-supported marker as a bit set makes every bit read as set,
+  which turns "this device does nothing" into "this device does everything".
+  Folded to zero at the boundary, once, rather than at each use.
+- **What a driver accepts is not what it requires.** The packed-header
+  attribute says which parameter sets the driver will take from us, and reading
+  it as which ones we must supply is the same capability-for-behaviour mistake
+  that a renderer's format list invited earlier in this phase. Whether the
+  driver emits them unasked is settled by encoding a frame and looking, not by
+  an attribute. The accessor is named for what it answers.
 - **A profile is not an encoder.** A device may decode a codec and not encode
   it, and both are entry points against the same profile, so the query asks for
   the encode entry point specifically. The test asserts the refusal as well as

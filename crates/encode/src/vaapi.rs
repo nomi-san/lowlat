@@ -14,13 +14,17 @@
 //! Loaded at runtime like everything else here, so a machine without the
 //! driver has a missing backend rather than a process that will not start.
 
-use core::ffi::{CStr, c_char, c_int};
+use core::ffi::{CStr, c_char, c_int, c_uint};
 
 use lowlat_common::dynlib::Library;
 
 use crate::ffi::va::{
-    VA_STATUS_SUCCESS, VADisplay, VAEntrypoint, VAEntrypointEncSlice, VAProfile, VAProfileH264High,
-    VAProfileH264Main, VAProfileHEVCMain, VAStatus,
+    VA_ATTRIB_NOT_SUPPORTED, VA_ENC_PACKED_HEADER_PICTURE, VA_ENC_PACKED_HEADER_SEQUENCE,
+    VA_PROGRESSIVE, VA_RC_CBR, VA_RC_CQP, VA_RC_VBR, VA_RT_FORMAT_YUV420, VA_STATUS_SUCCESS,
+    VAConfigAttrib, VAConfigAttribEncPackedHeaders, VAConfigAttribRTFormat,
+    VAConfigAttribRateControl, VAConfigID, VAContextID, VADisplay, VAEntrypoint,
+    VAEntrypointEncSlice, VAProfile, VAProfileH264High, VAProfileH264Main, VAProfileHEVCMain,
+    VAStatus, VASurfaceID,
 };
 
 /// The core interface and its display binding, versioned.
@@ -36,6 +40,44 @@ type MaxNumEntrypoints = unsafe extern "C" fn(VADisplay) -> c_int;
 type QueryConfigEntrypoints =
     unsafe extern "C" fn(VADisplay, VAProfile, *mut VAEntrypoint, *mut c_int) -> VAStatus;
 type ErrorStr = unsafe extern "C" fn(VAStatus) -> *const c_char;
+type GetConfigAttributes = unsafe extern "C" fn(
+    VADisplay,
+    VAProfile,
+    VAEntrypoint,
+    *mut VAConfigAttrib,
+    c_int,
+) -> VAStatus;
+type CreateConfig = unsafe extern "C" fn(
+    VADisplay,
+    VAProfile,
+    VAEntrypoint,
+    *mut VAConfigAttrib,
+    c_int,
+    *mut VAConfigID,
+) -> VAStatus;
+type DestroyConfig = unsafe extern "C" fn(VADisplay, VAConfigID) -> VAStatus;
+type CreateSurfaces = unsafe extern "C" fn(
+    VADisplay,
+    c_uint,
+    c_uint,
+    c_uint,
+    *mut VASurfaceID,
+    c_uint,
+    *mut core::ffi::c_void,
+    c_uint,
+) -> VAStatus;
+type DestroySurfaces = unsafe extern "C" fn(VADisplay, *mut VASurfaceID, c_int) -> VAStatus;
+type CreateContext = unsafe extern "C" fn(
+    VADisplay,
+    VAConfigID,
+    c_int,
+    c_int,
+    c_int,
+    *mut VASurfaceID,
+    c_int,
+    *mut VAContextID,
+) -> VAStatus;
+type DestroyContext = unsafe extern "C" fn(VADisplay, VAContextID) -> VAStatus;
 
 /// Why the backend could not be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,6 +152,13 @@ pub struct Vaapi {
     max_num_entrypoints: MaxNumEntrypoints,
     query_config_entrypoints: QueryConfigEntrypoints,
     error_str: ErrorStr,
+    get_config_attributes: GetConfigAttributes,
+    create_config: CreateConfig,
+    destroy_config: DestroyConfig,
+    create_surfaces: CreateSurfaces,
+    destroy_surfaces: DestroySurfaces,
+    create_context: CreateContext,
+    destroy_context: DestroyContext,
     get_display_drm: GetDisplayDrm,
     /// Last, so both outlive the addresses taken from them.
     _libva_drm: Library,
@@ -152,6 +201,27 @@ impl Vaapi {
                     .symbol(c"vaQueryConfigEntrypoints")
                     .ok_or(Error::MissingSymbol)?,
                 error_str: libva.symbol(c"vaErrorStr").ok_or(Error::MissingSymbol)?,
+                get_config_attributes: libva
+                    .symbol(c"vaGetConfigAttributes")
+                    .ok_or(Error::MissingSymbol)?,
+                create_config: libva
+                    .symbol(c"vaCreateConfig")
+                    .ok_or(Error::MissingSymbol)?,
+                destroy_config: libva
+                    .symbol(c"vaDestroyConfig")
+                    .ok_or(Error::MissingSymbol)?,
+                create_surfaces: libva
+                    .symbol(c"vaCreateSurfaces")
+                    .ok_or(Error::MissingSymbol)?,
+                destroy_surfaces: libva
+                    .symbol(c"vaDestroySurfaces")
+                    .ok_or(Error::MissingSymbol)?,
+                create_context: libva
+                    .symbol(c"vaCreateContext")
+                    .ok_or(Error::MissingSymbol)?,
+                destroy_context: libva
+                    .symbol(c"vaDestroyContext")
+                    .ok_or(Error::MissingSymbol)?,
                 get_display_drm: libva_drm
                     .symbol(c"vaGetDisplayDRM")
                     .ok_or(Error::MissingSymbol)?,
@@ -319,6 +389,43 @@ mod tests {
         assert_eq!(Codec::H265.profiles(), &[VAProfileHEVCMain]);
     }
 
+    /// What the driver offers, and a context built on it.
+    ///
+    /// The packed-header answer bounds how much code this backend may need,
+    /// but does not decide it: it reports what the driver will accept, not
+    /// what it requires. Which of those applies is settled by encoding a frame
+    /// and seeing whether parameter sets come out unasked.
+    #[test]
+    #[ignore = "requires the open-stack driver"]
+    fn the_driver_reports_what_it_will_do_and_a_context_builds() {
+        let va = Vaapi::load().expect("runtime");
+        let display = va.open(NODE).expect("render node");
+
+        for codec in [Codec::H264, Codec::H265] {
+            let caps = display.caps(codec).expect("caps");
+            println!(
+                "{codec:?}: profile {} rate-control {:#x} packed-headers {:#x} \
+                 (variable rate {}, accepts our headers {})",
+                caps.profile,
+                caps.rate_control,
+                caps.packed_headers,
+                caps.has_variable_rate(),
+                caps.accepts_packed_headers()
+            );
+            assert!(
+                caps.has_variable_rate(),
+                "no bitrate-carrying rate control: the congestion actuator cannot exist"
+            );
+
+            let context = display
+                .create_context(caps, 1920, 1080, 4)
+                .expect("context");
+            assert_eq!(context.surfaces().len(), 4);
+            assert!(context.surfaces().iter().all(|id| *id != 0));
+            println!("  context built with {} surfaces", context.surfaces().len());
+        }
+    }
+
     /// Needs the open-stack driver, so it is off by default. Run with
     /// `cargo test -p lowlat-encode -- --ignored`.
     #[test]
@@ -347,5 +454,231 @@ mod tests {
                 .expect("query"),
             "the driver claims an encode entry point for no profile at all"
         );
+    }
+}
+
+/// What the driver will do for one codec, asked rather than assumed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Caps {
+    pub profile: VAProfile,
+    /// Rate control modes offered, as the interface's bit set.
+    pub rate_control: u32,
+    /// Which headers the driver will **accept** from the caller.
+    ///
+    /// Read this as a capability and not as a requirement: it says what may be
+    /// supplied, not what must be. Whether the driver emits parameter sets on
+    /// its own when none are supplied is not in this answer and is settled by
+    /// encoding a frame and looking at what comes out. Treating the two as the
+    /// same thing is how a backend ends up with a hand-written parameter set
+    /// generator it never needed, or without one it did.
+    pub packed_headers: u32,
+}
+
+impl Caps {
+    /// Live bitrate change needs a rate control mode that has a bitrate.
+    /// Constant quantiser has none, so a device offering only that cannot
+    /// carry the congestion actuator at all.
+    pub fn has_variable_rate(&self) -> bool {
+        self.rate_control & (VA_RC_CBR | VA_RC_VBR) != 0
+    }
+
+    /// True when the driver will take parameter sets from the caller.
+    ///
+    /// Not the same as needing them. See [`Caps::packed_headers`].
+    pub fn accepts_packed_headers(&self) -> bool {
+        self.packed_headers & (VA_ENC_PACKED_HEADER_SEQUENCE | VA_ENC_PACKED_HEADER_PICTURE) != 0
+    }
+}
+
+/// A configured encode context with its surface pool.
+#[derive(Debug)]
+pub struct Context<'a> {
+    display: &'a Display<'a>,
+    config: VAConfigID,
+    context: VAContextID,
+    surfaces: Vec<VASurfaceID>,
+}
+
+impl Display<'_> {
+    /// Ask what the driver offers for a codec.
+    pub fn caps(&self, codec: Codec) -> Result<Caps> {
+        let profile = self.encode_profile(codec)?;
+        let mut attribs = [
+            VAConfigAttrib {
+                type_: VAConfigAttribRTFormat,
+                value: 0,
+            },
+            VAConfigAttrib {
+                type_: VAConfigAttribRateControl,
+                value: 0,
+            },
+            VAConfigAttrib {
+                type_: VAConfigAttribEncPackedHeaders,
+                value: 0,
+            },
+        ];
+        // SAFETY: the array is writable for the length passed.
+        let status = unsafe {
+            (self.va.get_config_attributes)(
+                self.raw,
+                profile,
+                VAEntrypointEncSlice,
+                attribs.as_mut_ptr(),
+                c_int::try_from(attribs.len()).unwrap_or(0),
+            )
+        };
+        self.va.check(status)?;
+
+        // An unsupported attribute comes back with a sentinel rather than
+        // zero, and treating that as a bit set would read every bit as set.
+        let value = |attrib: &VAConfigAttrib| {
+            if attrib.value == VA_ATTRIB_NOT_SUPPORTED {
+                0
+            } else {
+                attrib.value
+            }
+        };
+        if value(&attribs[0]) & VA_RT_FORMAT_YUV420 == 0 {
+            return Err(Error::NoEncoder);
+        }
+        Ok(Caps {
+            profile,
+            rate_control: value(&attribs[1]),
+            packed_headers: value(&attribs[2]),
+        })
+    }
+
+    /// Build an encode context and its surface pool.
+    pub fn create_context(
+        &self,
+        caps: Caps,
+        width: u32,
+        height: u32,
+        surfaces: usize,
+    ) -> Result<Context<'_>> {
+        // Only the two the pipeline depends on are requested. Asking for more
+        // than is needed is how a configuration fails on one device for a
+        // reason unrelated to anything it does.
+        let mut wanted = [
+            VAConfigAttrib {
+                type_: VAConfigAttribRTFormat,
+                value: VA_RT_FORMAT_YUV420,
+            },
+            VAConfigAttrib {
+                type_: VAConfigAttribRateControl,
+                value: if caps.rate_control & VA_RC_VBR != 0 {
+                    VA_RC_VBR
+                } else if caps.rate_control & VA_RC_CBR != 0 {
+                    VA_RC_CBR
+                } else {
+                    VA_RC_CQP
+                },
+            },
+        ];
+
+        let mut config: VAConfigID = 0;
+        // SAFETY: the array is readable for the length passed and the output
+        // is a live local.
+        let status = unsafe {
+            (self.va.create_config)(
+                self.raw,
+                caps.profile,
+                VAEntrypointEncSlice,
+                wanted.as_mut_ptr(),
+                c_int::try_from(wanted.len()).unwrap_or(0),
+                &raw mut config,
+            )
+        };
+        self.va.check(status)?;
+
+        let mut pool = vec![0 as VASurfaceID; surfaces];
+        // SAFETY: the pool is writable for its own length. No surface
+        // attributes: the runtime format above already fixes the layout, and
+        // an explicit attribute list is where a driver-specific refusal comes
+        // from.
+        let status = unsafe {
+            (self.va.create_surfaces)(
+                self.raw,
+                VA_RT_FORMAT_YUV420,
+                width,
+                height,
+                pool.as_mut_ptr(),
+                c_uint::try_from(pool.len()).unwrap_or(0),
+                core::ptr::null_mut(),
+                0,
+            )
+        };
+        if let Err(error) = self.va.check(status) {
+            // SAFETY: the configuration was created above and nothing else
+            // owns it.
+            unsafe { (self.va.destroy_config)(self.raw, config) };
+            return Err(error);
+        }
+
+        let mut context: VAContextID = 0;
+        // SAFETY: the pool is readable for its length and outlives the call;
+        // it is retained in the returned value.
+        let status = unsafe {
+            (self.va.create_context)(
+                self.raw,
+                config,
+                c_int::try_from(width).unwrap_or(0),
+                c_int::try_from(height).unwrap_or(0),
+                c_int::try_from(VA_PROGRESSIVE).unwrap_or(0),
+                pool.as_mut_ptr(),
+                c_int::try_from(pool.len()).unwrap_or(0),
+                &raw mut context,
+            )
+        };
+        if let Err(error) = self.va.check(status) {
+            // SAFETY: both were created above and nothing else owns them.
+            unsafe {
+                (self.va.destroy_surfaces)(
+                    self.raw,
+                    pool.as_mut_ptr(),
+                    c_int::try_from(pool.len()).unwrap_or(0),
+                );
+                (self.va.destroy_config)(self.raw, config);
+            }
+            return Err(error);
+        }
+
+        Ok(Context {
+            display: self,
+            config,
+            context,
+            surfaces: pool,
+        })
+    }
+}
+
+impl Context<'_> {
+    pub fn raw(&self) -> VAContextID {
+        self.context
+    }
+
+    /// The surface pool, one entry per in-flight picture.
+    pub fn surfaces(&self) -> &[VASurfaceID] {
+        &self.surfaces
+    }
+}
+
+impl Drop for Context<'_> {
+    /// Torn down innermost first: the context is built on the surfaces and the
+    /// configuration, so both outlive it.
+    fn drop(&mut self) {
+        let va = self.display.va;
+        let display = self.display.raw;
+        // SAFETY: each was created once by `create_context` and is destroyed
+        // once here, in the reverse of the order it was built.
+        unsafe {
+            (va.destroy_context)(display, self.context);
+            (va.destroy_surfaces)(
+                display,
+                self.surfaces.as_mut_ptr(),
+                c_int::try_from(self.surfaces.len()).unwrap_or(0),
+            );
+            (va.destroy_config)(display, self.config);
+        }
     }
 }
