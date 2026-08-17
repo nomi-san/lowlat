@@ -16,6 +16,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   retaining a primary context.
 - Opening an encode session against that context, and querying what the
   hardware will actually do.
+- Configuring the encoder for low latency, with the colour description the
+  wire requires, and changing its bitrate live.
 
 **Notes**
 
@@ -86,6 +88,31 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   the rule against it has to be explicit: it is the easy path and it is
   measurably worse. The planar format the conversion targets is accepted too,
   which is what makes the rule followable.
+- **The configuration starts from the preset and overrides only what is
+  required.** Building one from zero means silently accepting a default for
+  every field nobody thought about, and the fields nobody thinks about in an
+  encoder are the ones that add a frame of latency.
+- **No B-frames, though the hardware offers up to seven.** Every one of them is
+  reorder delay: latency paid on every frame to save bits on some of them,
+  which is the wrong trade for this product. Output order is pinned to capture
+  order for the same reason.
+- **One frame of rate-control buffer.** A larger one lets the encoder smooth
+  bitrate across frames, which is precisely the queueing this pipeline exists
+  to avoid; those bits arrive late rather than not at all.
+- **Keyframes are never scheduled.** The interval is set to infinite, so one is
+  produced when the delivery gate asks and at no other time. A periodic
+  keyframe on top of a throttled on-demand one is bandwidth spent to a
+  timetable rather than to a need.
+- **Parameter sets repeat on every keyframe.** A guest joining mid-stream is
+  then decodable from the next keyframe alone, with no separate out-of-band
+  step that can be got wrong.
+- **The reconfigure clears both the reset and the keyframe flags.** Either one
+  turns a rate change into a visible discontinuity, and congestion moves the
+  rate many times a minute.
+- **The initialisation block does not keep the pointer it was given.** The
+  interface copies the configuration during the call, and the block it named is
+  a local about to be moved into the returned value, so retaining it would
+  leave a dangling pointer in a structure that is reused on every reconfigure.
 - **The selection test proves itself the same way the loader's does.** On a
   machine with one compute device, matching the display's address cannot
   distinguish a correct implementation from one that ignores the address

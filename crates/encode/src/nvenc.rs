@@ -255,6 +255,42 @@ mod tests {
         }
     }
 
+    /// Configure a real encoder and change its rate underneath itself.
+    ///
+    /// The reconfigure half is the congestion actuator, and the gate that
+    /// matters for it counts keyframes across the change. That count needs
+    /// frames, which needs the submit path, so this asserts the call is
+    /// accepted and the counting arrives with the encode loop.
+    #[test]
+    #[ignore = "requires the vendor driver"]
+    fn an_encoder_configures_and_changes_rate_without_reinitialising() {
+        for codec in [Codec::H264, Codec::H265] {
+            let cuda = crate::cuda::Cuda::load().expect("compute runtime");
+            let device = cuda.any_device().expect("a device");
+            let context = cuda.retain_primary(&device).expect("context");
+            let api = Api::load().expect("encoder runtime");
+            let session = api.open_session(context).expect("session");
+
+            let config = Config {
+                codec,
+                width: 1920,
+                height: 1080,
+                fps: 60,
+                bitrate_bps: 20_000_000,
+            };
+            let mut encoder = session.initialize(config).expect("initialize");
+            assert_eq!(encoder.config().bitrate_bps, 20_000_000);
+
+            // Down hard, then back up, the way sustained congestion and its
+            // recovery would drive it.
+            for rate in [6_000_000, 3_000_000, 12_000_000, 25_000_000] {
+                encoder.reconfigure(rate).expect("reconfigure");
+                assert_eq!(encoder.config().bitrate_bps, rate);
+            }
+            println!("{codec:?}: configured at 1080p60 and reconfigured four times");
+        }
+    }
+
     /// Needs the vendor driver, so it is off by default. Run with
     /// `cargo test -p lowlat-encode -- --ignored`.
     #[test]
@@ -460,5 +496,242 @@ impl Drop for Session<'_> {
             // before the context field is dropped, which is the required order.
             unsafe { destroy(self.encoder) };
         }
+    }
+}
+
+/// What an encoder is set up to produce.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Config {
+    pub codec: Codec,
+    pub width: u32,
+    pub height: u32,
+    pub fps: u32,
+    pub bitrate_bps: u32,
+}
+
+/// Colour signalling, from [05 §3.1](../../../docs/05-host.md).
+///
+/// The far side applies BT.709 unconditionally, so this is not a preference.
+/// Emitting the description as well as the pixels matters: a decoder handed a
+/// stream with no colour description may choose a different matrix, and some
+/// do.
+mod colour {
+    /// Unspecified. The frame is not analogue-sourced and has no meaningful
+    /// video format to declare.
+    pub(super) const VIDEO_FORMAT_UNSPECIFIED: u32 = 5;
+    /// BT.709 for all three of primaries, transfer and matrix.
+    pub(super) const BT709: u32 = 1;
+    /// Limited range, measured from a recorded session rather than chosen.
+    pub(super) const FULL_RANGE: u32 = 0;
+}
+
+/// A configured encoder.
+pub struct Encoder<'a> {
+    session: Session<'a>,
+    config: Config,
+    /// Retained so a reconfigure can resend the whole block. The interface
+    /// takes a complete configuration every time, not a delta.
+    encode_config: crate::ffi::nvenc::NV_ENC_CONFIG,
+    init_params: crate::ffi::nvenc::NV_ENC_INITIALIZE_PARAMS,
+}
+
+impl<'a> Session<'a> {
+    /// Configure the encoder for low latency and initialise it.
+    pub fn initialize(self, config: Config) -> Result<Encoder<'a>, Error> {
+        use crate::ffi::nvenc as f;
+
+        let preset = crate::ffi::guids::NV_ENC_PRESET_P4_GUID;
+        let tuning = f::NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY;
+
+        // Start from the preset the hardware recommends, then override only
+        // what the pipeline actually requires. Building a configuration from
+        // zero means silently accepting a default for every field nobody
+        // thought about.
+        let get_preset = self
+            .api
+            .functions
+            .nvEncGetEncodePresetConfigEx
+            .ok_or(Error::MissingSymbol)?;
+        let mut preset_config = unsafe { core::mem::zeroed::<f::NV_ENC_PRESET_CONFIG>() };
+        preset_config.version = crate::ffi::versions::NV_ENC_PRESET_CONFIG_VER;
+        preset_config.presetCfg.version = crate::ffi::versions::NV_ENC_CONFIG_VER;
+        // SAFETY: the encoder is live and the block is stamped.
+        let status = unsafe {
+            get_preset(
+                self.encoder,
+                config.codec.guid(),
+                preset,
+                tuning,
+                &raw mut preset_config,
+            )
+        };
+        if status != NV_ENC_SUCCESS {
+            return Err(Error::Status(status));
+        }
+
+        let mut encode_config = preset_config.presetCfg;
+        encode_config.version = crate::ffi::versions::NV_ENC_CONFIG_VER;
+
+        // **Keyframes only when asked for.** Recovery is driven by the
+        // delivery gate, which throttles them; a periodic keyframe on top of
+        // that is bandwidth spent on a schedule rather than on a need.
+        encode_config.gopLength = f::NVENC_INFINITE_GOPLENGTH;
+        // No B-frames. The hardware offers up to seven and every one of them
+        // is reorder delay, which is latency paid on every frame to save bits
+        // on some of them. Wrong trade here.
+        encode_config.frameIntervalP = 1;
+
+        let rc = &mut encode_config.rcParams;
+        rc.rateControlMode = f::NV_ENC_PARAMS_RC_VBR;
+        rc.averageBitRate = config.bitrate_bps;
+        rc.maxBitRate = config.bitrate_bps;
+        // One frame of buffer. A larger one lets the encoder smooth bitrate
+        // across frames, which is exactly the queueing this pipeline exists to
+        // avoid: those bits arrive late rather than not at all.
+        let per_frame = config.bitrate_bps / config.fps.max(1);
+        rc.vbvBufferSize = per_frame;
+        rc.vbvInitialDelay = per_frame;
+        // Frames nothing references can be dropped by the gate without
+        // breaking anyone's reference chain.
+        rc.set_enableNonRefP(1);
+        // Output order is capture order. Any reordering is latency on every frame.
+        rc.set_zeroReorderDelay(1);
+
+        // SAFETY: the union member written is the one matching the codec, and
+        // it is read back through the same member for the life of the encoder.
+        unsafe {
+            match config.codec {
+                Codec::H264 => {
+                    let h264 = &mut encode_config.encodeCodecConfig.h264Config;
+                    h264.idrPeriod = f::NVENC_INFINITE_GOPLENGTH;
+                    // Parameter sets on every keyframe. A guest that joins
+                    // mid-stream is then decodable from the next keyframe
+                    // alone, with no separate out-of-band step to get wrong.
+                    h264.set_repeatSPSPPS(1);
+                    let vui = &mut h264.h264VUIParameters;
+                    vui.videoSignalTypePresentFlag = 1;
+                    vui.videoFormat = colour::VIDEO_FORMAT_UNSPECIFIED;
+                    vui.videoFullRangeFlag = colour::FULL_RANGE;
+                    vui.colourDescriptionPresentFlag = 1;
+                    vui.colourPrimaries = colour::BT709;
+                    vui.transferCharacteristics = colour::BT709;
+                    vui.colourMatrix = colour::BT709;
+                }
+                Codec::H265 => {
+                    let hevc = &mut encode_config.encodeCodecConfig.hevcConfig;
+                    hevc.idrPeriod = f::NVENC_INFINITE_GOPLENGTH;
+                    hevc.set_repeatSPSPPS(1);
+                    let vui = &mut hevc.hevcVUIParameters;
+                    vui.videoSignalTypePresentFlag = 1;
+                    vui.videoFormat = colour::VIDEO_FORMAT_UNSPECIFIED;
+                    vui.videoFullRangeFlag = colour::FULL_RANGE;
+                    vui.colourDescriptionPresentFlag = 1;
+                    vui.colourPrimaries = colour::BT709;
+                    vui.transferCharacteristics = colour::BT709;
+                    vui.colourMatrix = colour::BT709;
+                }
+            }
+        }
+
+        let mut init_params = unsafe { core::mem::zeroed::<f::NV_ENC_INITIALIZE_PARAMS>() };
+        init_params.version = crate::ffi::versions::NV_ENC_INITIALIZE_PARAMS_VER;
+        init_params.encodeGUID = config.codec.guid();
+        init_params.presetGUID = preset;
+        init_params.tuningInfo = tuning;
+        init_params.encodeWidth = config.width;
+        init_params.encodeHeight = config.height;
+        init_params.darWidth = config.width;
+        init_params.darHeight = config.height;
+        init_params.frameRateNum = config.fps;
+        init_params.frameRateDen = 1;
+        // No completion object: the hardware reports no asynchronous support
+        // on this platform, so the collect is a non-blocking poll instead.
+        init_params.enableEncodeAsync = 0;
+        // The encoder decides picture types, which is what lets a keyframe be
+        // requested per frame rather than scheduled.
+        init_params.enablePTD = 1;
+        init_params.encodeConfig = &raw mut encode_config;
+
+        let initialize = self
+            .api
+            .functions
+            .nvEncInitializeEncoder
+            .ok_or(Error::MissingSymbol)?;
+        // SAFETY: both blocks are stamped and live for the duration of the
+        // call; the configuration is copied by the callee.
+        let status = unsafe { initialize(self.encoder, &raw mut init_params) };
+        if status != NV_ENC_SUCCESS {
+            return Err(Error::Status(status));
+        }
+
+        // The interface copies the configuration during the call above, so
+        // the pointer has done its job. Cleared rather than carried: the
+        // block it names is a local about to be moved into the returned
+        // value, and a retained pointer to it would dangle. Reconfigure
+        // re-points this at the field it ends up in.
+        init_params.encodeConfig = core::ptr::null_mut();
+
+        Ok(Encoder {
+            session: self,
+            config,
+            encode_config,
+            init_params,
+        })
+    }
+}
+
+impl core::fmt::Debug for Encoder<'_> {
+    /// The configuration blocks carry a union and cannot be derived; the
+    /// settings worth seeing in a log are in [`Config`] anyway.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Encoder")
+            .field("config", &self.config)
+            .finish()
+    }
+}
+
+impl Encoder<'_> {
+    pub fn config(&self) -> Config {
+        self.config
+    }
+
+    /// Change the bitrate on a running encoder.
+    ///
+    /// **Never reinitialises and never forces a keyframe.** Congestion moves
+    /// the rate many times a minute; a keyframe or a reinitialisation at that
+    /// cadence would be visible as a stutter every time the network hiccuped,
+    /// which is the failure this actuator exists to avoid rather than cause.
+    pub fn reconfigure(&mut self, bitrate_bps: u32) -> Result<(), Error> {
+        use crate::ffi::nvenc as f;
+
+        self.config.bitrate_bps = bitrate_bps;
+        let per_frame = bitrate_bps / self.config.fps.max(1);
+        self.encode_config.rcParams.averageBitRate = bitrate_bps;
+        self.encode_config.rcParams.maxBitRate = bitrate_bps;
+        self.encode_config.rcParams.vbvBufferSize = per_frame;
+        self.encode_config.rcParams.vbvInitialDelay = per_frame;
+
+        let mut params = unsafe { core::mem::zeroed::<f::NV_ENC_RECONFIGURE_PARAMS>() };
+        params.version = crate::ffi::versions::NV_ENC_RECONFIGURE_PARAMS_VER;
+        params.reInitEncodeParams = self.init_params;
+        params.reInitEncodeParams.encodeConfig = &raw mut self.encode_config;
+        // Both deliberately clear. Either one turns a rate change into a
+        // visible discontinuity.
+        params.set_resetEncoder(0);
+        params.set_forceIDR(0);
+
+        let reconfigure = self
+            .session
+            .api
+            .functions
+            .nvEncReconfigureEncoder
+            .ok_or(Error::MissingSymbol)?;
+        // SAFETY: the encoder is live and the block is stamped and live for
+        // the call.
+        let status = unsafe { reconfigure(self.session.encoder, &raw mut params) };
+        if status != NV_ENC_SUCCESS {
+            return Err(Error::Status(status));
+        }
+        Ok(())
     }
 }
