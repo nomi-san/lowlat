@@ -342,8 +342,9 @@ refresh that recovers it.
 
 **Gate A:**
 
-0. Both hardware backends encode the same synthetic source, so the trait is shaped by two
-   implementations rather than one.
+0. [x] Both hardware backends encode the same synthetic source, so the trait is shaped by two
+   implementations rather than one. *One generic loop drives both, so a difference either still
+   carried in its shape is a compile error.*
 1. [x] **A stock client connects and renders our synthetic frames**, 1080p60, for 10 minutes, with
    no corruption and no freeze beyond the loss budget. *Passed 2026-08-18, 640 seconds
    continuous:*
@@ -383,7 +384,7 @@ refresh that recovers it.
    - **One decoder backend refuses our stream where two others accept it.** Same bytes, same
      client, same machine: the vendor backend fails and the software one renders. See the note
      below, because this is a real divergence rather than a peer defect.
-2. **Our emitted video stream is structurally indistinguishable from the session corpus.**
+2. [x] **Our emitted video stream is structurally indistinguishable from the session corpus.**
    Header layout, fragment sizing, message framing, and flags checked offline against the
    corpus, and our initialization parser accepts the corpus's client messages verbatim.
    *This runs without hardware and without a peer, and it is what makes item 1 diagnosable: a
@@ -395,11 +396,11 @@ refresh that recovers it.
    refresh, the forced first picture, and one reported. Counted both ways, because a backend
    could report the flag correctly and still code a refresh. Forcing a refresh every thirtieth
    picture fails it.*
-4. **A guest that is starved and recovers never receives a dependent frame across the gap.**
+4. [x] **A guest that is starved and recovers never receives a dependent frame across the gap.**
    Driven in the simulator by withholding acknowledgements until the window fills, then
    releasing them. *Named regression test; this is the gray-frame lesson and it is the reason
    the gate moved into this phase.*
-5. **`poll` reports "not ready" without waiting**, on both backends. Submit a burst deep
+5. [x] **`poll` reports "not ready" without waiting**, on both backends. Submit a burst deep
    enough that the queued encode time is far longer than one frame, then time the polls. A
    not-ready answer must cost a driver round trip, not a frame; and most polls in the burst
    must be not-ready, or the probe is gating nothing.
