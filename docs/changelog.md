@@ -59,6 +59,34 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   configuration message, and the encode-latency and generation cadences.
 - The bitrate budget: a ceiling divided by the guests on a stream, the
   minimum across their controllers, and a deadband before reconfiguring.
+- Two-channel ring geometry per guest, sized from the largest frame the stream
+  can produce, and the control channel a guest declares itself on.
+
+**Notes on the ring geometry and the control channel**
+
+- **The control channel was not attached at all**, so a peer's declaration was
+  counted as unhandled and dropped while the group acknowledgement reported
+  zero for that channel for the life of the session. A peer therefore
+  retransmitted its declaration until it gave up, and nothing above could see
+  the message that decides whether a guest is streamable.
+- **The slot width is the fragment width, so it is also the datagram width.**
+  A ring sized wider than the datagram floor does not gain headroom; it emits
+  datagrams no probe has justified, and a peer that cannot take one discards
+  the whole datagram rather than truncating it. The previous width put every
+  full fragment 207 bytes past the floor, which nothing noticed because no
+  message long enough to fill a fragment had ever been sent.
+- **The video ring is the peer's ring depth, which is the gate's top ceiling.**
+  Those two numbers have to be the same or a frame the gate admits is refused
+  by the ring it is admitted into, and the test says so rather than the
+  constants agreeing by coincidence.
+- **The largest frame that fits is four bytes short of the arithmetic**, since
+  the length prefix rides in the first fragment.
+- **A take that does not fit does not consume the message.** The channel only
+  advances on a completed take, so the same message would be read again every
+  pass at full speed. It ends the attempt with its own outcome instead.
+- Nothing is attached for video receive. Video is host to guest only, and an
+  unattached channel acknowledges zero, which is the truth about a channel the
+  peer never sends on.
 
 **Notes on the bitrate budget**
 

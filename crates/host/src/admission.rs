@@ -21,20 +21,54 @@ use std::sync::mpsc;
 
 use lowlat_core::channel::{RecvRing, SlotMeta};
 use lowlat_core::conn::{Conn, Credentials};
+use lowlat_core::control::{self, CONTROL_CHANNEL};
 use lowlat_core::endpoint::Endpoint;
-use lowlat_core::envelope::Envelope;
+use lowlat_core::envelope::{ENVELOPE_LEN, Envelope};
+use lowlat_core::packet::HEADER_LEN;
 use lowlat_core::send::{SendRing, SendSlot};
 use lowlat_core::session::Session;
 use lowlat_net::{Guest, Shell, Socket, Wake};
 
-/// Ring geometry for one guest.
+use crate::session::{Negotiation, State};
+
+/// Video, stream 0. See docs/01-protocol.md section 6.
+const VIDEO_CHANNEL: u8 = 1;
+
+/// What one fragment carries, and therefore what one ring slot holds.
 ///
-/// Provisional: sized for control traffic, which is all that crosses before
-/// there is an encoder. The video channel needs far more and will size itself
-/// when there is something to put in it.
-const SLOT: usize = 1400;
-const SLOTS: usize = 256;
-const CHANNEL: u8 = 1;
+/// **Derived from the datagram floor, not from the path.** The size a peer
+/// accepts is not negotiated and cannot be, so the floor is the only size
+/// entitled to be emitted before a probe has justified anything larger. A
+/// slot wide enough for a bigger datagram is not free headroom: the slot
+/// width *is* the fragment width, so widening it puts oversized datagrams on
+/// a path nothing has measured, and a peer that cannot take one discards the
+/// whole thing silently.
+const BODY: usize = lowlat_core::DEFAULT_DATAGRAM - ENVELOPE_LEN - HEADER_LEN;
+const SLOT: usize = BODY;
+
+/// Ring depths, per channel and direction.
+///
+/// **Sized from the largest frame the stream can produce**, not from control
+/// traffic. The send window may never exceed the peer's ring depth
+/// (docs/01-protocol.md section 7), which is also where the delivery gate's
+/// top ceiling comes from, so the video ring is exactly that depth: anything
+/// less would refuse a frame the gate had already admitted.
+const VIDEO_SEND_SLOTS: usize = 4000;
+/// Control we send is a handful of small messages per second.
+const CONTROL_SEND_SLOTS: usize = 256;
+/// Control we receive has to hold the peer's in-flight window plus whatever
+/// single message is longest, and a long one is a real shape: a message of
+/// several hundred fragments is recorded on this protocol.
+const CONTROL_RECV_SLOTS: usize = 1024;
+
+/// The longest inbound control message that will be taken.
+///
+/// **A message longer than this wedges the channel**, because a take that
+/// does not fit does not consume it and the next pass reads the same one
+/// forever. So the buffer is generous against what a peer actually sends --
+/// declarations, input batches, and small configuration bodies -- and a
+/// message past it ends the attempt rather than stalling it silently.
+const MAX_INBOUND: usize = 64 * 1024;
 
 /// How often the loop reports what it has gathered, in passes. Cheap, and only
 /// reads state the loop already owns.
@@ -75,6 +109,18 @@ pub enum Outcome {
     /// media path rather than from signaling, because a peer that closes a
     /// session it was using does not withdraw its offer.
     PeerGone,
+    /// Connected, then never said what it could decode.
+    ///
+    /// Distinct from [`Outcome::PeerGone`] on purpose: a peer that reached us
+    /// and then sat silent is either not speaking this protocol or died in the
+    /// handshake, and reporting that as a peer that went away sends the next
+    /// diagnosis to the network rather than to the negotiation.
+    NeverDeclared,
+    /// The control stream could not be read any further.
+    ///
+    /// A message that cannot be taken does not advance the channel, so this is
+    /// terminal rather than a frame to skip.
+    ControlStalled,
 }
 
 /// What the offer told us about the peer.
@@ -379,42 +425,101 @@ struct Attached {
     seed: [u8; 16],
 }
 
+/// Lend one channel's receive storage to the session.
+fn attach_recv<'a>(
+    session: &mut Session<'a>,
+    channel: u8,
+    bodies: &'a mut [u8],
+    meta: &'a mut [SlotMeta],
+) -> bool {
+    match RecvRing::new(bodies, meta, SLOT) {
+        Ok(ring) => session.attach_recv(channel, ring).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// Lend one channel's send storage to the session.
+fn attach_send<'a>(
+    session: &mut Session<'a>,
+    channel: u8,
+    bodies: &'a mut [u8],
+    meta: &'a mut [SendSlot],
+) -> bool {
+    match SendRing::new(bodies, meta, SLOT, channel) {
+        Ok(ring) => session.attach_send(channel, ring).is_ok(),
+        Err(_) => false,
+    }
+}
+
+/// Take everything the peer has said on the control channel.
+///
+/// **A take that fails is terminal.** The channel only advances when a message
+/// is consumed, so a body that does not fit or a prefix that does not parse
+/// would be read again on the next pass and every pass after it, at full
+/// speed. Ending the attempt reports what a silent spin would not.
+fn drain_control(
+    session: &mut Session<'_>,
+    negotiation: &mut Negotiation,
+    inbound: &mut [u8],
+) -> Result<(), Outcome> {
+    loop {
+        let Some(taken) = session.take_message(CONTROL_CHANNEL, inbound) else {
+            return Ok(());
+        };
+        let Ok(len) = taken else {
+            return Err(Outcome::ControlStalled);
+        };
+        // A body we cannot parse is skipped rather than fatal: it has already
+        // been consumed, so the channel is still moving.
+        let Some(content) = inbound.get(..len) else {
+            return Err(Outcome::ControlStalled);
+        };
+        let Ok(message) = control::parse(content) else {
+            continue;
+        };
+        // Input is the other thing on this channel and belongs to Phase 7.
+        // Until then an opcode the negotiation does not want is dropped.
+        let _ = negotiation.on_control(&message);
+    }
+}
+
 /// One guest's loop, from approval until teardown.
 ///
 /// Everything it borrows is owned here, on this thread, which is what lets the
 /// endpoint hold references into storage allocated once at the top.
 fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
-    let mut recv_bodies = vec![0u8; SLOT * SLOTS];
-    let mut recv_meta = vec![SlotMeta::default(); SLOTS];
-    let mut send_bodies = vec![0u8; SLOT * SLOTS];
-    let mut send_meta = vec![SendSlot::default(); SLOTS];
+    // Allocated once, here, and lent to the rings for the life of the thread.
+    // **Video receive is absent on purpose**: video is host to guest only, and
+    // the group acknowledgement reports zero for an unattached channel, which
+    // is the truth about a channel the peer never sends on.
+    let mut control_recv_bodies = vec![0u8; SLOT * CONTROL_RECV_SLOTS];
+    let mut control_recv_meta = vec![SlotMeta::default(); CONTROL_RECV_SLOTS];
+    let mut control_send_bodies = vec![0u8; SLOT * CONTROL_SEND_SLOTS];
+    let mut control_send_meta = vec![SendSlot::default(); CONTROL_SEND_SLOTS];
+    let mut video_send_bodies = vec![0u8; SLOT * VIDEO_SEND_SLOTS];
+    let mut video_send_meta = vec![SendSlot::default(); VIDEO_SEND_SLOTS];
+    let mut inbound = vec![0u8; MAX_INBOUND];
 
     let Ok(envelope) = Envelope::from_key(&args.key) else {
         return;
     };
     let mut session = Session::new(envelope, 1, 0.0);
-    if session
-        .attach_recv(
-            CHANNEL,
-            match RecvRing::new(&mut recv_bodies, &mut recv_meta, SLOT) {
-                Ok(ring) => ring,
-                Err(_) => return,
-            },
-        )
-        .is_err()
-    {
-        return;
-    }
-    if session
-        .attach_send(
-            CHANNEL,
-            match SendRing::new(&mut send_bodies, &mut send_meta, SLOT, CHANNEL) {
-                Ok(ring) => ring,
-                Err(_) => return,
-            },
-        )
-        .is_err()
-    {
+    if !attach_recv(
+        &mut session,
+        CONTROL_CHANNEL,
+        &mut control_recv_bodies,
+        &mut control_recv_meta,
+    ) || !attach_send(
+        &mut session,
+        CONTROL_CHANNEL,
+        &mut control_send_bodies,
+        &mut control_send_meta,
+    ) || !attach_send(
+        &mut session,
+        VIDEO_CHANNEL,
+        &mut video_send_bodies,
+        &mut video_send_meta,
+    ) {
         return;
     }
 
@@ -435,7 +540,10 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     let mut shell = Shell::new(args.socket, wake, Endpoint::new(conn, session));
     let started = lowlat_common::clock::Time::now();
     let mut reported: Vec<SocketAddr> = Vec::new();
-    let mut settled = false;
+    // The negotiation, from the moment the media path exists. Absent before
+    // that, because the five-second deadline runs from there and not from
+    // approval: a peer cannot declare itself over a path it does not have.
+    let mut negotiation: Option<Negotiation> = None;
     let mut pass: u32 = 0;
 
     while !running.stopping() {
@@ -450,6 +558,51 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         }) else {
             break;
         };
+
+        // **Every pass, not on the reporting cadence.** The declaration is on a
+        // deadline and input has a human waiting on it, so neither may sit in a
+        // ring until a counter comes round.
+        if let Some(negotiation) = negotiation.as_mut()
+            && let Err(outcome) =
+                drain_control(shell.endpoint().session(), negotiation, &mut inbound)
+        {
+            let _ = args.emit.send(Event::Ended {
+                attempt: args.attempt_id.clone(),
+                outcome,
+            });
+            return;
+        }
+
+        // The path first, then the declaration it carries. A transition seen a
+        // cadence late would spend that time off the deadline the peer is
+        // being held to.
+        match shell.endpoint().conn().state() {
+            lowlat_core::conn::State::Established(addr) if negotiation.is_none() => {
+                negotiation = Some(Negotiation::opened(now));
+                let _ = args.emit.send(Event::Established {
+                    attempt: args.attempt_id.clone(),
+                    addr,
+                });
+            }
+            lowlat_core::conn::State::Failed(_) => {
+                let _ = args.emit.send(Event::Ended {
+                    attempt: args.attempt_id.clone(),
+                    outcome: Outcome::ConnectivityFailed,
+                });
+                return;
+            }
+            _ => {}
+        }
+
+        if let Some(negotiation) = negotiation.as_mut()
+            && negotiation.tick(now) == State::Abandoned
+        {
+            let _ = args.emit.send(Event::Ended {
+                attempt: args.attempt_id.clone(),
+                outcome: Outcome::NeverDeclared,
+            });
+            return;
+        }
 
         pass = pass.wrapping_add(1);
         if pass % REPORT_EVERY != 0 {
@@ -475,30 +628,14 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
 
         // Only once there is a path. Before that nothing has arrived by
         // definition, so liveness would read as dead from the first pass.
-        if settled && shell.endpoint().health(now) == lowlat_core::session::Health::Dead {
+        if negotiation.is_some()
+            && shell.endpoint().health(now) == lowlat_core::session::Health::Dead
+        {
             let _ = args.emit.send(Event::Ended {
                 attempt: args.attempt_id.clone(),
                 outcome: Outcome::PeerGone,
             });
             return;
-        }
-
-        match shell.endpoint().conn().state() {
-            lowlat_core::conn::State::Established(addr) if !settled => {
-                settled = true;
-                let _ = args.emit.send(Event::Established {
-                    attempt: args.attempt_id.clone(),
-                    addr,
-                });
-            }
-            lowlat_core::conn::State::Failed(_) => {
-                let _ = args.emit.send(Event::Ended {
-                    attempt: args.attempt_id.clone(),
-                    outcome: Outcome::ConnectivityFailed,
-                });
-                return;
-            }
-            _ => {}
         }
     }
 }
@@ -705,6 +842,220 @@ mod tests {
             }
         }
         assert_eq!(terminal, 0, "an application-initiated end reported itself");
+    }
+}
+
+/// The ring geometry and the control path, driven through real rings rather
+/// than against the constants that configure them.
+#[cfg(test)]
+mod geometry {
+    use super::*;
+    use lowlat_core::control::{Control, op};
+
+    const KEY: [u8; 32] = [7u8; 32];
+
+    /// Storage for one endpoint, in the shape [`run_guest`] builds.
+    struct Arena {
+        control_recv_bodies: Vec<u8>,
+        control_recv_meta: Vec<SlotMeta>,
+        control_send_bodies: Vec<u8>,
+        control_send_meta: Vec<SendSlot>,
+        video_send_bodies: Vec<u8>,
+        video_send_meta: Vec<SendSlot>,
+    }
+
+    impl Arena {
+        fn new() -> Self {
+            Self {
+                control_recv_bodies: vec![0u8; SLOT * CONTROL_RECV_SLOTS],
+                control_recv_meta: vec![SlotMeta::default(); CONTROL_RECV_SLOTS],
+                control_send_bodies: vec![0u8; SLOT * CONTROL_SEND_SLOTS],
+                control_send_meta: vec![SendSlot::default(); CONTROL_SEND_SLOTS],
+                video_send_bodies: vec![0u8; SLOT * VIDEO_SEND_SLOTS],
+                video_send_meta: vec![SendSlot::default(); VIDEO_SEND_SLOTS],
+            }
+        }
+
+        /// A session wired exactly as a guest's is.
+        fn session(&mut self) -> Session<'_> {
+            let envelope = Envelope::from_key(&KEY).expect("envelope");
+            let mut session = Session::new(envelope, 1, 0.0);
+            assert!(attach_recv(
+                &mut session,
+                CONTROL_CHANNEL,
+                &mut self.control_recv_bodies,
+                &mut self.control_recv_meta,
+            ));
+            assert!(attach_send(
+                &mut session,
+                CONTROL_CHANNEL,
+                &mut self.control_send_bodies,
+                &mut self.control_send_meta,
+            ));
+            assert!(attach_send(
+                &mut session,
+                VIDEO_CHANNEL,
+                &mut self.video_send_bodies,
+                &mut self.video_send_meta,
+            ));
+            session
+        }
+    }
+
+    /// A body the initialization parser accepts, in the shape a peer sends.
+    fn declaration() -> Vec<u8> {
+        let mut body = br#"{"_version":1,"_max_w":1920,"_max_h":1080,"_flags":8,"resolutionX":1920,"resolutionY":1080,"refreshRate":60}"#.to_vec();
+        // The terminating NUL a peer puts on it, which the parser strips.
+        body.push(0);
+        body
+    }
+
+    fn control_bytes(control: &Control<'_>) -> Vec<u8> {
+        let mut header = [0u8; lowlat_core::control::CONTROL_HEADER_LEN];
+        let written = lowlat_core::control::encode_header(&mut header, control).expect("header");
+        let mut out = header[..written].to_vec();
+        out.extend_from_slice(control.body);
+        out
+    }
+
+    /// Move every datagram one session has to send into the other, and report
+    /// the largest one that crossed.
+    fn pump(from: &mut Session<'_>, into: &mut Session<'_>, now_ms: f64) -> usize {
+        let mut datagram = [0u8; lowlat_core::MAX_DATAGRAM];
+        let mut scratch = [0u8; lowlat_core::MAX_DATAGRAM];
+        let mut largest = 0usize;
+        while let Some(result) = from.get_output(now_ms, &mut datagram) {
+            let len = result.expect("output");
+            largest = largest.max(len);
+            let wire = datagram.get(..len).expect("written");
+            let _ = into.process_input(wire, now_ms, &mut scratch);
+        }
+        largest
+    }
+
+    /// **The slot width is the fragment width, so it is also the datagram
+    /// width.** A ring sized for headroom does not gain headroom; it emits
+    /// datagrams no probe has justified, and a peer that cannot take one
+    /// discards the whole datagram rather than truncating it. Widening `SLOT`
+    /// past the floor fails this. *Named regression test.*
+    #[test]
+    fn no_emitted_datagram_exceeds_the_floor_the_peer_is_known_to_accept() {
+        let mut arena = Arena::new();
+        let mut ours = arena.session();
+        let mut theirs = Arena::new();
+        let mut theirs = theirs.session();
+
+        // Big enough to fragment many times over, so the full-size fragment is
+        // the common case here rather than the exception.
+        let unit = vec![0xA5u8; 200 * SLOT];
+        ours.send_message(VIDEO_CHANNEL, &[], &unit).expect("queue");
+
+        let largest = pump(&mut ours, &mut theirs, 1.0);
+        assert!(
+            largest <= lowlat_core::DEFAULT_DATAGRAM,
+            "emitted a {largest}-byte datagram, past the {}-byte floor",
+            lowlat_core::DEFAULT_DATAGRAM
+        );
+        // And the fragments really were full, or the bound above is vacuous.
+        assert_eq!(largest, lowlat_core::DEFAULT_DATAGRAM);
+    }
+
+    /// The video ring is the peer's ring depth, which is also the delivery
+    /// gate's top ceiling: a frame the gate admits must fit the ring it is
+    /// admitted into. Sizing the ring from control traffic fails this.
+    /// *Named regression test.*
+    #[test]
+    fn the_video_ring_holds_a_frame_as_large_as_the_gate_will_admit() {
+        let mut arena = Arena::new();
+        let mut session = arena.session();
+
+        let ceiling = crate::gate::ceiling(30.0) as usize;
+        assert_eq!(
+            ceiling, VIDEO_SEND_SLOTS,
+            "the ring and the gate's top ceiling have parted company"
+        );
+
+        // Exactly the ceiling's worth of fragments. **The length prefix rides
+        // in the first fragment**, so the largest frame that fits is four
+        // bytes short of the arithmetic anyone would write down.
+        let frame = vec![0u8; ceiling * SLOT - lowlat_core::message::LENGTH_PREFIX_LEN];
+        let queued = session
+            .send_message(VIDEO_CHANNEL, &[], &frame)
+            .expect("a frame at the ceiling was refused");
+        assert_eq!(queued as usize, ceiling);
+
+        // And nothing beyond it: the window is the peer's depth, not ours to
+        // exceed.
+        assert!(
+            session.send_message(VIDEO_CHANNEL, &[], &[0u8; 1]).is_err(),
+            "the ring accepted a fragment past the peer's ring depth"
+        );
+    }
+
+    /// **The declaration arrives on channel 0, and nothing else reports it.**
+    /// A guest whose control channel is unattached has its declaration counted
+    /// as unhandled and dropped, while the group acknowledgement reports zero
+    /// for that channel forever, so the peer retransmits it until it gives up.
+    /// Attaching video alone fails this. *Named regression test.*
+    #[test]
+    fn a_peers_declaration_reaches_the_negotiation_through_the_real_rings() {
+        let mut ours = Arena::new();
+        let mut ours = ours.session();
+        let mut theirs = Arena::new();
+        let mut theirs = theirs.session();
+
+        let body = declaration();
+        let message = control_bytes(&Control {
+            a0: 0,
+            a1: 0,
+            a2: 0,
+            opcode: op::INIT,
+            body: &body,
+        });
+        theirs
+            .send_message(CONTROL_CHANNEL, &[], &message)
+            .expect("queue");
+        pump(&mut theirs, &mut ours, 1.0);
+
+        let mut negotiation = Negotiation::opened(0.0);
+        let mut inbound = vec![0u8; MAX_INBOUND];
+        drain_control(&mut ours, &mut negotiation, &mut inbound).expect("drained");
+
+        assert!(
+            negotiation.ready(),
+            "the declaration did not reach the negotiation"
+        );
+        let asked = negotiation.asked().expect("what the peer asked for");
+        assert_eq!((asked.max_width, asked.max_height), (1920, 1080));
+        assert_eq!(asked.refresh_rate, 60);
+    }
+
+    /// A take that does not fit does not consume the message, so the same one
+    /// is read again on the next pass and every pass after it. Reporting it
+    /// costs a session; spinning on it costs a core, silently.
+    /// *Named regression test.*
+    #[test]
+    fn a_message_too_long_to_take_ends_the_attempt_rather_than_spinning() {
+        let mut ours = Arena::new();
+        let mut ours = ours.session();
+        let mut theirs = Arena::new();
+        let mut theirs = theirs.session();
+
+        let body = vec![b'x'; 4096];
+        theirs
+            .send_message(CONTROL_CHANNEL, &[], &body)
+            .expect("queue");
+        pump(&mut theirs, &mut ours, 1.0);
+
+        let mut negotiation = Negotiation::opened(0.0);
+        // Shorter than the message that arrived, which is the condition the
+        // real buffer is sized to avoid.
+        let mut inbound = vec![0u8; 1024];
+        assert_eq!(
+            drain_control(&mut ours, &mut negotiation, &mut inbound),
+            Err(Outcome::ControlStalled),
+            "a message that cannot be taken was not reported"
+        );
     }
 }
 

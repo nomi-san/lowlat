@@ -313,8 +313,12 @@ construction rather than as covered.
   keyframe rather than a separate arrangement. *Gate A item 4's named regression test lives
   here and was shown capable of failing: removing the latch fails it, and swapping the retest
   to the frame in hand fails that test alone.*
-- [ ] Two-channel ring geometry per guest, sized from the largest frame the stream can produce
-  rather than from control traffic.
+- [x] Two-channel ring geometry per guest, sized from the largest frame the stream can produce
+  rather than from control traffic. *The video ring is the peer's ring depth, which is also the
+  gate's top ceiling, and a test holds the two together. The fragment width is the datagram
+  floor, because the slot width is the fragment width: a wider ring emits datagrams no probe
+  has justified. Control receive was not attached at all until now, so a peer's declaration was
+  dropped as unhandled while the acknowledgement reported zero for that channel forever.*
 - [x] Session initialization: accept the guest's preferences and encoder configuration, honour
   the 5-second deadline ([01 §12](01-protocol.md)), and emit the encode-latency and encoder
   generation messages ([01 §11.2](01-protocol.md)). *The recording's own initialization is
