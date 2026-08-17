@@ -510,7 +510,12 @@ fn drain_control(
 /// rather than truncated, so the next predicted frame would reference a
 /// picture the peer never received. Only the gate may latch, and the gate is
 /// on the stream's thread, so the guest says so and the stream acts on it.
-fn send_frames(session: &mut Session<'_>, seat: &SeatHold, packetiser: &mut Packetiser) {
+fn send_frames(
+    session: &mut Session<'_>,
+    seat: &SeatHold,
+    packetiser: &mut Packetiser,
+    negotiation: &mut Negotiation,
+) {
     while let Some(frame) = seat.next_frame() {
         let keyframe = frame.keyframe();
         let Some(header) = packetiser.header(keyframe) else {
@@ -522,8 +527,36 @@ fn send_frames(session: &mut Session<'_>, seat: &SeatHold, packetiser: &mut Pack
             .is_err()
         {
             seat.missed_frame();
+            continue;
+        }
+
+        // What the frame owes the peer beyond the picture. Both are cadences
+        // rather than per-frame traffic: the latency figure every thirtieth
+        // frame, the generation once after an initialisation.
+        let reports = negotiation.on_frame(seat.encode_latency_ms());
+        if let Some(message) = reports.latency_message(0) {
+            send_control(session, &message);
+        }
+        if let Some(message) = reports.generation_message(0) {
+            send_control(session, &message);
         }
     }
+}
+
+/// Queue one control message.
+///
+/// A refusal is dropped rather than reported: everything sent this way is a
+/// cadence that repeats, so a message lost to a full control window is
+/// replaced by the next one rather than being worth a retry of its own.
+fn send_control(session: &mut Session<'_>, message: &control::Control<'_>) {
+    let mut header = [0u8; control::CONTROL_HEADER_LEN];
+    let Ok(written) = control::encode_header(&mut header, message) else {
+        return;
+    };
+    let Some(head) = header.get(..written) else {
+        return;
+    };
+    let _ = session.send_message(CONTROL_CHANNEL, head, message.body);
 }
 
 /// Throughput on the video channel, as the rate controller wants it.
@@ -646,12 +679,15 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         let arrivals = &args.arrivals;
         let seated = seat.as_ref();
         let mut framing = packetiser.as_mut();
+        let mut declaring = negotiation.as_mut();
         let Ok(_) = shell.turn(now, |endpoint| {
             while let Ok(addr) = arrivals.try_recv() {
                 let _ = endpoint.conn().add_candidate(addr);
             }
-            if let (Some(seat), Some(packetiser)) = (seated, framing.as_deref_mut()) {
-                send_frames(endpoint.session(), seat, packetiser);
+            if let (Some(seat), Some(packetiser), Some(negotiation)) =
+                (seated, framing.as_deref_mut(), declaring.as_deref_mut())
+            {
+                send_frames(endpoint.session(), seat, packetiser, negotiation);
             }
         }) else {
             break;
@@ -712,8 +748,28 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             && let Ok(handle) = shell.wake_handle()
         {
             seat = seats.take(handle);
-            if seat.is_none() {
-                lowlat_common::log_warn!("guest: no seat free, streaming nothing");
+            match (seat.is_some(), negotiation.as_mut(), packetiser.as_ref()) {
+                (true, Some(negotiation), Some(packetiser)) => {
+                    // **The generation goes out on the frame after this**, so
+                    // a peer learns the reference chain started rather than
+                    // inferring it from the stream.
+                    negotiation.encoder_initialised(packetiser.generation());
+                    // Free insurance: thirteen bytes, no body, and a stock
+                    // host sends it before its first frame. The peer stores it
+                    // and nothing gates on it, so the cost of sending it is
+                    // the cost of being wrong about that.
+                    send_control(
+                        shell.endpoint().session(),
+                        &control::Control {
+                            a0: 1,
+                            a1: 0,
+                            a2: 0,
+                            opcode: control::op::HOST_MODE,
+                            body: &[],
+                        },
+                    );
+                }
+                _ => lowlat_common::log_warn!("guest: no seat free, streaming nothing"),
             }
         }
 
@@ -1000,6 +1056,32 @@ mod geometry {
             }
         }
 
+        /// A peer's session: the same rings, plus a receive ring on video so
+        /// what a guest sends can be read back the way a client reads it.
+        fn peer<'a>(&'a mut self, video_recv: &'a mut VideoRecv) -> Session<'a> {
+            let envelope = Envelope::from_key(&KEY).expect("envelope");
+            let mut session = Session::new(envelope, 1, 0.0);
+            assert!(attach_recv(
+                &mut session,
+                CONTROL_CHANNEL,
+                &mut self.control_recv_bodies,
+                &mut self.control_recv_meta,
+            ));
+            assert!(attach_send(
+                &mut session,
+                CONTROL_CHANNEL,
+                &mut self.control_send_bodies,
+                &mut self.control_send_meta,
+            ));
+            assert!(attach_recv(
+                &mut session,
+                VIDEO_CHANNEL,
+                &mut video_recv.bodies,
+                &mut video_recv.meta,
+            ));
+            session
+        }
+
         /// A session wired exactly as a guest's is.
         fn session(&mut self) -> Session<'_> {
             let envelope = Envelope::from_key(&KEY).expect("envelope");
@@ -1023,6 +1105,21 @@ mod geometry {
                 &mut self.video_send_meta,
             ));
             session
+        }
+    }
+
+    /// The video receive ring a peer has and a host does not.
+    struct VideoRecv {
+        bodies: Vec<u8>,
+        meta: Vec<SlotMeta>,
+    }
+
+    impl VideoRecv {
+        fn new() -> Self {
+            Self {
+                bodies: vec![0u8; SLOT * VIDEO_SEND_SLOTS],
+                meta: vec![SlotMeta::default(); VIDEO_SEND_SLOTS],
+            }
         }
     }
 
@@ -1152,6 +1249,95 @@ mod geometry {
         let asked = negotiation.asked().expect("what the peer asked for");
         assert_eq!((asked.max_width, asked.max_height), (1920, 1080));
         assert_eq!(asked.refresh_rate, 60);
+    }
+
+    /// **The guest's whole outbound half, end to end.** A coded frame is
+    /// framed, fragmented, sealed, carried, reassembled, and read back as the
+    /// video message a client reads: the header at the offsets section 11.3
+    /// fixes, then the bitstream, byte for byte.
+    ///
+    /// Every earlier check stops short of this. The packetiser's own tests
+    /// read the header out of a fragment it wrote; the corpus comparison
+    /// checks headers against a recording. Neither sends anything through a
+    /// send ring, and the send ring is where the fragment sizing and the
+    /// window live.
+    #[test]
+    fn a_coded_frame_crosses_to_a_peer_whole() {
+        let mut ours = Arena::new();
+        let mut ours = ours.session();
+        let mut theirs = Arena::new();
+        let mut video = VideoRecv::new();
+        let mut theirs = theirs.peer(&mut video);
+
+        // Big enough to fragment many times, with content that is a function
+        // of its offset so a misplaced fragment cannot pass.
+        let unit: Vec<u8> = (0..40_000u32).map(|at| (at % 251) as u8).collect();
+        let mut packetiser = Packetiser::new(1920, 1080, lowlat_core::video::Rotation::None);
+        let header = packetiser.header(true).expect("header").to_vec();
+        ours.send_message(VIDEO_CHANNEL, &header, &unit)
+            .expect("queue");
+
+        // Several passes: the outstanding cap releases a bounded number of
+        // fragments per pass, so one drain does not carry a frame this size.
+        let mut taken = Vec::new();
+        for round in 0..64 {
+            let now = f64::from(round) * 20.0;
+            pump(&mut ours, &mut theirs, now);
+            pump(&mut theirs, &mut ours, now);
+            let mut out = vec![0u8; 64 * 1024];
+            if let Some(Ok(len)) = theirs.take_message(VIDEO_CHANNEL, &mut out) {
+                out.truncate(len);
+                taken = out;
+                break;
+            }
+        }
+
+        assert!(!taken.is_empty(), "the frame never arrived whole");
+        let (head, body) = taken.split_at(lowlat_core::video::VIDEO_HEADER_LEN);
+        let parsed = lowlat_core::video::parse(head).expect("a video header");
+        assert_eq!((parsed.width, parsed.height), (1920, 1080));
+        assert_eq!(parsed.rotation, lowlat_core::video::Rotation::None);
+        assert!(parsed.keyframe, "the refresh flag did not survive");
+        assert_eq!(body, unit, "the bitstream did not arrive intact");
+    }
+
+    /// **The generation a peer is told is the generation its frames carry.**
+    /// Announced on the frame after the encoder is ready and repeated in every
+    /// video header, so the two are read from one place or they disagree, and
+    /// a peer that trusted either would be tracking a reference chain that
+    /// does not exist. *Named regression test.*
+    #[test]
+    fn the_announced_generation_is_the_one_the_header_carries() {
+        let mut packetiser = Packetiser::new(1920, 1080, lowlat_core::video::Rotation::None);
+        let mut negotiation = Negotiation::opened(0.0);
+        let body = declaration();
+        let raw = control_bytes(&Control {
+            a0: 0,
+            a1: 0,
+            a2: 0,
+            opcode: op::INIT,
+            body: &body,
+        });
+        let declared = control::parse(&raw).expect("parsed");
+        assert!(negotiation.on_control(&declared));
+        assert!(negotiation.ready());
+
+        negotiation.encoder_initialised(packetiser.generation());
+        let reports = negotiation.on_frame(3.0);
+        let announced = reports.generation_message(0).expect("an announcement");
+        assert_eq!(announced.opcode, op::ENCODER_GENERATION);
+        assert_eq!(announced.a0, 0, "the stream index is argument zero");
+
+        let header = packetiser.header(true).expect("header");
+        let carried = lowlat_core::video::parse(header).expect("a video header");
+        assert_eq!(
+            announced.a1, carried.frame_id,
+            "the announcement and the header disagree about the generation"
+        );
+
+        // Once only. A second announcement would tell a peer the chain
+        // restarted when nothing did.
+        assert!(negotiation.on_frame(3.0).generation_message(0).is_none());
     }
 
     /// A take that does not fit does not consume the message, so the same one

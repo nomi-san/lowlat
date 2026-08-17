@@ -144,6 +144,13 @@ struct Join {
 struct Shared {
     seats: [Seat; MAX_SEATS],
     pool: Pool,
+    /// Capture to bitstream collected for the last picture, in microseconds.
+    ///
+    /// **A property of the stream, not of a guest**: one encode serves every
+    /// guest, so they all wait the same time for it. Each guest folds it into
+    /// its own smoothed figure, because the cadence that reports it is per
+    /// guest.
+    encode_us: AtomicU32,
     /// Raised to end the loop; the loop checks it once per frame.
     stopping: AtomicU32,
 }
@@ -179,6 +186,7 @@ impl Stream {
         let shared = Arc::new(Shared {
             seats: core::array::from_fn(|_| Seat::new()),
             pool: Pool::new(POOL_SLOTS, max_frame_bytes()),
+            encode_us: AtomicU32::new(0),
             stopping: AtomicU32::new(0),
         });
         let (joins, arrivals) = mpsc::channel();
@@ -297,6 +305,13 @@ impl SeatHold {
         )]
         seat.measured_bits
             .store((measured_mbps as f32).to_bits(), Ordering::Relaxed);
+    }
+
+    /// Capture to bitstream collected for the last picture, in milliseconds.
+    ///
+    /// What the encode-latency message carries, once a guest has smoothed it.
+    pub fn encode_latency_ms(&self) -> f64 {
+        f64::from(self.shared.encode_us.load(Ordering::Relaxed)) / 1000.0
     }
 
     /// A frame the gate admitted did not reach the wire.
@@ -498,6 +513,7 @@ fn encode_loop<E: Encoder>(
         };
 
         let frame = source.acquire();
+        let captured_at = frame.captured_at;
         if encoder.submit(&frame, force_keyframe).is_err() {
             // Queue full is back pressure rather than a fault: collect below
             // and the next frame goes in.
@@ -550,6 +566,7 @@ fn encode_loop<E: Encoder>(
             &mut gate,
             &active,
             &mut guests,
+            captured_at,
             deadline_ms,
             started,
         );
@@ -633,12 +650,17 @@ fn release(seat: &Seat, pool: &Pool) {
 /// one holds whatever backlog it starts with forever, so a picture that misses
 /// its deadline once would cost a frame of latency for the rest of the
 /// session. Draining gives that frame back on the next pass that has room.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "one call site; a struct here would only rename the arguments"
+)]
 fn collect<E: Encoder>(
     shared: &Shared,
     encoder: &mut E,
     gate: &mut Gate,
     active: &[Active],
     guests: &mut [gate::Guest],
+    captured_at: lowlat_common::clock::Time,
     deadline_ms: f64,
     started: lowlat_common::clock::Time,
 ) -> bool {
@@ -694,6 +716,23 @@ fn collect<E: Encoder>(
                     wanted |= gate.request_keyframe(now_ms) == Keyframe::Request;
                     return wanted;
                 }
+
+                // Stamped against the capture, which is what every latency
+                // figure in docs/05-host.md section 10 is measured from. A
+                // stage that restamps it destroys the measurement rather than
+                // merely losing it.
+                let elapsed_us =
+                    lowlat_common::clock::diff_ms(captured_at, lowlat_common::clock::Time::now())
+                        * 1000.0;
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "clamped to the range before the conversion"
+                )]
+                shared.encode_us.store(
+                    elapsed_us.clamp(0.0, f64::from(u32::MAX)) as u32,
+                    Ordering::Relaxed,
+                );
 
                 let now_ms = lowlat_common::clock::elapsed_ms(started);
                 let mut picked = [0usize; MAX_SEATS];
@@ -875,6 +914,7 @@ mod tests {
             let shared = Arc::new(Shared {
                 seats: core::array::from_fn(|_| Seat::new()),
                 pool: Pool::new(slots, max_frame_bytes()),
+                encode_us: AtomicU32::new(0),
                 stopping: AtomicU32::new(0),
             });
             let (joins, arrivals) = mpsc::channel();
@@ -1001,6 +1041,59 @@ mod tests {
         until("a refresh after the join refresh", || {
             harness.forced.load(Ordering::Relaxed) >= 2
         });
+    }
+
+    /// The construction path the fake encoder skips entirely: a real device,
+    /// a real encoder, and the frames a guest would actually be sent.
+    ///
+    /// Needs a render node, so it is off by default. Run with
+    /// `cargo test -p lowlat-host -- --ignored the_real_encoder`.
+    #[test]
+    #[ignore = "requires a render node"]
+    fn the_real_encoder_serves_a_seated_guest() {
+        let stream = Stream::start(Config {
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            configured_mbps: 10.0,
+            min_mbps: 1.0,
+        });
+        let wake = lowlat_net::Wake::new().expect("wake");
+        let seat = stream
+            .seats()
+            .take(wake.handle().expect("handle"))
+            .expect("a free seat");
+
+        let mut received = 0usize;
+        let mut bytes = 0usize;
+        let mut first_is_a_refresh = None;
+        until("real frames to arrive", || {
+            while let Some(frame) = seat.next_frame() {
+                // A coded unit begins with a start code, so this says the
+                // bytes are a bitstream and not an empty or partial slot.
+                assert_eq!(
+                    frame.bytes().get(..4),
+                    Some([0, 0, 0, 1].as_slice()),
+                    "frame {received} does not begin with a start code"
+                );
+                if first_is_a_refresh.is_none() {
+                    // A sequence parameter set, which only a refresh carries.
+                    first_is_a_refresh = frame.bytes().get(4).map(|byte| byte & 0x1F == 7);
+                }
+                bytes += frame.bytes().len();
+                received += 1;
+            }
+            received >= 60
+        });
+
+        // **The first frame a joining guest sees has to be a refresh.** It has
+        // no reference chain yet, so anything else decodes to nothing.
+        assert_eq!(
+            first_is_a_refresh,
+            Some(true),
+            "the first frame a joining guest received was not a refresh"
+        );
+        println!("received {received} frames, {bytes} bytes");
     }
 
     /// The pool slot and the send ring are sized from the same arithmetic, so

@@ -64,6 +64,9 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 - The encode loop: one capture and one encode serving every guest, the seats
   guests take on it, and the daemon wiring that starts it.
+- The two cadences a stream owes its peer, sent from the guest that carries
+  them: the encode latency every thirtieth frame, and the encoder generation
+  once, on the frame after the encoder is ready.
 
 **Notes on the encode loop**
 
@@ -102,6 +105,16 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - **The gate's ceiling is the divided rate, not the configured one.** A second
   guest halves both what a guest may send and the window it is measured
   against.
+- **The encode latency belongs to the stream, not to a guest.** One encode
+  serves them all, so they all waited the same time for it; each guest folds
+  the same figure into its own smoothed value because the cadence that reports
+  it is per guest.
+- **The announced generation and the one in every video header are read from
+  one place**, so they cannot disagree. A peer told one number and shown
+  another would be tracking a reference chain that does not exist.
+- The host-mode message goes out before the first frame. It is thirteen bytes
+  with no body, a peer stores it and gates nothing on it, so sending it costs
+  less than being wrong about that.
 
 **Notes on the ring geometry and the control channel**
 
