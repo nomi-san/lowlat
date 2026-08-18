@@ -661,30 +661,30 @@ delivery gate does what it is meant to throughout, and no guest ever saw a broke
 
 ## Phase 7 - Input injection
 
-- [ ] `lowlat-inject` over the kernel input layer: keyboard, pointer buttons, wheel, and
+- [x] `lowlat-inject` over the kernel input layer: keyboard, pointer buttons, wheel, and
   absolute and relative motion, as **separate relative and absolute pointer devices**
   ([07 §4](07-platforms.md)).
-- [ ] Usage-code to kernel-code mapping as a pure, unit-tested function.
-- [ ] Per-guest pressed-state tracking with release-all on disconnect and on the peer's own
+- [x] Usage-code to kernel-code mapping as a pure, unit-tested function.
+- [x] Per-guest pressed-state tracking with release-all on disconnect and on the peer's own
   release message.
-- [ ] A **pure expansion from one control message to a batch of device events**, so the state
+- [x] A **pure expansion from one control message to a batch of device events**, so the state
   machine is testable with no device and the write is one call per batch rather than one per
   axis.
-- [ ] The three permissions gated **inside the injector**, releasing what a permission holds
+- [x] The three permissions gated **inside the injector**, releasing what a permission holds
   when it is revoked ([05 §7](05-host.md)).
-- [ ] Virtual gamepads, **Xbox 360 layout only** ([07 §4.2](07-platforms.md)): one device per
+- [x] Virtual gamepads, **Xbox 360 layout only** ([07 §4.2](07-platforms.md)): one device per
   guest per pad identifier, capped, created on first use, destroyed on unplug and on
   disconnect.
-- [ ] Force feedback as the simple magnitude effect, reported back to the owning guest as a
+- [x] Force feedback as the simple magnitude effect, reported back to the owning guest as a
   rumble message.
-- [ ] Events queued rather than dropped until a freshly created device is usable
+- [x] Events queued rather than dropped until a freshly created device is usable
   ([07 §4.1](07-platforms.md)), with a bounded queue and a stated overflow rule.
-- [ ] The three device-node failures told apart: module absent, group or rule missing,
+- [x] The three device-node failures told apart: module absent, group or rule missing,
   confinement refusing the create.
-- [ ] **One guest drives the pointer at a time**, optional and off by default
+- [x] **One guest drives the pointer at a time**, optional and off by default
   ([05 §7.1](05-host.md)): the pointer belongs to whoever last moved it, lapses after a fixed
   hold, and an owner takes it without waiting. Keyboards and pads are not arbitrated.
-- [ ] Permissions and the owner flag read off the relayed offer, which carries both.
+- [x] Permissions and the owner flag read off the relayed offer, which carries both.
 
 **Gate:**
 
