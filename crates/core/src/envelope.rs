@@ -62,6 +62,12 @@ pub enum Cipher {
 enum Keyed {
     Aes128(Aes128Gcm),
     Aes256(Aes256Gcm),
+    /// The same two ciphers on the x86-64 AES and carry-less multiply
+    /// instructions. Selected at construction when the processor has them,
+    /// never by a build flag, because the binary has to run where they are
+    /// absent. See `crate::aesni`.
+    #[cfg(target_arch = "x86_64")]
+    Hw(Cipher, crate::aesni::Aead),
 }
 
 /// Seals and opens records for one session.
@@ -124,6 +130,13 @@ impl Envelope {
     }
 
     fn build(key: &[u8], cipher: Cipher, nonce_prefix: [u8; NONCE_PREFIX_LEN]) -> Self {
+        #[cfg(target_arch = "x86_64")]
+        if let Some(aead) = crate::aesni::Aead::new(key) {
+            return Self {
+                keyed: Keyed::Hw(cipher, aead),
+                nonce_prefix,
+            };
+        }
         let keyed = match cipher {
             Cipher::Aes128 => Keyed::Aes128(Aes128Gcm::new(GenericArray::from_slice(key))),
             Cipher::Aes256 => Keyed::Aes256(Aes256Gcm::new(GenericArray::from_slice(key))),
@@ -134,9 +147,28 @@ impl Envelope {
         }
     }
 
+    /// Whether this session's records go through the hardware implementation.
+    ///
+    /// The selection is made at construction from what the processor reports,
+    /// so a session that quietly fell back to the portable path is worth
+    /// seeing in a log rather than inferring from a benchmark. It is also the
+    /// only way to test that the dispatch is wired at all.
+    pub fn hardware_accelerated(&self) -> bool {
+        #[cfg(target_arch = "x86_64")]
+        {
+            matches!(self.keyed, Keyed::Hw(..))
+        }
+        #[cfg(not(target_arch = "x86_64"))]
+        {
+            false
+        }
+    }
+
     /// Which cipher this session negotiated.
     pub const fn cipher(&self) -> Cipher {
         match self.keyed {
+            #[cfg(target_arch = "x86_64")]
+            Keyed::Hw(cipher, _) => cipher,
             Keyed::Aes128(_) => Cipher::Aes128,
             Keyed::Aes256(_) => Cipher::Aes256,
         }
@@ -192,10 +224,15 @@ impl Envelope {
         let nonce_bytes = self.nonce_bytes(counter);
         let nonce = GenericArray::from_slice(&nonce_bytes);
         let tag = match &self.keyed {
-            Keyed::Aes128(c) => c.encrypt_in_place_detached(nonce, &[], body),
-            Keyed::Aes256(c) => c.encrypt_in_place_detached(nonce, &[], body),
-        }
-        .map_err(|_| Error::Decrypt)?;
+            #[cfg(target_arch = "x86_64")]
+            Keyed::Hw(_, a) => GenericArray::from(a.seal(&nonce_bytes, body)),
+            Keyed::Aes128(c) => c
+                .encrypt_in_place_detached(nonce, &[], body)
+                .map_err(|_| Error::Decrypt)?,
+            Keyed::Aes256(c) => c
+                .encrypt_in_place_detached(nonce, &[], body)
+                .map_err(|_| Error::Decrypt)?,
+        };
 
         // Header is exactly CIPHERTEXT_OFFSET bytes, so every write below is
         // in range by construction.
@@ -261,10 +298,19 @@ impl Envelope {
         let nonce = GenericArray::from_slice(&nonce_bytes);
         let tag = GenericArray::from_slice(&tag_bytes);
         match &self.keyed {
-            Keyed::Aes128(c) => c.decrypt_in_place_detached(nonce, &[], body, tag),
-            Keyed::Aes256(c) => c.decrypt_in_place_detached(nonce, &[], body, tag),
+            #[cfg(target_arch = "x86_64")]
+            Keyed::Hw(_, a) => {
+                if !a.open(&nonce_bytes, body, &tag_bytes) {
+                    return Err(Error::Decrypt);
+                }
+            }
+            Keyed::Aes128(c) => c
+                .decrypt_in_place_detached(nonce, &[], body, tag)
+                .map_err(|_| Error::Decrypt)?,
+            Keyed::Aes256(c) => c
+                .decrypt_in_place_detached(nonce, &[], body, tag)
+                .map_err(|_| Error::Decrypt)?,
         }
-        .map_err(|_| Error::Decrypt)?;
 
         Ok(Opened {
             counter,
@@ -285,6 +331,18 @@ pub struct Opened<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Breaking the selection in `build` has to fail something. Without this
+    /// it did not: both paths produce identical bytes, so every other test
+    /// passes either way.
+    #[test]
+    #[cfg(target_arch = "x86_64")]
+    fn the_hardware_path_is_taken_when_the_processor_offers_it() {
+        let env = Envelope::from_key(&KEY128).unwrap();
+        assert_eq!(env.hardware_accelerated(), crate::aesni::available());
+        let env = Envelope::from_key(&KEY256).unwrap();
+        assert_eq!(env.hardware_accelerated(), crate::aesni::available());
+    }
 
     const KEY256: [u8; 32] = [7u8; 32];
     const KEY128: [u8; 16] = [9u8; 16];

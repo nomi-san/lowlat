@@ -38,6 +38,8 @@
 #[cfg(test)]
 extern crate std;
 
+#[cfg(target_arch = "x86_64")]
+mod aesni;
 pub mod channel;
 pub mod congestion;
 pub mod conn;
