@@ -361,6 +361,7 @@ dependencies = [
 name = "lowlat-inject"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "lowlat-common",
  "lowlat-core",
 ]
