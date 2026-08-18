@@ -697,6 +697,8 @@ delivery gate does what it is meant to throughout, and no guest ever saw a broke
 8. A local application's rumble reaches the peer.
 9. The readiness delay is measured under a compositor as well as a display server, and the
    queue's deadline is set from the larger figure rather than from the one already measured.
+   *Half done: measured on a display server with the real device set at 200 to 260 ms, which is
+   nearly double the single-device figure it replaces. The compositor case is still open.*
 
 ---
 

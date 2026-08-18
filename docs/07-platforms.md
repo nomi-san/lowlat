@@ -197,10 +197,15 @@ that gap are accepted by the kernel and go nowhere. Measured on a real desktop s
 creating a device and injecting one key per step at increasing delays, then reading back what
 the display server actually delivered:
 
-| device declares | first delay whose event arrived |
+| what was created | first delay whose event arrived |
 |---|---|
-| keys only | 100 to 150 ms |
-| keys and indicator lights | 200 ms, every run |
+| one keyboard, keys only | 100 to 150 ms |
+| one keyboard, keys and indicator lights | 200 ms, every run |
+| **the three devices a guest really gets** | **200 to 260 ms** |
+
+**The last row is the one to design against**, and it is nearly double the first. The delay
+scales with how many devices the system has to process at once, not with any one device, so a
+figure measured by creating a single keyboard understates the case that actually ships.
 
 Three consequences, and the first two are cheap.
 
@@ -215,11 +220,18 @@ Three consequences, and the first two are cheap.
   arriving a fraction of a second late is not noticeable; the first keystroke vanishing is, and
   it presents as a network fault.
 
-**There is no readiness signal to wait on instead.** A host cannot ask whether a consumer has
-opened its device, and the consumer writes nothing back: a keyboard that declares indicator
-lights is the one case where the display server might reply on the same descriptor, and across
-six runs it never did. A fixed wait is the only portable answer, which is the argument for
-starting it as early as possible rather than for making it shorter.
+**There is no readiness signal to wait on instead**, and two candidates were tested rather than
+dismissed. A host cannot ask whether a consumer has opened its device, and the consumer writes
+nothing back: a keyboard that declares indicator lights is the one case where the display server
+might reply on the same descriptor, and across six runs it never did. The second candidate is
+better and still fails: the device's event node is created owned by the system alone and is
+granted to the group part way through the window, which is observable. It is a **precondition,
+not a signal** -- the grant lands at 50 to 82 ms and does not predict delivery, with the same
+51 ms grant preceding delivery at 200 ms in one run and 230 ms in another.
+
+A fixed wait is the only portable answer, which is the argument for starting it as early as
+possible rather than for making it shorter. It is set **above** the worst measured case rather
+than at it, because the two errors are not symmetric.
 
 Measured on an X11 session. **The equivalent figure under a Wayland compositor is not yet
 measured** and the path is different: devices reach the compositor through the seat manager
