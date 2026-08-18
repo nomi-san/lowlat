@@ -45,12 +45,26 @@ pub struct Negotiation {
     /// What the guest asked for. The host is authoritative over all of it, so
     /// this is a request rather than a setting.
     asked: Option<Init>,
-    /// Video flags, which arrive twice: in the initialization and again in
-    /// every encoder-configuration message. The later one wins.
+    /// What this guest can decode.
+    ///
+    /// **It arrives in two places and both count** (docs/01-protocol.md
+    /// section 11.5): the initialization declares it, and every
+    /// encoder-configuration message restates it. The later one wins, because
+    /// the second is how a peer changes its mind mid-session and a host that
+    /// kept the first would never hear the change.
+    ///
+    /// A peer may send only the first. Requiring both would leave every such
+    /// peer declaring nothing at all.
     flags: u32,
     /// Set by an encoder-configuration message asking for reinitialization,
     /// and taken once by the encode loop.
-    force_refresh: bool,
+    reconfigure: bool,
+    /// Opcodes seen from this peer, one bit each, so each is logged once.
+    ///
+    /// **What a peer actually sends is worth knowing exactly once.** Logging
+    /// every message would bury the session under pointer motion; logging none
+    /// leaves the vocabulary a peer speaks unrecorded.
+    seen: u64,
     frames: u64,
     latency_ms: f64,
     /// The generation to announce, set when the encoder is initialized and
@@ -70,7 +84,8 @@ impl Negotiation {
             opened_ms: now_ms,
             asked: None,
             flags: 0,
-            force_refresh: false,
+            reconfigure: false,
+            seen: 0,
             frames: 0,
             latency_ms: 0.0,
             announce: None,
@@ -109,6 +124,7 @@ impl Negotiation {
     /// Returns true when the message was one this cares about, so a caller can
     /// tell "handled" from "pass it on" without inspecting the opcode twice.
     pub fn on_control(&mut self, message: &Control<'_>) -> bool {
+        self.note(message);
         match message.opcode {
             op::INIT => {
                 // **A second initialization is not a reset.** A peer that
@@ -133,9 +149,20 @@ impl Negotiation {
                 // Argument 0 is the stream, 1 the flags, 2 a reinitialization
                 // request. One stream in v1, so the index is read and not yet
                 // acted on.
+                //
+                // **Always logged, unlike everything else here.** It is the
+                // only message a peer uses to change its mind about what it
+                // can decode, it is rare, and a stream that reconfigures is
+                // read backwards from this line.
+                lowlat_common::log_info!(
+                    "guest: encoder config stream={} flags={:#x} reinit={}",
+                    message.a0,
+                    message.a1,
+                    u8::from(message.a2 != 0)
+                );
                 self.flags = message.a1;
                 if message.a2 != 0 {
-                    self.force_refresh = true;
+                    self.reconfigure = true;
                 }
                 true
             }
@@ -143,12 +170,31 @@ impl Negotiation {
         }
     }
 
-    /// Whether the next picture must be a refresh, clearing the request.
+    /// Log an opcode the first time this peer sends one.
+    fn note(&mut self, message: &Control<'_>) {
+        let bit = 1u64 << u32::from(message.opcode).min(63);
+        if self.seen & bit != 0 {
+            return;
+        }
+        self.seen |= bit;
+        lowlat_common::log_info!(
+            "guest: first op={} ({}) a0={} a1={} a2={} body={}",
+            message.opcode,
+            op::name(message.opcode),
+            message.a0,
+            message.a1,
+            message.a2,
+            message.body.len()
+        );
+    }
+
+    /// Whether the peer asked for the encoder to be reinitialized, clearing
+    /// the request.
     ///
     /// **Taken rather than read**, so two callers cannot both act on one
-    /// request and two refreshes go out for one ask.
-    pub fn take_force_refresh(&mut self) -> bool {
-        core::mem::replace(&mut self.force_refresh, false)
+    /// request and two go out for one ask.
+    pub fn take_reconfigure(&mut self) -> bool {
+        core::mem::replace(&mut self.reconfigure, false)
     }
 
     /// Note that the encoder was initialized at this generation, so the next
@@ -299,17 +345,45 @@ mod tests {
         );
     }
 
+    /// **The declaration arrives in two places and a peer may send only the
+    /// first.** Requiring both would leave every such peer declaring nothing,
+    /// which is the whole capability read backwards.
     #[test]
-    fn the_encoder_configuration_updates_flags_and_can_ask_for_a_refresh() {
+    fn the_initialization_alone_is_a_complete_declaration() {
+        let mut guest = Negotiation::opened(0.0);
+        guest.on_control(&control(
+            op::INIT,
+            30,
+            0,
+            0,
+            b"{\"_version\":1,\"_flags\":9}\0",
+        ));
+        assert!(
+            guest.ready(),
+            "the guest is not streamable on the first place"
+        );
+        assert_eq!(
+            guest.flags(),
+            lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC,
+            "the first place did not declare on its own"
+        );
+        assert!(
+            !guest.take_reconfigure(),
+            "an initialization asked for a reinitialization"
+        );
+    }
+
+    #[test]
+    fn the_encoder_configuration_updates_flags_and_can_ask_for_a_reinitialization() {
         let mut guest = Negotiation::opened(0.0);
         guest.on_control(&control(op::INIT, 124, 0, 0, RECORDED));
 
-        assert!(!guest.take_force_refresh());
+        assert!(!guest.take_reconfigure());
         assert!(guest.on_control(&control(op::ENCODER_CONFIG, 0, 0x09, 1, &[])));
         assert_eq!(guest.flags(), 0x09, "the later flags did not win");
-        assert!(guest.take_force_refresh(), "the refresh request was lost");
+        assert!(guest.take_reconfigure(), "the refresh request was lost");
         assert!(
-            !guest.take_force_refresh(),
+            !guest.take_reconfigure(),
             "one request produced two refreshes"
         );
     }

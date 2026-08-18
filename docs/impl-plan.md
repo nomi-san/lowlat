@@ -557,7 +557,17 @@ when it must not.
   encode 3.3 ms, zero loss and zero retransmissions. Three faults sat between a configured
   encoder and a decodable picture, and all three produce a stream that encodes without error
   (see the notes below).*
-- [ ] The two-place capability signalling ([01 §11.3](01-protocol.md)).
+- [x] The two-place capability signalling ([01 §11.5](01-protocol.md), which is where it is
+  described; the link here said §11.3 and was wrong). *Both places are read and the later wins.
+  A peer may send only the first, so requiring both would leave every such peer declaring
+  nothing -- confirmed against a live client, which declared H.264 in the initialization and
+  H.265 in the encoder configuration eight seconds later.*
+- [x] **A guest's reinitialization request changes what the stream codes** ([05 §6.1](05-host.md)).
+  *A live client switched the session between the two codecs in both directions, mid-stream,
+  with zero loss and zero retransmissions and one frame-rate sample below sixty across the
+  change. The request is answered against the intersection of every seated guest's
+  declaration, which is what the reference host does and what keeps one encode able to serve
+  every seat. 4:4:4 and 10-bit are carried through the same path and reported as not emitted.*
 
 - [ ] **The refusal path for a seat that cannot decode the session's codec** (D11): read the
   capability from session initialization, and disconnect with a status before any video is sent.

@@ -249,6 +249,51 @@ single-guest case that v1 actually ships.
 v1 policy is single-guest simple, but the data model is multi-guest from the first line
 ([00-overview.md](00-overview.md) D10).
 
+### §6.1 What the stream codes, when a guest asks for something else
+
+A guest declares what it can decode in two places, and a host reads both
+([01 §11.5](01-protocol.md)): session initialization declares it, and every encoder
+configuration message restates it. **The later one wins.** A peer may send only the first, so a
+host that required both would leave every such peer declaring nothing at all; a peer that sends
+the second is changing its mind, and a host that kept the first would never hear it.
+
+An encoder configuration message asking for reinitialization is a **request to code
+differently**, not merely a request for a keyframe. It is answered against every seated guest
+at once:
+
+```
+on reinitialization requested by any guest:
+    asked = intersection of every seated guest's declared flags
+    report any bit of `asked` this pipeline does not emit
+    wanted = codec named by `asked`
+    if wanted != running codec:
+        build a new encoder for `wanted`
+        latch every guest, and move the generation so each peer is told
+    else:
+        force one keyframe, which is what the request is owed
+```
+
+**The intersection, not the last request.** One encode serves every seat, so a capability only
+some of them declared is one none of them can be sent: granting it would hand the others a
+stream their decoders were not built for, and they report that as a decode failure rather than
+as a mismatch. With a single seat the intersection is exactly what that seat asked for, which
+is the ordinary case. No seats is no capability rather than every capability, because an empty
+intersection is vacuously everything and acting on it would configure a stream from nobody's
+declaration.
+
+**Joining is not asking.** A guest that arrives declaring less than the running stream produces
+does not move it; D11 settles that case by refusing the seat, and only an explicit request
+moves the codec. The refusal is the other half of this and is not built yet, so until it lands
+such a guest is sent a stream it cannot decode.
+
+**The guests outlive the encoder.** A seat is announced exactly once, when the guest claims it,
+so the seated set has to be owned above the encoder rather than rebuilt with it. A loop that
+rebuilt it would find no guests and publish to nobody while every seat still read as streaming.
+
+**A codec the device refuses is not the end of the stream.** The encoder that was running a
+moment ago worked, so a construction failure after a request declines the request and keeps the
+picture the guests had.
+
 ```
 on encoded frame F, fragment count N, keyframe K:
     largest = max(largest, N)                   // session high-water mark, not this frame

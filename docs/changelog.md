@@ -29,6 +29,14 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   offsets in every slice header. Those are byte counts into slice data that
   the side writing the header never sees.
 
+- **The capability a guest declares is read from both places it arrives in**
+  ([01 §11.5](01-protocol.md)), and a guest's reinitialization request now
+  changes what the stream codes rather than only forcing a keyframe. A live
+  client moved a session between the two codecs in both directions with zero
+  loss and one frame-rate sample below sixty across the change.
+- Every opcode a peer sends is logged once, with its arguments, so what a
+  peer actually speaks is on record rather than inferred.
+
 **Notes**
 
 - **A stream that encodes without error can decode to nothing.** All three
@@ -40,6 +48,13 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   actually uses**, not the ones the writer would prefer. A tool declared off
   and used anyway produces a bitstream a decoder reads with the wrong syntax,
   and it reports a decode failure rather than a mismatch.
+- **A capability request is answered against every seated guest, not against
+  the guest that asked.** One encode serves them all, so the stream codes
+  what they have in common; granting one seat's capability would hand the
+  others a stream their decoders were not built for.
+- **The base flag is set on every declaration and means nothing.** Counting
+  it as a capability the pipeline does not emit reported a refusal on every
+  ordinary request, which only a live run showed.
 
 - **The trait paid for itself here.** One generic loop already drove two
   backends; adding a second codec was selection, not a pipeline.

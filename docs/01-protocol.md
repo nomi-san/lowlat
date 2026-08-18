@@ -514,11 +514,24 @@ picture nobody asked for.
 eight, taking different encoder-warmup or session-setup paths, so a host must not require extras
 and a client must not send them.
 
-Codec selection is carried in two places and **both are required**. The capability bit in the
-init flags declares support; opcode 13 argument 1 must also carry the video flags. Setting
-only one produces a stream the peer will not decode. Opcode 13's other arguments are the stream
-index in argument 0 and a reinitialization request in argument 2, which is what forces the next
-picture to be a refresh.
+Codec selection is carried in two places. The capability bit in the init flags declares
+support, and opcode 13 argument 1 carries the same video flags again. Opcode 13's other
+arguments are the stream index in argument 0 and a reinitialization request in argument 2.
+
+**A host reads both, and the later one wins.** The two are not a pair that must agree: a peer
+may declare in the initialization and never send opcode 13 at all, and a host that required
+both would leave every such peer declaring nothing. A peer that does send opcode 13 is
+restating its capability, and when the value differs it is **changing its mind mid-session** --
+which is the whole point of the second place, and a host that kept the first would never hear
+it.
+
+**Argument 2 asks for a different stream, not only for a keyframe.** A host that can code what
+the new flags name reinitializes its encoder: new parameter sets, a new reference chain, and a
+new generation announced on opcode 29. Where nothing about the request changes what is already
+being produced, a keyframe is what it is owed. See [05 §6.1](05-host.md).
+
+**Argument 0 is a stream index and there is one stream in v1.** A peer that names another is
+read and not acted on.
 
 The flag bits:
 

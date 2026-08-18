@@ -128,6 +128,17 @@ struct Seat {
     /// A send the transport refuses is a broken reference chain exactly as a
     /// full window is, and the guest has no other way to say so.
     missed: AtomicU32,
+    /// What this guest declared it can decode, as the video flag bits.
+    ///
+    /// Written by the guest's thread whenever the declaration changes, read by
+    /// the loop when a reconfiguration is asked for.
+    flags: AtomicU32,
+    /// This guest asked for the encoder to be reinitialized.
+    ///
+    /// **Not the same as a refresh.** A refresh is a picture with no history
+    /// in the stream that is already running; this asks for a different stream
+    /// and is answered by building one.
+    reconfigure: AtomicU32,
 }
 
 impl Seat {
@@ -140,6 +151,8 @@ impl Seat {
             measured_bits: AtomicU32::new(0),
             missed: AtomicU32::new(0),
             refresh: AtomicU32::new(0),
+            flags: AtomicU32::new(0),
+            reconfigure: AtomicU32::new(0),
         }
     }
 }
@@ -172,6 +185,13 @@ struct Shared {
     timing: TimingCells,
     /// Raised to end the loop; the loop checks it once per frame.
     stopping: AtomicU32,
+    /// Counts encoder reinitializations.
+    ///
+    /// **A guest has to know, and cannot infer it.** A new encoder is a new
+    /// reference chain and a new set of parameter sets, which the peer learns
+    /// from the generation in the video header; a guest that never noticed
+    /// would keep announcing the old one.
+    epoch: AtomicU32,
 }
 
 /// A stage report, in microseconds, published as plain atomics.
@@ -311,6 +331,7 @@ impl Stream {
             encode_us: AtomicU32::new(0),
             timing: TimingCells::default(),
             stopping: AtomicU32::new(0),
+            epoch: AtomicU32::new(0),
         });
         let (joins, arrivals) = mpsc::channel();
         let owned = Arc::clone(&shared);
@@ -388,6 +409,12 @@ impl Seats {
                 seat.measured_bits.store(0, Ordering::Relaxed);
                 seat.missed.store(0, Ordering::Relaxed);
                 seat.refresh.store(0, Ordering::Relaxed);
+                // **The declaration belongs to the guest, not to the seat.**
+                // Left standing, an arriving guest would be counted in the
+                // consensus as whatever the last occupant could decode, until
+                // its own initialization landed.
+                seat.flags.store(0, Ordering::Relaxed);
+                seat.reconfigure.store(0, Ordering::Relaxed);
                 if joins.send(Join { seat: index, wake }).is_err() {
                     seat.state.store(seat_state::FREE, Ordering::Release);
                     return None;
@@ -467,6 +494,35 @@ impl SeatHold {
             seat.missed.fetch_add(1, Ordering::Relaxed);
         }
     }
+
+    /// What this guest can decode, as the video flag bits.
+    ///
+    /// Published on every change rather than once, because the declaration
+    /// arrives in two places and the second is how a peer changes its mind.
+    pub fn declare(&self, flags: u32) {
+        if let Some(seat) = self.shared.seats.get(self.index) {
+            seat.flags.store(flags, Ordering::Relaxed);
+        }
+    }
+
+    /// This guest asked for the encoder to be reinitialized.
+    ///
+    /// **Declare first.** The loop reads every seat's flags when it takes this
+    /// request, so a request that arrives before the flags it is asking for
+    /// would be answered against the old ones.
+    pub fn request_reconfigure(&self) {
+        if let Some(seat) = self.shared.seats.get(self.index) {
+            seat.reconfigure.store(1, Ordering::Release);
+        }
+    }
+
+    /// How many times the stream's encoder has been reinitialized.
+    ///
+    /// A guest compares this against what it last saw; a change means the
+    /// reference chain restarted and a new generation has to be announced.
+    pub fn epoch(&self) -> u32 {
+        self.shared.epoch.load(Ordering::Acquire)
+    }
 }
 
 impl Drop for SeatHold {
@@ -500,8 +556,21 @@ struct Active {
     wake: WakeHandle,
 }
 
+/// The seated guests, and the per-guest state that goes with them.
+///
+/// **Owned above the encoder, deliberately.** An encoder rebuilt mid-session
+/// must not take the seated guests with it: a seat is announced exactly once,
+/// when the guest claims it, so a loop that started fresh would never hear
+/// about a guest that was already streaming and would publish to nobody.
+#[derive(Default)]
+struct Roster {
+    active: Vec<Active>,
+    guests: Vec<gate::Guest>,
+    controllers: Vec<Controller>,
+}
+
 /// The loop.
-fn run(shared: &Shared, arrivals: &mpsc::Receiver<Join>, config: Config) {
+fn run(shared: &Shared, arrivals: &mpsc::Receiver<Join>, mut config: Config) {
     // Waiting rather than holding hardware. A host advertises itself long
     // before anyone connects, and an encoder open across that whole time is a
     // device another application cannot have.
@@ -525,13 +594,85 @@ fn run(shared: &Shared, arrivals: &mpsc::Receiver<Join>, config: Config) {
     // **The construction differs and the loop does not.** Each backend owns a
     // device, a context and an encoder whose lifetimes nest, so they are built
     // here and the same generic loop is handed whichever one exists.
-    match config.backend {
-        Backend::Open => run_open(shared, arrivals, config),
-        Backend::Vendor => run_vendor(shared, arrivals, config),
+    //
+    // **And it is built more than once.** A peer changes what it can decode
+    // with a message rather than by reconnecting, and a different codec is a
+    // different encoder, so the loop can hand this one back and ask for
+    // another. The guests outlive that; see [`Roster`].
+    let mut roster = Roster::default();
+    let mut previous: Option<Codec> = None;
+    loop {
+        let exit = match config.backend {
+            Backend::Open => run_open(shared, arrivals, config, &mut roster),
+            Backend::Vendor => run_vendor(shared, arrivals, config, &mut roster),
+        };
+        match exit {
+            Exit::Stopped => return,
+            // **A codec the device refuses is not the end of the stream.** The
+            // one that was running a moment ago worked, so the request is
+            // declined and the guests keep the picture they had rather than
+            // losing it to a configuration nobody can encode.
+            Exit::Failed => {
+                let Some(back) = previous.take() else { return };
+                lowlat_common::log_warn!(
+                    "stream: codec={:?} could not be configured, staying on {:?}",
+                    config.codec,
+                    back
+                );
+                config.codec = back;
+            }
+            Exit::Reconfigure(codec) => {
+                lowlat_common::log_info!(
+                    "stream: reconfiguring codec={:?} -> {:?}",
+                    config.codec,
+                    codec
+                );
+                previous = Some(config.codec);
+                config.codec = codec;
+                // **Every guest is latched and the generation moves.** The new
+                // encoder has no history at all, so a guest still expecting the
+                // old reference chain waits for the refresh that opens the new
+                // one, and its peer is told the chain restarted rather than
+                // being left to infer it.
+                for guest in &mut roster.guests {
+                    guest.mark_skipping();
+                }
+                shared.epoch.fetch_add(1, Ordering::Release);
+            }
+        }
     }
 }
 
-fn run_open(shared: &Shared, arrivals: &mpsc::Receiver<Join>, config: Config) {
+/// Why the encode loop handed the encoder back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Exit {
+    /// The host is stopping.
+    Stopped,
+    /// The encoder could not be built at all.
+    Failed,
+    /// Every seated guest can decode this codec, and at least one asked for a
+    /// configuration the running encoder does not produce.
+    Reconfigure(Codec),
+}
+
+/// Capability bits a peer can declare that this pipeline does not emit.
+///
+/// Four-four-four chroma and ten-bit colour are reserved and unimplemented
+/// (docs/00-overview.md D7), so a request for either is read and reported
+/// rather than quietly treated as granted, which would leave the peer building
+/// a decoder for a stream it will never receive.
+///
+/// **The base flag is not a capability and is not listed here.** It is set on
+/// every declaration and means nothing; testing it as one reports a refusal on
+/// every ordinary request, which is what it did.
+const NOT_EMITTED: u32 = lowlat_core::init::FLAG_COLOR444 | lowlat_core::init::FLAG_10BIT;
+
+fn run_open(
+    shared: &Shared,
+    arrivals: &mpsc::Receiver<Join>,
+    config: Config,
+    roster: &mut Roster,
+) -> Exit {
     let (codec, params) = match config.codec {
         Codec::H264 => (
             lowlat_encode::vaapi::Codec::H264,
@@ -559,48 +700,53 @@ fn run_open(shared: &Shared, arrivals: &mpsc::Receiver<Join>, config: Config) {
     };
     let Ok(display) = lowlat_encode::vaapi::Vaapi::load() else {
         lowlat_common::log_error!("stream: display runtime unavailable, nothing will encode");
-        return;
+        return Exit::Failed;
     };
     let Ok(display) = display.open(c"/dev/dri/renderD128") else {
         lowlat_common::log_error!("stream: render node could not be opened");
-        return;
+        return Exit::Failed;
     };
     let Ok(caps) = display.caps(codec) else {
         lowlat_common::log_error!("stream: render node reports no encode for codec={codec:?}");
-        return;
+        return Exit::Failed;
     };
     let Ok(context) = display.create_context(caps, config.width, config.height, ENCODE_DEPTH)
     else {
         lowlat_common::log_error!("stream: encode context could not be created");
-        return;
+        return Exit::Failed;
     };
     let Ok(mut encoder) = context.encoder(params, start_bps(config)) else {
         lowlat_common::log_error!("stream: encoder could not be configured");
-        return;
+        return Exit::Failed;
     };
-    encode_loop(shared, arrivals, config, &mut encoder);
+    encode_loop(shared, arrivals, config, roster, &mut encoder)
 }
 
-fn run_vendor(shared: &Shared, arrivals: &mpsc::Receiver<Join>, config: Config) {
+fn run_vendor(
+    shared: &Shared,
+    arrivals: &mpsc::Receiver<Join>,
+    config: Config,
+    roster: &mut Roster,
+) -> Exit {
     let Ok(cuda) = lowlat_encode::cuda::Cuda::load() else {
         lowlat_common::log_error!("stream: compute runtime unavailable, nothing will encode");
-        return;
+        return Exit::Failed;
     };
     let Ok(device) = cuda.any_device() else {
         lowlat_common::log_error!("stream: no compute device");
-        return;
+        return Exit::Failed;
     };
     let Ok(compute) = cuda.retain_primary(&device) else {
         lowlat_common::log_error!("stream: compute context could not be retained");
-        return;
+        return Exit::Failed;
     };
     let Ok(api) = lowlat_encode::nvenc::Api::load() else {
         lowlat_common::log_error!("stream: encoder runtime unavailable");
-        return;
+        return Exit::Failed;
     };
     let Ok(session) = api.open_session(compute) else {
         lowlat_common::log_error!("stream: encode session could not be opened");
-        return;
+        return Exit::Failed;
     };
     let Ok(mut encoder) = session.initialize(
         &cuda,
@@ -617,9 +763,9 @@ fn run_vendor(shared: &Shared, arrivals: &mpsc::Receiver<Join>, config: Config) 
         },
     ) else {
         lowlat_common::log_error!("stream: encoder could not be configured");
-        return;
+        return Exit::Failed;
     };
-    encode_loop(shared, arrivals, config, &mut encoder);
+    encode_loop(shared, arrivals, config, roster, &mut encoder)
 }
 
 /// The lowest level each codec has that carries 1080p60, which is 4.2 on the
@@ -669,8 +815,9 @@ fn encode_loop<E: Encoder>(
     shared: &Shared,
     arrivals: &mpsc::Receiver<Join>,
     config: Config,
+    roster: &mut Roster,
     encoder: &mut E,
-) {
+) -> Exit {
     // **The block says which codec is on the wire**, so a live run is
     // identifiable from the picture rather than from a log on the other
     // machine. Nothing downstream reads it; it is for the person watching.
@@ -686,10 +833,13 @@ fn encode_loop<E: Encoder>(
 
     // Compact and parallel: one entry per streaming guest, in no particular
     // order. Compaction happens on join and leave, which are rare, so the
-    // per-frame work is a walk over exactly the guests that exist.
-    let mut active: Vec<Active> = Vec::with_capacity(MAX_SEATS);
-    let mut guests: Vec<gate::Guest> = Vec::with_capacity(MAX_SEATS);
-    let mut controllers: Vec<Controller> = Vec::with_capacity(MAX_SEATS);
+    // per-frame work is a walk over exactly the guests that exist. They are
+    // lent from above rather than owned here; see [`Roster`].
+    let Roster {
+        active,
+        guests,
+        controllers,
+    } = roster;
     let mut samples: Vec<Sample> = Vec::with_capacity(MAX_SEATS);
     // When each picture still inside the encoder was captured and submitted,
     // oldest first. **A stamp per picture, not one for the loop**: with more
@@ -710,23 +860,16 @@ fn encode_loop<E: Encoder>(
 
     loop {
         if shared.stopping.load(Ordering::Acquire) != 0 {
-            return;
+            return Exit::Stopped;
         }
 
-        let moved = admit_and_retire(
-            shared,
-            arrivals,
-            config,
-            &mut active,
-            &mut guests,
-            &mut controllers,
-        );
+        let moved = admit_and_retire(shared, arrivals, config, active, guests, controllers);
         if moved {
             #[allow(
                 clippy::cast_possible_truncation,
                 reason = "bounded by MAX_SEATS, which is sixteen"
             )]
-            budget.rebound(active.len() as u32, &mut controllers);
+            budget.rebound(active.len() as u32, controllers);
             // **The gate's ceiling is the divided rate, not the configured
             // one.** A guest's room test scales with what that guest is
             // allowed to send, so a second guest halves both the rate and the
@@ -736,7 +879,7 @@ fn encode_loop<E: Encoder>(
                 reason = "a rate in megabits, only used to pick one of three ceiling steps"
             )]
             let ceiling = budget.ceiling() as f32;
-            for guest in &mut guests {
+            for guest in &mut *guests {
                 guest.set_rate(ceiling);
             }
         }
@@ -746,6 +889,35 @@ fn encode_loop<E: Encoder>(
             continue;
         }
 
+        // **A peer changes what it can decode with a message, not by
+        // reconnecting**, so the answer is a different encoder rather than a
+        // different session. Taken outside the frame clock: a reconfiguration
+        // is not worth a frame's wait and the encoder is about to be replaced
+        // anyway.
+        if reconfigure_asked(shared, active) {
+            let asked = consensus(shared, active);
+            if asked & NOT_EMITTED != 0 {
+                lowlat_common::log_warn!(
+                    "stream: guests asked for flags={:#x} and this pipeline emits 8-bit 4:2:0, \
+                     so {:#x} of it is not granted",
+                    asked,
+                    asked & NOT_EMITTED
+                );
+            }
+            let wanted = if asked & lowlat_core::init::FLAG_HEVC != 0 {
+                Codec::H265
+            } else {
+                Codec::H264
+            };
+            if wanted != config.codec {
+                return Exit::Reconfigure(wanted);
+            }
+            // Nothing here this encoder does not already produce, so what the
+            // request is owed is what a reinitialization would have given it:
+            // a picture with no history behind it.
+            force_keyframe = true;
+        }
+
         // Anything the hardware finished while this loop was elsewhere. Never
         // waits: a picture that is not ready costs a driver round trip and the
         // loop goes on to the frame clock.
@@ -753,8 +925,8 @@ fn encode_loop<E: Encoder>(
             shared,
             encoder,
             &mut gate,
-            &active,
-            &mut guests,
+            active,
+            guests,
             &mut in_flight,
             &mut stages,
             started,
@@ -782,9 +954,9 @@ fn encode_loop<E: Encoder>(
             // ticks, so this belongs here and not on the poll pass.
             tick_rate(
                 shared,
-                &active,
-                &mut guests,
-                &mut controllers,
+                active,
+                guests,
+                controllers,
                 &mut samples,
                 &mut budget,
                 encoder,
@@ -795,7 +967,7 @@ fn encode_loop<E: Encoder>(
             // the only recovery is a picture with no history behind it.
             // Throttled like every other request, so a peer failing on every
             // frame cannot ask for one per frame.
-            if refresh_asked(shared, &active) {
+            if refresh_asked(shared, active) {
                 let asked_at = lowlat_common::clock::elapsed_ms(started);
                 force_keyframe |= gate.request_keyframe(asked_at) == Keyframe::Request;
             }
@@ -885,6 +1057,41 @@ fn tick_rate<E: Encoder>(
         // is what keeps the stream unbroken across a reconfigure.
         let _ = encoder.reconfigure(bps);
     }
+}
+
+/// Whether any guest has asked for the encoder to be reinitialized, clearing
+/// the requests.
+fn reconfigure_asked(shared: &Shared, active: &[Active]) -> bool {
+    let mut asked = false;
+    for entry in active {
+        if let Some(seat) = shared.seats.get(entry.seat) {
+            asked |= seat.reconfigure.swap(0, Ordering::Acquire) != 0;
+        }
+    }
+    asked
+}
+
+/// What every seated guest can decode, as the video flag bits.
+///
+/// **The intersection, not the last request.** One encode serves every seat
+/// (docs/00-overview.md D11), so a capability only some of them declare is one
+/// none of them can be sent: granting it would hand the others a stream their
+/// decoders were not built for, and they report that as a decode failure
+/// rather than as a mismatch. With a single seat the intersection is exactly
+/// what that seat asked for, which is the ordinary case.
+///
+/// No seats is no capability, rather than every capability. An empty
+/// intersection is vacuously everything, and acting on that would configure a
+/// stream from nobody's declaration at all.
+fn consensus(shared: &Shared, active: &[Active]) -> u32 {
+    let mut flags: Option<u32> = None;
+    for entry in active {
+        if let Some(seat) = shared.seats.get(entry.seat) {
+            let declared = seat.flags.load(Ordering::Relaxed);
+            flags = Some(flags.map_or(declared, |all| all & declared));
+        }
+    }
+    flags.unwrap_or(0)
 }
 
 /// Whether any guest has asked for a refresh, clearing the requests.
@@ -1243,6 +1450,7 @@ mod tests {
                 encode_us: AtomicU32::new(0),
                 timing: TimingCells::default(),
                 stopping: AtomicU32::new(0),
+                epoch: AtomicU32::new(0),
             });
             let (joins, arrivals) = mpsc::channel();
             let forced = Arc::new(AtomicU32::new(0));
@@ -1256,7 +1464,8 @@ mod tests {
                         queued: std::collections::VecDeque::new(),
                         forced: counter,
                     };
-                    encode_loop(&owned, &arrivals, config, &mut encoder);
+                    let mut roster = Roster::default();
+                    encode_loop(&owned, &arrivals, config, &mut roster, &mut encoder);
                 })
                 .expect("thread");
             Self {
@@ -1276,6 +1485,309 @@ mod tests {
                 .take(wake.handle().expect("handle"))
                 .expect("a free seat")
         }
+    }
+
+    /// A stream whose loop this thread drives, so a return can be observed.
+    fn parked() -> (Arc<Shared>, Stream, mpsc::Receiver<Join>) {
+        let shared = Arc::new(Shared {
+            seats: core::array::from_fn(|_| Seat::new()),
+            pool: Pool::new(POOL_SLOTS, max_frame_bytes()),
+            encode_us: AtomicU32::new(0),
+            timing: TimingCells::default(),
+            stopping: AtomicU32::new(0),
+            epoch: AtomicU32::new(0),
+        });
+        let (joins, arrivals) = mpsc::channel();
+        let stream = Stream {
+            shared: Arc::clone(&shared),
+            joins: Some(joins),
+            thread: None,
+        };
+        (shared, stream, arrivals)
+    }
+
+    fn test_config(codec: Codec) -> Config {
+        Config {
+            width: 320,
+            height: 240,
+            fps: 240,
+            codec,
+            backend: Backend::Open,
+            configured_mbps: 10.0,
+            min_mbps: 1.0,
+            rotation: lowlat_core::video::Rotation::None,
+            detail_rows: 0,
+        }
+    }
+
+    fn fake_encoder() -> Fake {
+        Fake {
+            unit: vec![0x41; 900],
+            queued: std::collections::VecDeque::new(),
+            forced: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    fn seat_of(index: usize) -> Active {
+        let wake = lowlat_net::Wake::new().expect("wake");
+        Active {
+            seat: index,
+            wake: wake.handle().expect("handle"),
+        }
+    }
+
+    /// **The intersection, and it has to be.** One encode serves every seat,
+    /// so a capability only one of them declared is one none of them can be
+    /// sent. Granting it would hand the others a stream their decoders were
+    /// not built for, which they report as a decode failure rather than as a
+    /// mismatch.
+    #[test]
+    fn the_consensus_is_what_every_seat_can_decode() {
+        const BASE: u32 = lowlat_core::init::FLAG_BASE;
+        const HEVC: u32 = lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC;
+
+        let (shared, _stream, _arrivals) = parked();
+        let active = [seat_of(0), seat_of(1)];
+
+        shared.seats[0].flags.store(HEVC, Ordering::Relaxed);
+        shared.seats[1].flags.store(BASE, Ordering::Relaxed);
+        assert_eq!(
+            consensus(&shared, &active),
+            BASE,
+            "one seat's capability was granted on behalf of both"
+        );
+
+        shared.seats[1].flags.store(HEVC, Ordering::Relaxed);
+        assert_eq!(consensus(&shared, &active), HEVC, "agreement was not seen");
+
+        // Vacuously everything is the wrong answer: it would configure a
+        // stream from nobody's declaration at all.
+        assert_eq!(consensus(&shared, &[]), 0, "no seats claimed everything");
+    }
+
+    /// A seat carries its occupant's declaration and not the last one's.
+    #[test]
+    fn a_claimed_seat_declares_nothing_until_its_guest_does() {
+        let (shared, stream, _arrivals) = parked();
+        let held = stream.seats().take(wake_handle()).expect("a seat");
+        held.declare(lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC);
+        held.request_reconfigure();
+        drop(held);
+
+        // The loop frees a leaving seat; do that part by hand.
+        shared.seats[0]
+            .state
+            .store(seat_state::FREE, Ordering::Release);
+        let next = stream.seats().take(wake_handle()).expect("a seat");
+        assert_eq!(
+            shared.seats[0].flags.load(Ordering::Relaxed),
+            0,
+            "the new guest inherited what the last one could decode"
+        );
+        assert_eq!(
+            shared.seats[0].reconfigure.load(Ordering::Relaxed),
+            0,
+            "the new guest inherited a request it never made"
+        );
+        drop(next);
+    }
+
+    /// Watch for something the loop does, then stop the loop.
+    ///
+    /// **The stop is unconditional**, whether or not what was watched for
+    /// happened. A watcher that only stops on success turns a failing
+    /// assertion into a test that hangs, which reports less and costs more.
+    fn watcher(
+        shared: &Arc<Shared>,
+        mut happened: impl FnMut(&Shared) -> bool + Send + 'static,
+    ) -> std::thread::JoinHandle<bool> {
+        let shared = Arc::clone(shared);
+        std::thread::spawn(move || {
+            let began = lowlat_common::clock::Time::now();
+            let mut seen = false;
+            while lowlat_common::clock::elapsed_ms(began) < 2000.0 {
+                if happened(&shared) {
+                    seen = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            shared.stopping.store(1, Ordering::Release);
+            seen
+        })
+    }
+
+    fn wake_handle() -> WakeHandle {
+        lowlat_net::Wake::new()
+            .expect("wake")
+            .handle()
+            .expect("handle")
+    }
+
+    /// **The base flag is set on every declaration and means nothing.**
+    /// Counting it as a capability this pipeline does not emit reported a
+    /// refusal on every ordinary request for the second codec, which is what
+    /// it did until a live run showed the line.
+    #[test]
+    fn the_base_flag_is_not_a_capability_that_can_be_refused() {
+        assert_eq!(
+            lowlat_core::init::FLAG_BASE & NOT_EMITTED,
+            0,
+            "the always-set flag is being read as a request"
+        );
+        let ordinary = lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC;
+        assert_eq!(
+            ordinary & NOT_EMITTED,
+            0,
+            "an ordinary request for the second codec reports something ungranted"
+        );
+        // The two that really are not emitted still are.
+        assert_ne!(lowlat_core::init::FLAG_COLOR444 & NOT_EMITTED, 0);
+        assert_ne!(lowlat_core::init::FLAG_10BIT & NOT_EMITTED, 0);
+    }
+
+    /// **A peer changes what it can decode with a message, not by
+    /// reconnecting.** The loop hands the encoder back and names the codec to
+    /// build instead.
+    #[test]
+    fn a_request_for_the_other_codec_hands_the_encoder_back() {
+        let (shared, stream, arrivals) = parked();
+        let held = stream.seats().take(wake_handle()).expect("a seat");
+        held.declare(lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC);
+        held.request_reconfigure();
+
+        let mut roster = Roster::default();
+        // **A loop that never hands the encoder back would hang here.** The
+        // watchdog turns that into a failed assertion, which says what
+        // happened; a hung test says only that something did. It waits on the
+        // loop rather than on a fixed budget, so it costs nothing when the
+        // loop returns as it should.
+        let done = Arc::new(AtomicU32::new(0));
+        let returned = Arc::clone(&done);
+        let guarded = Arc::clone(&shared);
+        let watchdog = std::thread::spawn(move || {
+            let began = lowlat_common::clock::Time::now();
+            while returned.load(Ordering::Acquire) == 0
+                && lowlat_common::clock::elapsed_ms(began) < 2000.0
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            guarded.stopping.store(1, Ordering::Release);
+        });
+        let exit = encode_loop(
+            &shared,
+            &arrivals,
+            test_config(Codec::H264),
+            &mut roster,
+            &mut fake_encoder(),
+        );
+        done.store(1, Ordering::Release);
+        watchdog.join().expect("watchdog");
+        shared.stopping.store(0, Ordering::Release);
+        assert_eq!(
+            exit,
+            Exit::Reconfigure(Codec::H265),
+            "the request for the other codec was not answered with one"
+        );
+
+        // **The guests outlive the encoder, and the proof is the second
+        // run.** A seat is announced exactly once, when the guest claims it,
+        // so nothing arrives on the channel this time: a loop that rebuilt its
+        // roster would find no guests and publish to nobody, forever, while
+        // every seat still reads as streaming.
+        for guest in &mut roster.guests {
+            guest.mark_skipping();
+        }
+        let ticker = watcher(&shared, |shared| shared.seats[0].ring.pop().is_some());
+        let exit = encode_loop(
+            &shared,
+            &arrivals,
+            test_config(Codec::H265),
+            &mut roster,
+            &mut fake_encoder(),
+        );
+        assert!(
+            ticker.join().expect("ticker"),
+            "the rebuilt loop published to nobody"
+        );
+        assert_eq!(exit, Exit::Stopped);
+        assert_eq!(roster.active.len(), 1, "the seated guest was dropped");
+        assert_eq!(roster.guests.len(), 1);
+        assert_eq!(roster.controllers.len(), 1);
+        drop(held);
+    }
+
+    /// The same request against a stream already producing what was asked for
+    /// is a refresh, not a rebuild: there is nothing to build differently.
+    ///
+    /// **The request is made after the guest has settled**, because a guest
+    /// that has just joined is owed a keyframe anyway. Asking before that
+    /// would let the join keyframe stand in for the answer, and the check
+    /// would pass with the request ignored entirely.
+    #[test]
+    fn a_request_for_what_is_already_running_is_answered_with_a_refresh() {
+        let (shared, stream, arrivals) = parked();
+        let held = stream.seats().take(wake_handle()).expect("a seat");
+        held.declare(lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC);
+
+        let mut roster = Roster::default();
+        let forced = Arc::new(AtomicU32::new(0));
+        let mut encoder = Fake {
+            unit: vec![0x41; 900],
+            queued: std::collections::VecDeque::new(),
+            forced: Arc::clone(&forced),
+        };
+
+        let counted = Arc::clone(&forced);
+        let asked = Arc::clone(&shared);
+        let ticker = std::thread::spawn(move || {
+            let began = lowlat_common::clock::Time::now();
+            let mut settled = None;
+            let mut answered = false;
+            while lowlat_common::clock::elapsed_ms(began) < 3000.0 {
+                // **Keep up on this guest's behalf.** A ring left to fill
+                // latches the guest, and a latched guest is owed a keyframe
+                // for a reason that has nothing to do with this test: the
+                // check would then pass with the request ignored entirely.
+                while let Some(index) = asked.seats[0].ring.pop() {
+                    drop(asked.pool.claim(index));
+                }
+                let now = counted.load(Ordering::Relaxed);
+                match settled {
+                    // The join keyframe, which this test is not about.
+                    None if now > 0 => {
+                        settled = Some(now);
+                        asked.seats[0].reconfigure.store(1, Ordering::Release);
+                    }
+                    Some(before) if now > before => {
+                        answered = true;
+                        break;
+                    }
+                    _ => {}
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            asked.stopping.store(1, Ordering::Release);
+            answered
+        });
+
+        let exit = encode_loop(
+            &shared,
+            &arrivals,
+            test_config(Codec::H265),
+            &mut roster,
+            &mut encoder,
+        );
+        assert!(
+            ticker.join().expect("ticker"),
+            "a settled guest asked to reinitialize and got nothing"
+        );
+        assert_eq!(
+            exit,
+            Exit::Stopped,
+            "an encoder that already fits was rebuilt"
+        );
+        drop(held);
     }
 
     /// Spin until `predicate` holds or the budget runs out, so a test reports

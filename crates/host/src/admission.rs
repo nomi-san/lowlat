@@ -542,17 +542,54 @@ fn drain_control(
     }
 }
 
-/// Pass on a refresh the peer asked for.
+/// Pass on what the peer declared, and any reinitialization it asked for.
 ///
-/// **Taken rather than read**, so one request produces one refresh however
-/// many times the loop passes before the encoder acts on it.
-fn forward_refresh(negotiation: &mut Negotiation, seat: Option<&SeatHold>) {
-    if negotiation.take_force_refresh()
-        && let Some(seat) = seat
-    {
-        lowlat_common::log_info!("guest: peer asked for a refresh");
-        seat.request_refresh();
+/// **Declared first, then the request.** The loop reads every seat's flags
+/// when it takes a reinitialization request, so a request that arrived ahead
+/// of the flags it is asking for would be answered against the old ones.
+///
+/// **Taken rather than read**, so one request produces one reinitialization
+/// however many times the loop passes before the encoder acts on it.
+fn forward_declaration(negotiation: &mut Negotiation, seat: Option<&SeatHold>, declared: &mut u32) {
+    let Some(seat) = seat else { return };
+    let flags = negotiation.flags();
+    if flags != *declared {
+        *declared = flags;
+        seat.declare(flags);
     }
+    if negotiation.take_reconfigure() {
+        lowlat_common::log_info!("guest: peer asked to reinitialize, flags={flags:#x}");
+        seat.request_reconfigure();
+    }
+}
+
+/// Notice that the stream's encoder was rebuilt underneath this guest.
+///
+/// **A new encoder is a new reference chain and a new set of parameter sets.**
+/// The peer learns that from the generation the video header carries, so the
+/// generation moves here and the announcement follows on the next frame,
+/// exactly as it does when a guest first takes a seat. A guest that never
+/// noticed would keep naming the encoder that no longer exists.
+fn follow_epoch(
+    negotiation: &mut Negotiation,
+    packetiser: Option<&mut Packetiser>,
+    seat: Option<&SeatHold>,
+    seen: &mut u32,
+) {
+    let (Some(seat), Some(packetiser)) = (seat, packetiser) else {
+        return;
+    };
+    let epoch = seat.epoch();
+    if epoch == *seen {
+        return;
+    }
+    *seen = epoch;
+    packetiser.reconfigured();
+    negotiation.encoder_initialised(packetiser.generation());
+    lowlat_common::log_info!(
+        "guest: encoder reinitialised, generation={}",
+        packetiser.generation()
+    );
 }
 
 /// Queue everything the stream has published to this guest.
@@ -727,6 +764,13 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     });
     let mut throughput = Throughput::default();
     let mut declared = false;
+    // What was last published to the seat, so a declaration that has not moved
+    // is not republished on every pass.
+    let mut declared_flags = 0u32;
+    // Which encoder this guest's peer has been told about. Set from the seat
+    // rather than from zero, because a guest that joins after a
+    // reinitialization has not missed one.
+    let mut seen_epoch = 0u32;
     let mut inbound_messages: u64 = 0;
     let mut sent: u64 = 0;
     let mut reported_ms = 0.0f64;
@@ -773,7 +817,13 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         }
 
         if let Some(negotiation) = negotiation.as_mut() {
-            forward_refresh(negotiation, seat.as_ref());
+            forward_declaration(negotiation, seat.as_ref(), &mut declared_flags);
+            follow_epoch(
+                negotiation,
+                packetiser.as_mut(),
+                seat.as_ref(),
+                &mut seen_epoch,
+            );
         }
 
         // The path first, then the declaration it carries. A transition seen a
@@ -855,6 +905,9 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                     // a peer learns the reference chain started rather than
                     // inferring it from the stream.
                     negotiation.encoder_initialised(packetiser.generation());
+                    if let Some(seat) = seat.as_ref() {
+                        seen_epoch = seat.epoch();
+                    }
                     // Free insurance: thirteen bytes, no body, and a stock
                     // host sends it before its first frame. The peer stores it
                     // and nothing gates on it, so the cost of sending it is
