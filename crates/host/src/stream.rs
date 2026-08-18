@@ -600,6 +600,14 @@ struct Roster {
     active: Vec<Active>,
     guests: Vec<gate::Guest>,
     controllers: Vec<Controller>,
+    /// **The delivery gate is the session's, not the encoder's.** It carries
+    /// the largest frame the session has produced, and a latched guest is
+    /// retested against that rather than against the frame in hand. Rebuilt
+    /// with the encoder it starts at nothing, so every guest the rebuild
+    /// latched is re-admitted on the next frame whatever its size -- which is
+    /// the keyframe that does not fit, the grant spent, and the spike paid for
+    /// a recovery that did not happen.
+    gate: Gate,
 }
 
 /// The loop.
@@ -777,6 +785,32 @@ fn retire_leaving(shared: &Shared) {
             release(seat, &shared.pool);
             seat.state.store(seat_state::FREE, Ordering::Release);
         }
+    }
+}
+
+/// Bind the rate and the gate to the number of guests sharing the stream.
+///
+/// **The gate's ceiling is the divided rate, not the configured one.** A
+/// guest's room test scales with what that guest is allowed to send, so a
+/// second guest halves both the rate and the window it is measured against.
+fn rebind(
+    budget: &mut Budget,
+    guests_seated: usize,
+    guests: &mut [gate::Guest],
+    controllers: &mut [Controller],
+) {
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "bounded by MAX_SEATS, which is sixteen"
+    )]
+    budget.rebound(guests_seated as u32, controllers);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a rate in megabits, only used to pick one of three ceiling steps"
+    )]
+    let ceiling = budget.ceiling() as f32;
+    for guest in guests.iter_mut() {
+        guest.set_rate(ceiling);
     }
 }
 
@@ -968,7 +1002,6 @@ fn encode_loop<E: Encoder>(
     };
     let mut source =
         Synthetic::with_detail(config.width, config.height, config.detail_rows).with_marker(marker);
-    let mut gate = Gate::new();
     let mut budget = Budget::new(config.configured_mbps, config.min_mbps);
     let mut stages = Stages::default();
 
@@ -980,6 +1013,7 @@ fn encode_loop<E: Encoder>(
         active,
         guests,
         controllers,
+        gate,
     } = roster;
     let mut samples: Vec<Sample> = Vec::with_capacity(MAX_SEATS);
     // Reaching here means an encoder exists, so whatever was asked for was
@@ -989,6 +1023,14 @@ fn encode_loop<E: Encoder>(
             seat.asked_last.store(0, Ordering::Release);
         }
     }
+    // **The budget is new and the guests are not.** It is rebound when a
+    // guest joins or leaves, and a rebuilt encoder is neither, so it would
+    // start again at a count of none and read as undivided. Nothing downstream
+    // reads that count today -- the controllers and the gate ceilings ride in
+    // the roster with their divided bounds intact -- so this states the
+    // invariant rather than repairing a fault, and keeps the loop from
+    // depending on that being true by accident.
+    rebind(&mut budget, active.len(), guests, controllers);
     // When each picture still inside the encoder was captured and submitted,
     // oldest first. **A stamp per picture, not one for the loop**: with more
     // than one in flight, the picture that comes back is not the one that
@@ -1014,23 +1056,7 @@ fn encode_loop<E: Encoder>(
 
         let moved = admit_and_retire(shared, arrivals, config, active, guests, controllers);
         if moved {
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "bounded by MAX_SEATS, which is sixteen"
-            )]
-            budget.rebound(active.len() as u32, controllers);
-            // **The gate's ceiling is the divided rate, not the configured
-            // one.** A guest's room test scales with what that guest is
-            // allowed to send, so a second guest halves both the rate and the
-            // window it is measured against.
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "a rate in megabits, only used to pick one of three ceiling steps"
-            )]
-            let ceiling = budget.ceiling() as f32;
-            for guest in &mut *guests {
-                guest.set_rate(ceiling);
-            }
+            rebind(&mut budget, active.len(), guests, controllers);
         }
         if active.is_empty() {
             std::thread::sleep(IDLE_WAIT);
@@ -1058,6 +1084,17 @@ fn encode_loop<E: Encoder>(
             } else {
                 Codec::H264
             };
+            // **The whole decision on one line.** What every seat agreed on,
+            // how many seats that was over, and what it settles the codec at:
+            // a request that changes nothing and a request that is outvoted
+            // look identical from the outside otherwise.
+            lowlat_common::log_info!(
+                "stream: reinit asked, consensus={:#x} over {} seat(s), codec={:?} -> {:?}",
+                asked,
+                active.len(),
+                config.codec,
+                wanted
+            );
             if wanted != config.codec {
                 return Exit::Reconfigure(wanted);
             }
@@ -1073,7 +1110,7 @@ fn encode_loop<E: Encoder>(
         let collected = collect(
             shared,
             encoder,
-            &mut gate,
+            gate,
             active,
             guests,
             &mut in_flight,
@@ -1571,6 +1608,9 @@ mod tests {
         /// Collects still to be refused, so a device that stops answering can
         /// be played back a chosen number of times.
         refuse: u32,
+        /// Takes frames and produces none, which is how a second run of the
+        /// loop can be made to change nothing it inherited.
+        mute: bool,
     }
 
     #[derive(Debug)]
@@ -1600,6 +1640,9 @@ mod tests {
         }
 
         fn poll(&mut self) -> Result<Poll<'_>, Never> {
+            if self.mute {
+                return Ok(Poll::Pending);
+            }
             if self.refuse > 0 {
                 self.refuse -= 1;
                 return Err(Never);
@@ -1665,6 +1708,7 @@ mod tests {
                         queued: std::collections::VecDeque::new(),
                         forced: counter,
                         refuse: 0,
+                        mute: false,
                     };
                     let mut roster = Roster::default();
                     encode_loop(&owned, &arrivals, config, &mut roster, &mut encoder);
@@ -1728,6 +1772,7 @@ mod tests {
             queued: std::collections::VecDeque::new(),
             forced: Arc::new(AtomicU32::new(0)),
             refuse: 0,
+            mute: false,
         }
     }
 
@@ -1825,6 +1870,105 @@ mod tests {
             .expect("wake")
             .handle()
             .expect("handle")
+    }
+
+    /// **A rebuilt encoder arrives with its guests already seated**, and the
+    /// budget that divides the stream between them does not: it is rebound
+    /// when a guest joins or leaves, which a rebuild is not, so it starts
+    /// again at a count of none and reads as undivided.
+    ///
+    /// **This is an invariant made explicit rather than a defect repaired.**
+    /// Nothing downstream reads the count today: the controllers and the gate
+    /// ceilings ride in the roster with their divided bounds intact, and the
+    /// next join passes the real count anyway. It is written down because the
+    /// loop currently depends on that accident, and a change to how a guest is
+    /// admitted would end it silently.
+    #[test]
+    fn a_rebuilt_encoder_divides_the_stream_between_the_guests_it_inherited() {
+        let (shared, stream, arrivals) = parked();
+        let first = stream.seats().take(wake_handle()).expect("a seat");
+        let second = stream.seats().take(wake_handle()).expect("a seat");
+        first.declare(lowlat_core::init::FLAG_BASE);
+        second.declare(lowlat_core::init::FLAG_BASE);
+
+        // One pass to admit both, which is the state a rebuild inherits.
+        let mut roster = Roster::default();
+        let ticker = watcher(&shared, |shared| {
+            shared.seats[1].ring.pop().is_some() || shared.seats[0].ring.pop().is_some()
+        });
+        let config = test_config(Codec::H264);
+        encode_loop(&shared, &arrivals, config, &mut roster, &mut fake_encoder());
+        ticker.join().expect("ticker");
+        assert_eq!(roster.active.len(), 2, "both guests did not seat");
+        shared.stopping.store(0, Ordering::Release);
+
+        // What entering the loop again with that roster has to do.
+        let mut budget = Budget::new(config.configured_mbps, config.min_mbps);
+        assert!(
+            (budget.ceiling() - config.configured_mbps).abs() < f64::EPSILON,
+            "a fresh budget starts undivided, which is the trap"
+        );
+        rebind(
+            &mut budget,
+            roster.active.len(),
+            &mut roster.guests,
+            &mut roster.controllers,
+        );
+        assert!(
+            (budget.ceiling() - config.configured_mbps / 2.0).abs() < f64::EPSILON,
+            "two guests were each handed the whole stream: {}",
+            budget.ceiling()
+        );
+        drop(first);
+        drop(second);
+    }
+
+    /// **The largest frame the session has produced is the session's, not the
+    /// encoder's.** A latched guest is retested against it, so a rebuild that
+    /// forgot it re-admits every guest it just latched against a mark of
+    /// nothing: the keyframe they need does not fit, the grant is spent, and
+    /// the spike is paid for a recovery that did not happen.
+    #[test]
+    fn a_rebuilt_encoder_keeps_the_largest_frame_the_session_has_seen() {
+        let (shared, stream, arrivals) = parked();
+        let held = stream.seats().take(wake_handle()).expect("a seat");
+        held.declare(lowlat_core::init::FLAG_BASE);
+
+        let mut roster = Roster::default();
+        let ticker = watcher(&shared, |shared| shared.seats[0].ring.pop().is_some());
+        encode_loop(
+            &shared,
+            &arrivals,
+            test_config(Codec::H264),
+            &mut roster,
+            &mut fake_encoder(),
+        );
+        assert!(ticker.join().expect("ticker"), "nothing was delivered");
+        shared.stopping.store(0, Ordering::Release);
+
+        let largest = roster.gate.largest();
+        assert!(largest > 0, "the session never recorded a frame size");
+
+        // **A second run that produces nothing at all**, so what the gate
+        // holds afterwards is only what survived the rebuild. A run that
+        // encoded would re-accumulate a mark and hide the loss.
+        let mut mute = fake_encoder();
+        mute.mute = true;
+        let watchdog = watcher(&shared, |_| false);
+        encode_loop(
+            &shared,
+            &arrivals,
+            test_config(Codec::H265),
+            &mut roster,
+            &mut mute,
+        );
+        watchdog.join().expect("watchdog");
+        assert_eq!(
+            roster.gate.largest(),
+            largest,
+            "the largest frame the session had seen was rebuilt away with the encoder"
+        );
+        drop(held);
     }
 
     /// **The base flag is set on every declaration and means nothing.**
@@ -1940,6 +2084,7 @@ mod tests {
             queued: std::collections::VecDeque::new(),
             forced: Arc::clone(&forced),
             refuse: 0,
+            mute: false,
         };
 
         let counted = Arc::clone(&forced);
