@@ -34,7 +34,7 @@
 //! flight, and every index lost that way is a pool slot that never comes back.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
 use std::sync::mpsc;
 
 use lowlat_capture::synthetic::{Marker, Synthetic};
@@ -46,6 +46,7 @@ use crate::frames::{self, Pool};
 use crate::gate::{self, Gate, Keyframe};
 use crate::timing::{Report, Stages};
 use lowlat_core::congestion::Controller;
+use lowlat_core::control::status;
 
 use crate::rate::{Budget, Sample};
 
@@ -139,6 +140,19 @@ struct Seat {
     /// in the stream that is already running; this asks for a different stream
     /// and is answered by building one.
     reconfigure: AtomicU32,
+    /// Whether this guest's request is the one currently being tried.
+    ///
+    /// Moved here out of [`Seat::reconfigure`] when the request is taken, so
+    /// that a build which then fails can be reported to the guests that asked
+    /// for it and to no others.
+    asked_last: AtomicU32,
+    /// A reason this guest is being ended, or zero.
+    ///
+    /// **Zero is not a reason**, which is what makes it usable as the absent
+    /// value: a peer stops on a non-zero status and carries on through a zero
+    /// one, so there is no status a host would send that could be mistaken for
+    /// no status at all.
+    kick: AtomicI32,
 }
 
 impl Seat {
@@ -153,6 +167,8 @@ impl Seat {
             refresh: AtomicU32::new(0),
             flags: AtomicU32::new(0),
             reconfigure: AtomicU32::new(0),
+            asked_last: AtomicU32::new(0),
+            kick: AtomicI32::new(0),
         }
     }
 }
@@ -415,6 +431,8 @@ impl Seats {
                 // its own initialization landed.
                 seat.flags.store(0, Ordering::Relaxed);
                 seat.reconfigure.store(0, Ordering::Relaxed);
+                seat.asked_last.store(0, Ordering::Relaxed);
+                seat.kick.store(0, Ordering::Relaxed);
                 if joins.send(Join { seat: index, wake }).is_err() {
                     seat.state.store(seat_state::FREE, Ordering::Release);
                     return None;
@@ -516,6 +534,21 @@ impl SeatHold {
         }
     }
 
+    /// Why this guest is being ended, if it is.
+    ///
+    /// Set by the loop, read by the guest, and the guest is what turns it into
+    /// a message: the loop has no session to write to and the guest has no way
+    /// of knowing the encoder is gone.
+    pub fn kicked(&self) -> Option<i32> {
+        let reason = self
+            .shared
+            .seats
+            .get(self.index)?
+            .kick
+            .load(Ordering::Acquire);
+        (reason != 0).then_some(reason)
+    }
+
     /// How many times the stream's encoder has been reinitialized.
     ///
     /// A guest compares this against what it last saw; a change means the
@@ -571,26 +604,6 @@ struct Roster {
 
 /// The loop.
 fn run(shared: &Shared, arrivals: &mpsc::Receiver<Join>, mut config: Config) {
-    // Waiting rather than holding hardware. A host advertises itself long
-    // before anyone connects, and an encoder open across that whole time is a
-    // device another application cannot have.
-    while !occupied(shared) {
-        if shared.stopping.load(Ordering::Acquire) != 0 {
-            return;
-        }
-        std::thread::sleep(IDLE_WAIT);
-    }
-
-    lowlat_common::log_info!(
-        "stream: encoding w={} h={} fps={} ceiling_mbps={:.1} codec={:?} backend={:?}",
-        config.width,
-        config.height,
-        config.fps,
-        config.configured_mbps,
-        config.codec,
-        config.backend
-    );
-
     // **The construction differs and the loop does not.** Each backend owns a
     // device, a context and an encoder whose lifetimes nest, so they are built
     // here and the same generic loop is handed whichever one exists.
@@ -602,23 +615,80 @@ fn run(shared: &Shared, arrivals: &mpsc::Receiver<Join>, mut config: Config) {
     let mut roster = Roster::default();
     let mut previous: Option<Codec> = None;
     loop {
+        // Waiting rather than holding hardware. A host advertises itself long
+        // before anyone connects, and an encoder open across that whole time
+        // is a device another application cannot have.
+        //
+        // **Waited for on every pass, not once.** A build that fails ends the
+        // guests that were waiting on it, and the next guest to arrive is owed
+        // the same attempt: a device busy a moment ago may not be, and one
+        // that is still busy has to say so again rather than leaving the
+        // arrival connected to a thread that gave up before it got here.
+        loop {
+            // **The waiting loop has to retire seats too.** A guest that has
+            // been told the session is over gives its seat back, and only this
+            // thread may empty one; a wait that just tested occupancy would
+            // see the leaving seat, call it occupied, and rebuild the encoder
+            // that had just failed, at whatever rate the device refuses it.
+            retire_leaving(shared);
+            if occupied(shared) {
+                break;
+            }
+            if shared.stopping.load(Ordering::Acquire) != 0 {
+                return;
+            }
+            std::thread::sleep(IDLE_WAIT);
+        }
+
+        lowlat_common::log_info!(
+            "stream: encoding w={} h={} fps={} ceiling_mbps={:.1} codec={:?} backend={:?}",
+            config.width,
+            config.height,
+            config.fps,
+            config.configured_mbps,
+            config.codec,
+            config.backend
+        );
+
         let exit = match config.backend {
             Backend::Open => run_open(shared, arrivals, config, &mut roster),
             Backend::Vendor => run_vendor(shared, arrivals, config, &mut roster),
         };
         match exit {
             Exit::Stopped => return,
-            // **A codec the device refuses is not the end of the stream.** The
-            // one that was running a moment ago worked, so the request is
-            // declined and the guests keep the picture they had rather than
-            // losing it to a configuration nobody can encode.
-            Exit::Failed => {
-                let Some(back) = previous.take() else { return };
+            // **A codec the device refuses is not the end of the stream, but
+            // it is the end for whoever asked.** The encoder that was running
+            // a moment ago worked, so the guests that were watching keep their
+            // picture; the guest that asked has already rebuilt its decoder for
+            // a stream it is never going to receive, and is told so.
+            Exit::Failed(reason) => {
+                let Some(back) = previous.take() else {
+                    lowlat_common::log_error!(
+                        "stream: no encoder for codec={:?}, ending {} guest(s), reason={}",
+                        config.codec,
+                        occupied_seats(shared),
+                        reason
+                    );
+                    kick_all(shared, &roster.active, reason);
+                    // Back to waiting rather than out. The seats free as their
+                    // guests read the reason, and the next arrival gets its own
+                    // attempt at the device.
+                    //
+                    // **Paced, because the guests do not leave instantly.**
+                    // They have to notice, say goodbye and be retired, and
+                    // rebuilding on every pass until then asks a device that
+                    // just refused for an encoder thousands of times a second.
+                    roster = Roster::default();
+                    std::thread::sleep(IDLE_WAIT);
+                    continue;
+                };
                 lowlat_common::log_warn!(
-                    "stream: codec={:?} could not be configured, staying on {:?}",
+                    "stream: codec={:?} could not be configured (reason={}), staying on {:?}",
                     config.codec,
+                    reason,
                     back
                 );
+                kick_asked(shared, &roster.active, reason);
                 config.codec = back;
             }
             Exit::Reconfigure(codec) => {
@@ -648,11 +718,75 @@ fn run(shared: &Shared, arrivals: &mpsc::Receiver<Join>, mut config: Config) {
 enum Exit {
     /// The host is stopping.
     Stopped,
-    /// The encoder could not be built at all.
-    Failed,
+    /// The encoder could not be built, or stopped working, and the guests are
+    /// owed the reason.
+    Failed(i32),
     /// Every seated guest can decode this codec, and at least one asked for a
     /// configuration the running encoder does not produce.
     Reconfigure(Codec),
+}
+
+/// End the guests that asked for the configuration that could not be built.
+///
+/// **Only they are owed this.** A peer rebuilds its decoder the moment it asks
+/// rather than waiting to be told the request was granted, so a guest whose
+/// request failed is holding a decoder for a stream that will never arrive.
+/// The guests that asked for nothing are still watching the encoder that
+/// worked a moment ago.
+fn kick_asked(shared: &Shared, active: &[Active], reason: i32) {
+    for entry in active {
+        if let Some(seat) = shared.seats.get(entry.seat)
+            && seat.asked_last.swap(0, Ordering::AcqRel) != 0
+        {
+            seat.kick.store(reason, Ordering::Release);
+            let _ = entry.wake.notify();
+        }
+    }
+}
+
+/// End every seated guest, with a reason.
+///
+/// **The loop cannot send anything itself.** It owns no session; each guest
+/// owns its own and is the only thing that can write to its peer. So the
+/// reason is left on the seat and the guest turns it into a message.
+fn kick_all(shared: &Shared, active: &[Active], reason: i32) {
+    // **Every occupied seat, not only the ones the loop knows about.** A seat
+    // is promoted into the roster on the loop's first pass, so a build that
+    // fails before that has a guest holding a seat and no entry to find it by,
+    // and it was left connected to nothing until its own deadline noticed.
+    for seat in &shared.seats {
+        if seat.state.load(Ordering::Acquire) != seat_state::FREE {
+            seat.kick.store(reason, Ordering::Release);
+        }
+    }
+    // The wake is an optimisation over the guest's own polling, and only the
+    // seats the loop has admitted have a handle to wake by.
+    for entry in active {
+        let _ = entry.wake.notify();
+    }
+}
+
+/// Give back the seats whose guests have left.
+///
+/// **Only this thread may**, which is the seat protocol's whole point: the
+/// loop is the only pusher, so it is the only thing that can know nothing more
+/// is going into a ring. See the module note.
+fn retire_leaving(shared: &Shared) {
+    for seat in &shared.seats {
+        if seat.state.load(Ordering::Acquire) == seat_state::LEAVING {
+            release(seat, &shared.pool);
+            seat.state.store(seat_state::FREE, Ordering::Release);
+        }
+    }
+}
+
+/// Seats with a guest on them, admitted or not.
+fn occupied_seats(shared: &Shared) -> usize {
+    shared
+        .seats
+        .iter()
+        .filter(|seat| seat.state.load(Ordering::Acquire) != seat_state::FREE)
+        .count()
 }
 
 /// Capability bits a peer can declare that this pipeline does not emit.
@@ -700,24 +834,24 @@ fn run_open(
     };
     let Ok(display) = lowlat_encode::vaapi::Vaapi::load() else {
         lowlat_common::log_error!("stream: display runtime unavailable, nothing will encode");
-        return Exit::Failed;
+        return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
     let Ok(display) = display.open(c"/dev/dri/renderD128") else {
         lowlat_common::log_error!("stream: render node could not be opened");
-        return Exit::Failed;
+        return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
     let Ok(caps) = display.caps(codec) else {
         lowlat_common::log_error!("stream: render node reports no encode for codec={codec:?}");
-        return Exit::Failed;
+        return Exit::Failed(status::ENCODER_CAPABILITIES);
     };
     let Ok(context) = display.create_context(caps, config.width, config.height, ENCODE_DEPTH)
     else {
         lowlat_common::log_error!("stream: encode context could not be created");
-        return Exit::Failed;
+        return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
     let Ok(mut encoder) = context.encoder(params, start_bps(config)) else {
         lowlat_common::log_error!("stream: encoder could not be configured");
-        return Exit::Failed;
+        return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
     encode_loop(shared, arrivals, config, roster, &mut encoder)
 }
@@ -730,23 +864,23 @@ fn run_vendor(
 ) -> Exit {
     let Ok(cuda) = lowlat_encode::cuda::Cuda::load() else {
         lowlat_common::log_error!("stream: compute runtime unavailable, nothing will encode");
-        return Exit::Failed;
+        return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
     let Ok(device) = cuda.any_device() else {
         lowlat_common::log_error!("stream: no compute device");
-        return Exit::Failed;
+        return Exit::Failed(status::ENCODER_CAPABILITIES);
     };
     let Ok(compute) = cuda.retain_primary(&device) else {
         lowlat_common::log_error!("stream: compute context could not be retained");
-        return Exit::Failed;
+        return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
     let Ok(api) = lowlat_encode::nvenc::Api::load() else {
         lowlat_common::log_error!("stream: encoder runtime unavailable");
-        return Exit::Failed;
+        return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
     let Ok(session) = api.open_session(compute) else {
         lowlat_common::log_error!("stream: encode session could not be opened");
-        return Exit::Failed;
+        return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
     let Ok(mut encoder) = session.initialize(
         &cuda,
@@ -763,7 +897,7 @@ fn run_vendor(
         },
     ) else {
         lowlat_common::log_error!("stream: encoder could not be configured");
-        return Exit::Failed;
+        return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
     encode_loop(shared, arrivals, config, roster, &mut encoder)
 }
@@ -793,6 +927,13 @@ const IDLE_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
 
 /// Pictures the encoder may hold at once.
 const ENCODE_DEPTH: usize = 4;
+
+/// Collects in a row that must fail before the encoder is called stopped.
+///
+/// **Not one.** A device can refuse a single collect and answer the next, and
+/// ending every guest over one refusal would turn a hiccup into a
+/// disconnection. A run of them is a device that is not coming back.
+const COLLECT_FAILURES: u32 = 5;
 
 fn occupied(shared: &Shared) -> bool {
     shared
@@ -841,6 +982,13 @@ fn encode_loop<E: Encoder>(
         controllers,
     } = roster;
     let mut samples: Vec<Sample> = Vec::with_capacity(MAX_SEATS);
+    // Reaching here means an encoder exists, so whatever was asked for was
+    // granted and nobody is owed a refusal for it.
+    for entry in active.iter() {
+        if let Some(seat) = shared.seats.get(entry.seat) {
+            seat.asked_last.store(0, Ordering::Release);
+        }
+    }
     // When each picture still inside the encoder was captured and submitted,
     // oldest first. **A stamp per picture, not one for the loop**: with more
     // than one in flight, the picture that comes back is not the one that
@@ -857,6 +1005,7 @@ fn encode_loop<E: Encoder>(
     let mut previous_submit: Option<lowlat_common::clock::Time> = None;
     let mut force_keyframe = false;
     let mut since_report = 0u32;
+    let mut failures = 0u32;
 
     loop {
         if shared.stopping.load(Ordering::Acquire) != 0 {
@@ -921,7 +1070,7 @@ fn encode_loop<E: Encoder>(
         // Anything the hardware finished while this loop was elsewhere. Never
         // waits: a picture that is not ready costs a driver round trip and the
         // loop goes on to the frame clock.
-        force_keyframe |= collect(
+        let collected = collect(
             shared,
             encoder,
             &mut gate,
@@ -931,6 +1080,18 @@ fn encode_loop<E: Encoder>(
             &mut stages,
             started,
         );
+        force_keyframe |= collected.keyframe;
+        // **A stopped encoder used to be a log line per pass, forever.** The
+        // guests went on holding seats and receiving nothing, and the only
+        // thing that eventually noticed was each peer's own liveness deadline.
+        failures = if collected.failed { failures + 1 } else { 0 };
+        if failures >= COLLECT_FAILURES {
+            lowlat_common::log_error!(
+                "stream: encoder stopped answering after {failures} attempts, ending {} guest(s)",
+                active.len()
+            );
+            return Exit::Failed(status::ENCODE_FAILED);
+        }
 
         let now_ms = lowlat_common::clock::elapsed_ms(started);
         if now_ms >= next_frame_ms {
@@ -1065,7 +1226,13 @@ fn reconfigure_asked(shared: &Shared, active: &[Active]) -> bool {
     let mut asked = false;
     for entry in active {
         if let Some(seat) = shared.seats.get(entry.seat) {
-            asked |= seat.reconfigure.swap(0, Ordering::Acquire) != 0;
+            let this = seat.reconfigure.swap(0, Ordering::AcqRel) != 0;
+            // Remembered rather than only counted, so a build that fails can
+            // be reported to whoever asked for it.
+            if this {
+                seat.asked_last.store(1, Ordering::Release);
+            }
+            asked |= this;
         }
     }
     asked
@@ -1174,6 +1341,19 @@ fn release(seat: &Seat, pool: &Pool) {
     }
 }
 
+/// What one pass of collecting found.
+#[derive(Debug, Clone, Copy)]
+struct Collected {
+    /// A guest is latched and wants a keyframe.
+    keyframe: bool,
+    /// The encoder refused to answer.
+    ///
+    /// **One of these is not a fault.** A device can refuse a single collect
+    /// for reasons that clear on the next pass, so what says an encoder has
+    /// stopped is a run of them, and the run is what the loop counts.
+    failed: bool,
+}
+
 /// Take whatever the encoder has finished, and deliver each picture.
 ///
 /// Returns whether a keyframe was asked for. **Never waits.** A picture that
@@ -1195,15 +1375,23 @@ fn collect<E: Encoder>(
     )>,
     stages: &mut Stages,
     started: lowlat_common::clock::Time,
-) -> bool {
+) -> Collected {
     let mut wanted = false;
     loop {
         match encoder.poll() {
             Err(_) => {
                 lowlat_common::log_error!("stream: collect failed");
-                return wanted;
+                return Collected {
+                    keyframe: wanted,
+                    failed: true,
+                };
             }
-            Ok(Poll::Pending) => return wanted,
+            Ok(Poll::Pending) => {
+                return Collected {
+                    keyframe: wanted,
+                    failed: false,
+                };
+            }
             Ok(Poll::Ready {
                 bitstream,
                 keyframe,
@@ -1246,7 +1434,10 @@ fn collect<E: Encoder>(
                         guest.mark_skipping();
                     }
                     wanted |= gate.request_keyframe(now_ms) == Keyframe::Request;
-                    return wanted;
+                    return Collected {
+                        keyframe: wanted,
+                        failed: false,
+                    };
                 };
                 if !writer.fill(bitstream) {
                     // A sizing error rather than a transient one: the slot is
@@ -1259,7 +1450,10 @@ fn collect<E: Encoder>(
                         guest.mark_skipping();
                     }
                     wanted |= gate.request_keyframe(now_ms) == Keyframe::Request;
-                    return wanted;
+                    return Collected {
+                        keyframe: wanted,
+                        failed: false,
+                    };
                 }
 
                 let mut picked = [0usize; MAX_SEATS];
@@ -1374,6 +1568,9 @@ mod tests {
         /// Refresh requests seen, which is how the recovery path is observed
         /// from outside the gate.
         forced: Arc<AtomicU32>,
+        /// Collects still to be refused, so a device that stops answering can
+        /// be played back a chosen number of times.
+        refuse: u32,
     }
 
     #[derive(Debug)]
@@ -1403,6 +1600,10 @@ mod tests {
         }
 
         fn poll(&mut self) -> Result<Poll<'_>, Never> {
+            if self.refuse > 0 {
+                self.refuse -= 1;
+                return Err(Never);
+            }
             let Some(keyframe) = self.queued.pop_front() else {
                 return Ok(Poll::Pending);
             };
@@ -1463,6 +1664,7 @@ mod tests {
                         unit: vec![0x41; 900],
                         queued: std::collections::VecDeque::new(),
                         forced: counter,
+                        refuse: 0,
                     };
                     let mut roster = Roster::default();
                     encode_loop(&owned, &arrivals, config, &mut roster, &mut encoder);
@@ -1525,6 +1727,7 @@ mod tests {
             unit: vec![0x41; 900],
             queued: std::collections::VecDeque::new(),
             forced: Arc::new(AtomicU32::new(0)),
+            refuse: 0,
         }
     }
 
@@ -1736,6 +1939,7 @@ mod tests {
             unit: vec![0x41; 900],
             queued: std::collections::VecDeque::new(),
             forced: Arc::clone(&forced),
+            refuse: 0,
         };
 
         let counted = Arc::clone(&forced);
@@ -1788,6 +1992,132 @@ mod tests {
             "an encoder that already fits was rebuilt"
         );
         drop(held);
+    }
+
+    /// **A stopped encoder used to be a log line per pass, forever.** The
+    /// guests kept their seats and received nothing, and the only thing that
+    /// eventually noticed was each peer's own liveness deadline.
+    #[test]
+    fn an_encoder_that_stops_answering_ends_the_guests_with_a_reason() {
+        let (shared, stream, arrivals) = parked();
+        let held = stream.seats().take(wake_handle()).expect("a seat");
+        held.declare(lowlat_core::init::FLAG_BASE);
+
+        let mut roster = Roster::default();
+        let mut encoder = fake_encoder();
+        encoder.refuse = u32::MAX;
+        // A loop that never notices would hang here rather than fail.
+        let done = Arc::new(AtomicU32::new(0));
+        let returned = Arc::clone(&done);
+        let guarded = Arc::clone(&shared);
+        let watchdog = std::thread::spawn(move || {
+            let began = lowlat_common::clock::Time::now();
+            while returned.load(Ordering::Acquire) == 0
+                && lowlat_common::clock::elapsed_ms(began) < 2000.0
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            guarded.stopping.store(1, Ordering::Release);
+        });
+        let exit = encode_loop(
+            &shared,
+            &arrivals,
+            test_config(Codec::H264),
+            &mut roster,
+            &mut encoder,
+        );
+        done.store(1, Ordering::Release);
+        watchdog.join().expect("watchdog");
+        shared.stopping.store(0, Ordering::Release);
+        assert_eq!(
+            exit,
+            Exit::Failed(status::ENCODE_FAILED),
+            "an encoder that answered nothing was never noticed"
+        );
+        assert_eq!(
+            held.kicked(),
+            None,
+            "the loop kicked before anyone was told"
+        );
+
+        // The reason is left on the seat by the caller of the loop, because
+        // only the guest can turn it into a message.
+        kick_all(&shared, &roster.active, status::ENCODE_FAILED);
+        assert_eq!(held.kicked(), Some(status::ENCODE_FAILED));
+    }
+
+    /// **One refusal is not a stopped device.** A device can refuse a collect
+    /// and answer the next, and ending every guest over that turns a hiccup
+    /// into a disconnection.
+    ///
+    /// **Written against literals, not against the threshold.** Stating the
+    /// count as `COLLECT_FAILURES - 1` makes the check move with the constant,
+    /// so lowering the constant to one leaves this refusing nothing at all and
+    /// passing while a single hiccup ends every session.
+    #[test]
+    fn a_single_refusal_is_not_a_stopped_encoder() {
+        for refusals in [1u32, 2] {
+            let (shared, stream, arrivals) = parked();
+            let held = stream.seats().take(wake_handle()).expect("a seat");
+            held.declare(lowlat_core::init::FLAG_BASE);
+
+            let mut roster = Roster::default();
+            let mut encoder = fake_encoder();
+            encoder.refuse = refusals;
+            let watchdog = watcher(&shared, |_| false);
+            let exit = encode_loop(
+                &shared,
+                &arrivals,
+                test_config(Codec::H264),
+                &mut roster,
+                &mut encoder,
+            );
+            watchdog.join().expect("watchdog");
+            assert_eq!(
+                exit,
+                Exit::Stopped,
+                "{refusals} refusal(s) in a row ended the guests"
+            );
+            drop(held);
+        }
+    }
+
+    /// A reason reaches every seat, and a seat carries it until its guest
+    /// reads it.
+    #[test]
+    fn a_reason_reaches_every_seat() {
+        let (shared, stream, _arrivals) = parked();
+        let first = stream.seats().take(wake_handle()).expect("a seat");
+        let second = stream.seats().take(wake_handle()).expect("a seat");
+        let active = [seat_of(0), seat_of(1)];
+
+        assert_eq!(first.kicked(), None);
+        kick_all(&shared, &active, status::NO_ROOM);
+        assert_eq!(first.kicked(), Some(status::NO_ROOM));
+        assert_eq!(second.kicked(), Some(status::NO_ROOM));
+    }
+
+    /// **Only the guests that asked.** A peer rebuilds its decoder the moment
+    /// it asks rather than waiting to be told, so a guest whose request failed
+    /// holds a decoder for a stream that will never arrive. The guests that
+    /// asked for nothing are still watching an encoder that works.
+    #[test]
+    fn a_failed_request_ends_only_whoever_asked_for_it() {
+        let (shared, stream, _arrivals) = parked();
+        let asker = stream.seats().take(wake_handle()).expect("a seat");
+        let watcher = stream.seats().take(wake_handle()).expect("a seat");
+        let active = [seat_of(0), seat_of(1)];
+
+        asker.request_reconfigure();
+        assert!(reconfigure_asked(&shared, &active), "the request was lost");
+        kick_asked(&shared, &active, status::ENCODER_UNAVAILABLE);
+
+        assert_eq!(asker.kicked(), Some(status::ENCODER_UNAVAILABLE));
+        assert_eq!(
+            watcher.kicked(),
+            None,
+            "a guest that asked for nothing lost its picture"
+        );
     }
 
     /// Spin until `predicate` holds or the budget runs out, so a test reports

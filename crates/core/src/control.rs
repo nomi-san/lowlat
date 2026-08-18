@@ -84,6 +84,30 @@ pub mod op {
     }
 }
 
+/// What the disconnect opcode's first argument carries.
+///
+/// **A peer renders these; they are not ours to invent.** Each one names a
+/// reason a session ended in terms the peer already has a string for, so a
+/// value outside the set shows as a blank reason rather than as an error.
+///
+/// **Never zero.** A peer stores the status and stops on a non-zero one, so a
+/// disconnect carrying zero fires its callback and leaves the session running,
+/// which reads as a host that said goodbye and kept streaming.
+pub mod status {
+    /// Every seat is taken.
+    pub const NO_ROOM: i32 = 11;
+    /// No encoder could be built for what was asked of it.
+    ///
+    /// This is the one a peer gets when it asks for a configuration the device
+    /// will not encode, because the failure surfaces as an encoder that will
+    /// not initialize rather than as a capability answered in advance.
+    pub const ENCODER_UNAVAILABLE: i32 = -15000;
+    /// A picture failed to encode.
+    pub const ENCODE_FAILED: i32 = -15002;
+    /// The device would not say what it can encode.
+    pub const ENCODER_CAPABILITIES: i32 = -15110;
+}
+
 /// A control message: header plus whatever body followed it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Control<'a> {

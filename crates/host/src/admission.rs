@@ -21,7 +21,7 @@ use std::sync::mpsc;
 
 use lowlat_core::channel::{RecvRing, SlotMeta};
 use lowlat_core::conn::{Conn, Credentials};
-use lowlat_core::control::{self, CONTROL_CHANNEL};
+use lowlat_core::control::{self, CONTROL_CHANNEL, status};
 use lowlat_core::endpoint::Endpoint;
 use lowlat_core::envelope::{Cipher, ENVELOPE_LEN, Envelope};
 use lowlat_core::packet::HEADER_LEN;
@@ -35,6 +35,15 @@ use crate::video::Packetiser;
 
 /// Video, stream 0. See docs/01-protocol.md section 6.
 const VIDEO_CHANNEL: u8 = 1;
+
+/// How long a session stays up after the peer has been told it is over.
+///
+/// **The reason rides a reliable channel**, so it is retransmitted if the
+/// first attempt is lost. Tearing the session down on the pass that queued it
+/// throws the message away with the ring it is sitting in, and the peer is
+/// left to discover the disconnection from its own liveness deadline, which is
+/// exactly what saying why was meant to avoid.
+const KICK_GRACE_MS: f64 = 250.0;
 
 /// What one fragment carries, and therefore what one ring slot holds.
 ///
@@ -138,6 +147,13 @@ pub enum Outcome {
     /// A message that cannot be taken does not advance the channel, so this is
     /// terminal rather than a frame to skip.
     ControlStalled,
+    /// The host ended it, and told the peer why.
+    ///
+    /// **The only outcome the peer is given a reason for.** Every other one
+    /// here is something that happened to the session; this is a decision, and
+    /// a decision the peer is not told about is indistinguishable from a host
+    /// that stopped working.
+    Kicked(i32),
 }
 
 /// What the offer told us about the peer.
@@ -563,6 +579,28 @@ fn forward_declaration(negotiation: &mut Negotiation, seat: Option<&SeatHold>, d
     }
 }
 
+/// Tell the peer the session is over, and why.
+///
+/// **Sent before the session is torn down, not after.** The message rides the
+/// control channel like any other and needs a turn of the shell to reach the
+/// wire; a caller that returns immediately drops it.
+fn send_disconnect(session: &mut Session<'_>, reason: i32) {
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "the status is a signed value carried in an unsigned argument, and the peer                   reads it back as signed"
+    )]
+    send_control(
+        session,
+        &control::Control {
+            a0: reason as u32,
+            a1: 0,
+            a2: 0,
+            opcode: control::op::DISCONNECT,
+            body: &[],
+        },
+    );
+}
+
 /// Notice that the stream's encoder was rebuilt underneath this guest.
 ///
 /// **A new encoder is a new reference chain and a new set of parameter sets.**
@@ -771,6 +809,9 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     // rather than from zero, because a guest that joins after a
     // reinitialization has not missed one.
     let mut seen_epoch = 0u32;
+    // Why this session is ending and when that was decided, so the message has
+    // time to reach the peer before the session goes away.
+    let mut kicked: Option<(i32, f64)> = None;
     let mut inbound_messages: u64 = 0;
     let mut sent: u64 = 0;
     let mut reported_ms = 0.0f64;
@@ -845,6 +886,33 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 return;
             }
             _ => {}
+        }
+
+        // **Decided elsewhere, said here.** The stream thread owns no session
+        // and cannot write to a peer; this is the only place that can, so the
+        // reason it left on the seat becomes a message.
+        if kicked.is_none()
+            && let Some(reason) = seat.as_ref().and_then(SeatHold::kicked)
+        {
+            lowlat_common::log_info!("guest: ending this session, reason={reason}");
+            send_disconnect(shell.endpoint().session(), reason);
+            // The seat goes back now rather than at the end of the grace
+            // below: nothing more is going to be sent on it, and a seat held
+            // open is capacity another guest cannot have.
+            seat = None;
+            kicked = Some((reason, now));
+        }
+        // **The message is on a reliable channel and needs time to get
+        // there.** Returning on the pass that queued it tears the session down
+        // with the reason still in the ring, and the peer learns nothing.
+        if let Some((reason, at)) = kicked
+            && now - at >= KICK_GRACE_MS
+        {
+            let _ = args.emit.send(Event::Ended {
+                attempt: args.attempt_id.clone(),
+                outcome: Outcome::Kicked(reason),
+            });
+            return;
         }
 
         if let Some(negotiation) = negotiation.as_mut()
@@ -923,7 +991,16 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                         },
                     );
                 }
-                _ => lowlat_common::log_warn!("guest: no seat free, streaming nothing"),
+                // **Capacity is the one refusal that used to be silent.** The
+                // offer was accepted and the path was built, and then the
+                // guest sat connected receiving nothing until its own liveness
+                // deadline noticed, minutes later.
+                (false, _, _) => {
+                    lowlat_common::log_warn!("guest: every seat is taken");
+                    send_disconnect(shell.endpoint().session(), status::NO_ROOM);
+                    kicked = Some((status::NO_ROOM, now));
+                }
+                _ => lowlat_common::log_warn!("guest: seated with nothing to send on"),
             }
         }
 

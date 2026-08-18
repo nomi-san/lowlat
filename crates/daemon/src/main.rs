@@ -25,6 +25,8 @@ const SDK_V: u32 = 0x0006_0000;
 /// Advertised capacity, and the only policy the seam applies. Read once and
 /// handed to both the seam and the advertisement, so the listing cannot promise
 /// more than admission will grant.
+/// Seats a host offers unless told otherwise. The compile-time cap is the
+/// stream's, and a request above it is clamped rather than refused.
 const MAX_GUESTS: u32 = 4;
 
 /// Base port every guest's bind walks from.
@@ -99,7 +101,7 @@ fn occupancy(seam: &Admission) -> u32 {
     u32::try_from(seam.occupancy()).unwrap_or(u32::MAX)
 }
 
-fn advertisement(name: &str, players: u32) -> ConnUpdate {
+fn advertisement(name: &str, capacity: u32, players: u32) -> ConnUpdate {
     ConnUpdate {
         loader_v: 0,
         service_v: 0,
@@ -114,7 +116,7 @@ fn advertisement(name: &str, players: u32) -> ConnUpdate {
         desc: String::new(),
         game_id: String::new(),
         secret: String::new(),
-        max_players: MAX_GUESTS,
+        max_players: capacity,
         players,
         is_public: false,
         guests: Vec::new(),
@@ -188,6 +190,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // picture; a band makes frames large enough to need more than one
     // fragment, which is the only way a peer's reassembly is exercised.
     let detail_rows: u32 = flag("--detail").and_then(|v| v.parse().ok()).unwrap_or(0);
+    // Advertised capacity, and the number of seats the stream offers. Read
+    // from here rather than hardcoded, so the two cannot disagree.
+    let max_guests: u32 = flag("--max-guests")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(MAX_GUESTS)
+        .clamp(
+            1,
+            u32::try_from(lowlat::stream::MAX_SEATS).unwrap_or(MAX_GUESTS),
+        );
     // **One-based, because zero means unspecified rather than upright.** The
     // coded picture stays landscape whatever this says; a quarter turn changes
     // what the peer presents and what it maps pointer coordinates against.
@@ -211,7 +222,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut seam = Admission::new(Config {
         base_port,
-        max_guests: MAX_GUESTS as usize,
+        max_guests: max_guests as usize,
         servers: vec![stun],
         stream: Some(lowlat::stream::Config {
             codec,
@@ -259,6 +270,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     &mut peers,
                     &mut established,
                     &name,
+                    max_guests,
                     local,
                     reject_all,
                 )
@@ -311,6 +323,7 @@ async fn session_loop(
     peers: &mut std::collections::HashMap<String, String>,
     established: &mut std::collections::HashSet<String>,
     name: &str,
+    capacity: u32,
     local: Option<IpAddr>,
     reject_all: bool,
 ) -> Result<bool, Box<dyn std::error::Error>> {
@@ -318,9 +331,12 @@ async fn session_loop(
     // the frame that registers the session, so a reconnect without it is a
     // connection the service has not associated with this host.
     let _ = client.send_text("__ping__");
-    client.send("conn_update", &advertisement(name, occupancy(seam)))?;
+    client.send(
+        "conn_update",
+        &advertisement(name, capacity, occupancy(seam)),
+    )?;
     println!(
-        "lowlatd: advertised as {name:?}, capacity {MAX_GUESTS}, {} guest(s) carried over",
+        "lowlatd: advertised as {name:?}, capacity {capacity}, {} guest(s) carried over",
         seam.occupancy()
     );
 
@@ -409,7 +425,7 @@ async fn session_loop(
                         println!("lowlatd: cancelled {}", cancel.attempt_id);
                         seam.end_connection(&cancel.attempt_id);
                         peers.remove(&cancel.attempt_id);
-                        client.send("conn_update", &advertisement(name, occupancy(seam)))?;
+                        client.send("conn_update", &advertisement(name, capacity, occupancy(seam)))?;
                     }
                     // The service closes with a reason, and the reason is the
                     // only thing that distinguishes a bad session from a host
@@ -466,7 +482,10 @@ async fn session_loop(
                 Event::Established { attempt, addr } => {
                     println!("lowlatd: established {attempt} over {addr}");
                     established.insert(attempt.clone());
-                    client.send("conn_update", &advertisement(name, occupancy(seam)))?;
+                    client.send(
+                        "conn_update",
+                        &advertisement(name, capacity, occupancy(seam)),
+                    )?;
                 }
                 // The enum is non-exhaustive, so a catch-all is required across
                 // the crate boundary even though it is the shape this project
@@ -480,7 +499,10 @@ async fn session_loop(
                     seam.end_connection(&attempt);
                     peers.remove(&attempt);
                     established.remove(&attempt);
-                    client.send("conn_update", &advertisement(name, occupancy(seam)))?;
+                    client.send(
+                        "conn_update",
+                        &advertisement(name, capacity, occupancy(seam)),
+                    )?;
                 }
                 other => println!("lowlatd: unhandled seam event {other:?}"),
             }
