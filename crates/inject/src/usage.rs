@@ -90,6 +90,22 @@ pub fn key_code(usage: u16) -> Option<u16> {
     (code != 0).then_some(code)
 }
 
+/// The code hardware reports alongside a key, or `None` when the peer's code
+/// is not one hardware could have scanned.
+///
+/// A real keyboard announces the raw code it read before the key it decided
+/// on, and consumers that correlate the two get the same from this host. The
+/// codes a peer sends above the usage range are the peer's own invention and
+/// never appeared on any wire, so nothing is announced for them rather than
+/// announcing a code that does not exist.
+#[must_use]
+pub fn scan_code(usage: u16) -> Option<i32> {
+    (usage <= 255).then(|| USAGE_PAGE | i32::from(usage))
+}
+
+/// The standard's keyboard page, which the scanned code is qualified by.
+const USAGE_PAGE: i32 = 0x0007_0000;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,6 +172,13 @@ mod tests {
     fn both_names_for_the_context_menu_key_reach_it() {
         assert_eq!(key_code(101), Some(127));
         assert_eq!(key_code(118), Some(127));
+    }
+
+    #[test]
+    fn a_scanned_code_is_qualified_by_the_page_it_belongs_to() {
+        assert_eq!(scan_code(4), Some(0x0007_0004));
+        assert_eq!(scan_code(255), Some(0x0007_00ff));
+        assert_eq!(scan_code(258), None);
     }
 
     /// An override shadows the table rather than being an entry in it, so it

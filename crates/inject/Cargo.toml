@@ -10,6 +10,7 @@ authors.workspace = true
 
 [dependencies]
 lowlat-common.workspace = true
+lowlat-core.workspace = true
 
 [lints]
 workspace = true

@@ -7,4 +7,5 @@
 #![warn(missing_debug_implementations)]
 #![deny(clippy::indexing_slicing, clippy::unwrap_used, clippy::expect_used)]
 
+pub mod event;
 pub mod usage;
