@@ -464,22 +464,40 @@ unsafe fn bswap(x: __m128i) -> __m128i {
     _mm_shuffle_epi8(x, mask)
 }
 
-/// Carry-less 128x128 into 256 bits, no reduction. Four multiplies rather than
-/// Karatsuba's three: the extra xor chain does not pay for itself next to the
-/// AES work this is interleaved with.
+/// Carry-less 128x128, Karatsuba, returning the three partial products
+/// unassembled.
+///
+/// Three multiplies rather than schoolbook's four. The carry-less multiply
+/// issues on one port and the AES rounds on another, so on a packet this size
+/// the multiply count is the binding constraint and dropping a quarter of them
+/// is worth the two shuffles it costs.
+///
+/// The caller assembles them, because assembly is linear over xor and can
+/// therefore be deferred to the end of a whole group.
 ///
 /// # Safety
 /// PCLMULQDQ must be present.
 #[target_feature(enable = "pclmulqdq,sse2")]
-unsafe fn clmul_wide(a: __m128i, b: __m128i) -> (__m128i, __m128i) {
-    let t0 = _mm_clmulepi64_si128::<0x00>(a, b);
-    let t1 = _mm_clmulepi64_si128::<0x10>(a, b);
-    let t2 = _mm_clmulepi64_si128::<0x01>(a, b);
-    let t3 = _mm_clmulepi64_si128::<0x11>(a, b);
-    let mid = _mm_xor_si128(t1, t2);
+unsafe fn clmul_wide(a: __m128i, b: __m128i) -> (__m128i, __m128i, __m128i) {
+    let fold_a = _mm_xor_si128(a, _mm_shuffle_epi32::<0x4e>(a));
+    let fold_b = _mm_xor_si128(b, _mm_shuffle_epi32::<0x4e>(b));
     (
-        _mm_xor_si128(t0, _mm_slli_si128::<8>(mid)),
-        _mm_xor_si128(t3, _mm_srli_si128::<8>(mid)),
+        _mm_clmulepi64_si128::<0x00>(a, b),
+        _mm_clmulepi64_si128::<0x00>(fold_a, fold_b),
+        _mm_clmulepi64_si128::<0x11>(a, b),
+    )
+}
+
+/// Assemble summed Karatsuba partials into the 256-bit product.
+///
+/// # Safety
+/// SSE2 must be present.
+#[target_feature(enable = "sse2")]
+unsafe fn assemble(lo: __m128i, mid: __m128i, hi: __m128i) -> (__m128i, __m128i) {
+    let mid = _mm_xor_si128(mid, _mm_xor_si128(lo, hi));
+    (
+        _mm_xor_si128(lo, _mm_slli_si128::<8>(mid)),
+        _mm_xor_si128(hi, _mm_srli_si128::<8>(mid)),
     )
 }
 
@@ -519,7 +537,8 @@ unsafe fn reduce(lo: __m128i, hi: __m128i) -> __m128i {
 #[target_feature(enable = "pclmulqdq,sse2")]
 unsafe fn gmul(a: __m128i, b: __m128i) -> __m128i {
     unsafe {
-        let (lo, hi) = clmul_wide(a, b);
+        let (lo, mid, hi) = clmul_wide(a, b);
+        let (lo, hi) = assemble(lo, mid, hi);
         reduce(lo, hi)
     }
 }
@@ -536,17 +555,21 @@ unsafe fn ghash_group(hp: &[__m128i; GROUP], state: __m128i, blocks: &[__m128i])
     unsafe {
         debug_assert!(!blocks.is_empty() && blocks.len() <= GROUP);
         let mut lo = _mm_setzero_si128();
+        let mut mid = _mm_setzero_si128();
         let mut hi = _mm_setzero_si128();
         let powers = hp.iter().take(blocks.len()).rev();
-        for (k, (block, h)) in blocks.iter().zip(powers).enumerate() {
+        for (k, (block, power)) in blocks.iter().zip(powers).enumerate() {
             let mut x = bswap(*block);
             if k == 0 {
                 x = _mm_xor_si128(x, state);
             }
-            let (l, h) = clmul_wide(x, *h);
+            let (l, m, h) = clmul_wide(x, *power);
             lo = _mm_xor_si128(lo, l);
+            mid = _mm_xor_si128(mid, m);
             hi = _mm_xor_si128(hi, h);
         }
+        // One assembly and one reduction for the whole group.
+        let (lo, hi) = assemble(lo, mid, hi);
         reduce(lo, hi)
     }
 }
