@@ -427,10 +427,11 @@ pub struct Devices {
 impl Devices {
     /// Create all three, or none.
     ///
-    /// **Named per guest** so a device listing says which session a device
-    /// belongs to, which is the first question asked of one that is behaving
-    /// oddly.
-    pub fn create(guest: u32) -> Result<Self, Error> {
+    /// **Named with the guest's own label** so a device listing says which
+    /// session a device belongs to, which is the first question asked of one
+    /// behaving oddly. The label is whatever the caller correlates its logs
+    /// on; a long one is truncated rather than refused.
+    pub fn create(guest: &str) -> Result<Self, Error> {
         Ok(Self {
             keyboard: keyboard(guest)?,
             pointer: pointer(guest)?,
@@ -487,14 +488,14 @@ impl Sink for Devices {
     }
 }
 
-fn name(kind: &str, guest: u32) -> NameBuf {
+fn name(kind: &str, guest: &str) -> NameBuf {
     let mut buf = NameBuf::default();
     // The write cannot fail: the buffer discards past its capacity.
     let _ = write!(buf, "lowlat {kind} (guest {guest})");
     buf
 }
 
-fn keyboard(guest: u32) -> Result<Node, Error> {
+fn keyboard(guest: &str) -> Result<Node, Error> {
     let node = Node::open()?;
     node.set(ioctl::SET_EVBIT, EV_SYN)?;
     node.set(ioctl::SET_EVBIT, EV_KEY)?;
@@ -525,7 +526,7 @@ fn keyboard(guest: u32) -> Result<Node, Error> {
     Ok(node)
 }
 
-fn pointer(guest: u32) -> Result<Node, Error> {
+fn pointer(guest: &str) -> Result<Node, Error> {
     let node = Node::open()?;
     node.set(ioctl::SET_EVBIT, EV_SYN)?;
     node.set(ioctl::SET_EVBIT, EV_KEY)?;
@@ -547,7 +548,7 @@ fn pointer(guest: u32) -> Result<Node, Error> {
     Ok(node)
 }
 
-fn pointer_absolute(guest: u32) -> Result<Node, Error> {
+fn pointer_absolute(guest: &str) -> Result<Node, Error> {
     let node = Node::open()?;
     node.set(ioctl::SET_PROPBIT, INPUT_PROP_POINTER)?;
     node.set(ioctl::SET_EVBIT, EV_SYN)?;
@@ -886,7 +887,7 @@ mod device_tests {
     #[test]
     #[ignore = "creates real input devices"]
     fn three_devices_are_created_and_named_per_guest() {
-        let devices = Devices::create(7).expect("create");
+        let devices = Devices::create("7").expect("create");
         for kind in ["keyboard", "pointer", "pointer absolute"] {
             let wanted = format!("lowlat {kind} (guest 7)");
             assert!(Reader::open(&wanted).is_some(), "no node named {wanted}");
@@ -903,7 +904,7 @@ mod device_tests {
     #[test]
     #[ignore = "creates real input devices"]
     fn a_keystroke_reaches_the_input_layer() {
-        let mut devices = Devices::create(8).expect("create");
+        let mut devices = Devices::create("8").expect("create");
         ready(&mut devices);
         let mut reader = Reader::open("lowlat keyboard (guest 8)").expect("node");
         reader.drain();
@@ -932,7 +933,7 @@ mod device_tests {
     #[test]
     #[ignore = "creates real input devices"]
     fn a_vanishing_guest_releases_into_the_input_layer() {
-        let mut devices = Devices::create(9).expect("create");
+        let mut devices = Devices::create("9").expect("create");
         ready(&mut devices);
         let mut reader = Reader::open("lowlat keyboard (guest 9)").expect("node");
 
@@ -961,7 +962,7 @@ mod device_tests {
     #[test]
     #[ignore = "creates real input devices"]
     fn the_absolute_axes_are_published_at_the_range_they_are_written_in() {
-        let devices = Devices::create(12).expect("create");
+        let devices = Devices::create("12").expect("create");
         let reader = Reader::open("lowlat pointer absolute (guest 12)").expect("node");
         for (axis, request) in [(ABS_X, 0x8018_4540u64), (ABS_Y, 0x8018_4541u64)] {
             let mut info = UinputAbsSetup {
@@ -996,7 +997,7 @@ mod device_tests {
     #[test]
     #[ignore = "creates real input devices"]
     fn absolute_motion_reaches_the_far_corner() {
-        let mut devices = Devices::create(10).expect("create");
+        let mut devices = Devices::create("10").expect("create");
         ready(&mut devices);
         let mut reader = Reader::open("lowlat pointer absolute (guest 10)").expect("node");
         reader.drain();
@@ -1019,7 +1020,7 @@ mod device_tests {
     #[test]
     #[ignore = "creates real input devices"]
     fn events_written_before_the_device_is_usable_are_held_and_then_arrive() {
-        let mut devices = Devices::create(13).expect("create");
+        let mut devices = Devices::create("13").expect("create");
         let mut reader = Reader::open("lowlat keyboard (guest 13)").expect("node");
         reader.drain();
 
@@ -1035,11 +1036,80 @@ mod device_tests {
         assert_eq!(reader.keys(), vec![(183, 1), (183, 0)]);
     }
 
+    /// **Does destroying the device release what it holds?** The whole
+    /// teardown path turns on this. If the kernel does it, a guest thread can
+    /// let the handle drop; if not, every exit path owes an explicit release
+    /// and the one that is forgotten is the one that strands a key.
+    ///
+    /// **Read from a thread that is already draining**, which is what a real
+    /// consumer is. A reader that waits and looks afterwards sees nothing at
+    /// all: once the device is gone the kernel answers a read with "no such
+    /// device" before it looks at what is still buffered, so the releases are
+    /// real but unreachable to anything that was not already listening. That
+    /// is a property of the test, not of the teardown, and getting it wrong
+    /// the first time made a working kernel look broken.
+    #[test]
+    #[ignore = "creates real input devices"]
+    fn destroying_a_device_releases_what_it_holds() {
+        let mut devices = Devices::create("14").expect("create");
+        ready(&mut devices);
+        let leaf = Reader::node("lowlat keyboard (guest 14)").expect("node");
+
+        let mut listening = std::fs::File::open(format!("/dev/input/{leaf}")).expect("open");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let collector = std::sync::Arc::clone(&seen);
+        let reader = std::thread::spawn(move || {
+            let mut bytes = [0u8; size_of::<InputEvent>() * 64];
+            while let Ok(read) = listening.read(&mut bytes) {
+                if read == 0 {
+                    break;
+                }
+                let mut got = collector.lock().unwrap();
+                for frame in bytes[..read].chunks_exact(size_of::<InputEvent>()) {
+                    let kind = u16::from_ne_bytes([frame[16], frame[17]]);
+                    let code = u16::from_ne_bytes([frame[18], frame[19]]);
+                    let value = i32::from_ne_bytes([frame[20], frame[21], frame[22], frame[23]]);
+                    got.push((kind, code, value));
+                }
+            }
+        });
+
+        let mut inject = injector();
+        for usage in [104, 105] {
+            inject.on_control(&control(op::KEYBOARD, usage, 0, 1), &mut devices);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(60));
+
+        // No release_all: the handle simply goes away, as it does when a
+        // guest thread returns.
+        drop(devices);
+        reader.join().expect("reader");
+
+        let got = seen.lock().unwrap();
+        let pressed: Vec<u16> = got
+            .iter()
+            .filter(|(kind, _, value)| *kind == 1 && *value == 1)
+            .map(|(_, code, _)| *code)
+            .collect();
+        let mut released: Vec<u16> = got
+            .iter()
+            .filter(|(kind, _, value)| *kind == 1 && *value == 0)
+            .map(|(_, code, _)| *code)
+            .collect();
+        released.sort_unstable();
+        assert_eq!(pressed, vec![183, 184]);
+        assert_eq!(
+            released,
+            vec![183, 184],
+            "the kernel did not release what the device held"
+        );
+    }
+
     /// Gate item 5 against the kernel: revoking releases what it held.
     #[test]
     #[ignore = "creates real input devices"]
     fn revoking_a_permission_releases_into_the_input_layer() {
-        let mut devices = Devices::create(11).expect("create");
+        let mut devices = Devices::create("11").expect("create");
         ready(&mut devices);
         let mut reader = Reader::open("lowlat keyboard (guest 11)").expect("node");
 

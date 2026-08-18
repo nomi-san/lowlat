@@ -27,11 +27,14 @@ use lowlat_core::envelope::{Cipher, ENVELOPE_LEN, Envelope};
 use lowlat_core::packet::HEADER_LEN;
 use lowlat_core::send::{SendRing, SendSlot};
 use lowlat_core::session::Session;
+use lowlat_core::video::Rotation;
 use lowlat_net::{Guest, Shell, Socket, Wake};
 
 use crate::session::{Negotiation, State};
 use crate::stream::{SeatHold, Seats, Stream};
 use crate::video::Packetiser;
+use lowlat_inject::event::{Extents, Injector};
+use lowlat_inject::uinput::Devices;
 
 /// Video, stream 0. See docs/01-protocol.md section 6.
 const VIDEO_CHANNEL: u8 = 1;
@@ -523,9 +526,10 @@ fn attach_send<'a>(
 /// is consumed, so a body that does not fit or a prefix that does not parse
 /// would be read again on the next pass and every pass after it, at full
 /// speed. Ending the attempt reports what a silent spin would not.
-fn drain_control(
+fn drain_control<S: lowlat_inject::event::Sink>(
     session: &mut Session<'_>,
     negotiation: &mut Negotiation,
+    mut input: Option<&mut Input<S>>,
     inbound: &mut [u8],
     count: &mut u64,
 ) -> Result<(), Outcome> {
@@ -552,9 +556,14 @@ fn drain_control(
         if message.opcode == control::op::DISCONNECT {
             return Err(Outcome::PeerLeft);
         }
-        // Input is the other thing on this channel and belongs to Phase 7.
-        // Until then an opcode the negotiation does not want is dropped.
+        // **Two consumers, one channel, and no opcode belongs to both.** Each
+        // ignores what the other handles, which is why both are offered every
+        // message rather than one being given first refusal: ordering them
+        // would look like it mattered and nothing would ever exercise it.
         let _ = negotiation.on_control(&message);
+        if let Some(input) = input.as_deref_mut() {
+            input.injector.on_control(&message, &mut input.sink);
+        }
     }
 }
 
@@ -729,6 +738,71 @@ impl Throughput {
     }
 }
 
+/// No injection, for the paths and the tests that do not have any.
+///
+/// Named rather than spelled out at each call, because `None` alone leaves the
+/// sink's type for the caller to invent.
+#[cfg(test)]
+const NO_INPUT: Option<&mut Input<Devices>> = None;
+
+/// A guest's virtual devices and the state of what it is holding on them.
+///
+/// **Kept together because neither half is useful alone**, and because the two
+/// have the same lifetime: the devices are created when the guest is admitted
+/// and destroyed when its thread returns.
+///
+/// **Generic over where the events go** so the routing above it can be tested
+/// against a recorder rather than against the running session's real devices.
+/// The guest thread only ever builds the one variant.
+struct Input<S> {
+    injector: Injector,
+    sink: S,
+}
+
+impl Input<Devices> {
+    /// Create a guest's devices, or report why not and carry on without them.
+    ///
+    /// **A session without input is worth more than no session.** Every reason
+    /// this fails is a deployment problem on the host rather than anything the
+    /// peer did, and refusing the guest would report it as a connection
+    /// failure to the one party who cannot fix it.
+    fn open(label: &str, video: Option<(u32, u32, Rotation)>) -> Option<Self> {
+        let (width, height, rotation) = video?;
+        let extents = desktop_extents(width, height, rotation);
+        match Devices::create(label) {
+            Ok(devices) => Some(Self {
+                injector: Injector::new(extents),
+                sink: devices,
+            }),
+            Err(error) => {
+                lowlat_common::log_warn!(
+                    "inject: no devices for this guest, input is off, error={error}"
+                );
+                None
+            }
+        }
+    }
+}
+
+/// The extents a peer's absolute coordinates arrive in.
+///
+/// **The desktop's shape, not the encoded frame's**, and on a quarter turn
+/// those differ. A peer swaps the dimensions the stream declares before it
+/// transforms a pointer position, because what it is looking at is the desktop
+/// rather than the buffer, so the coordinates arrive already in that
+/// orientation. The host therefore swaps the extents it maps into and rotates
+/// nothing. Rotating here as well turns the pointer through a right angle and
+/// looks almost right, which is the worst way for it to be wrong.
+fn desktop_extents(width: u32, height: u32, rotation: Rotation) -> Extents {
+    match rotation {
+        Rotation::Deg90 | Rotation::Deg270 => Extents {
+            width: height,
+            height: width,
+        },
+        _ => Extents { width, height },
+    }
+}
+
 /// One guest's loop, from approval until teardown.
 ///
 /// Everything it borrows is owned here, on this thread, which is what lets the
@@ -800,6 +874,17 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             rotation,
         )
     });
+    // **Created here, at admission, rather than when the first key arrives.**
+    // A device takes a fifth of a second to become usable and there is nothing
+    // to wait on; starting now puts that behind connectivity and session
+    // initialization, which are longer, so it costs nothing anybody can see.
+    let mut input = Input::open(
+        args.attempt_id
+            .split('-')
+            .next()
+            .unwrap_or(&args.attempt_id),
+        args.video,
+    );
     let mut throughput = Throughput::default();
     let mut declared = false;
     // What was last published to the seat, so a declaration that has not moved
@@ -839,6 +924,13 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             break;
         };
 
+        // Release anything held while the devices were becoming usable. On
+        // its own timer, so a guest that pressed one key and waited does not
+        // hold it until it presses a second.
+        if let Some(input) = input.as_mut() {
+            input.sink.tick();
+        }
+
         // **Every pass, not on the reporting cadence.** The declaration is on a
         // deadline and input has a human waiting on it, so neither may sit in a
         // ring until a counter comes round.
@@ -846,6 +938,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             && let Err(outcome) = drain_control(
                 shell.endpoint().session(),
                 negotiation,
+                input.as_mut(),
                 &mut inbound,
                 &mut inbound_messages,
             )
@@ -1467,6 +1560,132 @@ mod geometry {
         );
     }
 
+    /// Records what a guest's devices would have been written.
+    #[derive(Debug, Default)]
+    struct Recorder {
+        events: Vec<(lowlat_inject::event::Device, lowlat_inject::event::Event)>,
+    }
+
+    impl lowlat_inject::event::Sink for Recorder {
+        fn emit(
+            &mut self,
+            device: lowlat_inject::event::Device,
+            events: &[lowlat_inject::event::Event],
+        ) {
+            self.events
+                .extend(events.iter().map(|event| (device, *event)));
+        }
+    }
+
+    fn recording_input() -> Input<Recorder> {
+        Input {
+            injector: Injector::new(Extents {
+                width: 1920,
+                height: 1080,
+            }),
+            sink: Recorder::default(),
+        }
+    }
+
+    /// Send control messages from a peer and drain them into the host.
+    fn drain_from_peer(
+        input: Option<&mut Input<Recorder>>,
+        messages: &[Control<'_>],
+    ) -> Negotiation {
+        let mut ours = Arena::new();
+        let mut ours = ours.session();
+        let mut theirs = Arena::new();
+        let mut theirs = theirs.session();
+        for message in messages {
+            theirs
+                .send_message(CONTROL_CHANNEL, &[], &control_bytes(message))
+                .expect("queue");
+        }
+        pump(&mut theirs, &mut ours, 1.0);
+
+        let mut negotiation = Negotiation::opened(0.0);
+        let mut inbound = vec![0u8; MAX_INBOUND];
+        drain_control(&mut ours, &mut negotiation, input, &mut inbound, &mut 0).expect("drained");
+        negotiation
+    }
+
+    /// **Both consumers of the control channel get what is theirs.** The
+    /// declaration and the input share one channel and one drain, and before
+    /// there was anywhere to put input the drain counted it as unhandled and
+    /// dropped it. Everything below this is covered by the inject crate; what
+    /// is covered nowhere else is that the guest loop hands the message over
+    /// at all, and that adding a second consumer did not cost the first one.
+    #[test]
+    fn both_consumers_of_the_control_channel_get_what_is_theirs() {
+        let mut input = recording_input();
+        let body = declaration();
+        let negotiation = drain_from_peer(
+            Some(&mut input),
+            &[
+                Control {
+                    a0: 0,
+                    a1: 0,
+                    a2: 0,
+                    opcode: op::INIT,
+                    body: &body,
+                },
+                Control {
+                    a0: 4,
+                    a1: 0,
+                    a2: 1,
+                    opcode: op::KEYBOARD,
+                    body: &[],
+                },
+            ],
+        );
+
+        assert!(negotiation.ready(), "the declaration was not taken");
+        let keys: Vec<(u16, i32)> = input
+            .sink
+            .events
+            .iter()
+            .filter(|(_, e)| e.kind == 0x01)
+            .map(|(_, e)| (e.code, e.value))
+            .collect();
+        assert_eq!(keys, vec![(30, 1)], "the keystroke did not reach injection");
+    }
+
+    /// **A quarter turn swaps the extents and nothing else.** The peer sends
+    /// coordinates in the desktop's orientation already; a host that also
+    /// rotated them would put the pointer at a right angle to where it was
+    /// asked for, which reads as an input bug rather than a geometry one.
+    #[test]
+    fn a_quarter_turn_swaps_the_extents_and_a_half_turn_does_not() {
+        let upright = desktop_extents(1920, 1080, Rotation::None);
+        assert_eq!((upright.width, upright.height), (1920, 1080));
+        for rotation in [Rotation::Deg90, Rotation::Deg270] {
+            let turned = desktop_extents(1920, 1080, rotation);
+            assert_eq!((turned.width, turned.height), (1080, 1920), "{rotation:?}");
+        }
+        // A half turn leaves the shape alone, so swapping there would be a
+        // pointer that works upright and breaks upside down.
+        let half = desktop_extents(1920, 1080, Rotation::Deg180);
+        assert_eq!((half.width, half.height), (1920, 1080));
+    }
+
+    /// A guest with no devices is still a guest: its input is dropped and
+    /// everything else about the session carries on.
+    #[test]
+    fn a_guest_without_devices_still_negotiates() {
+        let body = declaration();
+        let negotiation = drain_from_peer(
+            None,
+            &[Control {
+                a0: 0,
+                a1: 0,
+                a2: 0,
+                opcode: op::INIT,
+                body: &body,
+            }],
+        );
+        assert!(negotiation.ready());
+    }
+
     /// **The declaration arrives on channel 0, and nothing else reports it.**
     /// A guest whose control channel is unattached has its declaration counted
     /// as unhandled and dropped, while the group acknowledgement reports zero
@@ -1494,7 +1713,8 @@ mod geometry {
 
         let mut negotiation = Negotiation::opened(0.0);
         let mut inbound = vec![0u8; MAX_INBOUND];
-        drain_control(&mut ours, &mut negotiation, &mut inbound, &mut 0).expect("drained");
+        drain_control(&mut ours, &mut negotiation, NO_INPUT, &mut inbound, &mut 0)
+            .expect("drained");
 
         assert!(
             negotiation.ready(),
@@ -1619,7 +1839,7 @@ mod geometry {
         // real buffer is sized to avoid.
         let mut inbound = vec![0u8; 1024];
         assert_eq!(
-            drain_control(&mut ours, &mut negotiation, &mut inbound, &mut 0),
+            drain_control(&mut ours, &mut negotiation, NO_INPUT, &mut inbound, &mut 0),
             Err(Outcome::ControlStalled),
             "a message that cannot be taken was not reported"
         );
