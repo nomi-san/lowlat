@@ -659,7 +659,7 @@ delivery gate does what it is meant to throughout, and no guest ever saw a broke
 
 ---
 
-## Phase 7 - Input injection
+## Phase 7 - Input injection (closed 2026-08-19)
 
 - [x] `lowlat-inject` over the kernel input layer: keyboard, pointer buttons, wheel, and
   absolute and relative motion, as **separate relative and absolute pointer devices**
@@ -808,6 +808,17 @@ from a source change.
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
 
+- 2026-08-19: **Phase 7 is closed, and the live runs moved four things that reading could not
+  have.** The readiness figure is a device-count figure and not a per-device one, so three devices
+  cost nearly double what one was measured at. A virtual pad has to borrow a real controller's
+  identity or nothing maps it, and the mapping that identity selects has to be checked against
+  what the device emits rather than assumed. A guest holding a pointer button has to keep the
+  pointer, because a gesture made of a held button sends nothing and so cannot be told from a
+  finished one by elapsed time -- the obvious implementation takes the button away mid-drag.
+  And gate item 9 was answered by asking a better question: rather than measure the same delay
+  against a second display stack, measure **where** it is. It is in device discovery, which every
+  stack shares, and the display server's own share of it is nil, so the figure travels rather than
+  two figures happening to agree.
 - 2026-08-18: **Phase 7 gains pointer arbitration, and signaling's half of permissions.** The
   relayed offer turns out to carry both the permission set and an owner flag, so the gate built
   for Phase 7 is no longer half-connected and the owner override has a real source. Arbitration
