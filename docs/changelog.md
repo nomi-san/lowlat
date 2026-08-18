@@ -10,10 +10,36 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - The codec and the encoder backend are chosen at startup and drive the same
   loop, so a stream can be HEVC on the vendor backend without a second
   pipeline. A stock client decodes it at 60 fps.
-- The open backend refuses HEVC with a log line rather than configuring an
-  encoder whose parameter sets it cannot yet write.
+- HEVC on the open backend: a slice header for that codec, its sequence,
+  picture and slice buffers, and its three parameter sets carried together in
+  one packed header. Both codecs now run on both backends through the same
+  loop. A stock client decoded 2072 frames at 1920x1080 and 60 fps, decode
+  1.1 ms, encode 3.3 ms, zero loss and zero retransmissions.
+
+**Fixed**
+
+- The second codec's parameter sets declared a coded size rounded to the
+  standard's minimum block. The device codes at a coarser alignment and
+  corrects the size in the set it is handed, so a picture came out eight rows
+  taller than asked for with no conformance window to crop it.
+- The same sets left the per-block quantiser delta disabled, which on this
+  codec is the only handle rate control has. The configured bitrate did
+  nothing without it.
+- The same sets declared wavefront parallelism, which requires entry point
+  offsets in every slice header. Those are byte counts into slice data that
+  the side writing the header never sees.
 
 **Notes**
+
+- **A stream that encodes without error can decode to nothing.** All three
+  fixes above are of that shape, and none of them fails a call. Two were
+  found by encoding the same input with a second encoder on the same device
+  and comparing the two streams field by field, which is the method to reach
+  for first.
+- **The coding tools a parameter set declares have to be the ones the device
+  actually uses**, not the ones the writer would prefer. A tool declared off
+  and used anyway produces a bitstream a decoder reads with the wrong syntax,
+  and it reports a decode failure rather than a mismatch.
 
 - **The trait paid for itself here.** One generic loop already drove two
   backends; adding a second codec was selection, not a pipeline.

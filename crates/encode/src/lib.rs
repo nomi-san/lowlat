@@ -326,7 +326,9 @@ mod tests {
         let context = display
             .create_context(caps, WIDTH, HEIGHT, DEPTH)
             .expect("context");
-        let mut open = context.encoder(params, 20_000_000).expect("encoder");
+        let mut open = context
+            .encoder(vaapi::Params::H264(params), 20_000_000)
+            .expect("encoder");
         let (open_stream, open_keyframes) = encode_run(
             &mut open,
             WIDTH,
@@ -504,7 +506,9 @@ mod tests {
         let context = display
             .create_context(caps, WIDTH, HEIGHT, DEPTH)
             .expect("context");
-        let mut open = context.encoder(params, 20_000_000).expect("encoder");
+        let mut open = context
+            .encoder(vaapi::Params::H264(params), 20_000_000)
+            .expect("encoder");
         let (open_stream, open_keyframes) =
             encode_run(&mut open, WIDTH, HEIGHT, FRAMES, DEPTH, |_, _, _| {});
 

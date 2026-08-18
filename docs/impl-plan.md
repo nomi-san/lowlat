@@ -552,14 +552,39 @@ when it must not.
   1920x1080 H265 at 60 fps, decode 1.2 ms, zero loss, and encode 2.6 ms against H.264's 3.3.
   Reached by selection rather than by a second pipeline -- the encoder trait means one generic
   loop drives either backend and either codec.*
-- [ ] HEVC on the open backend. Its parameter sets are written by hand, so this needs a video
-  parameter set, a sequence set and a picture set of its own, plus that codec's sequence,
-  picture and slice buffers. The backend refuses the codec with a log line until then rather
-  than configuring an encoder whose output nothing decodes.
+- [x] HEVC on the open backend. *One generic loop over both codecs on both backends: a stock
+  client decoded 2072 frames of 1920x1080 H265 from the open backend at 60 fps, decode 1.1 ms,
+  encode 3.3 ms, zero loss and zero retransmissions. Three faults sat between a configured
+  encoder and a decodable picture, and all three produce a stream that encodes without error
+  (see the notes below).*
 - [ ] The two-place capability signalling ([01 §11.3](01-protocol.md)).
 
 - [ ] **The refusal path for a seat that cannot decode the session's codec** (D11): read the
   capability from session initialization, and disconnect with a status before any video is sent.
+  *No longer blocked: opcode 10's argument 0 is a status from the peer's own published status
+  enumeration, so the values it takes are known and one has only to be chosen. See the note at
+  the end of this phase.*
+
+**What the open backend's codec cost, and what it would cost again.** Three faults, each of
+which encodes without error and is only visible in what a decoder makes of the output.
+
+1. **The device codes at a sixteen-sample alignment and rewrites the size in the parameter set
+   it is handed.** The standard allows eight, 1080 is a whole number of eights, and a set
+   written that way therefore carries no conformance window. The device corrects the size to
+   1088 in place and leaves the absent window absent, so the picture arrives eight rows too
+   tall with nothing to crop it. The alignment cannot be read off one resolution -- 1080 and
+   1000 both round up and 1200 does not -- so it is measured across three.
+2. **Rate control has no handle on this codec unless the picture set gives it one.** The other
+   codec carries a per-block quantiser delta unconditionally; here it exists only if a flag
+   enables it, and without that flag the whole picture is stuck at the slice quantiser and the
+   configured bitrate does nothing.
+3. **Wavefront parallelism, declared and not wanted, puts entry point offsets in every slice
+   header** -- byte counts into slice data that the side writing the header never sees.
+
+Two of the three were found by encoding the same input with a second encoder on the same
+device and comparing the two streams field by field. That is the cheapest way to separate what
+the standard permits from what the hardware actually does, and it is the method to reach for
+first next time.
 
 **Gate:**
 
@@ -591,11 +616,13 @@ sent instead in the window between initialization and the first video message, w
 first moment the capability is known and the last moment before anything has been sent that the
 peer cannot use.
 
-**Open before this gate can be written as a number.** Opcode 10 carries a status
-([01 §11.1](01-protocol.md)) and **the values it takes are not yet known**. We must send one the
-stock client already renders rather than inventing a value, so the enumeration has to be read
-before the disconnect can name a reason. Until then the refusal is expressible but its status
-is not chosen.
+**The status enumeration is known; the value is a choice.** Opcode 10's argument 0
+([01 §11.1](01-protocol.md)) is a status from the peer family's own published enumeration, and
+the set of values is available rather than needing to be derived. Two are plausible for this
+refusal: a host-originated "removed by the host" warning, which is honest about who ended the
+session, and a decoder-support error, which names the actual cause but asserts a failure on the
+peer's side that has not happened yet. **A status of zero does not disconnect** -- the peer's
+control loop treats zero as "carry on" -- so whatever is chosen must be non-zero.
 
 ---
 

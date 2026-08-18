@@ -182,6 +182,51 @@ impl Codec {
     }
 }
 
+/// What an encoder codes with, which is the codec and that codec's parameters
+/// in one value.
+///
+/// **The two cannot be chosen separately.** Each codec's parameter sets are
+/// written by hand and every field the device is told has a counterpart in
+/// them, so a codec paired with the other one's parameters is a stream nothing
+/// decodes rather than a configuration error.
+#[derive(Debug, Clone, Copy)]
+pub enum Params {
+    H264(crate::h264::Params),
+    H265(crate::h265::Params),
+}
+
+impl Params {
+    pub fn codec(self) -> Codec {
+        match self {
+            Self::H264(_) => Codec::H264,
+            Self::H265(_) => Codec::H265,
+        }
+    }
+
+    fn width(self) -> u32 {
+        match self {
+            Self::H264(p) => p.width,
+            Self::H265(p) => p.width,
+        }
+    }
+
+    fn height(self) -> u32 {
+        match self {
+            Self::H264(p) => p.height,
+            Self::H265(p) => p.height,
+        }
+    }
+
+    /// How far the picture order count runs before it wraps.
+    fn poc_period(self) -> u32 {
+        let minus4 = match self {
+            Self::H264(p) => p.log2_max_poc_lsb_minus4,
+            Self::H265(p) => p.log2_max_poc_lsb_minus4,
+        };
+        1 << (minus4 + 4)
+    }
+}
+
 /// The loaded runtime.
 #[derive(Debug)]
 pub struct Vaapi {
@@ -548,7 +593,9 @@ mod tests {
             log2_max_poc_lsb_minus4: 4,
             max_num_ref_frames: 1,
         };
-        let mut encoder = context.encoder(params, 20_000_000).expect("encoder");
+        let mut encoder = context
+            .encoder(Params::H264(params), 20_000_000)
+            .expect("encoder");
         println!("collect is a probe: {}", encoder.collect_is_a_probe());
         let mut source = lowlat_capture::synthetic::Synthetic::new(1920, 1080);
 
@@ -646,6 +693,98 @@ mod tests {
         );
 
         let path = std::env::var("LOWLAT_DUMP").unwrap_or_else(|_| "/tmp/vaapi.h264".into());
+        std::fs::write(&path, &stream).expect("write");
+        println!("wrote {path}");
+    }
+
+    /// The second codec, through the same loop.
+    ///
+    /// **A half-correct path here encodes without error and decodes to
+    /// nothing**, so the checks are on what the units say rather than on the
+    /// calls returning success: which types came out, how many of each, and
+    /// whether the driver took the three sets we wrote.
+    #[test]
+    #[ignore = "requires the open-stack driver"]
+    fn the_second_codec_encodes_and_the_driver_takes_our_sets() {
+        let va = Vaapi::load().expect("runtime");
+        let display = va.open(NODE).expect("render node");
+        let caps = display.caps(Codec::H265).expect("caps");
+        // **The height is a knob because the rounding had to be measured.**
+        // The device codes at its own alignment and corrects the size in the
+        // sets it is handed, so what that alignment is cannot be read off one
+        // resolution: 1080 and 1000 both round up, 1200 does not, and only the
+        // three together name the unit. It stays so another device can be
+        // asked the same question.
+        let height: u32 = std::env::var("LOWLAT_PROBE_HEIGHT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1080);
+        let context = display
+            .create_context(caps, 1920, height, 4)
+            .expect("context");
+
+        let params = crate::h265::Params {
+            width: 1920,
+            height,
+            fps: 60,
+            level_idc: 123,
+            // As on the other codec: not zero, so the fixed-width order count
+            // in every slice header is actually exercised.
+            log2_max_poc_lsb_minus4: 4,
+            max_num_ref_frames: 1,
+        };
+        let mut encoder = context
+            .encoder(Params::H265(params), 20_000_000)
+            .expect("encoder");
+        let mut source = lowlat_capture::synthetic::Synthetic::new(1920, height);
+
+        const PICTURES: usize = 8;
+        const DEPTH: usize = 4;
+        let mut stream = Vec::new();
+        let mut collected = 0usize;
+        let mut submitted = 0usize;
+        while collected < PICTURES {
+            if submitted < PICTURES && encoder.in_flight() < DEPTH {
+                encoder.submit(&source.acquire(), false).expect("submit");
+                submitted += 1;
+            }
+            match encoder.poll().expect("poll") {
+                Poll::Ready { bitstream, .. } => {
+                    assert!(!bitstream.is_empty(), "an empty picture");
+                    stream.extend_from_slice(bitstream);
+                    collected += 1;
+                }
+                Poll::Pending => std::hint::spin_loop(),
+            }
+        }
+        println!("collected {collected} pictures, {} bytes", stream.len());
+
+        // **The type is six bits of the byte after the start code on this
+        // codec**, not five, so a reader written for the other one lands on a
+        // plausible wrong answer rather than failing.
+        let mut units = [0usize; 64];
+        for window in stream.windows(4) {
+            if window[..3] == [0, 0, 1] {
+                units[usize::from((window[3] >> 1) & 0x3F)] += 1;
+            }
+        }
+        assert_eq!(units[32], 1, "the video set is missing or repeated");
+        assert_eq!(units[33], 1, "the sequence set is missing or repeated");
+        assert_eq!(units[34], 1, "the picture set is missing or repeated");
+        // One refresh, and the rest predicted. A backend refreshing every
+        // picture would pass a count of slices and fail this.
+        assert_eq!(
+            units[usize::from(crate::h265::NAL_IDR_N_LP)],
+            1,
+            "more than the one unavoidable refresh"
+        );
+        assert_eq!(
+            units[usize::from(crate::h265::NAL_TRAIL_R)],
+            collected - 1,
+            "the rest are not predicted slices"
+        );
+
+        let path = std::env::var("LOWLAT_DUMP").unwrap_or_else(|_| "/tmp/vaapi.h265".into());
         std::fs::write(&path, &stream).expect("write");
         println!("wrote {path}");
     }
@@ -993,7 +1132,7 @@ struct InFlight {
 #[derive(Debug)]
 pub struct Encoder<'a> {
     context: &'a Context<'a>,
-    params: crate::h264::Params,
+    params: Params,
     bitrate_bps: u32,
     /// One coded buffer per surface, allocated once.
     coded: Vec<VABufferID>,
@@ -1020,15 +1159,50 @@ struct Reference {
     poc: u32,
 }
 
+/// What one submission needs to know about the picture it is coding.
+///
+/// Passed by value so the two codec halves take the same shape and neither
+/// reaches back for counters the other one keeps.
+#[derive(Debug, Clone, Copy)]
+struct Plan {
+    refresh: bool,
+    recon: VASurfaceID,
+    coded: VABufferID,
+    frame_num: u32,
+    poc: u32,
+}
+
+impl Plan {
+    /// The picture as the second codec's writer names it.
+    fn hevc_picture(self) -> crate::h265::Picture {
+        if self.refresh {
+            crate::h265::Picture::Refresh
+        } else {
+            crate::h265::Picture::Predicted { poc_lsb: self.poc }
+        }
+    }
+}
+
+/// The quantiser a picture opens at, before any per-block delta.
+///
+/// **Both codecs' picture sets declare no offset from it**, so this value and
+/// the zero written there are one setting expressed twice.
+const INITIAL_QP: u8 = 26;
+
+/// The interface's way of saying a picture has no collocated reference, which
+/// is the case whenever temporal motion vector prediction is off. Zero would
+/// name the first reference instead.
+const NO_COLLOCATED_PICTURE: u8 = 0xFF;
+
 impl<'a> Context<'a> {
     /// Build an encoder over this context.
-    pub fn encoder(&'a self, params: crate::h264::Params, bitrate_bps: u32) -> Result<Encoder<'a>> {
+    pub fn encoder(&'a self, params: Params, bitrate_bps: u32) -> Result<Encoder<'a>> {
         let va = self.display.va;
         let display = self.display.raw;
         // Generous: a keyframe of a hard scene is far larger than the average,
         // and a coded buffer too small fails the picture rather than truncating
         // it, which is the right failure but an avoidable one.
-        let size = params.width * params.height * 3 / 2;
+        let size = params.width() * params.height() * 3 / 2;
 
         let mut coded = Vec::with_capacity(self.surfaces.len());
         for _ in 0..self.surfaces.len() {
@@ -1213,6 +1387,402 @@ impl Encoder<'_> {
         result
     }
 
+    /// The two buffers that carry the rate and the rate it is spent at.
+    ///
+    /// **The rate the encoder actually runs at is carried here, not in the
+    /// sequence parameters.** The sequence buffer has a field for it and one
+    /// driver never reads that field, so a rate set only there leaves the
+    /// encoder on its own default with nothing reporting a problem. The
+    /// sequence field is set as well because a different driver does read it.
+    fn rate_buffers(&self, fps: u32) -> Result<(VABufferID, VABufferID)> {
+        #[repr(C)]
+        struct RateControl {
+            header: crate::ffi::va::VAEncMiscParameterBuffer,
+            rate: crate::ffi::va::VAEncMiscParameterRateControl,
+        }
+        // SAFETY: a plain-data header followed by its payload, which is the
+        // layout the interface specifies for this buffer. All-zero is a valid
+        // value of every field, and the ones that matter are set below.
+        let mut rate = unsafe { core::mem::zeroed::<RateControl>() };
+        rate.header.type_ = crate::ffi::va::VAEncMiscParameterTypeRateControl;
+        rate.rate.bits_per_second = self.bitrate_bps;
+        // A variable-rate target is this percentage of the peak above. Zero
+        // asks for a target of nothing, which is what a zeroed buffer says.
+        rate.rate.target_percentage = 100;
+        rate.rate.window_size = 1000;
+        let rate_buffer = self.buffer(crate::ffi::va::VAEncMiscParameterBufferType, &rate)?;
+
+        // **A rate is meaningless without the rate it is spent at**, and the
+        // driver does not learn the frame rate from anywhere else. Left unset
+        // it uses its own default, which is half what this pipeline runs at,
+        // so it budgets bits for thirty frames and receives sixty: the stream
+        // comes out at exactly twice its target, tracking the setting
+        // faithfully and overshooting it by a factor of two at every value.
+        // A congestion controller actuating through that is wrong by the same
+        // factor, and pushes a path into loss while believing it is well
+        // inside the budget.
+        #[repr(C)]
+        struct FrameRate {
+            header: crate::ffi::va::VAEncMiscParameterBuffer,
+            rate: crate::ffi::va::VAEncMiscParameterFrameRate,
+        }
+        // SAFETY: a plain-data header followed by its payload, which is the
+        // layout the interface specifies. All-zero is a valid value of every
+        // field and the ones that matter are set below.
+        let mut frame_rate = unsafe { core::mem::zeroed::<FrameRate>() };
+        frame_rate.header.type_ = crate::ffi::va::VAEncMiscParameterTypeFrameRate;
+        // Numerator in the low half, denominator in the high half. A zero
+        // denominator is read as one, but it is written out because a field
+        // that happens to work when left zero is one nobody checks.
+        frame_rate.rate.framerate = fps | (1 << 16);
+        let fps_buffer = self.buffer(crate::ffi::va::VAEncMiscParameterBufferType, &frame_rate)?;
+
+        Ok((rate_buffer, fps_buffer))
+    }
+
+    /// Build one picture's buffers for the first codec.
+    ///
+    /// **The order buffers are pushed in is load bearing twice over.** The
+    /// parameter sets declare the field widths the slice header is then read
+    /// with, and the picture buffer decides which fields the slice header is
+    /// expected to carry at all, so both precede it.
+    fn picture_h264(
+        &self,
+        params: &crate::h264::Params,
+        plan: Plan,
+        push: &mut impl FnMut(VABufferID),
+    ) -> Result<()> {
+        let mut seq =
+            unsafe { core::mem::zeroed::<crate::ffi::va::VAEncSequenceParameterBufferH264>() };
+        seq.level_idc = u8::try_from(params.level_idc).unwrap_or(42);
+        // **Refreshes happen on request, not on a schedule.** Zero is the
+        // interface's way of saying no period applies; a period of one would
+        // declare every picture a refresh, which is what this backend used to
+        // do and what the delivery gate exists to decide instead. One picture
+        // between predicted pictures, because there are no bidirectional ones.
+        seq.intra_period = 0;
+        seq.intra_idr_period = 0;
+        seq.ip_period = 1;
+        seq.bits_per_second = self.bitrate_bps;
+        seq.max_num_ref_frames = params.max_num_ref_frames;
+        seq.picture_width_in_mbs = u16::try_from(params.width.div_ceil(16)).unwrap_or(0);
+        seq.picture_height_in_mbs = u16::try_from(params.height.div_ceil(16)).unwrap_or(0);
+        // SAFETY: the flags are a union of a bitfield view and a plain word.
+        // The structure was zeroed, so either view is a valid value of it, and
+        // only the bitfield view is used from here on.
+        unsafe {
+            let bits = &mut seq.seq_fields.bits;
+            bits.set_chroma_format_idc(1);
+            bits.set_frame_mbs_only_flag(1);
+            bits.set_direct_8x8_inference_flag(1);
+            bits.set_log2_max_frame_num_minus4(params.log2_max_frame_num_minus4);
+            bits.set_pic_order_cnt_type(0);
+            bits.set_log2_max_pic_order_cnt_lsb_minus4(params.log2_max_poc_lsb_minus4);
+        }
+        let bottom = (params.height.div_ceil(16) * 16 - params.height) / 2;
+        if bottom > 0 {
+            seq.frame_cropping_flag = 1;
+            seq.frame_crop_bottom_offset = bottom;
+        }
+        push(self.buffer(crate::ffi::va::VAEncSequenceParameterBufferType, &seq)?);
+
+        let (rate_buffer, fps_buffer) = self.rate_buffers(params.fps)?;
+        push(rate_buffer);
+        push(fps_buffer);
+
+        // **Both parameter sets go into one header of sequence type, and the
+        // picture type is never used at all.** The interface names a type per
+        // set, which invites one header each; a working encoder on this driver
+        // sends them together and never sends the picture type, and sending it
+        // is what the driver faults on while assembling the stream.
+        // **Only with a refresh.** A parameter set is what makes a refresh
+        // decodable on its own, so it travels with one and a guest that joins
+        // mid-stream needs no separate out-of-band step. Repeating it on a
+        // predicted picture is bytes on the wire that change nothing.
+        if plan.refresh {
+            let mut sets = [0u8; 384];
+            let sps_len =
+                crate::h264::sequence_parameter_set(params, &mut sets).ok_or(Error::NoEncoder)?;
+            let pps_len = crate::h264::picture_parameter_set(
+                sets.get_mut(sps_len..).ok_or(Error::NoEncoder)?,
+            )
+            .ok_or(Error::NoEncoder)?;
+            let sets_len = sps_len + pps_len;
+            let (head, data) = self.packed(
+                crate::ffi::va::VAEncPackedHeaderSequence,
+                &sets[..sets_len],
+                sets_len * 8,
+            )?;
+            push(head);
+            push(data);
+        }
+
+        let mut pic =
+            unsafe { core::mem::zeroed::<crate::ffi::va::VAEncPictureParameterBufferH264>() };
+        pic.CurrPic.picture_id = plan.recon;
+        pic.CurrPic.frame_idx = plan.frame_num;
+        pic.CurrPic.TopFieldOrderCnt = i32::try_from(plan.poc).unwrap_or(0);
+        pic.CurrPic.BottomFieldOrderCnt = pic.CurrPic.TopFieldOrderCnt;
+        // Unused entries must be marked invalid, not left zero: zero is a
+        // valid surface identifier and the driver would follow it.
+        for entry in &mut pic.ReferenceFrames {
+            entry.picture_id = crate::ffi::va::VA_INVALID_SURFACE;
+            entry.flags = crate::ffi::va::VA_PICTURE_H264_INVALID;
+        }
+        // **The reference has to be named here even though the slice names it
+        // too.** This list is what the driver keeps its reference store from;
+        // a picture missing from it is one the driver is entitled to release,
+        // and it will, while the slice below still points at it.
+        if let (false, Some(reference)) = (plan.refresh, self.reference) {
+            if let Some(entry) = pic.ReferenceFrames.first_mut() {
+                entry.picture_id = reference.surface;
+                entry.frame_idx = reference.frame_num;
+                entry.TopFieldOrderCnt = i32::try_from(reference.poc).unwrap_or(0);
+                entry.BottomFieldOrderCnt = entry.TopFieldOrderCnt;
+                entry.flags = crate::ffi::va::VA_PICTURE_H264_SHORT_TERM_REFERENCE;
+            }
+        }
+        pic.coded_buf = plan.coded;
+        pic.frame_num = u16::try_from(plan.frame_num).unwrap_or(0);
+        pic.pic_init_qp = INITIAL_QP;
+        // SAFETY: as above, a zeroed union accessed only through one view.
+        unsafe {
+            let bits = &mut pic.pic_fields.bits;
+            bits.set_idr_pic_flag(u32::from(plan.refresh));
+            bits.set_reference_pic_flag(1);
+            bits.set_entropy_coding_mode_flag(1);
+            bits.set_deblocking_filter_control_present_flag(1);
+            bits.set_transform_8x8_mode_flag(1);
+        }
+        push(self.buffer(crate::ffi::va::VAEncPictureParameterBufferType, &pic)?);
+
+        let mut slice =
+            unsafe { core::mem::zeroed::<crate::ffi::va::VAEncSliceParameterBufferH264>() };
+        slice.num_macroblocks = params.width.div_ceil(16) * params.height.div_ceil(16);
+        // Two is intra, zero is predicted. Both are the plain forms; the
+        // values above four assert the whole picture has this type, and the
+        // packed header carries those.
+        slice.slice_type = if plan.refresh { 2 } else { 0 };
+        // Alternates so two consecutive refreshes are distinguishable, which
+        // is what the field is for.
+        slice.idr_pic_id = self.idr_pic_id;
+        slice.pic_order_cnt_lsb = u16::try_from(plan.poc).unwrap_or(0);
+        for entry in slice
+            .RefPicList0
+            .iter_mut()
+            .chain(slice.RefPicList1.iter_mut())
+        {
+            entry.picture_id = crate::ffi::va::VA_INVALID_SURFACE;
+            entry.flags = crate::ffi::va::VA_PICTURE_H264_INVALID;
+        }
+        if let (false, Some(reference)) = (plan.refresh, self.reference) {
+            if let Some(entry) = slice.RefPicList0.first_mut() {
+                entry.picture_id = reference.surface;
+                entry.frame_idx = reference.frame_num;
+                entry.TopFieldOrderCnt = i32::try_from(reference.poc).unwrap_or(0);
+                entry.BottomFieldOrderCnt = entry.TopFieldOrderCnt;
+                entry.flags = crate::ffi::va::VA_PICTURE_H264_SHORT_TERM_REFERENCE;
+            }
+        }
+        push(self.buffer(crate::ffi::va::VAEncSliceParameterBufferType, &slice)?);
+
+        // **The driver expects one of these per picture once packed headers
+        // are in use.** Without it there is no slice header to emit and the
+        // stream cannot be assembled, which is a fault inside the driver
+        // rather than a status.
+        let mut header = [0u8; 64];
+        let kind = if plan.refresh {
+            crate::h264::Picture::Refresh {
+                idr_pic_id: u32::from(self.idr_pic_id),
+            }
+        } else {
+            crate::h264::Picture::Predicted {
+                frame_num: plan.frame_num,
+                poc_lsb: plan.poc,
+            }
+        };
+        let written =
+            crate::h264::slice_header(params, kind, &mut header).ok_or(Error::NoEncoder)?;
+        let (head, data) = self.packed(
+            crate::ffi::va::VAEncPackedHeaderSlice,
+            &header[..written.bytes_written],
+            written.bit_length,
+        )?;
+        push(head);
+        push(data);
+        Ok(())
+    }
+
+    /// Build one picture's buffers for the second codec.
+    ///
+    /// **Every tool flag set here has a counterpart in the parameter sets**
+    /// ([`crate::h265`]), because this side codes the slice data and those
+    /// bytes describe it. The two are written from the same values on purpose;
+    /// a disagreement is not caught before the decoder.
+    fn picture_h265(
+        &self,
+        params: &crate::h265::Params,
+        plan: Plan,
+        push: &mut impl FnMut(VABufferID),
+    ) -> Result<()> {
+        let (coded_width, coded_height) = params.coded();
+
+        let mut seq =
+            unsafe { core::mem::zeroed::<crate::ffi::va::VAEncSequenceParameterBufferHEVC>() };
+        seq.general_profile_idc = u8::try_from(crate::h265::PROFILE_MAIN).unwrap_or(1);
+        seq.general_level_idc = u8::try_from(params.level_idc).unwrap_or(123);
+        seq.general_tier_flag = 0;
+        // As for the other codec: no period, and one picture between predicted
+        // ones because there are no bidirectional ones.
+        seq.intra_period = 0;
+        seq.intra_idr_period = 0;
+        seq.ip_period = 1;
+        seq.bits_per_second = self.bitrate_bps;
+        // **The coded size, not the visible one.** The sets crop the
+        // difference with a conformance window and the device is told what it
+        // actually codes.
+        seq.pic_width_in_luma_samples = u16::try_from(coded_width).unwrap_or(0);
+        seq.pic_height_in_luma_samples = u16::try_from(coded_height).unwrap_or(0);
+        let byte = |value: u32| u8::try_from(value).unwrap_or(0);
+        seq.log2_min_luma_coding_block_size_minus3 = byte(crate::h265::LOG2_MIN_CB - 3);
+        seq.log2_diff_max_min_luma_coding_block_size =
+            byte(crate::h265::LOG2_CTB - crate::h265::LOG2_MIN_CB);
+        seq.log2_min_transform_block_size_minus2 = byte(crate::h265::LOG2_MIN_TB - 2);
+        seq.log2_diff_max_min_transform_block_size =
+            byte(crate::h265::LOG2_MAX_TB - crate::h265::LOG2_MIN_TB);
+        seq.max_transform_hierarchy_depth_inter = byte(crate::h265::TRANSFORM_HIERARCHY_DEPTH);
+        seq.max_transform_hierarchy_depth_intra = byte(crate::h265::TRANSFORM_HIERARCHY_DEPTH);
+        // SAFETY: a union of a bitfield view and a plain word over a zeroed
+        // structure, so either view is a valid value of it, and only the
+        // bitfield view is used.
+        unsafe {
+            let bits = &mut seq.seq_fields.bits;
+            bits.set_chroma_format_idc(1);
+            bits.set_amp_enabled_flag(1);
+            bits.set_sample_adaptive_offset_enabled_flag(1);
+            bits.set_strong_intra_smoothing_enabled_flag(0);
+            // No temporal motion vector prediction, which is what lets the
+            // slice header omit the collocated picture entirely.
+            bits.set_sps_temporal_mvp_enabled_flag(0);
+        }
+        push(self.buffer(crate::ffi::va::VAEncSequenceParameterBufferType, &seq)?);
+
+        let (rate_buffer, fps_buffer) = self.rate_buffers(params.fps)?;
+        push(rate_buffer);
+        push(fps_buffer);
+
+        // **Three sets on this codec, and all three in one sequence header.**
+        // The interface names a type for the picture set too, and the other
+        // codec's path found that sending it is what the driver faults on. A
+        // decoder that never receives the video set has nothing to attach the
+        // sequence set to, so it leads.
+        if plan.refresh {
+            let mut sets = [0u8; 384];
+            let vps_len =
+                crate::h265::video_parameter_set(params, &mut sets).ok_or(Error::NoEncoder)?;
+            let sps_len = crate::h265::sequence_parameter_set(
+                params,
+                sets.get_mut(vps_len..).ok_or(Error::NoEncoder)?,
+            )
+            .ok_or(Error::NoEncoder)?;
+            let pps_len = crate::h265::picture_parameter_set(
+                sets.get_mut(vps_len + sps_len..).ok_or(Error::NoEncoder)?,
+            )
+            .ok_or(Error::NoEncoder)?;
+            let sets_len = vps_len + sps_len + pps_len;
+            let (head, data) = self.packed(
+                crate::ffi::va::VAEncPackedHeaderSequence,
+                &sets[..sets_len],
+                sets_len * 8,
+            )?;
+            push(head);
+            push(data);
+        }
+
+        let mut pic =
+            unsafe { core::mem::zeroed::<crate::ffi::va::VAEncPictureParameterBufferHEVC>() };
+        pic.decoded_curr_pic.picture_id = plan.recon;
+        pic.decoded_curr_pic.pic_order_cnt = i32::try_from(plan.poc).unwrap_or(0);
+        // Unused entries must be marked invalid, not left zero: zero is a
+        // valid surface identifier and the driver would follow it.
+        for entry in &mut pic.reference_frames {
+            entry.picture_id = crate::ffi::va::VA_INVALID_SURFACE;
+            entry.flags = crate::ffi::va::VA_PICTURE_HEVC_INVALID;
+        }
+        // The one picture a predicted picture points at, and it is always the
+        // one immediately before, which is what makes the reference set in the
+        // slice header a single entry one picture back.
+        if let (false, Some(reference)) = (plan.refresh, self.reference) {
+            if let Some(entry) = pic.reference_frames.first_mut() {
+                entry.picture_id = reference.surface;
+                entry.pic_order_cnt = i32::try_from(reference.poc).unwrap_or(0);
+                entry.flags = crate::ffi::va::VA_PICTURE_HEVC_RPS_ST_CURR_BEFORE;
+            }
+        }
+        pic.coded_buf = plan.coded;
+        // No collocated picture, which this value is the interface's way of
+        // saying. Zero would name the first reference instead.
+        pic.collocated_ref_pic_index = NO_COLLOCATED_PICTURE;
+        pic.pic_init_qp = INITIAL_QP;
+        pic.nal_unit_type = plan.hevc_picture().unit_type();
+        // SAFETY: as above, a zeroed union accessed only through one view.
+        unsafe {
+            let bits = &mut pic.pic_fields.bits;
+            bits.set_idr_pic_flag(u32::from(plan.refresh));
+            bits.set_coding_type(if plan.refresh { 1 } else { 2 });
+            bits.set_reference_pic_flag(1);
+            bits.set_transform_skip_enabled_flag(1);
+            // **Rate control has no other handle on this codec**: without a
+            // per-block quantiser delta the whole picture is stuck at the
+            // slice quantiser and the configured bitrate does nothing.
+            bits.set_cu_qp_delta_enabled_flag(1);
+            bits.set_pps_loop_filter_across_slices_enabled_flag(1);
+        }
+        push(self.buffer(crate::ffi::va::VAEncPictureParameterBufferType, &pic)?);
+
+        let mut slice =
+            unsafe { core::mem::zeroed::<crate::ffi::va::VAEncSliceParameterBufferHEVC>() };
+        slice.num_ctu_in_slice = params.ctus();
+        slice.slice_type = plan.hevc_picture().slice_type();
+        slice.max_num_merge_cand = u8::try_from(crate::h265::MAX_NUM_MERGE_CAND).unwrap_or(5);
+        for entry in slice
+            .ref_pic_list0
+            .iter_mut()
+            .chain(slice.ref_pic_list1.iter_mut())
+        {
+            entry.picture_id = crate::ffi::va::VA_INVALID_SURFACE;
+            entry.flags = crate::ffi::va::VA_PICTURE_HEVC_INVALID;
+        }
+        if let (false, Some(reference)) = (plan.refresh, self.reference) {
+            if let Some(entry) = slice.ref_pic_list0.first_mut() {
+                entry.picture_id = reference.surface;
+                entry.pic_order_cnt = i32::try_from(reference.poc).unwrap_or(0);
+                entry.flags = crate::ffi::va::VA_PICTURE_HEVC_RPS_ST_CURR_BEFORE;
+            }
+        }
+        // SAFETY: as above, a zeroed union accessed only through one view.
+        unsafe {
+            let bits = &mut slice.slice_fields.bits;
+            bits.set_last_slice_of_pic_flag(1);
+            bits.set_slice_sao_luma_flag(1);
+            bits.set_slice_sao_chroma_flag(1);
+            bits.set_slice_loop_filter_across_slices_enabled_flag(1);
+        }
+        push(self.buffer(crate::ffi::va::VAEncSliceParameterBufferType, &slice)?);
+
+        let mut header = [0u8; 64];
+        let written = crate::h265::slice_header(params, plan.hevc_picture(), &mut header)
+            .ok_or(Error::NoEncoder)?;
+        let (head, data) = self.packed(
+            crate::ffi::va::VAEncPackedHeaderSlice,
+            &header[..written.bytes_written],
+            written.bit_length,
+        )?;
+        push(head);
+        push(data);
+        Ok(())
+    }
+
     /// Encode one picture. Returns as soon as it is queued.
     ///
     /// Every picture here is a keyframe for now: the reference-picture
@@ -1251,225 +1821,33 @@ impl Encoder<'_> {
             unsafe { (self.va().begin_picture)(self.display(), self.context.context, input) };
         self.va().check(status)?;
 
-        let mut seq =
-            unsafe { core::mem::zeroed::<crate::ffi::va::VAEncSequenceParameterBufferH264>() };
-        seq.level_idc = u8::try_from(self.params.level_idc).unwrap_or(42);
-        // **Refreshes happen on request, not on a schedule.** Zero is the
-        // interface's way of saying no period applies; a period of one would
-        // declare every picture a refresh, which is what this backend used to
-        // do and what the delivery gate exists to decide instead. One picture
-        // between predicted pictures, because there are no bidirectional ones.
-        seq.intra_period = 0;
-        seq.intra_idr_period = 0;
-        seq.ip_period = 1;
-        seq.bits_per_second = self.bitrate_bps;
-        seq.max_num_ref_frames = self.params.max_num_ref_frames;
-        seq.picture_width_in_mbs = u16::try_from(self.params.width.div_ceil(16)).unwrap_or(0);
-        seq.picture_height_in_mbs = u16::try_from(self.params.height.div_ceil(16)).unwrap_or(0);
-        // SAFETY: the flags are a union of a bitfield view and a plain word.
-        // The structure was zeroed, so either view is a valid value of it, and
-        // only the bitfield view is used from here on.
-        unsafe {
-            let bits = &mut seq.seq_fields.bits;
-            bits.set_chroma_format_idc(1);
-            bits.set_frame_mbs_only_flag(1);
-            bits.set_direct_8x8_inference_flag(1);
-            bits.set_log2_max_frame_num_minus4(self.params.log2_max_frame_num_minus4);
-            bits.set_pic_order_cnt_type(0);
-            bits.set_log2_max_pic_order_cnt_lsb_minus4(self.params.log2_max_poc_lsb_minus4);
-        }
-        let bottom = (self.params.height.div_ceil(16) * 16 - self.params.height) / 2;
-        if bottom > 0 {
-            seq.frame_cropping_flag = 1;
-            seq.frame_crop_bottom_offset = bottom;
-        }
-        let seq_buffer = self.buffer(crate::ffi::va::VAEncSequenceParameterBufferType, &seq)?;
-
-        // **The rate the encoder actually runs at is carried here, not in the
-        // sequence parameters.** The sequence buffer has a field for it and
-        // one driver never reads that field, so a rate set only there leaves
-        // the encoder on its own default with nothing reporting a problem.
-        // The field above is kept because a different driver does read it.
-        #[repr(C)]
-        struct RateControl {
-            header: crate::ffi::va::VAEncMiscParameterBuffer,
-            rate: crate::ffi::va::VAEncMiscParameterRateControl,
-        }
-        // SAFETY: a plain-data header followed by its payload, which is the
-        // layout the interface specifies for this buffer. All-zero is a valid
-        // value of every field, and the ones that matter are set below.
-        let mut rate = unsafe { core::mem::zeroed::<RateControl>() };
-        rate.header.type_ = crate::ffi::va::VAEncMiscParameterTypeRateControl;
-        rate.rate.bits_per_second = self.bitrate_bps;
-        // A variable-rate target is this percentage of the peak above. Zero
-        // asks for a target of nothing, which is what a zeroed buffer says.
-        rate.rate.target_percentage = 100;
-        rate.rate.window_size = 1000;
-        let rate_buffer = self.buffer(crate::ffi::va::VAEncMiscParameterBufferType, &rate)?;
-
-        // **A rate is meaningless without the rate it is spent at**, and the
-        // driver does not learn the frame rate from anywhere else. Left unset
-        // it uses its own default, which is half what this pipeline runs at,
-        // so it budgets bits for thirty frames and receives sixty: the stream
-        // comes out at exactly twice its target, tracking the setting
-        // faithfully and overshooting it by a factor of two at every value.
-        // A congestion controller actuating through that is wrong by the same
-        // factor, and pushes a path into loss while believing it is well
-        // inside the budget.
-        #[repr(C)]
-        struct FrameRate {
-            header: crate::ffi::va::VAEncMiscParameterBuffer,
-            rate: crate::ffi::va::VAEncMiscParameterFrameRate,
-        }
-        // SAFETY: a plain-data header followed by its payload, which is the
-        // layout the interface specifies. All-zero is a valid value of every
-        // field and the ones that matter are set below.
-        let mut fps = unsafe { core::mem::zeroed::<FrameRate>() };
-        fps.header.type_ = crate::ffi::va::VAEncMiscParameterTypeFrameRate;
-        // Numerator in the low half, denominator in the high half. A zero
-        // denominator is read as one, but it is written out because a field
-        // that happens to work when left zero is one nobody checks.
-        fps.rate.framerate = self.params.fps | (1 << 16);
-        let fps_buffer = self.buffer(crate::ffi::va::VAEncMiscParameterBufferType, &fps)?;
-
-        // **Both parameter sets go into one header of sequence type, and the
-        // picture type is never used at all.** The interface names a type per
-        // set, which invites one header each; a working encoder on this driver
-        // sends them together and never sends the picture type, and sending it
-        // is what the driver faults on while assembling the stream.
-        // **Only with a refresh.** A parameter set is what makes a refresh
-        // decodable on its own, so it travels with one and a guest that joins
-        // mid-stream needs no separate out-of-band step. Repeating it on a
-        // predicted picture is bytes on the wire that change nothing.
-        let mut sets = [0u8; 384];
-        let sets_len = if refresh {
-            let sps_len = crate::h264::sequence_parameter_set(&self.params, &mut sets)
-                .ok_or(Error::NoEncoder)?;
-            let pps_len = crate::h264::picture_parameter_set(
-                sets.get_mut(sps_len..).ok_or(Error::NoEncoder)?,
-            )
-            .ok_or(Error::NoEncoder)?;
-            sps_len + pps_len
+        // **A refresh restarts the counters by definition**, and what advances
+        // for a predicted picture depends on the codec: one carries a frame
+        // number the order count is derived from, the other carries only the
+        // order count.
+        let (frame_num, poc) = if refresh {
+            (0, 0)
         } else {
-            0
-        };
-        let sets_packed = if refresh {
-            Some(self.packed(
-                crate::ffi::va::VAEncPackedHeaderSequence,
-                &sets[..sets_len],
-                sets_len * 8,
-            )?)
-        } else {
-            None
-        };
-
-        let mut pic =
-            unsafe { core::mem::zeroed::<crate::ffi::va::VAEncPictureParameterBufferH264>() };
-        // A refresh restarts both counters by definition. A predicted picture
-        // advances the frame number and takes twice it as its order count,
-        // which is the convention when every picture is a reference and output
-        // order is coding order.
-        let frame_num = if refresh {
-            0
-        } else {
-            (self.frame_num + 1) % (1 << (self.params.log2_max_frame_num_minus4 + 4))
-        };
-        let poc = (frame_num * 2) % (1 << (self.params.log2_max_poc_lsb_minus4 + 4));
-
-        pic.CurrPic.picture_id = recon;
-        pic.CurrPic.frame_idx = frame_num;
-        pic.CurrPic.TopFieldOrderCnt = i32::try_from(poc).unwrap_or(0);
-        pic.CurrPic.BottomFieldOrderCnt = pic.CurrPic.TopFieldOrderCnt;
-        // Unused entries must be marked invalid, not left zero: zero is a
-        // valid surface identifier and the driver would follow it.
-        for entry in &mut pic.ReferenceFrames {
-            entry.picture_id = crate::ffi::va::VA_INVALID_SURFACE;
-            entry.flags = crate::ffi::va::VA_PICTURE_H264_INVALID;
-        }
-        // **The reference has to be named here even though the slice names it
-        // too.** This list is what the driver keeps its reference store from;
-        // a picture missing from it is one the driver is entitled to release,
-        // and it will, while the slice below still points at it.
-        if let (false, Some(reference)) = (refresh, self.reference) {
-            if let Some(entry) = pic.ReferenceFrames.first_mut() {
-                entry.picture_id = reference.surface;
-                entry.frame_idx = reference.frame_num;
-                entry.TopFieldOrderCnt = i32::try_from(reference.poc).unwrap_or(0);
-                entry.BottomFieldOrderCnt = entry.TopFieldOrderCnt;
-                entry.flags = crate::ffi::va::VA_PICTURE_H264_SHORT_TERM_REFERENCE;
-            }
-        }
-        pic.coded_buf = coded;
-        pic.frame_num = u16::try_from(frame_num).unwrap_or(0);
-        pic.pic_init_qp = 26;
-        // SAFETY: as above, a zeroed union accessed only through one view.
-        unsafe {
-            let bits = &mut pic.pic_fields.bits;
-            bits.set_idr_pic_flag(u32::from(refresh));
-            bits.set_reference_pic_flag(1);
-            bits.set_entropy_coding_mode_flag(1);
-            bits.set_deblocking_filter_control_present_flag(1);
-            bits.set_transform_8x8_mode_flag(1);
-        }
-        let pic_buffer = self.buffer(crate::ffi::va::VAEncPictureParameterBufferType, &pic)?;
-
-        let mut slice =
-            unsafe { core::mem::zeroed::<crate::ffi::va::VAEncSliceParameterBufferH264>() };
-        slice.num_macroblocks = self.params.width.div_ceil(16) * self.params.height.div_ceil(16);
-        // Two is intra, zero is predicted. Both are the plain forms; the
-        // values above four assert the whole picture has this type, and the
-        // packed header carries those.
-        slice.slice_type = if refresh { 2 } else { 0 };
-        // Alternates so two consecutive refreshes are distinguishable, which
-        // is what the field is for.
-        slice.idr_pic_id = self.idr_pic_id;
-        slice.pic_order_cnt_lsb = u16::try_from(poc).unwrap_or(0);
-        for entry in slice
-            .RefPicList0
-            .iter_mut()
-            .chain(slice.RefPicList1.iter_mut())
-        {
-            entry.picture_id = crate::ffi::va::VA_INVALID_SURFACE;
-            entry.flags = crate::ffi::va::VA_PICTURE_H264_INVALID;
-        }
-        if let (false, Some(reference)) = (refresh, self.reference) {
-            if let Some(entry) = slice.RefPicList0.first_mut() {
-                entry.picture_id = reference.surface;
-                entry.frame_idx = reference.frame_num;
-                entry.TopFieldOrderCnt = i32::try_from(reference.poc).unwrap_or(0);
-                entry.BottomFieldOrderCnt = entry.TopFieldOrderCnt;
-                entry.flags = crate::ffi::va::VA_PICTURE_H264_SHORT_TERM_REFERENCE;
-            }
-        }
-        let slice_buffer = self.buffer(crate::ffi::va::VAEncSliceParameterBufferType, &slice)?;
-
-        // **The driver expects one of these per picture once packed headers
-        // are in use.** Without it there is no slice header to emit and the
-        // stream cannot be assembled, which is a fault inside the driver
-        // rather than a status.
-        let mut header = [0u8; 64];
-        let kind = if refresh {
-            crate::h264::Picture::Refresh {
-                idr_pic_id: u32::from(self.idr_pic_id),
-            }
-        } else {
-            crate::h264::Picture::Predicted {
-                frame_num,
-                poc_lsb: poc,
+            match self.params {
+                Params::H264(params) => {
+                    let next = (self.frame_num + 1) % (1 << (params.log2_max_frame_num_minus4 + 4));
+                    (next, (next * 2) % self.params.poc_period())
+                }
+                Params::H265(_) => (
+                    0,
+                    (self.reference.map_or(0, |reference| reference.poc) + 1)
+                        % self.params.poc_period(),
+                ),
             }
         };
-        let written =
-            crate::h264::slice_header(&self.params, kind, &mut header).ok_or(Error::NoEncoder)?;
-        let (header_head, header_data) = self.packed(
-            crate::ffi::va::VAEncPackedHeaderSlice,
-            &header[..written.bytes_written],
-            written.bit_length,
-        )?;
+        let plan = Plan {
+            refresh,
+            recon,
+            coded,
+            frame_num,
+            poc,
+        };
 
-        // The order is load bearing twice over. The parameter sets declare the
-        // field widths the slice header is then read with, and the picture
-        // buffer decides which fields the slice header is expected to carry at
-        // all, so both precede it.
         let mut buffers = [0 as VABufferID; 9];
         let mut used = 0usize;
         {
@@ -1479,17 +1857,10 @@ impl Encoder<'_> {
                     used += 1;
                 }
             };
-            push(seq_buffer);
-            push(rate_buffer);
-            push(fps_buffer);
-            if let Some((head, data)) = sets_packed {
-                push(head);
-                push(data);
+            match self.params {
+                Params::H264(params) => self.picture_h264(&params, plan, &mut push)?,
+                Params::H265(params) => self.picture_h265(&params, plan, &mut push)?,
             }
-            push(pic_buffer);
-            push(slice_buffer);
-            push(header_head);
-            push(header_data);
         }
         let buffers = buffers.get_mut(..used).ok_or(Error::NoEncoder)?;
 

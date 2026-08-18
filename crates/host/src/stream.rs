@@ -532,13 +532,31 @@ fn run(shared: &Shared, arrivals: &mpsc::Receiver<Join>, config: Config) {
 }
 
 fn run_open(shared: &Shared, arrivals: &mpsc::Receiver<Join>, config: Config) {
-    if config.codec == Codec::H265 {
-        // The parameter sets for this codec are written by hand on this
-        // backend and are not written yet. Said plainly rather than
-        // configuring an encoder that would emit a stream nothing decodes.
-        lowlat_common::log_error!("stream: the open backend has no h265 path yet");
-        return;
-    }
+    let (codec, params) = match config.codec {
+        Codec::H264 => (
+            lowlat_encode::vaapi::Codec::H264,
+            lowlat_encode::vaapi::Params::H264(lowlat_encode::h264::Params {
+                width: config.width,
+                height: config.height,
+                fps: config.fps,
+                level_idc: H264_LEVEL,
+                log2_max_frame_num_minus4: 4,
+                log2_max_poc_lsb_minus4: 4,
+                max_num_ref_frames: 1,
+            }),
+        ),
+        Codec::H265 => (
+            lowlat_encode::vaapi::Codec::H265,
+            lowlat_encode::vaapi::Params::H265(lowlat_encode::h265::Params {
+                width: config.width,
+                height: config.height,
+                fps: config.fps,
+                level_idc: H265_LEVEL,
+                log2_max_poc_lsb_minus4: 4,
+                max_num_ref_frames: 1,
+            }),
+        ),
+    };
     let Ok(display) = lowlat_encode::vaapi::Vaapi::load() else {
         lowlat_common::log_error!("stream: display runtime unavailable, nothing will encode");
         return;
@@ -547,23 +565,14 @@ fn run_open(shared: &Shared, arrivals: &mpsc::Receiver<Join>, config: Config) {
         lowlat_common::log_error!("stream: render node could not be opened");
         return;
     };
-    let Ok(caps) = display.caps(lowlat_encode::vaapi::Codec::H264) else {
-        lowlat_common::log_error!("stream: render node reports no h264 encode");
+    let Ok(caps) = display.caps(codec) else {
+        lowlat_common::log_error!("stream: render node reports no encode for codec={codec:?}");
         return;
     };
     let Ok(context) = display.create_context(caps, config.width, config.height, ENCODE_DEPTH)
     else {
         lowlat_common::log_error!("stream: encode context could not be created");
         return;
-    };
-    let params = lowlat_encode::h264::Params {
-        width: config.width,
-        height: config.height,
-        fps: config.fps,
-        level_idc: 42,
-        log2_max_frame_num_minus4: 4,
-        log2_max_poc_lsb_minus4: 4,
-        max_num_ref_frames: 1,
     };
     let Ok(mut encoder) = context.encoder(params, start_bps(config)) else {
         lowlat_common::log_error!("stream: encoder could not be configured");
@@ -612,6 +621,14 @@ fn run_vendor(shared: &Shared, arrivals: &mpsc::Receiver<Join>, config: Config) 
     };
     encode_loop(shared, arrivals, config, &mut encoder);
 }
+
+/// The lowest level each codec has that carries 1080p60, which is 4.2 on the
+/// first and 4.1 on the second. **They are written on different scales**: ten
+/// times the level number on the first, thirty on the second. Writing the
+/// first codec's scale into the second declares level 1.4, which is far below
+/// what this resolution needs, and a strict decoder refuses the stream.
+const H264_LEVEL: u32 = 42;
+const H265_LEVEL: u32 = 123;
 
 /// The rate an encoder opens at, before the controller has said anything.
 fn start_bps(config: Config) -> u32 {
