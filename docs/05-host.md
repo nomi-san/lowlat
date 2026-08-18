@@ -421,10 +421,37 @@ display-server-level injection cannot match.
 - **While the host cursor is hidden, absolute motion converts to relative deltas at
   injection.** This is a safety net for a peer that ignores the mode signal, so aiming works
   regardless.
-- A per-guest enable flag gates dispatch. The SDK invents no permission model beyond it;
-  permissions arrive from signaling ([04 §3](04-signaling.md)).
+- **Three permissions gate dispatch -- keyboard, pointer, gamepad -- and the gate lives in the
+  injector.** The SDK invents no permission model beyond them; they arrive from signaling
+  ([04 §3](04-signaling.md)). The gate belongs next to the pressed state rather than in the
+  message loop because **it is not a filter**: revoking a permission releases everything that
+  permission is holding, which is the same guard as a disconnect and needs the same state. A
+  gate placed in the loop would have to detect the transition and reach into the injector to
+  service it, splitting one invariant across two places, and it would need a second switch over
+  the same opcodes.
 - Injection tests are labeled and excluded by default. The default suite must never move the
   developer's pointer.
+
+### §7.1 Gamepads
+
+A peer's pad is a virtual device like its keyboard, with three differences that all follow from
+one fact: **a host does not know how many pads a guest has until it sends one.**
+
+- **A pad is created on the first message bearing a new identifier**, so unlike the keyboard and
+  pointer it cannot be created at admission and its device-readiness delay
+  ([07 §4.1](07-platforms.md)) sits in front of a stick somebody is already pushing. The same
+  queue-until-usable rule applies, and here it is load bearing rather than a nicety.
+- **The identifier is the peer's and is not an index** ([01 §11.1](01-protocol.md)). It maps to
+  a slot, and the number of slots one guest may hold is capped.
+- **Destroying the device is the release.** A pad that vanishes holds nothing, so unplug and
+  disconnect need no held-button walk -- but only if the device is genuinely destroyed, which
+  makes it something to test rather than something to assume.
+
+**Force feedback travels back to the peer.** A local application raising a rumble effect on the
+virtual pad reaches the guest that owns it as a rumble message. Only the simple magnitude effect
+is offered: it is what the common controller libraries raise, and the shaped effects would
+require carrying an envelope simulation for a peer that can express two motor strengths and
+nothing else.
 
 ## §8 Cursor
 

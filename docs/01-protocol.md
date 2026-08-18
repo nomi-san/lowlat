@@ -398,14 +398,14 @@ length **includes the terminator**; omitting it causes a silent parse failure on
 | 1 | mouse button | button, pressed, 0 | v1 |
 | 2 | mouse wheel | x, y, 0 | v1 |
 | 3 | mouse motion, stream 0 | relative flag, x, y | v1 |
-| 4 | gamepad button | pad, button, pressed | deferred |
-| 5 | gamepad axis | pad, axis, value | deferred |
-| 6 | gamepad unplug | 0, 0, pad | deferred |
+| 4 | gamepad button | button, pressed, pad | v1 |
+| 5 | gamepad axis | axis, value, pad | v1 |
+| 6 | gamepad unplug | 0, 0, pad | v1 |
 | 11 | init | header plus JSON body | v1 |
 | 13 | encoder configuration | stream, flags, reinit | v1 |
 | 17 | user data | length, sub-id, 0, plus body | v1, opaque pass through |
 | 21 | decode latency | microseconds, kind, stream | v1, diagnostic |
-| 23 | gamepad state | 28-byte body | deferred |
+| 23 | gamepad state | pad, 0, 0, plus 15-byte body | v1 |
 | 24 | release all input | 0, 0, 0 | v1 |
 | 26 | mouse motion, stream 1 and above | packed | v1 |
 | 30 | pen and touch | packed | deferred |
@@ -422,6 +422,27 @@ time, and a host that does not want it can drop the message.
 second thing that has not been read. A peer sends it with both clear in an ordinary session,
 which is a request to send nothing extra rather than a message to ignore.
 
+**The pad identifier is the peer's, and it is arbitrary.** Opcodes 4, 5, 6 and 23 all carry a
+32-bit value the peer chose; it is not an index and nothing bounds it. A host maps it to a slot
+and caps how many slots one guest may occupy, or a peer that varies the field creates a device
+per distinct value.
+
+**Opcode 23's body is fifteen bytes and the first three of them are padding**: a big-endian
+`u16` of button bits, four big-endian `i16` thumbstick axes, then two single-byte triggers. The
+padding is whatever the peer's stack held. Skip it; never validate it, and never treat a
+nonzero value there as a different message.
+
+**A gamepad reports itself two ways and a host takes both.** Opcodes 4 and 5 carry one button or
+one axis; opcode 23 carries a whole pad in one message. Which a peer sends is its own choice,
+and a peer may change it mid-session.
+
+**The two forms number the buttons differently and they do not line up.** Opcode 4's argument
+is an index into one ordering; opcode 23's body is a bit field in another, and the bit field
+carries a touchpad button the index has no value for. Neither is derivable from the other, so a
+host that maps one and shifts it into the other produces a pad whose face buttons are its
+direction pad. **Opcode 5's axis value is signed sixteen-bit** carried in an unsigned
+thirty-two-bit argument, so it needs a narrowing cast and not a comparison against zero.
+
 ### §11.2 Sent by the host
 
 | Op | Name | Arguments | Status |
@@ -431,7 +452,7 @@ which is a request to send nothing extra rather than a message to ignore.
 | 27 | stream ended | stream, 0, status | later |
 | 16 | input blocked | 1 blocked, 0 unblocked | later |
 | 17 | user data | length, sub-id, 0, plus body | v1 |
-| 20 | rumble | pad, large motor, small motor | deferred |
+| 20 | rumble | pad, large motor, small motor | v1 |
 | 21 | encode latency | 1, microseconds, stream | v1 |
 | 25 | guest list | JSON body | later |
 | 28 | host mode | mode | later |

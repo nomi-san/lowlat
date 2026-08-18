@@ -228,6 +228,36 @@ rather than by the display server opening them. It is not expected to be faster.
 Compositors discover the device through the normal input stack, so no compositor cooperation is
 required and nothing needs to be configured per desktop environment.
 
+### §4.2 Gamepads, and the two device layers
+
+Linux offers two ways to publish a virtual controller, and **which one is right is decided by
+the controller being emulated, not by preference.**
+
+| Layer | What it publishes | Suits |
+|---|---|---|
+| kernel input layer | buttons and axes directly, with an identity of our choosing | an Xbox 360 pad |
+| kernel HID layer | a report descriptor the kernel's own driver then binds | a DualShock 4 or DualSense |
+
+**An Xbox 360 pad must go through the input layer**, because it is not a HID device at all: it
+speaks a vendor protocol on a vendor-class interface, and its kernel driver binds on the USB bus
+rather than the HID one. There is nothing for the HID layer to present.
+
+**A DualShock 4 or DualSense must go through the HID layer**, because the whole point of
+emulating one is that applications recognise it as one. Presented as a report descriptor, the
+kernel's own driver claims it and supplies the correct button map, the touchpad as its own
+device, motion, battery, and lights and rumble as ordinary output reports. Published through the
+input layer instead you get the button layout and none of the identity, which is the part that
+was wanted.
+
+**v1 emulates the Xbox 360 pad only.** A peer sends one button layout regardless of what it is
+holding, so a second emulation buys identity and nothing else, and the identity is not free: the
+kernel driver interrogates a device of that family during setup and will not attach to one that
+cannot answer. That is worth doing and is not worth doing first.
+
+**The HID layer's device node carries the same packaging obligation as the input layer's**
+([§6](#6-privileges)): no distribution grants access to either by default, so a second backend
+means a second rule.
+
 ## §5 Process topology
 
 The topology follows from §3, and this is the coupling worth seeing before the capture
@@ -273,6 +303,7 @@ The daemon runs as a dedicated system user, never as root.
 |---|---|
 | display device | supplementary group for the device class, plus a rule for the render node |
 | input device node | supplementary group plus a rule granting the daemon write access |
+| HID device node | the same, and only once a controller needing that layer is emulated ([§4.2](#42-gamepads-and-the-two-device-layers)) |
 | framebuffer export | may require a specific capability rather than group membership, which §3's probe determines |
 
 The unit grants the minimum that works, denies device access by default and allows the two

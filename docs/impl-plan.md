@@ -661,17 +661,42 @@ delivery gate does what it is meant to throughout, and no guest ever saw a broke
 
 ## Phase 7 - Input injection
 
-- [ ] `lowlat-inject` over `uinput`: keyboard, mouse buttons, wheel, absolute and relative
-  motion.
+- [ ] `lowlat-inject` over the kernel input layer: keyboard, pointer buttons, wheel, and
+  absolute and relative motion, as **separate relative and absolute pointer devices**
+  ([07 §4](07-platforms.md)).
 - [ ] Usage-code to kernel-code mapping as a pure, unit-tested function.
-- [ ] Per-guest pressed-state tracking with release-all on disconnect.
+- [ ] Per-guest pressed-state tracking with release-all on disconnect and on the peer's own
+  release message.
+- [ ] A **pure expansion from one control message to a batch of device events**, so the state
+  machine is testable with no device and the write is one call per batch rather than one per
+  axis.
+- [ ] The three permissions gated **inside the injector**, releasing what a permission holds
+  when it is revoked ([05 §7](05-host.md)).
+- [ ] Virtual gamepads, **Xbox 360 layout only** ([07 §4.2](07-platforms.md)): one device per
+  guest per pad identifier, capped, created on first use, destroyed on unplug and on
+  disconnect.
+- [ ] Force feedback as the simple magnitude effect, reported back to the owning guest as a
+  rumble message.
+- [ ] Events queued rather than dropped until a freshly created device is usable
+  ([07 §4.1](07-platforms.md)), with a bounded queue and a stated overflow rule.
+- [ ] The three device-node failures told apart: module absent, group or rule missing,
+  confinement refusing the create.
 
 **Gate:**
 
-1. Keyboard and mouse round-trip from a stock client to a real input device.
+1. Keyboard and pointer round-trip from a stock client to a real input device.
 2. Absolute coordinates land on the correct pixel, including on a rotated output.
 3. **No stuck keys after an abrupt disconnect** with keys held. *Named regression test.*
 4. Mapping tests run without a device; injection tests are labeled and excluded by default.
+5. **Revoking a permission releases what it was holding**, with nothing else disturbed.
+   *Named regression test, no device required.*
+6. A stock client's gamepad drives a real device: both sticks, both triggers, the direction
+   pad, and every button, read back through an independent reader.
+7. **No held buttons and no orphaned devices** after an abrupt disconnect and after an unplug.
+   *Named regression test.*
+8. A local application's rumble reaches the peer.
+9. The readiness delay is measured under a compositor as well as a display server, and the
+   queue's deadline is set from the larger figure rather than from the one already measured.
 
 ---
 
@@ -762,6 +787,26 @@ from a source change.
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
 
+- 2026-08-18: **Phase 7 takes on gamepads, permissions and force feedback, and gains five gate
+  items.** Four of the additions were already required by [05 §7](05-host.md) and
+  [07 §4.1](07-platforms.md) and were simply unwritten in the plan: the permission gate, the
+  queue that covers a freshly created device's unusable window, the split between the three
+  ways the device node can refuse, and the pure expansion that makes the rest testable without
+  hardware. Gamepads are the genuine addition. They were listed as deferred against four
+  received opcodes and one sent one, which cannot stay: a peer sends pad input in an ordinary
+  session, and a host that accepts and drops it presents as a controller that does not work
+  rather than as a feature that is missing. **Only the Xbox 360 layout is emulated**, on the
+  kernel input layer; the controller families that need the HID layer buy identity rather than
+  capability, since a peer sends the same button layout whichever it is holding, and that
+  identity costs a device-setup handshake with the kernel's own driver
+  ([07 §4.2](07-platforms.md)). **Force feedback is included rather than deferred** because the
+  device must declare it or applications see a pad that cannot rumble, and declaring only the
+  simple magnitude effect removes the envelope simulation that the shaped effects would drag
+  in. The **permission gate is placed in the injector rather than in the message loop**: it is
+  not a filter, since revoking a permission releases what it holds, and that is the same
+  invariant a disconnect uses. Gate item 9 exists because every readiness figure so far comes
+  from one display server on one machine, and the deadline the queue is built around must not
+  be set from the friendlier of two numbers.
 - 2026-08-17: **Correction to the entry below: the no-wait flag is not ignored, it answers
   wrongly.** Recorded first as "ignored by the driver", which was measured from the outside and
   read one way too kindly. Set, the lock returns success on a block the driver has not finished
