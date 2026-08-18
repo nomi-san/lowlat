@@ -20,5 +20,6 @@
 )]
 
 pub mod event;
+pub mod gamepad;
 pub mod uinput;
 pub mod usage;

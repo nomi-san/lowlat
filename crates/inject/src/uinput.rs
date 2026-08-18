@@ -10,6 +10,7 @@
 //! can do, and writes batches the expander already built.
 
 use crate::event::{ABS_RANGE, Device, Event, Sink};
+use crate::gamepad::{self, MAX_PADS};
 use crate::usage;
 use core::fmt::Write as _;
 use std::os::fd::{AsRawFd as _, OwnedFd};
@@ -142,6 +143,12 @@ struct Node {
     fd: OwnedFd,
     /// Events produced before the device could deliver them.
     held: Held,
+    /// **Each device has its own deadline**, because they are not created
+    /// together: a guest's keyboard and pointers arrive when it is admitted
+    /// and a pad arrives whenever it first sends one, which may be minutes
+    /// later.
+    created: lowlat_common::clock::Time,
+    usable: bool,
 }
 
 /// Events waiting for a device to become usable.
@@ -234,6 +241,8 @@ impl Node {
         Ok(Self {
             fd,
             held: Held::default(),
+            created: lowlat_common::clock::Time::now(),
+            usable: false,
         })
     }
 
@@ -290,11 +299,15 @@ impl Node {
     }
 
     fn absolute_axis(&self, code: u16, maximum: i32) -> Result<(), Error> {
+        self.absolute_axis_signed(code, 0, maximum)
+    }
+
+    fn absolute_axis_signed(&self, code: u16, minimum: i32, maximum: i32) -> Result<(), Error> {
         let setup = UinputAbsSetup {
             code,
             filler: 0,
             value: 0,
-            minimum: 0,
+            minimum,
             maximum,
             fuzz: 0,
             flat: 0,
@@ -316,6 +329,28 @@ impl Node {
         }
     }
 
+    /// Send a batch, holding it if the device cannot deliver yet.
+    fn send(&mut self, events: &[Event]) -> Result<(), Error> {
+        if !self.usable {
+            if lowlat_common::clock::elapsed_ms(self.created) < USABLE_AFTER_MS {
+                self.held.push(events);
+                return Ok(());
+            }
+            self.usable = true;
+            self.flush()?;
+        }
+        write_to(&self.fd, events)
+    }
+
+    /// Release anything held once the device can deliver it.
+    fn tick(&mut self) -> Result<(), Error> {
+        if self.usable || lowlat_common::clock::elapsed_ms(self.created) < USABLE_AFTER_MS {
+            return Ok(());
+        }
+        self.usable = true;
+        self.flush()
+    }
+
     /// Write everything held, if there is anything.
     fn flush(&mut self) -> Result<(), Error> {
         let used = self.held.take();
@@ -323,10 +358,6 @@ impl Node {
             Some(events) if used > 0 => write_to(&self.fd, events),
             _ => Ok(()),
         }
-    }
-
-    fn write(&self, events: &[Event]) -> Result<(), Error> {
-        write_to(&self.fd, events)
     }
 }
 
@@ -420,8 +451,21 @@ pub struct Devices {
     keyboard: Node,
     pointer: Node,
     pointer_absolute: Node,
-    created: lowlat_common::clock::Time,
-    usable: bool,
+    /// **Created on first use, not at admission.** A guest's keyboard and
+    /// pointers exist because it connected; a pad exists because it sent one,
+    /// and how many it has is not knowable in advance.
+    pads: [Option<PadNode>; MAX_PADS],
+    /// Set once, so a guest holding more pads than there are slots is
+    /// reported rather than silently short of one.
+    refused: bool,
+    label: NameBuf,
+}
+
+/// One pad's device, addressed by the identifier its peer gave it.
+#[derive(Debug)]
+struct PadNode {
+    id: u32,
+    node: Node,
 }
 
 impl Devices {
@@ -436,8 +480,13 @@ impl Devices {
             keyboard: keyboard(guest)?,
             pointer: pointer(guest)?,
             pointer_absolute: pointer_absolute(guest)?,
-            created: lowlat_common::clock::Time::now(),
-            usable: false,
+            pads: [const { None }; MAX_PADS],
+            refused: false,
+            label: {
+                let mut label = NameBuf::default();
+                let _ = label.write_str(guest);
+                label
+            },
         })
     }
 
@@ -447,44 +496,92 @@ impl Devices {
     /// A guest that types one key and waits would otherwise have it sit in the
     /// queue until it typed a second.
     pub fn tick(&mut self) {
-        if self.usable {
-            return;
-        }
-        if lowlat_common::clock::elapsed_ms(self.created) < USABLE_AFTER_MS {
-            return;
-        }
-        self.usable = true;
+        let pads = self
+            .pads
+            .iter_mut()
+            .filter_map(Option::as_mut)
+            .map(|p| &mut p.node);
         for node in [
             &mut self.keyboard,
             &mut self.pointer,
             &mut self.pointer_absolute,
-        ] {
-            if let Err(error) = node.flush() {
+        ]
+        .into_iter()
+        .chain(pads)
+        {
+            if let Err(error) = node.tick() {
                 lowlat_common::log_warn!("inject: held events lost, error={error}");
             }
         }
+    }
+
+    /// The device for a pad, creating it if this is the first event for it.
+    fn pad(&mut self, id: u32) -> Option<&mut Node> {
+        if let Some(index) = self
+            .pads
+            .iter()
+            .position(|p| p.as_ref().is_some_and(|p| p.id == id))
+        {
+            return self
+                .pads
+                .get_mut(index)
+                .and_then(Option::as_mut)
+                .map(|p| &mut p.node);
+        }
+        let Some(index) = self.pads.iter().position(Option::is_none) else {
+            if !self.refused {
+                self.refused = true;
+                lowlat_common::log_warn!("inject: no room for another pad, pads={MAX_PADS}");
+            }
+            return None;
+        };
+        let node = match pad(self.label.as_str(), id) {
+            Ok(node) => node,
+            Err(error) => {
+                lowlat_common::log_warn!("inject: pad not created, pad={id} error={error}");
+                return None;
+            }
+        };
+        lowlat_common::log_info!("inject: pad created, pad={id}");
+        let slot = self.pads.get_mut(index)?;
+        *slot = Some(PadNode { id, node });
+        slot.as_mut().map(|p| &mut p.node)
     }
 }
 
 impl Sink for Devices {
     fn emit(&mut self, device: Device, events: &[Event]) {
-        self.tick();
-        let usable = self.usable;
         let node = match device {
             Device::Keyboard => &mut self.keyboard,
             Device::Pointer => &mut self.pointer,
             Device::PointerAbsolute => &mut self.pointer_absolute,
+            Device::Gamepad(id) => {
+                let Some(node) = self.pad(id) else { return };
+                node
+            }
         };
-        if !usable {
-            node.held.push(events);
-            return;
-        }
-        if let Err(error) = node.write(events) {
+        if let Err(error) = node.send(events) {
             // A write that fails is not recoverable here and must not stop the
             // session: the guest is still connected and still being sent
             // video. It is reported and the events are lost.
             lowlat_common::log_warn!("inject: write failed, device={device:?} error={error}");
         }
+    }
+
+    fn unplug(&mut self, pad: u32) {
+        let Some(index) = self
+            .pads
+            .iter()
+            .position(|p| p.as_ref().is_some_and(|p| p.id == pad))
+        else {
+            return;
+        };
+        // Dropping the device is the unplug, and it is also what releases
+        // everything the pad was holding.
+        if let Some(slot) = self.pads.get_mut(index) {
+            *slot = None;
+        }
+        lowlat_common::log_info!("inject: pad unplugged, pad={pad}");
     }
 }
 
@@ -569,6 +666,53 @@ fn pointer_absolute(guest: &str) -> Result<Node, Error> {
         node.absolute_axis(axis, ABS_RANGE)?;
     }
     node.create(name("pointer absolute", guest).as_str(), 3)?;
+    Ok(node)
+}
+
+fn pad(guest: &str, id: u32) -> Result<Node, Error> {
+    let node = Node::open()?;
+    node.set(ioctl::SET_EVBIT, EV_SYN)?;
+    node.set(ioctl::SET_EVBIT, EV_KEY)?;
+    node.set(ioctl::SET_EVBIT, EV_ABS)?;
+    for code in [
+        gamepad::key::SOUTH,
+        gamepad::key::EAST,
+        gamepad::key::NORTH,
+        gamepad::key::WEST,
+        gamepad::key::TL,
+        gamepad::key::TR,
+        gamepad::key::SELECT,
+        gamepad::key::START,
+        gamepad::key::MODE,
+        gamepad::key::THUMBL,
+        gamepad::key::THUMBR,
+    ] {
+        node.set(ioctl::SET_KEYBIT, libc::c_int::from(code))?;
+    }
+    // **The ranges are the pad's, not ours to choose.** An application reads
+    // them and scales its own deadzones by them, so a stick declared over a
+    // different span reaches the same code as a different stick.
+    for axis in [
+        gamepad::axis::X,
+        gamepad::axis::Y,
+        gamepad::axis::RX,
+        gamepad::axis::RY,
+    ] {
+        node.set(ioctl::SET_ABSBIT, libc::c_int::from(axis))?;
+        node.absolute_axis_signed(axis, -gamepad::STICK_RANGE - 1, gamepad::STICK_RANGE)?;
+    }
+    for axis in [gamepad::axis::Z, gamepad::axis::RZ] {
+        node.set(ioctl::SET_ABSBIT, libc::c_int::from(axis))?;
+        node.absolute_axis(axis, gamepad::TRIGGER_RANGE)?;
+    }
+    // The direction pad is two axes that take exactly three values each.
+    for axis in [gamepad::axis::HAT0X, gamepad::axis::HAT0Y] {
+        node.set(ioctl::SET_ABSBIT, libc::c_int::from(axis))?;
+        node.absolute_axis_signed(axis, -1, 1)?;
+    }
+    let mut name = NameBuf::default();
+    let _ = write!(name, "lowlat pad {id} (guest {guest})");
+    node.create(name.as_str(), 4)?;
     Ok(node)
 }
 
@@ -745,6 +889,7 @@ mod held_tests {
 mod device_tests {
     use super::*;
     use crate::event::{Extents, Injector, Permissions};
+    use crate::gamepad;
     use lowlat_core::control::{Control, op};
     use std::io::Read as _;
 
@@ -1103,6 +1248,140 @@ mod device_tests {
             vec![183, 184],
             "the kernel did not release what the device held"
         );
+    }
+
+    /// **A pad appears when the guest first sends one, and reports.** Read
+    /// back through the event node, so what is asserted is what the input
+    /// layer delivered rather than what the write returned.
+    #[test]
+    #[ignore = "creates real input devices"]
+    fn a_pad_appears_on_first_use_and_reports() {
+        let mut devices = Devices::create("15").expect("create");
+        assert!(
+            Reader::node("lowlat pad 9 (guest 15)").is_none(),
+            "a pad existed before the guest sent one"
+        );
+
+        let mut inject = injector();
+        let mut body = vec![0xAB, 0xCD, 0xEF];
+        body.extend_from_slice(&gamepad::bit::A.to_be_bytes());
+        for value in [1000i16, 2000, -3000, -4000] {
+            body.extend_from_slice(&value.to_be_bytes());
+        }
+        body.push(200);
+        body.push(50);
+        inject.on_control(
+            &Control {
+                a0: 9,
+                a1: 0,
+                a2: 0,
+                opcode: op::GAMEPAD_STATE,
+                body: &body,
+            },
+            &mut devices,
+        );
+
+        let mut reader = Reader::open("lowlat pad 9 (guest 15)").expect("the pad has no node");
+        // The first report was held while the device became usable, so it
+        // arrives when the deadline passes rather than now.
+        std::thread::sleep(std::time::Duration::from_millis(
+            USABLE_AFTER_MS as u64 + 20,
+        ));
+        devices.tick();
+
+        let seen = reader.settled();
+        let keys: Vec<(u16, i32)> = seen
+            .iter()
+            .filter(|(kind, _, _)| *kind == 0x01)
+            .map(|(_, code, value)| (*code, *value))
+            .collect();
+        let axes: Vec<(u16, i32)> = seen
+            .iter()
+            .filter(|(kind, _, _)| *kind == 0x03)
+            .map(|(_, code, value)| (*code, *value))
+            .collect();
+        assert_eq!(keys, vec![(gamepad::key::SOUTH, 1)]);
+        assert_eq!(
+            axes,
+            vec![
+                (gamepad::axis::X, 1000),
+                (gamepad::axis::Y, -2000),
+                (gamepad::axis::RX, -3000),
+                (gamepad::axis::RY, 4000),
+                (gamepad::axis::Z, 200),
+                (gamepad::axis::RZ, 50),
+            ]
+        );
+
+        // And it goes away when the guest says so.
+        inject.on_control(
+            &Control {
+                a0: 0,
+                a1: 0,
+                a2: 9,
+                opcode: op::GAMEPAD_UNPLUG,
+                body: &[],
+            },
+            &mut devices,
+        );
+        assert!(Reader::gone("lowlat pad 9 (guest 15)"), "the pad stayed");
+    }
+
+    /// **The axis ranges are what an application scales its deadzones by**,
+    /// and nothing in the event stream reveals them.
+    #[test]
+    #[ignore = "creates real input devices"]
+    fn a_pads_axes_are_published_at_the_ranges_they_are_written_in() {
+        let mut devices = Devices::create("16").expect("create");
+        let mut inject = injector();
+        inject.on_control(
+            &Control {
+                a0: 4,
+                a1: 0,
+                a2: 1,
+                opcode: op::GAMEPAD_AXIS,
+                body: &[],
+            },
+            &mut devices,
+        );
+        let reader = Reader::open("lowlat pad 1 (guest 16)").expect("the pad has no node");
+
+        let wanted = [
+            (gamepad::axis::X, -32768, 32767),
+            (gamepad::axis::Y, -32768, 32767),
+            (gamepad::axis::Z, 0, 255),
+            (gamepad::axis::RZ, 0, 255),
+            (gamepad::axis::HAT0X, -1, 1),
+            (gamepad::axis::HAT0Y, -1, 1),
+        ];
+        for (axis, minimum, maximum) in wanted {
+            let mut info = UinputAbsSetup {
+                code: axis,
+                filler: 0,
+                value: 0,
+                minimum: 0,
+                maximum: 0,
+                fuzz: 0,
+                flat: 0,
+                resolution: 0,
+            };
+            use std::os::fd::AsRawFd as _;
+            // SAFETY: the request writes an input_absinfo, and the pointer is
+            // offset to the absinfo half of the setup struct.
+            let rc = unsafe {
+                libc::ioctl(
+                    reader.file.as_raw_fd(),
+                    0x8018_4540u64 + u64::from(axis),
+                    core::ptr::from_mut(&mut info.value),
+                )
+            };
+            assert_eq!(rc, 0, "axis {axis:#x} could not be read back");
+            assert_eq!(
+                (info.minimum, info.maximum),
+                (minimum, maximum),
+                "{axis:#x}"
+            );
+        }
     }
 
     /// Gate item 5 against the kernel: revoking releases what it held.
