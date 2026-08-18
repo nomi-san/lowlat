@@ -182,6 +182,8 @@ pub struct Injector {
     floor: bool,
     /// One entry per pad this guest holds, in the order they first arrived.
     pads: [Option<Pad>; MAX_PADS],
+    /// What has arrived, for the line a live run is read from.
+    tally: Tally,
     scratch: [Event; SCRATCH],
     used: usize,
 }
@@ -201,6 +203,7 @@ impl Injector {
             caps_lock: None,
             floor: true,
             pads: [None; MAX_PADS],
+            tally: Tally::default(),
             scratch: [Event {
                 kind: 0,
                 code: 0,
@@ -242,6 +245,20 @@ impl Injector {
         self.floor = held;
     }
 
+    /// The first pad holding every button in `mask`, if any.
+    ///
+    /// A read of state this already keeps. It exists for the live-run probe
+    /// that stands in for a local application raising an effect
+    /// ([`crate::uinput::Devices::rumble`] is the real source).
+    #[must_use]
+    pub fn pad_holding(&self, mask: u16) -> Option<u32> {
+        self.pads
+            .iter()
+            .flatten()
+            .find(|pad| pad.buttons & mask == mask)
+            .map(|pad| pad.id)
+    }
+
     /// Report whether the local pointer is hidden.
     ///
     /// Nothing calls this yet; the signal is a property of the captured
@@ -255,8 +272,15 @@ impl Injector {
         self.hidden = hidden;
     }
 
+    /// What this guest has sent, by kind.
+    #[must_use]
+    pub fn tally(&self) -> Tally {
+        self.tally
+    }
+
     /// Expand one control message.
     pub fn on_control(&mut self, message: &Control<'_>, out: &mut impl Sink) {
+        self.tally.count(message.opcode);
         match message.opcode {
             op::KEYBOARD if self.permissions.keyboard => {
                 self.keyboard(message.a0, message.a1, message.a2 != 0, out);
@@ -735,6 +759,37 @@ impl Injector {
             out.emit(device, events);
         }
         self.used = 0;
+    }
+}
+
+/// A count of what a guest has sent, by kind.
+///
+/// **Counted where it arrives, before any gate.** A live run's first question
+/// is whether the input reached the host at all, and a tally taken after the
+/// permission and pointer gates cannot tell "nothing arrived" from "everything
+/// was dropped".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Tally {
+    pub keys: u32,
+    pub buttons: u32,
+    pub wheels: u32,
+    pub motions: u32,
+    pub pads: u32,
+}
+
+impl Tally {
+    fn count(&mut self, opcode: u8) {
+        let slot = match opcode {
+            op::KEYBOARD => &mut self.keys,
+            op::MOUSE_BUTTON => &mut self.buttons,
+            op::MOUSE_WHEEL => &mut self.wheels,
+            op::MOUSE_MOTION | op::MOUSE_MOTION_STREAM => &mut self.motions,
+            op::GAMEPAD_BUTTON | op::GAMEPAD_AXIS | op::GAMEPAD_STATE | op::GAMEPAD_UNPLUG => {
+                &mut self.pads
+            }
+            _ => return,
+        };
+        *slot = slot.saturating_add(1);
     }
 }
 

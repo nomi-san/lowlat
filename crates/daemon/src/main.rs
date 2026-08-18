@@ -229,8 +229,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // decision, not a host's, and imposing it breaks two people sharing a
     // desktop.
     let exclusive_pointer = flag_set("--exclusive-pointer");
+    // A live-run aid, off unless asked for: nothing on this machine vibrates,
+    // so without it the path back to a peer's controller cannot be exercised
+    // without running a game that raises an effect.
+    let rumble_probe = flag_set("--rumble-probe");
     let mut seam = Admission::new(Config {
         exclusive_pointer,
+        rumble_probe,
         base_port,
         max_guests: max_guests as usize,
         servers: vec![stun],

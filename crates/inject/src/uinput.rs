@@ -27,6 +27,7 @@ mod ioctl {
     pub(super) const SET_MSCBIT: libc::c_ulong = 0x4004_5568;
     pub(super) const SET_PROPBIT: libc::c_ulong = 0x4004_556e;
     pub(super) const SET_FFBIT: libc::c_ulong = 0x4004_556b;
+    pub(super) const SET_PHYS: libc::c_ulong = 0x4008_556c;
     pub(super) const BEGIN_FF_UPLOAD: libc::c_ulong = 0xc068_55c8;
     pub(super) const END_FF_UPLOAD: libc::c_ulong = 0x4068_55c9;
     pub(super) const BEGIN_FF_ERASE: libc::c_ulong = 0xc00c_55ca;
@@ -54,7 +55,7 @@ const FF_GAIN: u16 = 0x60;
 ///
 /// Applications upload a handful and reuse them. The bound exists so a pad
 /// costs a fixed amount, not because anything approaches it.
-const EFFECTS: usize = 16;
+const EFFECTS: u32 = 16;
 
 const MSC_SCAN: libc::c_int = 4;
 const REL_X: libc::c_int = 0x00;
@@ -75,11 +76,66 @@ const INPUT_PROP_POINTER: libc::c_int = 0x00;
 
 /// The device is not on any physical bus and does not claim to be.
 const BUS_VIRTUAL: u16 = 0x06;
+/// A pad claims this instead. See [`PAD`].
+const BUS_USB: u16 = 0x03;
 
 /// Not a real vendor's number. Distinctive so these devices are greppable in
 /// a device listing, and on a bus where nothing can collide with it.
 const VENDOR: u16 = 0x6c6c;
 const VERSION: u16 = 1;
+
+/// What a device tells the world it is.
+#[derive(Debug, Clone, Copy)]
+struct Identity {
+    bus: u16,
+    vendor: u16,
+    product: u16,
+    version: u16,
+    /// Effects it claims room for. **Non-zero exactly when force feedback is
+    /// declared**, or the device is refused outright.
+    effects: u32,
+}
+
+impl Identity {
+    /// A device that is ours and says so.
+    const fn ours(product: u16) -> Self {
+        Self {
+            bus: BUS_VIRTUAL,
+            vendor: VENDOR,
+            product,
+            version: VERSION,
+            effects: 0,
+        }
+    }
+}
+
+/// **A pad borrows a real controller's identity, and it has to.**
+///
+/// Everything that reads a gamepad decides what its buttons mean by looking
+/// the identity up in a table: the browser gamepad interface, the common
+/// controller libraries, and every per-title mapping people share. A device
+/// with an identity nobody has heard of is delivered as a bag of numbered
+/// buttons and axes, and no amount of correct input makes it usable.
+///
+/// **The mapping this selects is the one we actually emit.** The Linux entry
+/// for this identity is buttons zero to ten in kernel-code order and axes zero
+/// to five, with the direction pad on the first hat -- which is exactly the
+/// device [`pad`] builds, checked entry by entry rather than assumed. Claiming
+/// an identity whose mapping did not match would be worse than claiming none.
+///
+/// The honest half is not lost: [`UI_SET_PHYS`] carries which guest and which
+/// pad, which is what a physical-location string is for.
+const PAD: Identity = Identity {
+    bus: BUS_USB,
+    vendor: 0x045e,
+    product: 0x028e,
+    version: 0x0114,
+    effects: EFFECTS,
+};
+
+/// What a pad calls itself, which is what a real one on this platform calls
+/// itself.
+const PAD_NAME: &str = "Microsoft X-Box 360 pad";
 
 const NAME_LEN: usize = 80;
 
@@ -167,7 +223,7 @@ struct Node {
     ///
     /// **Held here rather than answered and forgotten**, because playing one
     /// names it by identifier and nothing else says how hard to vibrate.
-    effects: [Effect; EFFECTS],
+    effects: [Effect; EFFECTS as usize],
     /// A scale over every effect, which an application may turn down.
     gain: u16,
     /// **Each device has its own deadline**, because they are not created
@@ -273,7 +329,7 @@ impl Node {
         Ok(Self {
             fd,
             held: Held::default(),
-            effects: [Effect::default(); EFFECTS],
+            effects: [Effect::default(); EFFECTS as usize],
             gain: u16::MAX,
             created: lowlat_common::clock::Time::now(),
             usable: false,
@@ -290,18 +346,37 @@ impl Node {
         }
     }
 
-    fn create(&self, name: &str, product: u16) -> Result<(), Error> {
-        self.create_with_effects(name, product, 0)
+    /// Say where the device is, which is how one of ours is told from another
+    /// when they all claim the same identity.
+    fn set_phys(&self, phys: &str) -> Result<(), Error> {
+        let mut bytes = [0u8; NAME_LEN];
+        for (slot, byte) in bytes.iter_mut().take(NAME_LEN - 1).zip(phys.as_bytes()) {
+            *slot = *byte;
+        }
+        // SAFETY: the request reads a NUL-terminated string, and the buffer
+        // outlives the call with its last byte left zero.
+        let rc = unsafe {
+            libc::ioctl(
+                self.fd.as_raw_fd(),
+                ioctl::SET_PHYS,
+                bytes.as_ptr().cast::<libc::c_char>(),
+            )
+        };
+        if rc < 0 {
+            Err(Error::Failed(errno()))
+        } else {
+            Ok(())
+        }
     }
 
-    fn create_with_effects(&self, name: &str, product: u16, effects: u32) -> Result<(), Error> {
+    fn create(&self, name: &str, identity: Identity) -> Result<(), Error> {
         let mut setup = UinputSetup {
-            bustype: BUS_VIRTUAL,
-            vendor: VENDOR,
-            product,
-            version: VERSION,
+            bustype: identity.bus,
+            vendor: identity.vendor,
+            product: identity.product,
+            version: identity.version,
             name: [0; NAME_LEN],
-            ff_effects_max: effects,
+            ff_effects_max: identity.effects,
         };
         // Truncated rather than refused: the name is a label in a device
         // listing and nothing reads it back.
@@ -894,7 +969,7 @@ fn keyboard(guest: &str) -> Result<Node, Error> {
         }
         node.set(ioctl::SET_KEYBIT, libc::c_int::from(code))?;
     }
-    node.create(name("keyboard", guest).as_str(), 1)?;
+    node.create(name("keyboard", guest).as_str(), Identity::ours(1))?;
     Ok(node)
 }
 
@@ -916,7 +991,7 @@ fn pointer(guest: &str) -> Result<Node, Error> {
     ] {
         node.set(ioctl::SET_RELBIT, axis)?;
     }
-    node.create(name("pointer", guest).as_str(), 2)?;
+    node.create(name("pointer", guest).as_str(), Identity::ours(2))?;
     Ok(node)
 }
 
@@ -940,7 +1015,7 @@ fn pointer_absolute(guest: &str) -> Result<Node, Error> {
         node.set(ioctl::SET_ABSBIT, libc::c_int::from(axis))?;
         node.absolute_axis(axis, ABS_RANGE)?;
     }
-    node.create(name("pointer absolute", guest).as_str(), 3)?;
+    node.create(name("pointer absolute", guest).as_str(), Identity::ours(3))?;
     Ok(node)
 }
 
@@ -999,13 +1074,12 @@ fn pad(guest: &str, id: u32) -> Result<Node, Error> {
     // produce two numbers a peer can express.
     node.set(ioctl::SET_EVBIT, EV_FF.into())?;
     node.set(ioctl::SET_FFBIT, FF_RUMBLE)?;
-    let mut name = NameBuf::default();
-    let _ = write!(name, "lowlat pad {id} (guest {guest})");
-    // **Non-zero, or the device is not created at all.** It is the number of
-    // effects the pad claims it can hold, and a device that declares force
-    // feedback and room for none of it is refused outright rather than
-    // created and then failing uploads.
-    node.create_with_effects(name.as_str(), 4, u32::try_from(EFFECTS).unwrap_or(1))?;
+    // Which guest and which pad, since the name is a borrowed one and every
+    // pad on this machine shares it.
+    let mut phys = NameBuf::default();
+    let _ = write!(phys, "lowlat/guest{guest}/pad{id}");
+    node.set_phys(phys.as_str())?;
+    node.create(PAD_NAME, PAD)?;
     Ok(node)
 }
 
@@ -1250,7 +1324,57 @@ mod device_tests {
             false
         }
 
+        /// **Pads are found by where they are, not what they are called.**
+        /// Every pad claims one borrowed name, so the name identifies the
+        /// model and the location identifies the device.
+        fn phys(phys: &str) -> Option<String> {
+            Self::by(|path| {
+                std::fs::read_to_string(path.join("device/phys"))
+                    .is_ok_and(|found| found.trim() == phys)
+            })
+        }
+
+        fn open_phys(location: &str) -> Option<Self> {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                if let Some(leaf) = Self::phys(location)
+                    && let Ok(file) = std::fs::File::open(format!("/dev/input/{leaf}"))
+                {
+                    use std::os::fd::AsRawFd as _;
+                    // SAFETY: a drain with nothing left must return rather
+                    // than park the test forever.
+                    unsafe {
+                        let flags = libc::fcntl(file.as_raw_fd(), libc::F_GETFL);
+                        libc::fcntl(file.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK);
+                    }
+                    return Some(Self { file });
+                }
+                if std::time::Instant::now() >= deadline {
+                    return None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        }
+
+        fn gone_phys(location: &str) -> bool {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                if Self::phys(location).is_none() {
+                    return true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            false
+        }
+
         fn node(name: &str) -> Option<String> {
+            Self::by(|path| {
+                std::fs::read_to_string(path.join("device/name"))
+                    .is_ok_and(|found| found.trim() == name)
+            })
+        }
+
+        fn by(matches: impl Fn(&std::path::Path) -> bool) -> Option<String> {
             for entry in std::fs::read_dir("/sys/class/input").ok()?.flatten() {
                 let path = entry.path();
                 let Some(leaf) = path.file_name().and_then(|l| l.to_str()).map(str::to_owned)
@@ -1260,10 +1384,7 @@ mod device_tests {
                 if !leaf.starts_with("event") {
                     continue;
                 }
-                let Ok(found) = std::fs::read_to_string(path.join("device/name")) else {
-                    continue;
-                };
-                if found.trim() == name {
+                if matches(&path) {
                     return Some(leaf);
                 }
             }
@@ -1566,7 +1687,7 @@ mod device_tests {
     fn a_pad_appears_on_first_use_and_reports() {
         let mut devices = Devices::create("15").expect("create");
         assert!(
-            Reader::node("lowlat pad 9 (guest 15)").is_none(),
+            Reader::phys("lowlat/guest15/pad9").is_none(),
             "a pad existed before the guest sent one"
         );
 
@@ -1589,7 +1710,7 @@ mod device_tests {
             &mut devices,
         );
 
-        let mut reader = Reader::open("lowlat pad 9 (guest 15)").expect("the pad has no node");
+        let mut reader = Reader::open_phys("lowlat/guest15/pad9").expect("the pad has no node");
         // The first report was held while the device became usable, so it
         // arrives when the deadline passes rather than now.
         std::thread::sleep(std::time::Duration::from_millis(
@@ -1632,7 +1753,60 @@ mod device_tests {
             },
             &mut devices,
         );
-        assert!(Reader::gone("lowlat pad 9 (guest 15)"), "the pad stayed");
+        assert!(Reader::gone_phys("lowlat/guest15/pad9"), "the pad stayed");
+    }
+
+    /// **The identity is what every consumer maps the buttons by**, so it is
+    /// read back from the device rather than assumed from the constant that
+    /// was written. A pad whose identity did not take is delivered as numbered
+    /// buttons and is unusable however correct the input is.
+    #[test]
+    #[ignore = "creates real input devices"]
+    fn a_pad_presents_the_identity_its_mapping_is_keyed_on() {
+        let mut devices = Devices::create("18").expect("create");
+        let mut inject = injector();
+        inject.on_control(
+            &Control {
+                a0: 4,
+                a1: 0,
+                a2: 2,
+                opcode: op::GAMEPAD_AXIS,
+                body: &[],
+            },
+            &mut devices,
+        );
+        let reader = Reader::open_phys("lowlat/guest18/pad2").expect("the pad has no node");
+
+        let mut id = [0u16; 4];
+        use std::os::fd::AsRawFd as _;
+        // EVIOCGID, which is _IOR('E', 0x02, struct input_id).
+        // SAFETY: the request writes four u16, which is what is passed.
+        let rc = unsafe {
+            libc::ioctl(
+                reader.file.as_raw_fd(),
+                0x8008_4502u64,
+                id.as_mut_ptr().cast::<libc::c_void>(),
+            )
+        };
+        assert_eq!(rc, 0, "the identity could not be read back");
+        // **Written out rather than compared against the constant**, because
+        // a comparison against the constant scales with it and would accept
+        // any identity at all. All four numbers are part of the key a mapping
+        // is looked up by, the version included: change it and the lookup
+        // finds a different entry or none.
+        assert_eq!(
+            id,
+            [0x0003, 0x045e, 0x028e, 0x0114],
+            "the pad does not present the identity its mapping is keyed on"
+        );
+        assert_eq!(id, [PAD.bus, PAD.vendor, PAD.product, PAD.version]);
+
+        // And it is still tellable from another guest's, which is the half the
+        // borrowed name gives up.
+        let leaf = Reader::phys("lowlat/guest18/pad2").expect("node");
+        let name =
+            std::fs::read_to_string(format!("/sys/class/input/{leaf}/device/name")).expect("name");
+        assert_eq!(name.trim(), PAD_NAME);
     }
 
     /// **The axis ranges are what an application scales its deadzones by**,
@@ -1652,7 +1826,7 @@ mod device_tests {
             },
             &mut devices,
         );
-        let reader = Reader::open("lowlat pad 1 (guest 16)").expect("the pad has no node");
+        let reader = Reader::open_phys("lowlat/guest16/pad1").expect("the pad has no node");
 
         let wanted = [
             (gamepad::axis::X, -32768, 32767),
@@ -1722,9 +1896,9 @@ mod device_tests {
             },
             &mut devices,
         );
-        let leaf = Reader::node("lowlat pad 1 (guest 17)").expect("the pad has no node");
+        let leaf = Reader::phys("lowlat/guest17/pad1").expect("the pad has no node");
         // The node is root-owned until the device manager grants the group.
-        let _wait = Reader::open("lowlat pad 1 (guest 17)").expect("node");
+        let _wait = Reader::open_phys("lowlat/guest17/pad1").expect("node");
 
         let application = std::thread::spawn(move || {
             let mut node = std::fs::OpenOptions::new()

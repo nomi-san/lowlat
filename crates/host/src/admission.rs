@@ -88,6 +88,13 @@ const MAX_INBOUND: usize = 64 * 1024;
 /// reads state the loop already owns.
 const REPORT_EVERY: u32 = 16;
 
+/// The buttons the live-run probe watches for, as the whole-pad message packs
+/// them: the two face buttons nearest the thumb.
+const PROBE_CHORD: u16 = 0x1000 | 0x2000;
+
+/// How long the probe asks for.
+const PROBE_MS: f64 = 500.0;
+
 /// How often a streaming guest says how it is doing, in milliseconds.
 const PROGRESS_MS: f64 = 2000.0;
 
@@ -245,6 +252,11 @@ pub struct Config {
     /// ([`crate::floor`]). Off by default: one person driving is a
     /// configuration, not a law.
     pub exclusive_pointer: bool,
+    /// **A live-run probe, and nothing a shipped host should run.** Nothing on
+    /// this machine vibrates, so the only way to exercise the path back to a
+    /// peer's controller without a game is to raise an effect ourselves. Holding
+    /// A and B on a pad sends one, and zero half a second later.
+    pub rumble_probe: bool,
 }
 
 /// How many withdrawn attempts are remembered.
@@ -427,6 +439,7 @@ impl Admission {
         let theirs = (attempt.peer.ufrag.clone(), attempt.peer.pwd.clone());
         let permissions = attempt.peer.permissions;
         let owner = attempt.peer.owner;
+        let rumble_probe = self.config.rumble_probe;
 
         let guest = Guest::spawn(wake, move |wake, running| {
             run_guest(
@@ -446,6 +459,7 @@ impl Admission {
                     floor,
                     permissions,
                     owner,
+                    rumble_probe,
                 },
                 wake,
                 running,
@@ -529,6 +543,8 @@ struct Attached {
     permissions: lowlat_inject::event::Permissions,
     /// Whether it may take the pointer from another guest.
     owner: bool,
+    /// The live-run rumble probe.
+    rumble_probe: bool,
 }
 
 /// Lend one channel's receive storage to the session.
@@ -675,6 +691,20 @@ fn forward_declaration(negotiation: &mut Negotiation, seat: Option<&SeatHold>, d
         lowlat_common::log_info!("guest: peer asked to reinitialize, flags={flags:#x}");
         seat.request_reconfigure();
     }
+}
+
+/// Ask a peer's controller to vibrate.
+fn send_rumble(session: &mut Session<'_>, pad: u32, large: u8, small: u8) {
+    send_control(
+        session,
+        &control::Control {
+            a0: pad,
+            a1: u32::from(large),
+            a2: u32::from(small),
+            opcode: control::op::RUMBLE,
+            body: &[],
+        },
+    );
 }
 
 /// Tell the peer the session is over, and why.
@@ -1001,6 +1031,10 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     let mut inbound_messages: u64 = 0;
     let mut sent: u64 = 0;
     let mut reported_ms = 0.0f64;
+    // The live-run probe: when it fires and whether the chord has been let go
+    // of since, so holding the two buttons does not rumble continuously.
+    let mut probe_until: Option<f64> = None;
+    let mut probe_armed = true;
     let mut pass: u32 = 0;
 
     while !running.stopping() {
@@ -1039,16 +1073,32 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             // peer holding it.** Nothing on this machine can vibrate; the
             // controller is somewhere else.
             while let Some(rumble) = input.sink.rumble() {
-                send_control(
+                send_rumble(
                     shell.endpoint().session(),
-                    &control::Control {
-                        a0: rumble.pad,
-                        a1: u32::from(rumble.large),
-                        a2: u32::from(rumble.small),
-                        opcode: control::op::RUMBLE,
-                        body: &[],
-                    },
+                    rumble.pad,
+                    rumble.large,
+                    rumble.small,
                 );
+            }
+            if args.rumble_probe {
+                let chord = input.injector.pad_holding(PROBE_CHORD);
+                match (probe_until, chord) {
+                    (None, Some(pad)) if probe_armed => {
+                        lowlat_common::log_info!("input: rumble probe, pad={pad}");
+                        send_rumble(shell.endpoint().session(), pad, u8::MAX, u8::MAX);
+                        probe_until = Some(now + PROBE_MS);
+                        probe_armed = false;
+                    }
+                    (Some(until), _) if now >= until => {
+                        // **Zero, always.** A controller told to vibrate and
+                        // never told to stop vibrates until its battery dies.
+                        let pad = chord.unwrap_or(0);
+                        send_rumble(shell.endpoint().session(), pad, 0, 0);
+                        probe_until = None;
+                    }
+                    (None, None) => probe_armed = true,
+                    _ => {}
+                }
             }
         }
 
@@ -1248,10 +1298,19 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                     .session()
                     .recv_cumulative(CONTROL_CHANNEL)
                     .unwrap_or(0);
+                let input_tally = input
+                    .as_ref()
+                    .map(|i| i.injector.tally())
+                    .unwrap_or_default();
                 lowlat_common::log_info!(
-                    "guest: attempt={} frames={sent} window={window} stale={stale} mbps={measured:.2} encode_ms={:.2} rx_frag={rx} rx_msg={inbound_messages}",
+                    "guest: attempt={} frames={sent} window={window} stale={stale} mbps={measured:.2} encode_ms={:.2} rx_frag={rx} rx_msg={inbound_messages} keys={} btn={} wheel={} motion={} pad={}",
                     args.attempt_id,
-                    seat.encode_latency_ms()
+                    seat.encode_latency_ms(),
+                    input_tally.keys,
+                    input_tally.buttons,
+                    input_tally.wheels,
+                    input_tally.motions,
+                    input_tally.pads
                 );
             }
         }
@@ -1315,6 +1374,7 @@ mod tests {
     fn admission(max_guests: usize) -> Admission {
         Admission::new(Config {
             exclusive_pointer: false,
+            rumble_probe: false,
             // Ephemeral, so the tests do not fight the machine for a fixed port.
             base_port: 0,
             max_guests,
@@ -1398,6 +1458,7 @@ mod tests {
 
         let mut seam = Admission::new(Config {
             exclusive_pointer: false,
+            rumble_probe: false,
             base_port: base,
             max_guests: 4,
             servers: Vec::new(),
@@ -2190,6 +2251,7 @@ mod reclamation {
 
         let mut seam = Admission::new(Config {
             exclusive_pointer: false,
+            rumble_probe: false,
             base_port: base,
             max_guests: 4,
             servers: Vec::new(),
