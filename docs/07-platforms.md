@@ -189,6 +189,42 @@ and inside a session we own.
 - Device creation needs write access to the input device node. The daemon gets it through a
   group and a rule, not through running as root ([§6](#6-privileges)).
 
+### §4.1 A created device is not a usable one
+
+**The kernel publishes the device in under half a millisecond and the display stack takes
+between one and three tenths of a second to start delivering from it.** Events written into
+that gap are accepted by the kernel and go nowhere. Measured on a real desktop session by
+creating a device and injecting one key per step at increasing delays, then reading back what
+the display server actually delivered:
+
+| device declares | first delay whose event arrived |
+|---|---|
+| keys only | 100 to 150 ms |
+| keys and indicator lights | 200 ms, every run |
+
+Three consequences, and the first two are cheap.
+
+- **Do not declare indicator lights.** A device claiming them costs roughly twice the setup
+  time, because the display server configures keyboard state for it. An injection device has no
+  use for them: nothing reads its lights.
+- **Create the device when the guest is admitted, not when its first input arrives.** The wait
+  then overlaps connectivity and session initialization, which take longer than it does, and
+  costs nothing observable. A device created on demand puts the whole delay in front of a
+  keystroke somebody is waiting for.
+- **Hold events until the deadline rather than dropping them.** The first keystroke of a session
+  arriving a fraction of a second late is not noticeable; the first keystroke vanishing is, and
+  it presents as a network fault.
+
+**There is no readiness signal to wait on instead.** A host cannot ask whether a consumer has
+opened its device, and the consumer writes nothing back: a keyboard that declares indicator
+lights is the one case where the display server might reply on the same descriptor, and across
+six runs it never did. A fixed wait is the only portable answer, which is the argument for
+starting it as early as possible rather than for making it shorter.
+
+Measured on an X11 session. **The equivalent figure under a Wayland compositor is not yet
+measured** and the path is different: devices reach the compositor through the seat manager
+rather than by the display server opening them. It is not expected to be faster.
+
 Compositors discover the device through the normal input stack, so no compositor cooperation is
 required and nothing needs to be configured per desktop environment.
 
