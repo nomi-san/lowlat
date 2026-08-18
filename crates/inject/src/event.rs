@@ -173,6 +173,13 @@ pub struct Injector {
     /// towards and a guess is wrong half the time.
     num_lock: Option<bool>,
     caps_lock: Option<bool>,
+    /// Whether this guest currently has the pointer.
+    ///
+    /// **Only the pointer**, and only when the host is arbitrating it. Every
+    /// guest types at once and every guest's pads are its own devices; the
+    /// pointer is the one thing they genuinely share, because the display
+    /// stack merges every pointer device on a seat into one cursor.
+    floor: bool,
     /// One entry per pad this guest holds, in the order they first arrived.
     pads: [Option<Pad>; MAX_PADS],
     scratch: [Event; SCRATCH],
@@ -192,6 +199,7 @@ impl Injector {
             hidden: false,
             num_lock: None,
             caps_lock: None,
+            floor: true,
             pads: [None; MAX_PADS],
             scratch: [Event {
                 kind: 0,
@@ -220,6 +228,20 @@ impl Injector {
         }
     }
 
+    /// Say whether this guest currently has the pointer.
+    ///
+    /// **Losing it releases the buttons it was holding, here and now.** The
+    /// alternative is to wait for the guest's own release to arrive and drop
+    /// it for want of the pointer, which leaves a button down on a machine
+    /// nobody is driving. A guest that simply stopped moving never sends
+    /// another pointer message at all, so waiting is waiting forever.
+    pub fn set_floor(&mut self, held: bool, out: &mut impl Sink) {
+        if self.floor && !held {
+            self.release_buttons(out);
+        }
+        self.floor = held;
+    }
+
     /// Report whether the local pointer is hidden.
     ///
     /// Nothing calls this yet; the signal is a property of the captured
@@ -239,16 +261,16 @@ impl Injector {
             op::KEYBOARD if self.permissions.keyboard => {
                 self.keyboard(message.a0, message.a1, message.a2 != 0, out);
             }
-            op::MOUSE_BUTTON if self.permissions.pointer => {
+            op::MOUSE_BUTTON if self.pointer_allowed() => {
                 self.button(message.a0, message.a1 != 0, out);
             }
-            op::MOUSE_WHEEL if self.permissions.pointer => {
+            op::MOUSE_WHEEL if self.pointer_allowed() => {
                 self.wheel(as_i32(message.a0), as_i32(message.a1), out);
             }
-            op::MOUSE_MOTION if self.permissions.pointer => {
+            op::MOUSE_MOTION if self.pointer_allowed() => {
                 self.motion(message.a0 != 0, as_i32(message.a1), as_i32(message.a2), out);
             }
-            op::MOUSE_MOTION_STREAM if self.permissions.pointer => {
+            op::MOUSE_MOTION_STREAM if self.pointer_allowed() => {
                 // **The two coordinates are packed differently.** The
                 // horizontal one is unsigned and the vertical one is signed,
                 // which is not symmetry anybody would invent and is not
@@ -464,6 +486,15 @@ impl Injector {
         );
         self.report();
         self.flush(Device::Gamepad(id), out);
+    }
+
+    /// Whether pointer input from this guest reaches a device.
+    ///
+    /// Two independent gates and both must hold: what the guest is entitled
+    /// to, which changes rarely, and whether it has the pointer right now,
+    /// which changes as guests take turns.
+    fn pointer_allowed(&self) -> bool {
+        self.permissions.pointer && self.floor
     }
 
     fn keyboard(&mut self, code: u32, modifiers: u32, pressed: bool, out: &mut impl Sink) {
@@ -1376,6 +1407,78 @@ mod tests {
             );
         }
         assert_eq!(out.distinct_devices(), MAX_PADS);
+    }
+
+    /// **Losing the pointer lets go of the buttons it was holding.** The
+    /// guest that lost it has stopped moving by definition, so it will send no
+    /// release of its own; waiting for one leaves a button down on a machine
+    /// somebody else is now driving.
+    #[test]
+    fn losing_the_pointer_releases_the_buttons_it_was_holding() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        inject.on_control(&control(op::MOUSE_BUTTON, 1, 1, 0), &mut out);
+        inject.on_control(&key(4, true), &mut out);
+        out.batches.clear();
+
+        inject.set_floor(false, &mut out);
+        assert_eq!(out.keys_at(0), vec![BTN_LEFT]);
+
+        // The keyboard is untouched: every guest types at once.
+        out.batches.clear();
+        inject.on_control(&key(5, true), &mut out);
+        assert_eq!(out.keys_at(1), vec![48]);
+    }
+
+    #[test]
+    fn nothing_from_the_pointer_reaches_a_device_without_it() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        inject.set_floor(false, &mut out);
+        for message in [
+            control(op::MOUSE_BUTTON, 1, 1, 0),
+            control(op::MOUSE_WHEEL, 0, 120, 0),
+            control(op::MOUSE_MOTION, 0, 100, 100),
+            control(op::MOUSE_MOTION_STREAM, 0, 5, 0),
+        ] {
+            inject.on_control(&message, &mut out);
+        }
+        assert!(out.batches.is_empty());
+
+        // And it all works again when the pointer comes back.
+        inject.set_floor(true, &mut out);
+        inject.on_control(&control(op::MOUSE_MOTION, 0, 100, 100), &mut out);
+        assert_eq!(out.devices(), vec![Device::PointerAbsolute]);
+    }
+
+    /// Gamepads are each their own device, so two guests never contend for
+    /// one and losing the pointer must not disturb a pad.
+    #[test]
+    fn a_pad_is_untouched_by_the_pointer_changing_hands() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        inject.on_control(
+            &state(1, &pad_state_body(gamepad::bit::A, 0, 0, 0, 0, 0, 0)),
+            &mut out,
+        );
+        out.batches.clear();
+
+        inject.set_floor(false, &mut out);
+        assert!(out.batches.is_empty(), "the pad was disturbed");
+
+        inject.on_control(
+            &state(1, &pad_state_body(gamepad::bit::B, 0, 0, 0, 0, 0, 0)),
+            &mut out,
+        );
+        assert_eq!(out.keys_at(1), vec![gamepad::key::EAST]);
+    }
+
+    /// Losing it twice releases once: the second is not a new loss.
+    #[test]
+    fn losing_the_pointer_again_releases_nothing_more() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        inject.on_control(&control(op::MOUSE_BUTTON, 1, 1, 0), &mut out);
+        inject.set_floor(false, &mut out);
+        out.batches.clear();
+        inject.set_floor(false, &mut out);
+        assert!(out.batches.is_empty());
     }
 
     /// **A peer losing focus centres its pads and does not unplug them.**

@@ -74,6 +74,11 @@ fn flag(name: &str) -> Option<String> {
     args.get(at + 1).cloned()
 }
 
+/// A switch that carries no value.
+fn flag_set(name: &str) -> bool {
+    std::env::args().any(|arg| arg == name)
+}
+
 fn read(path: &str) -> String {
     std::fs::read_to_string(path)
         .map(|s| s.trim().to_string())
@@ -220,7 +225,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         _ => lowlat::video::Rotation::None,
     };
 
+    // **Off unless asked for.** One guest driving at a time is a room's
+    // decision, not a host's, and imposing it breaks two people sharing a
+    // desktop.
+    let exclusive_pointer = flag_set("--exclusive-pointer");
     let mut seam = Admission::new(Config {
+        exclusive_pointer,
         base_port,
         max_guests: max_guests as usize,
         servers: vec![stun],
@@ -364,6 +374,12 @@ async fn session_loop(
                                 ufrag: offer.data.creds.ice_ufrag,
                                 pwd: offer.data.creds.ice_pwd,
                                 aes256: offer.data.creds.aes256,
+                                permissions: lowlat::inject::Permissions {
+                                    keyboard: offer.permissions.keyboard,
+                                    pointer: offer.permissions.mouse,
+                                    gamepad: offer.permissions.gamepad,
+                                },
+                                owner: offer.is_owner,
                             })
                             .err()
                             .map(|error| error.to_string())

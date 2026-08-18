@@ -167,6 +167,12 @@ pub struct Peer {
     /// Media key material. Retained because the answer's key is ours, not
     /// theirs; this is kept for the legacy path and for logging its absence.
     pub aes256: Option<String>,
+    /// What this peer may drive, as signaling reported it.
+    pub permissions: lowlat_inject::event::Permissions,
+    /// Whether this peer owns the machine, which decides only one thing: it
+    /// takes the pointer from another guest rather than waiting for it
+    /// ([`crate::floor`]).
+    pub owner: bool,
 }
 
 /// Credentials the answer carries back.
@@ -235,6 +241,10 @@ pub struct Config {
     /// admits guests and sends them nothing. Absent is what the seam's own
     /// tests use, so they need neither a thread nor a device.
     pub stream: Option<crate::stream::Config>,
+    /// Whether one guest at a time may drive the pointer
+    /// ([`crate::floor`]). Off by default: one person driving is a
+    /// configuration, not a law.
+    pub exclusive_pointer: bool,
 }
 
 /// How many withdrawn attempts are remembered.
@@ -267,6 +277,13 @@ pub struct Admission {
     withdrawn: Vec<String>,
     events: mpsc::Receiver<Event>,
     emit: mpsc::Sender<Event>,
+    /// Who has the pointer, shared by every guest thread.
+    floor: crate::floor::Floor,
+    /// **A small number for each guest, and the only identifier that is one.**
+    /// An attempt identifier is sixty characters of service-assigned text: it
+    /// is what logs correlate on and it is no use naming a device or a pointer
+    /// holder, so both use this and one line at admission joins them.
+    next_guest: u32,
 }
 
 impl core::fmt::Debug for Attempt {
@@ -283,6 +300,7 @@ impl Admission {
     pub fn new(config: Config) -> Self {
         let (emit, events) = mpsc::channel();
         let stream = config.stream.map(Stream::start);
+        let floor = crate::floor::Floor::new(config.exclusive_pointer);
         Self {
             config,
             stream,
@@ -290,6 +308,8 @@ impl Admission {
             withdrawn: Vec::new(),
             events,
             emit,
+            floor,
+            next_guest: 1,
         }
     }
 
@@ -396,12 +416,17 @@ impl Admission {
         }
 
         let attempt_id = id.to_string();
+        let guest_number = self.next_guest;
+        self.next_guest = self.next_guest.wrapping_add(1);
+        let floor = self.floor.clone();
         let emit = self.emit.clone();
         let servers = self.config.servers.clone();
         let seats = self.stream.as_ref().map(Stream::seats);
         let video = self.config.stream.map(|s| (s.width, s.height, s.rotation));
         let ours = (local.ufrag.clone(), local.pwd.clone());
         let theirs = (attempt.peer.ufrag.clone(), attempt.peer.pwd.clone());
+        let permissions = attempt.peer.permissions;
+        let owner = attempt.peer.owner;
 
         let guest = Guest::spawn(wake, move |wake, running| {
             run_guest(
@@ -417,6 +442,10 @@ impl Admission {
                     seed,
                     seats,
                     video,
+                    guest: guest_number,
+                    floor,
+                    permissions,
+                    owner,
                 },
                 wake,
                 running,
@@ -492,6 +521,14 @@ struct Attached {
     /// The stream's dimensions and orientation, which the video header
     /// carries.
     video: Option<(u32, u32, lowlat_core::video::Rotation)>,
+    /// This guest's small number, used where a name has to be short.
+    guest: u32,
+    /// Who has the pointer.
+    floor: crate::floor::Floor,
+    /// What this guest may drive.
+    permissions: lowlat_inject::event::Permissions,
+    /// Whether it may take the pointer from another guest.
+    owner: bool,
 }
 
 /// Lend one channel's receive storage to the session.
@@ -526,10 +563,53 @@ fn attach_send<'a>(
 /// is consumed, so a body that does not fit or a prefix that does not parse
 /// would be read again on the next pass and every pass after it, at full
 /// speed. Ending the attempt reports what a silent spin would not.
+/// Notice that this guest no longer has the pointer, and let go of what it
+/// was holding with it.
+///
+/// **This is the whole reason the check is on a timer rather than on a
+/// message.** A guest loses the pointer by going quiet, so there is no message
+/// of its own to answer, and the release it eventually sends would arrive
+/// after somebody else had taken over and be dropped for want of the pointer.
+/// A button would stay down on a machine that guest is no longer driving.
+fn follow_pointer<S: lowlat_inject::event::Sink>(
+    input: &mut Input<S>,
+    floor: &crate::floor::Floor,
+    guest: u32,
+    now_ms: f64,
+) {
+    let holds = floor.holds(guest, now_ms);
+    input.injector.set_floor(holds, &mut input.sink);
+}
+
+/// What a guest needs to ask for the pointer.
+#[derive(Debug, Clone, Copy)]
+struct Pointer<'a> {
+    floor: &'a crate::floor::Floor,
+    guest: u32,
+    owner: bool,
+    now_ms: f64,
+}
+
+/// Opcodes that move the pointer, and so ask for it.
+///
+/// **Only these.** Keyboards do not conflict the way pointers do and pads are
+/// each their own device, so arbitrating either would stop two people using
+/// one session for no gain (docs/05-host.md section 7.1).
+const fn moves_the_pointer(opcode: u8) -> bool {
+    matches!(
+        opcode,
+        control::op::MOUSE_BUTTON
+            | control::op::MOUSE_WHEEL
+            | control::op::MOUSE_MOTION
+            | control::op::MOUSE_MOTION_STREAM
+    )
+}
+
 fn drain_control<S: lowlat_inject::event::Sink>(
     session: &mut Session<'_>,
     negotiation: &mut Negotiation,
     mut input: Option<&mut Input<S>>,
+    pointer: Pointer<'_>,
     inbound: &mut [u8],
     count: &mut u64,
 ) -> Result<(), Outcome> {
@@ -562,6 +642,15 @@ fn drain_control<S: lowlat_inject::event::Sink>(
         // would look like it mattered and nothing would ever exercise it.
         let _ = negotiation.on_control(&message);
         if let Some(input) = input.as_deref_mut() {
+            // **Asking is the same as using it.** A guest holds the pointer
+            // because it is moving something, and this is the only evidence
+            // of that there is.
+            if moves_the_pointer(message.opcode) {
+                let holds = pointer
+                    .floor
+                    .claim(pointer.guest, pointer.owner, pointer.now_ms);
+                input.injector.set_floor(holds, &mut input.sink);
+            }
             input.injector.on_control(&message, &mut input.sink);
         }
     }
@@ -878,13 +967,25 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     // A device takes a fifth of a second to become usable and there is nothing
     // to wait on; starting now puts that behind connectivity and session
     // initialization, which are longer, so it costs nothing anybody can see.
-    let mut input = Input::open(
-        args.attempt_id
-            .split('-')
-            .next()
-            .unwrap_or(&args.attempt_id),
-        args.video,
-    );
+    let mut input = Input::open(&args.guest.to_string(), args.video);
+    if let Some(input) = input.as_mut() {
+        // **The one line that joins the two identifiers.** Everything else
+        // logs the attempt, and a device name and a pointer holder both need
+        // something short; this is where a support question crosses between
+        // them.
+        lowlat_common::log_info!(
+            "guest: number={} attempt={} owner={} keyboard={} pointer={} gamepad={}",
+            args.guest,
+            args.attempt_id,
+            u8::from(args.owner),
+            u8::from(args.permissions.keyboard),
+            u8::from(args.permissions.pointer),
+            u8::from(args.permissions.gamepad)
+        );
+        input
+            .injector
+            .set_permissions(args.permissions, &mut input.sink);
+    }
     let mut throughput = Throughput::default();
     let mut declared = false;
     // What was last published to the seat, so a declaration that has not moved
@@ -927,8 +1028,13 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         // Release anything held while the devices were becoming usable. On
         // its own timer, so a guest that pressed one key and waited does not
         // hold it until it presses a second.
+        //
+        // **And ask whether this guest still has the pointer**, which is the
+        // only way one that stopped moving ever finds out it lost it: it sends
+        // nothing further, so there is no message to answer.
         if let Some(input) = input.as_mut() {
             input.sink.tick();
+            follow_pointer(input, &args.floor, args.guest, now);
         }
 
         // **Every pass, not on the reporting cadence.** The declaration is on a
@@ -939,6 +1045,12 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 shell.endpoint().session(),
                 negotiation,
                 input.as_mut(),
+                Pointer {
+                    floor: &args.floor,
+                    guest: args.guest,
+                    owner: args.owner,
+                    now_ms: now,
+                },
                 &mut inbound,
                 &mut inbound_messages,
             )
@@ -1171,6 +1283,8 @@ mod tests_support {
 
     pub(super) fn peer() -> Peer {
         Peer {
+            permissions: lowlat_inject::event::Permissions::default(),
+            owner: false,
             ufrag: "aaaa".into(),
             pwd: "passwordforaaaa".into(),
             aes256: None,
@@ -1185,6 +1299,7 @@ mod tests {
 
     fn admission(max_guests: usize) -> Admission {
         Admission::new(Config {
+            exclusive_pointer: false,
             // Ephemeral, so the tests do not fight the machine for a fixed port.
             base_port: 0,
             max_guests,
@@ -1267,6 +1382,7 @@ mod tests {
         drop(probe);
 
         let mut seam = Admission::new(Config {
+            exclusive_pointer: false,
             base_port: base,
             max_guests: 4,
             servers: Vec::new(),
@@ -1577,6 +1693,17 @@ mod geometry {
         }
     }
 
+    /// A pointer nobody is arbitrating, for the tests that are not about it.
+    fn no_pointer() -> Pointer<'static> {
+        static FREE: std::sync::OnceLock<crate::floor::Floor> = std::sync::OnceLock::new();
+        Pointer {
+            floor: FREE.get_or_init(|| crate::floor::Floor::new(false)),
+            guest: 1,
+            owner: false,
+            now_ms: 0.0,
+        }
+    }
+
     fn recording_input() -> Input<Recorder> {
         Input {
             injector: Injector::new(Extents {
@@ -1605,7 +1732,15 @@ mod geometry {
 
         let mut negotiation = Negotiation::opened(0.0);
         let mut inbound = vec![0u8; MAX_INBOUND];
-        drain_control(&mut ours, &mut negotiation, input, &mut inbound, &mut 0).expect("drained");
+        drain_control(
+            &mut ours,
+            &mut negotiation,
+            input,
+            no_pointer(),
+            &mut inbound,
+            &mut 0,
+        )
+        .expect("drained");
         negotiation
     }
 
@@ -1648,6 +1783,166 @@ mod geometry {
             .map(|(_, e)| (e.code, e.value))
             .collect();
         assert_eq!(keys, vec![(30, 1)], "the keystroke did not reach injection");
+    }
+
+    /// Two guests through the real drain, sharing one arbiter.
+    fn two_guests_move(exclusive: bool, gap_ms: f64) -> (Recorder, Recorder) {
+        let floor = crate::floor::Floor::new(exclusive);
+        let motion = Control {
+            a0: 0,
+            a1: 100,
+            a2: 100,
+            opcode: op::MOUSE_MOTION,
+            body: &[],
+        };
+        let mut first = recording_input();
+        let mut second = recording_input();
+        // The first moves, the second tries while the first still holds it,
+        // and then the first moves again.
+        for (guest, at) in [(1u32, 0.0), (2, gap_ms), (1, gap_ms + 1.0)] {
+            let input = if guest == 1 { &mut first } else { &mut second };
+            drain_one(
+                input,
+                Pointer {
+                    floor: &floor,
+                    guest,
+                    owner: false,
+                    now_ms: at,
+                },
+                &motion,
+            );
+        }
+        (first.sink, second.sink)
+    }
+
+    fn drain_one(input: &mut Input<Recorder>, pointer: Pointer<'_>, message: &Control<'_>) {
+        let mut ours = Arena::new();
+        let mut ours = ours.session();
+        let mut theirs = Arena::new();
+        let mut theirs = theirs.session();
+        theirs
+            .send_message(CONTROL_CHANNEL, &[], &control_bytes(message))
+            .expect("queue");
+        pump(&mut theirs, &mut ours, 1.0);
+        let mut negotiation = Negotiation::opened(0.0);
+        let mut inbound = vec![0u8; MAX_INBOUND];
+        drain_control(
+            &mut ours,
+            &mut negotiation,
+            Some(input),
+            pointer,
+            &mut inbound,
+            &mut 0,
+        )
+        .expect("drained");
+    }
+
+    /// **With it off, both guests drive at once**, which is the default and
+    /// the ordinary case of two people sharing a desktop.
+    #[test]
+    fn both_guests_drive_the_pointer_when_it_is_not_arbitrated() {
+        let (first, second) = two_guests_move(false, 1.0);
+        assert!(!first.events.is_empty());
+        assert!(!second.events.is_empty());
+    }
+
+    /// With it on, the one that moved first keeps it while it keeps moving.
+    #[test]
+    fn the_guest_that_moved_first_keeps_the_pointer() {
+        let (first, second) = two_guests_move(true, 1.0);
+        assert!(
+            !first.events.is_empty(),
+            "the first guest lost its own pointer"
+        );
+        assert!(
+            second.events.is_empty(),
+            "a second guest drove at the same time"
+        );
+    }
+
+    /// And hands it over once it stops.
+    #[test]
+    fn the_pointer_goes_to_the_next_guest_once_the_first_stops() {
+        let (_first, second) = two_guests_move(true, crate::floor::HOLD_MS);
+        assert!(!second.events.is_empty(), "the pointer never changed hands");
+    }
+
+    /// **The guest that lost the pointer lets go of what it was holding.** It
+    /// went quiet, so nothing it sends will ever say so; only the pass notices.
+    /// Without this a button stays down on a machine somebody else is driving,
+    /// because the release arrives after the handover and is dropped with the
+    /// rest of that guest's pointer input.
+    #[test]
+    fn a_guest_that_loses_the_pointer_lets_go_of_its_buttons() {
+        let floor = crate::floor::Floor::new(true);
+        let mut holder = recording_input();
+        let press = Control {
+            a0: 1,
+            a1: 1,
+            a2: 0,
+            opcode: op::MOUSE_BUTTON,
+            body: &[],
+        };
+        drain_one(
+            &mut holder,
+            Pointer {
+                floor: &floor,
+                guest: 1,
+                owner: false,
+                now_ms: 0.0,
+            },
+            &press,
+        );
+        assert!(!holder.sink.events.is_empty(), "the press never landed");
+        holder.sink.events.clear();
+
+        // It goes quiet, and somebody else takes over.
+        let later = crate::floor::HOLD_MS + 1.0;
+        assert!(floor.claim(2, false, later));
+
+        follow_pointer(&mut holder, &floor, 1, later);
+        let released: Vec<u16> = holder
+            .sink
+            .events
+            .iter()
+            .filter(|(_, e)| e.kind == 0x01 && e.value == 0)
+            .map(|(_, e)| e.code)
+            .collect();
+        assert_eq!(released, vec![0x110], "the button was left down");
+    }
+
+    /// A guest that still has it is left alone. **It has to be holding
+    /// something for this to mean anything**: a pass that released
+    /// unconditionally would emit nothing here either, and the check would
+    /// pass while every button came up on every pass.
+    #[test]
+    fn a_guest_that_still_has_the_pointer_is_not_disturbed() {
+        let floor = crate::floor::Floor::new(true);
+        let mut holder = recording_input();
+        drain_one(
+            &mut holder,
+            Pointer {
+                floor: &floor,
+                guest: 1,
+                owner: false,
+                now_ms: 0.0,
+            },
+            &Control {
+                a0: 1,
+                a1: 1,
+                a2: 0,
+                opcode: op::MOUSE_BUTTON,
+                body: &[],
+            },
+        );
+        assert!(!holder.sink.events.is_empty(), "the press never landed");
+        holder.sink.events.clear();
+
+        follow_pointer(&mut holder, &floor, 1, 10.0);
+        assert!(
+            holder.sink.events.is_empty(),
+            "a guest still holding the pointer had its button taken away"
+        );
     }
 
     /// **A quarter turn swaps the extents and nothing else.** The peer sends
@@ -1713,8 +2008,15 @@ mod geometry {
 
         let mut negotiation = Negotiation::opened(0.0);
         let mut inbound = vec![0u8; MAX_INBOUND];
-        drain_control(&mut ours, &mut negotiation, NO_INPUT, &mut inbound, &mut 0)
-            .expect("drained");
+        drain_control(
+            &mut ours,
+            &mut negotiation,
+            NO_INPUT,
+            no_pointer(),
+            &mut inbound,
+            &mut 0,
+        )
+        .expect("drained");
 
         assert!(
             negotiation.ready(),
@@ -1839,7 +2141,14 @@ mod geometry {
         // real buffer is sized to avoid.
         let mut inbound = vec![0u8; 1024];
         assert_eq!(
-            drain_control(&mut ours, &mut negotiation, NO_INPUT, &mut inbound, &mut 0),
+            drain_control(
+                &mut ours,
+                &mut negotiation,
+                NO_INPUT,
+                no_pointer(),
+                &mut inbound,
+                &mut 0
+            ),
             Err(Outcome::ControlStalled),
             "a message that cannot be taken was not reported"
         );
@@ -1865,6 +2174,7 @@ mod reclamation {
         drop(probe);
 
         let mut seam = Admission::new(Config {
+            exclusive_pointer: false,
             base_port: base,
             max_guests: 4,
             servers: Vec::new(),

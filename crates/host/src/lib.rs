@@ -6,6 +6,7 @@
 // Phase 8 lands the ABI. Phases 4 through 7 land the orchestration.
 
 pub mod admission;
+pub mod floor;
 pub mod frames;
 pub mod gate;
 pub mod rate;
@@ -15,3 +16,9 @@ pub mod timing;
 pub mod video;
 
 pub use admission::{Admission, Config, Event, HostCredentials, Outcome, Peer};
+
+/// What a guest may drive, re-exported so an application setting it does not
+/// have to name the injection crate.
+pub mod inject {
+    pub use lowlat_inject::event::Permissions;
+}

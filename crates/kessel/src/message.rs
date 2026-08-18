@@ -180,6 +180,47 @@ pub struct OfferRelay {
     pub data: OfferData,
     #[serde(default)]
     pub skip_approval: bool,
+    /// The peer owns this machine, which is what lets it take the pointer from
+    /// another guest ([05 §7.1](../../../docs/05-host.md)).
+    #[serde(default)]
+    pub is_owner: bool,
+    /// What the peer may drive.
+    ///
+    /// **Read here and never from the peer**, which is the whole reason it
+    /// arrives relayed rather than in the offer's own data
+    /// ([04 §3](../../../docs/04-signaling.md)).
+    #[serde(default)]
+    pub permissions: Permissions,
+}
+
+/// What a guest may drive.
+///
+/// **Everything, when the field is absent.** The service sends it on every
+/// offer; a host that read silence as a refusal would deny input to a peer
+/// whose service simply did not say, and the failure would look like broken
+/// input rather than a policy.
+#[derive(Debug, Clone, Copy, Deserialize)]
+pub struct Permissions {
+    #[serde(default = "yes")]
+    pub keyboard: bool,
+    #[serde(default = "yes")]
+    pub mouse: bool,
+    #[serde(default = "yes")]
+    pub gamepad: bool,
+}
+
+const fn yes() -> bool {
+    true
+}
+
+impl Default for Permissions {
+    fn default() -> Self {
+        Self {
+            keyboard: true,
+            mouse: true,
+            gamepad: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
