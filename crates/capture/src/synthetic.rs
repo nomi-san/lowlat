@@ -20,14 +20,30 @@ const BACKGROUND_LUMA: u8 = 64;
 const BAR_LUMA: u8 = 200;
 /// No colour.
 const NEUTRAL_CHROMA: u8 = 128;
-/// The static block's two chroma components.
+
+/// The static block's colour, as its two chroma components.
 ///
 /// **They differ, and that is the point.** Equal components survive being
 /// written in the wrong order, so a consumer that interleaves the two
 /// backwards would produce identical output and the fault would keep until
 /// something else exposed it.
-const BLOCK_CB: u8 = 240;
-const BLOCK_CR: u8 = 90;
+///
+/// It is a parameter rather than a constant so a caller can say something with
+/// it. Nothing here knows what: the block is a colour this source paints, and
+/// the meaning belongs to whoever chose it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Marker {
+    pub cb: u8,
+    pub cr: u8,
+}
+
+impl Marker {
+    /// Blue, and the default.
+    pub const BLUE: Self = Self { cb: 240, cr: 90 };
+    /// Green. The chroma pair a fully saturated green carries under the
+    /// colour matrix this pipeline emits.
+    pub const GREEN: Self = Self { cb: 42, cr: 26 };
+}
 
 /// How wide the moving bar is, in luma samples.
 const BAR_WIDTH: usize = 64;
@@ -63,6 +79,7 @@ pub struct Synthetic {
     chroma_stride: usize,
     index: u64,
     detail_rows: usize,
+    marker: Marker,
 }
 
 impl core::fmt::Debug for Synthetic {
@@ -96,9 +113,20 @@ impl Synthetic {
             chroma_stride,
             index: 0,
             detail_rows: 0,
+            marker: Marker::BLUE,
         };
         source.paint_chroma();
         source
+    }
+
+    /// The same source with the static block painted a chosen colour.
+    ///
+    /// **Chroma is written once**, so this repaints rather than deferring to
+    /// the next frame.
+    pub fn with_marker(mut self, marker: Marker) -> Self {
+        self.marker = marker;
+        self.paint_chroma();
+        self
     }
 
     /// The same source with a band of unpredictable detail across the top.
@@ -136,8 +164,8 @@ impl Synthetic {
             for column in 0..columns {
                 let at = start + column * 2;
                 if let Some(pair) = self.chroma.get_mut(at..at + 2) {
-                    pair[0] = BLOCK_CB;
-                    pair[1] = BLOCK_CR;
+                    pair[0] = self.marker.cb;
+                    pair[1] = self.marker.cr;
                 }
             }
         }
@@ -286,20 +314,49 @@ mod tests {
     }
 
     /// A swap of the two chroma components would leave this identical if they
-    /// were equal, which is why they are not.
+    /// were equal, which is why no marker has them equal.
     #[test]
     fn the_colour_block_distinguishes_its_two_components() {
         let mut source = Synthetic::new(256, 64);
         let frame = source.acquire();
         let row = frame.chroma.row(0).expect("a chroma row");
-        assert_eq!(row[0], BLOCK_CB);
-        assert_eq!(row[1], BLOCK_CR);
-        assert_ne!(BLOCK_CB, BLOCK_CR, "a swap would be undetectable");
+        assert_eq!(row[0], Marker::BLUE.cb);
+        assert_eq!(row[1], Marker::BLUE.cr);
 
         // Outside the block, in both directions, no colour at all.
         assert_eq!(row[200], NEUTRAL_CHROMA, "the block is too wide");
         let far = frame.chroma.row(20).expect("a chroma row");
         assert_eq!(far[0], NEUTRAL_CHROMA, "the block is too tall");
+    }
+
+    /// **Every marker has to survive the swap check**, so none of them may
+    /// have equal components, and no two of them may be each other's swap.
+    #[test]
+    fn no_marker_is_undetectable_or_mistakable_for_another() {
+        let markers = [Marker::BLUE, Marker::GREEN];
+        for marker in markers {
+            assert_ne!(marker.cb, marker.cr, "{marker:?} survives a swap");
+        }
+        for (index, one) in markers.iter().enumerate() {
+            for other in &markers[index + 1..] {
+                assert_ne!(one, other, "two markers are the same colour");
+                assert!(
+                    one.cb != other.cr || one.cr != other.cb,
+                    "{one:?} swapped is {other:?}, so a swap would read as the other codec"
+                );
+            }
+        }
+    }
+
+    /// The block is repainted, not queued: chroma is written once at
+    /// construction and never again.
+    #[test]
+    fn choosing_a_marker_repaints_the_block() {
+        let mut source = Synthetic::new(256, 64).with_marker(Marker::GREEN);
+        let frame = source.acquire();
+        let row = frame.chroma.row(0).expect("a chroma row");
+        assert_eq!(row[0], Marker::GREEN.cb);
+        assert_eq!(row[1], Marker::GREEN.cr);
     }
 
     #[test]

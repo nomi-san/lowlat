@@ -37,7 +37,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::mpsc;
 
-use lowlat_capture::synthetic::Synthetic;
+use lowlat_capture::synthetic::{Marker, Synthetic};
 use lowlat_common::spsc::Ring;
 use lowlat_encode::{Encoder, Poll};
 use lowlat_net::WakeHandle;
@@ -671,7 +671,15 @@ fn encode_loop<E: Encoder>(
     config: Config,
     encoder: &mut E,
 ) {
-    let mut source = Synthetic::with_detail(config.width, config.height, config.detail_rows);
+    // **The block says which codec is on the wire**, so a live run is
+    // identifiable from the picture rather than from a log on the other
+    // machine. Nothing downstream reads it; it is for the person watching.
+    let marker = match config.codec {
+        Codec::H264 => Marker::BLUE,
+        Codec::H265 => Marker::GREEN,
+    };
+    let mut source =
+        Synthetic::with_detail(config.width, config.height, config.detail_rows).with_marker(marker);
     let mut gate = Gate::new();
     let mut budget = Budget::new(config.configured_mbps, config.min_mbps);
     let mut stages = Stages::default();
