@@ -245,6 +245,17 @@ impl Injector {
         self.floor = held;
     }
 
+    /// Whether this guest is holding any pointer button.
+    ///
+    /// **A gesture that is still going, stated as plainly as it can be.** A
+    /// guest mid-drag sends nothing at all while it pauses, so elapsed silence
+    /// cannot tell a finished gesture from a paused one; a button that is
+    /// still down can.
+    #[must_use]
+    pub fn holds_pointer_button(&self) -> bool {
+        self.buttons.iter().any(|held| *held)
+    }
+
     /// The first pad holding every button in `mask`, if any.
     ///
     /// A read of state this already keeps. It exists for the live-run probe

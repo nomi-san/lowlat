@@ -93,6 +93,26 @@ impl Floor {
         }
     }
 
+    /// Keep the pointer this guest already has, without being able to take it.
+    ///
+    /// **For a guest that is mid-gesture but sending nothing.** Holding a
+    /// button produces no messages at all, so there is nothing to claim on,
+    /// and the claim would otherwise lapse under a guest whose gesture is
+    /// plainly still going. It cannot take the pointer from anybody: a guest
+    /// that already lost it stays lost, or letting go of a button somewhere
+    /// out of sight would snatch the cursor back.
+    pub fn refresh(&self, guest: u32, now_ms: f64) {
+        if !self.shared.enabled {
+            return;
+        }
+        let Ok(mut state) = self.shared.state.lock() else {
+            return;
+        };
+        if state.holder == Some(guest) {
+            state.since_ms = now_ms;
+        }
+    }
+
     /// Whether this guest has the pointer without asking for it.
     ///
     /// **This is what a guest that stopped moving is asked**, once a pass, so
@@ -214,6 +234,45 @@ mod tests {
         assert!(floor.claim(1, false, 0.0));
         assert!(floor.holds(2, HOLD_MS));
         assert!(floor.holds(1, HOLD_MS));
+    }
+
+    /// **A held button keeps the pointer for as long as it is down.** This is
+    /// the case the timeout alone gets wrong: a guest mid-drag sends nothing
+    /// while it pauses, so it loses the pointer, another guest takes it, and
+    /// the first guest's button is taken away in the middle of its gesture.
+    #[test]
+    fn a_guest_mid_gesture_keeps_the_pointer_however_long_it_pauses() {
+        let floor = Floor::new(true);
+        assert!(floor.claim(1, false, 0.0));
+        // It holds a button and says nothing for far longer than the hold.
+        let mut now = 0.0;
+        for _ in 0..20 {
+            now += HOLD_MS / 2.0;
+            floor.refresh(1, now);
+        }
+        assert!(floor.holds(1, now), "the gesture lost the pointer");
+        assert!(
+            !floor.claim(2, false, now),
+            "another guest took it mid-gesture"
+        );
+
+        // And once the gesture ends it lapses as usual.
+        assert!(floor.claim(2, false, now + HOLD_MS));
+    }
+
+    /// Refreshing keeps the pointer and cannot take it. Otherwise a guest that
+    /// lost it while still holding a button snatches it back.
+    #[test]
+    fn refreshing_cannot_take_the_pointer_from_whoever_has_it() {
+        let floor = Floor::new(true);
+        assert!(floor.claim(1, false, 0.0));
+        assert!(floor.claim(2, false, HOLD_MS));
+        floor.refresh(1, HOLD_MS + 1.0);
+        assert!(
+            !floor.holds(1, HOLD_MS + 2.0),
+            "the old holder took it back"
+        );
+        assert!(floor.holds(2, HOLD_MS + 2.0));
     }
 
     #[test]

@@ -593,6 +593,14 @@ fn follow_pointer<S: lowlat_inject::event::Sink>(
     guest: u32,
     now_ms: f64,
 ) {
+    // **A button that is still down keeps the pointer.** A guest mid-drag
+    // sends nothing while it pauses, so time alone cannot tell a gesture that
+    // ended from one that paused; the button can. Without this a pause of half
+    // a second hands the cursor to somebody else and takes the first guest's
+    // button away in the middle of its own drag.
+    if input.injector.holds_pointer_button() {
+        floor.refresh(guest, now_ms);
+    }
     let holds = floor.holds(guest, now_ms);
     input.injector.set_floor(holds, &mut input.sink);
 }
@@ -1985,6 +1993,46 @@ mod geometry {
             .map(|(_, e)| e.code)
             .collect();
         assert_eq!(released, vec![0x110], "the button was left down");
+    }
+
+    /// The whole defect, through the drain: a guest holds a button, pauses
+    /// longer than the hold, and must still have the pointer and its button.
+    #[test]
+    fn a_paused_drag_keeps_both_the_pointer_and_its_button() {
+        let floor = crate::floor::Floor::new(true);
+        let mut dragger = recording_input();
+        drain_one(
+            &mut dragger,
+            Pointer {
+                floor: &floor,
+                guest: 1,
+                owner: false,
+                now_ms: 0.0,
+            },
+            &Control {
+                a0: 1,
+                a1: 1,
+                a2: 0,
+                opcode: op::MOUSE_BUTTON,
+                body: &[],
+            },
+        );
+        dragger.sink.events.clear();
+
+        // It pauses, for four times the hold, saying nothing at all.
+        let mut now = 0.0;
+        for _ in 0..8 {
+            now += crate::floor::HOLD_MS / 2.0;
+            follow_pointer(&mut dragger, &floor, 1, now);
+        }
+        assert!(
+            dragger.sink.events.is_empty(),
+            "a paused drag had its button taken away"
+        );
+        assert!(
+            !floor.claim(2, false, now),
+            "another guest took the pointer mid-drag"
+        );
     }
 
     /// A guest that still has it is left alone. **It has to be holding
