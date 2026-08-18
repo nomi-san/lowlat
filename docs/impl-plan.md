@@ -739,6 +739,9 @@ delivery gate does what it is meant to throughout, and no guest ever saw a broke
 - [ ] Colour conversion by compute shader, writing planes directly, per-slot targets.
 - [ ] Zero-copy import from the capture handle into the encoder on the same device.
 - [ ] Cursor extraction, classification, and the visibility and relative-mode signals.
+- [ ] **Absolute input placed within the captured output**, not spread over the whole desktop
+  ([05 §7](05-host.md)). Correct today only because there is one output; a second display
+  stretches the stream across both.
 - [ ] **A guest without the pointer is shown that it does not have it**, rather than finding
   out by nothing happening ([05 §7.1](05-host.md)). Cursor updates are already per guest, so
   this is a different image to one guest and not a new mechanism.
@@ -751,7 +754,9 @@ delivery gate does what it is meant to throughout, and no guest ever saw a broke
 3. Cursor shape changes and relative mode both behave correctly, including entering and
    leaving a window drag.
 4. With the pointer arbitrated, the guest that does not have it can see that it does not.
-5. Capture survives resolution change and display hotplug.
+5. **Absolute input lands on the captured display with a second display attached**, and on the
+   correct one. *This cannot fail with one display, which is why it is a gate item.*
+6. Capture survives resolution change and display hotplug.
 
 ---
 

@@ -415,6 +415,24 @@ display-server-level injection cannot match.
   Layout is the far side's concern; we inject physical keys.
 - **Absolute coordinates arrive in stream space** and are mapped to the output's geometry at
   injection, accounting for rotation. Relative deltas pass through.
+- **The mapping is a normalisation at both ends, and that is why a stream smaller than the
+  display still lands on the right pixel.** A peer scales its window position into the stream's
+  dimensions; the host scales that into the absolute axis, which the input stack then spreads
+  across the desktop. Neither side needs to know the other's pixel count, only its shape.
+
+  **What that hides is the offset, and it will not survive a second display.** The axis is
+  spread over the *whole* desktop, so with one output it lands where it should and with two the
+  stream is stretched across both. The fix is the one the established hosts use: express the
+  point in whole-desktop coordinates including the captured output's own position, rather than
+  handing the input stack a bare fraction and letting it choose. That is arithmetic rather than
+  a per-compositor call, so it keeps working at the greeter, but it needs the captured output's
+  rectangle -- which does not exist until capture does ([09](#) and
+  [07-platforms.md](07-platforms.md)).
+
+  **It also assumes the stream and the display are the same size**, which they are in the
+  established model because a host changes the display mode rather than scaling a copy of it. A
+  host that ever encodes a scaled or cropped view of a larger desktop has to say so here, not
+  discover it through a pointer that drifts.
 - **One injector per guest**, holding that guest's pressed-key state. On disconnect it
   releases everything it is holding. Without this, a guest that vanishes mid-keystroke leaves
   a key held down on a machine nobody is sitting at.
