@@ -362,6 +362,7 @@ name = "lowlat-inject"
 version = "0.0.0"
 dependencies = [
  "lowlat-common",
+ "lowlat-core",
 ]
 
 [[package]]
