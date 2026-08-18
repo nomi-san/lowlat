@@ -432,7 +432,38 @@ display-server-level injection cannot match.
 - Injection tests are labeled and excluded by default. The default suite must never move the
   developer's pointer.
 
-### §7.1 Gamepads
+### §7.1 One pointer, shared
+
+**Every guest has its own devices and they still contend for one cursor.** The display stack
+merges every pointer device on a seat into a single cursor, so two guests moving at once fight
+over it and neither can aim. Keyboards do not conflict that way -- two people typing produce two
+streams of keystrokes into whatever has focus, which is what a shared desktop is for -- and pads
+do not conflict at all, because each guest's are its own devices. So **only the pointer is
+arbitrated**, and arbitrating the rest would stop two people using one session for no gain.
+
+**Off by default.** One person driving at a time is a room's decision, not a host's.
+
+When it is on, the pointer belongs to whoever last moved it and lapses a fixed time after they
+stop. Asking for it is the same act as using it: there is no separate claim, because moving
+something is the only evidence that a guest wants it. An **owner** takes it from whoever has it
+rather than waiting; everybody else waits for the lapse.
+
+**The hold is the whole behaviour.** Too short and the pointer is taken away mid-gesture, because
+there is a still moment inside any drag or held aim. Too long and taking over reads as the
+session having stopped responding.
+
+**A guest that loses the pointer releases the buttons it was holding, at once.** This is the part
+that is easy to get wrong, and getting it wrong is not subtle. A guest loses the pointer by going
+quiet, so it will never send a release of its own; the release it eventually does send arrives
+after somebody else has taken over and is dropped along with the rest of that guest's pointer
+input. The button then stays down on a machine that guest is no longer driving. So the loss is
+noticed on the host's own timer rather than waiting for a message, and it releases immediately.
+
+The local user taking the pointer back from every guest needs a source of local input activity,
+which is the same "observe the interactive session" problem as the hidden-pointer signal
+([§8.2](#82-source-of-the-hidden-signal-per-backend)) and lands with it.
+
+### §7.2 Gamepads
 
 A peer's pad is a virtual device like its keyboard, with three differences that all follow from
 one fact: **a host does not know how many pads a guest has until it sends one.**

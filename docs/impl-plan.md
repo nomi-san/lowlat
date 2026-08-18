@@ -681,6 +681,10 @@ delivery gate does what it is meant to throughout, and no guest ever saw a broke
   ([07 §4.1](07-platforms.md)), with a bounded queue and a stated overflow rule.
 - [ ] The three device-node failures told apart: module absent, group or rule missing,
   confinement refusing the create.
+- [ ] **One guest drives the pointer at a time**, optional and off by default
+  ([05 §7.1](05-host.md)): the pointer belongs to whoever last moved it, lapses after a fixed
+  hold, and an owner takes it without waiting. Keyboards and pads are not arbitrated.
+- [ ] Permissions and the owner flag read off the relayed offer, which carries both.
 
 **Gate:**
 
@@ -699,6 +703,10 @@ delivery gate does what it is meant to throughout, and no guest ever saw a broke
    queue's deadline is set from the larger figure rather than from the one already measured.
    *Half done: measured on a display server with the real device set at 200 to 260 ms, which is
    nearly double the single-device figure it replaces. The compositor case is still open.*
+10. **A guest that loses the pointer while holding a button does not leave it down.** *Named
+    regression test; the obvious implementation has this defect and it is invisible until two
+    people share a session.*
+11. Two guests type at once with the pointer arbitrated, and each drives its own pad.
 
 ---
 
@@ -789,6 +797,17 @@ from a source change.
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
 
+- 2026-08-18: **Phase 7 gains pointer arbitration, and signaling's half of permissions.** The
+  relayed offer turns out to carry both the permission set and an owner flag, so the gate built
+  for Phase 7 is no longer half-connected and the owner override has a real source. Arbitration
+  was not in the plan and belongs in it: with two guests on one desktop the pointer is the single
+  device they genuinely contend for, because the display stack merges every pointer on a seat
+  into one cursor. **It covers the pointer only.** Keyboards do not conflict that way and pads
+  are each their own device, so arbitrating either would stop two people using one session and
+  buy nothing. **The decision is host-wide and the enforcement is per guest**, which is not where
+  the obvious implementation puts it: gating before injection loses the release of a button whose
+  holder has already gone quiet, and leaves it down on a machine somebody else is driving. Gate
+  item 10 exists for exactly that, because it is invisible with one guest.
 - 2026-08-18: **Phase 7 takes on gamepads, permissions and force feedback, and gains five gate
   items.** Four of the additions were already required by [05 §7](05-host.md) and
   [07 §4.1](07-platforms.md) and were simply unwritten in the plan: the permission gate, the
