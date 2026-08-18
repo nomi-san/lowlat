@@ -15,6 +15,12 @@ use lowlat_core::init::{self, Init};
 /// How long a guest has to initialize before the attempt is abandoned.
 pub const INIT_DEADLINE_MS: f64 = 5000.0;
 
+/// The one stream this host produces.
+///
+/// A peer may hold three and addresses each by index. Everything it says about
+/// the other two describes a stream it is not being sent.
+pub const PRIMARY_STREAM: u32 = 0;
+
 /// Encode latency goes out every thirtieth frame, which is half a second at
 /// sixty.
 pub const LATENCY_INTERVAL_FRAMES: u64 = 30;
@@ -133,6 +139,21 @@ impl Negotiation {
                 if self.state != State::AwaitingInit {
                     return true;
                 }
+                // **Logged whole, once.** A peer's declaration is the input
+                // to every video decision made afterwards, and peers differ:
+                // one sends the eight keys the format describes, another sends
+                // three hundred bytes of them. Reading the object beats
+                // inferring it from the fields that happened to parse.
+                lowlat_common::log_info!(
+                    "guest: init body={}",
+                    core::str::from_utf8(
+                        message
+                            .body
+                            .split_last()
+                            .map_or(message.body, |(_, head)| head)
+                    )
+                    .unwrap_or("<not text>")
+                );
                 match init::parse(message.body) {
                     Ok(asked) => {
                         self.flags = asked.flags;
@@ -147,8 +168,7 @@ impl Negotiation {
             }
             op::ENCODER_CONFIG => {
                 // Argument 0 is the stream, 1 the flags, 2 a reinitialization
-                // request. One stream in v1, so the index is read and not yet
-                // acted on.
+                // request.
                 //
                 // **Always logged, unlike everything else here.** It is the
                 // only message a peer uses to change its mind about what it
@@ -160,6 +180,16 @@ impl Negotiation {
                     message.a1,
                     u8::from(message.a2 != 0)
                 );
+                // **A peer declares per stream, and this host produces one.**
+                // The declaration is not a property of the guest: a peer sends
+                // one of these for each stream it holds, and a peer that can
+                // decode a codec on a secondary stream has said nothing about
+                // the stream it is actually being sent. Taking the flags off
+                // whichever arrived last records a capability about a stream
+                // nobody is receiving, and then acts on it.
+                if message.a0 != PRIMARY_STREAM {
+                    return true;
+                }
                 self.flags = message.a1;
                 if message.a2 != 0 {
                     self.reconfigure = true;
@@ -371,6 +401,36 @@ mod tests {
             !guest.take_reconfigure(),
             "an initialization asked for a reinitialization"
         );
+    }
+
+    /// **A peer declares per stream and holds more than one.** A stock client
+    /// sends an encoder configuration for its secondary streams before it
+    /// sends one for the stream it is receiving, so a host that ignores the
+    /// index records what the peer can decode on a stream nobody is sending
+    /// it, and then reconfigures on the strength of that.
+    #[test]
+    fn a_declaration_about_another_stream_is_not_this_streams() {
+        let mut guest = Negotiation::opened(0.0);
+        guest.on_control(&control(op::INIT, 124, 0, 0, RECORDED));
+        assert_eq!(guest.flags(), lowlat_core::init::FLAG_BASE);
+
+        // What a stock client sends first: the secondary streams.
+        assert!(guest.on_control(&control(op::ENCODER_CONFIG, 2, 0x09, 0, &[])));
+        assert!(guest.on_control(&control(op::ENCODER_CONFIG, 1, 0x09, 1, &[])));
+        assert_eq!(
+            guest.flags(),
+            lowlat_core::init::FLAG_BASE,
+            "another stream's capability was taken for this one"
+        );
+        assert!(
+            !guest.take_reconfigure(),
+            "another stream's request reconfigured this one"
+        );
+
+        // And then the one it is actually receiving.
+        assert!(guest.on_control(&control(op::ENCODER_CONFIG, PRIMARY_STREAM, 0x09, 1, &[])));
+        assert_eq!(guest.flags(), 0x09);
+        assert!(guest.take_reconfigure());
     }
 
     #[test]

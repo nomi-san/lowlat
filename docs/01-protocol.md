@@ -390,10 +390,23 @@ length **includes the terminator**; omitting it causes a silent parse failure on
 | 11 | init | header plus JSON body | v1 |
 | 13 | encoder configuration | stream, flags, reinit | v1 |
 | 17 | user data | length, sub-id, 0, plus body | v1, opaque pass through |
+| 21 | decode latency | microseconds, kind, stream | v1, diagnostic |
 | 23 | gamepad state | 28-byte body | deferred |
 | 24 | release all input | 0, 0, 0 | v1 |
 | 26 | mouse motion, stream 1 and above | packed | v1 |
 | 30 | pen and touch | packed | deferred |
+| 35 | diagnostics | bit flags | v1 |
+
+**Opcode 21 travels in both directions and its arguments are transposed between them.** A host
+sends `(kind, microseconds, stream)`; a peer sends `(microseconds, kind, stream)`. Reading the
+inbound one with the outbound layout gives a stream index of one and a latency of nothing.
+Kind 1 is per-stream and kind 2 has a slot of its own. What a peer reports here is its decode
+time, and a host that does not want it can drop the message.
+
+**Opcode 35 turns diagnostics on.** Bit 0 of argument 0 enables the per-frame timing of opcode
+34, which is what makes that message's "behind a diagnostic flag" concrete; bit 1 enables a
+second thing that has not been read. A peer sends it with both clear in an ordinary session,
+which is a request to send nothing extra rather than a message to ignore.
 
 ### §11.2 Sent by the host
 
@@ -422,8 +435,8 @@ identifier will report (§11.3). It is emitted on the frame following an encoder
 initialization, which is how a peer learns the reference chain restarted rather than inferring
 it.
 
-**Opcode 34 is per-frame timing telemetry** behind a diagnostic flag, so an ordinary session
-never emits it: four big-endian floats covering loop start to encode complete, capture start to
+**Opcode 34 is per-frame timing telemetry** behind the diagnostic flag that opcode 11's
+counterpart, opcode 35, carries (§11.1), so an ordinary session never emits it: four big-endian floats covering loop start to encode complete, capture start to
 encode start, the frame interval, and the encode duration. Documented so its arrival is not
 mistaken for something else.
 
@@ -510,6 +523,14 @@ one is a default rather than a refusal. Two of them carry sentinels rather than 
 arrive as 0 to mean **no preference**. A host reading either as a dimension tries to encode a
 picture nobody asked for.
 
+**A maximum of zero is also no limit**, whether the key was absent or sent as zero. Peers exist
+that state neither maximum, and a host that reads the absence as a ceiling has a ceiling of
+nothing.
+
+**Eight keys is the smallest object seen, not the only one.** One peer sends exactly those
+eight in about 124 bytes; another sends around 306. A host reads the keys it knows and ignores
+the rest, which is what the "do not add keys" rule above constrains a *client* to, not a host.
+
 **Do not add keys.** Peers exist that behave differently when the object carries more than these
 eight, taking different encoder-warmup or session-setup paths, so a host must not require extras
 and a client must not send them.
@@ -530,8 +551,11 @@ the new flags name reinitializes its encoder: new parameter sets, a new referenc
 new generation announced on opcode 29. Where nothing about the request changes what is already
 being produced, a keyframe is what it is owed. See [05 §6.1](05-host.md).
 
-**Argument 0 is a stream index and there is one stream in v1.** A peer that names another is
-read and not acted on.
+**Argument 0 is a stream index, and a peer declares per stream rather than per session.** A
+peer holds up to three and sends one of these for each. Observed: a client sends them for
+streams 2 and 1 before it ever sends one for stream 0. A host that ignores the index records
+what the peer can decode on a stream it is not being sent, and then acts on it; the flags for
+streams it does not produce belong to those streams and to nothing else.
 
 The flag bits:
 

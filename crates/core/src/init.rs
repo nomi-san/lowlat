@@ -73,8 +73,16 @@ impl Init {
     }
 
     /// True when the peer stated a ceiling rather than declaring none.
+    ///
+    /// **Zero is not a ceiling.** A peer that leaves these out, and at least
+    /// one that sends them as zero, means no limit exactly as [`NO_LIMIT`]
+    /// does; reading either as a size gives a ceiling of nothing, and anything
+    /// that sized a picture from it would encode a picture of no width.
     pub const fn has_size_limit(&self) -> bool {
-        self.max_width != NO_LIMIT && self.max_height != NO_LIMIT
+        self.max_width != NO_LIMIT
+            && self.max_height != NO_LIMIT
+            && self.max_width != 0
+            && self.max_height != 0
     }
 }
 
@@ -179,6 +187,40 @@ mod tests {
     /// parser agrees with the writer.
     const RECORDED: &[u8] = b"{\"_version\":1,\"_max_w\":60000,\"_max_h\":60000,\"_flags\":8,\
 \"resolutionX\":0,\"resolutionY\":0,\"mediaContainer\":0,\"refreshRate\":60}\0";
+
+    /// **Zero is not a ceiling.** A live client declared no maximum at all,
+    /// which reads as zero here, and a host that took it for a size would
+    /// encode a picture of no width. Both spellings of "no limit" have to
+    /// answer the same.
+    #[test]
+    fn no_maximum_is_not_a_maximum_of_nothing() {
+        let none = Init {
+            version: VERSION,
+            max_width: 0,
+            max_height: 0,
+            flags: FLAG_BASE,
+            resolution_x: 2560,
+            resolution_y: 1440,
+            media_container: 0,
+            refresh_rate: 60,
+        };
+        assert!(!none.has_size_limit(), "zero was read as a ceiling");
+
+        let sentinel = Init {
+            max_width: NO_LIMIT,
+            max_height: NO_LIMIT,
+            ..none
+        };
+        assert!(!sentinel.has_size_limit());
+
+        // A real ceiling still reads as one.
+        let real = Init {
+            max_width: 1920,
+            max_height: 1080,
+            ..none
+        };
+        assert!(real.has_size_limit(), "a stated ceiling was discarded");
+    }
 
     #[test]
     fn a_recorded_client_body_parses_field_for_field() {

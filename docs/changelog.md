@@ -37,6 +37,16 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - Every opcode a peer sends is logged once, with its arguments, so what a
   peer actually speaks is on record rather than inferred.
 
+**Fixed**
+
+- An encoder configuration message names the stream it is about, and the
+  index was being ignored. A peer sends one for each stream it holds, and a
+  client was observed declaring for its secondary streams before the one it
+  was receiving, so the host recorded a capability about a stream nobody was
+  sending it and would have acted on it.
+- A maximum picture size of zero was read as a stated ceiling. Peers exist
+  that declare no maximum at all, and a ceiling of nothing is not one.
+
 **Notes**
 
 - **A stream that encodes without error can decode to nothing.** All three
@@ -55,6 +65,11 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - **The base flag is set on every declaration and means nothing.** Counting
   it as a capability the pipeline does not emit reported a refusal on every
   ordinary request, which only a live run showed.
+- **Two messages a peer sends in the first second of an ordinary session
+  were undocumented**, and both turned up by logging every opcode once
+  rather than by reading: a decode-latency report whose arguments are
+  transposed against the host's own, and the flag that turns per-frame
+  timing on. See [01 §11.1](01-protocol.md).
 
 - **The trait paid for itself here.** One generic loop already drove two
   backends; adding a second codec was selection, not a pipeline.
