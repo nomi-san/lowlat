@@ -266,6 +266,20 @@ holding, so a second emulation buys identity and nothing else, and the identity 
 kernel driver interrogates a device of that family during setup and will not attach to one that
 cannot answer. That is worth doing and is not worth doing first.
 
+**A virtual pad has to borrow a real controller's identity.** Everything that reads a gamepad
+decides what its buttons mean by looking the bus, vendor, product and version up in a table:
+browsers, the common controller libraries, and every per-title mapping people share. A device
+with an identity nobody has heard of is delivered as a bag of numbered buttons and axes, and no
+amount of correct input makes it usable. So the pad presents the Xbox 360 controller's, and
+**the mapping that selects is verified against what the device actually emits** rather than
+assumed: buttons zero to ten in kernel-code order, axes zero to five, direction pad on the first
+hat. Borrowing an identity whose mapping did not match would be worse than borrowing none,
+because everything would look recognised and half the buttons would be wrong.
+
+Identification does not have to be given up for it. The **physical-location string** carries
+which guest and which pad, which is what that field is for, so a device listing shows the model
+and the location shows the session.
+
 **The HID layer's device node carries the same packaging obligation as the input layer's**
 ([§6](#6-privileges)): no distribution grants access to either by default, so a second backend
 means a second rule.
