@@ -40,6 +40,9 @@ pub mod op {
     pub const RELEASE: u8 = 24;
     pub const MOUSE_MOTION_STREAM: u8 = 26;
     pub const PEN_TOUCH: u8 = 30;
+    /// Turns per-frame timing on. A peer sends it with every bit clear in an
+    /// ordinary session, which is a request to send nothing extra.
+    pub const DIAGNOSTICS: u8 = 35;
 
     // Sent by a host.
     pub const CURSOR: u8 = 9;
@@ -52,6 +55,8 @@ pub mod op {
     /// Announces the generation the video header's frame identifier will carry,
     /// on the frame after an encoder initialization.
     pub const ENCODER_GENERATION: u8 = 29;
+    /// Per-frame timing, behind the flag [`DIAGNOSTICS`] carries.
+    pub const FRAME_TIMING: u8 = 34;
 
     /// Short name for logs. Never allocates; unknown opcodes render as
     /// `"unknown"` and the numeric value should be logged alongside.
@@ -71,7 +76,11 @@ pub mod op {
             BLOCKED => "blocked",
             USER_DATA => "user-data",
             RUMBLE => "rumble",
-            ENCODE_LATENCY => "encode-latency",
+            // **Named without a direction.** It travels both ways carrying
+            // different things -- a host's encode time out, a peer's decode
+            // time in -- so naming it for one direction mislabels the other
+            // in the log, which is exactly where the two get confused.
+            ENCODE_LATENCY => "latency",
             GAMEPAD_STATE => "gamepad-state",
             RELEASE => "release",
             GUEST_LIST => "guest-list",
@@ -79,6 +88,8 @@ pub mod op {
             HOST_MODE => "host-mode",
             ENCODER_GENERATION => "encoder-generation",
             PEN_TOUCH => "pen-touch",
+            DIAGNOSTICS => "diagnostics",
+            FRAME_TIMING => "frame-timing",
             _ => "unknown",
         }
     }
@@ -218,6 +229,48 @@ mod tests {
         let parsed = parse(&buf[..CONTROL_HEADER_LEN + 5]).unwrap();
         assert_eq!(parsed.body, b"hello");
         assert_eq!(parsed.opcode, op::USER_DATA);
+    }
+
+    /// **Every opcode either side sends has a name.** A live run reads the
+    /// vocabulary a peer speaks off this table, and one that renders as
+    /// "unknown" sends the reader to the protocol document to look up a number
+    /// that was known all along. Found by a live run doing exactly that.
+    #[test]
+    fn every_opcode_this_protocol_defines_has_a_name() {
+        use op::{
+            BLOCKED, CURSOR, DIAGNOSTICS, DISCONNECT, ENCODE_LATENCY, ENCODER_CONFIG,
+            ENCODER_GENERATION, FRAME_TIMING, GAMEPAD_AXIS, GAMEPAD_BUTTON, GAMEPAD_STATE,
+            GAMEPAD_UNPLUG, GUEST_LIST, HOST_MODE, INIT, KEYBOARD, MOUSE_BUTTON, MOUSE_MOTION,
+            MOUSE_MOTION_STREAM, MOUSE_WHEEL, PEN_TOUCH, RELEASE, RUMBLE, USER_DATA, name,
+        };
+        for opcode in [
+            KEYBOARD,
+            MOUSE_BUTTON,
+            MOUSE_WHEEL,
+            MOUSE_MOTION,
+            GAMEPAD_BUTTON,
+            GAMEPAD_AXIS,
+            GAMEPAD_UNPLUG,
+            CURSOR,
+            DISCONNECT,
+            INIT,
+            ENCODER_CONFIG,
+            BLOCKED,
+            USER_DATA,
+            RUMBLE,
+            ENCODE_LATENCY,
+            GAMEPAD_STATE,
+            RELEASE,
+            GUEST_LIST,
+            MOUSE_MOTION_STREAM,
+            HOST_MODE,
+            ENCODER_GENERATION,
+            PEN_TOUCH,
+            FRAME_TIMING,
+            DIAGNOSTICS,
+        ] {
+            assert_ne!(name(opcode), "unknown", "opcode {opcode} has no name");
+        }
     }
 
     /// An opcode we do not know must parse, not fail. The protocol is additive.
