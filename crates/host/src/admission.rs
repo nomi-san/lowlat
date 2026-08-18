@@ -1035,6 +1035,21 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         if let Some(input) = input.as_mut() {
             input.sink.tick();
             follow_pointer(input, &args.floor, args.guest, now);
+            // **What a local application asks a pad to do goes back to the
+            // peer holding it.** Nothing on this machine can vibrate; the
+            // controller is somewhere else.
+            while let Some(rumble) = input.sink.rumble() {
+                send_control(
+                    shell.endpoint().session(),
+                    &control::Control {
+                        a0: rumble.pad,
+                        a1: u32::from(rumble.large),
+                        a2: u32::from(rumble.small),
+                        opcode: control::op::RUMBLE,
+                        body: &[],
+                    },
+                );
+            }
         }
 
         // **Every pass, not on the reporting cadence.** The declaration is on a

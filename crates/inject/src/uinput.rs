@@ -26,6 +26,11 @@ mod ioctl {
     pub(super) const SET_ABSBIT: libc::c_ulong = 0x4004_5567;
     pub(super) const SET_MSCBIT: libc::c_ulong = 0x4004_5568;
     pub(super) const SET_PROPBIT: libc::c_ulong = 0x4004_556e;
+    pub(super) const SET_FFBIT: libc::c_ulong = 0x4004_556b;
+    pub(super) const BEGIN_FF_UPLOAD: libc::c_ulong = 0xc068_55c8;
+    pub(super) const END_FF_UPLOAD: libc::c_ulong = 0x4068_55c9;
+    pub(super) const BEGIN_FF_ERASE: libc::c_ulong = 0xc00c_55ca;
+    pub(super) const END_FF_ERASE: libc::c_ulong = 0x400c_55cb;
 }
 
 const EV_SYN: libc::c_int = 0x00;
@@ -35,6 +40,21 @@ const EV_KEY: libc::c_int = 0x01;
 const EV_REL: libc::c_int = 0x02;
 const EV_ABS: libc::c_int = 0x03;
 const EV_MSC: libc::c_int = 0x04;
+const EV_FF: u16 = 0x15;
+/// The kernel asks the device's creator a question through this.
+const EV_UINPUT: u16 = 0x0101;
+const UI_FF_UPLOAD: u16 = 1;
+const UI_FF_ERASE: u16 = 2;
+/// The only effect offered. See [`crate::gamepad`] for why.
+const FF_RUMBLE: libc::c_int = 0x50;
+/// Not an effect: a scale applied to all of them.
+const FF_GAIN: u16 = 0x60;
+
+/// Effects one pad may have uploaded at once.
+///
+/// Applications upload a handful and reuse them. The bound exists so a pad
+/// costs a fixed amount, not because anything approaches it.
+const EFFECTS: usize = 16;
 
 const MSC_SCAN: libc::c_int = 4;
 const REL_X: libc::c_int = 0x00;
@@ -143,6 +163,13 @@ struct Node {
     fd: OwnedFd,
     /// Events produced before the device could deliver them.
     held: Held,
+    /// Effects an application has uploaded to this device.
+    ///
+    /// **Held here rather than answered and forgotten**, because playing one
+    /// names it by identifier and nothing else says how hard to vibrate.
+    effects: [Effect; EFFECTS],
+    /// A scale over every effect, which an application may turn down.
+    gain: u16,
     /// **Each device has its own deadline**, because they are not created
     /// together: a guest's keyboard and pointers arrive when it is admitted
     /// and a pad arrives whenever it first sends one, which may be minutes
@@ -221,12 +248,17 @@ impl Held {
 
 impl Node {
     /// Open the node and start describing a device on it.
+    ///
+    /// **Read as well as written.** Only a pad ever has anything to read, but
+    /// the kernel asks its questions on the same descriptor the device was
+    /// created on, so a write-only one could never be answered. Non-blocking
+    /// throughout: nothing here may park a guest's thread.
     fn open() -> Result<Self, Error> {
         // SAFETY: a constant NUL-terminated path and flags the call defines.
         let raw = unsafe {
             libc::open(
                 c"/dev/uinput".as_ptr(),
-                libc::O_WRONLY | libc::O_CLOEXEC | libc::O_NONBLOCK,
+                libc::O_RDWR | libc::O_CLOEXEC | libc::O_NONBLOCK,
             )
         };
         if raw < 0 {
@@ -241,6 +273,8 @@ impl Node {
         Ok(Self {
             fd,
             held: Held::default(),
+            effects: [Effect::default(); EFFECTS],
+            gain: u16::MAX,
             created: lowlat_common::clock::Time::now(),
             usable: false,
         })
@@ -257,13 +291,17 @@ impl Node {
     }
 
     fn create(&self, name: &str, product: u16) -> Result<(), Error> {
+        self.create_with_effects(name, product, 0)
+    }
+
+    fn create_with_effects(&self, name: &str, product: u16, effects: u32) -> Result<(), Error> {
         let mut setup = UinputSetup {
             bustype: BUS_VIRTUAL,
             vendor: VENDOR,
             product,
             version: VERSION,
             name: [0; NAME_LEN],
-            ff_effects_max: 0,
+            ff_effects_max: effects,
         };
         // Truncated rather than refused: the name is a label in a device
         // listing and nothing reads it back.
@@ -351,6 +389,155 @@ impl Node {
         self.flush()
     }
 
+    /// Answer whatever the kernel has asked, and report what to vibrate at.
+    ///
+    /// **Answering is not optional.** An upload the creator never completes
+    /// leaves the application's own call blocked until it times out, and it
+    /// then reports a controller that cannot rumble.
+    fn poll_rumble(&mut self) -> Option<(u16, u16)> {
+        let mut latest = None;
+        let mut frame = [0u8; size_of::<InputEvent>()];
+        loop {
+            // SAFETY: the buffer is one event long and lives across the call.
+            let read = unsafe {
+                libc::read(
+                    self.fd.as_raw_fd(),
+                    frame.as_mut_ptr().cast::<libc::c_void>(),
+                    frame.len(),
+                )
+            };
+            // A whole event or nothing: a short read is a closed or drained
+            // descriptor, and a negative one is "nothing waiting".
+            if !usize::try_from(read).is_ok_and(|got| got == frame.len()) {
+                return latest;
+            }
+            let at = |offset: usize| -> u16 {
+                u16::from_ne_bytes([
+                    frame.get(offset).copied().unwrap_or(0),
+                    frame.get(offset + 1).copied().unwrap_or(0),
+                ])
+            };
+            let value = i32::from_ne_bytes([
+                frame.get(20).copied().unwrap_or(0),
+                frame.get(21).copied().unwrap_or(0),
+                frame.get(22).copied().unwrap_or(0),
+                frame.get(23).copied().unwrap_or(0),
+            ]);
+            let (kind, code) = (at(16), at(18));
+            match (kind, code) {
+                (EV_UINPUT, UI_FF_UPLOAD) => self.take_upload(value),
+                (EV_UINPUT, UI_FF_ERASE) => self.take_erase(value),
+                // **The gain is a scale, not an effect**, and an application
+                // that turns it down expects that to be honoured rather than
+                // treated as an unknown effect identifier.
+                (EV_FF, FF_GAIN) => self.gain = u16::try_from(value).unwrap_or(u16::MAX),
+                (EV_FF, _) => {
+                    latest = Some(self.play(code, value != 0));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Take an uploaded effect and tell the kernel it was accepted.
+    fn take_upload(&mut self, request: i32) {
+        let mut upload = UinputFfUpload {
+            request_id: u32::try_from(request).unwrap_or(0),
+            retval: 0,
+            effect: FfEffect::default(),
+            old: FfEffect::default(),
+        };
+        // SAFETY: the request reads and writes a uinput_ff_upload, which is
+        // what is passed, with the layout the kernel's header fixes.
+        if unsafe {
+            libc::ioctl(
+                self.fd.as_raw_fd(),
+                ioctl::BEGIN_FF_UPLOAD,
+                core::ptr::from_mut(&mut upload),
+            )
+        } < 0
+        {
+            return;
+        }
+        let (id, strong, weak) = (upload.effect.id, upload.effect.strong, upload.effect.weak);
+        // **Accepted even when there is no room for it.** Refusing an upload
+        // is reported to the application as a broken device; forgetting one
+        // costs a single effect nobody is playing.
+        upload.retval = 0;
+        // SAFETY: as above, and the struct is unchanged apart from the result.
+        unsafe {
+            libc::ioctl(
+                self.fd.as_raw_fd(),
+                ioctl::END_FF_UPLOAD,
+                core::ptr::from_ref(&upload),
+            );
+        }
+        let slot = self
+            .effects
+            .iter()
+            .position(|e| e.used && e.id == id)
+            .or_else(|| self.effects.iter().position(|e| !e.used));
+        if let Some(slot) = slot.and_then(|at| self.effects.get_mut(at)) {
+            *slot = Effect {
+                id,
+                used: true,
+                strong,
+                weak,
+            };
+        }
+    }
+
+    fn take_erase(&mut self, request: i32) {
+        let mut erase = UinputFfErase {
+            request_id: u32::try_from(request).unwrap_or(0),
+            retval: 0,
+            effect_id: 0,
+        };
+        // SAFETY: the request reads and writes a uinput_ff_erase.
+        if unsafe {
+            libc::ioctl(
+                self.fd.as_raw_fd(),
+                ioctl::BEGIN_FF_ERASE,
+                core::ptr::from_mut(&mut erase),
+            )
+        } < 0
+        {
+            return;
+        }
+        let id = i16::try_from(erase.effect_id).unwrap_or(-1);
+        erase.retval = 0;
+        // SAFETY: as above.
+        unsafe {
+            libc::ioctl(
+                self.fd.as_raw_fd(),
+                ioctl::END_FF_ERASE,
+                core::ptr::from_ref(&erase),
+            );
+        }
+        if let Some(slot) = self.effects.iter_mut().find(|e| e.used && e.id == id) {
+            *slot = Effect::default();
+        }
+    }
+
+    /// What starting or stopping an effect comes to, at the current gain.
+    fn play(&mut self, id: u16, started: bool) -> (u16, u16) {
+        if !started {
+            return (0, 0);
+        }
+        let Some(effect) = self
+            .effects
+            .iter()
+            .find(|e| e.used && e.id == i16::try_from(id).unwrap_or(-1))
+        else {
+            return (0, 0);
+        };
+        let scale = |value: u16| -> u16 {
+            let scaled = u32::from(value) * u32::from(self.gain) / u32::from(u16::MAX);
+            u16::try_from(scaled).unwrap_or(u16::MAX)
+        };
+        (scale(effect.strong), scale(effect.weak))
+    }
+
     /// Write everything held, if there is anything.
     fn flush(&mut self) -> Result<(), Error> {
         let used = self.held.take();
@@ -425,6 +612,62 @@ struct UinputAbsSetup {
     resolution: i32,
 }
 
+/// What a pad is asked to vibrate at, on the way back to its peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rumble {
+    /// The peer's own identifier for the pad, so it needs no mapping back.
+    pub pad: u32,
+    /// **Eight bits each, as the peer carries them.** The kernel counts a
+    /// motor in sixteen and the peer widens what it is sent by repeating the
+    /// byte, so taking the high byte is exactly the inverse and a value
+    /// survives the round trip unchanged.
+    pub large: u8,
+    pub small: u8,
+}
+
+/// One effect a pad is holding, reduced to what a peer can express.
+#[derive(Debug, Clone, Copy, Default)]
+struct Effect {
+    id: i16,
+    used: bool,
+    strong: u16,
+    weak: u16,
+}
+
+#[repr(C)]
+#[derive(Debug)]
+struct UinputFfUpload {
+    request_id: u32,
+    retval: i32,
+    effect: FfEffect,
+    old: FfEffect,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+struct FfEffect {
+    kind: u16,
+    id: i16,
+    direction: u16,
+    trigger_button: u16,
+    trigger_interval: u16,
+    replay_length: u16,
+    replay_delay: u16,
+    /// The union, of which only the plain magnitude arm is read: two
+    /// sixteen-bit motors at its front, then padding to the union's size.
+    strong: u16,
+    weak: u16,
+    rest: [u8; 28],
+}
+
+#[repr(C)]
+#[derive(Debug, Default)]
+struct UinputFfErase {
+    request_id: u32,
+    retval: i32,
+    effect_id: u32,
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct InputEvent {
@@ -466,6 +709,9 @@ pub struct Devices {
 struct PadNode {
     id: u32,
     node: Node,
+    /// What was last reported, so an effect replayed at the same strength
+    /// does not put another message on the wire.
+    last_rumble: (u8, u8),
 }
 
 impl Devices {
@@ -515,6 +761,31 @@ impl Devices {
         }
     }
 
+    /// What any of this guest's pads has been asked to vibrate at, since the
+    /// last ask.
+    ///
+    /// **Polled rather than pushed.** The kernel raises these on the same
+    /// descriptor the device was created on, and the guest's loop is already
+    /// turning; a thread per pad would be a thread per pad for a message that
+    /// arrives when somebody drives over rubble.
+    pub fn rumble(&mut self) -> Option<Rumble> {
+        for pad in self.pads.iter_mut().filter_map(Option::as_mut) {
+            if let Some((strong, weak)) = pad.node.poll_rumble() {
+                let (large, small) = (high_byte(strong), high_byte(weak));
+                if (large, small) == pad.last_rumble {
+                    continue;
+                }
+                pad.last_rumble = (large, small);
+                return Some(Rumble {
+                    pad: pad.id,
+                    large,
+                    small,
+                });
+            }
+        }
+        None
+    }
+
     /// The device for a pad, creating it if this is the first event for it.
     fn pad(&mut self, id: u32) -> Option<&mut Node> {
         if let Some(index) = self
@@ -544,7 +815,11 @@ impl Devices {
         };
         lowlat_common::log_info!("inject: pad created, pad={id}");
         let slot = self.pads.get_mut(index)?;
-        *slot = Some(PadNode { id, node });
+        *slot = Some(PadNode {
+            id,
+            node,
+            last_rumble: (0, 0),
+        });
         slot.as_mut().map(|p| &mut p.node)
     }
 }
@@ -669,6 +944,14 @@ fn pointer_absolute(guest: &str) -> Result<Node, Error> {
     Ok(node)
 }
 
+/// The peer's half of a sixteen-bit motor.
+///
+/// It widens what it is sent by repeating the byte, so this is the exact
+/// inverse and a value survives the round trip.
+const fn high_byte(value: u16) -> u8 {
+    (value >> 8) as u8
+}
+
 fn pad(guest: &str, id: u32) -> Result<Node, Error> {
     let node = Node::open()?;
     node.set(ioctl::SET_EVBIT, EV_SYN)?;
@@ -710,9 +993,19 @@ fn pad(guest: &str, id: u32) -> Result<Node, Error> {
         node.set(ioctl::SET_ABSBIT, libc::c_int::from(axis))?;
         node.absolute_axis_signed(axis, -1, 1)?;
     }
+    // **Declared, or an application sees a pad that cannot rumble.** Only the
+    // plain magnitude effect: it is what the common controller libraries
+    // raise, and the shaped ones would mean carrying an envelope simulation to
+    // produce two numbers a peer can express.
+    node.set(ioctl::SET_EVBIT, EV_FF.into())?;
+    node.set(ioctl::SET_FFBIT, FF_RUMBLE)?;
     let mut name = NameBuf::default();
     let _ = write!(name, "lowlat pad {id} (guest {guest})");
-    node.create(name.as_str(), 4)?;
+    // **Non-zero, or the device is not created at all.** It is the number of
+    // effects the pad claims it can hold, and a device that declares force
+    // feedback and room for none of it is refused outright rather than
+    // created and then failing uploads.
+    node.create_with_effects(name.as_str(), 4, u32::try_from(EFFECTS).unwrap_or(1))?;
     Ok(node)
 }
 
@@ -862,6 +1155,21 @@ mod held_tests {
         held.push(&long);
         assert!(held.used <= HELD);
         assert!(held.reported);
+    }
+
+    /// **The peer widens a motor by repeating the byte**, so the high byte is
+    /// the exact inverse and a value survives the round trip. Taking the low
+    /// byte instead is silently wrong at every strength but the ones where
+    /// the two halves happen to match.
+    #[test]
+    fn a_motor_survives_the_round_trip_to_the_peer_and_back() {
+        for byte in 0..=u8::MAX {
+            let widened = u16::from(byte) | (u16::from(byte) << 8);
+            assert_eq!(high_byte(widened), byte);
+        }
+        assert_eq!(high_byte(0xC000), 0xC0);
+        assert_eq!(high_byte(u16::MAX), u8::MAX);
+        assert_eq!(high_byte(0), 0);
     }
 
     #[test]
@@ -1382,6 +1690,109 @@ mod device_tests {
                 "{axis:#x}"
             );
         }
+    }
+
+    /// **An application's rumble reaches the peer.** Driven the way a real one
+    /// does it: upload an effect to the event node with `EVIOCSFF`, then play
+    /// it by writing an `EV_FF` event at the identifier the kernel assigned.
+    /// Nothing here simulates the kernel; it is the kernel doing the asking.
+    ///
+    /// **The application has to be on its own thread**, and that is not a
+    /// tidiness point. The upload blocks inside the kernel until the device's
+    /// creator answers it, so a test that uploads and then looks for the
+    /// answer deadlocks against itself -- measured at thirty seconds, the
+    /// kernel's own patience. In a real session the guest's loop is turning
+    /// while some other process uploads, which is what this reproduces.
+    #[test]
+    #[ignore = "creates real input devices"]
+    fn an_applications_rumble_reaches_the_peer() {
+        use std::io::Write as _;
+        use std::os::fd::AsRawFd as _;
+
+        let mut devices = Devices::create("17").expect("create");
+        let mut inject = injector();
+        // Any pad event creates the device.
+        inject.on_control(
+            &Control {
+                a0: 0,
+                a1: 0,
+                a2: 1,
+                opcode: op::GAMEPAD_AXIS,
+                body: &[],
+            },
+            &mut devices,
+        );
+        let leaf = Reader::node("lowlat pad 1 (guest 17)").expect("the pad has no node");
+        // The node is root-owned until the device manager grants the group.
+        let _wait = Reader::open("lowlat pad 1 (guest 17)").expect("node");
+
+        let application = std::thread::spawn(move || {
+            let mut node = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(format!("/dev/input/{leaf}"))
+                .expect("open for writing");
+            let mut effect = FfEffect {
+                kind: 0x50,
+                id: -1, // let the kernel assign one
+                strong: 0xC000,
+                weak: 0x4000,
+                ..FfEffect::default()
+            };
+            // EVIOCSFF, which is _IOW('E', 0x80, struct ff_effect).
+            const EVIOCSFF: libc::c_ulong = 0x4030_4580;
+            // SAFETY: the request reads a ff_effect, which is what is passed.
+            let rc = unsafe {
+                libc::ioctl(node.as_raw_fd(), EVIOCSFF, core::ptr::from_mut(&mut effect))
+            };
+            assert_eq!(rc, 0, "the kernel refused the effect");
+
+            let mut play = |value: i32| {
+                let mut frame = [0u8; size_of::<InputEvent>()];
+                frame[16..18].copy_from_slice(&0x15u16.to_ne_bytes());
+                #[allow(clippy::cast_sign_loss)]
+                frame[18..20].copy_from_slice(&(effect.id as u16).to_ne_bytes());
+                frame[20..24].copy_from_slice(&value.to_ne_bytes());
+                node.write_all(&frame).expect("play");
+            };
+            play(1);
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            play(0);
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        });
+
+        let mut reported = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            while let Some(rumble) = devices.rumble() {
+                reported.push(rumble);
+            }
+            if application.is_finished() && reported.len() >= 2 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        application.join().expect("application");
+        while let Some(rumble) = devices.rumble() {
+            reported.push(rumble);
+        }
+
+        assert_eq!(
+            reported,
+            vec![
+                Rumble {
+                    pad: 1,
+                    large: 0xC0,
+                    small: 0x40
+                },
+                Rumble {
+                    pad: 1,
+                    large: 0,
+                    small: 0
+                },
+            ],
+            "the effect did not come back as the peer would receive it"
+        );
     }
 
     /// Gate item 5 against the kernel: revoking releases what it held.
