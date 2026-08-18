@@ -545,7 +545,7 @@ when it must not.
 
 ---
 
-## Phase 6 - HEVC
+## Phase 6 - HEVC (closed 2026-08-18)
 
 - [x] HEVC encode path on the vendor backend, and the codec and encoder chosen at startup
   rather than per guest, because one encode serves every guest. *A stock client decodes it:
@@ -604,9 +604,11 @@ first next time.
 
 **Gate:**
 
-1. [~] A stock client negotiates and decodes HEVC, and both codecs are selectable. *Decoded, on
-   the vendor backend, and both codecs are selectable there. The negotiation half is not done:
-   the codec is chosen at startup and no guest is consulted, which is what gate 2 is for.*
+1. [x] A stock client negotiates and decodes HEVC, and both codecs are selectable. *Both codecs
+   on both backends through one loop, and the negotiation half is done: a stock client moved a
+   live session between them in both directions, mid-stream, and with two guests seated the
+   move waited until both agreed. Zero loss and one frame-rate sample below sixty across each
+   change.*
 
    **A test that looked like a pass and was not.** A client declaring H.264 also decoded the
    HEVC stream, which appears to make the refusal path unnecessary. It does not: the client
@@ -614,7 +616,7 @@ first next time.
    it carries because a host can change codec underneath it. A peer without that sniff builds
    the decoder it declared and fails every picture, which is exactly the failure this project
    spent a day on from the other direction. The refusal is still required.
-2. **A guest the host cannot serve is disconnected with a status, and the peer reports that
+2. [x] **A guest the host cannot serve is disconnected with a status, and the peer reports that
    status rather than a timeout.** *Done: an unbuildable encoder ends the guest with the
    encoder-unavailable status, and the client logs `host sent opcode 10, status=-15000` and
    reports it, in place of the ten-second no-video timeout it used to blame the network for.*
@@ -643,6 +645,17 @@ peer cannot use.
 in [05 §6.2](05-host.md). They are the encode-side statuses rather than the decode-side ones,
 because what a host can honestly report is what it could not do. **A status of zero does not
 disconnect** -- the peer's control loop treats zero as "carry on" -- so none of them is zero.
+
+**Closed 2026-08-18, verified against stock clients and two guests at once.** Both codecs on
+both backends; a guest's declaration read from both places it arrives in; a reinitialization
+request answered against what every seated guest can decode; and four reasons a host can end a
+session, each reaching the peer as a status rather than as a timeout.
+
+**One thing was found and not closed here**, because it belongs to multi-guest delivery
+(Phase 11) and to the retransmission scan rather than to this phase: two guests on a wide-area
+path behind a single uplink fill their send windows and retransmit at several times the
+configured rate, recovering each time. Two guests on a local path do not come close. The
+delivery gate does what it is meant to throughout, and no guest ever saw a broken picture.
 
 ---
 

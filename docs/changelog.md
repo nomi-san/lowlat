@@ -3,7 +3,7 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
-## 6: HEVC (in progress)
+## 6: HEVC (closed 2026-08-18)
 
 **Added**
 
@@ -63,6 +63,16 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 **Notes**
 
+- **Verified against stock clients, and against two guests at once.** A client
+  moved a live session between the codecs in both directions; with two
+  seated, the move waited until both agreed and then changed for both. A
+  third guest arriving at capacity was declined in signalling.
+- **Two guests on a wide-area path behind one uplink fill their send
+  windows** and retransmit at several times the configured rate, recovering
+  each time; two guests on a local path peak at a window of fourteen. The
+  delivery gate behaves correctly throughout and no picture broke. Left open
+  against multi-guest delivery and the retransmission scan, neither of which
+  is this phase.
 - **A stream that encodes without error can decode to nothing.** All three
   fixes above are of that shape, and none of them fails a call. Two were
   found by encoding the same input with a second encoder on the same device
