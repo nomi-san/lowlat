@@ -178,6 +178,20 @@ Video stream `n` maps to channel 1 for `n = 0` and `n + 2` otherwise. v1 runs st
 but the mapping is fixed and channels 3 and 4 are reserved for it rather than being general
 purpose.
 
+**Three video streams is the ceiling, and it is a peer-side constant.** A peer allocates its
+decoders, its metrics and its per-stream configuration as arrays of three, so the index is
+bounded before it reaches any host: a message naming stream 3 or above is out of range on the
+peer's own terms. An older generation of the same peer allocated two, which is the one place
+this number has moved.
+
+**They are streams, not a fallback ladder.** The reason to have three is more than one thing to
+show at once -- additional displays, a cursor or overlay layer carried apart from the picture it
+sits on, and a peer asking for a specific view rather than taking whatever the host sends.
+Everything per stream is therefore per stream on both sides: the flags a peer declares
+(§11.5), the encoder generation, the encode latency, and the
+mouse motion opcode that exists only to name one. A host that collapses them to a single value
+records what a peer said about a picture it is not being sent.
+
 Sequence spaces are strictly per channel. A shared receive ring keyed by a per-channel sequence
 collides and corrupts.
 
