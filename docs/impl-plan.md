@@ -569,11 +569,17 @@ when it must not.
   declaration, which is what the reference host does and what keeps one encode able to serve
   every seat. 4:4:4 and 10-bit are carried through the same path and reported as not emitted.*
 
-- [ ] **The refusal path for a seat that cannot decode the session's codec** (D11): read the
-  capability from session initialization, and disconnect with a status before any video is sent.
-  *No longer blocked: opcode 10's argument 0 is a status from the peer's own published status
-  enumeration, so the values it takes are known and one has only to be chosen. See the note at
-  the end of this phase.*
+- [x] **Ending a session with a reason** ([05 §6.2](05-host.md)). *Four reasons on one
+  mechanism: no room, no encoder for what was asked, the device would not report its
+  capabilities, and an encoder that stopped answering. Verified live: a host that cannot build
+  an encoder ends the guest with that status and the peer reports it immediately, where before
+  it waited ten seconds for its own no-video timeout and then blamed the network.*
+
+  **D11's original refusal is not built, and should not be.** It said a seat that cannot decode
+  the session's codec is disconnected by the host. A peer is the only party that can tell its
+  decoder failed; it raises a decode error of its own and reports it through its own API. A host
+  cannot detect the condition, so a refusal for it would be a guess. D11 is amended
+  ([00](00-overview.md)) and the gate below with it.
 
 **What the open backend's codec cost, and what it would cost again.** Three faults, each of
 which encodes without error and is only visible in what a decoder makes of the output.
@@ -608,9 +614,15 @@ first next time.
    it carries because a host can change codec underneath it. A peer without that sniff builds
    the decoder it declared and fails every picture, which is exactly the failure this project
    spent a day on from the other direction. The refusal is still required.
-2. **A guest that cannot decode the session's codec is disconnected with a status, and no video
-   is ever sent to it.** Observed against a stock client: the disconnect arrives, the client
-   reports it, and the other guests' streams are undisturbed across the whole episode.
+2. **A guest the host cannot serve is disconnected with a status, and the peer reports that
+   status rather than a timeout.** *Done: an unbuildable encoder ends the guest with the
+   encoder-unavailable status, and the client logs `host sent opcode 10, status=-15000` and
+   reports it, in place of the ten-second no-video timeout it used to blame the network for.*
+
+   **Rewritten 2026-08-18, from "a guest that cannot decode".** That gate could only be passed
+   by the host guessing at a peer's decoder, and the peer already reports its own decode
+   failures. What is worth gating is the half a host can actually know: that it could not serve
+   the guest, and that it said so.
 
 **The original third clause was removed, 2026-08-17.** It read "a client without HEVC falls
 back to H.264 without operator intervention", and **one encode serves every guest**
@@ -626,13 +638,11 @@ sent instead in the window between initialization and the first video message, w
 first moment the capability is known and the last moment before anything has been sent that the
 peer cannot use.
 
-**The status enumeration is known; the value is a choice.** Opcode 10's argument 0
-([01 §11.1](01-protocol.md)) is a status from the peer family's own published enumeration, and
-the set of values is available rather than needing to be derived. Two are plausible for this
-refusal: a host-originated "removed by the host" warning, which is honest about who ended the
-session, and a decoder-support error, which names the actual cause but asserts a failure on the
-peer's side that has not happened yet. **A status of zero does not disconnect** -- the peer's
-control loop treats zero as "carry on" -- so whatever is chosen must be non-zero.
+**The status enumeration is known and the values are chosen.** Opcode 10's argument 0
+([01 §11.2](01-protocol.md)) is a status the peer already renders, and the four a host sends are
+in [05 §6.2](05-host.md). They are the encode-side statuses rather than the decode-side ones,
+because what a host can honestly report is what it could not do. **A status of zero does not
+disconnect** -- the peer's control loop treats zero as "carry on" -- so none of them is zero.
 
 ---
 

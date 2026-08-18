@@ -290,9 +290,53 @@ such a guest is sent a stream it cannot decode.
 so the seated set has to be owned above the encoder rather than rebuilt with it. A loop that
 rebuilt it would find no guests and publish to nobody while every seat still read as streaming.
 
-**A codec the device refuses is not the end of the stream.** The encoder that was running a
-moment ago worked, so a construction failure after a request declines the request and keeps the
-picture the guests had.
+**A codec the device refuses is not the end of the stream, but it is the end for whoever asked.**
+The encoder that was running a moment ago worked, so the guests that were watching keep their
+picture. The guest that asked does not: a peer rebuilds its decoder the moment it asks rather
+than waiting to be told the request was granted, so it is now holding a decoder for a stream
+that will never arrive, and it is ended with a reason.
+
+### §6.2 Ending a session, and saying why
+
+Two mechanisms, and which one applies is fixed by when the host learns it cannot serve the
+guest.
+
+**Before a media path exists**, the host declines the offer in signalling
+([04](04-signaling.md)). The peer never receives credentials and never punches, and its API
+reports the refusal.
+
+**After a media path exists**, the only thing that can end a session is a disconnect on the
+control channel ([01 §11.2](01-protocol.md)), because signalling carries nothing once a peer is
+streaming. Everything below is that message with a different reason:
+
+| Reason | When |
+|---|---|
+| no room | every seat is taken when the guest becomes streamable |
+| no encoder | nothing could be built for what was asked of it |
+| encoder capabilities | the device would not say what it can encode |
+| encode failed | the encoder stopped answering mid-stream |
+
+**A peer that cannot decode what it is sent is not on this list.** It is the one party that can
+tell, it raises a decode error of its own, and it reports that through its own API. A host
+cannot detect it and must not pretend to: what a host owes a peer is the truth about what the
+*host* could not do.
+
+**The reason is left where the guest can find it, not sent by whoever decided.** The encode loop
+owns no session and cannot write to any peer; each guest owns its own and is the only thing that
+can. So a failure marks the seat and the guest turns it into a message.
+
+**And the message needs time to arrive.** It rides a reliable channel, so it is retransmitted if
+lost, but a session torn down on the pass that queued it throws the reason away with the ring it
+is sitting in. The session stays up briefly after the decision for exactly that reason.
+
+**A stopped encoder is a run of failures, not one.** A device can refuse a single collect and
+answer the next; ending every guest over that turns a hiccup into a disconnection.
+
+**And a failure does not end the loop.** It goes back to waiting: the seats free as their guests
+read the reason, and the next arrival is owed its own attempt, because a device busy a moment
+ago may not be. The wait has to retire the seats it is waiting on -- only this thread may empty
+one -- or the loop sees a guest that has already left, calls it occupied, and rebuilds the
+encoder that just failed at whatever rate the device refuses it.
 
 ```
 on encoded frame F, fragment count N, keyframe K:

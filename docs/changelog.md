@@ -37,6 +37,14 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - Every opcode a peer sends is logged once, with its arguments, so what a
   peer actually speaks is on record rather than inferred.
 
+- **A session the host cannot serve ends with a reason** ([05 §6.2](05-host.md)):
+  no room, no encoder for what was asked, no capability report from the
+  device, or an encoder that stopped answering. A guest used to sit
+  connected receiving nothing until its own liveness deadline noticed,
+  minutes later, and then blame the network.
+- `--max-guests` sets the advertised capacity and the number of seats,
+  which were previously one hardcoded number.
+
 **Fixed**
 
 - An encoder configuration message names the stream it is about, and the
@@ -44,6 +52,12 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   client was observed declaring for its secondary streams before the one it
   was receiving, so the host recorded a capability about a stream nobody was
   sending it and would have acted on it.
+- A build that fails no longer ends the encode loop. It goes back to
+  waiting, so the next guest gets its own attempt at the device -- and the
+  waiting retires the seats it is waiting on, without which the loop saw a
+  guest that had already left, called it occupied, and rebuilt the encoder
+  that had just failed nearly ten thousand times a minute at 76 percent of
+  a core.
 - A maximum picture size of zero was read as a stated ceiling. Peers exist
   that declare no maximum at all, and a ceiling of nothing is not one.
 
@@ -65,6 +79,12 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - **The base flag is set on every declaration and means nothing.** Counting
   it as a capability the pipeline does not emit reported a refusal on every
   ordinary request, which only a live run showed.
+- **A host reports what it could not do, not what it guessed a peer could
+  not.** D11 said a seat that cannot decode the session's codec is
+  disconnected by the host; a peer is the only party that can tell its
+  decoder failed, and it raises an error of its own when it does. The
+  decision is amended and the phase gate rewritten to the half a host can
+  actually know.
 - **Two messages a peer sends in the first second of an ordinary session
   were undocumented**, and both turned up by logging every opcode once
   rather than by reading: a decode-latency report whose arguments are

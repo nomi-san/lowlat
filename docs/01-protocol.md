@@ -428,6 +428,7 @@ which is a request to send nothing extra rather than a message to ignore.
 |---|---|---|---|
 | 9 | cursor update | 21-byte fixed body plus optional PNG image | v1 |
 | 10 | disconnect | status, 0, 0 | v1 |
+| 27 | stream ended | stream, 0, status | later |
 | 16 | input blocked | 1 blocked, 0 unblocked | later |
 | 17 | user data | length, sub-id, 0, plus body | v1 |
 | 20 | rumble | pad, large motor, small motor | deferred |
@@ -439,6 +440,18 @@ which is a request to send nothing extra rather than a message to ignore.
 
 Three of these have cadences rather than triggers, and the cadences are counted in frames:
 encode latency every 30th frame, the guest list every 120th and only from stream 0.
+
+**Opcode 10's argument is a status the peer already renders**, from the same enumeration its own
+API reports. Sending a value outside it shows as a blank reason rather than as an error, so a
+host picks from the set rather than inventing one. **Zero is not one of them**: a peer stores
+the status and stops on a non-zero one, so a disconnect carrying zero fires the peer's callback
+and leaves the session running.
+
+**Opcodes 10 and 27 are the same event at two scopes.** A host that can no longer serve a
+stream ends the whole session with opcode 10 when the stream is the primary one, and reports
+just that stream with opcode 27 when it is not, leaving the session up. v1 produces the primary
+stream only, so it sends opcode 10 and never opcode 27; the pair is documented together because
+a host that grows a second stream needs the distinction and it is not guessable.
 
 **Opcode 21's first argument is 1, not 0.** The value it carries is an exponentially weighted
 average of capture to bitstream-collected, `latency = 0.9 * latency + 0.1 * sample`, converted
