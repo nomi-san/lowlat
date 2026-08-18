@@ -233,9 +233,15 @@ A fixed wait is the only portable answer, which is the argument for starting it 
 possible rather than for making it shorter. It is set **above** the worst measured case rather
 than at it, because the two errors are not symmetric.
 
-Measured on an X11 session. **The equivalent figure under a Wayland compositor is not yet
-measured** and the path is different: devices reach the compositor through the seat manager
-rather than by the display server opening them. It is not expected to be faster.
+**The delay is not the display server's, so it is not the display server's to differ on.**
+Timing two endpoints in the same run -- a display-server client, and the input library a
+compositor consumes -- gives 140 to 230 ms and 100 to 260 ms respectively. They are the same
+within the noise of two processes being scheduled, so **the display server adds nothing
+measurable** and the whole cost sits in device discovery, which every display stack shares.
+
+That is a better answer than measuring the same thing twice would have been: it says the figure
+travels, rather than that two figures happened to agree. A compositor session would still show
+whether its own device setup costs anything on top, but it does not set the number.
 
 Compositors discover the device through the normal input stack, so no compositor cooperation is
 required and nothing needs to be configured per desktop environment.

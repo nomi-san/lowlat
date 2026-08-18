@@ -699,10 +699,12 @@ delivery gate does what it is meant to throughout, and no guest ever saw a broke
 7. **No held buttons and no orphaned devices** after an abrupt disconnect and after an unplug.
    *Named regression test.*
 8. A local application's rumble reaches the peer.
-9. The readiness delay is measured under a compositor as well as a display server, and the
-   queue's deadline is set from the larger figure rather than from the one already measured.
-   *Half done: measured on a display server with the real device set at 200 to 260 ms, which is
-   nearly double the single-device figure it replaces. The compositor case is still open.*
+9. The readiness delay is not measured against one display stack alone, and the queue's
+   deadline is set from the worst figure rather than the friendliest. *Answered by measuring
+   where the delay actually is rather than by measuring twice: it is in device discovery, which
+   every stack shares, and the display server's own share of it is nil
+   ([07 §4.1](07-platforms.md)). A compositor session would still confirm its own share is as
+   small; it no longer sets the figure.*
 10. **A guest that loses the pointer while holding a button does not leave it down.** *Named
     regression test; the obvious implementation has this defect and it is invisible until two
     people share a session.*
