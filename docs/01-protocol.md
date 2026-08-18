@@ -88,6 +88,37 @@ There is no associated data. The envelope header is not authenticated.
 The counter MUST increase monotonically per sender for the life of a session. A session that
 would wrap it is torn down rather than reusing a nonce.
 
+### §4.1 The implementation is chosen at runtime, not at build time
+
+Two implementations of the same construction ship: a portable one, and one built on the x86-64
+AES and carry-less multiply instructions. The second makes a single pass over the packet and
+reduces the authentication accumulator once per eight blocks rather than once per block, which
+is the whole of the difference.
+
+**Which one runs is decided when the session key is installed, from what the processor
+reports.** It is not a build flag and must not become one. A binary compiled for a processor
+with these instructions will not start on one without them, and a host does not choose the
+machine it is installed on. The probe is a CPUID read: both features are plain instruction-set
+additions carrying no processor state, so there is no operating system handshake to consult and
+the CPUID bit is the entire answer.
+
+**The two are interchangeable by construction and are tested to be**, because anything less is
+a session a peer cannot decrypt. Identical ciphertext and identical tag for the same key,
+nonce and message; interoperable in both directions; checked at every length boundary the
+group size creates, including empty, partial, and one past a group. A peer cannot tell which
+one a host used, and a host that falls back is slower and nothing else.
+
+Measured on a 2K120 session at 40 Mbps with four guests: sealing costs 8.7 CPU-seconds per half
+hour against 20.5, and 10.1 microseconds per frame per guest against 23.7. The portable path
+was never the constraint and this is not the difference between working and not working. It is
+the packetize stage's share of the frame budget ([05 §10](05-host.md)), and it is headroom that
+a keyframe burst spends.
+
+*Lesson: the block counter goes into the last four bytes of the counter block as bytes, not as
+a value. Writing the machine integer instead reverses them, which round-trips against itself
+perfectly, passes every self-consistent test, and cannot be opened by any other implementation.
+Published vectors are what catch it.*
+
 ## §5 Cleartext packets
 
 ### §5.1 Data packet
