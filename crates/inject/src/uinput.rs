@@ -28,6 +28,8 @@ mod ioctl {
 }
 
 const EV_SYN: libc::c_int = 0x00;
+/// The report marker, as the event stream carries it.
+const SYN: u16 = 0x00;
 const EV_KEY: libc::c_int = 0x01;
 const EV_REL: libc::c_int = 0x02;
 const EV_ABS: libc::c_int = 0x03;
@@ -65,6 +67,33 @@ const NAME_LEN: usize = 80;
 /// **A report ends at its own marker, not at a write boundary**, so a batch
 /// larger than this is split across calls without splitting a report.
 const CHUNK: usize = 64;
+
+/// How long after creation a device is assumed to be delivering.
+///
+/// **A created device is not a usable one.** The kernel publishes it in about
+/// a quarter of a millisecond and the display stack does not start delivering
+/// from it for a fifth of a second or more; events written into that gap are
+/// accepted and go nowhere at all. Measured here with the same three devices a
+/// guest really gets: first delivery at 200 to 260 ms across six runs.
+///
+/// **There is nothing to wait on instead**, and this was tested rather than
+/// assumed. The one observable milestone in the gap is the device manager
+/// granting the group on the event node, which happens at 50 to 82 ms and does
+/// not predict delivery: the same 51 ms grant preceded delivery at 200 ms in
+/// one run and 230 ms in another. It is a precondition, not a signal.
+///
+/// So the figure is a clock, and it is set above the worst case rather than at
+/// it, because the two errors are not symmetric: a first keystroke arriving
+/// late is invisible, and one that vanishes reads as a network fault. It is
+/// also unmeasured under a compositor, where the devices arrive by a different
+/// route and there is no reason to expect it faster.
+const USABLE_AFTER_MS: f64 = 400.0;
+
+/// Events held per device while it becomes usable.
+///
+/// Generous on purpose: a person types perhaps three keys in the window, and
+/// the cost of a slot is eight bytes.
+const HELD: usize = 256;
 
 /// Why a device could not be created.
 ///
@@ -111,6 +140,76 @@ fn errno() -> i32 {
 #[derive(Debug)]
 struct Node {
     fd: OwnedFd,
+    /// Events produced before the device could deliver them.
+    held: Held,
+}
+
+/// Events waiting for a device to become usable.
+///
+/// **Its own type, with no descriptor**, so the bound and what happens at the
+/// bound are testable without publishing a device to the running session.
+#[derive(Debug)]
+struct Held {
+    events: [Event; HELD],
+    used: usize,
+    /// Set once, so an overflow is reported rather than repeated.
+    reported: bool,
+}
+
+impl Default for Held {
+    fn default() -> Self {
+        Self {
+            events: [Event {
+                kind: 0,
+                code: 0,
+                value: 0,
+            }; HELD],
+            used: 0,
+            reported: false,
+        }
+    }
+}
+
+impl Held {
+    /// **Held rather than dropped.** The window is a fifth of a second and
+    /// what falls in it is the first thing somebody typed.
+    fn push(&mut self, events: &[Event]) {
+        for event in events {
+            if self.used >= HELD {
+                self.discard_oldest_report();
+            }
+            if let Some(slot) = self.events.get_mut(self.used) {
+                *slot = *event;
+                self.used += 1;
+            }
+        }
+    }
+
+    /// Make room by dropping the oldest whole report.
+    ///
+    /// **A whole report, never part of one.** Half a report reaches a consumer
+    /// as a state change nobody asked for. Losing a press whose release
+    /// survives is the harmless direction: the kernel discards a release for a
+    /// key that is not down.
+    fn discard_oldest_report(&mut self) {
+        let end = self
+            .events
+            .get(..self.used)
+            .and_then(|held| held.iter().position(|e| e.kind == SYN))
+            .map_or(self.used, |at| at + 1);
+        self.events.copy_within(end..self.used, 0);
+        self.used -= end;
+        if !self.reported {
+            self.reported = true;
+            lowlat_common::log_warn!(
+                "inject: held events overflowed before the device was usable, held={HELD}"
+            );
+        }
+    }
+
+    fn take(&mut self) -> usize {
+        core::mem::replace(&mut self.used, 0)
+    }
 }
 
 impl Node {
@@ -132,7 +231,10 @@ impl Node {
         }
         // SAFETY: the descriptor is fresh from open and is not owned elsewhere.
         let fd = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(raw) };
-        Ok(Self { fd })
+        Ok(Self {
+            fd,
+            held: Held::default(),
+        })
     }
 
     fn set(&self, request: libc::c_ulong, bit: libc::c_int) -> Result<(), Error> {
@@ -214,7 +316,22 @@ impl Node {
         }
     }
 
+    /// Write everything held, if there is anything.
+    fn flush(&mut self) -> Result<(), Error> {
+        let used = self.held.take();
+        match self.held.events.get(..used) {
+            Some(events) if used > 0 => write_to(&self.fd, events),
+            _ => Ok(()),
+        }
+    }
+
     fn write(&self, events: &[Event]) -> Result<(), Error> {
+        write_to(&self.fd, events)
+    }
+}
+
+fn write_to(fd: &OwnedFd, events: &[Event]) -> Result<(), Error> {
+    {
         for chunk in events.chunks(CHUNK) {
             let mut out = [InputEvent::EMPTY; CHUNK];
             let mut used = 0;
@@ -240,7 +357,7 @@ impl Node {
             // until the call returns, and the descriptor is ours.
             let written = unsafe {
                 libc::write(
-                    self.fd.as_raw_fd(),
+                    fd.as_raw_fd(),
                     filled.as_ptr().cast::<libc::c_void>(),
                     bytes,
                 )
@@ -303,6 +420,8 @@ pub struct Devices {
     keyboard: Node,
     pointer: Node,
     pointer_absolute: Node,
+    created: lowlat_common::clock::Time,
+    usable: bool,
 }
 
 impl Devices {
@@ -316,17 +435,49 @@ impl Devices {
             keyboard: keyboard(guest)?,
             pointer: pointer(guest)?,
             pointer_absolute: pointer_absolute(guest)?,
+            created: lowlat_common::clock::Time::now(),
+            usable: false,
         })
+    }
+
+    /// Release anything held once the devices can deliver it.
+    ///
+    /// **Called from the loop that already runs, not only on the next event.**
+    /// A guest that types one key and waits would otherwise have it sit in the
+    /// queue until it typed a second.
+    pub fn tick(&mut self) {
+        if self.usable {
+            return;
+        }
+        if lowlat_common::clock::elapsed_ms(self.created) < USABLE_AFTER_MS {
+            return;
+        }
+        self.usable = true;
+        for node in [
+            &mut self.keyboard,
+            &mut self.pointer,
+            &mut self.pointer_absolute,
+        ] {
+            if let Err(error) = node.flush() {
+                lowlat_common::log_warn!("inject: held events lost, error={error}");
+            }
+        }
     }
 }
 
 impl Sink for Devices {
     fn emit(&mut self, device: Device, events: &[Event]) {
+        self.tick();
+        let usable = self.usable;
         let node = match device {
-            Device::Keyboard => &self.keyboard,
-            Device::Pointer => &self.pointer,
-            Device::PointerAbsolute => &self.pointer_absolute,
+            Device::Keyboard => &mut self.keyboard,
+            Device::Pointer => &mut self.pointer,
+            Device::PointerAbsolute => &mut self.pointer_absolute,
         };
+        if !usable {
+            node.held.push(events);
+            return;
+        }
         if let Err(error) = node.write(events) {
             // A write that fails is not recoverable here and must not stop the
             // session: the guest is still connected and still being sent
@@ -456,6 +607,124 @@ impl core::fmt::Write for NameBuf {
             self.used += 1;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod held_tests {
+    use super::*;
+
+    fn report(code: u16) -> [Event; 2] {
+        [
+            Event {
+                kind: 1,
+                code,
+                value: 1,
+            },
+            Event {
+                kind: SYN,
+                code: 0,
+                value: 0,
+            },
+        ]
+    }
+
+    #[test]
+    fn everything_pushed_is_kept_while_there_is_room() {
+        let mut held = Held::default();
+        for code in 0..8 {
+            held.push(&report(code));
+        }
+        assert_eq!(held.take(), 16);
+        assert!(!held.reported);
+    }
+
+    /// **The oldest whole report goes, never part of one.** Half a report
+    /// reaches a consumer as a state change nobody asked for.
+    ///
+    /// Reports of three events, deliberately: the queue does not divide by
+    /// three, so dropping one event at a time leaves the front of the queue
+    /// mid-report instead of cancelling out the way an even size would.
+    #[test]
+    fn the_bound_discards_whole_reports_from_the_front() {
+        let mut held = Held::default();
+        let triple = |code: u16| {
+            [
+                Event {
+                    kind: 1,
+                    code,
+                    value: 1,
+                },
+                Event {
+                    kind: 1,
+                    code,
+                    value: 0,
+                },
+                Event {
+                    kind: SYN,
+                    code: 0,
+                    value: 0,
+                },
+            ]
+        };
+        // Codes start at one: the report marker carries a code of zero, so a
+        // key numbered zero cannot be told from a marker.
+        let mut code = 1;
+        while held.used + 3 <= HELD {
+            held.push(&triple(code));
+            code += 1;
+        }
+        let before = held.used;
+        held.push(&triple(9999));
+        assert!(held.used <= HELD);
+        assert!(held.reported, "an overflow went unreported");
+
+        // Every report in the queue is whole: two keys then the marker, from
+        // the very first event to the last.
+        let used = held.used;
+        let mut keys = 0;
+        for event in &held.events[..used] {
+            if event.kind == SYN {
+                assert_eq!(keys, 2, "a report was cut short at the front");
+                keys = 0;
+            } else {
+                keys += 1;
+            }
+        }
+        assert_eq!(keys, 0, "the queue ends mid-report");
+        assert!(held.events[..used].iter().any(|e| e.code == 9999));
+        assert!(
+            !held.events[..used]
+                .iter()
+                .any(|e| e.kind == 1 && e.code == 1),
+            "the oldest report survived"
+        );
+        assert!(before >= HELD - 2);
+    }
+
+    /// A report longer than the whole queue must not spin or corrupt the
+    /// count. It cannot happen from the expander, which is why it is checked.
+    #[test]
+    fn a_report_longer_than_the_queue_does_not_wedge_it() {
+        let mut held = Held::default();
+        let long: Vec<Event> = (0..HELD + 10)
+            .map(|i| Event {
+                kind: 1,
+                code: u16::try_from(i % 1000).unwrap(),
+                value: 1,
+            })
+            .collect();
+        held.push(&long);
+        assert!(held.used <= HELD);
+        assert!(held.reported);
+    }
+
+    #[test]
+    fn taking_empties_it() {
+        let mut held = Held::default();
+        held.push(&report(1));
+        assert_eq!(held.take(), 2);
+        assert_eq!(held.take(), 0);
     }
 }
 
@@ -595,6 +864,18 @@ mod device_tests {
         }
     }
 
+    /// Wait out the readiness deadline and release what was held.
+    ///
+    /// **The tests go through the real path rather than around it.** A device
+    /// that has not reached its deadline holds everything, and a test that
+    /// skipped that would be testing a configuration nothing ships.
+    fn ready(devices: &mut Devices) {
+        std::thread::sleep(std::time::Duration::from_millis(
+            USABLE_AFTER_MS as u64 + 20,
+        ));
+        devices.tick();
+    }
+
     fn injector() -> Injector {
         Injector::new(Extents {
             width: 1920,
@@ -623,6 +904,7 @@ mod device_tests {
     #[ignore = "creates real input devices"]
     fn a_keystroke_reaches_the_input_layer() {
         let mut devices = Devices::create(8).expect("create");
+        ready(&mut devices);
         let mut reader = Reader::open("lowlat keyboard (guest 8)").expect("node");
         reader.drain();
 
@@ -651,6 +933,7 @@ mod device_tests {
     #[ignore = "creates real input devices"]
     fn a_vanishing_guest_releases_into_the_input_layer() {
         let mut devices = Devices::create(9).expect("create");
+        ready(&mut devices);
         let mut reader = Reader::open("lowlat keyboard (guest 9)").expect("node");
 
         let mut inject = injector();
@@ -714,6 +997,7 @@ mod device_tests {
     #[ignore = "creates real input devices"]
     fn absolute_motion_reaches_the_far_corner() {
         let mut devices = Devices::create(10).expect("create");
+        ready(&mut devices);
         let mut reader = Reader::open("lowlat pointer absolute (guest 10)").expect("node");
         reader.drain();
 
@@ -729,11 +1013,34 @@ mod device_tests {
         assert_eq!(absolute, vec![(ABS_X, ABS_RANGE), (ABS_Y, ABS_RANGE)]);
     }
 
+    /// **Events produced before the device can deliver are held, not lost.**
+    /// This is the whole reason the deadline exists: written into the gap they
+    /// are accepted by the kernel and go nowhere at all.
+    #[test]
+    #[ignore = "creates real input devices"]
+    fn events_written_before_the_device_is_usable_are_held_and_then_arrive() {
+        let mut devices = Devices::create(13).expect("create");
+        let mut reader = Reader::open("lowlat keyboard (guest 13)").expect("node");
+        reader.drain();
+
+        let mut inject = injector();
+        inject.on_control(&control(op::KEYBOARD, 104, 0, 1), &mut devices);
+        inject.on_control(&control(op::KEYBOARD, 104, 0, 0), &mut devices);
+        assert!(
+            reader.settled().is_empty(),
+            "an event reached the device before its deadline"
+        );
+
+        ready(&mut devices);
+        assert_eq!(reader.keys(), vec![(183, 1), (183, 0)]);
+    }
+
     /// Gate item 5 against the kernel: revoking releases what it held.
     #[test]
     #[ignore = "creates real input devices"]
     fn revoking_a_permission_releases_into_the_input_layer() {
         let mut devices = Devices::create(11).expect("create");
+        ready(&mut devices);
         let mut reader = Reader::open("lowlat keyboard (guest 11)").expect("node");
 
         let mut inject = injector();
