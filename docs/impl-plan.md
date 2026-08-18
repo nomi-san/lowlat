@@ -739,6 +739,9 @@ delivery gate does what it is meant to throughout, and no guest ever saw a broke
 - [ ] Colour conversion by compute shader, writing planes directly, per-slot targets.
 - [ ] Zero-copy import from the capture handle into the encoder on the same device.
 - [ ] Cursor extraction, classification, and the visibility and relative-mode signals.
+- [ ] **A guest without the pointer is shown that it does not have it**, rather than finding
+  out by nothing happening ([05 §7.1](05-host.md)). Cursor updates are already per guest, so
+  this is a different image to one guest and not a new mechanism.
 
 **Gate B:**
 
@@ -747,7 +750,8 @@ delivery gate does what it is meant to throughout, and no guest ever saw a broke
    and does not.
 3. Cursor shape changes and relative mode both behave correctly, including entering and
    leaving a window drag.
-4. Capture survives resolution change and display hotplug.
+4. With the pointer arbitrated, the guest that does not have it can see that it does not.
+5. Capture survives resolution change and display hotplug.
 
 ---
 

@@ -459,6 +459,19 @@ after somebody else has taken over and is dropped along with the rest of that gu
 input. The button then stays down on a machine that guest is no longer driving. So the loss is
 noticed on the host's own timer rather than waiting for a message, and it releases immediately.
 
+**A guest without the pointer should be shown that it does not have it.** Today it finds out by
+nothing happening, which is indistinguishable from a session that has stopped responding. The
+established products in this space answer it through the cursor: the guest that does not have
+the pointer is sent a refused shape, and gets its own cursor back when the pointer frees up.
+That is the right answer here too and it needs no new mechanism, because cursor updates are
+already per guest ([§8](#8-cursor)) -- it is one guest being sent a different image. It lands
+with the cursor path.
+
+**The hold and that feedback are related.** Without it, the figure has to stay short enough that
+being ignored is over before anybody wonders; with it, a longer hold is comfortable because the
+guest can see whose turn it is. So revisit the figure when the feedback lands rather than
+treating it as settled.
+
 The local user taking the pointer back from every guest needs a source of local input activity,
 which is the same "observe the interactive session" problem as the hidden-pointer signal
 ([§8.2](#82-source-of-the-hidden-signal-per-backend)) and lands with it.
