@@ -758,9 +758,9 @@ it is the safer of the two to hold.
   desktop is kept as a diagnostic but is nearly blind to the matrix: a desktop is mostly grey
   and a grey pixel carries no chroma for one to act on.
 - [x] Zero-copy import from the capture handle into the conversion, and the converted frame
-  back out as a descriptor. *The plane offsets travel with it and come from the driver: a
-  2560x1440 frame puts chroma 49152 bytes past where pitch times height would, so a computed
-  offset reads the wrong bytes.*
+  back out as a descriptor. *Laid out so the colour plane begins exactly one luma plane in,
+  because an encoder registering by pointer assumes that and has no field in which to be told
+  otherwise; a driver left to lay out a two-plane image put it 49152 bytes further on.*
 - [ ] The encoder importing that descriptor and producing a decodable picture. **This is what
   settles the layout**; no test short of it can tell a correct plane offset from a plausible
   one.

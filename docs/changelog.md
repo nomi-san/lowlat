@@ -23,11 +23,15 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   writing a two-plane result through a view per plane. The two-plane format
   reports no write support on any device here while each of its planes reports
   it everywhere, so the views are the only way in.
-- The converted frame handed out as a descriptor an encoder can take, untiled,
-  with the plane offsets and pitches the driver reports rather than ones
-  computed from the width. A 2560x1440 frame puts chroma 49152 bytes past where
-  the arithmetic would, so an importer given the computed number reads the tail
-  of the luma plane as colour.
+- The converted frame handed out as a descriptor an encoder can take: untiled,
+  two planes in one allocation, and laid out so the colour plane begins exactly
+  one luma plane in. That is not a choice. An encoder registering a frame by
+  pointer is given one address and one row length and assumes it, with no field
+  in which to say otherwise, while a driver asked to lay out a two-plane image
+  put the colour plane 49152 bytes further on. Two images bound at offsets of
+  our choosing settle it, and the result needs less machinery than the
+  two-plane image it replaced. The allocation is exportable as either handle
+  kind, so the encoder is chosen at the handover.
 
 **Found by running it**
 
