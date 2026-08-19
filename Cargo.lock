@@ -447,6 +447,7 @@ dependencies = [
 name = "lowlat-host"
 version = "0.0.0"
 dependencies = [
+ "drm",
  "loom",
  "lowlat-capture",
  "lowlat-common",
