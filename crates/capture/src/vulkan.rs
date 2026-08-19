@@ -10,9 +10,11 @@
 //! system memory, which is the thing this whole path exists to avoid.
 
 use std::ffi::CStr;
+use std::os::fd::RawFd;
 use std::path::Path;
 
 use ash::vk;
+use drm::buffer::DrmFourcc;
 
 /// What went wrong.
 ///
@@ -34,6 +36,10 @@ pub enum Error {
     Unsupported(&'static str),
     /// The device exposes no queue that can run the conversion.
     NoQueue,
+    /// The captured framebuffer is in a layout this interface has no name for.
+    UnknownFormat,
+    /// No memory type satisfies both the image and the imported descriptor.
+    NoMemoryType,
 }
 
 impl core::fmt::Display for Error {
@@ -44,6 +50,8 @@ impl core::fmt::Display for Error {
             Self::NoDeviceForNode => f.write_str("no device reports driving that display node"),
             Self::Unsupported(what) => write!(f, "the display's device does not support {what}"),
             Self::NoQueue => f.write_str("the display's device exposes no usable queue"),
+            Self::UnknownFormat => f.write_str("captured pixel layout has no equivalent here"),
+            Self::NoMemoryType => f.write_str("no memory type suits both image and descriptor"),
         }
     }
 }
@@ -260,8 +268,443 @@ impl Drop for Device {
     }
 }
 
+/// The pixel layout a captured buffer is in, as this interface names it.
+///
+/// **The mapping is by byte order, not by the name's letters.** A format whose
+/// name reads one way round is often stored the other way, and getting it wrong
+/// produces a picture with red and blue exchanged that looks close enough to be
+/// missed on a desktop and obvious on a face.
+fn pixel_format(fourcc: DrmFourcc) -> Option<vk::Format> {
+    Some(match fourcc {
+        // Bytes in memory are R, G, B, A.
+        DrmFourcc::Abgr8888 => vk::Format::R8G8B8A8_UNORM,
+        DrmFourcc::Xbgr8888 => vk::Format::R8G8B8A8_UNORM,
+        // Bytes in memory are B, G, R, A. This is the pointer's format.
+        DrmFourcc::Argb8888 => vk::Format::B8G8R8A8_UNORM,
+        DrmFourcc::Xrgb8888 => vk::Format::B8G8R8A8_UNORM,
+        // One packed word, alpha in the top two bits then blue, green, red.
+        DrmFourcc::Abgr2101010 => vk::Format::A2B10G10R10_UNORM_PACK32,
+        DrmFourcc::Xbgr2101010 => vk::Format::A2B10G10R10_UNORM_PACK32,
+        _ => return None,
+    })
+}
+
+/// A captured framebuffer, imported without a copy.
+///
+/// Holds the memory it was imported into, so dropping it releases both.
+pub struct Imported {
+    image: vk::Image,
+    memory: vk::DeviceMemory,
+    pub width: u32,
+    pub height: u32,
+    pub format: vk::Format,
+}
+
+impl core::fmt::Debug for Imported {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Imported")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("format", &self.format)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Device {
+    /// Import a captured framebuffer.
+    ///
+    /// **The descriptor is consumed on success.** This interface takes
+    /// ownership of an imported descriptor, so closing it here as well would
+    /// close a descriptor the driver still holds.
+    ///
+    /// The tiling modifier and the per-plane pitches are handed over rather
+    /// than inferred. That is the whole reason for choosing this interface:
+    /// both drivers here scan out of something tiled or compressed, and a
+    /// buffer read as though it were plain rows is garbage.
+    pub fn import(&self, source: &Imports<'_>) -> Result<Imported, Error> {
+        let format = pixel_format(source.format).ok_or(Error::UnknownFormat)?;
+
+        let layouts: Vec<vk::SubresourceLayout> = source
+            .planes
+            .iter()
+            .map(|plane| {
+                vk::SubresourceLayout::default()
+                    .offset(u64::from(plane.offset))
+                    .row_pitch(u64::from(plane.pitch))
+            })
+            .collect();
+
+        let mut external = vk::ExternalMemoryImageCreateInfo::default()
+            .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+        let mut explicit = vk::ImageDrmFormatModifierExplicitCreateInfoEXT::default()
+            .drm_format_modifier(source.modifier)
+            .plane_layouts(&layouts);
+        let create = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(format)
+            .extent(vk::Extent3D {
+                width: source.width,
+                height: source.height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
+            // Read by the conversion shader, and copied out by the diagnostic
+            // that checks this import is producing real pixels.
+            .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_SRC)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .push_next(&mut external)
+            .push_next(&mut explicit);
+
+        // SAFETY: every borrowed structure outlives the call.
+        let image = unsafe { self.device.create_image(&create, None) }.map_err(driver)?;
+
+        match self.bind_imported(image, source.fd) {
+            Ok(memory) => Ok(Imported {
+                image,
+                memory,
+                width: source.width,
+                height: source.height,
+                format,
+            }),
+            Err(error) => {
+                // SAFETY: the image was created above and nothing else refers
+                // to it, because binding is what failed.
+                unsafe { self.device.destroy_image(image, None) };
+                Err(error)
+            }
+        }
+    }
+
+    /// Take the descriptor's memory and bind the image to it.
+    fn bind_imported(&self, image: vk::Image, fd: RawFd) -> Result<vk::DeviceMemory, Error> {
+        let external = ash::khr::external_memory_fd::Device::new(&self.instance, &self.device);
+        // What the driver will accept for this descriptor, intersected with
+        // what the image needs. Choosing from either alone picks a type the
+        // other rejects.
+        let mut properties = vk::MemoryFdPropertiesKHR::default();
+        // SAFETY: the descriptor is live and owned by the caller until this
+        // call succeeds.
+        unsafe {
+            external.get_memory_fd_properties(
+                vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT,
+                fd,
+                &mut properties,
+            )
+        }
+        .map_err(driver)?;
+
+        // SAFETY: the image was created on this device.
+        let requirements = unsafe { self.device.get_image_memory_requirements(image) };
+        let allowed = requirements.memory_type_bits & properties.memory_type_bits;
+        let index = (0..32)
+            .find(|bit| allowed & (1 << bit) != 0)
+            .ok_or(Error::NoMemoryType)?;
+
+        // The image is the only thing in this allocation, which is what an
+        // imported buffer is by construction.
+        let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(image);
+        let mut import = vk::ImportMemoryFdInfoKHR::default()
+            .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT)
+            .fd(fd);
+        let allocate = vk::MemoryAllocateInfo::default()
+            .allocation_size(requirements.size)
+            .memory_type_index(index)
+            .push_next(&mut dedicated)
+            .push_next(&mut import);
+
+        // SAFETY: the chain outlives the call. On success the driver owns the
+        // descriptor; on failure it does not, and the caller still holds it.
+        let memory = unsafe { self.device.allocate_memory(&allocate, None) }.map_err(driver)?;
+        // SAFETY: both handles are this device's and neither is bound yet.
+        match unsafe { self.device.bind_image_memory(image, memory, 0) } {
+            Ok(()) => Ok(memory),
+            Err(result) => {
+                // SAFETY: nothing is bound to it.
+                unsafe { self.device.free_memory(memory, None) };
+                Err(driver(result))
+            }
+        }
+    }
+
+    /// Release an imported image.
+    ///
+    /// Not a `Drop` on [`Imported`] itself, because freeing needs the device
+    /// and an image that outlived its device would be worse than an explicit
+    /// call.
+    pub fn release(&self, imported: Imported) {
+        // SAFETY: both handles came from this device, and the wait means no
+        // submitted work still refers to them.
+        unsafe {
+            let _ = self.device.device_wait_idle();
+            self.device.destroy_image(imported.image, None);
+            self.device.free_memory(imported.memory, None);
+        }
+    }
+}
+
+impl Device {
+    /// Copy an imported image out into ordinary memory.
+    ///
+    /// **A diagnostic, and the only place in this crate that moves pixels to
+    /// the processor.** The conversion never does this; it reads the image on
+    /// the device and writes its result there. This exists because an import
+    /// that is subtly wrong -- a tiling described incorrectly, a channel order
+    /// reversed -- still succeeds at every call, and the only thing that says
+    /// so is the picture.
+    ///
+    /// Returns tightly packed rows, four bytes per pixel, in the imported
+    /// format's own channel order.
+    pub fn read_back(&self, imported: &Imported) -> Result<Vec<u8>, Error> {
+        let bytes = u64::from(imported.width) * u64::from(imported.height) * 4;
+
+        let buffer_info = vk::BufferCreateInfo::default()
+            .size(bytes)
+            .usage(vk::BufferUsageFlags::TRANSFER_DST)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        // SAFETY: the create info outlives the call.
+        let buffer = unsafe { self.device.create_buffer(&buffer_info, None) }.map_err(driver)?;
+
+        let result = self.read_back_into(imported, buffer, bytes);
+        // SAFETY: created just above; the wait inside the helper means nothing
+        // submitted still refers to it.
+        unsafe { self.device.destroy_buffer(buffer, None) };
+        result
+    }
+
+    fn read_back_into(
+        &self,
+        imported: &Imported,
+        buffer: vk::Buffer,
+        bytes: u64,
+    ) -> Result<Vec<u8>, Error> {
+        // SAFETY: the buffer was created on this device.
+        let requirements = unsafe { self.device.get_buffer_memory_requirements(buffer) };
+        let index = self.host_visible_memory(requirements.memory_type_bits)?;
+        let allocate = vk::MemoryAllocateInfo::default()
+            .allocation_size(requirements.size)
+            .memory_type_index(index);
+        // SAFETY: the allocate info outlives the call.
+        let memory = unsafe { self.device.allocate_memory(&allocate, None) }.map_err(driver)?;
+
+        let outcome = (|| -> Result<Vec<u8>, Error> {
+            // SAFETY: neither handle is bound yet and both are this device's.
+            unsafe { self.device.bind_buffer_memory(buffer, memory, 0) }.map_err(driver)?;
+            self.copy_image_to_buffer(imported, buffer)?;
+
+            // SAFETY: the memory is host visible, nothing else maps it, and the
+            // copy above completed before this call returns.
+            let mapped = unsafe {
+                self.device
+                    .map_memory(memory, 0, bytes, vk::MemoryMapFlags::empty())
+            }
+            .map_err(driver)?;
+            let length = usize::try_from(bytes).unwrap_or(0);
+            // SAFETY: the driver returned a mapping of at least `bytes`, and it
+            // stays valid until the unmap below.
+            let pixels = unsafe { core::slice::from_raw_parts(mapped.cast::<u8>(), length) };
+            let copied = pixels.to_vec();
+            // SAFETY: mapped by the call above and not referenced after this.
+            unsafe { self.device.unmap_memory(memory) };
+            Ok(copied)
+        })();
+
+        // SAFETY: nothing submitted still refers to it; the copy waited.
+        unsafe { self.device.free_memory(memory, None) };
+        outcome
+    }
+
+    /// A memory type the processor can read.
+    fn host_visible_memory(&self, allowed: u32) -> Result<u32, Error> {
+        // SAFETY: the device came from this instance.
+        let memory = unsafe {
+            self.instance
+                .get_physical_device_memory_properties(self.physical)
+        };
+        let wanted = vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT;
+        memory
+            .memory_types
+            .iter()
+            .take(usize::try_from(memory.memory_type_count).unwrap_or(0))
+            .enumerate()
+            .find(|(at, kind)| allowed & (1 << at) != 0 && kind.property_flags.contains(wanted))
+            .and_then(|(at, _)| u32::try_from(at).ok())
+            .ok_or(Error::NoMemoryType)
+    }
+
+    /// Record and run the copy, waiting for it to finish.
+    fn copy_image_to_buffer(&self, imported: &Imported, buffer: vk::Buffer) -> Result<(), Error> {
+        let pool_info = vk::CommandPoolCreateInfo::default().queue_family_index(self.queue_family);
+        // SAFETY: the create info outlives the call.
+        let pool = unsafe { self.device.create_command_pool(&pool_info, None) }.map_err(driver)?;
+
+        let outcome = self.record_and_submit(imported, buffer, pool);
+
+        // SAFETY: the submit waited, so no recorded work is still running.
+        unsafe { self.device.destroy_command_pool(pool, None) };
+        outcome
+    }
+
+    fn record_and_submit(
+        &self,
+        imported: &Imported,
+        buffer: vk::Buffer,
+        pool: vk::CommandPool,
+    ) -> Result<(), Error> {
+        let allocate = vk::CommandBufferAllocateInfo::default()
+            .command_pool(pool)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+        // SAFETY: the allocate info outlives the call.
+        let buffers = unsafe { self.device.allocate_command_buffers(&allocate) }.map_err(driver)?;
+        let commands = *buffers.first().ok_or(Error::NoQueue)?;
+
+        let begin = vk::CommandBufferBeginInfo::default()
+            .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+        // SAFETY: the command buffer was just allocated and is not recording.
+        unsafe { self.device.begin_command_buffer(commands, &begin) }.map_err(driver)?;
+
+        // **The image was last written by the display, which is not this
+        // interface at all.** Naming that as the previous owner is what makes
+        // the contents legible; claiming it was ours lets a driver assume a
+        // layout it never had.
+        let acquire = vk::ImageMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::empty())
+            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+            .src_queue_family_index(vk::QUEUE_FAMILY_FOREIGN_EXT)
+            .dst_queue_family_index(self.queue_family)
+            .image(imported.image)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            });
+        // SAFETY: recording into a command buffer that has begun, with a
+        // barrier that outlives the call.
+        unsafe {
+            self.device.cmd_pipeline_barrier(
+                commands,
+                vk::PipelineStageFlags::TOP_OF_PIPE,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[],
+                &[acquire],
+            );
+        }
+
+        let region = vk::BufferImageCopy::default()
+            .image_subresource(vk::ImageSubresourceLayers {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+            .image_extent(vk::Extent3D {
+                width: imported.width,
+                height: imported.height,
+                depth: 1,
+            });
+        // SAFETY: as above; the buffer is large enough for the whole image.
+        unsafe {
+            self.device.cmd_copy_image_to_buffer(
+                commands,
+                imported.image,
+                vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                buffer,
+                &[region],
+            );
+            self.device.end_command_buffer(commands).map_err(driver)?;
+        }
+
+        // SAFETY: the create info outlives the call.
+        let fence = unsafe {
+            self.device
+                .create_fence(&vk::FenceCreateInfo::default(), None)
+        }
+        .map_err(driver)?;
+        let submits = [vk::SubmitInfo::default().command_buffers(&buffers)];
+        // SAFETY: everything borrowed outlives the wait below, which is what
+        // makes it safe to free them afterwards.
+        let waited = unsafe {
+            self.device
+                .queue_submit(self.queue, &submits, fence)
+                .map_err(driver)
+                .and_then(|()| {
+                    self.device
+                        .wait_for_fences(&[fence], true, u64::MAX)
+                        .map_err(driver)
+                })
+        };
+        // SAFETY: signalled or never submitted; either way nothing waits on it.
+        unsafe { self.device.destroy_fence(fence, None) };
+        waited
+    }
+}
+
+/// What to import, gathered from a captured framebuffer.
+///
+/// One descriptor and one or more planes within it. Several distinct
+/// descriptors are not handled: no display seen here scans out that way, and
+/// guessing at the arrangement is worse than saying so.
+#[derive(Debug)]
+pub struct Imports<'a> {
+    pub width: u32,
+    pub height: u32,
+    pub format: DrmFourcc,
+    pub modifier: u64,
+    pub fd: RawFd,
+    pub planes: &'a [PlaneLayout],
+}
+
+/// Where one plane sits inside the imported descriptor.
+#[derive(Debug, Clone, Copy)]
+pub struct PlaneLayout {
+    pub offset: u32,
+    pub pitch: u32,
+}
+
 #[cfg(test)]
 mod tests {
+    use ash::vk;
+
+    /// **The two names read as opposites and that is correct.** A captured
+    /// buffer is named by the order of its channels within a little-endian
+    /// word, most significant first; this interface names a byte-order format
+    /// by the order of the bytes in memory. Those are reverses of each other,
+    /// so a buffer called ABGR is imported as an RGBA format and one called
+    /// ARGB as BGRA. Anyone "fixing" the apparent mismatch exchanges red and
+    /// blue in every frame, which on a desktop looks plausible until something
+    /// in the picture is a known colour.
+    ///
+    /// The packed layout is the exception and does not reverse: it is one word
+    /// rather than four bytes, so both names describe the same bit positions.
+    #[test]
+    fn channel_order_is_by_byte_not_by_name() {
+        use drm::buffer::DrmFourcc;
+
+        assert_eq!(
+            super::pixel_format(DrmFourcc::Abgr8888),
+            Some(vk::Format::R8G8B8A8_UNORM)
+        );
+        assert_eq!(
+            super::pixel_format(DrmFourcc::Argb8888),
+            Some(vk::Format::B8G8R8A8_UNORM)
+        );
+        assert_eq!(
+            super::pixel_format(DrmFourcc::Abgr2101010),
+            Some(vk::Format::A2B10G10R10_UNORM_PACK32)
+        );
+        // Something nothing here scans out has no import rather than a guess.
+        assert_eq!(super::pixel_format(DrmFourcc::Yuyv), None);
+    }
 
     /// The node numbers have to come out of the encoding the kernel uses, which
     /// is not a plain pair of bytes. The values here are the display and render
