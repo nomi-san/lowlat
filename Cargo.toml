@@ -41,6 +41,11 @@ getrandom = "0.2"
 # Scanout capture. Pure ioctls through rustix, so nothing is linked or dlopened,
 # and the prime export takes its flags from us rather than assuming write access.
 drm = "0.15"
+# Import and colour conversion. The only interface that takes a buffer's tiling
+# modifier explicitly and runs one compute shader across both drivers here.
+# Loaded at runtime rather than linked, so a machine without it fails at our
+# call site instead of refusing to start.
+ash = "0.38"
 
 # Signaling only. lowlat-kessel is the one crate permitted an async runtime, a
 # TLS stack and a JSON parser; nothing inside the FFI boundary links it.

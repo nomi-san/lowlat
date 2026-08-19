@@ -18,6 +18,7 @@
 
 pub mod scanout;
 pub mod synthetic;
+pub mod vulkan;
 
 use lowlat_common::clock::Time;
 
