@@ -158,6 +158,51 @@ impl Device {
         }
     }
 
+    /// Open any device that can do this, for a test with no display attached.
+    ///
+    /// **Not for the product.** A conversion has to run on the device the frame
+    /// is on, and picking whichever came first would be exactly the
+    /// cross-device copy the whole path avoids. It exists so the colour
+    /// transform can be checked against a reference without a screen, which is
+    /// the only check of it that cannot be fooled by the contents of a desktop.
+    pub fn any() -> Result<Self, Error> {
+        // SAFETY: as in for_display.
+        let entry = unsafe { ash::Entry::load() }.map_err(|_| Error::NoLoader)?;
+        let application = vk::ApplicationInfo::default().api_version(vk::API_VERSION_1_1);
+        let create = vk::InstanceCreateInfo::default().application_info(&application);
+        // SAFETY: the create info outlives the call.
+        let instance = unsafe { entry.create_instance(&create, None) }.map_err(driver)?;
+
+        // SAFETY: enumerating from a live instance.
+        let candidates = unsafe { instance.enumerate_physical_devices() }
+            .map_err(driver)
+            .unwrap_or_default();
+        let opened = candidates
+            .into_iter()
+            .find_map(|physical| {
+                Self::open(&instance, physical)
+                    .ok()
+                    .map(|(device, queue, family)| (physical, device, queue, family))
+            })
+            .ok_or(Error::NoDeviceForNode);
+
+        match opened {
+            Ok((physical, device, queue, queue_family)) => Ok(Self {
+                _entry: entry,
+                instance,
+                physical,
+                device,
+                queue,
+                queue_family,
+            }),
+            Err(error) => {
+                // SAFETY: nothing created from it outlives the failed call.
+                unsafe { instance.destroy_instance(None) };
+                Err(error)
+            }
+        }
+    }
+
     /// The device that reports driving this display node.
     ///
     /// Matched on the node numbers the driver itself reports, which is exact.
@@ -314,6 +359,14 @@ pub struct Imported {
     pub width: u32,
     pub height: u32,
     pub format: vk::Format,
+    /// Whether the last thing to write this was outside this interface.
+    ///
+    /// True for a capture, which the display wrote. False for anything built
+    /// here. It decides which previous owner a barrier names, and naming the
+    /// wrong one is not cosmetic: claiming a foreign owner for an image nobody
+    /// else has touched is an error the validation layers report, and claiming
+    /// ours for a captured one lets a driver assume a layout it never had.
+    pub(crate) foreign: bool,
 }
 
 impl core::fmt::Debug for Imported {
@@ -385,6 +438,7 @@ impl Device {
                 width: source.width,
                 height: source.height,
                 format,
+                foreign: true,
             }),
             Err(error) => {
                 // SAFETY: the image was created above and nothing else refers
@@ -685,6 +739,232 @@ pub struct Imports<'a> {
 pub struct PlaneLayout {
     pub offset: u32,
     pub pitch: u32,
+}
+
+impl Device {
+    /// Build a frame from bytes, for a test with a known answer.
+    ///
+    /// **Not a capture path.** Nothing in the product moves pixels to the
+    /// device this way; a captured frame is already there. This exists so the
+    /// conversion can be fed an input whose correct output is known in advance.
+    ///
+    /// Takes four bytes a pixel, red first, tightly packed.
+    pub fn upload_rgba(&self, width: u32, height: u32, pixels: &[u8]) -> Result<Imported, Error> {
+        let create = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(vk::Format::R8G8B8A8_UNORM)
+            .extent(vk::Extent3D {
+                width,
+                height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::UNDEFINED);
+        // SAFETY: the create info outlives the call.
+        let image = unsafe { self.device.create_image(&create, None) }.map_err(driver)?;
+
+        // SAFETY: the image was created on this device.
+        let requirements = unsafe { self.device.get_image_memory_requirements(image) };
+        // The image lives on the device like any other. Only the staging
+        // buffer below is memory the processor can see.
+        let index = self.device_local_memory(requirements.memory_type_bits)?;
+        let allocate = vk::MemoryAllocateInfo::default()
+            .allocation_size(requirements.size)
+            .memory_type_index(index);
+        // SAFETY: the allocate info outlives the call.
+        let memory = match unsafe { self.device.allocate_memory(&allocate, None) } {
+            Ok(memory) => memory,
+            Err(result) => {
+                // SAFETY: nothing refers to it.
+                unsafe { self.device.destroy_image(image, None) };
+                return Err(driver(result));
+            }
+        };
+
+        let built = (|| -> Result<(), Error> {
+            // SAFETY: neither handle is bound yet.
+            unsafe { self.device.bind_image_memory(image, memory, 0) }.map_err(driver)?;
+            self.stage_into(image, width, height, pixels)
+        })();
+
+        match built {
+            Ok(()) => Ok(Imported {
+                image,
+                memory,
+                width,
+                height,
+                format: vk::Format::R8G8B8A8_UNORM,
+                // Written here, so a barrier must not claim otherwise.
+                foreign: false,
+            }),
+            Err(error) => {
+                // SAFETY: nothing submitted refers to either handle.
+                unsafe {
+                    self.device.destroy_image(image, None);
+                    self.device.free_memory(memory, None);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Copy bytes through a staging buffer into an image.
+    fn stage_into(
+        &self,
+        image: vk::Image,
+        width: u32,
+        height: u32,
+        pixels: &[u8],
+    ) -> Result<(), Error> {
+        let bytes = u64::try_from(pixels.len()).unwrap_or(0);
+        let info = vk::BufferCreateInfo::default()
+            .size(bytes.max(4))
+            .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        // SAFETY: the create info outlives the call.
+        let staging = unsafe { self.device.create_buffer(&info, None) }.map_err(driver)?;
+        // SAFETY: created on this device.
+        let requirements = unsafe { self.device.get_buffer_memory_requirements(staging) };
+        let index = self.host_visible_memory(requirements.memory_type_bits)?;
+        let allocate = vk::MemoryAllocateInfo::default()
+            .allocation_size(requirements.size)
+            .memory_type_index(index);
+        // SAFETY: the allocate info outlives the call.
+        let memory = unsafe { self.device.allocate_memory(&allocate, None) }.map_err(driver)?;
+
+        let done = (|| -> Result<(), Error> {
+            // SAFETY: neither handle is bound yet.
+            unsafe { self.device.bind_buffer_memory(staging, memory, 0) }.map_err(driver)?;
+            // SAFETY: host visible and nothing else maps it.
+            let mapped = unsafe {
+                self.device
+                    .map_memory(memory, 0, bytes, vk::MemoryMapFlags::empty())
+            }
+            .map_err(driver)?;
+            // SAFETY: the mapping is at least `pixels.len()` bytes and the
+            // source is a live slice that does not overlap it.
+            unsafe {
+                core::ptr::copy_nonoverlapping(pixels.as_ptr(), mapped.cast::<u8>(), pixels.len());
+                self.device.unmap_memory(memory);
+            }
+            self.copy_buffer_to_image(staging, image, width, height)
+        })();
+
+        // SAFETY: the copy waited before returning.
+        unsafe {
+            self.device.destroy_buffer(staging, None);
+            self.device.free_memory(memory, None);
+        }
+        done
+    }
+
+    fn copy_buffer_to_image(
+        &self,
+        buffer: vk::Buffer,
+        image: vk::Image,
+        width: u32,
+        height: u32,
+    ) -> Result<(), Error> {
+        let pool_info = vk::CommandPoolCreateInfo::default().queue_family_index(self.queue_family);
+        // SAFETY: the create info outlives the call.
+        let pool = unsafe { self.device.create_command_pool(&pool_info, None) }.map_err(driver)?;
+
+        let done = (|| -> Result<(), Error> {
+            let allocate = vk::CommandBufferAllocateInfo::default()
+                .command_pool(pool)
+                .level(vk::CommandBufferLevel::PRIMARY)
+                .command_buffer_count(1);
+            // SAFETY: the allocate info outlives the call.
+            let buffers =
+                unsafe { self.device.allocate_command_buffers(&allocate) }.map_err(driver)?;
+            let commands = *buffers.first().ok_or(Error::NoQueue)?;
+            let begin = vk::CommandBufferBeginInfo::default()
+                .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+            // SAFETY: freshly allocated and not recording.
+            unsafe { self.device.begin_command_buffer(commands, &begin) }.map_err(driver)?;
+
+            let whole = vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            };
+            let to_dst = vk::ImageMemoryBarrier::default()
+                .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(image)
+                .subresource_range(whole);
+            let region = vk::BufferImageCopy::default()
+                .image_subresource(vk::ImageSubresourceLayers {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    mip_level: 0,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                })
+                .image_extent(vk::Extent3D {
+                    width,
+                    height,
+                    depth: 1,
+                });
+
+            // SAFETY: recording into a begun buffer; everything borrowed
+            // outlives the call.
+            unsafe {
+                self.device.cmd_pipeline_barrier(
+                    commands,
+                    vk::PipelineStageFlags::TOP_OF_PIPE,
+                    vk::PipelineStageFlags::TRANSFER,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &[to_dst],
+                );
+                self.device.cmd_copy_buffer_to_image(
+                    commands,
+                    buffer,
+                    image,
+                    vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                    &[region],
+                );
+                self.device.end_command_buffer(commands).map_err(driver)?;
+            }
+
+            // SAFETY: the create info outlives the call.
+            let fence = unsafe {
+                self.device
+                    .create_fence(&vk::FenceCreateInfo::default(), None)
+            }
+            .map_err(driver)?;
+            let submits = [vk::SubmitInfo::default().command_buffers(&buffers)];
+            // SAFETY: borrowed structures outlive the wait below.
+            let waited = unsafe {
+                self.device
+                    .queue_submit(self.queue, &submits, fence)
+                    .map_err(driver)
+                    .and_then(|()| {
+                        self.device
+                            .wait_for_fences(&[fence], true, u64::MAX)
+                            .map_err(driver)
+                    })
+            };
+            // SAFETY: signalled or never submitted.
+            unsafe { self.device.destroy_fence(fence, None) };
+            waited
+        })();
+
+        // SAFETY: the submit waited.
+        unsafe { self.device.destroy_command_pool(pool, None) };
+        done
+    }
 }
 
 #[cfg(test)]

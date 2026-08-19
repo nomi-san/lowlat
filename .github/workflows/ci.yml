@@ -19,6 +19,15 @@ jobs:
       - name: Install toolchain
         run: rustup component add rustfmt clippy
 
+      # The colour conversion is checked against a reference computed on the
+      # processor, and that check runs on the software driver rather than
+      # needing a graphics card. It is the only thing that catches a wrong
+      # colour matrix: comparing a converted desktop against its source is
+      # nearly blind to one, because a desktop is mostly grey and a grey pixel
+      # carries no colour for a matrix to act on.
+      - name: Install a graphics driver for the conversion test
+        run: sudo apt-get update && sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+
       - name: Cache
         uses: actions/cache@v6
         with:

@@ -335,7 +335,7 @@ impl Device {
 
     /// Memory the device reads fastest, which is where a conversion target
     /// belongs: nothing on the processor reads it.
-    fn device_local_memory(&self, allowed: u32) -> Result<u32, Error> {
+    pub(crate) fn device_local_memory(&self, allowed: u32) -> Result<u32, Error> {
         // SAFETY: the device came from this instance.
         let memory = unsafe {
             self.instance
@@ -498,8 +498,16 @@ impl Converter {
             .dst_access_mask(vk::AccessFlags::SHADER_READ)
             .old_layout(vk::ImageLayout::UNDEFINED)
             .new_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)
-            .src_queue_family_index(vk::QUEUE_FAMILY_FOREIGN_EXT)
-            .dst_queue_family_index(device.queue_family)
+            .src_queue_family_index(if source.foreign {
+                vk::QUEUE_FAMILY_FOREIGN_EXT
+            } else {
+                vk::QUEUE_FAMILY_IGNORED
+            })
+            .dst_queue_family_index(if source.foreign {
+                device.queue_family
+            } else {
+                vk::QUEUE_FAMILY_IGNORED
+            })
             .image(source.image)
             .subresource_range(whole);
         // The target has never been written, so its previous contents are
@@ -783,5 +791,135 @@ impl Device {
         // SAFETY: the submit waited, so nothing recorded is still running.
         unsafe { self.device.destroy_command_pool(pool, None) };
         outcome
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The colour transform, computed on the processor from the same rules the
+    /// shader implements, written from the definitions rather than transcribed
+    /// from the shader so a mistake cannot be shared by both.
+    fn reference(r: u8, g: u8, b: u8) -> (u8, u8, u8) {
+        let (rf, gf, bf) = (
+            f64::from(r) / 255.0,
+            f64::from(g) / 255.0,
+            f64::from(b) / 255.0,
+        );
+        let kr = 0.2126_f64;
+        let kb = 0.0722_f64;
+        let kg = 1.0 - kr - kb;
+        let y = kr * rf + kg * gf + kb * bf;
+        let u = (bf - y) / (2.0 - 2.0 * kb);
+        let v = (rf - y) / (2.0 - 2.0 * kr);
+        // Walked rather than cast, because a cast here is exactly the lint the
+        // data path forbids and this is eight comparisons in a test.
+        let quantise = |value: f64| -> u8 {
+            let scaled = (value * 255.0).round().clamp(0.0, 255.0);
+            (0..=u8::MAX)
+                .find(|candidate| f64::from(*candidate) >= scaled)
+                .unwrap_or(u8::MAX)
+        };
+        (
+            quantise(y * (219.0 / 255.0) + 16.0 / 255.0),
+            quantise(u * (224.0 / 255.0) + 128.0 / 255.0),
+            quantise(v * (224.0 / 255.0) + 128.0 / 255.0),
+        )
+    }
+
+    /// Saturated colours, each filling a whole 2x2 block so subsampling has
+    /// nothing to average and the answer is exact.
+    ///
+    /// **Grey is deliberately not the whole list.** A grey pixel has equal
+    /// channels, so every luma matrix returns the same luma for it and it
+    /// carries no chroma at all; a test made of greys passes with the wrong
+    /// coefficients, which is exactly how the desktop comparison nearly fooled
+    /// us.
+    const PATTERN: [[u8; 3]; 8] = [
+        [255, 0, 0],
+        [0, 255, 0],
+        [0, 0, 255],
+        [255, 255, 0],
+        [0, 255, 255],
+        [255, 0, 255],
+        [255, 255, 255],
+        [0, 0, 0],
+    ];
+
+    /// The conversion agrees with the definition, on colours that can tell one
+    /// matrix from another.
+    ///
+    /// **Runs by default, unlike the other tests that touch a device.** It
+    /// needs a driver but not a graphics card: it passes on the software one
+    /// with the same exactness, in a tenth of a second, which is why continuous
+    /// integration installs a loader rather than skipping this. A colour
+    /// regression has no other check that can catch it -- the comparison
+    /// against a real desktop is nearly blind to the matrix, which is what
+    /// prompted this.
+    #[test]
+    fn conversion_matches_the_reference() {
+        let width = u32::try_from(PATTERN.len()).unwrap() * 2;
+        let height = 2;
+
+        let mut pixels = vec![0u8; (width as usize) * (height as usize) * 4];
+        for (block, colour) in PATTERN.iter().enumerate() {
+            for dy in 0..2usize {
+                for dx in 0..2usize {
+                    let x = block * 2 + dx;
+                    let at = (dy * (width as usize) + x) * 4;
+                    pixels[at] = colour[0];
+                    pixels[at + 1] = colour[1];
+                    pixels[at + 2] = colour[2];
+                    pixels[at + 3] = 255;
+                }
+            }
+        }
+
+        let device = Device::any().expect("a device that can convert");
+        let source = device
+            .upload_rgba(width, height, &pixels)
+            .expect("upload the pattern");
+        let target = device.allocate_nv12(width, height).expect("a target");
+        let converter = Converter::new(&device).expect("a pipeline");
+        converter
+            .run(&device, &source, &target, false)
+            .expect("convert");
+        let (luma, chroma) = device.read_nv12(&target).expect("read the planes");
+
+        let mut worst = 0u8;
+        for (block, colour) in PATTERN.iter().enumerate() {
+            let (want_y, want_u, want_v) = reference(colour[0], colour[1], colour[2]);
+            // Every luma sample in the block is the same colour, so all four
+            // must land on the same answer.
+            for dy in 0..2usize {
+                for dx in 0..2usize {
+                    let at = dy * (width as usize) + block * 2 + dx;
+                    let got = luma[at];
+                    worst = worst.max(got.abs_diff(want_y));
+                    assert!(
+                        got.abs_diff(want_y) <= 1,
+                        "block {block} luma {got} wanted {want_y}"
+                    );
+                }
+            }
+            let at = block * 2;
+            worst = worst.max(chroma[at].abs_diff(want_u));
+            worst = worst.max(chroma[at + 1].abs_diff(want_v));
+            assert!(
+                chroma[at].abs_diff(want_u) <= 1 && chroma[at + 1].abs_diff(want_v) <= 1,
+                "block {block} chroma {} {} wanted {want_u} {want_v}",
+                chroma[at],
+                chroma[at + 1]
+            );
+        }
+        println!(
+            "worst disagreement {worst} of 255, over {} colours",
+            PATTERN.len()
+        );
+
+        converter.destroy(&device);
+        device.release_nv12(target);
+        device.release(source);
     }
 }
