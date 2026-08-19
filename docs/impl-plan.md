@@ -10,7 +10,9 @@ Conventions, per [AGENTS.md](../AGENTS.md) §2:
   gate.
 - One phase per commit. Changelog entry precedes the checkbox flip. Do not start a phase
   before the previous one is committed.
-- Phases 0 to 8 are testable without display hardware. Phases 9 and later require bare metal.
+- Phases 9 and later require bare metal and a display. **Phase 9 runs before Phase 8**; the
+  numbers are stable so that references to them keep resolving, and the order of execution is
+  the change log's to state.
 
 ## The two gates that matter
 
@@ -714,6 +716,13 @@ delivery gate does what it is meant to throughout, and no guest ever saw a broke
 
 ## Phase 8 - Public C ABI
 
+**Deferred until Phase 9 closes.** Capture is the last phase that can force a header rewrite:
+the concrete `lowlat_host_config` field set and the output enumeration both depend on the
+capture backend ([06 §14](06-api.md)), while everything after Phase 9 adds only appendable
+surface, which [06 §11](06-api.md) permits without a version change. Phase 8 itself carries no
+unresolved question - the seam it wraps has been driven against real peers since Phase 4 - so
+it is the safer of the two to hold.
+
 - [ ] `lowlat-host` orchestration and the `extern "C"` surface from
   [06-api.md](06-api.md).
 - [ ] Generated header, opaque handles, versioned structs, stable-numbered enums.
@@ -740,7 +749,23 @@ delivery gate does what it is meant to throughout, and no guest ever saw a broke
   [07-platforms.md](07-platforms.md).
 - [ ] Colour conversion by compute shader, writing planes directly, per-slot targets.
 - [ ] Zero-copy import from the capture handle into the encoder on the same device.
-- [ ] Cursor extraction, classification, and the visibility and relative-mode signals.
+- [ ] Cursor extraction, classification, and the visibility signal. **The shape has to be read
+  and compared, not detected from metadata**: the pointer buffer's identity turns over as the
+  pointer moves and says nothing about what it looks like. The buffer is linear and maps
+  directly, so this is a compare against the previous read rather than a device readback, and
+  the read is one the cursor path owes anyway. **Crop to the opaque extent**: the allocation is
+  a fixed 256x256 whatever the pointer is, and almost all of it is transparent.
+- [x] **Measure whether the composited pointer disappears when a client takes the pointer.**
+  *Answered 2026-08-19 against a real desktop: it does, and it also disappears for things that
+  are not that.* Mouselook and a video player both remove it, which is the wanted behaviour and
+  matches what the pointer's requested visibility would say. But it also disappears when the
+  pointer merely grows past what the hardware pointer plane can carry, at which point the
+  pointer is still on screen and simply drawn into the main image instead. **So the signal is
+  the rendering one, not the intent one**, and relative mode cannot be driven from it: a guest
+  shaking the mouse to find the cursor would have their pointer locked. The session-side helper
+  is a prerequisite rather than an improvement ([07 §2.1](07-platforms.md)).
+- [ ] **Rebuild the import when the scanout format changes**, without restarting the encoder or
+  costing a keyframe. Not a rare event: see [07 §3.3](07-platforms.md).
 - [ ] **Absolute input placed within the captured output**, not spread over the whole desktop
   ([05 §7](05-host.md)). Correct today only because there is one output; a second display
   stretches the stream across both.
@@ -753,8 +778,12 @@ delivery gate does what it is meant to throughout, and no guest ever saw a broke
 1. **Real desktop streaming to a stock client**, 10 minutes, no corruption.
 2. No host-visible copy between capture and encode; a readback stage would appear in the log
    and does not.
-3. Cursor shape changes and relative mode both behave correctly, including entering and
-   leaving a window drag.
+3. Cursor shape changes behave correctly, including entering and leaving a window drag.
+   *Relative mode is held out of this gate*, and the measurement above is why. The two signals
+   were shown to differ on real hardware: the pointer leaves the hardware plane both when an
+   application hides it and when it is merely too large to sit there, and only the first means
+   relative. Relative mode gets its own gate once the session helper exists
+   ([07 §2.1](07-platforms.md)).
 4. With the pointer arbitrated, the guest that does not have it can see that it does not.
 5. **Absolute input lands on the captured display with a second display attached**, and on the
    correct one. *This cannot fail with one display, which is why it is a gate item.*
@@ -808,7 +837,21 @@ from a source change.
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
 
-- 2026-08-19: **Phase 7 is closed, and the live runs moved four things that reading could not
+- 2026-08-19: **Phase 9 runs before Phase 8, and relative mode leaves Gate B.** The premise for
+  putting the ABI first was that everything up to it needs no display hardware, which stopped
+  being true when the development machine became bare metal with two drivers and the capture
+  probes ran on it. Capture is now the last phase that can force a header rewrite, and the ABI
+  is the piece with no unresolved question left in it, so holding the ABI costs nothing and
+  holding capture costs the whole product. Numbers stay as they are, because renumbering
+  invalidates every reference to them from the other documents.
+
+  **Relative mode comes out of Gate B** and gains a measurement instead. It is driven by the
+  pointer's requested visibility, which lives in session state that a backend below the
+  compositor cannot read, and the composited-pointer signal the backend *can* read is a
+  different state wearing a similar name. The question worth answering first is not how to
+  build the helper but whether the two signals coincide on this stack, which one mouselook
+  application answers in a minute. Cursor shape and the per-guest arbitration image are
+  unaffected and stay in the gate.
   have.** The readiness figure is a device-count figure and not a per-device one, so three devices
   cost nearly double what one was measured at. A virtual pad has to borrow a real controller's
   identity or nothing maps it, and the mapping that identity selects has to be checked against

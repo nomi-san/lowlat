@@ -3,6 +3,44 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 9: capture (in progress)
+
+**Added**
+
+- The scanout capture backend: enumerate the display pipeline, describe the
+  primary and cursor planes with their format, modifier and per-buffer pitches,
+  and export those buffers for import elsewhere. It reads no pixels; a
+  framebuffer leaves here as file descriptors.
+- A diagnostic that prints every transition the display pipeline makes, so
+  format changes, pointer disappearances and pointer redraws are observable
+  while a desktop is driven by hand.
+
+**Found by running it**
+
+- **Plane position needs the atomic capability, not just universal planes.**
+  Without it a plane carries no position property at all, and a reader that
+  defaults a missing property reports a pointer parked in the corner rather
+  than a value that does not exist. Both capabilities are requested at open so
+  a driver that cannot answer says so once; a missing property is an error.
+- **Plane coordinates are signed in an unsigned field**, and go negative in
+  ordinary use: the first corrected run read a pointer two pixels past the left
+  edge, which reads as four billion pixels the other way if taken unsigned.
+- **The scanout pixel format changes several times a minute.** Ten-bit for the
+  composited desktop, eight-bit whenever a fullscreen surface takes the display
+  over, and back again. Modifier, stride and plane count are identical across
+  the change, so nothing about the buffer announces it
+  ([07 §3.3](07-platforms.md)).
+- **A pointer leaving the hardware plane is not the relative-mode signal.** It
+  leaves both when an application hides it and when it merely grows past what
+  the plane can carry, at which point it is still on screen and in use. Only
+  the first means relative, so that signal has to come from inside the session
+  ([07 §2.1](07-platforms.md)).
+- **A pointer shape cannot be detected from metadata.** The buffer identity
+  turns over as the pointer moves and carries no information about what the
+  pointer looks like, so the shape has to be read and compared. The buffer is
+  linear and maps directly, and it is a fixed size whatever the pointer is, so
+  the extent comes from the alpha channel.
+
 ## 6: HEVC (closed 2026-08-18)
 
 **Added**

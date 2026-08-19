@@ -64,6 +64,24 @@ shown and relative mode never engages, which is correct rather than degraded.
 
 That keeps scanout viable without weakening the cursor rules in [05 §8](05-host.md).
 
+**Measured 2026-08-19, and the helper is now required rather than preferred.** The tempting
+shortcut is to drive relative mode from what scanout *can* see: the hardware pointer plane
+either carries a pointer or it does not, and it stops carrying one exactly when an application
+hides it. On a real desktop that holds for mouselook and for a video player, both of which are
+wanted. It also holds for a case that is not wanted at all: **a pointer that has merely grown
+too large for the plane is drawn into the main image instead**, so the plane empties while the
+pointer is still on screen and still being used. Shaking the mouse to find the cursor does it.
+
+So the two signals are genuinely different states and neither substitutes for the other:
+
+| signal | source | what it is for |
+|---|---|---|
+| a pointer is being composited | the hardware plane, visible to scanout | whether to draw one for a guest ([05 §8](05-host.md)) |
+| an application hid the pointer | session state, above this backend | whether to put a guest into relative mode |
+
+Driving relative mode from the first would lock a guest's pointer because they shook the mouse,
+which is worse than not offering the feature. The helper is the only source of the second.
+
 ### §2.2 The virtual display path is the same code
 
 A kernel-provided virtual display presents as an ordinary display device, so **the scanout
@@ -174,6 +192,37 @@ and which is not on the path to Gate B.
 The virtual-display control could not run: the software virtual driver is not built for this
 kernel. §2.2's claim is therefore untested, and now less load-bearing.
 
+### §3.3 The scanout format changes while you watch, measured 2026-08-19
+
+§3.1 said to read format and modifier from the kernel on every framebuffer change, and named
+the triggers as swapping a display, toggling high dynamic range, or restarting the compositor.
+All three are rare, which makes the rule easy to read as a precaution.
+
+**It is not a precaution. The format changes several times a minute in ordinary use.** A
+fifteen-minute session on the development workstation recorded **twelve** format changes, and
+the trigger was a user entering and leaving fullscreen -- including in a browser:
+
+```
+2560x1440 ABGR2101010  modifier 0x0300000000606014  pitch 10240   composited desktop
+2560x1440 ABGR8888     modifier 0x0300000000606014  pitch 10240   a fullscreen surface
+```
+
+The compositor scans out ten-bit for the desktop it composes, and hands a fullscreen
+application's own eight-bit buffer straight to the plane instead. Modifier and pitch are
+unchanged, because both formats are thirty-two bits per pixel; **only the interpretation of the
+bytes moves**, which is the failure mode with no symptom. A backend that probes the format once
+at startup produces a correct picture until the moment somebody presses F11, and then produces
+a wrong one with nothing logged.
+
+Three consequences the pipeline has to carry:
+
+- **The import is rebuilt on a format change, not the session.** This is the `Lost` contract
+  from [05 §2](05-host.md), and it now has a frequency attached.
+- **The conversion accepts both packed depths.** Ten-bit input is the normal case (§3.1, §3.2)
+  and eight-bit is what arrives whenever an application is fullscreen, which is most of the
+  time anyone is playing something.
+- **A rebuild must not cost a keyframe.** At this rate, a reinitialization that forces one
+  would put a visible hitch on every fullscreen toggle.
 
 ## §4 Input
 
@@ -415,11 +464,13 @@ None of this reaches the protocol core, the IO shell's logic, or the public API.
 | frame variant | **closed**: multi-plane, modifier-bearing, 10-bit capable |
 | process topology | **closed**: system service, session helpers optional (§5) |
 | privilege requirement | **closed**: card node plus the elevated capability |
-| pointer-hidden signal source | open: needs the session-side probe (§2.1) |
+| pointer-hidden signal source | **closed as a question, open as work**: the session-side probe is required, not preferred, and the plane signal was measured to be a different state (§2.1) |
+| scanout format stability | **closed**: it changes several times a minute in ordinary use (§3.3) |
 | framebuffer export, classic module of the second vendor | open, not run here, off the path |
 | virtual display | open: the software virtual driver is absent from this kernel |
 | audio capture surface | open, Phase 10 |
 
-Six of the nine were closed by one probe, run before Phase 0 rather than at Phase 9. A second
-run of the same probe on different hardware closed the seventh (§3.2). The rest are all
+Six of the ten were closed by one probe, run before Phase 0 rather than at Phase 9. A second
+run of the same probe on different hardware closed the seventh (§3.2), and the first run of the
+real backend closed two more (§2.1, §3.3) while adding one of them to the list. The rest are all
 narrower than the questions they replaced.
