@@ -108,8 +108,8 @@ nonce and message; interoperable in both directions; checked at every length bou
 group size creates, including empty, partial, and one past a group. A peer cannot tell which
 one a host used, and a host that falls back is slower and nothing else.
 
-Measured on a 2K120 session at 40 Mbps with four guests: sealing costs 7.6 CPU-seconds per half
-hour against 20.5, and 8.8 microseconds per frame per guest against 23.7. The portable path
+Measured on a 2K120 session at 40 Mbps with four guests, AES-256: sealing costs 7.9 CPU-seconds
+per half hour against 20.5, and 9.1 microseconds per frame per guest against 23.7. The portable path
 was never the constraint and this is not the difference between working and not working. It is
 the packetize stage's share of the frame budget ([05 §10](05-host.md)), and it is headroom that
 a keyframe burst spends.
