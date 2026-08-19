@@ -53,9 +53,10 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   trip against the source separates a correct matrix from a wrong one by under
   three times, because a grey pixel gives every matrix the same luma and no
   chroma at all, and a dark desktop is almost entirely grey. The figure that
-  moves is the one taken over saturated pixels alone. A synthetic pattern
-  checked against a reference computed on the processor is what would settle
-  it, and it is on the phase's list.
+  moves is the one taken over saturated pixels alone. The check that settles it
+  is eight saturated colours against the transform computed on the processor,
+  which agrees exactly and needs a driver rather than a graphics card, so it
+  runs by default and in continuous integration.
 
 ## 6: HEVC (closed 2026-08-18)
 
