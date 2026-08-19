@@ -406,7 +406,9 @@ version = "0.0.0"
 dependencies = [
  "ash",
  "drm",
+ "libc",
  "lowlat-common",
+ "lowlat-core",
 ]
 
 [[package]]
