@@ -120,7 +120,7 @@ fn main() {
 
     // The same frame as an encoder will take it, at a real size, because the
     // padding a driver applies is not visible at test dimensions.
-    match device.export_nv12(&target) {
+    match device.export_nv12(&target, true) {
         Ok((fd, exported)) => {
             let size = std::fs::File::from(fd)
                 .seek(std::io::SeekFrom::End(0))
@@ -133,13 +133,11 @@ fn main() {
                 exported.planes[1].offset,
                 exported.planes[1].pitch
             );
-            let naive = u64::from(exported.planes[0].pitch) * u64::from(exported.height);
-            if u64::from(exported.planes[1].offset) != naive {
-                println!(
-                    "  chroma is NOT where pitch times height would put it ({naive}); \
-                     an importer told the computed number reads the wrong bytes"
-                );
-            }
+            let wanted = u64::from(exported.planes[0].pitch) * u64::from(exported.height);
+            println!(
+                "  colour begins one luma plane in: {}",
+                u64::from(exported.planes[1].offset) == wanted
+            );
         }
         Err(error) => eprintln!("export failed: {error}"),
     }

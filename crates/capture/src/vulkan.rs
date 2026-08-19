@@ -43,6 +43,12 @@ pub enum Error {
     /// The committed shader is not a whole number of words, or the driver
     /// built nothing from it. Either way the file beside the source is wrong.
     BadShader,
+    /// The two planes of a conversion target cannot be laid out the way an
+    /// encoder reads them: their rows came back different lengths, or the
+    /// colour plane cannot start where the encoder expects. Refused rather
+    /// than worked around, because the layout is what an encoder is told and
+    /// there is no way to tell it anything else.
+    PlanesDisagree,
 }
 
 impl core::fmt::Display for Error {
@@ -56,6 +62,9 @@ impl core::fmt::Display for Error {
             Self::UnknownFormat => f.write_str("captured pixel layout has no equivalent here"),
             Self::NoMemoryType => f.write_str("no memory type suits both image and descriptor"),
             Self::BadShader => f.write_str("the committed conversion shader is unusable"),
+            Self::PlanesDisagree => {
+                f.write_str("the frame's planes cannot be laid out for an encoder")
+            }
         }
     }
 }

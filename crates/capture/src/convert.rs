@@ -21,6 +21,13 @@ use crate::vulkan::{Device, Error, Imported, PlaneLayout, driver};
 /// The untiled arrangement, as the display interface numbers it.
 const LINEAR: u64 = 0;
 
+/// Both ways a frame can be handed on, asked for together at allocation so the
+/// choice of encoder is not made here.
+const SHAREABLE: vk::ExternalMemoryHandleTypeFlags = vk::ExternalMemoryHandleTypeFlags::from_raw(
+    vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD.as_raw()
+        | vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT.as_raw(),
+);
+
 /// The compiled shader, committed rather than built.
 ///
 /// A build-time shader compiler would be a dependency for something that
@@ -51,18 +58,37 @@ pub struct Exported {
     pub width: u32,
     pub height: u32,
     pub modifier: u64,
-    /// Luma first, then the interleaved chroma.
+    /// Bytes per row, the same for both planes, which is the single figure an
+    /// encoder registering by pointer is given.
+    pub pitch: u32,
+    /// Luma first, then the interleaved colour. The colour plane begins exactly
+    /// one luma plane in, which is what an encoder assumes and what this
+    /// allocation is built to guarantee.
     pub planes: [PlaneLayout; 2],
 }
 
-/// A converted frame: luma and chroma in one image, ready to hand on.
+/// A converted frame: two planes in one allocation, laid out the way an
+/// encoder expects to find them.
+///
+/// **Two images rather than one in a two-plane format, and the encoder is the
+/// reason.** An encoder registering a frame by pointer is given one address and
+/// one row length, and takes the colour plane to begin exactly one luma plane
+/// later. A driver asked for a two-plane image does not oblige: measured here,
+/// it put the colour plane 49152 bytes further on than that, which an encoder
+/// reading the computed position cannot see and cannot survive. Two images
+/// bound into one allocation at offsets of our choosing put it exactly where it
+/// is expected, and cost nothing: both are untiled, their row lengths come out
+/// equal, and the whole thing still leaves as one descriptor.
 pub struct Nv12 {
-    image: vk::Image,
+    luma_image: vk::Image,
+    chroma_image: vk::Image,
     pub(crate) memory: vk::DeviceMemory,
-    /// One view per plane, single-component formats the device can write.
+    /// One view per plane, which is what the conversion writes through.
     planes: [vk::ImageView; 2],
     pub width: u32,
     pub height: u32,
+    /// Bytes per row, the same for both planes. An encoder is told this once.
+    pub pitch: u32,
 }
 
 impl core::fmt::Debug for Nv12 {
@@ -70,6 +96,7 @@ impl core::fmt::Debug for Nv12 {
         f.debug_struct("Nv12")
             .field("width", &self.width)
             .field("height", &self.height)
+            .field("pitch", &self.pitch)
             .finish_non_exhaustive()
     }
 }
@@ -243,26 +270,47 @@ impl Device {
     pub fn allocate_nv12(&self, width: u32, height: u32) -> Result<Nv12, Error> {
         // Both dimensions round up to even. A plane at half resolution has no
         // meaning for an odd one, and the shader's last block would write
-        // outside the chroma plane.
+        // outside the colour plane.
         let width = width.next_multiple_of(2);
         let height = height.next_multiple_of(2);
 
-        // **Untiled, and handed out as a descriptor.** An encoder has to be
-        // able to take this without a copy, and untiled is the one arrangement
-        // every encoder here reads. The alternative -- writing into something
-        // the device prefers and copying to something the encoder accepts --
-        // is a whole frame moved per frame, which is the cost this path exists
-        // to avoid. Whether writing untiled from a shader is measurably slower
-        // than writing tiled is a question for a benchmark, not a guess.
-        let modifiers = [LINEAR];
-        let mut list =
-            vk::ImageDrmFormatModifierListCreateInfoEXT::default().drm_format_modifiers(&modifiers);
-        let mut external = vk::ExternalMemoryImageCreateInfo::default()
-            .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+        let luma_image = self.plane_image(width, height, vk::Format::R8_UNORM)?;
+        let chroma_image = match self.plane_image(width / 2, height / 2, vk::Format::R8G8_UNORM) {
+            Ok(image) => image,
+            Err(error) => {
+                // SAFETY: created just above and nothing refers to it.
+                unsafe { self.device.destroy_image(luma_image, None) };
+                return Err(error);
+            }
+        };
 
+        match self.bind_planes(luma_image, chroma_image, width, height) {
+            Ok(nv12) => Ok(nv12),
+            Err(error) => {
+                // SAFETY: both created above; binding is what failed.
+                unsafe {
+                    self.device.destroy_image(luma_image, None);
+                    self.device.destroy_image(chroma_image, None);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// One plane, untiled and shareable.
+    ///
+    /// **Untiled because every encoder here reads untiled** without being
+    /// taught anything, and writing into what the device prefers and copying
+    /// into what the encoder accepts would move a whole frame per frame. Both
+    /// handle kinds are asked for at once so the same frame can go to an
+    /// encoder that wants a display-interface descriptor or one that wants this
+    /// interface's own; a device that refused the pair would fail here rather
+    /// than at the handover.
+    fn plane_image(&self, width: u32, height: u32, format: vk::Format) -> Result<vk::Image, Error> {
+        let mut external = vk::ExternalMemoryImageCreateInfo::default().handle_types(SHAREABLE);
         let create = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
-            .format(vk::Format::G8_B8R8_2PLANE_420_UNORM)
+            .format(format)
             .extent(vk::Extent3D {
                 width,
                 height,
@@ -271,108 +319,133 @@ impl Device {
             .mip_levels(1)
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
-            .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
+            .tiling(vk::ImageTiling::LINEAR)
             .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC)
-            // Mutable format and extended usage together are what let the
-            // planes be written: the two-plane format reports no write support
-            // under any modifier on any device here, while each of its
-            // single-component planes reports it under all of them.
-            .flags(vk::ImageCreateFlags::MUTABLE_FORMAT | vk::ImageCreateFlags::EXTENDED_USAGE)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
             .initial_layout(vk::ImageLayout::UNDEFINED)
-            .push_next(&mut list)
             .push_next(&mut external);
         // SAFETY: every borrowed structure outlives the call.
-        let image = unsafe { self.device.create_image(&create, None) }.map_err(driver)?;
+        unsafe { self.device.create_image(&create, None) }.map_err(driver)
+    }
 
-        match self.finish_nv12(image, width, height) {
-            Ok(nv12) => Ok(nv12),
+    /// Put both planes in one allocation, colour exactly one luma plane in.
+    fn bind_planes(
+        &self,
+        luma_image: vk::Image,
+        chroma_image: vk::Image,
+        width: u32,
+        height: u32,
+    ) -> Result<Nv12, Error> {
+        let subresource = vk::ImageSubresource {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            mip_level: 0,
+            array_layer: 0,
+        };
+        // SAFETY: both images are this device's and untiled, which is what
+        // makes this query answerable.
+        let (luma_layout, chroma_layout) = unsafe {
+            (
+                self.device
+                    .get_image_subresource_layout(luma_image, subresource),
+                self.device
+                    .get_image_subresource_layout(chroma_image, subresource),
+            )
+        };
+        // An encoder is told one row length for both planes. Half the width at
+        // two bytes a sample comes to the same figure as the full width at one,
+        // so they agree unless a driver pads them differently -- and if one
+        // ever does, that is a refusal rather than something to paper over.
+        if luma_layout.row_pitch != chroma_layout.row_pitch {
+            return Err(Error::PlanesDisagree);
+        }
+        let pitch = u32::try_from(luma_layout.row_pitch).map_err(|_| Error::PlanesDisagree)?;
+        let colour_at = luma_layout.row_pitch * u64::from(height);
+
+        // SAFETY: both images are this device's.
+        let (luma_needs, chroma_needs) = unsafe {
+            (
+                self.device.get_image_memory_requirements(luma_image),
+                self.device.get_image_memory_requirements(chroma_image),
+            )
+        };
+        if colour_at % chroma_needs.alignment != 0 {
+            return Err(Error::PlanesDisagree);
+        }
+        let index =
+            self.device_local_memory(luma_needs.memory_type_bits & chroma_needs.memory_type_bits)?;
+
+        let mut exportable = vk::ExportMemoryAllocateInfo::default().handle_types(SHAREABLE);
+        let allocate = vk::MemoryAllocateInfo::default()
+            .allocation_size(colour_at + chroma_needs.size)
+            .memory_type_index(index)
+            .push_next(&mut exportable);
+        // SAFETY: the chain outlives the call.
+        let memory = unsafe { self.device.allocate_memory(&allocate, None) }.map_err(driver)?;
+
+        let bound = (|| -> Result<[vk::ImageView; 2], Error> {
+            // SAFETY: neither image is bound yet and both are this device's.
+            unsafe {
+                self.device
+                    .bind_image_memory(luma_image, memory, 0)
+                    .map_err(driver)?;
+                self.device
+                    .bind_image_memory(chroma_image, memory, colour_at)
+                    .map_err(driver)?;
+            }
+            let mut planes = [vk::ImageView::null(); 2];
+            for (at, (image, format)) in [
+                (luma_image, vk::Format::R8_UNORM),
+                (chroma_image, vk::Format::R8G8_UNORM),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let info = vk::ImageViewCreateInfo::default()
+                    .image(image)
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(format)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    });
+                // SAFETY: the create info outlives the call.
+                match unsafe { self.device.create_image_view(&info, None) } {
+                    Ok(view) => {
+                        if let Some(slot) = planes.get_mut(at) {
+                            *slot = view;
+                        }
+                    }
+                    Err(result) => {
+                        for view in planes.into_iter().filter(|v| *v != vk::ImageView::null()) {
+                            // SAFETY: created just above on this device.
+                            unsafe { self.device.destroy_image_view(view, None) };
+                        }
+                        return Err(driver(result));
+                    }
+                }
+            }
+            Ok(planes)
+        })();
+
+        match bound {
+            Ok(planes) => Ok(Nv12 {
+                luma_image,
+                chroma_image,
+                memory,
+                planes,
+                width,
+                height,
+                pitch,
+            }),
             Err(error) => {
-                // SAFETY: nothing else refers to it; finishing is what failed.
-                unsafe { self.device.destroy_image(image, None) };
+                // SAFETY: nothing is bound to it any more.
+                unsafe { self.device.free_memory(memory, None) };
                 Err(error)
             }
         }
-    }
-
-    fn finish_nv12(&self, image: vk::Image, width: u32, height: u32) -> Result<Nv12, Error> {
-        // SAFETY: the image was created on this device.
-        let requirements = unsafe { self.device.get_image_memory_requirements(image) };
-        let index = self.device_local_memory(requirements.memory_type_bits)?;
-        let allocate = vk::MemoryAllocateInfo::default()
-            .allocation_size(requirements.size)
-            .memory_type_index(index);
-        let mut exportable = vk::ExportMemoryAllocateInfo::default()
-            .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
-        // The image is the only thing in this allocation, which is what an
-        // interface taking it by descriptor expects.
-        let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(image);
-        let allocate = allocate
-            .push_next(&mut exportable)
-            .push_next(&mut dedicated);
-        // SAFETY: the allocate info outlives the call.
-        let memory = unsafe { self.device.allocate_memory(&allocate, None) }.map_err(driver)?;
-        // SAFETY: neither handle is bound yet and both are this device's.
-        if let Err(result) = unsafe { self.device.bind_image_memory(image, memory, 0) } {
-            // SAFETY: nothing is bound to it.
-            unsafe { self.device.free_memory(memory, None) };
-            return Err(driver(result));
-        }
-
-        let mut planes = [vk::ImageView::null(); 2];
-        for (at, (aspect, format)) in [
-            (vk::ImageAspectFlags::PLANE_0, vk::Format::R8_UNORM),
-            (vk::ImageAspectFlags::PLANE_1, vk::Format::R8G8_UNORM),
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            // The view's usage is narrowed to what this view is for. Without
-            // it the view inherits the image's usage, which includes one the
-            // two-plane format does not support and the driver rejects.
-            let mut usage =
-                vk::ImageViewUsageCreateInfo::default().usage(vk::ImageUsageFlags::STORAGE);
-            let info = vk::ImageViewCreateInfo::default()
-                .image(image)
-                .view_type(vk::ImageViewType::TYPE_2D)
-                .format(format)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: aspect,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                })
-                .push_next(&mut usage);
-            // SAFETY: the chain outlives the call.
-            match unsafe { self.device.create_image_view(&info, None) } {
-                Ok(view) => {
-                    if let Some(slot) = planes.get_mut(at) {
-                        *slot = view;
-                    }
-                }
-                Err(result) => {
-                    for view in planes
-                        .into_iter()
-                        .filter(|view| *view != vk::ImageView::null())
-                    {
-                        // SAFETY: created just above on this device.
-                        unsafe { self.device.destroy_image_view(view, None) };
-                    }
-                    // SAFETY: nothing refers to them any more.
-                    unsafe { self.device.free_memory(memory, None) };
-                    return Err(driver(result));
-                }
-            }
-        }
-
-        Ok(Nv12 {
-            image,
-            memory,
-            planes,
-            width,
-            height,
-        })
     }
 
     /// Memory the device reads fastest, which is where a conversion target
@@ -401,65 +474,50 @@ impl Device {
     /// Hand the converted frame out as a descriptor an encoder can take.
     ///
     /// **The descriptor is the caller's to close.** Exporting duplicates it
-    /// rather than moving it, so the image stays usable and both ends have to
+    /// rather than moving it, so the frame stays usable and both ends have to
     /// be released.
     ///
-    /// The layout that comes back is not decoration. An importer is told where
-    /// each plane starts and how long its rows are, and those are the driver's
-    /// numbers rather than ones computed from the width: a plane is padded to
-    /// whatever alignment it wants, and a reader walking rows by width lands
-    /// progressively further into the wrong place.
-    pub fn export_nv12(&self, nv12: &Nv12) -> Result<(OwnedFd, Exported), Error> {
+    /// `display_interface` picks which kind of handle comes back. An encoder
+    /// reached through the display stack takes one kind; one reached through
+    /// this vendor's own compute interface takes the other, and it has no name
+    /// for the first. The frame is allocated able to produce either.
+    pub fn export_nv12(
+        &self,
+        nv12: &Nv12,
+        display_interface: bool,
+    ) -> Result<(OwnedFd, Exported), Error> {
         let external = ash::khr::external_memory_fd::Device::new(&self.instance, &self.device);
         let info = vk::MemoryGetFdInfoKHR::default()
             .memory(nv12.memory)
-            .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+            .handle_type(if display_interface {
+                vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT
+            } else {
+                vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD
+            });
         // SAFETY: the info outlives the call and the memory is this device's.
         let fd = unsafe { external.get_memory_fd(&info) }.map_err(driver)?;
         // SAFETY: the driver returned a fresh owned descriptor.
         let fd = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
 
-        let mut planes = [PlaneLayout {
-            offset: 0,
-            pitch: 0,
-        }; 2];
-        // **Memory planes, not image planes.** For an image laid out by a
-        // display-interface modifier the two are addressed by different aspect
-        // names, and asking with the wrong one is rejected rather than
-        // answered approximately.
-        for (at, aspect) in [
-            vk::ImageAspectFlags::MEMORY_PLANE_0_EXT,
-            vk::ImageAspectFlags::MEMORY_PLANE_1_EXT,
-        ]
-        .into_iter()
-        .enumerate()
-        {
-            let subresource = vk::ImageSubresource {
-                aspect_mask: aspect,
-                mip_level: 0,
-                array_layer: 0,
-            };
-            // SAFETY: the image is this device's and was created with a
-            // modifier, which is what makes these aspects valid.
-            let layout = unsafe {
-                self.device
-                    .get_image_subresource_layout(nv12.image, subresource)
-            };
-            if let Some(slot) = planes.get_mut(at) {
-                *slot = PlaneLayout {
-                    offset: u32::try_from(layout.offset).unwrap_or(0),
-                    pitch: u32::try_from(layout.row_pitch).unwrap_or(0),
-                };
-            }
-        }
-
+        // **Not queried back.** The layout is the one this allocation was built
+        // to, so reporting anything else would mean the two had drifted.
         Ok((
             fd,
             Exported {
                 width: nv12.width,
                 height: nv12.height,
                 modifier: LINEAR,
-                planes,
+                pitch: nv12.pitch,
+                planes: [
+                    PlaneLayout {
+                        offset: 0,
+                        pitch: nv12.pitch,
+                    },
+                    PlaneLayout {
+                        offset: nv12.pitch * nv12.height,
+                        pitch: nv12.pitch,
+                    },
+                ],
             },
         ))
     }
@@ -473,7 +531,8 @@ impl Device {
             for view in nv12.planes {
                 self.device.destroy_image_view(view, None);
             }
-            self.device.destroy_image(nv12.image, None);
+            self.device.destroy_image(nv12.luma_image, None);
+            self.device.destroy_image(nv12.chroma_image, None);
             self.device.free_memory(nv12.memory, None);
         }
     }
@@ -620,17 +679,16 @@ impl Converter {
             .subresource_range(whole);
         // The target has never been written, so its previous contents are
         // nobody's and discarding them is correct.
-        let prepare = vk::ImageMemoryBarrier::default()
-            .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
-            .old_layout(vk::ImageLayout::UNDEFINED)
-            .new_layout(vk::ImageLayout::GENERAL)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .image(target.image)
-            .subresource_range(vk::ImageSubresourceRange {
-                aspect_mask: vk::ImageAspectFlags::PLANE_0 | vk::ImageAspectFlags::PLANE_1,
-                ..whole
-            });
+        let prepare = [target.luma_image, target.chroma_image].map(|image| {
+            vk::ImageMemoryBarrier::default()
+                .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+                .old_layout(vk::ImageLayout::UNDEFINED)
+                .new_layout(vk::ImageLayout::GENERAL)
+                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                .image(image)
+                .subresource_range(whole)
+        });
 
         let params = Params {
             width: i32::try_from(source.width).unwrap_or(i32::MAX),
@@ -661,7 +719,7 @@ impl Converter {
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],
-                &[acquire, prepare],
+                &[acquire, prepare[0], prepare[1]],
             );
             vk_device.cmd_bind_pipeline(commands, vk::PipelineBindPoint::COMPUTE, self.pipeline);
             vk_device.cmd_bind_descriptor_sets(
@@ -803,53 +861,48 @@ impl Device {
 
             // The conversion wrote it and this reads it, so the write has to be
             // made visible before the copy rather than merely have happened.
-            let settle = vk::ImageMemoryBarrier::default()
-                .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
-                .old_layout(vk::ImageLayout::GENERAL)
-                .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .image(nv12.image)
-                .subresource_range(vk::ImageSubresourceRange {
-                    aspect_mask: vk::ImageAspectFlags::PLANE_0 | vk::ImageAspectFlags::PLANE_1,
-                    base_mip_level: 0,
-                    level_count: 1,
-                    base_array_layer: 0,
-                    layer_count: 1,
-                });
+            let settle = [nv12.luma_image, nv12.chroma_image].map(|image| {
+                vk::ImageMemoryBarrier::default()
+                    .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                    .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                    .old_layout(vk::ImageLayout::GENERAL)
+                    .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(image)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+            });
 
-            let regions = [
-                vk::BufferImageCopy::default()
-                    .buffer_offset(0)
-                    .image_subresource(vk::ImageSubresourceLayers {
-                        aspect_mask: vk::ImageAspectFlags::PLANE_0,
-                        mip_level: 0,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    })
-                    .image_extent(vk::Extent3D {
-                        width: nv12.width,
-                        height: nv12.height,
-                        depth: 1,
-                    }),
-                vk::BufferImageCopy::default()
-                    .buffer_offset(split)
-                    .image_subresource(vk::ImageSubresourceLayers {
-                        aspect_mask: vk::ImageAspectFlags::PLANE_1,
-                        mip_level: 0,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    })
-                    // Half resolution in both directions, which the interface
-                    // expects stated in the plane's own texels rather than the
-                    // image's.
-                    .image_extent(vk::Extent3D {
-                        width: nv12.width / 2,
-                        height: nv12.height / 2,
-                        depth: 1,
-                    }),
-            ];
+            let plain = |aspect| vk::ImageSubresourceLayers {
+                aspect_mask: aspect,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            };
+            let luma_region = [vk::BufferImageCopy::default()
+                .buffer_offset(0)
+                .image_subresource(plain(vk::ImageAspectFlags::COLOR))
+                .image_extent(vk::Extent3D {
+                    width: nv12.width,
+                    height: nv12.height,
+                    depth: 1,
+                })];
+            // Half resolution in both directions, stated in the plane's own
+            // texels rather than the picture's.
+            let chroma_region = [vk::BufferImageCopy::default()
+                .buffer_offset(split)
+                .image_subresource(plain(vk::ImageAspectFlags::COLOR))
+                .image_extent(vk::Extent3D {
+                    width: nv12.width / 2,
+                    height: nv12.height / 2,
+                    depth: 1,
+                })];
 
             // SAFETY: recording into a begun command buffer with borrowed
             // structures that outlive the call.
@@ -861,14 +914,21 @@ impl Device {
                     vk::DependencyFlags::empty(),
                     &[],
                     &[],
-                    &[settle],
+                    &[settle[0], settle[1]],
                 );
                 self.device.cmd_copy_image_to_buffer(
                     commands,
-                    nv12.image,
+                    nv12.luma_image,
                     vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
                     buffer,
-                    &regions,
+                    &luma_region,
+                );
+                self.device.cmd_copy_image_to_buffer(
+                    commands,
+                    nv12.chroma_image,
+                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                    buffer,
+                    &chroma_region,
                 );
                 self.device.end_command_buffer(commands).map_err(driver)?;
             }
@@ -1033,18 +1093,18 @@ mod tests {
         device.release(source);
     }
 
-    /// The exported descriptor is real and the layout is self-consistent.
+    /// The exported descriptor carries the layout an encoder reads.
     ///
-    /// **This does not prove the plane offset is the right one, and it was
-    /// written believing it did.** Substituting the offset a naive
-    /// implementation would compute -- width times height -- passes every
-    /// assertion here, because at these dimensions that value equals the
-    /// minimum a consistent layout could have. What the test does catch is a
-    /// layout query that failed or returned nothing, the wrong aspect names, a
-    /// descriptor that is not a real buffer, and any size that cannot hold what
-    /// the layout claims. **The offset being the driver's own is settled by an
-    /// encoder importing it and producing a picture**, and by nothing short of
-    /// that.
+    /// **The colour plane must begin exactly one luma plane in.** An encoder
+    /// registering a frame by pointer is given one address and one row length
+    /// and assumes that; there is no field in which to tell it anything else.
+    /// A driver left to lay out a two-plane image does not oblige, which is why
+    /// the two planes are separate images bound at offsets of our choosing, and
+    /// why this asserts equality rather than a bound.
+    ///
+    /// It still does not prove an encoder will accept the frame -- only an
+    /// encoder producing a picture does that -- but it does catch the layout
+    /// drifting from what the allocation was built to.
     ///
     /// Behind the flag, unlike the colour check: the software driver reports
     /// both planes starting at offset zero, which cannot describe one
@@ -1059,7 +1119,7 @@ mod tests {
         let device = Device::any().expect("a device that can convert");
         let target = device.allocate_nv12(width, height).expect("a target");
 
-        let (fd, layout) = device.export_nv12(&target).expect("export the frame");
+        let (fd, layout) = device.export_nv12(&target, true).expect("export the frame");
         let size = std::fs::File::from(fd)
             .seek(std::io::SeekFrom::End(0))
             .expect("size of the exported descriptor");
@@ -1076,9 +1136,11 @@ mod tests {
             layout.planes[0].pitch >= width,
             "luma rows are shorter than the picture"
         );
-        assert!(
-            layout.planes[1].offset >= layout.planes[0].pitch * height,
-            "chroma starts inside the luma plane"
+        assert_eq!(
+            layout.planes[1].offset,
+            layout.planes[0].pitch * height,
+            "colour must begin exactly one luma plane in, which is where an \
+             encoder registering by pointer looks for it"
         );
         let needed = u64::from(layout.planes[1].offset)
             + u64::from(layout.planes[1].pitch) * u64::from(height / 2);
