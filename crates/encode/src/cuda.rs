@@ -47,6 +47,16 @@ type EventCreate = unsafe extern "C" fn(*mut CUevent, c_uint) -> CUresult;
 type EventDestroy = unsafe extern "C" fn(CUevent) -> CUresult;
 type EventRecord = unsafe extern "C" fn(CUevent, CUstream) -> CUresult;
 type EventQuery = unsafe extern "C" fn(CUevent) -> CUresult;
+type ImportExternalMemory = unsafe extern "C" fn(
+    *mut crate::ffi::cuda::CUexternalMemory,
+    *const crate::ffi::cuda::CUDA_EXTERNAL_MEMORY_HANDLE_DESC,
+) -> CUresult;
+type ExternalMemoryGetMappedBuffer = unsafe extern "C" fn(
+    *mut CUdeviceptr,
+    crate::ffi::cuda::CUexternalMemory,
+    *const crate::ffi::cuda::CUDA_EXTERNAL_MEMORY_BUFFER_DESC,
+) -> CUresult;
+type DestroyExternalMemory = unsafe extern "C" fn(crate::ffi::cuda::CUexternalMemory) -> CUresult;
 
 /// Why the runtime could not be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -233,6 +243,9 @@ pub struct Cuda {
     event_destroy: EventDestroy,
     event_record: EventRecord,
     event_query: EventQuery,
+    import_external_memory: ImportExternalMemory,
+    external_memory_get_mapped_buffer: ExternalMemoryGetMappedBuffer,
+    destroy_external_memory: DestroyExternalMemory,
     /// Last, so it outlives the addresses taken from it.
     _library: Library,
 }
@@ -297,6 +310,15 @@ impl Cuda {
                     .ok_or(Error::MissingSymbol)?,
                 event_query: library
                     .symbol(c"cuEventQuery")
+                    .ok_or(Error::MissingSymbol)?,
+                import_external_memory: library
+                    .symbol(c"cuImportExternalMemory")
+                    .ok_or(Error::MissingSymbol)?,
+                external_memory_get_mapped_buffer: library
+                    .symbol(c"cuExternalMemoryGetMappedBuffer")
+                    .ok_or(Error::MissingSymbol)?,
+                destroy_external_memory: library
+                    .symbol(c"cuDestroyExternalMemory")
                     .ok_or(Error::MissingSymbol)?,
                 _library: library,
             }
@@ -711,5 +733,112 @@ mod tests {
             Error::NoSuchDevice(absent),
             "selection fell back to another device"
         );
+    }
+}
+
+/// Memory that belongs to another interface, borrowed by this one.
+///
+/// **The descriptor is consumed.** This runtime takes ownership of a handle it
+/// imports and closes it when the import is released, so a caller that also
+/// closed it would close a descriptor the driver still holds.
+pub struct External {
+    handle: crate::ffi::cuda::CUexternalMemory,
+    // Debug is by hand: the two function pointers have no useful rendering and
+    // the handle is an address that means nothing outside the runtime.
+    destroy: DestroyExternalMemory,
+    map: ExternalMemoryGetMappedBuffer,
+}
+
+impl core::fmt::Debug for External {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("External").finish_non_exhaustive()
+    }
+}
+
+// SAFETY: an import belongs to its context, not to a thread, as an allocation
+// does.
+unsafe impl Send for External {}
+
+impl External {
+    /// Address one region of the imported memory.
+    ///
+    /// The offset and the row length are the exporter's, not ours to compute.
+    /// A frame laid out for this encoder puts its colour plane exactly one luma
+    /// plane in, and the pitch is the same for both, which is the single figure
+    /// registration is given.
+    pub fn plane(&self, offset: u64, size: u64, pitch: usize) -> Result<Plane> {
+        let mut descriptor =
+            unsafe { core::mem::zeroed::<crate::ffi::cuda::CUDA_EXTERNAL_MEMORY_BUFFER_DESC>() };
+        descriptor.offset = offset;
+        descriptor.size = size;
+
+        let mut ptr: CUdeviceptr = 0;
+        // SAFETY: the descriptor is live for the call and the import is this
+        // runtime's.
+        check(unsafe { (self.map)(&raw mut ptr, self.handle, &raw const descriptor) })?;
+        Ok(Plane { ptr, pitch })
+    }
+}
+
+impl Drop for External {
+    fn drop(&mut self) {
+        // SAFETY: imported by this runtime and not released twice. Any address
+        // taken from it is invalid afterwards, which is why a plane borrows the
+        // import rather than outliving it.
+        unsafe {
+            let _ = (self.destroy)(self.handle);
+        }
+    }
+}
+
+/// One plane inside imported memory, addressed the way registration wants it.
+#[derive(Debug, Clone, Copy)]
+pub struct Plane {
+    ptr: CUdeviceptr,
+    pitch: usize,
+}
+
+impl Plane {
+    pub fn ptr(&self) -> CUdeviceptr {
+        self.ptr
+    }
+
+    pub fn pitch(&self) -> usize {
+        self.pitch
+    }
+}
+
+impl Cuda {
+    /// Take memory another interface allocated.
+    ///
+    /// **The handle is the platform's opaque kind, not the display stack's.**
+    /// This runtime's handle enumeration has no name for a display-interface
+    /// descriptor at all, so a frame destined here has to be exported the other
+    /// way; the same allocation can produce both.
+    ///
+    /// # Safety
+    ///
+    /// A context must be current on this thread, and `fd` must be a handle this
+    /// runtime can import: one exported for the platform's opaque kind, whose
+    /// `size` is the whole allocation behind it.
+    pub unsafe fn import(&self, fd: std::os::fd::OwnedFd, size: u64) -> Result<External> {
+        use std::os::fd::IntoRawFd;
+
+        let mut descriptor =
+            unsafe { core::mem::zeroed::<crate::ffi::cuda::CUDA_EXTERNAL_MEMORY_HANDLE_DESC>() };
+        descriptor.type_ = crate::ffi::cuda::CU_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD;
+        descriptor.handle.fd = fd.into_raw_fd();
+        descriptor.size = size;
+
+        let mut handle: crate::ffi::cuda::CUexternalMemory = core::ptr::null_mut();
+        // SAFETY: the descriptor is live for the call. On success the runtime
+        // owns the descriptor; on failure it does not, and it leaks rather
+        // than being closed twice, which is the safer of the two.
+        check(unsafe { (self.import_external_memory)(&raw mut handle, &raw const descriptor) })?;
+        Ok(External {
+            handle,
+            destroy: self.destroy_external_memory,
+            map: self.external_memory_get_mapped_buffer,
+        })
     }
 }

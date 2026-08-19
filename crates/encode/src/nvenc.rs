@@ -1199,6 +1199,20 @@ impl Encoder<'_> {
 
     /// Register a device allocation holding one planar frame.
     pub fn register(&self, buffer: &crate::cuda::DeviceBuffer) -> Result<Input, Error> {
+        self.register_ptr(buffer.ptr(), buffer.pitch())
+    }
+
+    /// Register one planar frame by address.
+    ///
+    /// **One address and one row length, and the colour plane is assumed to
+    /// begin exactly one luma plane in.** There is no field here in which to
+    /// say otherwise, which is why a frame produced elsewhere has to be laid
+    /// out that way before it arrives.
+    pub fn register_ptr(
+        &self,
+        ptr: crate::ffi::cuda::CUdeviceptr,
+        pitch: usize,
+    ) -> Result<Input, Error> {
         use crate::ffi::nvenc as f;
         let register = self
             .functions()
@@ -1210,8 +1224,8 @@ impl Encoder<'_> {
         params.resourceType = f::NV_ENC_INPUT_RESOURCE_TYPE_CUDADEVICEPTR;
         params.width = self.config.width;
         params.height = self.config.height;
-        params.pitch = u32::try_from(buffer.pitch()).map_err(|_| Error::MissingSymbol)?;
-        params.resourceToRegister = buffer.ptr() as *mut core::ffi::c_void;
+        params.pitch = u32::try_from(pitch).map_err(|_| Error::MissingSymbol)?;
+        params.resourceToRegister = ptr as *mut core::ffi::c_void;
         params.bufferFormat = f::NV_ENC_BUFFER_FORMAT_NV12;
         params.bufferUsage = f::NV_ENC_INPUT_IMAGE;
 
@@ -1234,7 +1248,6 @@ impl Encoder<'_> {
         frame: &lowlat_capture::Frame<'_>,
         force_keyframe: bool,
     ) -> Result<(), Error> {
-        use crate::ffi::nvenc as f;
         if self.pending.len() >= IN_FLIGHT {
             return Err(Error::QueueFull);
         }
@@ -1244,10 +1257,39 @@ impl Encoder<'_> {
         // the hardware is still reading.
         let slot = self.next_output;
         self.upload(slot, frame)?;
-        let (registered, width, height, pitch) = {
-            let held = &self.inputs.get(slot).ok_or(Error::NoContext)?.input;
-            (held.registered, held.width, held.height, held.pitch)
+        let held = {
+            let input = &self.inputs.get(slot).ok_or(Error::NoContext)?.input;
+            Input {
+                registered: input.registered,
+                width: input.width,
+                height: input.height,
+                pitch: input.pitch,
+            }
         };
+        self.queue(slot, &held, force_keyframe)
+    }
+
+    /// Hand over a frame that is already on the device and already registered.
+    ///
+    /// **No upload, which is the point.** A frame produced on the device by
+    /// something else is registered once and handed over by reference from then
+    /// on; nothing here copies a pixel.
+    ///
+    /// The caller owns the frame's lifetime and must not let it go while a
+    /// picture built from it is still in flight.
+    pub fn submit_registered(&mut self, input: &Input, force_keyframe: bool) -> Result<(), Error> {
+        if self.pending.len() >= IN_FLIGHT {
+            return Err(Error::QueueFull);
+        }
+        let slot = self.next_output;
+        self.queue(slot, input, force_keyframe)
+    }
+
+    /// Map an input, encode from it, and record the marker behind the work.
+    fn queue(&mut self, slot: usize, held: &Input, force_keyframe: bool) -> Result<(), Error> {
+        use crate::ffi::nvenc as f;
+        let (registered, width, height, pitch) =
+            (held.registered, held.width, held.height, held.pitch);
 
         let map = self
             .functions()
