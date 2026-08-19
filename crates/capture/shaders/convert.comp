@@ -1,0 +1,115 @@
+#version 450
+
+// Colour conversion: whatever the display scans out, into the planar 4:2:0 an
+// encoder takes.
+//
+// **One shader for every input depth.** A normalized format arrives here as
+// float regardless of how many bits it was stored in, so a ten-bit capture and
+// an eight-bit one differ only in the view they are read through and not in a
+// line of this. That matters because the display switches between the two
+// several times a minute; see docs/07-platforms.md section 3.3.
+//
+// Read through a sampler rather than as a storage image, which is what makes
+// the above true: a storage read needs the format written into the shader, and
+// packed ten-bit storage support is not universal.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D source;
+layout(set = 0, binding = 1, r8) uniform writeonly image2D luma;
+layout(set = 0, binding = 2, rg8) uniform writeonly image2D chroma;
+
+layout(push_constant) uniform Params {
+    ivec2 extent;  // source size in pixels
+    uint dither;   // nonzero to spread the quantisation error
+} params;
+
+// BT.709, and not selectable. A receiver applies the inverse unconditionally
+// with nothing on the wire saying which matrix was used, so emitting anything
+// else produces a stream that decodes perfectly and renders with the wrong
+// colour, on every platform at once.
+const float KR = 0.2126;
+const float KB = 0.0722;
+const float KG = 1.0 - KR - KB;
+
+// Limited range: black sits at 16 and white at 235. Getting this wrong is
+// subtler than getting the matrix wrong, because it reads as a washed-out
+// picture rather than as a colour error.
+const float Y_SCALE = 219.0 / 255.0;
+const float Y_OFFSET = 16.0 / 255.0;
+const float C_SCALE = 224.0 / 255.0;
+const float C_OFFSET = 128.0 / 255.0;
+
+// Ordered dither. Ten bits into eight is a two-bit reduction, so sixteen levels
+// of spread is more than the error can use. Off unless asked for: whether the
+// banding it removes is visible after the encoder has quantised again is a
+// question for a comparison, not for a guess.
+const float BAYER[16] = float[16](
+    0.0,  8.0,  2.0, 10.0,
+    12.0, 4.0, 14.0,  6.0,
+    3.0, 11.0,  1.0,  9.0,
+    15.0, 7.0, 13.0,  5.0
+);
+
+float spread(ivec2 at) {
+    if (params.dither == 0u) {
+        return 0.0;
+    }
+    // Centred on zero and scaled to one eight-bit step, so it perturbs the
+    // rounding and nothing else.
+    return (BAYER[(at.y & 3) * 4 + (at.x & 3)] / 16.0 - 0.5) / 255.0;
+}
+
+vec3 fetch(ivec2 at) {
+    // Clamped rather than wrapped. An odd width or height leaves one column or
+    // row whose partner is off the edge, and repeating the last pixel is the
+    // only choice that does not invent colour at the border.
+    return texelFetch(source, min(at, params.extent - 1), 0).rgb;
+}
+
+float luma_of(vec3 colour) {
+    return KR * colour.r + KG * colour.g + KB * colour.b;
+}
+
+void store_luma(ivec2 at, vec3 colour) {
+    float y = luma_of(colour) * Y_SCALE + Y_OFFSET + spread(at);
+    imageStore(luma, at, vec4(y, 0.0, 0.0, 0.0));
+}
+
+void main() {
+    // One invocation owns a 2x2 block: four luma samples and the single chroma
+    // sample they share.
+    ivec2 block = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 base = block * 2;
+    if (base.x >= params.extent.x || base.y >= params.extent.y) {
+        return;
+    }
+
+    vec3 c00 = fetch(base + ivec2(0, 0));
+    vec3 c10 = fetch(base + ivec2(1, 0));
+    vec3 c01 = fetch(base + ivec2(0, 1));
+    vec3 c11 = fetch(base + ivec2(1, 1));
+
+    store_luma(base + ivec2(0, 0), c00);
+    store_luma(base + ivec2(1, 0), c10);
+    store_luma(base + ivec2(0, 1), c01);
+    store_luma(base + ivec2(1, 1), c11);
+
+    // **Average the four colours, then convert once.** The transform is linear
+    // in the source, so this is exactly equal to converting four times and
+    // averaging the results, at a quarter of the work. Writing subsampled
+    // chroma has no shortcut in the other direction: a decoder gets its
+    // upsample from the sampler for free, and this average is ours to compute.
+    vec3 mean = (c00 + c10 + c01 + c11) * 0.25;
+    float y = luma_of(mean);
+    float u = (mean.b - y) / (2.0 - 2.0 * KB);
+    float v = (mean.r - y) / (2.0 - 2.0 * KR);
+
+    // Blue difference first, which is the order the two-plane format names.
+    imageStore(chroma, block, vec4(
+        u * C_SCALE + C_OFFSET + spread(block),
+        v * C_SCALE + C_OFFSET + spread(block + ivec2(2, 0)),
+        0.0,
+        0.0
+    ));
+}

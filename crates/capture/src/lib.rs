@@ -16,6 +16,7 @@
 //! output where every consumer can read it, and it disappears when real
 //! capture arrives with a handle of its own.
 
+pub mod convert;
 pub mod scanout;
 pub mod synthetic;
 pub mod vulkan;

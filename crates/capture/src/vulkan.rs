@@ -40,6 +40,9 @@ pub enum Error {
     UnknownFormat,
     /// No memory type satisfies both the image and the imported descriptor.
     NoMemoryType,
+    /// The committed shader is not a whole number of words, or the driver
+    /// built nothing from it. Either way the file beside the source is wrong.
+    BadShader,
 }
 
 impl core::fmt::Display for Error {
@@ -52,13 +55,14 @@ impl core::fmt::Display for Error {
             Self::NoQueue => f.write_str("the display's device exposes no usable queue"),
             Self::UnknownFormat => f.write_str("captured pixel layout has no equivalent here"),
             Self::NoMemoryType => f.write_str("no memory type suits both image and descriptor"),
+            Self::BadShader => f.write_str("the committed conversion shader is unusable"),
         }
     }
 }
 
 impl std::error::Error for Error {}
 
-fn driver(result: vk::Result) -> Error {
+pub(crate) fn driver(result: vk::Result) -> Error {
     Error::Driver(result.as_raw())
 }
 
@@ -86,11 +90,11 @@ const REQUIRED: [&CStr; 4] = [
 pub struct Device {
     /// Dropped last. Every handle below is scoped to it.
     _entry: ash::Entry,
-    instance: ash::Instance,
-    physical: vk::PhysicalDevice,
-    device: ash::Device,
-    queue: vk::Queue,
-    queue_family: u32,
+    pub(crate) instance: ash::Instance,
+    pub(crate) physical: vk::PhysicalDevice,
+    pub(crate) device: ash::Device,
+    pub(crate) queue: vk::Queue,
+    pub(crate) queue_family: u32,
 }
 
 impl core::fmt::Debug for Device {
@@ -214,9 +218,21 @@ impl Device {
             .queue_priorities(&priorities)];
         let names: Vec<*const core::ffi::c_char> =
             REQUIRED.iter().map(|name| name.as_ptr()).collect();
+        // The single-byte and two-byte storage formats the conversion writes
+        // are not in the set every device must support unasked.
+        let mut features = vk::PhysicalDeviceFeatures2::default();
+        features.features.shader_storage_image_extended_formats = vk::TRUE;
+        // Creating an image in a two-plane layout needs this even though
+        // nothing here samples one: the conversion reaches its planes through
+        // views, because the two-plane format itself cannot be written to on
+        // any device seen here while each of its planes can.
+        let mut ycbcr = vk::PhysicalDeviceSamplerYcbcrConversionFeatures::default()
+            .sampler_ycbcr_conversion(true);
         let create = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queues)
-            .enabled_extension_names(&names);
+            .enabled_extension_names(&names)
+            .push_next(&mut features)
+            .push_next(&mut ycbcr);
         // SAFETY: every borrowed slice outlives the call, and the extension
         // names are static.
         let device = unsafe { instance.create_device(physical, &create, None) }.map_err(driver)?;
@@ -293,7 +309,7 @@ fn pixel_format(fourcc: DrmFourcc) -> Option<vk::Format> {
 ///
 /// Holds the memory it was imported into, so dropping it releases both.
 pub struct Imported {
-    image: vk::Image,
+    pub(crate) image: vk::Image,
     memory: vk::DeviceMemory,
     pub width: u32,
     pub height: u32,
@@ -518,7 +534,7 @@ impl Device {
     }
 
     /// A memory type the processor can read.
-    fn host_visible_memory(&self, allowed: u32) -> Result<u32, Error> {
+    pub(crate) fn host_visible_memory(&self, allowed: u32) -> Result<u32, Error> {
         // SAFETY: the device came from this instance.
         let memory = unsafe {
             self.instance
