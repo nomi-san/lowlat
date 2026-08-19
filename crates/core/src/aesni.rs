@@ -20,11 +20,15 @@
 #![cfg(target_arch = "x86_64")]
 
 use core::arch::x86_64::{
-    __cpuid, __m128i, _mm_aesenc_si128, _mm_aesenclast_si128, _mm_aeskeygenassist_si128,
-    _mm_clmulepi64_si128, _mm_insert_epi32, _mm_loadu_si128, _mm_or_si128, _mm_set_epi8,
-    _mm_setzero_si128, _mm_shuffle_epi8, _mm_shuffle_epi32, _mm_slli_epi32, _mm_slli_epi64,
-    _mm_slli_si128, _mm_srli_epi32, _mm_srli_epi64, _mm_srli_si128, _mm_storeu_si128,
-    _mm_xor_si128,
+    __cpuid, __cpuid_count, __m128i, __m256i, _mm_aesenc_si128, _mm_aesenclast_si128,
+    _mm_aeskeygenassist_si128, _mm_clmulepi64_si128, _mm_insert_epi32, _mm_loadu_si128,
+    _mm_or_si128, _mm_set_epi8, _mm_setzero_si128, _mm_shuffle_epi8, _mm_shuffle_epi32,
+    _mm_slli_epi32, _mm_slli_epi64, _mm_slli_si128, _mm_srli_epi32, _mm_srli_epi64, _mm_srli_si128,
+    _mm_storeu_si128, _mm_xor_si128, _mm256_aesenc_epi128, _mm256_aesenclast_epi128,
+    _mm256_broadcastsi128_si256, _mm256_castsi128_si256, _mm256_castsi256_si128,
+    _mm256_clmulepi64_epi128, _mm256_extracti128_si256, _mm256_inserti128_si256,
+    _mm256_loadu_si256, _mm256_setzero_si256, _mm256_shuffle_epi8, _mm256_shuffle_epi32,
+    _mm256_storeu_si256, _mm256_xor_si256, _xgetbv,
 };
 
 /// Blocks folded into GHASH between reductions, and so also the number of
@@ -47,6 +51,35 @@ pub(crate) fn available() -> bool {
     leaf.ecx & (1 << 25) != 0 && leaf.ecx & (1 << 1) != 0
 }
 
+/// Whether this processor has the 256-bit VAES and VPCLMULQDQ instructions
+/// **and** an operating system that has enabled the register state they use.
+///
+/// **The second half is not optional and is the difference from
+/// [`available`].** AES-NI and PCLMULQDQ carry no processor state, so CPUID is
+/// the whole answer for them. AVX does carry state, and a kernel that has not
+/// enabled it leaves a processor advertising instructions that fault on first
+/// use. XGETBV is the only way to ask.
+pub(crate) fn wide_available() -> bool {
+    // Leaves 1 and 7 are architecturally defined on every x86-64 part.
+    let leaf1 = __cpuid(1);
+    // XSAVE has to be enabled by the operating system before XGETBV may be
+    // executed at all, so this order matters.
+    if leaf1.ecx & (1 << 27) == 0 {
+        return false;
+    }
+    // SAFETY: OSXSAVE is set, which is exactly the precondition for XGETBV.
+    let xcr0 = unsafe { _xgetbv(0) };
+    // Bit 1 is the SSE state, bit 2 the upper half of the YMM registers.
+    if xcr0 & 0b110 != 0b110 {
+        return false;
+    }
+    let leaf7 = __cpuid_count(7, 0);
+    let avx2 = leaf7.ebx & (1 << 5) != 0;
+    let vaes = leaf7.ecx & (1 << 9) != 0;
+    let vpclmul = leaf7.ecx & (1 << 10) != 0;
+    avx2 && vaes && vpclmul
+}
+
 /// An expanded key schedule, split so no access needs a computed index.
 ///
 /// `middle` is sized for AES-256's thirteen inner rounds; AES-128 uses nine of
@@ -59,12 +92,32 @@ struct Schedule {
     last: __m128i,
 }
 
+/// The same schedule and GHASH powers arranged for the 256-bit path, where
+/// one register holds two blocks.
+///
+/// Round keys are broadcast once here rather than per round: a broadcast
+/// inside the round loop would add ten to fourteen instructions to a group
+/// that only issues forty.
+#[derive(Clone, Copy)]
+struct WideKeys {
+    first: __m256i,
+    middle: [__m256i; 13],
+    middle_len: usize,
+    last: __m256i,
+    /// The powers paired to match the block pairs: `[H^8, H^7]`, `[H^6, H^5]`,
+    /// `[H^4, H^3]`, `[H^2, H^1]`.
+    hp: [__m256i; GROUP / 2],
+}
+
 /// AES-128-GCM or AES-256-GCM with hardware instructions.
 #[derive(Clone, Copy)]
 pub(crate) struct Aead {
     sched: Schedule,
     /// H^1 through H^8, byte-reflected, for the aggregated GHASH.
     hp: [__m128i; GROUP],
+    /// Present when the processor offers the 256-bit instructions. The narrow
+    /// path stays compiled in, and is what the wide one is tested against.
+    wide: Option<WideKeys>,
 }
 
 impl core::fmt::Debug for Aead {
@@ -81,11 +134,36 @@ impl Aead {
     /// Returns `None` for any other length, and for a processor without the
     /// instructions.
     pub(crate) fn new(key: &[u8]) -> Option<Self> {
+        Self::with_tier(key, wide_available())
+    }
+
+    /// Whether this instance is on the 256-bit path.
+    #[cfg(test)]
+    fn is_wide(&self) -> bool {
+        self.wide.is_some()
+    }
+
+    /// The narrow path only. Exists so the tests can drive both tiers on a
+    /// processor that offers the wide one; otherwise landing the wide tier
+    /// would silently stop covering the narrow one everywhere it matters.
+    #[cfg(test)]
+    fn new_narrow(key: &[u8]) -> Option<Self> {
+        Self::with_tier(key, false)
+    }
+
+    fn with_tier(key: &[u8], wide: bool) -> Option<Self> {
         if !available() {
             return None;
         }
-        // SAFETY: `available()` just confirmed both features.
-        unsafe { Self::new_unchecked(key) }
+        // SAFETY: `available()` just confirmed AES-NI and PCLMULQDQ, and
+        // `wide` is only true when `wide_available()` confirmed the rest.
+        unsafe {
+            let mut aead = Self::new_unchecked(key)?;
+            if wide {
+                aead.wide = Some(wide_keys(&aead.sched, &aead.hp));
+            }
+            Some(aead)
+        }
     }
 
     /// # Safety
@@ -106,7 +184,11 @@ impl Aead {
                 *slot = prev;
                 prev = gmul(prev, h);
             }
-            Some(Self { sched, hp })
+            Some(Self {
+                sched,
+                hp,
+                wide: None,
+            })
         }
     }
 
@@ -220,6 +302,23 @@ impl Aead {
             let mut ctr: u32 = 2;
             let mut off = 0usize;
 
+            if let Some(wk) = &self.wide {
+                while off + GROUP_BYTES <= buf.len() {
+                    let mut c = [_mm256_setzero_si256(); GROUP / 2];
+                    for (k, cipher) in c.iter_mut().enumerate() {
+                        *cipher = _mm256_loadu_si256(buf.as_ptr().add(off + k * 2 * BLOCK).cast());
+                    }
+                    ghash = wide_ghash(wk, ghash, &c);
+                    let ks = wide_keystream(wk, base, ctr);
+                    for (k, (slot, cipher)) in ks.iter().zip(c.iter()).enumerate() {
+                        let at = buf.as_mut_ptr().add(off + k * 2 * BLOCK).cast::<__m256i>();
+                        _mm256_storeu_si256(at, _mm256_xor_si256(*cipher, *slot));
+                    }
+                    ctr = ctr.wrapping_add(GROUP_STEP);
+                    off += GROUP_BYTES;
+                }
+            }
+
             while off + GROUP_BYTES <= buf.len() {
                 let mut c = [_mm_setzero_si128(); GROUP];
                 for (k, cipher) in c.iter_mut().enumerate() {
@@ -324,6 +423,140 @@ fn copy_in(dst: &mut [u8; BLOCK], src: &[u8], off: usize, take: usize) {
 fn copy_out(dst: &mut [u8], off: usize, src: &[u8; BLOCK], take: usize) {
     if let (Some(d), Some(s)) = (dst.get_mut(off..off + take), src.get(..take)) {
         d.copy_from_slice(s);
+    }
+}
+
+// ---- the 256-bit path ----
+
+/// Build the wide schedule and the paired GHASH powers.
+///
+/// # Safety
+/// AVX2, VAES and VPCLMULQDQ must be present.
+#[target_feature(enable = "avx2,vaes,vpclmulqdq")]
+unsafe fn wide_keys(s: &Schedule, hp: &[__m128i; GROUP]) -> WideKeys {
+    unsafe {
+        let mut middle = [_mm256_setzero_si256(); 13];
+        for (dst, src) in middle.iter_mut().zip(s.middle.iter()) {
+            *dst = _mm256_broadcastsi128_si256(*src);
+        }
+        // Pair k carries blocks 2k and 2k+1, so it needs H^(8-2k) in the low
+        // lane and H^(7-2k) in the high one. `hp[i]` is H^(i+1).
+        let mut paired = [_mm256_setzero_si256(); GROUP / 2];
+        for (k, slot) in paired.iter_mut().enumerate() {
+            let low = hp.get(7 - 2 * k).copied().unwrap_or(_mm_setzero_si128());
+            let high = hp.get(6 - 2 * k).copied().unwrap_or(_mm_setzero_si128());
+            *slot = lanes(low, high);
+        }
+        WideKeys {
+            first: _mm256_broadcastsi128_si256(s.first),
+            middle,
+            middle_len: s.middle_len,
+            last: _mm256_broadcastsi128_si256(s.last),
+            hp: paired,
+        }
+    }
+}
+
+/// Two 128-bit values into one register, `low` in lane zero.
+///
+/// The cast alone leaves the upper lane undefined, which is a real hazard when
+/// the upper lane is meant to be zero, so it is always written explicitly.
+///
+/// # Safety
+/// AVX2 must be present.
+#[target_feature(enable = "avx2")]
+unsafe fn lanes(low: __m128i, high: __m128i) -> __m256i {
+    _mm256_inserti128_si256::<1>(_mm256_castsi128_si256(low), high)
+}
+
+/// Fold a register's two lanes together. GHASH sums with xor, so the two
+/// halves of an accumulator combine the same way its terms did.
+///
+/// # Safety
+/// AVX2 must be present.
+#[target_feature(enable = "avx2")]
+unsafe fn fold_lanes(v: __m256i) -> __m128i {
+    _mm_xor_si128(_mm256_castsi256_si128(v), _mm256_extracti128_si256::<1>(v))
+}
+
+/// Eight counter blocks as four registers, two blocks per instruction.
+///
+/// # Safety
+/// AVX2, VAES and SSE4.1 must be present.
+#[target_feature(enable = "avx2,vaes,sse4.1")]
+unsafe fn wide_keystream(wk: &WideKeys, base: __m128i, ctr: u32) -> [__m256i; GROUP / 2] {
+    unsafe {
+        let mut b = [_mm256_setzero_si256(); GROUP / 2];
+        for (pair, slot) in (0u32..).zip(b.iter_mut()) {
+            let low = with_counter(base, ctr.wrapping_add(pair.wrapping_mul(2)));
+            let high = with_counter(base, ctr.wrapping_add(pair.wrapping_mul(2).wrapping_add(1)));
+            *slot = _mm256_xor_si256(lanes(low, high), wk.first);
+        }
+        for key in wk.middle.iter().take(wk.middle_len) {
+            for slot in b.iter_mut() {
+                *slot = _mm256_aesenc_epi128(*slot, *key);
+            }
+        }
+        for slot in b.iter_mut() {
+            *slot = _mm256_aesenclast_epi128(*slot, wk.last);
+        }
+        b
+    }
+}
+
+/// The byte reversal GHASH needs, applied within each lane.
+///
+/// # Safety
+/// AVX2 must be present.
+#[target_feature(enable = "avx2")]
+unsafe fn wide_bswap(x: __m256i) -> __m256i {
+    let mask = _mm_set_epi8(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15);
+    _mm256_shuffle_epi8(x, _mm256_broadcastsi128_si256(mask))
+}
+
+/// Karatsuba on both lanes at once, partial products left unassembled.
+///
+/// # Safety
+/// AVX2 and VPCLMULQDQ must be present.
+#[target_feature(enable = "avx2,vpclmulqdq")]
+unsafe fn wide_clmul(a: __m256i, b: __m256i) -> (__m256i, __m256i, __m256i) {
+    let fold_a = _mm256_xor_si256(a, _mm256_shuffle_epi32::<0x4e>(a));
+    let fold_b = _mm256_xor_si256(b, _mm256_shuffle_epi32::<0x4e>(b));
+    (
+        _mm256_clmulepi64_epi128::<0x00>(a, b),
+        _mm256_clmulepi64_epi128::<0x00>(fold_a, fold_b),
+        _mm256_clmulepi64_epi128::<0x11>(a, b),
+    )
+}
+
+/// The eight-block GHASH step, four multiplies instead of eight.
+///
+/// Assembly and reduction stay 128-bit: both are linear over xor, so folding
+/// the lanes first and assembling once gives the same answer as assembling
+/// each lane, and it costs one reduction rather than two.
+///
+/// # Safety
+/// AVX2, VPCLMULQDQ and SSE2 must be present.
+#[target_feature(enable = "avx2,vpclmulqdq,sse2")]
+unsafe fn wide_ghash(wk: &WideKeys, state: __m128i, c: &[__m256i; GROUP / 2]) -> __m128i {
+    unsafe {
+        let mut lo = _mm256_setzero_si256();
+        let mut mid = _mm256_setzero_si256();
+        let mut hi = _mm256_setzero_si256();
+        for (k, (pair, power)) in c.iter().zip(wk.hp.iter()).enumerate() {
+            let mut x = wide_bswap(*pair);
+            if k == 0 {
+                // The accumulator folds into the first block only, which is
+                // the low lane of the first pair.
+                x = _mm256_xor_si256(x, lanes(state, _mm_setzero_si128()));
+            }
+            let (l, m, h) = wide_clmul(x, *power);
+            lo = _mm256_xor_si256(lo, l);
+            mid = _mm256_xor_si256(mid, m);
+            hi = _mm256_xor_si256(hi, h);
+        }
+        let (lo, hi) = assemble(fold_lanes(lo), fold_lanes(mid), fold_lanes(hi));
+        reduce(lo, hi)
     }
 }
 
@@ -616,6 +849,7 @@ mod tests {
     use aes_gcm::aead::AeadInPlace;
     use aes_gcm::aead::generic_array::GenericArray;
     use aes_gcm::{Aes128Gcm, Aes256Gcm, KeyInit};
+    use std::vec;
     use std::vec::Vec;
 
     /// Lengths chosen for the boundaries this code actually has: empty, under
@@ -655,6 +889,16 @@ mod tests {
                 .unwrap()
         };
         tag.into()
+    }
+
+    /// Every tier this processor can run, so a machine with the wide
+    /// instructions still exercises the narrow path.
+    fn tiers(key: &[u8]) -> Vec<(&'static str, Aead)> {
+        let mut v = vec![("narrow", Aead::new_narrow(key).expect("hardware AES"))];
+        if wide_available() {
+            v.push(("wide", Aead::new(key).expect("hardware AES")));
+        }
+        v
     }
 
     #[test]
@@ -720,14 +964,33 @@ mod tests {
                 let key = material(0xd00d ^ key_len as u64, key_len);
                 let nonce: [u8; 12] = material(0xfeed ^ len as u64, 12).try_into().unwrap();
                 let plain = material(0xbead ^ len as u64, len);
-                let hw = Aead::new(&key).unwrap();
 
-                let mut buf = plain.clone();
-                let tag = hw.seal(&nonce, &mut buf);
-                assert!(hw.open(&nonce, &mut buf, &tag), "open failed at len {len}");
-                assert_eq!(buf, plain, "round trip differs at len {len}");
+                // Every tier opens every other tier's output. A session does
+                // not know which one the peer is running, so this is the
+                // property that actually has to hold.
+                for (sealer, s) in tiers(&key) {
+                    let mut sealed = plain.clone();
+                    let tag = s.seal(&nonce, &mut sealed);
+                    for (opener, o) in tiers(&key) {
+                        let mut buf = sealed.clone();
+                        assert!(
+                            o.open(&nonce, &mut buf, &tag),
+                            "{opener} could not open {sealer} at len {len}"
+                        );
+                        assert_eq!(buf, plain, "{opener}/{sealer} differs at len {len}");
+                    }
+                }
             }
         }
+    }
+
+    #[test]
+    fn the_wide_tier_is_taken_when_the_processor_offers_it() {
+        // Without this, breaking the selection fails nothing: both tiers
+        // produce identical bytes, so every other test passes either way.
+        let key = material(0xfab, 32);
+        assert_eq!(Aead::new(&key).unwrap().is_wide(), wide_available());
+        assert!(!Aead::new_narrow(&key).unwrap().is_wide());
     }
 
     #[test]
