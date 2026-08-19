@@ -25,7 +25,7 @@
 //! computed on the processor is the check that would settle it**, and it needs
 //! no display; this program is what can be run against a real one.
 
-use std::io::Write;
+use std::io::{Seek, Write};
 use std::os::fd::IntoRawFd;
 use std::path::{Path, PathBuf};
 
@@ -117,6 +117,32 @@ fn main() {
     // at all; a dark desktop is nearly all such pixels and averages the
     // interesting ones away. This is the number that moves.
     println!("over saturated pixels only: {saturated:.2} across {counted} of them");
+
+    // The same frame as an encoder will take it, at a real size, because the
+    // padding a driver applies is not visible at test dimensions.
+    match device.export_nv12(&target) {
+        Ok((fd, exported)) => {
+            let size = std::fs::File::from(fd)
+                .seek(std::io::SeekFrom::End(0))
+                .unwrap_or(0);
+            println!(
+                "exported {size} bytes, modifier {:#018x}, luma offset {} pitch {}, chroma offset {} pitch {}",
+                exported.modifier,
+                exported.planes[0].offset,
+                exported.planes[0].pitch,
+                exported.planes[1].offset,
+                exported.planes[1].pitch
+            );
+            let naive = u64::from(exported.planes[0].pitch) * u64::from(exported.height);
+            if u64::from(exported.planes[1].offset) != naive {
+                println!(
+                    "  chroma is NOT where pitch times height would put it ({naive}); \
+                     an importer told the computed number reads the wrong bytes"
+                );
+            }
+        }
+        Err(error) => eprintln!("export failed: {error}"),
+    }
 
     if let Err(why) = write_ppm(&out, width, height, &rgb) {
         eprintln!("cannot write {}: {why}", out.display());

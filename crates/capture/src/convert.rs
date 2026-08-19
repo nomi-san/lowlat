@@ -14,7 +14,12 @@
 
 use ash::vk;
 
-use crate::vulkan::{Device, Error, Imported, driver};
+use std::os::fd::OwnedFd;
+
+use crate::vulkan::{Device, Error, Imported, PlaneLayout, driver};
+
+/// The untiled arrangement, as the display interface numbers it.
+const LINEAR: u64 = 0;
 
 /// The compiled shader, committed rather than built.
 ///
@@ -40,10 +45,20 @@ struct Params {
     dither: u32,
 }
 
+/// How a converted frame is laid out, for whatever imports it next.
+#[derive(Debug, Clone, Copy)]
+pub struct Exported {
+    pub width: u32,
+    pub height: u32,
+    pub modifier: u64,
+    /// Luma first, then the interleaved chroma.
+    pub planes: [PlaneLayout; 2],
+}
+
 /// A converted frame: luma and chroma in one image, ready to hand on.
 pub struct Nv12 {
     image: vk::Image,
-    memory: vk::DeviceMemory,
+    pub(crate) memory: vk::DeviceMemory,
     /// One view per plane, single-component formats the device can write.
     planes: [vk::ImageView; 2],
     pub width: u32,
@@ -232,6 +247,19 @@ impl Device {
         let width = width.next_multiple_of(2);
         let height = height.next_multiple_of(2);
 
+        // **Untiled, and handed out as a descriptor.** An encoder has to be
+        // able to take this without a copy, and untiled is the one arrangement
+        // every encoder here reads. The alternative -- writing into something
+        // the device prefers and copying to something the encoder accepts --
+        // is a whole frame moved per frame, which is the cost this path exists
+        // to avoid. Whether writing untiled from a shader is measurably slower
+        // than writing tiled is a question for a benchmark, not a guess.
+        let modifiers = [LINEAR];
+        let mut list =
+            vk::ImageDrmFormatModifierListCreateInfoEXT::default().drm_format_modifiers(&modifiers);
+        let mut external = vk::ExternalMemoryImageCreateInfo::default()
+            .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+
         let create = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
             .format(vk::Format::G8_B8R8_2PLANE_420_UNORM)
@@ -243,12 +271,18 @@ impl Device {
             .mip_levels(1)
             .array_layers(1)
             .samples(vk::SampleCountFlags::TYPE_1)
-            .tiling(vk::ImageTiling::OPTIMAL)
+            .tiling(vk::ImageTiling::DRM_FORMAT_MODIFIER_EXT)
             .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC)
+            // Mutable format and extended usage together are what let the
+            // planes be written: the two-plane format reports no write support
+            // under any modifier on any device here, while each of its
+            // single-component planes reports it under all of them.
             .flags(vk::ImageCreateFlags::MUTABLE_FORMAT | vk::ImageCreateFlags::EXTENDED_USAGE)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED);
-        // SAFETY: the create info outlives the call.
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .push_next(&mut list)
+            .push_next(&mut external);
+        // SAFETY: every borrowed structure outlives the call.
         let image = unsafe { self.device.create_image(&create, None) }.map_err(driver)?;
 
         match self.finish_nv12(image, width, height) {
@@ -268,6 +302,14 @@ impl Device {
         let allocate = vk::MemoryAllocateInfo::default()
             .allocation_size(requirements.size)
             .memory_type_index(index);
+        let mut exportable = vk::ExportMemoryAllocateInfo::default()
+            .handle_types(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+        // The image is the only thing in this allocation, which is what an
+        // interface taking it by descriptor expects.
+        let mut dedicated = vk::MemoryDedicatedAllocateInfo::default().image(image);
+        let allocate = allocate
+            .push_next(&mut exportable)
+            .push_next(&mut dedicated);
         // SAFETY: the allocate info outlives the call.
         let memory = unsafe { self.device.allocate_memory(&allocate, None) }.map_err(driver)?;
         // SAFETY: neither handle is bound yet and both are this device's.
@@ -354,6 +396,72 @@ impl Device {
             })
             .and_then(|(at, _)| u32::try_from(at).ok())
             .ok_or(Error::NoMemoryType)
+    }
+
+    /// Hand the converted frame out as a descriptor an encoder can take.
+    ///
+    /// **The descriptor is the caller's to close.** Exporting duplicates it
+    /// rather than moving it, so the image stays usable and both ends have to
+    /// be released.
+    ///
+    /// The layout that comes back is not decoration. An importer is told where
+    /// each plane starts and how long its rows are, and those are the driver's
+    /// numbers rather than ones computed from the width: a plane is padded to
+    /// whatever alignment it wants, and a reader walking rows by width lands
+    /// progressively further into the wrong place.
+    pub fn export_nv12(&self, nv12: &Nv12) -> Result<(OwnedFd, Exported), Error> {
+        let external = ash::khr::external_memory_fd::Device::new(&self.instance, &self.device);
+        let info = vk::MemoryGetFdInfoKHR::default()
+            .memory(nv12.memory)
+            .handle_type(vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT);
+        // SAFETY: the info outlives the call and the memory is this device's.
+        let fd = unsafe { external.get_memory_fd(&info) }.map_err(driver)?;
+        // SAFETY: the driver returned a fresh owned descriptor.
+        let fd = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+
+        let mut planes = [PlaneLayout {
+            offset: 0,
+            pitch: 0,
+        }; 2];
+        // **Memory planes, not image planes.** For an image laid out by a
+        // display-interface modifier the two are addressed by different aspect
+        // names, and asking with the wrong one is rejected rather than
+        // answered approximately.
+        for (at, aspect) in [
+            vk::ImageAspectFlags::MEMORY_PLANE_0_EXT,
+            vk::ImageAspectFlags::MEMORY_PLANE_1_EXT,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let subresource = vk::ImageSubresource {
+                aspect_mask: aspect,
+                mip_level: 0,
+                array_layer: 0,
+            };
+            // SAFETY: the image is this device's and was created with a
+            // modifier, which is what makes these aspects valid.
+            let layout = unsafe {
+                self.device
+                    .get_image_subresource_layout(nv12.image, subresource)
+            };
+            if let Some(slot) = planes.get_mut(at) {
+                *slot = PlaneLayout {
+                    offset: u32::try_from(layout.offset).unwrap_or(0),
+                    pitch: u32::try_from(layout.row_pitch).unwrap_or(0),
+                };
+            }
+        }
+
+        Ok((
+            fd,
+            Exported {
+                width: nv12.width,
+                height: nv12.height,
+                modifier: LINEAR,
+                planes,
+            },
+        ))
     }
 
     /// Release a conversion target.
@@ -796,6 +904,8 @@ impl Device {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Seek;
+
     use super::*;
 
     /// The colour transform, computed on the processor from the same rules the
@@ -921,5 +1031,66 @@ mod tests {
         converter.destroy(&device);
         device.release_nv12(target);
         device.release(source);
+    }
+
+    /// The exported descriptor is real and the layout is self-consistent.
+    ///
+    /// **This does not prove the plane offset is the right one, and it was
+    /// written believing it did.** Substituting the offset a naive
+    /// implementation would compute -- width times height -- passes every
+    /// assertion here, because at these dimensions that value equals the
+    /// minimum a consistent layout could have. What the test does catch is a
+    /// layout query that failed or returned nothing, the wrong aspect names, a
+    /// descriptor that is not a real buffer, and any size that cannot hold what
+    /// the layout claims. **The offset being the driver's own is settled by an
+    /// encoder importing it and producing a picture**, and by nothing short of
+    /// that.
+    ///
+    /// Behind the flag, unlike the colour check: the software driver reports
+    /// both planes starting at offset zero, which cannot describe one
+    /// allocation, and handing a hardware encoder a frame is the entire point.
+    ///
+    ///   cargo test -p lowlat-capture --lib -- --ignored
+    #[test]
+    #[ignore = "needs a graphics device; the software one reports no plane offsets"]
+    fn the_exported_layout_describes_the_descriptor() {
+        let width = 256;
+        let height = 128;
+        let device = Device::any().expect("a device that can convert");
+        let target = device.allocate_nv12(width, height).expect("a target");
+
+        let (fd, layout) = device.export_nv12(&target).expect("export the frame");
+        let size = std::fs::File::from(fd)
+            .seek(std::io::SeekFrom::End(0))
+            .expect("size of the exported descriptor");
+        println!(
+            "exported {size} bytes, luma offset {} pitch {}, chroma offset {} pitch {}",
+            layout.planes[0].offset,
+            layout.planes[0].pitch,
+            layout.planes[1].offset,
+            layout.planes[1].pitch
+        );
+
+        assert_eq!(layout.planes[0].offset, 0, "luma does not start the buffer");
+        assert!(
+            layout.planes[0].pitch >= width,
+            "luma rows are shorter than the picture"
+        );
+        assert!(
+            layout.planes[1].offset >= layout.planes[0].pitch * height,
+            "chroma starts inside the luma plane"
+        );
+        let needed = u64::from(layout.planes[1].offset)
+            + u64::from(layout.planes[1].pitch) * u64::from(height / 2);
+        assert!(
+            size >= needed,
+            "the descriptor is {size} bytes and the layout needs {needed}"
+        );
+        assert!(
+            layout.planes[1].pitch >= width,
+            "chroma rows are shorter than the picture"
+        );
+
+        device.release_nv12(target);
     }
 }
