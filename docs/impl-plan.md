@@ -764,8 +764,12 @@ it is the safer of the two to hold.
 - [x] The encoder importing that descriptor and producing a decodable picture. *Done: thirty
   pictures at 2560x1440 from a real desktop, decoded outside the project as yuv420p, limited
   range, BT.709. That settles the layout, which nothing short of it could.*
-- [ ] Capture replacing the synthetic source in the stream loop, so the path reaches a guest
-  rather than a file.
+- [x] Capture replacing the synthetic source in the stream loop, so the path reaches a guest
+  rather than a file. *Two things only a loop shows: the display cycles through a pool of
+  buffers, so a source that imports once reads one of them forever and produces a stream that
+  decodes perfectly and never changes; and a conversion target per picture in flight, for the
+  reason the encoder's own input surfaces are. Which node the display is on is discovered
+  rather than configured, because a wrong setting is indistinguishable from no session.*
 - [ ] Cursor extraction, classification, and the visibility signal. **The shape has to be read
   and compared, not detected from metadata**: the pointer buffer's identity turns over as the
   pointer moves and says nothing about what it looks like. The buffer is linear and maps

@@ -37,6 +37,11 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   needed only an address and a row length, so the existing path is unchanged
   and a frame already on the device skips the copy entirely.
 
+- The real desktop as the stream's frame source, in place of the generator.
+  The display node is discovered rather than configured, the plane is re-read
+  every frame, imports are kept per buffer of the display's rotation, and there
+  is one conversion target per picture in flight.
+
 **Found by running it**
 
 - **Plane position needs the atomic capability, not just universal planes.**
@@ -62,6 +67,12 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   pointer looks like, so the shape has to be read and compared. The buffer is
   linear and maps directly, and it is a fixed size whatever the pointer is, so
   the extent comes from the alpha channel.
+- **A source that imports once is indistinguishable from a working one until
+  you watch it move.** The display cycles through a pool of buffers as it
+  draws, so one import reads one buffer of that rotation for ever. The stream
+  decodes perfectly, every stage reports success, and the picture never
+  changes. The check is therefore that consecutive pictures differ, not that
+  the file decodes.
 - **The whole path produces a picture something else can read.** Thirty frames
   captured from a real desktop, imported, converted and encoded with no copy at
   any stage, decoded outside the project as yuv420p, limited range, BT.709.
