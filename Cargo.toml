@@ -38,6 +38,10 @@ lowlat-kessel = { path = "crates/kessel" }
 libc = "0.2"
 getrandom = "0.2"
 
+# Scanout capture. Pure ioctls through rustix, so nothing is linked or dlopened,
+# and the prime export takes its flags from us rather than assuming write access.
+drm = "0.15"
+
 # Signaling only. lowlat-kessel is the one crate permitted an async runtime, a
 # TLS stack and a JSON parser; nothing inside the FFI boundary links it.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal"] }
