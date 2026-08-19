@@ -519,7 +519,7 @@ fn integrity_of(bytes: &[u8], at: usize, password: &str) -> Result<[u8; 20]> {
 /// length field substituted for the fingerprint-inclusive value.
 fn fingerprint_of(bytes: &[u8], at: usize) -> Result<u32> {
     let claimed = u16::try_from(at + 12).map_err(|_| Error::Oversized)?;
-    let mut crc = Crc32::new();
+    let mut crc = crate::crc32::Crc32::new();
     crc.update(bytes.get(..2).ok_or(Error::Malformed)?);
     crc.update(&claimed.to_be_bytes());
     crc.update(bytes.get(4..at + INTEGRITY_LEN).ok_or(Error::Malformed)?);
@@ -594,32 +594,6 @@ fn decode_mapped(value: &[u8], tid: TransactionId) -> Option<SocketAddr> {
     }
 }
 
-/// CRC-32, the reflected polynomial, computed a byte at a time.
-///
-/// Not a cryptographic primitive and not on a hot path: checks are emitted a
-/// few times a second. A table would buy nothing here and costs a kilobyte.
-struct Crc32(u32);
-
-impl Crc32 {
-    fn new() -> Self {
-        Self(0xFFFF_FFFF)
-    }
-
-    fn update(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.0 ^= u32::from(*byte);
-            for _ in 0..8 {
-                let mask = (self.0 & 1).wrapping_neg();
-                self.0 = (self.0 >> 1) ^ (0xEDB8_8320 & mask);
-            }
-        }
-    }
-
-    fn finish(self) -> u32 {
-        self.0 ^ 0xFFFF_FFFF
-    }
-}
-
 fn be16(bytes: &[u8], at: usize) -> Result<u16> {
     let slot = bytes.get(at..at + 2).ok_or(Error::Malformed)?;
     Ok(u16::from_be_bytes([
@@ -661,7 +635,7 @@ mod tests {
 
     #[test]
     fn crc32_matches_the_standard_vector() {
-        let mut crc = Crc32::new();
+        let mut crc = crate::crc32::Crc32::new();
         crc.update(b"123456789");
         assert_eq!(crc.finish(), 0xCBF4_3926);
     }
