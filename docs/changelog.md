@@ -33,6 +33,10 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   two-plane image it replaced. The allocation is exportable as either handle
   kind, so the encoder is chosen at the handover.
 
+- The encoder taking a converted frame directly, with no upload. Registration
+  needed only an address and a row length, so the existing path is unchanged
+  and a frame already on the device skips the copy entirely.
+
 **Found by running it**
 
 - **Plane position needs the atomic capability, not just universal planes.**
@@ -58,6 +62,11 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   pointer looks like, so the shape has to be read and compared. The buffer is
   linear and maps directly, and it is a fixed size whatever the pointer is, so
   the extent comes from the alpha channel.
+- **The whole path produces a picture something else can read.** Thirty frames
+  captured from a real desktop, imported, converted and encoded with no copy at
+  any stage, decoded outside the project as yuv420p, limited range, BT.709.
+  That is what settles the frame layout: a colour plane in the wrong place
+  shows as garbage chroma, and there is none.
 - **A desktop is a poor test vector for colour.** Comparing a conversion round
   trip against the source separates a correct matrix from a wrong one by under
   three times, because a grey pixel gives every matrix the same luma and no
