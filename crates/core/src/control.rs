@@ -117,6 +117,13 @@ pub mod status {
     pub const ENCODE_FAILED: i32 = -15002;
     /// The device would not say what it can encode.
     pub const ENCODER_CAPABILITIES: i32 = -15110;
+    /// There is nothing to capture.
+    ///
+    /// **Distinct from an encoder that would not start, and the difference is
+    /// not pedantic.** A display that has powered down leaves the encoder
+    /// perfectly able and nothing to feed it; reporting that as an encoder
+    /// failure sends whoever reads it to the wrong half of the machine.
+    pub const CAPTURE_UNAVAILABLE: i32 = -14003;
 }
 
 /// A control message: header plus whatever body followed it.

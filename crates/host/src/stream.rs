@@ -928,6 +928,41 @@ fn run_vendor(
         lowlat_common::log_error!("stream: encode session could not be opened");
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
+    // **The display decides the picture size when it is the source.** The
+    // encoder is created before the source exists and its registration fixes
+    // the shape, so asking the display first is the only way the two agree.
+    let (width, height) = if config.display {
+        // **A display that is asleep is the ordinary case for this product,
+        // not a fault.** Somebody connecting to a machine whose screen has
+        // powered down is most of what remote access is for, so it is waited
+        // for rather than refused. The wait is bounded because the only thing
+        // that wakes a blanked display is somebody at the desk, and a guest
+        // held indefinitely on a machine nobody is at learns nothing.
+        match await_display() {
+            Some(size) => {
+                if size != (config.width, config.height) {
+                    lowlat_common::log_info!(
+                        "stream: the display is {}x{}, not the configured {}x{}; following it",
+                        size.0,
+                        size.1,
+                        config.width,
+                        config.height
+                    );
+                }
+                size
+            }
+            None => {
+                lowlat_common::log_error!(
+                    "stream: nothing has been scanning out for {:.0}s, ending {} guest(s)",
+                    DISPLAY_WAIT.as_secs_f64(),
+                    roster.active.len()
+                );
+                return Exit::Failed(status::CAPTURE_UNAVAILABLE);
+            }
+        }
+    } else {
+        (config.width, config.height)
+    };
     let Ok(mut encoder) = session.initialize(
         &cuda,
         lowlat_encode::nvenc::Config {
@@ -935,8 +970,8 @@ fn run_vendor(
                 Codec::H264 => lowlat_encode::nvenc::Codec::H264,
                 Codec::H265 => lowlat_encode::nvenc::Codec::H265,
             },
-            width: config.width,
-            height: config.height,
+            width,
+            height,
             fps: config.fps,
             bitrate_bps: start_bps(config),
             min_qp: lowlat_encode::nvenc::DEFAULT_MIN_QP,
@@ -1016,6 +1051,34 @@ fn occupied(shared: &Shared) -> bool {
 /// for a new frame when the frame clock says so, so an encode overlaps the
 /// acquire and the submit behind it, and a picture leaves within a poll of
 /// being ready rather than at the next frame boundary.
+/// How long a guest waits for a display that is not scanning out.
+///
+/// Long enough that a screen blanked while nobody was looking has a chance to
+/// come back when somebody arrives, short enough that a guest on a machine
+/// with no display at all is told so rather than held.
+const DISPLAY_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Wait for something to scan out, and report what shape it is.
+fn await_display() -> Option<(u32, u32)> {
+    let began = lowlat_common::clock::Time::now();
+    let mut said = false;
+    loop {
+        if let Some(size) = crate::display::Display::size_of_display() {
+            return Some(size);
+        }
+        if !said {
+            said = true;
+            lowlat_common::log_info!(
+                "stream: nothing is scanning out, waiting for a display to come back"
+            );
+        }
+        if lowlat_common::clock::elapsed_ms(began) >= DISPLAY_WAIT.as_secs_f64() * 1000.0 {
+            return None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
 /// Handing over a picture that is already on the device.
 ///
 /// **Host-local and deliberately narrow.** One backend can take a frame this
@@ -1129,6 +1192,8 @@ fn encode_loop<E: Encoder + FromDevice>(
     let mut force_keyframe = false;
     let mut since_report = 0u32;
     let mut failures = 0u32;
+    // Whether the last pass found the display dark.
+    let mut held = false;
 
     loop {
         if shared.stopping.load(Ordering::Acquire) != 0 {
@@ -1227,17 +1292,31 @@ fn encode_loop<E: Encoder + FromDevice>(
             // A picture from the display is already on the device and is
             // handed over by reference; the generator's is bytes and is
             // uploaded. Nothing else in this loop can tell them apart.
+            // **A display that cannot be read holds its last picture; it never
+            // falls back to the generator.** The two are not interchangeable
+            // sources: one is the machine and the other is a test pattern, and
+            // a guest whose screen turned into moving colour bars would have
+            // no way to tell that from the host having gone wrong.
             let ready = match display.as_deref_mut() {
-                Some(desktop) => match desktop.acquire() {
-                    Ok(captured_at) => Some(captured_at),
-                    Err(error) => {
-                        lowlat_common::log_warn!("stream: the display could not be read, {error}");
-                        None
+                Some(desktop) => {
+                    let read = desktop.acquire();
+                    let dark = read.is_err();
+                    if dark != held {
+                        held = dark;
+                        // Once per transition. Per frame it is sixty lines a
+                        // second saying the same thing.
+                        match &read {
+                            Err(error) => lowlat_common::log_warn!(
+                                "stream: the display stopped, holding the last picture, {error}"
+                            ),
+                            Ok(_) => lowlat_common::log_info!("stream: the display came back"),
+                        }
                     }
-                },
+                    Some(read.unwrap_or(began))
+                }
                 None => None,
             };
-            let synthetic = if ready.is_none() {
+            let synthetic = if display.is_none() {
                 Some(source.acquire())
             } else {
                 None

@@ -166,6 +166,17 @@ impl Display {
         })
     }
 
+    /// What the display is showing, before anything is built on it.
+    ///
+    /// **The encoder has to be configured for this and is created first**, so
+    /// the size has to be readable without a device, a converter or a target.
+    /// Configuring it for anything else produces a stream of the wrong shape
+    /// rather than a refusal, which is a whole session wasted.
+    pub fn size_of_display() -> Option<(u32, u32)> {
+        let (_, _, layout) = Self::find().ok()?;
+        Some((layout.primary.width, layout.primary.height))
+    }
+
     /// The first node with something on it.
     ///
     /// Nodes are tried in order and the first that reports a lit primary plane
