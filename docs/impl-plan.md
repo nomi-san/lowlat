@@ -747,7 +747,15 @@ it is the safer of the two to hold.
 
 - [ ] Capture backend selection and the display-stack decision from
   [07-platforms.md](07-platforms.md).
-- [ ] Colour conversion by compute shader, writing planes directly, per-slot targets.
+- [x] Colour conversion by compute shader, writing planes directly. *One shader for every
+  input depth, because a normalized format reaches a shader as float whatever its depth; the
+  two-plane result is written through a view per plane, which measurement showed is the only
+  way in.* Per-slot targets remain, with the frame ring.
+- [ ] **A conversion test that can fail without a display.** The round trip against a real
+  desktop separates a correct matrix from a wrong one by under three times, because a desktop
+  is nearly all grey and a grey pixel carries no chroma for a matrix to act on. A synthetic
+  pattern of known saturated colours compared against a reference computed on the processor
+  settles it outright, needs no display, and runs on the software device.
 - [ ] Zero-copy import from the capture handle into the encoder on the same device.
 - [ ] Cursor extraction, classification, and the visibility signal. **The shape has to be read
   and compared, not detected from metadata**: the pointer buffer's identity turns over as the

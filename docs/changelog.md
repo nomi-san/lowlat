@@ -14,6 +14,15 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - A diagnostic that prints every transition the display pipeline makes, so
   format changes, pointer disappearances and pointer redraws are observable
   while a desktop is driven by hand.
+- The device the display is on, opened by matching the node's own numbers as
+  the driver reports them. Exact, where a name or an index is a coin flip on a
+  machine with two cards.
+- Import of a captured framebuffer with no copy, the tiling modifier and
+  per-plane pitches handed over rather than inferred.
+- Colour conversion on the device: one compute shader for every input depth,
+  writing a two-plane result through a view per plane. The two-plane format
+  reports no write support on any device here while each of its planes reports
+  it everywhere, so the views are the only way in.
 
 **Found by running it**
 
@@ -40,6 +49,13 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   pointer looks like, so the shape has to be read and compared. The buffer is
   linear and maps directly, and it is a fixed size whatever the pointer is, so
   the extent comes from the alpha channel.
+- **A desktop is a poor test vector for colour.** Comparing a conversion round
+  trip against the source separates a correct matrix from a wrong one by under
+  three times, because a grey pixel gives every matrix the same luma and no
+  chroma at all, and a dark desktop is almost entirely grey. The figure that
+  moves is the one taken over saturated pixels alone. A synthetic pattern
+  checked against a reference computed on the processor is what would settle
+  it, and it is on the phase's list.
 
 ## 6: HEVC (closed 2026-08-18)
 
