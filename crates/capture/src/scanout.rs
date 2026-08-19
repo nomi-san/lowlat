@@ -157,6 +157,9 @@ pub struct Cursor {
 pub struct Layout {
     /// What the display is showing.
     pub primary: Framebuffer,
+    /// The plane it is on, so a later frame can be re-read without walking
+    /// every plane and its properties again.
+    pub primary_plane: plane::Handle,
     /// Absent when nothing is drawing a pointer.
     pub cursor: Option<Cursor>,
 }
@@ -211,6 +214,7 @@ impl Card {
         let planes = self.plane_handles().map_err(|error| device_error(&error))?;
 
         let mut primary = None;
+        let mut primary_plane = None;
         let mut cursor = None;
         for handle in planes {
             let Ok(info) = self.get_plane(handle) else {
@@ -230,6 +234,7 @@ impl Card {
             let image = self.framebuffer(fb)?;
             if class == PLANE_TYPE_PRIMARY {
                 primary = Some(image);
+                primary_plane = Some(handle);
             } else {
                 let x = self
                     .plane_property(handle, c"CRTC_X")
@@ -243,9 +248,29 @@ impl Card {
             }
         }
 
-        primary
-            .map(|primary| Layout { primary, cursor })
-            .ok_or(Error::NoScanout)
+        match (primary, primary_plane) {
+            (Some(primary), Some(primary_plane)) => Ok(Layout {
+                primary,
+                primary_plane,
+                cursor,
+            }),
+            _ => Err(Error::NoScanout),
+        }
+    }
+
+    /// Re-read what one plane is scanning out.
+    ///
+    /// **This is the per-frame call, and [`Card::scan`] is not.** The display
+    /// cycles through a small pool of buffers as it draws, so the framebuffer
+    /// behind a plane is a different one almost every frame and has to be read
+    /// again; walking every plane and its properties to learn that would be
+    /// most of a scan for a fact one call already gives.
+    pub fn framebuffer_on(&self, plane: plane::Handle) -> Result<Framebuffer, Error> {
+        let info = self
+            .get_plane(plane)
+            .map_err(|error| device_error(&error))?;
+        let fb = info.framebuffer().ok_or(Error::NoScanout)?;
+        self.framebuffer(fb)
     }
 
     /// Describe one framebuffer.

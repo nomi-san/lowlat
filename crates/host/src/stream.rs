@@ -323,6 +323,14 @@ pub struct Config {
     /// one fragment, which is the only way the fragmenting path here and the
     /// reassembly a peer runs are exercised together.
     pub detail_rows: u32,
+    /// Capture the real display rather than generating pictures.
+    ///
+    /// **Not a preference between two sources of equal standing.** The
+    /// generator exists so everything above it can be built and measured
+    /// without a screen; a display is what the product streams. Which node
+    /// that is is not configured, because it is discovered: see
+    /// [`crate::display::Display::open`].
+    pub display: bool,
 }
 
 /// The running loop, and the handle the seam holds it by.
@@ -887,7 +895,11 @@ fn run_open(
         lowlat_common::log_error!("stream: encoder could not be configured");
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
-    encode_loop(shared, arrivals, config, roster, &mut encoder)
+    // **No display source here.** The conversion runs on the device the display
+    // is attached to, and a frame on one card cannot reach an encoder on
+    // another without the copy through system memory this path exists to
+    // avoid. When this backend can take a frame by descriptor, the two meet.
+    encode_loop(shared, arrivals, config, roster, &mut encoder, None)
 }
 
 fn run_vendor(
@@ -933,7 +945,25 @@ fn run_vendor(
         lowlat_common::log_error!("stream: encoder could not be configured");
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
-    encode_loop(shared, arrivals, config, roster, &mut encoder)
+    let mut desktop = if config.display {
+        match crate::display::Display::open(lowlat_encode::nvenc::IN_FLIGHT, &encoder) {
+            Ok(desktop) => Some(desktop),
+            Err(error) => {
+                lowlat_common::log_error!("stream: the display could not be opened, {error}");
+                return Exit::Failed(status::ENCODER_UNAVAILABLE);
+            }
+        }
+    } else {
+        None
+    };
+    encode_loop(
+        shared,
+        arrivals,
+        config,
+        roster,
+        &mut encoder,
+        desktop.as_mut(),
+    )
 }
 
 /// The lowest level each codec has that carries 1080p60, which is 4.2 on the
@@ -986,13 +1016,64 @@ fn occupied(shared: &Shared) -> bool {
 /// for a new frame when the frame clock says so, so an encode overlaps the
 /// acquire and the submit behind it, and a picture leaves within a poll of
 /// being ready rather than at the next frame boundary.
-fn encode_loop<E: Encoder>(
+/// Handing over a picture that is already on the device.
+///
+/// **Host-local and deliberately narrow.** One backend can take a frame this
+/// way today and the other cannot, so putting it on the encoder interface would
+/// be an abstraction over a single implementation. When the second exists it
+/// moves there and this goes away, which is the point at which a type parameter
+/// would have earned its place.
+trait FromDevice {
+    /// True when the picture was queued. False is back pressure or a backend
+    /// that does not take frames this way, and the caller treats both the same:
+    /// it goes round and tries again.
+    fn submit_from_device(
+        &mut self,
+        input: &lowlat_encode::nvenc::Input,
+        force_keyframe: bool,
+    ) -> bool;
+}
+
+impl FromDevice for lowlat_encode::nvenc::Encoder<'_> {
+    fn submit_from_device(
+        &mut self,
+        input: &lowlat_encode::nvenc::Input,
+        force_keyframe: bool,
+    ) -> bool {
+        self.submit_registered(input, force_keyframe).is_ok()
+    }
+}
+
+#[cfg(test)]
+impl FromDevice for tests::Fake {
+    fn submit_from_device(
+        &mut self,
+        _input: &lowlat_encode::nvenc::Input,
+        _force_keyframe: bool,
+    ) -> bool {
+        false
+    }
+}
+
+impl FromDevice for lowlat_encode::vaapi::Encoder<'_> {
+    fn submit_from_device(
+        &mut self,
+        _input: &lowlat_encode::nvenc::Input,
+        _force_keyframe: bool,
+    ) -> bool {
+        false
+    }
+}
+
+fn encode_loop<E: Encoder + FromDevice>(
     shared: &Shared,
     arrivals: &mpsc::Receiver<Join>,
     config: Config,
     roster: &mut Roster,
     encoder: &mut E,
+    display: Option<&mut crate::display::Display>,
 ) -> Exit {
+    let mut display = display;
     // **The block says which codec is on the wire**, so a live run is
     // identifiable from the picture rather than from a log on the other
     // machine. Nothing downstream reads it; it is for the person watching.
@@ -1142,8 +1223,28 @@ fn encode_loop<E: Encoder>(
             };
 
             let began = lowlat_common::clock::Time::now();
-            let frame = source.acquire();
-            let captured_at = frame.captured_at;
+            // **The desktop when there is one, and the generator otherwise.**
+            // A picture from the display is already on the device and is
+            // handed over by reference; the generator's is bytes and is
+            // uploaded. Nothing else in this loop can tell them apart.
+            let ready = match display.as_deref_mut() {
+                Some(desktop) => match desktop.acquire() {
+                    Ok(captured_at) => Some(captured_at),
+                    Err(error) => {
+                        lowlat_common::log_warn!("stream: the display could not be read, {error}");
+                        None
+                    }
+                },
+                None => None,
+            };
+            let synthetic = if ready.is_none() {
+                Some(source.acquire())
+            } else {
+                None
+            };
+            let captured_at = ready
+                .or_else(|| synthetic.as_ref().map(|frame| frame.captured_at))
+                .unwrap_or(began);
             stages
                 .acquire
                 .record(lowlat_common::clock::diff_ms(began, captured_at));
@@ -1171,7 +1272,15 @@ fn encode_loop<E: Encoder>(
             }
 
             let submitted_at = lowlat_common::clock::Time::now();
-            if encoder.submit(&frame, force_keyframe).is_ok() {
+            let queued = match (&synthetic, display.as_deref_mut()) {
+                (Some(frame), _) => encoder.submit(frame, force_keyframe).is_ok(),
+                (None, Some(desktop)) => match desktop.presented() {
+                    Some(input) => encoder.submit_from_device(input, force_keyframe),
+                    None => false,
+                },
+                (None, None) => false,
+            };
+            if queued {
                 force_keyframe = false;
                 if let Some(previous) = previous_submit {
                     stages
@@ -1595,7 +1704,7 @@ mod tests {
     /// the same code that drives them, with the hardware's latency and its
     /// device removed.
     #[derive(Debug)]
-    struct Fake {
+    pub(super) struct Fake {
         unit: Vec<u8>,
         /// One entry per picture in flight, true where a refresh was asked
         /// for. **A fake that never answers a refresh request would hold every
@@ -1614,7 +1723,7 @@ mod tests {
     }
 
     #[derive(Debug)]
-    struct Never;
+    pub(super) struct Never;
 
     impl core::fmt::Display for Never {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -1678,6 +1787,7 @@ mod tests {
         /// that ring still has room, so each path can be reached on its own.
         fn with_pool(slots: usize) -> Self {
             let config = Config {
+                display: false,
                 width: 320,
                 height: 240,
                 fps: 240,
@@ -1711,7 +1821,7 @@ mod tests {
                         mute: false,
                     };
                     let mut roster = Roster::default();
-                    encode_loop(&owned, &arrivals, config, &mut roster, &mut encoder);
+                    encode_loop(&owned, &arrivals, config, &mut roster, &mut encoder, None);
                 })
                 .expect("thread");
             Self {
@@ -1754,6 +1864,7 @@ mod tests {
 
     fn test_config(codec: Codec) -> Config {
         Config {
+            display: false,
             width: 320,
             height: 240,
             fps: 240,
@@ -1897,7 +2008,14 @@ mod tests {
             shared.seats[1].ring.pop().is_some() || shared.seats[0].ring.pop().is_some()
         });
         let config = test_config(Codec::H264);
-        encode_loop(&shared, &arrivals, config, &mut roster, &mut fake_encoder());
+        encode_loop(
+            &shared,
+            &arrivals,
+            config,
+            &mut roster,
+            &mut fake_encoder(),
+            None,
+        );
         ticker.join().expect("ticker");
         assert_eq!(roster.active.len(), 2, "both guests did not seat");
         shared.stopping.store(0, Ordering::Release);
@@ -1942,6 +2060,7 @@ mod tests {
             test_config(Codec::H264),
             &mut roster,
             &mut fake_encoder(),
+            None,
         );
         assert!(ticker.join().expect("ticker"), "nothing was delivered");
         shared.stopping.store(0, Ordering::Release);
@@ -1961,6 +2080,7 @@ mod tests {
             test_config(Codec::H265),
             &mut roster,
             &mut mute,
+            None,
         );
         watchdog.join().expect("watchdog");
         assert_eq!(
@@ -2027,6 +2147,7 @@ mod tests {
             test_config(Codec::H264),
             &mut roster,
             &mut fake_encoder(),
+            None,
         );
         done.store(1, Ordering::Release);
         watchdog.join().expect("watchdog");
@@ -2052,6 +2173,7 @@ mod tests {
             test_config(Codec::H265),
             &mut roster,
             &mut fake_encoder(),
+            None,
         );
         assert!(
             ticker.join().expect("ticker"),
@@ -2126,6 +2248,7 @@ mod tests {
             test_config(Codec::H265),
             &mut roster,
             &mut encoder,
+            None,
         );
         assert!(
             ticker.join().expect("ticker"),
@@ -2170,6 +2293,7 @@ mod tests {
             test_config(Codec::H264),
             &mut roster,
             &mut encoder,
+            None,
         );
         done.store(1, Ordering::Release);
         watchdog.join().expect("watchdog");
@@ -2216,6 +2340,7 @@ mod tests {
                 test_config(Codec::H264),
                 &mut roster,
                 &mut encoder,
+                None,
             );
             watchdog.join().expect("watchdog");
             assert_eq!(
@@ -2371,6 +2496,7 @@ mod tests {
     #[ignore = "requires a render node"]
     fn the_real_encoder_serves_a_seated_guest() {
         let stream = Stream::start(Config {
+            display: false,
             width: 1920,
             height: 1080,
             fps: 60,
@@ -2431,6 +2557,7 @@ mod tests {
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
         let stream = Stream::start(Config {
+            display: false,
             width: 1920,
             height: 1080,
             fps: 60,
@@ -2481,6 +2608,7 @@ mod tests {
     /// table docs/05-host.md section 10 asks for.
     fn measure(fps: u32, frames: usize) -> Report {
         let stream = Stream::start(Config {
+            display: false,
             width: 1920,
             height: 1080,
             fps,

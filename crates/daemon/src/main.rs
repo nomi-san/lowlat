@@ -249,6 +249,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             min_mbps: MIN_BITRATE_MBPS,
             rotation,
             detail_rows,
+            // Off unless asked for. Capture needs the elevated capability and
+            // a display, and a run that has neither should generate pictures
+            // rather than refuse to start.
+            display: flag_set("--capture"),
         }),
     });
 

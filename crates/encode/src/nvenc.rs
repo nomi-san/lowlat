@@ -1085,7 +1085,12 @@ impl Encoder<'_> {
 /// bounds only how far the pipeline may run ahead of the hardware before it
 /// must collect. Deep enough to absorb a slow frame, shallow enough that a
 /// stall is noticed rather than buffered away.
-const IN_FLIGHT: usize = 4;
+/// How many pictures the encoder holds at once.
+///
+/// Public because a frame source has to build one conversion target per
+/// picture in flight: sharing fewer means converting into a target the
+/// hardware has not finished reading.
+pub const IN_FLIGHT: usize = 4;
 
 /// A registered input surface.
 ///
