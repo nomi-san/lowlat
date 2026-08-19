@@ -154,31 +154,50 @@ impl Aead {
                 off += GROUP_BYTES;
             }
 
-            // At most seven whole blocks and one partial block are left. They
-            // are encrypted one at a time but folded into GHASH together, so
-            // the tail costs one reduction rather than one per block.
-            let mut tail = [_mm_setzero_si128(); GROUP];
-            let mut n_tail = 0usize;
-            while off < buf.len() {
-                let take = (buf.len() - off).min(BLOCK);
-                let ks = encrypt_block(&self.sched, with_counter(base, ctr));
-                let mut block = [0u8; BLOCK];
-                copy_in(&mut block, buf, off, take);
-                let cipher = _mm_xor_si128(_mm_loadu_si128(block.as_ptr().cast()), ks);
-                _mm_storeu_si128(block.as_mut_ptr().cast(), cipher);
-                copy_out(buf, off, &block, take);
-                // A partial block is zero-padded before it reaches GHASH.
-                let mut padded = [0u8; BLOCK];
-                copy_in(&mut padded, &block, 0, take);
-                if let Some(slot) = tail.get_mut(n_tail) {
-                    *slot = _mm_loadu_si128(padded.as_ptr().cast());
+            // Up to eight blocks are left, the last possibly partial. Their
+            // keystream is generated in one pipelined pass exactly like a full
+            // group's: encrypting them one at a time pays full AES latency per
+            // block, which made a seven-block message cost more than an
+            // eight-block one.
+            let rem = buf.len() - off;
+            if rem > 0 {
+                let n_tail = rem.div_ceil(BLOCK);
+                // A whole group's worth of keystream is generated even for a
+                // one-block tail. Sizing this to the tail was tried and is
+                // slower: a runtime-length slice cannot stay in registers, so
+                // every AES round spills, and a 1200-byte packet went from 269
+                // to 295 ns. Doing extra work in registers beats doing less
+                // work through memory.
+                let ks = keystream_group(&self.sched, base, ctr);
+                let mut tail = [_mm_setzero_si128(); GROUP];
+                for (k, key) in ks.iter().enumerate().take(n_tail) {
+                    let at = off + k * BLOCK;
+                    let take = (buf.len() - at).min(BLOCK);
+                    let cipher = if take == BLOCK {
+                        // A whole block moves through registers; only the
+                        // short final block needs to go via a padded copy.
+                        let p = buf.as_mut_ptr().add(at).cast::<__m128i>();
+                        let c = _mm_xor_si128(_mm_loadu_si128(p), *key);
+                        _mm_storeu_si128(p, c);
+                        c
+                    } else {
+                        let mut block = [0u8; BLOCK];
+                        copy_in(&mut block, buf, at, take);
+                        let c = _mm_xor_si128(_mm_loadu_si128(block.as_ptr().cast()), *key);
+                        _mm_storeu_si128(block.as_mut_ptr().cast(), c);
+                        copy_out(buf, at, &block, take);
+                        // GHASH sees the partial block zero-padded, never the
+                        // keystream bytes past the message.
+                        let mut padded = [0u8; BLOCK];
+                        copy_in(&mut padded, &block, 0, take);
+                        _mm_loadu_si128(padded.as_ptr().cast())
+                    };
+                    if let Some(slot) = tail.get_mut(k) {
+                        *slot = cipher;
+                    }
+                    ctr = ctr.wrapping_add(1);
                 }
-                n_tail += 1;
-                ctr = ctr.wrapping_add(1);
-                off += take;
-            }
-            if let Some(blocks) = tail.get(..n_tail) {
-                if !blocks.is_empty() {
+                if let Some(blocks) = tail.get(..n_tail) {
                     ghash = ghash_group(&self.hp, ghash, blocks);
                 }
             }
@@ -218,26 +237,43 @@ impl Aead {
                 off += GROUP_BYTES;
             }
 
-            let mut tail = [_mm_setzero_si128(); GROUP];
-            let mut n_tail = 0usize;
-            while off < buf.len() {
-                let take = (buf.len() - off).min(BLOCK);
-                let mut padded = [0u8; BLOCK];
-                copy_in(&mut padded, buf, off, take);
-                if let Some(slot) = tail.get_mut(n_tail) {
-                    *slot = _mm_loadu_si128(padded.as_ptr().cast());
+            // Same pipelined tail as the sealing side, with GHASH taking the
+            // ciphertext before the keystream lands on it.
+            let rem = buf.len() - off;
+            if rem > 0 {
+                let n_tail = rem.div_ceil(BLOCK);
+                // A whole group's worth of keystream is generated even for a
+                // one-block tail. Sizing this to the tail was tried and is
+                // slower: a runtime-length slice cannot stay in registers, so
+                // every AES round spills, and a 1200-byte packet went from 269
+                // to 295 ns. Doing extra work in registers beats doing less
+                // work through memory.
+                let ks = keystream_group(&self.sched, base, ctr);
+                let mut tail = [_mm_setzero_si128(); GROUP];
+                for (k, key) in ks.iter().enumerate().take(n_tail) {
+                    let at = off + k * BLOCK;
+                    let take = (buf.len() - at).min(BLOCK);
+                    if take == BLOCK {
+                        let p = buf.as_mut_ptr().add(at).cast::<__m128i>();
+                        let cipher = _mm_loadu_si128(p);
+                        if let Some(slot) = tail.get_mut(k) {
+                            *slot = cipher;
+                        }
+                        _mm_storeu_si128(p, _mm_xor_si128(cipher, *key));
+                    } else {
+                        let mut padded = [0u8; BLOCK];
+                        copy_in(&mut padded, buf, at, take);
+                        let cipher = _mm_loadu_si128(padded.as_ptr().cast());
+                        if let Some(slot) = tail.get_mut(k) {
+                            *slot = cipher;
+                        }
+                        let mut block = [0u8; BLOCK];
+                        _mm_storeu_si128(block.as_mut_ptr().cast(), _mm_xor_si128(cipher, *key));
+                        copy_out(buf, at, &block, take);
+                    }
+                    ctr = ctr.wrapping_add(1);
                 }
-                n_tail += 1;
-                let ks = encrypt_block(&self.sched, with_counter(base, ctr));
-                let plain = _mm_xor_si128(_mm_loadu_si128(padded.as_ptr().cast()), ks);
-                let mut block = [0u8; BLOCK];
-                _mm_storeu_si128(block.as_mut_ptr().cast(), plain);
-                copy_out(buf, off, &block, take);
-                ctr = ctr.wrapping_add(1);
-                off += take;
-            }
-            if let Some(blocks) = tail.get(..n_tail) {
-                if !blocks.is_empty() {
+                if let Some(blocks) = tail.get(..n_tail) {
                     ghash = ghash_group(&self.hp, ghash, blocks);
                 }
             }
@@ -583,9 +619,16 @@ mod tests {
     use std::vec::Vec;
 
     /// Lengths chosen for the boundaries this code actually has: empty, under
-    /// one block, exactly one block, the eight-block group boundary, one past
-    /// it, and a real packet at the PMTU floor.
-    const LENGTHS: [usize; 13] = [0, 1, 15, 16, 17, 31, 127, 128, 129, 1200, 1201, 2047, 4096];
+    /// one block, exactly one block, a real packet at the PMTU floor, and the
+    /// eight-block group boundary from both sides.
+    ///
+    /// **Every possible tail size appears.** The tail runs a different path
+    /// from a whole group, so 80, 96 and 112 bytes are here to give it five,
+    /// six and seven whole blocks, and 113 and 127 give it eight with a
+    /// partial one on the end.
+    const LENGTHS: [usize; 18] = [
+        0, 1, 15, 16, 17, 31, 80, 96, 112, 113, 127, 128, 129, 1200, 1201, 2047, 2048, 4096,
+    ];
 
     fn material(seed: u64, len: usize) -> Vec<u8> {
         let mut s = seed;
