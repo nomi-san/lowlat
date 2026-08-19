@@ -757,7 +757,13 @@ it is the safer of the two to hold.
   Runs by default, because it needs a driver and not a card.* The round trip against a real
   desktop is kept as a diagnostic but is nearly blind to the matrix: a desktop is mostly grey
   and a grey pixel carries no chroma for one to act on.
-- [ ] Zero-copy import from the capture handle into the encoder on the same device.
+- [x] Zero-copy import from the capture handle into the conversion, and the converted frame
+  back out as a descriptor. *The plane offsets travel with it and come from the driver: a
+  2560x1440 frame puts chroma 49152 bytes past where pitch times height would, so a computed
+  offset reads the wrong bytes.*
+- [ ] The encoder importing that descriptor and producing a decodable picture. **This is what
+  settles the layout**; no test short of it can tell a correct plane offset from a plausible
+  one.
 - [ ] Cursor extraction, classification, and the visibility signal. **The shape has to be read
   and compared, not detected from metadata**: the pointer buffer's identity turns over as the
   pointer moves and says nothing about what it looks like. The buffer is linear and maps

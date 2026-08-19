@@ -23,6 +23,11 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   writing a two-plane result through a view per plane. The two-plane format
   reports no write support on any device here while each of its planes reports
   it everywhere, so the views are the only way in.
+- The converted frame handed out as a descriptor an encoder can take, untiled,
+  with the plane offsets and pitches the driver reports rather than ones
+  computed from the width. A 2560x1440 frame puts chroma 49152 bytes past where
+  the arithmetic would, so an importer given the computed number reads the tail
+  of the luma plane as colour.
 
 **Found by running it**
 
