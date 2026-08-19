@@ -11,6 +11,10 @@ authors.workspace = true
 [dependencies]
 lowlat-common.workspace = true
 drm.workspace = true
+# The pointer plane is mapped and read; frames never are.
+libc.workspace = true
+# The pointer is encoded in the form the wire carries it.
+lowlat-core.workspace = true
 ash.workspace = true
 
 [lints]

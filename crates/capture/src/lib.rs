@@ -17,6 +17,7 @@
 //! capture arrives with a handle of its own.
 
 pub mod convert;
+pub mod cursor;
 pub mod scanout;
 pub mod synthetic;
 pub mod vulkan;
