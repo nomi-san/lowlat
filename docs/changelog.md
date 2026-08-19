@@ -42,6 +42,10 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   every frame, imports are kept per buffer of the display's rotation, and there
   is one conversion target per picture in flight.
 
+- The pointer read off its plane and cropped to what is actually drawn, the
+  image form the wire carries it in, and the pointer message itself. The host
+  wiring that would send them is not written yet.
+
 **Found by running it**
 
 - **Plane position needs the atomic capability, not just universal planes.**
@@ -67,6 +71,12 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   pointer looks like, so the shape has to be read and compared. The buffer is
   linear and maps directly, and it is a fixed size whatever the pointer is, so
   the extent comes from the alpha channel.
+- **A peer that dies with a full send window is never reaped.** The window
+  climbs to its cap, every fragment goes stale, and the host retransmits at
+  three times the configured rate indefinitely. The process stays up, which is
+  worse than exiting: one that dies gets restarted and this one consumes the
+  uplink. The same session ends three other guests correctly, so the reaping
+  path is not broken in general.
 - **A source that imports once is indistinguishable from a working one until
   you watch it move.** The display cycles through a pool of buffers as it
   draws, so one import reads one buffer of that rotation for ever. The stream

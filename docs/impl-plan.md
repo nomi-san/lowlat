@@ -770,7 +770,11 @@ it is the safer of the two to hold.
   decodes perfectly and never changes; and a conversion target per picture in flight, for the
   reason the encoder's own input surfaces are. Which node the display is on is discovered
   rather than configured, because a wrong setting is indistinguishable from no session.*
-- [ ] Cursor extraction, classification, and the visibility signal. **The shape has to be read
+- [ ] Cursor extraction, classification, and the visibility signal. *Reading, encoding and the
+  wire message are done; the host wiring is not, so a guest currently sees no pointer at all.
+  What remains is the per-guest image cache keyed by checksum and gated on the client having
+  advertised it, the forget flag once the cache is full, the debounce, and the rule that an
+  update is skipped when the pointer is outside the stream.* **The shape has to be read
   and compared, not detected from metadata**: the pointer buffer's identity turns over as the
   pointer moves and says nothing about what it looks like. The buffer is linear and maps
   directly, so this is a compare against the previous read rather than a device readback, and
@@ -823,6 +827,12 @@ from a source change.
 
 ## Phase 11 - Multi-guest, software encode, and VAAPI
 
+- [ ] **A guest whose peer stops answering with a full send window is ended.** It is not today:
+  the window climbs to its cap, every fragment goes stale, and the host retransmits at three
+  times the configured rate indefinitely while the guest is never reaped. **This is a
+  correctness bug rather than a throughput one and does not belong behind the rest of this
+  phase.** A window at its cap with every fragment stale is enough to end a guest on its own,
+  without waiting on a deadline.
 - [ ] Per-guest pressure gate and the skip-until-keyframe cascade, expressed so a skip cannot
   be issued without latching the pending-keyframe state.
 - [ ] Consensus actuators and the degraded-guest event.
