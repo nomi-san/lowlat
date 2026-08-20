@@ -282,24 +282,33 @@ const HIDDEN_AFTER_MS: f64 = 250.0;
 struct Presence {
     /// When the plane was first found empty, while it still is.
     dark_since: Option<f64>,
-    /// The last thing said about the pointer, which is what a report of
-    /// nothing being drawn has to carry: the plane holds the position too, so
-    /// there is no fresh one to send.
-    last: PointerState,
+    /// The last pointer actually seen, which is what a report of nothing being
+    /// drawn has to carry: the plane holds the position too, so there is no
+    /// fresh one to send.
+    ///
+    /// **Absent until one has been seen, and that is load bearing.** "Nothing
+    /// is drawn" only means anything against something having been drawn
+    /// before. A stream can start onto an idle desktop whose compositor is not
+    /// using the pointer plane at all, and reporting that as a pointer taken
+    /// over tells a guest to hide its cursor and switch to deltas before it
+    /// has been shown a pointer even once.
+    last: Option<PointerState>,
 }
 
 impl Presence {
     /// Nothing is being drawn. Say so, once it has been true long enough.
     fn dark(&mut self, now_ms: f64) -> Option<PointerState> {
+        // Nothing has ever been drawn, so nothing has stopped being drawn.
+        let last = self.last?;
         let since = *self.dark_since.get_or_insert(now_ms);
         if now_ms - since < HIDDEN_AFTER_MS {
             return None;
         }
         let state = PointerState {
             hidden: true,
-            ..self.last
+            ..last
         };
-        self.last = state;
+        self.last = Some(state);
         Some(state)
     }
 
@@ -309,7 +318,7 @@ impl Presence {
     /// on this edge is a guest that cannot see its own pointer for that long.
     fn lit(&mut self, state: PointerState) {
         self.dark_since = None;
-        self.last = state;
+        self.last = Some(state);
     }
 }
 
@@ -2498,13 +2507,21 @@ mod tests {
     /// late on that edge is a guest that cannot see its own pointer.
     #[test]
     fn nothing_drawn_is_believed_only_after_it_persists() {
+        // **Nothing drawn before anything ever was says nothing.** A stream
+        // starting onto an idle desktop whose compositor is not using the
+        // pointer plane would otherwise tell a guest its pointer had been
+        // taken over before it had been shown one.
+        let mut fresh = Presence::default();
+        assert_eq!(fresh.dark(1000.0), None);
+        assert_eq!(fresh.dark(1000.0 + HIDDEN_AFTER_MS * 10.0), None);
+
         let mut presence = Presence {
             dark_since: None,
-            last: PointerState {
+            last: Some(PointerState {
                 x: 10,
                 y: 20,
                 ..PointerState::default()
-            },
+            }),
         };
 
         // A transient blank says nothing at all.
