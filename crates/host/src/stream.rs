@@ -295,7 +295,41 @@ struct Presence {
     last: Option<PointerState>,
 }
 
+/// One read of the pointer, as the presence rule needs it.
+#[derive(Debug, Clone, Copy)]
+struct Seen {
+    state: PointerState,
+    /// Whether this read examined the pixels. See [`crate::capture`].
+    looked: bool,
+}
+
 impl Presence {
+    /// Take one read into account and say what to publish, if anything.
+    ///
+    /// **The whole rule in one place, because it was got wrong at the call
+    /// site rather than here.** A read that did not look at the pixels cannot
+    /// say a pointer is still there, and letting one clear the wait resets it
+    /// three times out of four, so it never expires.
+    fn observe(&mut self, seen: Option<Seen>, now_ms: f64) -> Option<PointerState> {
+        let Some(seen) = seen else {
+            return self.dark(now_ms);
+        };
+        if seen.looked {
+            self.lit(seen.state);
+            return Some(seen.state);
+        }
+        // Mid-decision: saying anything here reports a pointer that may
+        // already be gone, and undoes the wait that is about to answer.
+        if self.waiting() {
+            return None;
+        }
+        Some(PointerState {
+            x: seen.state.x,
+            y: seen.state.y,
+            ..self.carried()
+        })
+    }
+
     /// Nothing is being drawn. Say so, once it has been true long enough.
     fn dark(&mut self, now_ms: f64) -> Option<PointerState> {
         // Nothing has ever been drawn, so nothing has stopped being drawn.
@@ -310,6 +344,19 @@ impl Presence {
         };
         self.last = Some(state);
         Some(state)
+    }
+
+    /// Whether a decision about the pointer going away is pending.
+    ///
+    /// While it is, a read that did not look at the pixels says nothing: it
+    /// would report a pointer that may already be gone.
+    fn waiting(&self) -> bool {
+        self.dark_since.is_some()
+    }
+
+    /// The last pointer seen, for a read that only has a position to add.
+    fn carried(&self) -> PointerState {
+        self.last.unwrap_or_default()
     }
 
     /// A pointer is being drawn again.
@@ -1474,7 +1521,7 @@ fn publish_pointer(
         // aim actually wants. Below that it is one of the transients and
         // nothing is said, so the guest keeps drawing the last pointer where
         // it was.
-        if let Some(state) = presence.dark(now_ms) {
+        if let Some(state) = presence.observe(None, now_ms) {
             shared.publish_pointer(state, None);
         }
         return;
@@ -1500,9 +1547,18 @@ fn publish_pointer(
         checksum: seen.checksum,
         hidden: false,
     };
-    presence.lit(state);
-    // The picture travels only when it is one nothing has been shown yet.
-    let image = seen.fresh.then(|| desktop.pointer_image());
+    let Some(state) = presence.observe(
+        Some(Seen {
+            state,
+            looked: seen.looked,
+        }),
+        now_ms,
+    ) else {
+        return;
+    };
+    // The picture travels only when it is one nothing has been shown yet,
+    // which can only be a read that looked.
+    let image = (seen.fresh && seen.looked).then(|| desktop.pointer_image());
     shared.publish_pointer(state, image);
 }
 
@@ -2498,6 +2554,73 @@ mod tests {
     /// sent. Granting it would hand the others a stream their decoders were
     /// not built for, which they report as a decode failure rather than as a
     /// mismatch.
+    /// **A read that did not look at the pixels is not evidence of a pointer.**
+    /// The picture is read on a cadence and the reads between report the one
+    /// already held; counting those as a pointer still being drawn resets the
+    /// timer three times out of four, so it never expires and a game that hid
+    /// the cursor never reaches the guest.
+    #[test]
+    fn only_a_read_that_looked_clears_the_wait() {
+        let seen = PointerState {
+            x: 10,
+            y: 20,
+            ..PointerState::default()
+        };
+        let mut presence = Presence::default();
+        assert_eq!(
+            presence.observe(
+                Some(Seen {
+                    state: seen,
+                    looked: true
+                }),
+                0.0
+            ),
+            Some(seen)
+        );
+
+        // Nothing drawn, then the reads in between that did not look, then
+        // nothing drawn again -- which is exactly the pattern a game that
+        // hides the cursor produces, three ticks in four.
+        let blind = Some(Seen {
+            state: seen,
+            looked: false,
+        });
+        assert_eq!(
+            presence.observe(None, 100.0),
+            None,
+            "the wait did not start"
+        );
+        for at in [118.0, 136.0, 154.0] {
+            assert_eq!(
+                presence.observe(blind, at),
+                None,
+                "a read that did not look spoke for the pointer"
+            );
+        }
+        assert_eq!(presence.observe(None, 172.0), None);
+        for at in [190.0, 208.0, 226.0] {
+            assert_eq!(presence.observe(blind, at), None);
+        }
+
+        let held = presence
+            .observe(None, 100.0 + HIDDEN_AFTER_MS)
+            .expect("the deadline never arrived");
+        assert!(held.hidden, "the wait expired into the wrong answer");
+
+        // And a read that did look, with a pointer in it, ends it at once.
+        assert_eq!(
+            presence.observe(
+                Some(Seen {
+                    state: seen,
+                    looked: true
+                }),
+                999.0
+            ),
+            Some(seen)
+        );
+        assert!(!presence.waiting());
+    }
+
     /// **The plane emptying is a noisy version of "an application took the
     /// pointer".** It is that when a game hides the cursor to aim, and it is
     /// not when a pointer grew past what the plane can carry or when a display

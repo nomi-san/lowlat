@@ -242,6 +242,14 @@ pub struct Pointer {
     pub checksum: u32,
     /// True when this read produced a picture that has not been seen before.
     pub fresh: bool,
+    /// True when this read actually examined the pixels.
+    ///
+    /// **Only a read that looked can say whether a pointer is being drawn.**
+    /// The picture is read on a cadence, so most reads report the one they
+    /// already had; taking those as evidence that a pointer is still on screen
+    /// resets any timer watching for one that has gone, three times out of
+    /// four, so it never expires.
+    pub looked: bool,
 }
 
 /// Reads the pointer and notices when its picture changes.
@@ -332,9 +340,11 @@ impl Watcher {
         let repeated = cursor.image.id == self.id;
         self.id = cursor.image.id;
         let mut fresh = false;
+        let mut looked = false;
         self.since = self.since.saturating_add(1);
         if self.since >= PIXELS_EVERY || self.held.used == 0 {
             self.since = 0;
+            looked = true;
             let Some((extent, rgba)) = self.reader.read(card, &cursor.image)? else {
                 return Ok(None);
             };
@@ -367,6 +377,7 @@ impl Watcher {
             height: u16::try_from(held.extent.height).unwrap_or(u16::MAX),
             checksum: held.checksum,
             fresh,
+            looked,
         }))
     }
 
