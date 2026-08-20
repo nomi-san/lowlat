@@ -17,7 +17,7 @@
 
 use std::io::Write;
 
-use lowlat::display::Display;
+use lowlat::display::{Display, Registration};
 use lowlat_encode::{Poll, cuda, nvenc};
 
 fn main() {
@@ -68,8 +68,10 @@ fn main() {
         )
         .unwrap_or_else(|e| fail(&format!("configure: {e}")));
 
-    let mut desktop = Display::open(nvenc::IN_FLIGHT, &encoder)
-        .unwrap_or_else(|e| fail(&format!("display: {e}")));
+    let mut desktop = Display::open(nvenc::IN_FLIGHT, |device, frame| {
+        Display::register_vendor(device, &encoder, frame)
+    })
+    .unwrap_or_else(|e| fail(&format!("display: {e}")));
     println!("{desktop:?}, encoding {frames} pictures");
 
     let mut file = std::fs::File::create(&out).unwrap_or_else(|e| fail(&format!("create: {e}")));
@@ -78,7 +80,7 @@ fn main() {
         desktop
             .acquire()
             .unwrap_or_else(|e| fail(&format!("acquire: {e}")));
-        let Some(input) = desktop.presented() else {
+        let Some(Registration::Vendor { input, .. }) = desktop.presented() else {
             fail("nothing was converted")
         };
         if encoder.submit_registered(input, at == 0).is_err() {

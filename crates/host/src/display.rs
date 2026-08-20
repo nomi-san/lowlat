@@ -70,12 +70,38 @@ impl From<vulkan::Error> for Error {
     }
 }
 
+/// What an encoder calls a converted frame it has been handed.
+///
+/// **An enum rather than a type parameter**, because the set is closed and the
+/// two members are genuinely different objects: one is an address the vendor
+/// runtime was told about, the other is a surface the display interface
+/// imported. A backend matches its own and refuses the other, which is the
+/// same shape as a frame arriving for a pipeline that cannot take it.
+pub enum Registration {
+    /// An address registered with the vendor runtime.
+    Vendor {
+        input: lowlat_encode::nvenc::Input,
+        /// Kept because releasing it invalidates the address the encoder
+        /// holds.
+        _taken: lowlat_encode::cuda::External,
+    },
+    /// A surface the display interface imported from the same allocation.
+    Open { surface: u32 },
+}
+
+impl core::fmt::Debug for Registration {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Vendor { .. } => f.write_str("Vendor"),
+            Self::Open { surface } => write!(f, "Open({surface})"),
+        }
+    }
+}
+
 /// One conversion target, registered with the encoder once.
 struct Target {
     frame: Nv12,
-    input: lowlat_encode::nvenc::Input,
-    /// Kept because releasing it invalidates the address the encoder holds.
-    _taken: lowlat_encode::cuda::External,
+    registration: Registration,
 }
 
 /// What the display is showing, described once and compared against.
@@ -150,7 +176,10 @@ impl Display {
     /// **The encoder must already be configured for what the display is
     /// showing.** Its registration fixes the picture size, so a mismatch is a
     /// stream of the wrong shape rather than a refusal.
-    pub fn open(depth: usize, encoder: &lowlat_encode::nvenc::Encoder<'_>) -> Result<Self, Error> {
+    pub fn open(
+        depth: usize,
+        register: impl Fn(&vulkan::Device, &Nv12) -> Result<Registration, Error>,
+    ) -> Result<Self, Error> {
         let (node, card, layout) = Self::find()?;
         let device = vulkan::Device::for_display(&node)?;
         let converter = Converter::new(&device)?;
@@ -158,7 +187,12 @@ impl Display {
 
         let mut targets = Vec::with_capacity(depth);
         for _ in 0..depth {
-            targets.push(Self::target(&device, encoder, shape.width, shape.height)?);
+            let frame = device.allocate_nv12(shape.width, shape.height)?;
+            let registration = register(&device, &frame)?;
+            targets.push(Target {
+                frame,
+                registration,
+            });
         }
 
         lowlat_common::log_info!(
@@ -218,17 +252,17 @@ impl Display {
         Err(Error::Capture(last))
     }
 
-    /// Build one conversion target and hand it to the encoder.
-    fn target(
+    /// Register a conversion target with the vendor runtime.
+    ///
+    /// **The frame leaves by the handle that runtime has a name for.** It has
+    /// none for a display-interface descriptor, and the allocation can produce
+    /// either.
+    pub fn register_vendor(
         device: &vulkan::Device,
         encoder: &lowlat_encode::nvenc::Encoder<'_>,
-        width: u32,
-        height: u32,
-    ) -> Result<Target, Error> {
-        let frame = device.allocate_nv12(width, height)?;
-        // The encoder's runtime has no name for a display-interface descriptor,
-        // so the frame leaves the other way. The allocation can produce both.
-        let (fd, exported) = device.export_nv12(&frame, false)?;
+        frame: &Nv12,
+    ) -> Result<Registration, Error> {
+        let (fd, exported) = device.export_nv12(frame, false)?;
         let bytes = u64::from(exported.pitch) * u64::from(exported.height) * 3 / 2;
         let cuda = lowlat_encode::cuda::Cuda::load().map_err(|_| Error::Register)?;
         // SAFETY: the encoder's context is current on this thread, the
@@ -241,20 +275,36 @@ impl Display {
         let input = encoder
             .register_ptr(plane.ptr(), plane.pitch())
             .map_err(|_| Error::Register)?;
-        Ok(Target {
-            frame,
+        Ok(Registration::Vendor {
             input,
             _taken: taken,
         })
+    }
+
+    /// Import a conversion target through the display interface.
+    ///
+    /// **The same allocation, described rather than copied.** The encoder then
+    /// reads the bytes the conversion wrote, which is the whole reason this
+    /// backend has a display source at all.
+    pub fn register_open(
+        device: &vulkan::Device,
+        display: &lowlat_encode::vaapi::Display<'_>,
+        frame: &Nv12,
+    ) -> Result<Registration, Error> {
+        let (fd, exported) = device.export_nv12(frame, true)?;
+        let surface = display
+            .import(std::os::fd::AsFd::as_fd(&fd), &exported)
+            .map_err(|_| Error::Register)?;
+        Ok(Registration::Open { surface })
     }
 
     /// The registration the last [`Display::acquire`] converted into.
     ///
     /// Separate from the acquire so a caller can hold it across other work
     /// without holding the whole source borrowed.
-    pub fn presented(&self) -> Option<&lowlat_encode::nvenc::Input> {
+    pub fn presented(&self) -> Option<&Registration> {
         let slot = self.next.checked_sub(1)? % self.targets.len().max(1);
-        self.targets.get(slot).map(|target| &target.input)
+        self.targets.get(slot).map(|target| &target.registration)
     }
 
     /// Convert what the display is showing now into the next free target.

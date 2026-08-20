@@ -1158,6 +1158,42 @@ fn run_open(
     config: Config,
     roster: &mut Roster,
 ) -> Exit {
+    // **The size the display settled on, before anything is built for it.**
+    // Same rule as the vendor path: a display decides its own size and
+    // everything downstream has to be told the same answer.
+    let (width, height) = if config.display {
+        match await_display() {
+            Some(size) => {
+                if size != (config.width, config.height) {
+                    lowlat_common::log_info!(
+                        "stream: the display is {}x{}, not the configured {}x{}; following it",
+                        size.0,
+                        size.1,
+                        config.width,
+                        config.height
+                    );
+                }
+                size
+            }
+            None => {
+                lowlat_common::log_error!(
+                    "stream: nothing has been scanning out for {:.0}s, ending {} guest(s)",
+                    DISPLAY_WAIT.as_secs_f64(),
+                    roster.active.len()
+                );
+                return Exit::Failed(status::CAPTURE_UNAVAILABLE);
+            }
+        }
+    } else {
+        (config.width, config.height)
+    };
+    shared.publish_picture(width, height);
+    let config = Config {
+        width,
+        height,
+        ..config
+    };
+
     let (codec, params) = match config.codec {
         Codec::H264 => (
             lowlat_encode::vaapi::Codec::H264,
@@ -1204,15 +1240,27 @@ fn run_open(
         lowlat_common::log_error!("stream: encoder could not be configured");
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
-    // **No display source here.** The conversion runs on the device the display
-    // is attached to, and a frame on one card cannot reach an encoder on
-    // another without the copy through system memory this path exists to
-    // avoid. When this backend can take a frame by descriptor, the two meet.
-    //
-    // The configured size is the real one here for the same reason: with a
-    // generated picture there is no display to follow.
-    shared.publish_picture(config.width, config.height);
-    encode_loop(shared, arrivals, config, roster, &mut encoder, None)
+    let mut desktop = if config.display {
+        match crate::display::Display::open(ENCODE_DEPTH, |device, frame| {
+            crate::display::Display::register_open(device, &display, frame)
+        }) {
+            Ok(desktop) => Some(desktop),
+            Err(error) => {
+                lowlat_common::log_error!("stream: the display could not be opened, {error}");
+                return Exit::Failed(status::CAPTURE_UNAVAILABLE);
+            }
+        }
+    } else {
+        None
+    };
+    encode_loop(
+        shared,
+        arrivals,
+        config,
+        roster,
+        &mut encoder,
+        desktop.as_mut(),
+    )
 }
 
 fn run_vendor(
@@ -1312,7 +1360,9 @@ fn run_vendor(
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
     let mut desktop = if config.display {
-        match crate::display::Display::open(lowlat_encode::nvenc::IN_FLIGHT, &encoder) {
+        match crate::display::Display::open(lowlat_encode::nvenc::IN_FLIGHT, |device, frame| {
+            crate::display::Display::register_vendor(device, &encoder, frame)
+        }) {
             Ok(desktop) => Some(desktop),
             Err(error) => {
                 lowlat_common::log_error!("stream: the display could not be opened, {error}");
@@ -1611,7 +1661,7 @@ trait FromDevice {
     /// it goes round and tries again.
     fn submit_from_device(
         &mut self,
-        input: &lowlat_encode::nvenc::Input,
+        registration: &crate::display::Registration,
         force_keyframe: bool,
     ) -> bool;
 }
@@ -1619,9 +1669,14 @@ trait FromDevice {
 impl FromDevice for lowlat_encode::nvenc::Encoder<'_> {
     fn submit_from_device(
         &mut self,
-        input: &lowlat_encode::nvenc::Input,
+        registration: &crate::display::Registration,
         force_keyframe: bool,
     ) -> bool {
+        // **A registration made for the other backend is refused, not
+        // reinterpreted.** It names an object this runtime has never heard of.
+        let crate::display::Registration::Vendor { input, .. } = registration else {
+            return false;
+        };
         self.submit_registered(input, force_keyframe).is_ok()
     }
 }
@@ -1630,7 +1685,7 @@ impl FromDevice for lowlat_encode::nvenc::Encoder<'_> {
 impl FromDevice for tests::Fake {
     fn submit_from_device(
         &mut self,
-        _input: &lowlat_encode::nvenc::Input,
+        _registration: &crate::display::Registration,
         _force_keyframe: bool,
     ) -> bool {
         false
@@ -1640,10 +1695,13 @@ impl FromDevice for tests::Fake {
 impl FromDevice for lowlat_encode::vaapi::Encoder<'_> {
     fn submit_from_device(
         &mut self,
-        _input: &lowlat_encode::nvenc::Input,
-        _force_keyframe: bool,
+        registration: &crate::display::Registration,
+        force_keyframe: bool,
     ) -> bool {
-        false
+        let crate::display::Registration::Open { surface } = registration else {
+            return false;
+        };
+        self.submit_registered(*surface, force_keyframe).is_ok()
     }
 }
 
@@ -1953,7 +2011,26 @@ fn encode_loop<E: Encoder + FromDevice>(
                 since_report += 1;
                 if since_report >= REPORT_FRAMES {
                     since_report = 0;
-                    shared.timing.publish(&stages.report());
+                    let report = stages.report();
+                    shared.timing.publish(&report);
+                    // **Where the time goes, not just how much of it there
+                    // is.** The figure a peer is told is one number covering
+                    // capture, conversion, submission and the wait for the
+                    // hardware, and the four move for different reasons: a
+                    // slower device, a larger picture, and a stage that
+                    // blocks all read the same from outside.
+                    lowlat_common::log_info!(
+                        "stream: stages ms p50/p99 acquire={:.3}/{:.3} encode={:.3}/{:.3} \
+                         publish={:.3}/{:.3} interval={:.3}/{:.3}",
+                        report.acquire.p50,
+                        report.acquire.p99,
+                        report.encode.p50,
+                        report.encode.p99,
+                        report.publish.p50,
+                        report.publish.p99,
+                        report.interval.p50,
+                        report.interval.p99,
+                    );
                 }
             }
             // A refusal is the encoder holding as many pictures as it will:

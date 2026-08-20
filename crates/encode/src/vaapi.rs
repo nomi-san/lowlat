@@ -28,6 +28,11 @@ use crate::ffi::va::{
     VAEntrypoint, VAEntrypointEncSlice, VAProfile, VAProfileH264High, VAProfileH264Main,
     VAProfileHEVCMain, VAStatus, VASurfaceID,
 };
+use crate::ffi::va::{
+    VA_FOURCC_NV12, VA_SURFACE_ATTRIB_SETTABLE, VAGenericValue, VAGenericValueTypeInteger,
+    VAGenericValueTypePointer, VASurfaceAttrib, VASurfaceAttribExternalBufferDescriptor,
+    VASurfaceAttribMemoryType,
+};
 
 /// The core interface and its display binding, versioned.
 const LIBVA: [&CStr; 2] = [c"libva.so.2", c"libva.so"];
@@ -1041,6 +1046,114 @@ impl Display<'_> {
         Ok(pool)
     }
 
+    /// Take a frame that already lives on this device as a surface.
+    ///
+    /// **The whole point of the open backend having a display source.** The
+    /// conversion writes into an allocation on this same device and hands over
+    /// a descriptor; importing it means the encoder reads those very bytes
+    /// rather than a copy of them through system memory.
+    ///
+    /// The descriptor is borrowed for the call. The runtime duplicates what it
+    /// keeps, so the caller still owns the one it passed in.
+    pub fn import(
+        &self,
+        fd: std::os::fd::BorrowedFd<'_>,
+        frame: &lowlat_capture::convert::Exported,
+    ) -> Result<VASurfaceID> {
+        use std::os::fd::AsRawFd;
+
+        let bytes = u64::from(frame.pitch)
+            .checked_mul(u64::from(frame.height))
+            .and_then(|luma| luma.checked_mul(3))
+            .map(|both| both / 2)
+            .and_then(|size| u32::try_from(size).ok())
+            .ok_or(Error::UnsupportedLayout)?;
+
+        let blank = crate::ffi::va::VADRMPRIMESurfaceDescriptorLayer {
+            drm_format: 0,
+            num_planes: 0,
+            object_index: [0; crate::ffi::va::VA_DRM_PRIME_PLANES],
+            offset: [0; crate::ffi::va::VA_DRM_PRIME_PLANES],
+            pitch: [0; crate::ffi::va::VA_DRM_PRIME_PLANES],
+        };
+        let mut descriptor = crate::ffi::va::VADRMPRIMESurfaceDescriptor {
+            fourcc: VA_FOURCC_NV12,
+            width: frame.width,
+            height: frame.height,
+            num_objects: 1,
+            objects: [crate::ffi::va::VADRMPRIMESurfaceDescriptorObject {
+                fd: fd.as_raw_fd(),
+                size: bytes,
+                drm_format_modifier: frame.modifier,
+            }; crate::ffi::va::VA_DRM_PRIME_OBJECTS],
+            num_layers: 1,
+            layers: [blank; crate::ffi::va::VA_DRM_PRIME_LAYERS],
+        };
+        // **One layer of two planes, not two layers of one.** Both planes live
+        // in the same allocation at offsets of our choosing, and describing
+        // them as separate layers is how a driver is told they are separate
+        // allocations, which they are not.
+        descriptor.layers[0] = crate::ffi::va::VADRMPRIMESurfaceDescriptorLayer {
+            drm_format: crate::ffi::va::DRM_FORMAT_NV12,
+            num_planes: 2,
+            object_index: [0; crate::ffi::va::VA_DRM_PRIME_PLANES],
+            offset: [frame.planes[0].offset, frame.planes[1].offset, 0, 0],
+            pitch: [frame.planes[0].pitch, frame.planes[1].pitch, 0, 0],
+        };
+
+        let mut attributes = [
+            VASurfaceAttrib {
+                type_: VASurfaceAttribMemoryType,
+                flags: VA_SURFACE_ATTRIB_SETTABLE,
+                value: VAGenericValue {
+                    type_: VAGenericValueTypeInteger,
+                    value: crate::ffi::va::_VAGenericValue__bindgen_ty_1 {
+                        i: i32::from_ne_bytes(
+                            crate::ffi::va::VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2.to_ne_bytes(),
+                        ),
+                    },
+                },
+            },
+            VASurfaceAttrib {
+                type_: VASurfaceAttribExternalBufferDescriptor,
+                flags: VA_SURFACE_ATTRIB_SETTABLE,
+                value: VAGenericValue {
+                    type_: VAGenericValueTypePointer,
+                    value: crate::ffi::va::_VAGenericValue__bindgen_ty_1 {
+                        p: core::ptr::from_mut(&mut descriptor).cast(),
+                    },
+                },
+            },
+        ];
+
+        let mut surface: VASurfaceID = 0;
+        // SAFETY: the attribute list and the descriptor it points at both
+        // outlive the call, the descriptor names one live descriptor, and the
+        // surface is one writable identifier.
+        let status = unsafe {
+            (self.va.create_surfaces)(
+                self.raw,
+                VA_RT_FORMAT_YUV420,
+                frame.width,
+                frame.height,
+                core::ptr::from_mut(&mut surface),
+                1,
+                attributes.as_mut_ptr().cast(),
+                c_uint::try_from(attributes.len()).unwrap_or(0),
+            )
+        };
+        self.va.check(status)?;
+        Ok(surface)
+    }
+
+    /// Release a surface taken by [`Display::import`].
+    pub fn release(&self, mut surface: VASurfaceID) {
+        // SAFETY: the identifier came from a successful import on this display.
+        unsafe {
+            (self.va.destroy_surfaces)(self.raw, core::ptr::from_mut(&mut surface), 1);
+        }
+    }
+
     fn destroy_pool(&self, pool: &mut [VASurfaceID]) {
         // SAFETY: every entry came from a successful create.
         unsafe {
@@ -1051,6 +1164,15 @@ impl Display<'_> {
             );
         }
     }
+}
+
+/// Where a picture to encode comes from.
+enum Source<'a> {
+    /// Bytes in system memory, which have to be uploaded first.
+    Bytes(&'a lowlat_capture::Frame<'a>),
+    /// A surface already on this device, imported from the allocation the
+    /// conversion wrote into.
+    Surface(VASurfaceID),
 }
 
 impl Context<'_> {
@@ -1794,6 +1916,19 @@ impl Encoder<'_> {
         frame: &lowlat_capture::Frame<'_>,
         force_keyframe: bool,
     ) -> Result<()> {
+        self.submit_from(Source::Bytes(frame), force_keyframe)
+    }
+
+    /// Encode a picture that is already on this device.
+    ///
+    /// **No upload, and that is the whole difference.** The surface was
+    /// imported from the allocation the conversion wrote into, so the encoder
+    /// reads those very bytes.
+    pub fn submit_registered(&mut self, input: VASurfaceID, force_keyframe: bool) -> Result<()> {
+        self.submit_from(Source::Surface(input), force_keyframe)
+    }
+
+    fn submit_from(&mut self, source: Source<'_>, force_keyframe: bool) -> Result<()> {
         if self.pending.len() >= self.coded.len() {
             return Err(Error::QueueFull);
         }
@@ -1804,15 +1939,22 @@ impl Encoder<'_> {
         let refresh = force_keyframe || self.reference.is_none();
         let slot = self.next;
         self.next = (self.next + 1) % self.coded.len();
-        let input = *self.context.surfaces.get(slot).ok_or(Error::NoEncoder)?;
         let recon = *self.context.recon.get(slot).ok_or(Error::NoEncoder)?;
         let coded = self.coded[slot];
 
         // **One input surface per slot, so this cannot overwrite a picture
         // that is still being encoded.** The slot is only reused once its
         // picture has been collected, which is what the queue-full check
-        // above enforces.
-        self.upload(input, frame)?;
+        // above enforces. A picture already on the device brings its own
+        // surface and the pool is not touched at all.
+        let input = match source {
+            Source::Bytes(frame) => {
+                let input = *self.context.surfaces.get(slot).ok_or(Error::NoEncoder)?;
+                self.upload(input, frame)?;
+                input
+            }
+            Source::Surface(input) => input,
+        };
 
         // The picture is read from the input surface and reconstructed into
         // its counterpart. The two are never the same surface.

@@ -21869,3 +21869,55 @@ pub const VA_TEE_EXECUTE_FUNCTION_ID_PASS_THROUGH: _VA_TEE_EXEC_FUNCTION_ID = 1;
 pub const VA_TEE_EXECUTE_FUNCTION_ID_GET_FIRMWARE_VERSION: _VA_TEE_EXEC_FUNCTION_ID = 2;
 pub type _VA_TEE_EXEC_FUNCTION_ID = ::std::os::raw::c_uint;
 pub use self::_VA_TEE_EXEC_FUNCTION_ID as VA_TEE_EXECUTE_FUNCTION_ID;
+
+// The descriptor a surface is imported through, from the runtime's
+// display-interface header rather than its core one. Hand-written because the
+// generated bindings above cover the core header only.
+
+/// Memory a surface is imported from, as a descriptor naming file descriptors
+/// and the layout inside them.
+pub const VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2: u32 = 0x4000_0000;
+
+/// Objects and layers a descriptor can name.
+///
+/// The header fixes both at four. A frame handed over here is one object with
+/// one layer of two planes.
+pub const VA_DRM_PRIME_OBJECTS: usize = 4;
+pub const VA_DRM_PRIME_LAYERS: usize = 4;
+pub const VA_DRM_PRIME_PLANES: usize = 4;
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct VADRMPRIMESurfaceDescriptorObject {
+    /// **Borrowed for the call and closed by the caller.** The runtime
+    /// duplicates what it needs.
+    pub fd: ::std::os::raw::c_int,
+    pub size: u32,
+    pub drm_format_modifier: u64,
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct VADRMPRIMESurfaceDescriptorLayer {
+    pub drm_format: u32,
+    pub num_planes: u32,
+    pub object_index: [u32; VA_DRM_PRIME_PLANES],
+    pub offset: [u32; VA_DRM_PRIME_PLANES],
+    pub pitch: [u32; VA_DRM_PRIME_PLANES],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct VADRMPRIMESurfaceDescriptor {
+    pub fourcc: u32,
+    pub width: u32,
+    pub height: u32,
+    pub num_objects: u32,
+    pub objects: [VADRMPRIMESurfaceDescriptorObject; VA_DRM_PRIME_OBJECTS],
+    pub num_layers: u32,
+    pub layers: [VADRMPRIMESurfaceDescriptorLayer; VA_DRM_PRIME_LAYERS],
+}
+
+/// The four character code a two-plane eight-bit frame is named by, on the
+/// display interface rather than the runtime's own.
+pub const DRM_FORMAT_NV12: u32 = 0x3231_564E;
