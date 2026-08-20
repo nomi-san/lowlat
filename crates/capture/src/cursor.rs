@@ -14,8 +14,13 @@
 //!   from the alpha channel, and shipping the buffer's own dimensions instead
 //!   would send a quarter of a megabyte at the wrong size.
 //! - **The identity of the buffer says nothing about the shape.** The display
-//!   cycles a pool of them and a redraw lands wherever; only the pixels
-//!   distinguish one pointer from another.
+//!   cycles a pool of them and a redraw lands wherever, including back in the
+//!   buffer that already held the previous shape: measured at thirteen of
+//!   nineteen shape changes in twenty seconds of ordinary hovering. Only the
+//!   pixels distinguish one pointer from another.
+//! - **The mapping is uncached, so how it is read matters more than how much
+//!   of it is read.** Walking it with a stride costs an order of magnitude
+//!   more than copying it out in bulk and walking the copy.
 
 use std::os::fd::AsRawFd;
 
@@ -38,12 +43,49 @@ pub struct Extent {
     pub height: u32,
 }
 
+/// Rows copied out of the plane before the whole of it is.
+///
+/// **The plane is a fixed 256 high whatever the pointer is**, and every
+/// pointer measured here is drawn within the first few dozen rows of it, so
+/// copying the whole allocation spends four times what the answer needs. A
+/// pointer whose drawn part reaches the last copied row, or is not in these
+/// rows at all, is read again in full: correct either way, and fast for the
+/// shapes that actually occur. Measured over a session of ordinary use, the
+/// second copy never happened.
+const ROWS_FIRST: u32 = 64;
+
+/// Reads between one look at the pixels and the next.
+///
+/// **The position is nearly free and the picture is not.** Measured on this
+/// display: describing the plane costs 0.006 ms, and looking at the pixels
+/// costs about 3 ms, most of it faulting a fresh mapping of uncached memory.
+/// So the position is read every time and the picture on a cadence, which
+/// comes to 0.77 ms per read amortised, and what a guest sees is a pointer
+/// that tracks at full rate whose shape can lag by up to four reads.
+///
+/// **The buffer identifier is not used to trigger this**, tempting as it is:
+/// it changes on almost every read while the pointer moves, so it would spend
+/// the cost on exactly the reads that can least afford it, and it still misses
+/// the change it was supposed to catch.
+const PIXELS_EVERY: u32 = 4;
+
 /// Reads pointers, reusing one buffer for all of them.
 pub struct Reader {
+    /// The plane's own bytes, copied into system memory.
+    ///
+    /// **The mapping is uncached, and that decides how it is read.** Measured
+    /// on this display: touching every fourth byte of the mapping to find the
+    /// drawn part costs 43 ms, while copying the same bytes out in bulk costs
+    /// 6.6 ms and scanning them here afterwards costs 0.025. Wide loads
+    /// combine over that mapping and a strided walk cannot, so everything is
+    /// copied first and nothing reads the mapping twice.
+    plane: Vec<u8>,
     /// Allocated once. The pointer path is not a frame path, but it is not a
     /// setup path either, and allocating per read would put an allocation on
     /// something that runs whenever the pointer is redrawn.
     scratch: Vec<u8>,
+    /// Whether the last read had to copy the whole plane.
+    whole: bool,
 }
 
 impl core::fmt::Debug for Reader {
@@ -61,7 +103,9 @@ impl Default for Reader {
 impl Reader {
     pub fn new() -> Self {
         Self {
+            plane: vec![0; (LIMIT as usize) * (LIMIT as usize) * 4],
             scratch: vec![0; (LIMIT as usize) * (LIMIT as usize) * 4],
+            whole: false,
         }
     }
 
@@ -105,21 +149,49 @@ impl Reader {
         // written through, and the slice does not outlive the unmap below.
         let pixels = unsafe { core::slice::from_raw_parts(mapped.cast::<u8>(), length) };
 
-        let found = extent(pixels, plane.width, plane.height, pitch);
-        if let Some(area) = found {
-            self.copy(pixels, pitch, area);
+        // The first rows, then the whole thing only if the answer was not in
+        // them. Copying is the whole cost of a read, so the second copy has to
+        // be the exception rather than the rule.
+        let mut rows = ROWS_FIRST.min(plane.height);
+        let mut found = self.take(pixels, pitch, plane.width, rows);
+        self.whole = rows >= plane.height;
+        if rows < plane.height && !settled(found, rows) {
+            rows = plane.height;
+            found = self.take(pixels, pitch, plane.width, rows);
+            self.whole = true;
         }
 
         // SAFETY: mapped above, this length, and nothing refers to it after
-        // `copy` returned.
+        // the copies above returned.
         unsafe {
             libc::munmap(mapped, length);
         }
 
+        if let Some(area) = found {
+            self.copy(pitch, area);
+        }
         Ok(found.map(|area| {
             let used = (area.width as usize) * (area.height as usize) * 4;
             (area, self.scratch.get(..used).unwrap_or_default())
         }))
+    }
+
+    /// Whether the last read had to copy the whole plane.
+    pub fn read_whole(&self) -> bool {
+        self.whole
+    }
+
+    /// Copy `rows` of the mapping into system memory and find what is drawn.
+    ///
+    /// **One bulk copy, then every scan happens here.** The mapping is
+    /// uncached and reading it twice, or reading it with a stride, costs an
+    /// order of magnitude more than the answer is worth.
+    fn take(&mut self, pixels: &[u8], pitch: usize, width: u32, rows: u32) -> Option<Extent> {
+        let length = pitch.checked_mul(rows as usize)?;
+        let from = pixels.get(..length)?;
+        let into = self.plane.get_mut(..length)?;
+        into.copy_from_slice(from);
+        extent(into, width, rows, pitch)
     }
 
     /// Copy the drawn part out, swapping to the channel order an image wants.
@@ -128,16 +200,19 @@ impl Reader {
     /// first. Copying them across unchanged produces a pointer with red and
     /// blue exchanged, which on a mostly white arrow is invisible and on a
     /// coloured one is not.
-    fn copy(&mut self, pixels: &[u8], pitch: usize, area: Extent) {
+    fn copy(&mut self, pitch: usize, area: Extent) {
+        // Named rather than reached through `self`, so reading one buffer and
+        // writing the other is two borrows of two fields and not one of both.
+        let Self { plane, scratch, .. } = self;
         let width = area.width as usize;
         for row in 0..area.height as usize {
             let from = (area.y as usize + row) * pitch + (area.x as usize) * 4;
             let to = row * width * 4;
             for column in 0..width {
-                let Some(quad) = pixels.get(from + column * 4..from + column * 4 + 4) else {
+                let Some(quad) = plane.get(from + column * 4..from + column * 4 + 4) else {
                     continue;
                 };
-                let Some(slot) = self.scratch.get_mut(to + column * 4..to + column * 4 + 4) else {
+                let Some(slot) = scratch.get_mut(to + column * 4..to + column * 4 + 4) else {
                     continue;
                 };
                 slot[0] = quad[2];
@@ -178,8 +253,17 @@ pub struct Pointer {
 /// actually changed is the encoded bytes.
 pub struct Watcher {
     reader: Reader,
-    /// The identifier last looked at, or zero for nothing yet.
+    /// The identifier last looked at, or zero for nothing yet. **Reported,
+    /// never used to decide anything.**
     id: u32,
+    /// Shapes that arrived in the buffer that carried the previous one, which
+    /// is the case an identifier cannot see.
+    repeats: u64,
+    /// Reads since the pixels were last looked at.
+    since: u32,
+    /// Pixel reads that had to copy the whole plane after the first rows did
+    /// not answer.
+    whole: u64,
     /// The current picture, in the form the wire carries it.
     png: Vec<u8>,
     held: Held,
@@ -198,6 +282,7 @@ impl core::fmt::Debug for Watcher {
         f.debug_struct("Watcher")
             .field("checksum", &self.held.checksum)
             .field("bytes", &self.held.used)
+            .field("repeats", &self.repeats)
             .finish_non_exhaustive()
     }
 }
@@ -213,6 +298,9 @@ impl Watcher {
         Self {
             reader: Reader::new(),
             id: 0,
+            repeats: 0,
+            since: 0,
+            whole: 0,
             // Sized for the largest pointer a plane can carry, once, so
             // encoding one never allocates.
             png: vec![0; lowlat_core::png::upper_bound(LIMIT, LIMIT)],
@@ -234,17 +322,34 @@ impl Watcher {
             return Ok(None);
         };
 
+        // **The picture is read on a cadence, and never because the buffer
+        // identifier moved.** Triggering on the identifier misses a compositor
+        // that redraws a pointer into the buffer it already had: one
+        // application's link pointer became an arrow with the identifier
+        // unchanged, and a guest kept the hand while the screen showed the
+        // arrow. The identifier describes a buffer; the shape is not a
+        // property of the buffer it arrived in.
+        let repeated = cursor.image.id == self.id;
+        self.id = cursor.image.id;
         let mut fresh = false;
-        if cursor.image.id != self.id {
-            self.id = cursor.image.id;
+        self.since = self.since.saturating_add(1);
+        if self.since >= PIXELS_EVERY || self.held.used == 0 {
+            self.since = 0;
             let Some((extent, rgba)) = self.reader.read(card, &cursor.image)? else {
-                self.id = 0;
                 return Ok(None);
             };
             // The two fields are named rather than reached through `self`,
             // because the bytes just read are borrowed out of the reader for
             // as long as they are in use.
             fresh = Self::adopt(&mut self.png, &mut self.held, extent, rgba)?;
+            // Counted after the picture is adopted, because the bytes it was
+            // read into are borrowed out of the reader until then.
+            if self.reader.read_whole() {
+                self.whole = self.whole.saturating_add(1);
+            }
+            if fresh && repeated {
+                self.repeats = self.repeats.saturating_add(1);
+            }
         }
 
         let held = self.held;
@@ -287,10 +392,38 @@ impl Watcher {
         Ok(true)
     }
 
+    /// The identifier of the buffer the pointer was last read from.
+    pub fn buffer(&self) -> u32 {
+        self.id
+    }
+
+    /// Pixel reads that fell back to copying the whole plane.
+    pub fn whole_reads(&self) -> u64 {
+        self.whole
+    }
+
+    /// How many shapes arrived in the buffer that carried the one before.
+    ///
+    /// **The measure of what a buffer identifier cannot tell you.** Anything
+    /// above zero is a shape that a reader triggered on the identifier would
+    /// have missed entirely.
+    pub fn repeated_buffers(&self) -> u64 {
+        self.repeats
+    }
+
     /// The picture the last read named, in the form the wire carries it.
     pub fn image(&self) -> &[u8] {
         self.png.get(..self.held.used).unwrap_or_default()
     }
+}
+
+/// Whether a partial read answered the question on its own.
+///
+/// **Nothing found is not an answer**, because the drawn part may be entirely
+/// below the rows that were read; nor is a rectangle that reaches the last row
+/// read, because it may continue past it.
+fn settled(found: Option<Extent>, rows: u32) -> bool {
+    found.is_some_and(|area| area.y + area.height < rows)
 }
 
 /// The smallest rectangle holding every pixel that is not fully transparent.
@@ -327,6 +460,25 @@ fn extent(pixels: &[u8], width: u32, height: u32, pitch: usize) -> Option<Extent
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A partial read that did not settle has to ask for the rest.** The
+    /// pointer is usually drawn in the first rows of the plane and reading
+    /// only those is most of the saving, but a pointer drawn below them, or
+    /// one that continues past the last row read, is not answered by them.
+    #[test]
+    fn a_partial_read_that_did_not_settle_asks_for_the_rest() {
+        let at = |y, height| {
+            Some(Extent {
+                x: 0,
+                y,
+                width: 8,
+                height,
+            })
+        };
+        assert!(!settled(None, 64), "nothing found is not an answer");
+        assert!(!settled(at(40, 24), 64), "it reaches the last row read");
+        assert!(settled(at(2, 24), 64), "clear of the boundary");
+    }
 
     /// **A redraw is not a new shape.** The display cycles a pool of buffers
     /// and the same pointer lands in a different one as it moves, so the
@@ -453,8 +605,8 @@ mod tests {
         let pitch = 8 * 4;
         let pixels = plane(8, 8, pitch, (1, 1, 2, 2));
         let mut reader = Reader::new();
+        reader.plane[..pixels.len()].copy_from_slice(&pixels);
         reader.copy(
-            &pixels,
             pitch,
             Extent {
                 x: 1,

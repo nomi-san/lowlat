@@ -32,27 +32,48 @@ fn main() {
         fail("this pipeline has no pointer plane")
     };
 
+    println!(
+        "plane {}x{} pitch {} at ({},{})",
+        layout.cursor.as_ref().map_or(0, |c| c.image.width),
+        layout.cursor.as_ref().map_or(0, |c| c.image.height),
+        layout
+            .cursor
+            .as_ref()
+            .and_then(|c| c.image.planes().next().map(|b| b.pitch))
+            .unwrap_or(0),
+        layout.cursor.as_ref().map_or(0, |c| c.x),
+        layout.cursor.as_ref().map_or(0, |c| c.y),
+    );
+
     let mut watcher = Watcher::new();
     let (mut reads, mut shapes, mut moves, mut blank) = (0u32, 0u32, 0u32, 0u32);
     let mut last = (i32::MIN, i32::MIN);
     let mut seen: Vec<u32> = Vec::new();
 
     let until = std::time::Instant::now() + std::time::Duration::from_secs(seconds);
+    let mut spent = std::time::Duration::ZERO;
+    let mut worst = std::time::Duration::ZERO;
     while std::time::Instant::now() < until {
-        match watcher.read(&card, &at) {
+        let began = std::time::Instant::now();
+        let outcome = watcher.read(&card, &at);
+        let took = began.elapsed();
+        spent += took;
+        worst = worst.max(took);
+        match outcome {
             Ok(Some(pointer)) => {
                 reads += 1;
                 if pointer.fresh {
                     shapes += 1;
                     seen.push(pointer.checksum);
                     println!(
-                        "shape {}x{} checksum {:#010x} at ({},{}), {} bytes",
+                        "shape {}x{} checksum {:#010x} at ({},{}), {} bytes, buffer {}",
                         pointer.width,
                         pointer.height,
                         pointer.checksum,
                         pointer.x,
                         pointer.y,
-                        watcher.image().len()
+                        watcher.image().len(),
+                        watcher.buffer()
                     );
                     std::fs::File::create(&out)
                         .and_then(|mut f| f.write_all(watcher.image()))
@@ -79,9 +100,32 @@ fn main() {
         "{reads} reads, {moves} positions, {shapes} shape changes over {distinct} distinct \
          pictures, {blank} with nothing drawn"
     );
+    // **The number that says whether an identifier can be trusted as a
+    // trigger.** Anything above zero is a shape that arrived in the buffer
+    // that carried the one before it, which a reader watching identifiers
+    // would never have looked at.
+    println!(
+        "{} shape(s) arrived in the buffer that already held one, {} read(s) copied the whole \
+         plane",
+        watcher.repeated_buffers(),
+        watcher.whole_reads()
+    );
+    // **What reading every time costs**, which is the price of not trusting
+    // the identifier. It runs on the thread that captures frames, so a mean
+    // anywhere near a frame interval is a mean that has to come down.
+    if reads > 0 {
+        println!(
+            "read cost: {:.3} ms mean, {:.3} ms worst, over {reads} reads",
+            spent.as_secs_f64() * 1000.0 / f64::from(reads),
+            worst.as_secs_f64() * 1000.0
+        );
+    }
     println!("wrote {}", out.display());
     if seen.len() > distinct {
-        println!("note: a picture was adopted twice, so something re-sends an unchanged pointer");
+        // Not a defect: only the last picture is held, so a pointer
+        // alternating between two shapes re-encodes each time. What stops it
+        // travelling twice is the per-guest cache, not this.
+        println!("note: shapes alternated, so a picture was encoded more than once");
     }
 }
 
