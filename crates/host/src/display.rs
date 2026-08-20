@@ -18,7 +18,8 @@
 use std::collections::HashMap;
 
 use lowlat_capture::convert::{Converter, Nv12};
-use lowlat_capture::scanout::{self, Card};
+use lowlat_capture::cursor::{Pointer, Watcher};
+use lowlat_capture::scanout::{self, Card, CursorPlane};
 use lowlat_capture::vulkan::{self, Imports, PlaneLayout};
 use lowlat_common::clock::Time;
 
@@ -110,6 +111,12 @@ pub struct Display {
     imports: HashMap<u32, vulkan::Imported>,
     targets: Vec<Target>,
     next: usize,
+    /// The pointer plane, when the pipeline has one. **Found once**: a machine
+    /// that draws its pointer in the picture rather than on a plane has none,
+    /// and looking for it every frame would be a walk of the whole pipeline
+    /// for an answer that does not change.
+    cursor_plane: Option<CursorPlane>,
+    cursor: Watcher,
 }
 
 impl core::fmt::Debug for Display {
@@ -163,6 +170,8 @@ impl Display {
             imports: HashMap::new(),
             targets,
             next: 0,
+            cursor_plane: layout.cursor_plane,
+            cursor: Watcher::new(),
         })
     }
 
@@ -317,6 +326,34 @@ impl Display {
         for (_, imported) in self.imports.drain() {
             self.device.release(imported);
         }
+    }
+
+    /// Read the pointer the display is drawing, if it is drawing one.
+    ///
+    /// **Not on the frame path.** It reads the plane's buffer on the
+    /// processor, which the rule against copying pixels does not cover: that
+    /// rule is about frames, which are megabytes sixty times a second, and
+    /// this is a quarter of a megabyte a few times a second that has to be
+    /// compared against the last one to know whether it changed at all.
+    ///
+    /// Nothing drawn is a state and not a failure. It means an application hid
+    /// the pointer, or the compositor drew it into the picture because it
+    /// outgrew the plane, and this backend cannot tell those apart. Both mean
+    /// the same thing to a peer: do not draw one.
+    pub fn pointer(&mut self) -> Option<Pointer> {
+        let at = self.cursor_plane.as_ref()?;
+        match self.cursor.read(&self.card, at) {
+            Ok(pointer) => pointer,
+            Err(error) => {
+                lowlat_common::log_warn!("display: the pointer could not be read, err={error}");
+                None
+            }
+        }
+    }
+
+    /// The picture the last [`Display::pointer`] named.
+    pub fn pointer_image(&self) -> &[u8] {
+        self.cursor.image()
     }
 
     /// What the display is showing, for the encoder's configuration.

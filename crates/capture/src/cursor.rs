@@ -19,7 +19,7 @@
 
 use std::os::fd::AsRawFd;
 
-use crate::scanout::{Card, Error, Framebuffer};
+use crate::scanout::{Card, CursorPlane, Error, Framebuffer};
 
 /// The most a pointer plane can be, which is what the drivers here advertise.
 /// A larger one is refused rather than truncated: a pointer read at the wrong
@@ -27,7 +27,7 @@ use crate::scanout::{Card, Error, Framebuffer};
 const LIMIT: u32 = 256;
 
 /// A pointer, cropped to what is actually drawn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Extent {
     /// Where the drawn part begins inside the plane's own buffer. The
     /// difference matters: the plane is positioned by its buffer's corner, not
@@ -149,6 +149,150 @@ impl Reader {
     }
 }
 
+/// The pointer as it should reach a peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pointer {
+    /// Top-left of the **drawn part** on the display: the plane's own corner
+    /// plus where the drawing begins inside it.
+    ///
+    /// Signed, and it goes negative at the left and top edges. The drawn part
+    /// is what travels, so sending the plane's corner instead would place
+    /// every pointer up and to the left of itself by however much padding the
+    /// compositor happened to leave.
+    pub x: i32,
+    pub y: i32,
+    pub width: u16,
+    pub height: u16,
+    /// Names the image, and is what a peer that keeps pointers holds it by.
+    pub checksum: u32,
+    /// True when this read produced a picture that has not been seen before.
+    pub fresh: bool,
+}
+
+/// Reads the pointer and notices when its picture changes.
+///
+/// **The framebuffer identifier is the trigger and the checksum is the
+/// identity.** The display cycles a pool of buffers as the pointer moves and
+/// the same picture lands in a different one each time, so an identifier that
+/// moved means only that something was redrawn. What settles whether the shape
+/// actually changed is the encoded bytes.
+pub struct Watcher {
+    reader: Reader,
+    /// The identifier last looked at, or zero for nothing yet.
+    id: u32,
+    /// The current picture, in the form the wire carries it.
+    png: Vec<u8>,
+    held: Held,
+}
+
+/// The picture currently held, and what names it.
+#[derive(Debug, Clone, Copy, Default)]
+struct Held {
+    used: usize,
+    checksum: u32,
+    extent: Extent,
+}
+
+impl core::fmt::Debug for Watcher {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Watcher")
+            .field("checksum", &self.held.checksum)
+            .field("bytes", &self.held.used)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Default for Watcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Watcher {
+    pub fn new() -> Self {
+        Self {
+            reader: Reader::new(),
+            id: 0,
+            // Sized for the largest pointer a plane can carry, once, so
+            // encoding one never allocates.
+            png: vec![0; lowlat_core::png::upper_bound(LIMIT, LIMIT)],
+            held: Held::default(),
+        }
+    }
+
+    /// Read the pointer, if one is being drawn.
+    ///
+    /// Nothing drawn is a state and not a failure, and it has two causes that
+    /// this backend cannot tell apart: an application hid the pointer, or the
+    /// compositor drew it into the picture because it outgrew the plane. Both
+    /// mean the same thing to a peer, which is not to draw one of its own.
+    pub fn read(&mut self, card: &Card, at: &CursorPlane) -> Result<Option<Pointer>, Error> {
+        let Some(cursor) = card.cursor_on(at)? else {
+            // Forget the identifier: the next plane to appear may reuse it,
+            // and its picture would then never be read.
+            self.id = 0;
+            return Ok(None);
+        };
+
+        let mut fresh = false;
+        if cursor.image.id != self.id {
+            self.id = cursor.image.id;
+            let Some((extent, rgba)) = self.reader.read(card, &cursor.image)? else {
+                self.id = 0;
+                return Ok(None);
+            };
+            // The two fields are named rather than reached through `self`,
+            // because the bytes just read are borrowed out of the reader for
+            // as long as they are in use.
+            fresh = Self::adopt(&mut self.png, &mut self.held, extent, rgba)?;
+        }
+
+        let held = self.held;
+        if held.used == 0 {
+            return Ok(None);
+        }
+        Ok(Some(Pointer {
+            x: cursor
+                .x
+                .saturating_add(i32::try_from(held.extent.x).unwrap_or(0)),
+            y: cursor
+                .y
+                .saturating_add(i32::try_from(held.extent.y).unwrap_or(0)),
+            width: u16::try_from(held.extent.width).unwrap_or(u16::MAX),
+            height: u16::try_from(held.extent.height).unwrap_or(u16::MAX),
+            checksum: held.checksum,
+            fresh,
+        }))
+    }
+
+    /// Encode what was read and say whether it is a picture not seen before.
+    ///
+    /// **Separated from the read so the decision can be tested without a
+    /// display**, which is the half that has been got wrong: a redraw is not a
+    /// new shape, and treating one as the other sends the same pointer over
+    /// and over.
+    fn adopt(png: &mut [u8], held: &mut Held, extent: Extent, rgba: &[u8]) -> Result<bool, Error> {
+        let stride = (extent.width as usize).saturating_mul(4);
+        let used = lowlat_core::png::encode(rgba, extent.width, extent.height, stride, png)
+            .map_err(|_| Error::UnknownFormat(extent.width))?;
+        let checksum = lowlat_core::crc32::of(png.get(..used).unwrap_or_default());
+        if checksum == held.checksum {
+            return Ok(false);
+        }
+        *held = Held {
+            used,
+            checksum,
+            extent,
+        };
+        Ok(true)
+    }
+
+    /// The picture the last read named, in the form the wire carries it.
+    pub fn image(&self) -> &[u8] {
+        self.png.get(..self.held.used).unwrap_or_default()
+    }
+}
+
 /// The smallest rectangle holding every pixel that is not fully transparent.
 fn extent(pixels: &[u8], width: u32, height: u32, pitch: usize) -> Option<Extent> {
     let (mut left, mut top) = (width, height);
@@ -183,6 +327,43 @@ fn extent(pixels: &[u8], width: u32, height: u32, pitch: usize) -> Option<Extent
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A redraw is not a new shape.** The display cycles a pool of buffers
+    /// and the same pointer lands in a different one as it moves, so the
+    /// identifier moves constantly while the picture does not. Reading the
+    /// identifier as the identity sends the same image over and over, and on a
+    /// peer that keeps them, fills its cache with copies of one pointer.
+    #[test]
+    fn the_same_picture_read_twice_is_not_a_new_shape() {
+        let mut watcher = Watcher::new();
+        let area = Extent {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+        };
+        let arrow = [0xFFu8; 2 * 2 * 4];
+        let beam = [0x40u8; 2 * 2 * 4];
+        let Watcher { png, held, .. } = &mut watcher;
+
+        assert!(
+            Watcher::adopt(png, held, area, &arrow).expect("encode"),
+            "the first picture"
+        );
+        let first = held.checksum;
+        assert!(
+            !Watcher::adopt(png, held, area, &arrow).expect("encode"),
+            "the same picture read again"
+        );
+        assert_eq!(held.checksum, first, "the name of a picture is its bytes");
+
+        assert!(
+            Watcher::adopt(png, held, area, &beam).expect("encode"),
+            "a real change"
+        );
+        assert_ne!(held.checksum, first);
+        assert!(!watcher.image().is_empty());
+    }
 
     /// Build a plane's worth of bytes with one opaque block in it.
     fn plane(

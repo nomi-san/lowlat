@@ -14,7 +14,7 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 
 use drm::buffer::{DrmFourcc, DrmModifier};
-use drm::control::{Device as ControlDevice, plane};
+use drm::control::{Device as ControlDevice, plane, property};
 
 /// A display device opened for mode-setting queries.
 ///
@@ -152,6 +152,19 @@ pub struct Cursor {
     pub y: i32,
 }
 
+/// The pointer plane, and the identifiers its position is read from.
+///
+/// **The property identifiers are resolved once and kept**, because reading a
+/// property by name costs an ioctl per property on the plane until the name
+/// matches. That is fine on the walk that finds the plane and is not fine
+/// every time the pointer moves.
+#[derive(Debug, Clone, Copy)]
+pub struct CursorPlane {
+    pub plane: plane::Handle,
+    x: property::Handle,
+    y: property::Handle,
+}
+
 /// One scan of the device.
 #[derive(Debug, Clone)]
 pub struct Layout {
@@ -162,6 +175,9 @@ pub struct Layout {
     pub primary_plane: plane::Handle,
     /// Absent when nothing is drawing a pointer.
     pub cursor: Option<Cursor>,
+    /// The plane that pointer is on, so it can be re-read without walking the
+    /// pipeline again.
+    pub cursor_plane: Option<CursorPlane>,
 }
 
 /// What [`Card::export`] asks for. Close-on-exec and nothing else; see there
@@ -216,6 +232,7 @@ impl Card {
         let mut primary = None;
         let mut primary_plane = None;
         let mut cursor = None;
+        let mut cursor_plane = None;
         for handle in planes {
             let Ok(info) = self.get_plane(handle) else {
                 continue;
@@ -237,14 +254,19 @@ impl Card {
                 primary_plane = Some(handle);
             } else {
                 let x = self
-                    .plane_property(handle, c"CRTC_X")
-                    .map(signed)
+                    .property_id(handle, c"CRTC_X")
                     .ok_or(Error::MissingProperty("CRTC_X"))?;
                 let y = self
-                    .plane_property(handle, c"CRTC_Y")
-                    .map(signed)
+                    .property_id(handle, c"CRTC_Y")
                     .ok_or(Error::MissingProperty("CRTC_Y"))?;
+                let at = CursorPlane {
+                    plane: handle,
+                    x,
+                    y,
+                };
+                let (x, y) = self.position_of(&at)?;
                 cursor = Some(Cursor { image, x, y });
+                cursor_plane = Some(at);
             }
         }
 
@@ -253,6 +275,7 @@ impl Card {
                 primary,
                 primary_plane,
                 cursor,
+                cursor_plane,
             }),
             _ => Err(Error::NoScanout),
         }
@@ -271,6 +294,45 @@ impl Card {
             .map_err(|error| device_error(&error))?;
         let fb = info.framebuffer().ok_or(Error::NoScanout)?;
         self.framebuffer(fb)
+    }
+
+    /// Re-read what the pointer plane is drawing, and where.
+    ///
+    /// **The per-frame call for the pointer**, as [`Card::framebuffer_on`] is
+    /// for the display. Nothing drawn is a state rather than a failure: a
+    /// compositor takes the plane down when an application hides the pointer,
+    /// and when the pointer grows past what the plane can carry.
+    pub fn cursor_on(&self, at: &CursorPlane) -> Result<Option<Cursor>, Error> {
+        let info = self
+            .get_plane(at.plane)
+            .map_err(|error| device_error(&error))?;
+        let (Some(fb), Some(_crtc)) = (info.framebuffer(), info.crtc()) else {
+            return Ok(None);
+        };
+        let image = self.framebuffer(fb)?;
+        let (x, y) = self.position_of(at)?;
+        Ok(Some(Cursor { image, x, y }))
+    }
+
+    /// Where a plane is drawn, by property identifier rather than by name.
+    fn position_of(&self, at: &CursorPlane) -> Result<(i32, i32), Error> {
+        let set = self
+            .get_properties(at.plane)
+            .map_err(|error| device_error(&error))?;
+        let (ids, values) = set.as_props_and_values();
+        let mut found = (None, None);
+        for (id, value) in ids.iter().zip(values.iter()) {
+            if *id == at.x {
+                found.0 = Some(signed(*value));
+            } else if *id == at.y {
+                found.1 = Some(signed(*value));
+            }
+        }
+        match found {
+            (Some(x), Some(y)) => Ok((x, y)),
+            (None, _) => Err(Error::MissingProperty("CRTC_X")),
+            _ => Err(Error::MissingProperty("CRTC_Y")),
+        }
     }
 
     /// Describe one framebuffer.
@@ -313,6 +375,21 @@ impl Card {
         for (id, value) in ids.iter().zip(values.iter()) {
             if self.get_property(*id).is_ok_and(|info| info.name() == name) {
                 return Some(*value);
+            }
+        }
+        None
+    }
+
+    /// The identifier of a plane property, resolved once by name.
+    fn property_id(
+        &self,
+        handle: plane::Handle,
+        name: &core::ffi::CStr,
+    ) -> Option<property::Handle> {
+        let set = self.get_properties(handle).ok()?;
+        for id in set.as_props_and_values().0 {
+            if self.get_property(*id).is_ok_and(|info| info.name() == name) {
+                return Some(*id);
             }
         }
         None
