@@ -814,19 +814,28 @@ it is the safer of the two to hold.
 
 **Gate B:**
 
-1. **Real desktop streaming to a stock client**, 10 minutes, no corruption.
-2. No host-visible copy between capture and encode; a readback stage would appear in the log
+1. [x] **Real desktop streaming to a stock client**, 10 minutes, no corruption. *Passed
+   2026-08-20: 10 to 12 minutes of a real desktop at 2560x1440, a 120 Hz host to a 60 fps
+   client, nothing wrong.*
+2. [x] No host-visible copy between capture and encode; a readback stage would appear in the log
    and does not.
-3. Cursor shape changes behave correctly, including entering and leaving a window drag.
+3. [x] Cursor shape changes behave correctly, including entering and leaving a window drag.
+   *Passed 2026-08-20 against a stock client, hotspot included: an I-beam and an arrow land on
+   the same pixel as the host's.* **A shape change is detected from the pixels on a cadence and
+   never from the buffer's identity**, which was tried and does not work: a compositor redraws a
+   pointer into the buffer it already had, measured at thirteen of nineteen changes in twenty
+   seconds of ordinary use.
    *Relative mode is held out of this gate*, and the measurement above is why. The two signals
    were shown to differ on real hardware: the pointer leaves the hardware plane both when an
    application hides it and when it is merely too large to sit there, and only the first means
    relative. Relative mode gets its own gate once the session helper exists
    ([07 §2.1](07-platforms.md)).
-4. With the pointer arbitrated, the guest that does not have it can see that it does not.
-5. **Absolute input lands on the captured display with a second display attached**, and on the
-   correct one. *This cannot fail with one display, which is why it is a gate item.*
-6. Capture survives resolution change and display hotplug.
+4. [x] With the pointer arbitrated, the guest that does not have it can see that it does not.
+   *Passed 2026-08-20 with two guests: the one that does not hold the pointer is shown the
+   desktop theme's refused shape, and the real cursor returns when the hold lapses.*
+5. [ ] **Absolute input lands on the captured display with a second display attached**, and on
+   the correct one. *This cannot fail with one display, which is why it is a gate item.*
+6. [ ] Capture survives resolution change and display hotplug.
 
 ---
 
