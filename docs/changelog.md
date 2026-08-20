@@ -12,6 +12,13 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   it already holds. A peer that declared no pointer cache is sent the picture
   every time; a full cache is emptied rather than evicted from, because the far
   side cannot report what it dropped.
+- **A guest is shown when the pointer is not its to move.** With the pointer
+  arbitrated, a guest that does not hold it had its input dropped and nothing
+  happened, which is indistinguishable from a session that has stopped
+  responding. It is sent a refused shape instead and gets the real pointer back
+  when its turn comes. The shape is loaded from the desktop's own icon theme
+  rather than drawn: those files carry a picture and its hotspot together, and
+  nothing here can derive a hotspot for a shape the display never draws.
 - **The hotspot, derived from the host's own injection.** Nothing reports one,
   and the far side draws the picture against its own pointer, so the offset it
   applies is the one the host sends and zero draws every pointer down and to
