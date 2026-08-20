@@ -433,6 +433,23 @@ display-server-level injection cannot match.
   established model because a host changes the display mode rather than scaling a copy of it. A
   host that ever encodes a scaled or cropped view of a larger desktop has to say so here, not
   discover it through a pointer that drifts.
+
+  **The size a peer is told and the extents its coordinates are scaled by MUST come from one
+  place, and that place is the picture the stream really produces.** A display decides its own
+  size; a configured size is a request. Describing the stream with one number and scaling input
+  by another puts every absolute position through the ratio between them, and the failure is
+  quiet and proportional rather than obviously broken: a 2560-wide display described as 1920
+  reaches the right edge of the screen three quarters of the way across the picture. The size
+  is therefore read from the stream, not from configuration, and re-read while the session runs
+  rather than once, because a guest is seated before the stream has opened a display and a
+  display can change size afterwards.
+
+  **Nothing converts between physical and logical pixels, and nothing should.** The mapping is
+  a ratio, so it is correct in whichever space both of its ends are read from; a host that
+  mixes a picture measured in one with a screen measured in the other is wrong by the display's
+  scale factor. The rule is consistency, not physical pixels. It becomes a real conversion only
+  when a captured *sub-rectangle* has to be placed within a larger desktop, because then the
+  offset and the range must be in the same space -- which is the second-display case above.
 - **One injector per guest**, holding that guest's pressed-key state. On disconnect it
   releases everything it is holding. Without this, a guest that vanishes mid-keystroke leaves
   a key held down on a machine nobody is sitting at.

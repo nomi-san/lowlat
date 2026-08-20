@@ -99,6 +99,15 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 **Fixed**
 
+- **A guest described the stream with the configured size rather than the one
+  it produces.** A display decides its own size and the stream follows it, but
+  the guest kept the configured numbers, and the size a peer is told is the
+  coordinate space its absolute input comes back in. Every position therefore
+  arrived scaled by the ratio between the two, quietly and proportionally: a
+  2560-wide display described as 1920 reached the right edge of the screen
+  three quarters of the way across the picture. The size is now read from the
+  stream and re-read while the session runs, because a guest is seated before
+  the stream has opened a display, and a display can change size afterwards.
 - **A window of stale fragments was re-sent whole on every pass.** The
   outstanding cap was applied to fragments awaiting a first send and to nothing
   else, so retransmission had no ceiling at all: a peer that stopped
