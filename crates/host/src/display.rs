@@ -373,6 +373,19 @@ impl Display {
         }
     }
 
+    /// Whether anything is still plugged into the device being captured.
+    ///
+    /// **A controller that lost its connector keeps scanning out**, holding
+    /// the last picture it was given, so every read here succeeds and the
+    /// stream carries a desktop that will never change again. Nothing else in
+    /// this path can tell that from a desktop nobody is touching.
+    pub fn attached(&self) -> bool {
+        // A device that cannot answer is not evidence that nothing is plugged
+        // into it, and tearing a session down on a failed query would be worse
+        // than the state it is looking for.
+        self.card.attached().unwrap_or(true)
+    }
+
     /// Whether the display changed size, clearing the answer.
     pub fn take_resize(&mut self) -> bool {
         core::mem::replace(&mut self.resized, false)

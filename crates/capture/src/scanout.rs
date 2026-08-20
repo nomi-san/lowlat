@@ -14,7 +14,7 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 
 use drm::buffer::{DrmFourcc, DrmModifier};
-use drm::control::{Device as ControlDevice, crtc, plane, property};
+use drm::control::{Device as ControlDevice, connector, crtc, plane, property};
 
 /// A display device opened for mode-setting queries.
 ///
@@ -321,6 +321,28 @@ impl Card {
             .map_err(|error| device_error(&error))?;
         let fb = info.framebuffer().ok_or(Error::NoScanout)?;
         self.framebuffer(fb)
+    }
+
+    /// Whether anything is still plugged into this device.
+    ///
+    /// **A controller keeps scanning out after its connector is unplugged.**
+    /// It holds the last picture it was given, so every read succeeds, the
+    /// framebuffer is valid, and the only thing wrong is that it will never
+    /// change again. Nothing in the capture path can tell that from a desktop
+    /// nobody is touching: measured with the display moved to another card,
+    /// one framebuffer for as long as anyone watched, against three cycling on
+    /// the card that had it. The connector is what says so.
+    ///
+    /// **Not a per-frame call.** It walks every connector, and asks each not to
+    /// probe: a probe drives the link and costs milliseconds.
+    pub fn attached(&self) -> Result<bool, Error> {
+        let handles = self
+            .resource_handles()
+            .map_err(|error| device_error(&error))?;
+        Ok(handles.connectors().iter().any(|handle| {
+            self.get_connector(*handle, false)
+                .is_ok_and(|info| info.state() == connector::State::Connected)
+        }))
     }
 
     /// Re-read what the pointer plane is drawing, and where.

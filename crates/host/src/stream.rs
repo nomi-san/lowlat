@@ -88,6 +88,12 @@ const COLLECT_WAIT: std::time::Duration = std::time::Duration::from_millis(1);
 /// The same figure as a number, for comparing against a remaining interval.
 const POLL_MS: f64 = 1.0;
 
+/// How often the device is asked whether anything is still plugged into it.
+///
+/// **Slow on purpose.** It walks every connector on the card, and the state it
+/// is looking for is a person moving a cable.
+const ATTACHED_MS: f64 = 1000.0;
+
 /// How often the pointer is looked at.
 ///
 /// **An absolute figure and not a frame count.** A pointer that blinks for a
@@ -993,7 +999,7 @@ fn run(shared: &Shared, arrivals: &mpsc::Receiver<Join>, mut config: Config) {
                 kick_asked(shared, &roster.active, reason);
                 config.codec = back;
             }
-            Exit::Resized | Exit::Reconfigure(_) => {
+            Exit::Rediscover(_) | Exit::Reconfigure(_) => {
                 if let Exit::Reconfigure(codec) = exit {
                     lowlat_common::log_info!(
                         "stream: reconfiguring codec={:?} -> {:?}",
@@ -1002,11 +1008,11 @@ fn run(shared: &Shared, arrivals: &mpsc::Receiver<Join>, mut config: Config) {
                     );
                     previous = Some(config.codec);
                     config.codec = codec;
-                } else {
-                    // The size is not carried here: the loop re-reads it from
-                    // the display on the way back in, which is the one place
-                    // that knows it.
-                    lowlat_common::log_info!("stream: the display changed size, rebuilding");
+                } else if let Exit::Rediscover(why) = exit {
+                    // What it changed to is not carried: the loop reads it
+                    // from the display on the way back in, which is the one
+                    // place that knows.
+                    lowlat_common::log_info!("stream: {why}, rebuilding");
                 }
                 // **Every guest is latched and the generation moves.** The new
                 // encoder has no history at all, so a guest still expecting the
@@ -1033,14 +1039,16 @@ enum Exit {
     /// Every seated guest can decode this codec, and at least one asked for a
     /// configuration the running encoder does not produce.
     Reconfigure(Codec),
-    /// The display changed size underneath the encoder.
+    /// What is being captured changed, and the pipeline has to be found again.
     ///
-    /// **The encoder is built for one picture size and cannot follow.** Left
-    /// running, it keeps coding the old size: the new picture lands in a
-    /// corner of a frame the rest of which never changes again, and the peer
-    /// is never told, so it goes on decoding at a size the stream stopped
-    /// producing.
-    Resized,
+    /// **The encoder is built around one display and cannot follow one.** A
+    /// size change leaves it coding the old size, so the new picture lands in
+    /// a corner of a frame the rest of which never changes again; a display
+    /// unplugged from this device leaves the controller scanning out the last
+    /// thing it held, for ever. The reason is carried for the log because the
+    /// two look identical from here: the loop hands the encoder back and the
+    /// display is discovered again.
+    Rediscover(&'static str),
 }
 
 /// End the guests that asked for the configuration that could not be built.
@@ -1720,6 +1728,7 @@ fn encode_loop<E: Encoder + FromDevice>(
     let mut pointer_ms = -POINTER_MS;
     let mut hotspots = Hotspots::new();
     let mut presence = Presence::default();
+    let mut attached_ms = 0.0f64;
 
     loop {
         if shared.stopping.load(Ordering::Acquire) != 0 {
@@ -1812,6 +1821,18 @@ fn encode_loop<E: Encoder + FromDevice>(
         }
 
         let now_ms = lowlat_common::clock::elapsed_ms(started);
+
+        // **Is anything still plugged into the device being captured?** A
+        // controller whose connector has gone keeps scanning out the last
+        // picture it held, so nothing above this notices: every read succeeds
+        // and the stream carries a desktop that stopped changing. Asked on its
+        // own slow cadence, because it walks every connector.
+        if now_ms - attached_ms >= ATTACHED_MS {
+            attached_ms = now_ms;
+            if display.as_deref().is_some_and(|d| !d.attached()) {
+                return Exit::Rediscover("nothing is plugged into the device being captured");
+            }
+        }
         if now_ms >= next_frame_ms {
             // The deadline advances by the interval rather than from now, so
             // the frame clock does not drift, and it is pulled forward after a
@@ -1873,7 +1894,7 @@ fn encode_loop<E: Encoder + FromDevice>(
             // picture in a corner of a stale frame, which is what a peer sees
             // until it is told otherwise.
             if display.as_deref_mut().is_some_and(Display::take_resize) {
-                return Exit::Resized;
+                return Exit::Rediscover("the display changed size");
             }
 
             let synthetic = if display.is_none() {

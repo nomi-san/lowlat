@@ -23,6 +23,11 @@ fn main() {
     let seconds: u64 = args.next().and_then(|v| v.parse().ok()).unwrap_or(20);
 
     let card = Card::open(&node).expect("open");
+    println!(
+        "anything plugged in: {}",
+        card.attached()
+            .map_or_else(|e| format!("{e}"), |a| a.to_string())
+    );
     let layout = card.scan().expect("scan");
     let plane = layout.primary_plane;
 
