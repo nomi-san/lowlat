@@ -237,22 +237,19 @@ impl Card {
             let Ok(info) = self.get_plane(handle) else {
                 continue;
             };
-            // A plane with no framebuffer or no controller is configured but
-            // dark, and there is nothing behind it to export.
-            let (Some(fb), Some(_crtc)) = (info.framebuffer(), info.crtc()) else {
-                continue;
-            };
             let class = self
                 .plane_property(handle, c"type")
                 .unwrap_or(PLANE_TYPE_OVERLAY);
             if class != PLANE_TYPE_PRIMARY && class != PLANE_TYPE_CURSOR {
                 continue;
             }
-            let image = self.framebuffer(fb)?;
-            if class == PLANE_TYPE_PRIMARY {
-                primary = Some(image);
-                primary_plane = Some(handle);
-            } else {
+
+            // **A dark pointer plane is still the pointer plane.** It carries
+            // no framebuffer while nothing is drawing a pointer, and it is
+            // dark for a moment after a mode change; this walk happens once, so
+            // a scan that skipped it then would leave the whole session with no
+            // pointer plane to re-read.
+            if class == PLANE_TYPE_CURSOR {
                 let x = self
                     .property_id(handle, c"CRTC_X")
                     .ok_or(Error::MissingProperty("CRTC_X"))?;
@@ -264,10 +261,22 @@ impl Card {
                     x,
                     y,
                 };
-                let (x, y) = self.position_of(&at)?;
-                cursor = Some(Cursor { image, x, y });
                 cursor_plane = Some(at);
+                if let (Some(fb), Some(_crtc)) = (info.framebuffer(), info.crtc()) {
+                    let image = self.framebuffer(fb)?;
+                    let (x, y) = self.position_of(&at)?;
+                    cursor = Some(Cursor { image, x, y });
+                }
+                continue;
             }
+
+            // A primary plane with no framebuffer or no controller is
+            // configured but dark, and nothing is being scanned out.
+            let (Some(fb), Some(_crtc)) = (info.framebuffer(), info.crtc()) else {
+                continue;
+            };
+            primary = Some(self.framebuffer(fb)?);
+            primary_plane = Some(handle);
         }
 
         match (primary, primary_plane) {

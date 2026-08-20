@@ -192,15 +192,17 @@ impl Sender {
             y: state.y,
             hot_x: state.hot_x,
             hot_y: state.hot_y,
-            // **Plane presence drives this and nothing else.** A pointer that
-            // is not on the plane is either one an application hid or one the
-            // compositor drew into the picture, and in both cases a peer that
-            // drew its own would be wrong: there is nothing to draw, or the
-            // frame already carries it.
-            hidden: !state.drawn,
-            // Both need a signal this backend cannot see, and inventing one
-            // from what it can see traps the pointer of anybody who shook the
-            // mouse (docs/07-platforms.md section 2.1).
+            // **Never set from this backend, and plane presence is not it.**
+            // A client derives relative mode from this bit as well as from the
+            // relative one -- `relative || hidden` is the real test -- so any
+            // moment the compositor stops using the pointer plane would put a
+            // guest into relative mode with no pointer to see. The plane empties
+            // for a pointer that was merely too big for it and for a moment
+            // after a mode change, neither of which is an application taking the
+            // pointer over. All three of these need the intent signal, which is
+            // session state this backend sits below
+            // (docs/07-platforms.md section 2.1).
+            hidden: false,
             relative: false,
             suppressed: false,
         };
@@ -308,7 +310,6 @@ mod tests {
             width: 21,
             height: 24,
             checksum,
-            drawn: true,
         }
     }
 
@@ -445,15 +446,20 @@ mod tests {
         assert!(flags(old).contains(Flags::IMAGE));
     }
 
-    /// Nothing drawing a pointer is a state a peer has to be told about, or it
-    /// keeps drawing the last one it was sent over a picture that has its own.
+    /// **The hidden bit is never set from this backend, and that is not an
+    /// omission.** A client's test for relative mode is `relative || hidden`,
+    /// so this bit takes a guest's pointer away and locks it into relative
+    /// motion. Nothing here can tell an application hiding the pointer from a
+    /// pointer that merely outgrew the hardware plane, or from the moment
+    /// after a mode change, so setting it on any of those traps a guest whose
+    /// pointer was never taken over.
     #[test]
-    fn a_pointer_that_is_not_drawn_is_reported_hidden() {
+    fn the_bit_a_client_reads_as_relative_is_never_set() {
         let mut sender = sender(true);
-        let mut gone = state(0);
-        gone.drawn = false;
-        let message = sender.update(gone).expect("an update");
-        assert!(flags(message).contains(Flags::HIDDEN));
-        assert!(!flags(message).contains(Flags::IMAGE));
+        for update in [state(0), state(7)] {
+            let message = sender.update(update).expect("an update");
+            assert!(!flags(message).contains(Flags::HIDDEN), "hidden was set");
+            assert!(!flags(message).contains(Flags::RELATIVE));
+        }
     }
 }

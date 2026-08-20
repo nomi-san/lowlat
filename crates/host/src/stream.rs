@@ -253,13 +253,6 @@ pub struct PointerState {
     pub height: u16,
     /// Names the picture, for a peer that keeps them.
     pub checksum: u32,
-    /// Whether anything is compositing a pointer.
-    ///
-    /// **The rendering signal and not the intent one.** It is false when an
-    /// application hid the pointer and also when the compositor drew it into
-    /// the picture instead, and this backend cannot tell those apart. Both
-    /// mean the same thing to a peer: do not draw one.
-    pub drawn: bool,
 }
 
 /// The pointer the loop last saw, and a counter that says so cheaply.
@@ -1406,9 +1399,13 @@ fn publish_pointer(
 ) {
     let Some(desktop) = display else { return };
     let Some(seen) = desktop.pointer() else {
-        // Nothing is compositing a pointer. The far side has to be told, or it
-        // keeps drawing the last one over a picture that may have its own.
-        shared.publish_pointer(PointerState::default(), None);
+        // **Nothing is compositing a pointer, and there is nothing safe to say
+        // about that.** The one bit that would carry it is the one a client
+        // reads as relative mode, so reporting it hides the guest's pointer
+        // and locks it into relative for a plane that empties whenever a
+        // pointer is too large for it or a mode has just changed. The guest
+        // keeps drawing the last pointer at the last place, which is stale
+        // rather than trapped.
         return;
     };
     let Some((x, y)) = within(seen.x, seen.y, width, height) else {
@@ -1430,7 +1427,6 @@ fn publish_pointer(
         width: seen.width,
         height: seen.height,
         checksum: seen.checksum,
-        drawn: true,
     };
     // The picture travels only when it is one nothing has been shown yet.
     let image = seen.fresh.then(|| desktop.pointer_image());
