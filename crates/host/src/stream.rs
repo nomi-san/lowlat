@@ -253,6 +253,64 @@ pub struct PointerState {
     pub height: u16,
     /// Names the picture, for a peer that keeps them.
     pub checksum: u32,
+    /// Nothing is compositing a pointer, held long enough to mean it.
+    ///
+    /// **This is the bit a client reads as relative mode** (`relative ||
+    /// hidden`), so it takes a guest's pointer away and turns its motion into
+    /// deltas. That is wanted when an application took the pointer over, and
+    /// this backend cannot see that directly: what it sees is the hardware
+    /// plane emptying, which happens for that reason and for two others.
+    pub hidden: bool,
+}
+
+/// How long the pointer plane must stay empty before it means anything.
+///
+/// **The plane emptying is a noisy version of "an application took the
+/// pointer".** It is that when a game hides the cursor to aim, and it is not
+/// when a pointer merely grew past what the plane can carry, or for the moment
+/// after a display mode change while the pipeline is being rebuilt. Both of
+/// those pass; an application holding the pointer does not.
+///
+/// So it is slow to hide and immediate to show. A quarter second before a
+/// pointer disappears on entering a game is not noticeable; a quarter second
+/// of a guest wrongly locked into relative motion is, which is why the other
+/// edge has no delay at all.
+const HIDDEN_AFTER_MS: f64 = 250.0;
+
+/// Whether the display is drawing a pointer, and since when.
+#[derive(Debug, Default)]
+struct Presence {
+    /// When the plane was first found empty, while it still is.
+    dark_since: Option<f64>,
+    /// The last thing said about the pointer, which is what a report of
+    /// nothing being drawn has to carry: the plane holds the position too, so
+    /// there is no fresh one to send.
+    last: PointerState,
+}
+
+impl Presence {
+    /// Nothing is being drawn. Say so, once it has been true long enough.
+    fn dark(&mut self, now_ms: f64) -> Option<PointerState> {
+        let since = *self.dark_since.get_or_insert(now_ms);
+        if now_ms - since < HIDDEN_AFTER_MS {
+            return None;
+        }
+        let state = PointerState {
+            hidden: true,
+            ..self.last
+        };
+        self.last = state;
+        Some(state)
+    }
+
+    /// A pointer is being drawn again.
+    ///
+    /// **Immediate, and deliberately not debounced**: the cost of being late
+    /// on this edge is a guest that cannot see its own pointer for that long.
+    fn lit(&mut self, state: PointerState) {
+        self.dark_since = None;
+        self.last = state;
+    }
 }
 
 /// The pointer the loop last saw, and a counter that says so cheaply.
@@ -1396,16 +1454,20 @@ fn publish_pointer(
     width: u32,
     height: u32,
     hotspots: &mut Hotspots,
+    presence: &mut Presence,
+    now_ms: f64,
 ) {
     let Some(desktop) = display else { return };
     let Some(seen) = desktop.pointer() else {
-        // **Nothing is compositing a pointer, and there is nothing safe to say
-        // about that.** The one bit that would carry it is the one a client
-        // reads as relative mode, so reporting it hides the guest's pointer
-        // and locks it into relative for a plane that empties whenever a
-        // pointer is too large for it or a mode has just changed. The guest
-        // keeps drawing the last pointer at the last place, which is stale
-        // rather than trapped.
+        // **Nothing is compositing a pointer, which usually means something
+        // took it over.** Held for long enough, it is reported: a client turns
+        // it into relative motion, which is what a game hiding the cursor to
+        // aim actually wants. Below that it is one of the transients and
+        // nothing is said, so the guest keeps drawing the last pointer where
+        // it was.
+        if let Some(state) = presence.dark(now_ms) {
+            shared.publish_pointer(state, None);
+        }
         return;
     };
     let Some((x, y)) = within(seen.x, seen.y, width, height) else {
@@ -1427,7 +1489,9 @@ fn publish_pointer(
         width: seen.width,
         height: seen.height,
         checksum: seen.checksum,
+        hidden: false,
     };
+    presence.lit(state);
     // The picture travels only when it is one nothing has been shown yet.
     let image = seen.fresh.then(|| desktop.pointer_image());
     shared.publish_pointer(state, image);
@@ -1590,6 +1654,7 @@ fn encode_loop<E: Encoder + FromDevice>(
     // shape points.
     let mut pointer_ms = -POINTER_MS;
     let mut hotspots = Hotspots::new();
+    let mut presence = Presence::default();
 
     loop {
         if shared.stopping.load(Ordering::Acquire) != 0 {
@@ -1733,6 +1798,8 @@ fn encode_loop<E: Encoder + FromDevice>(
                     config.width,
                     config.height,
                     &mut hotspots,
+                    &mut presence,
+                    now_ms,
                 );
             }
 
@@ -2422,6 +2489,48 @@ mod tests {
     /// sent. Granting it would hand the others a stream their decoders were
     /// not built for, which they report as a decode failure rather than as a
     /// mismatch.
+    /// **The plane emptying is a noisy version of "an application took the
+    /// pointer".** It is that when a game hides the cursor to aim, and it is
+    /// not when a pointer grew past what the plane can carry or when a display
+    /// mode has just changed. Both of those pass and an application holding
+    /// the pointer does not, so the answer is held before it is believed --
+    /// and released the moment the pointer is back, because the cost of being
+    /// late on that edge is a guest that cannot see its own pointer.
+    #[test]
+    fn nothing_drawn_is_believed_only_after_it_persists() {
+        let mut presence = Presence {
+            dark_since: None,
+            last: PointerState {
+                x: 10,
+                y: 20,
+                ..PointerState::default()
+            },
+        };
+
+        // A transient blank says nothing at all.
+        assert_eq!(presence.dark(1000.0), None);
+        assert_eq!(presence.dark(1000.0 + HIDDEN_AFTER_MS - 1.0), None);
+
+        // Held, it is reported, and it carries the last position because the
+        // plane that holds the position is the one that went away.
+        let held = presence.dark(1000.0 + HIDDEN_AFTER_MS).expect("a report");
+        assert!(held.hidden);
+        assert_eq!((held.x, held.y), (10, 20));
+
+        // And a pointer coming back clears it with no delay at all.
+        presence.lit(PointerState {
+            x: 30,
+            y: 40,
+            ..PointerState::default()
+        });
+        assert_eq!(presence.dark(2000.0), None, "the clock did not restart");
+        assert_eq!(
+            presence.dark(2000.0 + HIDDEN_AFTER_MS).map(|s| (s.x, s.y)),
+            Some((30, 40)),
+            "and it reports where the pointer was last seen"
+        );
+    }
+
     /// **The hotspot comes from the one thing this host knows and no driver
     /// does: it put the pointer there itself.** A guest commands a position,
     /// the display draws the shape with its point on it, and the difference

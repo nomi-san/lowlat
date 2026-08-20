@@ -192,18 +192,18 @@ impl Sender {
             y: state.y,
             hot_x: state.hot_x,
             hot_y: state.hot_y,
-            // **Never set from this backend, and plane presence is not it.**
-            // A client derives relative mode from this bit as well as from the
-            // relative one -- `relative || hidden` is the real test -- so any
-            // moment the compositor stops using the pointer plane would put a
-            // guest into relative mode with no pointer to see. The plane empties
-            // for a pointer that was merely too big for it and for a moment
-            // after a mode change, neither of which is an application taking the
-            // pointer over. All three of these need the intent signal, which is
-            // session state this backend sits below
-            // (docs/07-platforms.md section 2.1).
-            hidden: false,
+            // **A client reads this as relative mode**, whether or not the
+            // relative bit is set beside it: its test is `relative || hidden`.
+            // That is what makes it the right bit for a game that hid the
+            // pointer to aim, and it is why it is debounced before it is set
+            // (crate::stream) rather than following the hardware plane
+            // directly.
+            hidden: state.hidden,
+            // **Not set, and not the same question.** The far side decides how
+            // to enforce relative motion; this says what the pointer is doing.
             relative: false,
+            // Needs a signal that says a touchscreen is driving, which this
+            // backend does not have.
             suppressed: false,
         };
 
@@ -310,6 +310,7 @@ mod tests {
             width: 21,
             height: 24,
             checksum,
+            hidden: false,
         }
     }
 
@@ -454,12 +455,18 @@ mod tests {
     /// after a mode change, so setting it on any of those traps a guest whose
     /// pointer was never taken over.
     #[test]
-    fn the_bit_a_client_reads_as_relative_is_never_set() {
+    fn the_bit_a_client_reads_as_relative_carries_the_debounced_answer() {
         let mut sender = sender(true);
-        for update in [state(0), state(7)] {
-            let message = sender.update(update).expect("an update");
-            assert!(!flags(message).contains(Flags::HIDDEN), "hidden was set");
-            assert!(!flags(message).contains(Flags::RELATIVE));
-        }
+        let message = sender.update(state(7)).expect("an update");
+        assert!(!flags(message).contains(Flags::HIDDEN));
+
+        let mut gone = state(7);
+        gone.hidden = true;
+        let message = sender.update(gone).expect("an update");
+        assert!(flags(message).contains(Flags::HIDDEN));
+        // **Never set beside it.** Enforcing relative motion is the far side's
+        // to do; this says what the pointer is doing, and a host that set both
+        // would be answering a question it was not asked.
+        assert!(!flags(message).contains(Flags::RELATIVE));
     }
 }
