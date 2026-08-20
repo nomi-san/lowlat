@@ -99,6 +99,22 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 **Fixed**
 
+- **A pointer redrawn into the buffer it already occupied was never noticed.**
+  The pixels were read only when the plane's framebuffer identifier moved, and
+  a compositor that redraws a pointer in place defeats that: a browser's link
+  pointer became an arrow with the identifier unchanged, and a guest kept the
+  hand while the screen showed the arrow. Thirteen of nineteen shape changes in
+  twenty seconds of ordinary hovering arrived in the buffer that carried the
+  previous one, so the identifier is not even usable as a hint. The picture is
+  now read on a cadence instead, and the position every time, because the two
+  cost three orders of magnitude apart: 0.006 ms to describe the plane against
+  about 3 ms to look at the pixels.
+
+  **The pixels are copied out in bulk before anything scans them**, which is
+  worth more than reading fewer of them: the mapping is uncached, and touching
+  every fourth byte of it to find the drawn part measured 43 ms against 6.6 to
+  copy the same bytes out and 0.025 to scan the copy. Only the first 64 rows
+  are copied, with a full copy behind it for a pointer that is not in them.
 - **A guest described the stream with the configured size rather than the one
   it produces.** A display decides its own size and the stream follows it, but
   the guest kept the configured numbers, and the size a peer is told is the
