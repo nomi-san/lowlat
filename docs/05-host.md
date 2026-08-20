@@ -601,12 +601,34 @@ equivalent, so it is per backend, and this is an open item for Gate B:
 |---|---|
 | X11 | cursor visibility notifications from the fixes extension |
 | compositor-mediated | the cursor mode reported alongside the stream |
-| scanout | no direct source; plane presence is the only observable |
+| scanout | no direct source; plane presence, debounced ([§8.4](#84-deriving-hidden-from-plane-presence)) |
 
 The scanout row is the problem case, because it is the one backend where the two states
 collapse and the false-positive rate is highest. It is flagged in
 [07-platforms.md](07-platforms.md) as a backend selection input, not something to paper over
 here.
+
+### §8.4 Deriving hidden from plane presence
+
+Where a backend has no direct source, the plane is the only observable and it **can** carry the
+signal, but only with the rules below. Every one of them exists because its absence shipped.
+
+**The far side derives relative mode from `hidden` as well as from `relative`** -- its test is
+either bit, not both. So this is not a drawing instruction that can be set freely: setting it
+takes the guest's pointer away and turns its motion into deltas.
+
+- **Debounce before believing it.** The plane empties for an application taking the pointer,
+  which is meant, and for a pointer that merely outgrew what the plane can carry, and for the
+  moment a display mode change is being rebuilt, which are not. The transients pass; an
+  application holding the pointer does not. **Slow to hide, immediate to show**: a quarter
+  second before a pointer disappears on entering a game is imperceptible, and a quarter second
+  of a guest unable to see its own pointer is not.
+- **Nothing drawn means nothing until something has been.** A stream can open onto an idle
+  desktop whose compositor is not using the plane at all, and asserting from that tells a guest
+  its pointer was taken over before it has been shown one.
+- **Only a read that examined the pixels may speak for the pointer.** Where the picture is read
+  on a cadence, the reads in between report the picture already held; counting those as a
+  pointer still being present clears the wait every time, so it never expires.
 
 ### §8.3 The state machine
 

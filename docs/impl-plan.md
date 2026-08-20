@@ -835,7 +835,12 @@ it is the safer of the two to hold.
    desktop theme's refused shape, and the real cursor returns when the hold lapses.*
 5. [ ] **Absolute input lands on the captured display with a second display attached**, and on
    the correct one. *This cannot fail with one display, which is why it is a gate item.*
-6. [ ] Capture survives resolution change and display hotplug.
+6. [x] Capture survives resolution change and display hotplug. *Passed 2026-08-20: a mode
+   change is followed, the stream rebuilt around it and the peer told, and the display link
+   pulled and restored resumes the same session.* **A display that changes size cannot be
+   absorbed**: the encoder and the conversion target are built for one size, so the new picture
+   lands in a corner of a frame the rest of which never changes again and the peer is never
+   told.
 
 ---
 

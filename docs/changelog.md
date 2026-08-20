@@ -118,6 +118,22 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 **Fixed**
 
+- **A framebuffer identifier is not a buffer.** GPU imports were cached against
+  it and the kernel reuses them: measured over a monitor switched off and on,
+  two identifiers came back naming different memory, so the encoder was fed a
+  picture from before the display went dark, alternating with live frames until
+  the cache turned over. The export has an identity and it is what the cache is
+  keyed on now.
+- **A display that changes size rebuilds the stream**, and a peer's declaration
+  rebuilds it too rather than waiting for an explicit request. Both are the same
+  shape: something the encoder is built around changed, and only a message from
+  a peer was being treated as a reason.
+- **Deriving the hidden signal from the pointer plane**, which took four goes
+  and is now written down in [05-host.md §8.4](05-host.md). It must be
+  debounced, it must not speak before a pointer has ever been seen, and only a
+  read that examined the pixels may say a pointer is still there. And the plane
+  chosen has to be the one on the controller that is lit: a card has one per
+  controller, and the others never have a pointer on them.
 - **A pointer redrawn into the buffer it already occupied was never noticed.**
   The pixels were read only when the plane's framebuffer identifier moved, and
   a compositor that redraws a pointer in place defeats that: a browser's link
