@@ -14,7 +14,7 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 
 use drm::buffer::{DrmFourcc, DrmModifier};
-use drm::control::{Device as ControlDevice, plane, property};
+use drm::control::{Device as ControlDevice, crtc, plane, property};
 
 /// A display device opened for mode-setting queries.
 ///
@@ -232,7 +232,12 @@ impl Card {
         let mut primary = None;
         let mut primary_plane = None;
         let mut cursor = None;
-        let mut cursor_plane = None;
+        let mut primary_crtc = None;
+        // Every pointer plane the card has, with the controller each is bound
+        // to. Resolved after the walk, because the lit controller is not known
+        // until the primary plane has been found and the order is the
+        // kernel's.
+        let mut cursors: Vec<(CursorPlane, Option<crtc::Handle>)> = Vec::new();
         for handle in planes {
             let Ok(info) = self.get_plane(handle) else {
                 continue;
@@ -244,11 +249,14 @@ impl Card {
                 continue;
             }
 
-            // **A dark pointer plane is still the pointer plane.** It carries
-            // no framebuffer while nothing is drawing a pointer, and it is
-            // dark for a moment after a mode change; this walk happens once, so
-            // a scan that skipped it then would leave the whole session with no
-            // pointer plane to re-read.
+            // **A dark pointer plane is still the pointer plane**, and a card
+            // has one per controller. It carries no framebuffer while nothing
+            // is drawing a pointer, and none for a moment after a mode change,
+            // so requiring one loses the pointer for the rest of the session;
+            // but taking any of them lands on a plane belonging to a
+            // controller that drives nothing, which never has a pointer on it
+            // at all. Both were shipped, in that order. So they are collected
+            // and the one on the lit controller is chosen below.
             if class == PLANE_TYPE_CURSOR {
                 let x = self
                     .property_id(handle, c"CRTC_X")
@@ -261,22 +269,32 @@ impl Card {
                     x,
                     y,
                 };
-                cursor_plane = Some(at);
-                if let (Some(fb), Some(_crtc)) = (info.framebuffer(), info.crtc()) {
-                    let image = self.framebuffer(fb)?;
-                    let (x, y) = self.position_of(&at)?;
-                    cursor = Some(Cursor { image, x, y });
-                }
+                cursors.push((at, info.crtc()));
                 continue;
             }
 
             // A primary plane with no framebuffer or no controller is
             // configured but dark, and nothing is being scanned out.
-            let (Some(fb), Some(_crtc)) = (info.framebuffer(), info.crtc()) else {
+            let (Some(fb), Some(crtc)) = (info.framebuffer(), info.crtc()) else {
                 continue;
             };
             primary = Some(self.framebuffer(fb)?);
             primary_plane = Some(handle);
+            primary_crtc = Some(crtc);
+        }
+
+        // **The one on the controller that is lit**, then any that is bound at
+        // all, then any at all. The last is what covers a pointer plane that
+        // is merely dark at this instant.
+        let candidates: Vec<(CursorPlane, Option<u32>)> = cursors
+            .iter()
+            .map(|(at, bound)| (*at, bound.map(u32::from)))
+            .collect();
+        let cursor_plane = choose_cursor(&candidates, primary_crtc.map(u32::from));
+        if let Some(at) = cursor_plane.as_ref()
+            && let Ok(Some(seen)) = self.cursor_on(at)
+        {
+            cursor = Some(seen);
         }
 
         match (primary, primary_plane) {
@@ -418,6 +436,26 @@ impl Card {
     }
 }
 
+/// Which pointer plane to re-read, out of the one per controller a card has.
+///
+/// **The one on the controller that is lit**, then any that is bound at all,
+/// then any at all. The last is what covers a plane that happens to be dark at
+/// this instant, which is an ordinary state: it carries no framebuffer while
+/// nothing is drawing a pointer, and none for a moment after a mode change.
+///
+/// Both halves have shipped broken. Requiring a framebuffer loses the pointer
+/// for the rest of the session, because this walk happens once. Taking any
+/// plane lands on one belonging to a controller that drives nothing, which
+/// never has a pointer on it at all.
+fn choose_cursor<T: Copy>(cursors: &[(T, Option<u32>)], lit: Option<u32>) -> Option<T> {
+    cursors
+        .iter()
+        .find(|(_, bound)| bound.is_some() && *bound == lit)
+        .or_else(|| cursors.iter().find(|(_, bound)| bound.is_some()))
+        .or_else(|| cursors.first())
+        .map(|(at, _)| *at)
+}
+
 /// What an exported buffer actually is.
 ///
 /// **A framebuffer identifier is not one.** The kernel reuses identifiers, and
@@ -445,6 +483,31 @@ pub fn identity(fd: &OwnedFd) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A card has a pointer plane per controller, and only one is lit.**
+    /// Both halves of this have shipped broken: requiring a framebuffer loses
+    /// the pointer for the rest of the session, because the walk that finds it
+    /// happens once and the plane is dark whenever nothing is drawing a
+    /// pointer; taking any plane lands on one belonging to a controller that
+    /// drives nothing, where a pointer never appears at all.
+    #[test]
+    fn the_pointer_plane_is_the_one_on_the_lit_controller() {
+        // Which plane is being chosen is all that matters here, so they are
+        // named rather than built: a real one carries three handles that the
+        // choice never looks at.
+        let (dark, other, lit) = (("dark", None), ("other", Some(7)), ("lit", Some(3)));
+
+        // The lit controller wins wherever it sits in the kernel's order.
+        assert_eq!(choose_cursor(&[dark, other, lit], Some(3)), Some("lit"));
+        assert_eq!(choose_cursor(&[lit, other, dark], Some(3)), Some("lit"));
+
+        // Nothing lit: a bound plane beats an unbound one.
+        assert_eq!(choose_cursor(&[dark, other], None), Some("other"));
+
+        // And a plane that is merely dark right now is still the plane.
+        assert_eq!(choose_cursor(&[dark], Some(3)), Some("dark"));
+        assert_eq!(choose_cursor::<&str>(&[], Some(3)), None);
+    }
 
     /// What the export actually asks for must never carry write access. The
     /// failure it guards against is a driver refusing every scanout buffer with
