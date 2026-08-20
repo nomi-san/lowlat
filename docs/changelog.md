@@ -99,6 +99,15 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 **Fixed**
 
+- **A window of stale fragments was re-sent whole on every pass.** The
+  outstanding cap was applied to fragments awaiting a first send and to nothing
+  else, so retransmission had no ceiling at all: a peer that stopped
+  acknowledging was sent **74 Mbps against a configured 10**, decaying to 21 and
+  staying there. The cap now stops the scan rather than one branch of it, and a
+  fragment in a retransmitting state counts against it whether or not it is due
+  this pass -- without the second half the window behind the first hundred is
+  admitted every pass and the ceiling does not hold. The same cut against the
+  same peer now measures **5.30, 2.64, 1.77, 1.77, 1.77 Mbps**.
 - **A datagram the path refused took the session down with it.** A send error
   was returned out of the shell's turn and the guest loop stopped on it without
   reporting an outcome, so a local filter rule, a route that had not come back

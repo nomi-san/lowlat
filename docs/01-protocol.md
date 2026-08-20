@@ -300,10 +300,17 @@ silently discards whole datagrams and presents as "control works, video does not
   below the named sequence, without waiting for the timeout. **Once per fragment per
   acknowledgement**, tracked by a latch on the fragment, so a burst of nacks cannot turn into a
   retransmission storm.
-- **Outstanding fragments are capped at 100 per channel.** A sender at the cap does not send; it
-  marks the fragment deferred and lets the retransmission scan release it as the window drains.
-  The same 100 is the congestion controller's window floor (§10), so it is one constant with
-  three consumers and must not be tuned in one place alone.
+- **Outstanding fragments are capped at 100 per channel, and the cap gates the whole scan.** A
+  sender at the cap does not send; it marks the fragment deferred and lets the retransmission
+  scan release it as the window drains. Past the cap the scan classifies and emits nothing, so
+  the fragments nearest the base are the ones that get the bandwidth. The same 100 is the
+  congestion controller's window floor (§10), so it is one constant with three consumers and
+  must not be tuned in one place alone.
+- **A fragment in a retransmitting state counts against the cap whether or not it is due**, as
+  does one released from deferral. **This is the only ceiling on retransmission there is.**
+  Counting emissions alone lets a window of stale fragments admit another hundred sends on
+  every pass, which is a peer that has stopped acknowledging being sent several times the
+  configured bitrate for as long as the session lasts.
 - **Stall escape:** when a gap cannot be filled and the window is starving, the reader skips
   forward. It MUST jump to the **furthest** occupied slot, never the nearest. Jumping to the
   nearest crawls the flow-control window and has cost a 20x throughput regression.
