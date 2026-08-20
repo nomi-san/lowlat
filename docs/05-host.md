@@ -444,12 +444,17 @@ display-server-level injection cannot match.
   rather than once, because a guest is seated before the stream has opened a display and a
   display can change size afterwards.
 
-  **Nothing converts between physical and logical pixels, and nothing should.** The mapping is
-  a ratio, so it is correct in whichever space both of its ends are read from; a host that
-  mixes a picture measured in one with a screen measured in the other is wrong by the display's
-  scale factor. The rule is consistency, not physical pixels. It becomes a real conversion only
-  when a captured *sub-rectangle* has to be placed within a larger desktop, because then the
-  offset and the range must be in the same space -- which is the second-display case above.
+  **Both ends of the ratio MUST be in one coordinate space, and a display scale factor is the
+  usual way they stop being.** Capture reports the real framebuffer; a windowing system asked
+  about screen geometry may answer in scaled units instead, and at 125 or 150 percent the two
+  disagree by exactly that factor. Where a platform makes that a per-process property, the
+  process MUST declare the aware mode, and it is a **packaging requirement rather than a code
+  one**: nothing in the source shows why an undeclared host is wrong, and it is wrong only on
+  machines that are scaled. Where the platform has no such split, there is nothing to convert.
+
+  This stops being free when a captured *sub-rectangle* has to be placed within a larger
+  desktop, because then the offset and the range must also be in the same space -- which is the
+  second-display case above.
 - **One injector per guest**, holding that guest's pressed-key state. On disconnect it
   releases everything it is holding. Without this, a guest that vanishes mid-keystroke leaves
   a key held down on a machine nobody is sitting at.
