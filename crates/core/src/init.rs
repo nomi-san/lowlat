@@ -52,6 +52,14 @@ pub struct Init {
     pub resolution_y: u32,
     pub media_container: u32,
     pub refresh_rate: u32,
+    /// The peer keeps pointer images it has been sent and will accept one
+    /// named by its checksum instead of resent.
+    ///
+    /// **A peer that did not say this must be sent the picture every time.**
+    /// Naming one it never kept leaves it drawing whatever it last had, which
+    /// is a pointer stuck in the shape it happened to be in when the guest
+    /// joined.
+    pub caches_cursor: bool,
 }
 
 impl Init {
@@ -147,6 +155,16 @@ fn field(body: &[u8], key: &str, fallback: u32) -> u32 {
     value_after(body, key).map_or(fallback, |rest| number(rest, fallback))
 }
 
+/// Read a boolean, which is absent far more often than it is false.
+///
+/// **Only a literal `true` counts.** A key a peer left out, a key it sent as
+/// `false`, and a key carrying something else are all the same answer, and it
+/// is the one that costs nothing to be wrong about: the picture is sent rather
+/// than named.
+fn truth(body: &[u8], key: &str) -> bool {
+    value_after(body, key).is_some_and(|rest| rest.starts_with(b"true"))
+}
+
 /// Parse an initialization body.
 ///
 /// `body` is everything after the control header, terminating NUL included.
@@ -175,6 +193,7 @@ pub fn parse(body: &[u8]) -> Result<Init> {
         resolution_y: field(body, "resolutionY", 0),
         media_container: field(body, "mediaContainer", 0),
         refresh_rate: field(body, "refreshRate", 60),
+        caches_cursor: truth(body, "_cache_cursor"),
     })
 }
 
@@ -203,6 +222,7 @@ mod tests {
             resolution_y: 1440,
             media_container: 0,
             refresh_rate: 60,
+            caches_cursor: false,
         };
         assert!(!none.has_size_limit(), "zero was read as a ceiling");
 
@@ -261,6 +281,7 @@ mod tests {
             resolution_y: 0,
             media_container: 0,
             refresh_rate: 60,
+            caches_cursor: false,
         };
         assert!(!with(0x04).ten_bit(), "bit two was read as ten-bit");
         assert!(with(0x10).ten_bit());
@@ -319,6 +340,24 @@ mod tests {
         assert_eq!(init.flags, 9);
         assert_eq!(init.refresh_rate, 144);
         assert!(init.hevc());
+        // Not an unknown key any more: a real peer states its pointer cache
+        // here and nowhere else.
+        assert!(init.caches_cursor);
+    }
+
+    /// **A peer that did not say it caches must be sent the picture every
+    /// time.** Absent, false, and anything unexpected are one answer, and it
+    /// is the one that costs a few hundred bytes rather than leaving a peer
+    /// drawing whatever pointer it last had.
+    #[test]
+    fn only_a_stated_cursor_cache_counts() {
+        let of = |body: &[u8]| parse(body).expect("parsed").caches_cursor;
+        assert!(of(b"{\"_version\":1,\"_cache_cursor\":true}"));
+        assert!(of(b"{\"_version\":1, \"_cache_cursor\" : true }"));
+        assert!(!of(b"{\"_version\":1,\"_cache_cursor\":false}"));
+        assert!(!of(b"{\"_version\":1}"));
+        // A key that merely begins the same way is a different key.
+        assert!(!of(b"{\"_version\":1,\"_cache_cursors\":true}"));
     }
 
     #[test]
