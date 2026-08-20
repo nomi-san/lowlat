@@ -1041,6 +1041,8 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             .set_permissions(args.permissions, &mut input.sink);
     }
     let mut throughput = Throughput::default();
+    // What this guest has been told about the pointer, and what it holds.
+    let mut pointer = crate::cursor::Sender::new();
     let mut declared = false;
     // What was last published to the seat, so a declaration that has not moved
     // is not republished on every pass.
@@ -1233,6 +1235,9 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         // it. A stream that renders nothing is diagnosed from here first.
         if !declared && let Some(asked) = negotiation.as_ref().and_then(Negotiation::asked) {
             declared = true;
+            // **Read once, here, and never assumed.** A peer that did not say
+            // it keeps pointer pictures is sent the picture every time.
+            pointer.caches(asked.caches_cursor);
             lowlat_common::log_info!(
                 "guest: declared attempt={} max_w={} max_h={} res={}x{} fps={} flags={:#x}",
                 args.attempt_id,
@@ -1306,6 +1311,19 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 }
                 _ => lowlat_common::log_warn!("guest: seated with nothing to send on"),
             }
+        }
+
+        // **The pointer, per guest, because what it is owed depends on what it
+        // already holds.** The stream reads it once; this decides whether the
+        // picture travels or only its name, and sends nothing at all on the
+        // passes where nothing about it moved.
+        if let Some(seat) = seat.as_ref()
+            && let Some(message) = pointer.next(seat)
+        {
+            let _ = shell
+                .endpoint()
+                .session()
+                .send_message(CONTROL_CHANNEL, message, &[]);
         }
 
         // What the stream's controller and gate are steered by. Cheap, and it

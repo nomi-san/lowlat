@@ -87,6 +87,15 @@ const COLLECT_WAIT: std::time::Duration = std::time::Duration::from_millis(1);
 /// The same figure as a number, for comparing against a remaining interval.
 const POLL_MS: f64 = 1.0;
 
+/// How often the pointer is looked at.
+///
+/// **An absolute figure and not a frame count.** A pointer that blinks for a
+/// single frame must not flap a peer between states, and nothing a hand does
+/// to a mouse is worth reporting faster than this. It is also what keeps the
+/// read off the frame path: the plane is mapped and compared on the processor,
+/// which is cheap at this rate and waste at every frame.
+const POINTER_MS: f64 = 18.0;
+
 /// Frames between one timing report and the next. Ten seconds at sixty.
 const REPORT_FRAMES: u32 = 600;
 
@@ -201,6 +210,8 @@ struct Shared {
     timing: TimingCells,
     /// Raised to end the loop; the loop checks it once per frame.
     stopping: AtomicU32,
+    /// The pointer, as the loop last read it.
+    cursor: CursorCell,
     /// Counts encoder reinitializations.
     ///
     /// **A guest has to know, and cannot infer it.** A new encoder is a new
@@ -208,6 +219,77 @@ struct Shared {
     /// from the generation in the video header; a guest that never noticed
     /// would keep announcing the old one.
     epoch: AtomicU32,
+}
+
+/// The pointer as a guest needs to report it, in the captured picture's own
+/// coordinates.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PointerState {
+    pub x: u16,
+    pub y: u16,
+    pub hot_x: u16,
+    pub hot_y: u16,
+    /// The drawn part's size, which is what travels; a plane is a fixed
+    /// allocation and almost all of it is padding.
+    pub width: u16,
+    pub height: u16,
+    /// Names the picture, for a peer that keeps them.
+    pub checksum: u32,
+    /// Whether anything is compositing a pointer.
+    ///
+    /// **The rendering signal and not the intent one.** It is false when an
+    /// application hid the pointer and also when the compositor drew it into
+    /// the picture instead, and this backend cannot tell those apart. Both
+    /// mean the same thing to a peer: do not draw one.
+    pub drawn: bool,
+}
+
+/// The pointer the loop last saw, and a counter that says so cheaply.
+///
+/// **The one lock this stream has, and the exception the rule allows** (AGENTS
+/// section 6 rule 8): many readers during a stream, one writer, and a
+/// variable-length picture that cannot be an atomic. A guest copies under it
+/// and does everything else outside it, and the counter beside it is what
+/// keeps a guest from taking it at all on the passes where nothing moved,
+/// which is almost all of them.
+#[derive(Debug, Default)]
+struct CursorCell {
+    generation: AtomicU32,
+    held: std::sync::Mutex<Held>,
+}
+
+/// What a guest copies out.
+#[derive(Debug, Default)]
+struct Held {
+    state: PointerState,
+    png: Vec<u8>,
+}
+
+impl Shared {
+    /// Publish what the loop just read of the pointer.
+    ///
+    /// `image` is the picture, and is present only when it is one no guest has
+    /// been shown yet. **Nothing is published when nothing changed**, so a
+    /// stationary pointer costs guests one atomic load a pass and no message.
+    fn publish_pointer(&self, state: PointerState, image: Option<&[u8]>) {
+        let mut held = self
+            .cursor
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if held.state == state && image.is_none() {
+            return;
+        }
+        held.state = state;
+        if let Some(image) = image {
+            held.png.clear();
+            held.png.extend_from_slice(image);
+        }
+        drop(held);
+        // Released after the write above, so a guest that sees the new count
+        // sees the state that goes with it.
+        self.cursor.generation.fetch_add(1, Ordering::Release);
+    }
 }
 
 /// A stage report, in microseconds, published as plain atomics.
@@ -354,6 +436,7 @@ impl Stream {
             pool: Pool::new(POOL_SLOTS, max_frame_bytes()),
             encode_us: AtomicU32::new(0),
             timing: TimingCells::default(),
+            cursor: CursorCell::default(),
             stopping: AtomicU32::new(0),
             epoch: AtomicU32::new(0),
         });
@@ -490,6 +573,31 @@ impl SeatHold {
         )]
         seat.measured_bits
             .store((measured_mbps as f32).to_bits(), Ordering::Relaxed);
+    }
+
+    /// How many times the pointer has changed.
+    ///
+    /// **Read every pass and the lock is not**, which is the point of it:
+    /// nothing about the pointer moves on most passes.
+    pub fn pointer_generation(&self) -> u32 {
+        self.shared.cursor.generation.load(Ordering::Acquire)
+    }
+
+    /// Copy the pointer out, picture included.
+    ///
+    /// **Copied under the lock and used outside it.** Encoding a message while
+    /// holding it would put the whole of a guest's pointer work inside a lock
+    /// every other guest is waiting on.
+    pub fn pointer(&self, image: &mut Vec<u8>) -> Option<PointerState> {
+        let held = self
+            .shared
+            .cursor
+            .held
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        image.clear();
+        image.extend_from_slice(&held.png);
+        Some(held.state)
     }
 
     /// Capture to bitstream collected for the last picture, in milliseconds.
@@ -1051,6 +1159,51 @@ fn occupied(shared: &Shared) -> bool {
 /// for a new frame when the frame clock says so, so an encode overlaps the
 /// acquire and the submit behind it, and a picture leaves within a poll of
 /// being ready rather than at the next frame boundary.
+/// Read the pointer and publish it for the guests to report.
+///
+/// **Skipped rather than clamped when the pointer is not on this stream.** A
+/// pointer outside the picture is not this stream's to describe, and a clamped
+/// one is a pointer parked against an edge it is not at. The far side keeps
+/// drawing the last one it was told about, which is what it should do.
+fn publish_pointer(
+    shared: &Shared,
+    display: Option<&mut crate::display::Display>,
+    width: u32,
+    height: u32,
+) {
+    let Some(desktop) = display else { return };
+    let Some(seen) = desktop.pointer() else {
+        // Nothing is compositing a pointer. The far side has to be told, or it
+        // keeps drawing the last one over a picture that may have its own.
+        shared.publish_pointer(PointerState::default(), None);
+        return;
+    };
+    let (Ok(x), Ok(y)) = (u16::try_from(seen.x), u16::try_from(seen.y)) else {
+        // Negative, which is a pointer straddling the left or top edge. Not
+        // representable and not this stream's, by the same rule.
+        return;
+    };
+    if u32::from(x) >= width || u32::from(y) >= height {
+        return;
+    }
+    let state = PointerState {
+        x,
+        y,
+        // Nothing reports it and nothing has derived it yet, so a peer draws
+        // the picture from its corner. Wrong by a hotspot, and visibly so on
+        // a shape whose point is in its middle.
+        hot_x: 0,
+        hot_y: 0,
+        width: seen.width,
+        height: seen.height,
+        checksum: seen.checksum,
+        drawn: true,
+    };
+    // The picture travels only when it is one nothing has been shown yet.
+    let image = seen.fresh.then(|| desktop.pointer_image());
+    shared.publish_pointer(state, image);
+}
+
 /// How long a guest waits for a display that is not scanning out.
 ///
 /// Long enough that a screen blanked while nobody was looking has a chance to
@@ -1194,6 +1347,8 @@ fn encode_loop<E: Encoder + FromDevice>(
     let mut failures = 0u32;
     // Whether the last pass found the display dark.
     let mut held = false;
+    // When the pointer was last looked at.
+    let mut pointer_ms = -POINTER_MS;
 
     loop {
         if shared.stopping.load(Ordering::Acquire) != 0 {
@@ -1316,6 +1471,15 @@ fn encode_loop<E: Encoder + FromDevice>(
                 }
                 None => None,
             };
+            // **The pointer, on its own cadence and after the picture.** It
+            // is read from the same device and the same thread as the frame,
+            // which is what the state it reports is a property of; a thread
+            // outside this one sees another seat or nothing at all.
+            if now_ms - pointer_ms >= POINTER_MS {
+                pointer_ms = now_ms;
+                publish_pointer(shared, display.as_deref_mut(), config.width, config.height);
+            }
+
             let synthetic = if display.is_none() {
                 Some(source.acquire())
             } else {
@@ -1882,6 +2046,7 @@ mod tests {
                 pool: Pool::new(slots, max_frame_bytes()),
                 encode_us: AtomicU32::new(0),
                 timing: TimingCells::default(),
+                cursor: CursorCell::default(),
                 stopping: AtomicU32::new(0),
                 epoch: AtomicU32::new(0),
             });
@@ -1929,6 +2094,7 @@ mod tests {
             pool: Pool::new(POOL_SLOTS, max_frame_bytes()),
             encode_us: AtomicU32::new(0),
             timing: TimingCells::default(),
+            cursor: CursorCell::default(),
             stopping: AtomicU32::new(0),
             epoch: AtomicU32::new(0),
         });
