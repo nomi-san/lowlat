@@ -287,15 +287,28 @@ impl<'a> SendRing<'a> {
                 continue;
             }
 
+            // **The cap gates the whole scan and not only the fragments
+            // waiting for a first send.** It is the only ceiling on
+            // retransmission there is: a window full of stale fragments is
+            // re-sent in its entirety on every pass without it, at several
+            // times the configured rate and for as long as the session lasts.
+            // Past the cap the scan classifies and sends nothing, so the
+            // fragments nearest the base are the ones that get the bandwidth.
+            if self.outstanding >= OUTSTANDING_CAP {
+                self.classify(index, now_ms, srtt_ms, level);
+                self.cursor = self.cursor.wrapping_add(1);
+                continue;
+            }
+
             let age = now_ms - slot.last_sent_ms;
             let nacked = self
                 .nack_below
                 .is_some_and(|below| seq::lt(sequence, below) && !slot.nack_resent);
 
             let due = if !slot.sent {
-                // Pending. The cap is what defers it, and draining is what
-                // releases it.
-                self.outstanding < OUTSTANDING_CAP
+                // Pending. The cap above is what defers it, and draining is
+                // what releases it.
+                true
             } else if nacked {
                 true
             } else {
@@ -303,6 +316,13 @@ impl<'a> SendRing<'a> {
             };
 
             if !due {
+                // **A fragment in a retransmitting state counts against the cap
+                // whether or not it is due this pass.** Counting only what was
+                // sent lets a window of stale fragments admit a hundred more
+                // sends every pass, which is the ceiling failing to hold.
+                if slot.retransmits > 0 || slot.nack_resent {
+                    self.outstanding = self.outstanding.saturating_add(1);
+                }
                 self.classify(index, now_ms, srtt_ms, level);
                 self.cursor = self.cursor.wrapping_add(1);
                 continue;
@@ -400,9 +420,14 @@ mod tests {
 
     impl Storage {
         fn new() -> Self {
+            Self::wide(SLOTS)
+        }
+
+        /// A ring deep enough for the cap to bite.
+        fn wide(slots: usize) -> Self {
             Self {
-                bodies: std::vec![0u8; SLOT * SLOTS],
-                meta: std::vec![SendSlot::default(); SLOTS],
+                bodies: std::vec![0u8; SLOT * slots],
+                meta: std::vec![SendSlot::default(); slots],
             }
         }
         fn ring(&mut self) -> SendRing<'_> {
@@ -491,6 +516,54 @@ mod tests {
         let emitted = drain(&mut ring, 0.0, 10.0);
         assert_eq!(emitted.len(), SLOTS, "cap should not bite below 100");
         assert_eq!(ring.outstanding(), SLOTS as u32);
+    }
+
+    /// **The only ceiling on retransmission there is.** A window of stale
+    /// fragments was re-sent whole on every pass, because the cap was applied
+    /// to fragments awaiting a first send and to nothing else. Measured live
+    /// at 74 Mbps against a configured 10, for as long as the session lasted.
+    #[test]
+    fn a_stale_window_is_not_resent_whole_on_every_pass() {
+        const WIDE: usize = 300;
+        let mut storage = Storage::wide(WIDE);
+        let mut ring = storage.ring();
+        for _ in 0..WIDE {
+            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+        }
+
+        // Every fragment gets a first send, a capful per pass, and nothing is
+        // acknowledged.
+        let now = 0.0;
+        let mut first = 0usize;
+        loop {
+            let emitted = drain(&mut ring, now, 1.0);
+            assert!(
+                emitted.len() <= OUTSTANDING_CAP as usize,
+                "a pass sent {} fragments",
+                emitted.len()
+            );
+            if emitted.is_empty() {
+                break;
+            }
+            first += emitted.len();
+        }
+        assert_eq!(first, WIDE, "every fragment should reach the wire once");
+
+        // Now past every timeout, with the peer still saying nothing.
+        let now = now + 200.0;
+        assert_eq!(
+            drain(&mut ring, now, 1.0).len(),
+            OUTSTANDING_CAP as usize,
+            "the whole window went out again"
+        );
+
+        // **And the pass straight after sends nothing.** The hundred already
+        // retransmitting hold the cap until they are due again, which is what
+        // stops the rest of the window being admitted behind them.
+        assert!(
+            drain(&mut ring, now, 1.0).is_empty(),
+            "a second pass sent more of the same window"
+        );
     }
 
     #[test]
