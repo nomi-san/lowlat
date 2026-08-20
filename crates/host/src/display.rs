@@ -123,6 +123,8 @@ pub struct Display {
     /// for an answer that does not change.
     cursor_plane: Option<CursorPlane>,
     cursor: Watcher,
+    /// Latched when the display changed size, and taken by the loop.
+    resized: bool,
 }
 
 impl core::fmt::Debug for Display {
@@ -178,6 +180,7 @@ impl Display {
             next: 0,
             cursor_plane: layout.cursor_plane,
             cursor: Watcher::new(),
+            resized: false,
         })
     }
 
@@ -277,6 +280,12 @@ impl Display {
                 shape.height,
                 shape.format
             );
+            // **A size change is not something this can absorb.** The
+            // conversion target and the encoder are both built for one size,
+            // so the picture would land in a corner of a frame the rest of
+            // which never changes again. Latched for the loop, which rebuilds
+            // around it.
+            self.resized |= (shape.width, shape.height) != (self.shape.width, self.shape.height);
             self.forget_imports();
             self.shape = shape;
         }
@@ -362,6 +371,11 @@ impl Display {
                 None
             }
         }
+    }
+
+    /// Whether the display changed size, clearing the answer.
+    pub fn take_resize(&mut self) -> bool {
+        core::mem::replace(&mut self.resized, false)
     }
 
     /// The picture the last [`Display::pointer`] named.

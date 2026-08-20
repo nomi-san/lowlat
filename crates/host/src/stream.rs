@@ -42,6 +42,7 @@ use lowlat_common::spsc::Ring;
 use lowlat_encode::{Encoder, Poll};
 use lowlat_net::WakeHandle;
 
+use crate::display::Display;
 use crate::frames::{self, Pool};
 use crate::gate::{self, Gate, Keyframe};
 use crate::timing::{Report, Stages};
@@ -885,14 +886,21 @@ fn run(shared: &Shared, arrivals: &mpsc::Receiver<Join>, mut config: Config) {
                 kick_asked(shared, &roster.active, reason);
                 config.codec = back;
             }
-            Exit::Reconfigure(codec) => {
-                lowlat_common::log_info!(
-                    "stream: reconfiguring codec={:?} -> {:?}",
-                    config.codec,
-                    codec
-                );
-                previous = Some(config.codec);
-                config.codec = codec;
+            Exit::Resized | Exit::Reconfigure(_) => {
+                if let Exit::Reconfigure(codec) = exit {
+                    lowlat_common::log_info!(
+                        "stream: reconfiguring codec={:?} -> {:?}",
+                        config.codec,
+                        codec
+                    );
+                    previous = Some(config.codec);
+                    config.codec = codec;
+                } else {
+                    // The size is not carried here: the loop re-reads it from
+                    // the display on the way back in, which is the one place
+                    // that knows it.
+                    lowlat_common::log_info!("stream: the display changed size, rebuilding");
+                }
                 // **Every guest is latched and the generation moves.** The new
                 // encoder has no history at all, so a guest still expecting the
                 // old reference chain waits for the refresh that opens the new
@@ -918,6 +926,14 @@ enum Exit {
     /// Every seated guest can decode this codec, and at least one asked for a
     /// configuration the running encoder does not produce.
     Reconfigure(Codec),
+    /// The display changed size underneath the encoder.
+    ///
+    /// **The encoder is built for one picture size and cannot follow.** Left
+    /// running, it keeps coding the old size: the new picture lands in a
+    /// corner of a frame the rest of which never changes again, and the peer
+    /// is never told, so it goes on decoding at a size the stream stopped
+    /// producing.
+    Resized,
 }
 
 /// End the guests that asked for the configuration that could not be built.
@@ -1599,8 +1615,20 @@ fn encode_loop<E: Encoder + FromDevice>(
         // different session. Taken outside the frame clock: a reconfiguration
         // is not worth a frame's wait and the encoder is about to be replaced
         // anyway.
-        if reconfigure_asked(shared, active) {
-            let asked = consensus(shared, active);
+        // **A declaration is a reason on its own, not only a request.** A peer
+        // states what it can decode when it joins, and a host that acted only
+        // on an explicit reinitialization left a guest that asked for one
+        // codec being sent the other until it went away and came back. What
+        // every seated guest can decode is the whole of the decision, so a
+        // change in it is the trigger.
+        let asked = consensus(shared, active);
+        let wanted = if asked & lowlat_core::init::FLAG_HEVC != 0 {
+            Codec::H265
+        } else {
+            Codec::H264
+        };
+        let disagrees = asked != 0 && wanted != config.codec;
+        if reconfigure_asked(shared, active) || disagrees {
             if asked & NOT_EMITTED != 0 {
                 lowlat_common::log_warn!(
                     "stream: guests asked for flags={:#x} and this pipeline emits 8-bit 4:2:0, \
@@ -1609,17 +1637,14 @@ fn encode_loop<E: Encoder + FromDevice>(
                     asked & NOT_EMITTED
                 );
             }
-            let wanted = if asked & lowlat_core::init::FLAG_HEVC != 0 {
-                Codec::H265
-            } else {
-                Codec::H264
-            };
             // **The whole decision on one line.** What every seat agreed on,
-            // how many seats that was over, and what it settles the codec at:
-            // a request that changes nothing and a request that is outvoted
-            // look identical from the outside otherwise.
+            // how many seats that was over, what settled the codec, and which
+            // of the two reasons brought us here: a request that changes
+            // nothing, a request that is outvoted, and a declaration nobody
+            // asked about look identical from the outside otherwise.
             lowlat_common::log_info!(
-                "stream: reinit asked, consensus={:#x} over {} seat(s), codec={:?} -> {:?}",
+                "stream: reinit {}, consensus={:#x} over {} seat(s), codec={:?} -> {:?}",
+                if disagrees { "by declaration" } else { "asked" },
                 asked,
                 active.len(),
                 config.codec,
@@ -1713,6 +1738,14 @@ fn encode_loop<E: Encoder + FromDevice>(
                     config.height,
                     &mut hotspots,
                 );
+            }
+
+            // **Before anything is encoded from it.** A frame taken at the
+            // new size and coded by an encoder built for the old one is the
+            // picture in a corner of a stale frame, which is what a peer sees
+            // until it is told otherwise.
+            if display.as_deref_mut().is_some_and(Display::take_resize) {
+                return Exit::Resized;
             }
 
             let synthetic = if display.is_none() {
@@ -1879,6 +1912,15 @@ fn consensus(shared: &Shared, active: &[Active]) -> u32 {
     for entry in active {
         if let Some(seat) = shared.seats.get(entry.seat) {
             let declared = seat.flags.load(Ordering::Relaxed);
+            // **A seat that has declared nothing is not a vote.** A guest takes
+            // its seat the moment it is streamable and its declaration reaches
+            // the seat a pass later, so counting that gap as "can decode
+            // nothing" drags the stream down to the base codec and back again.
+            // Every real declaration carries the base flag, so zero is only
+            // ever the gap.
+            if declared == 0 {
+                continue;
+            }
             flags = Some(flags.map_or(declared, |all| all & declared));
         }
     }
@@ -2512,6 +2554,33 @@ mod tests {
         // Vacuously everything is the wrong answer: it would configure a
         // stream from nobody's declaration at all.
         assert_eq!(consensus(&shared, &[]), 0, "no seats claimed everything");
+    }
+
+    /// **A seat that has not declared yet is not a vote against everything.**
+    /// A guest takes its seat the moment it is streamable and its declaration
+    /// reaches the seat a pass later; counting that gap as "can decode
+    /// nothing" drags the stream to the base codec and straight back, which is
+    /// two encoder rebuilds and two keyframes for nothing.
+    #[test]
+    fn a_seat_that_has_not_declared_does_not_vote() {
+        const HEVC: u32 = lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC;
+
+        let (shared, _stream, _arrivals) = parked();
+        let active = [seat_of(0), seat_of(1)];
+
+        shared.seats[0].flags.store(HEVC, Ordering::Relaxed);
+        shared.seats[1].flags.store(0, Ordering::Relaxed);
+        assert_eq!(
+            consensus(&shared, &active),
+            HEVC,
+            "a seat mid-join was counted as decoding nothing"
+        );
+
+        // And once it does declare, it counts.
+        shared.seats[1]
+            .flags
+            .store(lowlat_core::init::FLAG_BASE, Ordering::Relaxed);
+        assert_eq!(consensus(&shared, &active), lowlat_core::init::FLAG_BASE);
     }
 
     /// A seat carries its occupant's declaration and not the last one's.
