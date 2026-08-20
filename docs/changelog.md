@@ -99,6 +99,15 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 **Fixed**
 
+- **A datagram the path refused took the session down with it.** A send error
+  was returned out of the shell's turn and the guest loop stopped on it without
+  reporting an outcome, so a local filter rule, a route that had not come back
+  or a link that had gone ended a session silently: nothing reaped the attempt,
+  and its port, its seat and its share of the advertised capacity were never
+  released. A refused datagram is now dropped like the loss it is, logged on the
+  edges of an outage rather than per datagram, and a loop that does stop reports
+  why. **Found by a live run**, not by a test: the two faults compose, and the
+  first one hid the second.
 - **A session nothing could be delivered on was never ended.** Liveness watched
   the inbound direction only, so a peer that keeps acknowledging on the cadence
   while it has stopped receiving satisfied it indefinitely, and the whole send
