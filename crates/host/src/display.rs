@@ -106,9 +106,15 @@ pub struct Display {
     plane: drm::control::plane::Handle,
     /// What the display was doing when the imports below were built.
     shape: Shape,
-    /// One per buffer of the display's rotation, keyed by the kernel's
-    /// identifier for it.
-    imports: HashMap<u32, vulkan::Imported>,
+    /// One per buffer of the display's rotation.
+    ///
+    /// **Keyed by what the buffer is, not by the identifier the kernel gives
+    /// its framebuffer.** Identifiers are reused, and they are reused across
+    /// the transition where it shows: over a monitor switched off and on, two
+    /// came back naming different memory. An import cached against one then
+    /// feeds the encoder the picture from before the display went dark,
+    /// alternating with live frames until the cache turns over.
+    imports: HashMap<u64, vulkan::Imported>,
     targets: Vec<Target>,
     next: usize,
     /// The pointer plane, when the pipeline has one. **Found once**: a machine
@@ -275,7 +281,7 @@ impl Display {
             self.shape = shape;
         }
 
-        self.ensure_import(&fb)?;
+        let key = self.ensure_import(&fb)?;
 
         // The slot is chosen and the cursor advanced before anything is
         // borrowed out of the targets, because the registration handed back
@@ -283,42 +289,49 @@ impl Display {
         let slot = self.next % self.targets.len().max(1);
         self.next = self.next.wrapping_add(1);
 
-        let source = self.imports.get(&fb.id).ok_or(Error::Register)?;
+        let source = self.imports.get(&key).ok_or(Error::Register)?;
         let target = self.targets.get(slot).ok_or(Error::Register)?;
         self.converter
             .run(&self.device, source, &target.frame, false)?;
         Ok(began)
     }
 
-    /// Make sure this buffer is imported, building it if the rotation moved on.
-    fn ensure_import(&mut self, fb: &scanout::Framebuffer) -> Result<(), Error> {
-        if !self.imports.contains_key(&fb.id) {
-            // Bounded rather than unbounded. A compositor that cycles more
-            // widely than expected costs a rebuild per turn, which is a cost;
-            // an unbounded map would be a leak.
-            if self.imports.len() >= IMPORTS {
-                self.forget_imports();
-            }
-            let planes: Vec<PlaneLayout> = fb
-                .planes()
-                .map(|buffer| PlaneLayout {
-                    offset: buffer.offset,
-                    pitch: buffer.pitch,
-                })
-                .collect();
-            let first = fb.planes().next().ok_or(scanout::Error::NoScanout)?;
-            let fd = self.card.export(first)?;
-            let imported = self.device.import(&Imports {
-                width: fb.width,
-                height: fb.height,
-                format: fb.format,
-                modifier: fb.modifier.map_or(0, u64::from),
-                fd: <std::os::fd::OwnedFd as std::os::fd::IntoRawFd>::into_raw_fd(fd),
-                planes: &planes,
-            })?;
-            self.imports.insert(fb.id, imported);
+    /// Make sure this buffer is imported, and say which import it is.
+    ///
+    /// **The buffer is exported every frame, and it is what identifies it.**
+    /// The export costs a handful of microseconds and is the only thing that
+    /// says which memory is behind a framebuffer; the identifier beside it
+    /// does not, because the kernel reuses those.
+    fn ensure_import(&mut self, fb: &scanout::Framebuffer) -> Result<u64, Error> {
+        let first = fb.planes().next().ok_or(scanout::Error::NoScanout)?;
+        let fd = self.card.export(first)?;
+        let key = scanout::identity(&fd).ok_or(Error::Register)?;
+        if self.imports.contains_key(&key) {
+            return Ok(key);
         }
-        Ok(())
+        // Bounded rather than unbounded. A compositor that cycles more widely
+        // than expected costs a rebuild per turn, which is a cost; an
+        // unbounded map would be a leak.
+        if self.imports.len() >= IMPORTS {
+            self.forget_imports();
+        }
+        let planes: Vec<PlaneLayout> = fb
+            .planes()
+            .map(|buffer| PlaneLayout {
+                offset: buffer.offset,
+                pitch: buffer.pitch,
+            })
+            .collect();
+        let imported = self.device.import(&Imports {
+            width: fb.width,
+            height: fb.height,
+            format: fb.format,
+            modifier: fb.modifier.map_or(0, u64::from),
+            fd: <std::os::fd::OwnedFd as std::os::fd::IntoRawFd>::into_raw_fd(fd),
+            planes: &planes,
+        })?;
+        self.imports.insert(key, imported);
+        Ok(key)
     }
 
     /// Drop every import, which is what a changed picture requires.

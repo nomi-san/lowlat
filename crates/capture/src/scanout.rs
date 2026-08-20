@@ -10,7 +10,7 @@
 //! descriptors, and everything downstream of here works on the device.
 
 use std::fs::{File, OpenOptions};
-use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 use std::path::Path;
 
 use drm::buffer::{DrmFourcc, DrmModifier};
@@ -407,6 +407,30 @@ impl Card {
         self.buffer_to_prime_fd(buffer.handle, EXPORT_FLAGS)
             .map_err(|error| device_error(&error))
     }
+}
+
+/// What an exported buffer actually is.
+///
+/// **A framebuffer identifier is not one.** The kernel reuses identifiers, and
+/// it reuses them across exactly the transition that makes it matter: measured
+/// over a monitor being switched off and on, two identifiers came back naming
+/// different memory than before. Anything cached against an identifier then
+/// serves what was behind it last time -- the picture from the moment the
+/// display went dark, alternating with live ones.
+///
+/// The export is what has an identity: the kernel keeps one of these per
+/// buffer, so the same buffer exports to the same inode and two buffers never
+/// share one.
+pub fn identity(fd: &OwnedFd) -> Option<u64> {
+    // SAFETY: plain data, and zeroing it is how the call expects to be given
+    // one.
+    let mut stat: libc::stat = unsafe { core::mem::zeroed() };
+    // SAFETY: the descriptor is open for the borrow, and the struct is
+    // writable and the right size.
+    if unsafe { libc::fstat(fd.as_raw_fd(), &mut stat) } != 0 {
+        return None;
+    }
+    Some(stat.st_ino)
 }
 
 #[cfg(test)]
