@@ -23,6 +23,11 @@ fn main() {
     let seconds: u64 = args.next().and_then(|v| v.parse().ok()).unwrap_or(20);
 
     let card = Card::open(&node).expect("open");
+    // What this device can say about the desktop it is part of. A second
+    // output the compositor owns but the device does not drive is invisible
+    // here, and that decides whether absolute input can be placed from this
+    // backend alone.
+    card.describe();
     println!(
         "anything plugged in: {}",
         card.attached()

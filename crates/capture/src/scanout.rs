@@ -323,6 +323,41 @@ impl Card {
         self.framebuffer(fb)
     }
 
+    /// Print what this device says about its controllers, for a probe.
+    ///
+    /// **What a controller reports is its own framebuffer, not the desktop.**
+    /// Whether the position of one inside a larger desktop is discoverable
+    /// here at all is what decides where absolute input can be placed from.
+    pub fn describe(&self) {
+        let Ok(handles) = self.resource_handles() else {
+            return;
+        };
+        for crtc in handles.crtcs() {
+            let Ok(info) = self.get_crtc(*crtc) else {
+                continue;
+            };
+            let mode = info
+                .mode()
+                .map(|m| format!("{}x{}", m.size().0, m.size().1))
+                .unwrap_or_else(|| "no mode".to_string());
+            println!(
+                "crtc {:?}: position {:?} mode {mode}",
+                crtc,
+                info.position()
+            );
+        }
+        for connector in handles.connectors() {
+            if let Ok(info) = self.get_connector(*connector, false) {
+                println!(
+                    "connector {:?}-{}: {:?}",
+                    info.interface(),
+                    info.interface_id(),
+                    info.state()
+                );
+            }
+        }
+    }
+
     /// Whether anything is still plugged into this device.
     ///
     /// **A controller keeps scanning out after its connector is unplugged.**

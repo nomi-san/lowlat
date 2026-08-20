@@ -1963,9 +1963,17 @@ fn encode_loop<E: Encoder + FromDevice>(
             let captured_at = ready
                 .or_else(|| synthetic.as_ref().map(|frame| frame.captured_at))
                 .unwrap_or(began);
-            stages
-                .acquire
-                .record(lowlat_common::clock::diff_ms(began, captured_at));
+            // **What the acquire cost, not when the picture is stamped.** A
+            // display reports the moment it began, because that is when the
+            // picture on screen was the one being taken and it is what the
+            // latency a peer is told counts from; measuring the stage against
+            // that stamp compares a clock reading with itself and reports
+            // zero, which is what it did, hiding the capture and the colour
+            // conversion inside a figure nobody could break down.
+            stages.acquire.record(lowlat_common::clock::diff_ms(
+                began,
+                lowlat_common::clock::Time::now(),
+            ));
 
             // **The tick is the frame.** The controller counts its periods in
             // ticks, so this belongs here and not on the poll pass.
