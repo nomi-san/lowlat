@@ -311,6 +311,14 @@ silently discards whole datagrams and presents as "control works, video does not
   retransmissions.
 - **Liveness:** 60 seconds without progress is a soft failure; 120 seconds is a hard failure.
   Keepalives (`0x08`) hold an idle session open.
+- **Delivery deadline:** a channel holding outstanding fragments, none of which the peer has
+  acknowledged for 15 seconds, is a hard failure of the session. **Judged per channel and on
+  the acknowledged count, never on the window.** The liveness deadlines above measure the
+  inbound direction only, which a peer that keeps acknowledging while it has stopped receiving
+  satisfies indefinitely, and its whole send window is retransmitted for exactly as long. A
+  congested path fills a window identically and acknowledges throughout, so the window cannot
+  distinguish them. A peer that has stopped draining one ring keeps acknowledging the others,
+  so a count summed across channels cannot either.
 
 ## §10 Congestion control
 
@@ -650,4 +658,5 @@ bit 3 is set on every offer, so `_flags` of 8 alone is the ordinary case: H.264,
 | ack cadence | 30 ms | §9 |
 | soft liveness timeout | 60 s | §9 |
 | hard liveness timeout | 120 s | §9 |
+| delivery deadline | 15 s | §9 |
 | congestion window floor | 100 | §10 |

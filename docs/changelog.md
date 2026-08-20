@@ -97,6 +97,24 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   which agrees exactly and needs a driver rather than a graphics card, so it
   runs by default and in continuous integration.
 
+**Fixed**
+
+- **A session nothing could be delivered on was never ended.** Liveness watched
+  the inbound direction only, so a peer that keeps acknowledging on the cadence
+  while it has stopped receiving satisfied it indefinitely, and the whole send
+  window was retransmitted at 88 to 92 Mbps against a configured 30 for as long
+  as the session was allowed to last. A channel that has held outstanding
+  fragments with none of them acknowledged for fifteen seconds now ends the
+  session with an outcome of its own, so a live run can tell a peer that went
+  away from a peer that stopped reading.
+
+  **Judged on the acknowledged count, not on the window.** A congested path
+  fills a window and looks identical from the send side, and it acknowledges
+  throughout; the two are told apart only by whether the count moves. And
+  judged per channel, because a peer that has stopped draining one ring keeps
+  acknowledging the others, so a figure summed across them is refreshed by the
+  cheap traffic while the expensive traffic goes nowhere.
+
 ## 6: HEVC (closed 2026-08-18)
 
 **Added**
