@@ -210,6 +210,15 @@ struct Shared {
     timing: TimingCells,
     /// Raised to end the loop; the loop checks it once per frame.
     stopping: AtomicU32,
+    /// The picture the stream is really producing, as width in the high half
+    /// and height in the low.
+    ///
+    /// **Not the configured size.** A display decides its own, and a guest
+    /// that describes the stream with the configured numbers tells its peer a
+    /// coordinate space the picture is not in: the peer then sends absolute
+    /// input against a rectangle of the wrong size, and every position lands
+    /// scaled by the ratio between the two.
+    picture: AtomicU32,
     /// The pointer, as the loop last read it.
     cursor: CursorCell,
     /// Counts encoder reinitializations.
@@ -266,6 +275,12 @@ struct Held {
 }
 
 impl Shared {
+    /// Say what size the stream is really producing.
+    fn publish_picture(&self, width: u32, height: u32) {
+        let packed = (width.min(0xFFFF) << 16) | height.min(0xFFFF);
+        self.picture.store(packed, Ordering::Release);
+    }
+
     /// Publish what the loop just read of the pointer.
     ///
     /// `image` is the picture, and is present only when it is one no guest has
@@ -436,6 +451,7 @@ impl Stream {
             pool: Pool::new(POOL_SLOTS, max_frame_bytes()),
             encode_us: AtomicU32::new(0),
             timing: TimingCells::default(),
+            picture: AtomicU32::new(0),
             cursor: CursorCell::default(),
             stopping: AtomicU32::new(0),
             epoch: AtomicU32::new(0),
@@ -573,6 +589,23 @@ impl SeatHold {
         )]
         seat.measured_bits
             .store((measured_mbps as f32).to_bits(), Ordering::Relaxed);
+    }
+
+    /// What size the stream is really producing, once it is known.
+    ///
+    /// **Read when a guest takes its seat**, which is after the loop has
+    /// settled the size, and it is what the peer has to be told: the picture's
+    /// own pixels are the space its absolute input is expressed in.
+    pub fn picture(&self) -> Option<(u16, u16)> {
+        let packed = self.shared.picture.load(Ordering::Acquire);
+        if packed == 0 {
+            return None;
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "both halves were clamped to sixteen bits when they were stored"
+        )]
+        Some(((packed >> 16) as u16, (packed & 0xFFFF) as u16))
     }
 
     /// How many times the pointer has changed.
@@ -1007,6 +1040,10 @@ fn run_open(
     // is attached to, and a frame on one card cannot reach an encoder on
     // another without the copy through system memory this path exists to
     // avoid. When this backend can take a frame by descriptor, the two meet.
+    //
+    // The configured size is the real one here for the same reason: with a
+    // generated picture there is no display to follow.
+    shared.publish_picture(config.width, config.height);
     encode_loop(shared, arrivals, config, roster, &mut encoder, None)
 }
 
@@ -1071,6 +1108,11 @@ fn run_vendor(
     } else {
         (config.width, config.height)
     };
+    // **Said once the size is settled and before any guest is seated.** It is
+    // the coordinate space a peer's absolute input is expressed in, so a guest
+    // that seated against the configured numbers would place every position
+    // scaled by the ratio between the two.
+    shared.publish_picture(width, height);
     let Ok(mut encoder) = session.initialize(
         &cuda,
         lowlat_encode::nvenc::Config {
@@ -2046,6 +2088,7 @@ mod tests {
                 pool: Pool::new(slots, max_frame_bytes()),
                 encode_us: AtomicU32::new(0),
                 timing: TimingCells::default(),
+                picture: AtomicU32::new(0),
                 cursor: CursorCell::default(),
                 stopping: AtomicU32::new(0),
                 epoch: AtomicU32::new(0),
@@ -2094,6 +2137,7 @@ mod tests {
             pool: Pool::new(POOL_SLOTS, max_frame_bytes()),
             encode_us: AtomicU32::new(0),
             timing: TimingCells::default(),
+            picture: AtomicU32::new(0),
             cursor: CursorCell::default(),
             stopping: AtomicU32::new(0),
             epoch: AtomicU32::new(0),
@@ -2145,6 +2189,31 @@ mod tests {
     /// sent. Granting it would hand the others a stream their decoders were
     /// not built for, which they report as a decode failure rather than as a
     /// mismatch.
+    /// **The size a peer is told is the size its input comes back in.** A
+    /// display decides its own, and a guest that described the stream with the
+    /// configured numbers instead put every absolute position through the
+    /// ratio between the two: measured live, a 2560x1440 display described as
+    /// 1920x1080 reached the right edge of the screen three quarters of the
+    /// way across the picture.
+    #[test]
+    fn the_settled_picture_size_reaches_a_guest_exactly() {
+        let (shared, stream, _arrivals) = parked();
+        let wake = lowlat_net::Wake::new().expect("wake");
+        let seat = stream
+            .seats()
+            .take(wake.handle().expect("handle"))
+            .expect("a free seat");
+
+        assert_eq!(seat.picture(), None, "a size nothing has settled on yet");
+        shared.publish_picture(2560, 1440);
+        assert_eq!(seat.picture(), Some((2560, 1440)));
+
+        // The packing is two halves of one word, and a size that did not fit
+        // would arrive as a different picture rather than as a refusal.
+        shared.publish_picture(1920, 1080);
+        assert_eq!(seat.picture(), Some((1920, 1080)));
+    }
+
     #[test]
     fn the_consensus_is_what_every_seat_can_decode() {
         const BASE: u32 = lowlat_core::init::FLAG_BASE;

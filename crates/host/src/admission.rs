@@ -1047,6 +1047,9 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     // What was last published to the seat, so a declaration that has not moved
     // is not republished on every pass.
     let mut declared_flags = 0u32;
+    // The picture size this guest is describing, once the stream has settled
+    // on one.
+    let mut followed: Option<(u16, u16)> = None;
     // Which encoder this guest's peer has been told about. Set from the seat
     // rather than from zero, because a guest that joins after a
     // reinitialization has not missed one.
@@ -1067,6 +1070,39 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         let now = lowlat_common::clock::elapsed_ms(started);
         // Candidates are injected where the application's work is pulled, after
         // the wake has been taken, so nothing enqueued from here on is lost.
+        // **The size the stream settled on, checked every pass rather than
+        // once.** A guest takes its seat before the loop has opened a display,
+        // so at that moment the size is not known yet; and a display can change
+        // size while a session is running. The number the peer is told is the
+        // coordinate space its absolute input comes back in, so a guest
+        // describing the stream with the configured size puts every position
+        // through the ratio between the two: a 2560 wide display described as
+        // 1920 reaches the right edge three quarters of the way across.
+        if let Some(settled) = seat.as_ref().and_then(SeatHold::picture)
+            && followed != Some(settled)
+            && let Some((_, _, rotation)) = args.video
+        {
+            let (width, height) = settled;
+            lowlat_common::log_info!(
+                "guest: the stream is {width}x{height}, following it for the picture and for \
+                 absolute input"
+            );
+            followed = Some(settled);
+            let mut framing = Packetiser::new(width, height, rotation);
+            framing.reconfigured();
+            if let Some(negotiation) = negotiation.as_mut() {
+                negotiation.encoder_initialised(framing.generation());
+            }
+            packetiser = Some(framing);
+            if let Some(input) = input.as_mut() {
+                input.injector.set_extents(desktop_extents(
+                    u32::from(width),
+                    u32::from(height),
+                    rotation,
+                ));
+            }
+        }
+
         let arrivals = &args.arrivals;
         let seated = seat.as_ref();
         let mut framing = packetiser.as_mut();

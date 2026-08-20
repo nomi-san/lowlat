@@ -189,6 +189,18 @@ pub struct Injector {
 }
 
 impl Injector {
+    /// The extents absolute coordinates arrive in.
+    ///
+    /// **Settled by the stream, not by configuration.** A display decides its
+    /// own size and the peer is told what the picture really is, so the space
+    /// its coordinates are expressed in is that size and not the one a host
+    /// was started with. The two differing scales every absolute position by
+    /// the ratio between them, which reads as a pointer that reaches the edge
+    /// of the screen three quarters of the way across.
+    pub fn set_extents(&mut self, extents: Extents) {
+        self.extents = extents;
+    }
+
     #[must_use]
     pub fn new(extents: Extents) -> Self {
         Self {
