@@ -159,6 +159,16 @@ pub struct Injector {
     /// other, and leave the key held with nothing tracking it.
     keys: [bool; KEY_SLOTS],
     buttons: [bool; BUTTONS],
+    /// Which device each held button went down on.
+    ///
+    /// **A release has to reach the device that took the press.** Which
+    /// pointer device an event goes to follows whichever kind of motion
+    /// arrived last, and a peer switches between them mid-gesture: a drag that
+    /// begins with the pointer placed and continues with deltas, or a client
+    /// flipping to relative mode while a button is down. Routing the release
+    /// by what is current then sends it to a device that never saw the press,
+    /// and leaves the button held on a machine nobody is driving.
+    pressed_on: [Device; BUTTONS],
     /// Which pointer moved last, so a click lands on the device the position
     /// came from.
     absolute: bool,
@@ -220,6 +230,7 @@ impl Injector {
             permissions: Permissions::default(),
             keys: [false; KEY_SLOTS],
             buttons: [false; BUTTONS],
+            pressed_on: [Device::PointerAbsolute; BUTTONS],
             absolute: false,
             last_abs: None,
             commanded: None,
@@ -643,10 +654,23 @@ impl Injector {
         }
         *held = pressed;
 
+        // Chosen once, on the way down, and remembered for the way up.
+        let device = if pressed {
+            let device = self.pointer();
+            if let Some(slot) = self.pressed_on.get_mut(index) {
+                *slot = device;
+            }
+            device
+        } else {
+            self.pressed_on
+                .get(index)
+                .copied()
+                .unwrap_or(Device::Pointer)
+        };
+
         self.used = 0;
         self.push(EV_KEY, code, i32::from(pressed));
         self.report();
-        let device = self.pointer();
         self.flush(device, out);
     }
 
@@ -751,23 +775,30 @@ impl Injector {
     }
 
     fn release_buttons(&mut self, out: &mut impl Sink) {
-        self.used = 0;
-        for index in 0..BUTTONS {
-            if self.buttons.get(index) != Some(&true) {
-                continue;
+        // **Grouped by the device each went down on**, because a release sent
+        // anywhere else leaves the button held where it really is. Two passes
+        // over five buttons, on a path that runs when a guest leaves.
+        for device in [Device::PointerAbsolute, Device::Pointer] {
+            self.used = 0;
+            for index in 0..BUTTONS {
+                if self.buttons.get(index) != Some(&true) {
+                    continue;
+                }
+                if self.pressed_on.get(index).copied() != Some(device) {
+                    continue;
+                }
+                if let Some(held) = self.buttons.get_mut(index) {
+                    *held = false;
+                }
+                #[allow(clippy::cast_possible_truncation, reason = "the loop bound is five")]
+                if let Some(code) = button_code(index as u32 + 1) {
+                    self.push(EV_KEY, code, 0);
+                }
             }
-            if let Some(held) = self.buttons.get_mut(index) {
-                *held = false;
+            if self.used > 0 {
+                self.report();
+                self.flush(device, out);
             }
-            #[allow(clippy::cast_possible_truncation, reason = "the loop bound is five")]
-            if let Some(code) = button_code(index as u32 + 1) {
-                self.push(EV_KEY, code, 0);
-            }
-        }
-        if self.used > 0 {
-            self.report();
-            let device = self.pointer();
-            self.flush(device, out);
         }
     }
 
@@ -1169,6 +1200,61 @@ mod tests {
         assert!(out.devices().iter().all(|d| *d == Device::PointerAbsolute));
     }
 
+    /// **A release has to reach the device that took the press.** Which
+    /// pointer device an event goes to follows whichever kind of motion
+    /// arrived last, and a peer changes kind mid-gesture: a drag that begins
+    /// with the pointer placed and continues with deltas, or a client that
+    /// flips to relative mode with a button down. Routed by what is current,
+    /// the release goes to a device that never saw the press and the button
+    /// stays held on a machine nobody is driving.
+    #[test]
+    fn a_button_is_released_on_the_device_that_took_it() {
+        let mut inject = Injector::new(Extents {
+            width: 1920,
+            height: 1080,
+        });
+        let mut out = Recorder::default();
+
+        // Placed, then pressed: both land on the absolute device. Then the
+        // peer switches to deltas without letting go, which moves every later
+        // event to the relative one.
+        inject.on_control(&control(op::MOUSE_MOTION, 0, 100, 100), &mut out);
+        inject.on_control(&control(op::MOUSE_BUTTON, 1, 1, 0), &mut out);
+        assert_eq!(out.devices(), vec![Device::PointerAbsolute; 2]);
+        inject.on_control(&control(op::MOUSE_MOTION, 1, 5, 5), &mut out);
+
+        // The release must still go where the press did.
+        let mut up = Recorder::default();
+        inject.on_control(&control(op::MOUSE_BUTTON, 1, 0, 0), &mut up);
+        assert_eq!(up.keys_at(0), vec![BTN_LEFT], "nothing was released");
+        assert_eq!(
+            up.devices(),
+            vec![Device::PointerAbsolute],
+            "the release went to a device that never saw the press"
+        );
+
+        // And the bulk release, which runs when a guest leaves, does the same.
+        // **Pressed on the relative device here**, deliberately: a release
+        // that simply went to whichever device the sweep visited first would
+        // be right by accident if the press had been on the absolute one.
+        let mut inject = Injector::new(Extents {
+            width: 1920,
+            height: 1080,
+        });
+        let mut out = Recorder::default();
+        inject.on_control(&control(op::MOUSE_MOTION, 1, 5, 5), &mut out);
+        inject.on_control(&control(op::MOUSE_BUTTON, 1, 1, 0), &mut out);
+        inject.on_control(&control(op::MOUSE_MOTION, 0, 100, 100), &mut out);
+        let mut gone = Recorder::default();
+        inject.release_all(&mut gone);
+        assert_eq!(gone.keys_at(0), vec![BTN_LEFT], "nothing was released");
+        assert_eq!(
+            gone.devices(),
+            vec![Device::Pointer],
+            "the sweep released it on a device that never held it"
+        );
+    }
+
     /// A rotated output is a swap of the extents, not a rotation of the
     /// coordinate: the peer already sends them the way the desktop is.
     #[test]
@@ -1206,7 +1292,12 @@ mod tests {
         );
     }
 
-    /// A click belongs to whichever pointer produced the position it is at.
+    /// A press belongs to whichever pointer produced the position it is at.
+    ///
+    /// **The release does not, and this test used to say it did.** A button
+    /// goes down on one device and the kernel holds it there; a release sent
+    /// to another leaves it down on the first, on a machine nobody is driving.
+    /// See `a_button_is_released_on_the_device_that_took_it`.
     #[test]
     fn a_click_follows_the_pointer_that_moved_last() {
         let (mut inject, mut out) = (injector(), Recorder::default());
@@ -1220,7 +1311,7 @@ mod tests {
                 Device::PointerAbsolute,
                 Device::PointerAbsolute,
                 Device::Pointer,
-                Device::Pointer,
+                Device::PointerAbsolute,
             ]
         );
     }
