@@ -770,16 +770,30 @@ it is the safer of the two to hold.
   decodes perfectly and never changes; and a conversion target per picture in flight, for the
   reason the encoder's own input surfaces are. Which node the display is on is discovered
   rather than configured, because a wrong setting is indistinguishable from no session.*
-- [ ] Cursor extraction, classification, and the visibility signal. *Reading, encoding and the
-  wire message are done; the host wiring is not, so a guest currently sees no pointer at all.
-  What remains is the per-guest image cache keyed by checksum and gated on the client having
-  advertised it, the forget flag once the cache is full, the debounce, and the rule that an
-  update is skipped when the pointer is outside the stream.* **The shape has to be read
-  and compared, not detected from metadata**: the pointer buffer's identity turns over as the
-  pointer moves and says nothing about what it looks like. The buffer is linear and maps
-  directly, so this is a compare against the previous read rather than a device readback, and
-  the read is one the cursor path owes anyway. **Crop to the opaque extent**: the allocation is
-  a fixed 256x256 whatever the pointer is, and almost all of it is transparent.
+- [x] Cursor extraction and the visibility signal, **closed 2026-08-20**, verified against a
+  stock client. Reading, encoding, the wire message, the per-guest cache gated on the client
+  having advertised it, the forget flag, the cadence, the skip when the pointer is outside the
+  stream, and the hotspot. *Classification is struck from this item: the shape is never
+  classified, only the bitmap travels, so there is nothing to classify against.*
+  **The shape has to be read and compared, not detected from metadata**: the pointer buffer's
+  identity turns over as the pointer moves and says nothing about what it looks like -- and it
+  is not usable as a trigger either, because a compositor redraws a pointer into the buffer it
+  already had, measured at thirteen of nineteen shape changes in twenty seconds of ordinary
+  hovering. The buffer is linear and maps directly, so this is a compare against the previous
+  read rather than a device readback. **The mapping is uncached, so it is copied out in bulk
+  before anything scans it**: walking it with a stride to find the drawn part costs an order of
+  magnitude more than copying the same bytes and walking the copy, and only the rows a pointer
+  occupies are copied. **Crop to the opaque extent**: the allocation is a fixed 256x256 whatever
+  the pointer is, and almost all of it is transparent.
+- [x] **The hotspot, which nothing reports**, closed 2026-08-20. The far side draws the picture
+  against its own pointer, so the offset it applies is the one the host sends, and zero draws
+  every pointer down and to the right of where it is. It is derived from the host's own
+  injection: a guest commands a position, the display draws the shape with its point on it, and
+  the difference is the hotspot. Sampled once per command on the read after it, refused unless
+  it lands inside its own shape, and cached per shape.
+- [ ] **Relative mode**, which this backend cannot supply on its own and is not blocked on
+  anything else here. It needs the intent signal, which is session state above this backend;
+  see the item below and [07-platforms.md](07-platforms.md).
 - [x] **Measure whether the composited pointer disappears when a client takes the pointer.**
   *Answered 2026-08-19 against a real desktop: it does, and it also disappears for things that
   are not that.* Mouselook and a video player both remove it, which is the wanted behaviour and

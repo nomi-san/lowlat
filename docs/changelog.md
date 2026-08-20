@@ -7,6 +7,18 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 **Added**
 
+- **A guest is shown the pointer**, read once on the thread that owns the
+  display and reported per guest, because what a guest is owed depends on what
+  it already holds. A peer that declared no pointer cache is sent the picture
+  every time; a full cache is emptied rather than evicted from, because the far
+  side cannot report what it dropped.
+- **The hotspot, derived from the host's own injection.** Nothing reports one,
+  and the far side draws the picture against its own pointer, so the offset it
+  applies is the one the host sends and zero draws every pointer down and to
+  the right of where it is. A guest commands a position, the display draws the
+  shape with its point on it, and the difference is the hotspot: sampled once
+  per command on the read after it, refused unless it lands inside its own
+  shape, and cached per shape.
 - The scanout capture backend: enumerate the display pipeline, describe the
   primary and cursor planes with their format, modifier and per-buffer pitches,
   and export those buffers for import elsewhere. It reads no pixels; a
