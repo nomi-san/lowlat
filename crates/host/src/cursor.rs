@@ -11,7 +11,15 @@
 
 use lowlat_core::cursor::{self, Image, Update};
 
+use crate::stock;
 use crate::stream::{PointerState, SeatHold};
+
+/// The nominal size a stock shape is asked for.
+///
+/// **Matched to what the display's own pointers measure**, so a refused
+/// pointer does not arrive at a noticeably different size from the one it
+/// replaces.
+const STOCK_SIZE: u32 = 24;
 
 /// Pictures one peer is assumed to hold.
 ///
@@ -48,6 +56,27 @@ pub struct Sender {
     message: Vec<u8>,
     /// Whether the first update has been reported.
     said: bool,
+    /// What this guest is shown while somebody else holds the pointer, and its
+    /// picture already encoded.
+    ///
+    /// **A shape the display never draws**, so it is loaded from the desktop's
+    /// own theme rather than read off the plane, and it brings its own hotspot
+    /// with it (crate::stock).
+    refused: Option<Refused>,
+    /// Whether the last update was the refused shape, so the real pointer is
+    /// sent again the moment the guest gets it back.
+    refusing: bool,
+}
+
+/// The refused pointer, encoded once.
+#[derive(Debug)]
+struct Refused {
+    png: Vec<u8>,
+    checksum: u32,
+    width: u16,
+    height: u16,
+    hot_x: u16,
+    hot_y: u16,
 }
 
 impl core::fmt::Debug for Sender {
@@ -74,6 +103,8 @@ impl Sender {
             seen: None,
             image: Vec::new(),
             said: false,
+            refused: refused(),
+            refusing: false,
             // Sized once for the largest picture a pointer plane can carry, so
             // building an update never allocates.
             message: vec![0; cursor::encoded_len(lowlat_core::png::upper_bound(256, 256))],
@@ -86,16 +117,26 @@ impl Sender {
     }
 
     /// The next update for this guest, if it is owed one.
-    pub fn next(&mut self, seat: &SeatHold) -> Option<&[u8]> {
+    ///
+    /// `holds` is whether this guest has the arbitrated pointer. A guest that
+    /// does not is shown a refused shape: without it, its input is dropped and
+    /// **nothing happens**, which is indistinguishable from a session that has
+    /// stopped responding (docs/05-host.md section 7.1).
+    pub fn next(&mut self, seat: &SeatHold, holds: bool) -> Option<&[u8]> {
         let generation = seat.pointer_generation();
+        // **The change of turn is an update in its own right.** It owes a
+        // message even when the pointer has not moved, or a guest that stops
+        // moving keeps whichever shape it had when its turn changed.
+        let turned = self.refusing != (!holds && self.refused.is_some());
         // **Nothing has been published yet.** A guest can be seated before the
         // display is even open, and reporting the state that has not been read
         // tells the peer there is no pointer when the truth is that nobody has
         // looked.
-        if generation == 0 || self.seen == Some(generation) {
+        if generation == 0 || (self.seen == Some(generation) && !turned) {
             return None;
         }
         self.seen = Some(generation);
+        self.refusing = !holds && self.refused.is_some();
         let state = seat.pointer(&mut self.image)?;
         // **Once per guest.** A pointer moves constantly and logging it would
         // bury a session; logging none leaves "the guest sees no pointer" with
@@ -117,11 +158,34 @@ impl Sender {
         self.update(state)
     }
 
+    /// Substitute the refused shape into a state, when this guest is not the
+    /// one driving.
+    fn refuse(&self, state: PointerState) -> PointerState {
+        let Some(refused) = self.refused.as_ref() else {
+            return state;
+        };
+        PointerState {
+            width: refused.width,
+            height: refused.height,
+            hot_x: refused.hot_x,
+            hot_y: refused.hot_y,
+            checksum: refused.checksum,
+            // The position and whether anything is drawn at all are still the
+            // display's to say. Only the picture changes.
+            ..state
+        }
+    }
+
     /// Build the message for one state, deciding what the peer is owed.
     ///
     /// Split from [`Sender::next`] so the decision can be exercised without a
     /// seat and without a display.
     fn update(&mut self, state: PointerState) -> Option<&[u8]> {
+        let state = if self.refusing {
+            self.refuse(state)
+        } else {
+            state
+        };
         let update = Update {
             stream: 0,
             x: state.x,
@@ -152,6 +216,15 @@ impl Sender {
             // **The picture's own size travels with it**, not the update's
             // idea of it: a message that disagreed with the image it carries
             // is read as the image.
+            Choice::Carried if self.refusing => Image::Fresh {
+                png: self
+                    .refused
+                    .as_ref()
+                    .map_or(&[][..], |refused| &refused.png[..]),
+                width: state.width,
+                height: state.height,
+                checksum: state.checksum,
+            },
             Choice::Carried => Image::Fresh {
                 png: &self.image,
                 width: state.width,
@@ -165,7 +238,7 @@ impl Sender {
 
     /// What to say about the picture, and whether the peer must forget first.
     fn decide(&mut self, checksum: u32) -> (Choice, bool) {
-        if checksum == 0 || self.image.is_empty() {
+        if checksum == 0 || (self.image.is_empty() && !self.refusing) {
             return (Choice::Nothing, false);
         }
         if !self.caching {
@@ -191,6 +264,35 @@ impl Sender {
         }
         (Choice::Carried, forget)
     }
+}
+
+/// Load and encode the refused shape, once.
+///
+/// **Absent is a state, not a failure.** A machine with no icon theme has no
+/// shape to show, and a guest there finds out it does not have the pointer the
+/// way it does today: by nothing happening.
+fn refused() -> Option<Refused> {
+    let stock = stock::load(&stock::REFUSED, STOCK_SIZE)?;
+    let mut png =
+        vec![0; lowlat_core::png::upper_bound(u32::from(stock.width), u32::from(stock.height))];
+    let used = lowlat_core::png::encode(
+        &stock.rgba,
+        u32::from(stock.width),
+        u32::from(stock.height),
+        (stock.width as usize) * 4,
+        &mut png,
+    )
+    .ok()?;
+    png.truncate(used);
+    let checksum = lowlat_core::crc32::of(&png);
+    Some(Refused {
+        png,
+        checksum,
+        width: stock.width,
+        height: stock.height,
+        hot_x: stock.hot_x,
+        hot_y: stock.hot_y,
+    })
 }
 
 #[cfg(test)]
@@ -225,6 +327,61 @@ mod tests {
     }
 
     use cursor::Flags;
+
+    fn stock_shape() -> Refused {
+        Refused {
+            png: std::vec![9, 8, 7, 6],
+            checksum: 0x5150_5150,
+            width: 24,
+            height: 24,
+            hot_x: 12,
+            hot_y: 12,
+        }
+    }
+
+    fn field(message: &[u8], at: usize) -> u16 {
+        u16::from_be_bytes([message[13 + at], message[13 + at + 1]])
+    }
+
+    /// **A guest without the arbitrated pointer is shown that it does not have
+    /// it.** Its input is dropped and nothing happens, which is
+    /// indistinguishable from a session that has stopped responding, so it is
+    /// sent a refused shape instead of the real pointer.
+    #[test]
+    fn a_guest_without_the_pointer_is_shown_a_refused_shape() {
+        let mut sender = sender(false);
+        sender.refused = Some(stock_shape());
+
+        let real = sender.update(state(7)).expect("an update").to_vec();
+        assert_eq!(field(&real, 7), 21, "the display's own shape");
+
+        sender.refusing = true;
+        let refused = sender.update(state(7)).expect("an update");
+        assert_eq!(field(refused, 7), 24, "the stock shape's width");
+        assert_eq!(field(refused, 15), 12, "and the hotspot that came with it");
+        assert!(flags(refused).contains(Flags::IMAGE));
+        assert_ne!(real, refused, "the same picture either way");
+
+        // **The position is still the display's to say.** Only the picture
+        // changes, or a guest that cannot drive also loses track of where the
+        // pointer is.
+        assert_eq!(field(refused, 11), 10);
+        assert_eq!(field(refused, 13), 20);
+    }
+
+    /// And it gets the real pointer back the moment the turn passes to it.
+    #[test]
+    fn the_real_pointer_comes_back_when_the_turn_does() {
+        let mut sender = sender(false);
+        sender.refused = Some(stock_shape());
+        sender.refusing = true;
+        let refused = sender.update(state(7)).expect("an update").to_vec();
+
+        sender.refusing = false;
+        let back = sender.update(state(7)).expect("an update");
+        assert_eq!(field(back, 7), 21);
+        assert_ne!(refused, back);
+    }
 
     /// **A peer that did not say it keeps pictures gets the picture, every
     /// time.** Naming one it never kept leaves it drawing whatever it last

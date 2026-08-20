@@ -1373,8 +1373,12 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         // already holds.** The stream reads it once; this decides whether the
         // picture travels or only its name, and sends nothing at all on the
         // passes where nothing about it moved.
+        // **Whether this guest is the one driving**, which decides what it is
+        // shown: a guest without the arbitrated pointer sees a refused shape
+        // rather than finding out by nothing happening.
+        let holds = args.floor.holds(args.guest, now);
         if let Some(seat) = seat.as_ref()
-            && let Some(message) = pointer.next(seat)
+            && let Some(message) = pointer.next(seat, holds)
         {
             let _ = shell
                 .endpoint()

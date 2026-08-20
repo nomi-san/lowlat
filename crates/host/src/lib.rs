@@ -13,6 +13,7 @@ pub mod frames;
 pub mod gate;
 pub mod rate;
 pub mod session;
+pub mod stock;
 pub mod stream;
 pub mod timing;
 pub mod video;
