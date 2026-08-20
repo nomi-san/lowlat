@@ -28,6 +28,16 @@ pub const ACK_CADENCE_MS: f64 = 30.0;
 pub const LIVENESS_SOFT_MS: f64 = 60_000.0;
 /// No progress for this long is a hard failure.
 pub const LIVENESS_HARD_MS: f64 = 120_000.0;
+/// Data outstanding with none of it acknowledged for this long is a hard
+/// failure of its own.
+///
+/// **A different question from the two deadlines above, and a much shorter
+/// one.** Those ask whether anything arrives, which a peer that keeps
+/// acknowledging on the cadence while receiving nothing satisfies for ever;
+/// everything queued for it is retransmitted for exactly as long. A congested
+/// path recovers inside a few seconds and acknowledges throughout, so a window
+/// that has moved by nothing in fifteen is not congestion.
+pub const DELIVERY_DEADLINE_MS: f64 = 15_000.0;
 
 /// Weight given to a new round-trip sample.
 const SRTT_ALPHA: f64 = 0.1;
@@ -53,6 +63,25 @@ pub enum Health {
     Stalled,
     /// No progress for [`LIVENESS_HARD_MS`]. Tear down.
     Dead,
+    /// Data has been outstanding and unacknowledged for
+    /// [`DELIVERY_DEADLINE_MS`]. Tear down.
+    ///
+    /// **Distinct from [`Health::Dead`] because the cause is.** Dead is a peer
+    /// that says nothing; this is a peer that still speaks and has stopped
+    /// receiving, and the two are told apart only by whether a window moves.
+    Undeliverable,
+}
+
+/// One channel's delivery progress.
+#[derive(Debug, Clone, Copy)]
+struct Delivery {
+    /// The channel's acknowledged count when it last moved.
+    acked_seen: u64,
+    /// When that was. **Seeded at construction and refreshed by every poll
+    /// that finds the channel empty**, which is what a ring attached after
+    /// construction relies on: nothing can be outstanding on it before it has
+    /// been given something to send.
+    since_ms: f64,
 }
 
 /// One peer-to-peer session.
@@ -71,6 +100,13 @@ pub struct Session<'a> {
 
     last_ack_sent_ms: f64,
     last_progress_ms: f64,
+    /// Per channel, when delivery on it last made progress.
+    ///
+    /// **Per channel and not per session.** A peer that has stopped draining
+    /// one ring keeps acknowledging the others, and it is the busy channel
+    /// that backs up: a figure summed across all of them is refreshed by the
+    /// cheap traffic and never reports the expensive traffic going nowhere.
+    delivery: [Delivery; CHANNEL_COUNT],
     ack_due: bool,
     /// Why the pending acknowledgement is owed. Data arrival makes it an
     /// acknowledgement; the cadence alone makes it a keepalive.
@@ -96,6 +132,10 @@ impl<'a> Session<'a> {
             srtt_seeded: false,
             last_ack_sent_ms: now_ms,
             last_progress_ms: now_ms,
+            delivery: [Delivery {
+                acked_seen: 0,
+                since_ms: now_ms,
+            }; CHANNEL_COUNT],
             ack_due: false,
             ack_kind: AckKind::Ack,
             trigger: (0, 0),
@@ -132,16 +172,42 @@ impl<'a> Session<'a> {
         self.controller.rate_mbps()
     }
 
-    /// Liveness, judged against the last forward progress.
+    /// Liveness, judged against the last forward progress in each direction.
+    ///
+    /// **Both directions, because a session can fail in either.** Nothing
+    /// arriving is one failure; everything queued sitting unacknowledged is
+    /// another, and it is invisible to a deadline that only watches what comes
+    /// in.
     pub fn health(&self, now_ms: f64) -> Health {
         let idle = now_ms - self.last_progress_ms;
         if idle >= LIVENESS_HARD_MS {
-            Health::Dead
-        } else if idle >= LIVENESS_SOFT_MS {
+            return Health::Dead;
+        }
+        if self.undeliverable(now_ms) {
+            return Health::Undeliverable;
+        }
+        if idle >= LIVENESS_SOFT_MS {
             Health::Stalled
         } else {
             Health::Alive
         }
+    }
+
+    /// True when a channel has held data the peer has not acknowledged for the
+    /// whole of [`DELIVERY_DEADLINE_MS`].
+    ///
+    /// The window is read now rather than remembered, so a channel that
+    /// drained a moment ago is not judged on what it used to hold.
+    fn undeliverable(&self, now_ms: f64) -> bool {
+        self.send.iter().enumerate().any(|(channel, ring)| {
+            ring.as_ref().is_some_and(|ring| {
+                ring.in_flight() > 0
+                    && self
+                        .delivery
+                        .get(channel)
+                        .is_some_and(|entry| now_ms - entry.since_ms >= DELIVERY_DEADLINE_MS)
+            })
+        })
     }
 
     /// One channel's send pressure: the outstanding window, the stale count
@@ -297,6 +363,19 @@ impl<'a> Session<'a> {
             self.ack_kind = AckKind::Keepalive;
         }
         let (window, stale) = self.pressure();
+        // **An empty channel is progress, not a stall.** A channel with
+        // nothing outstanding can produce no acknowledgement, and a deadline
+        // that did not say so would end every session that stopped sending.
+        for (channel, ring) in self.send.iter().enumerate() {
+            let (Some(ring), Some(entry)) = (ring.as_ref(), self.delivery.get_mut(channel)) else {
+                continue;
+            };
+            let acked = ring.acked();
+            if ring.in_flight() == 0 || acked != entry.acked_seen {
+                entry.acked_seen = acked;
+                entry.since_ms = now_ms;
+            }
+        }
         self.controller.tick(window, stale, 0.0);
     }
 
@@ -415,13 +494,18 @@ mod tests {
     const SLOTS: usize = 32;
     const KEY: [u8; 32] = [3u8; 32];
     const VIDEO: u8 = 1;
+    const CONTROL: u8 = 0;
 
-    /// Storage for one endpoint: a receive and a send ring on one channel.
+    /// Storage for one endpoint: a receive and a send ring per channel.
     struct Arena {
         recv_bodies: Vec<u8>,
         recv_meta: Vec<SlotMeta>,
         send_bodies: Vec<u8>,
         send_meta: Vec<SendSlot>,
+        control_recv_bodies: Vec<u8>,
+        control_recv_meta: Vec<SlotMeta>,
+        control_send_bodies: Vec<u8>,
+        control_send_meta: Vec<SendSlot>,
     }
 
     impl Arena {
@@ -431,6 +515,10 @@ mod tests {
                 recv_meta: std::vec![SlotMeta::default(); SLOTS],
                 send_bodies: std::vec![0u8; SLOT * SLOTS],
                 send_meta: std::vec![SendSlot::default(); SLOTS],
+                control_recv_bodies: std::vec![0u8; SLOT * SLOTS],
+                control_recv_meta: std::vec![SlotMeta::default(); SLOTS],
+                control_send_bodies: std::vec![0u8; SLOT * SLOTS],
+                control_send_meta: std::vec![SendSlot::default(); SLOTS],
             }
         }
     }
@@ -450,6 +538,62 @@ mod tests {
             )
             .unwrap();
         session
+    }
+
+    /// An endpoint carrying both channels, with the video receive ring
+    /// optionally missing.
+    ///
+    /// **A peer that is not draining what it is sent** looks exactly like
+    /// this from the far side: its transport still acknowledges the channel it
+    /// is keeping up with, and the one it is not never advances.
+    fn endpoint_pair(arena: &mut Arena, now: f64, video_recv: bool) -> Session<'_> {
+        let mut session = Session::new(Envelope::from_key(&KEY).unwrap(), 1, now);
+        if video_recv {
+            session
+                .attach_recv(
+                    VIDEO,
+                    RecvRing::new(&mut arena.recv_bodies, &mut arena.recv_meta, SLOT).unwrap(),
+                )
+                .unwrap();
+        }
+        session
+            .attach_recv(
+                CONTROL,
+                RecvRing::new(
+                    &mut arena.control_recv_bodies,
+                    &mut arena.control_recv_meta,
+                    SLOT,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        session
+            .attach_send(
+                VIDEO,
+                SendRing::new(&mut arena.send_bodies, &mut arena.send_meta, SLOT, VIDEO).unwrap(),
+            )
+            .unwrap();
+        session
+            .attach_send(
+                CONTROL,
+                SendRing::new(
+                    &mut arena.control_send_bodies,
+                    &mut arena.control_send_meta,
+                    SLOT,
+                    CONTROL,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        session
+    }
+
+    /// Drain one endpoint into nothing, which is a path that is not carrying.
+    fn discard(from: &mut Session<'_>, now: f64) {
+        let mut wire = [0u8; 512];
+        while let Some(result) = from.get_output(now, &mut wire) {
+            result.unwrap();
+        }
     }
 
     /// Drain one endpoint into the other, returning how many datagrams moved.
@@ -628,6 +772,116 @@ mod tests {
 
         assert_eq!(left.health(now), Health::Alive, "the idle sender died");
         assert_eq!(right.health(now), Health::Alive, "the idle receiver died");
+    }
+
+    /// **The regression for a peer that stopped receiving and never stopped
+    /// talking.** Its acknowledgements keep arriving on the cadence, so every
+    /// deadline that watches the inbound direction is satisfied for ever,
+    /// while nothing queued for it is ever delivered and all of it is
+    /// retransmitted for as long as the session lasts.
+    #[test]
+    fn a_peer_that_acknowledges_nothing_is_undeliverable() {
+        let mut left_arena = Arena::new();
+        let mut right_arena = Arena::new();
+        let mut left = endpoint(&mut left_arena, 0.0);
+        let mut right = endpoint(&mut right_arena, 0.0);
+
+        left.send_message(VIDEO, &[], b"x").unwrap();
+
+        let mut now = 0.0;
+        while now < DELIVERY_DEADLINE_MS {
+            now += ACK_CADENCE_MS;
+            left.poll(now);
+            right.poll(now);
+            // Only one direction. The peer is heard from throughout and
+            // receives nothing, which is the shape of a broken return path and
+            // of a peer that has stopped reading.
+            discard(&mut left, now);
+            pump(&mut right, &mut left, now);
+        }
+
+        assert_eq!(
+            left.health(now),
+            Health::Undeliverable,
+            "a window that has moved by nothing for the whole deadline"
+        );
+        assert_eq!(
+            right.health(now),
+            Health::Alive,
+            "the end with nothing outstanding is not the one at fault"
+        );
+    }
+
+    /// **The peer is reachable, is acknowledging, and is still not receiving
+    /// the stream.** Its control channel keeps up while its video ring takes
+    /// nothing, which is what a peer that has stopped draining looks like from
+    /// here. A deadline summed across channels never fires, because the cheap
+    /// channel refreshes it for the expensive one.
+    #[test]
+    fn a_channel_that_is_not_draining_is_undeliverable_while_another_keeps_up() {
+        let mut left_arena = Arena::new();
+        let mut right_arena = Arena::new();
+        let mut left = endpoint_pair(&mut left_arena, 0.0, true);
+        // No video receive ring: everything sent on it is unhandled and never
+        // acknowledged, while control is taken normally.
+        let mut right = endpoint_pair(&mut right_arena, 0.0, false);
+
+        left.send_message(VIDEO, &[], b"x").unwrap();
+
+        let mut now = 0.0;
+        while now < DELIVERY_DEADLINE_MS {
+            now += ACK_CADENCE_MS;
+            left.send_message(CONTROL, &[], b"c").unwrap();
+            left.poll(now);
+            right.poll(now);
+            pump(&mut left, &mut right, now);
+            pump(&mut right, &mut left, now);
+            let mut body = [0u8; SLOT];
+            while right.take_message(CONTROL, &mut body).is_some() {}
+        }
+
+        assert_eq!(
+            left.health(now),
+            Health::Undeliverable,
+            "the channel that is not moving decides this, not the one that is"
+        );
+    }
+
+    /// The control for the test above: the same duration, the same traffic,
+    /// and the acknowledgements getting through. **A congested path fills a
+    /// window and looks identical from the send side**, so the deadline has to
+    /// be judged on the acknowledgements and not on the window.
+    #[test]
+    fn a_peer_that_keeps_acknowledging_survives_the_delivery_deadline() {
+        let mut left_arena = Arena::new();
+        let mut right_arena = Arena::new();
+        let mut left = endpoint(&mut left_arena, 0.0);
+        let mut right = endpoint(&mut right_arena, 0.0);
+
+        // **Something is outstanding the whole way through**, enqueued at the
+        // end of each pass and acknowledged at the start of the next, so the
+        // window is never empty when health is judged. A deadline that read
+        // the window rather than the acknowledgements would end this session,
+        // and this is the traffic it would end.
+        let mut now = 0.0;
+        left.send_message(VIDEO, &[], b"x").unwrap();
+        while now < DELIVERY_DEADLINE_MS + 5_000.0 {
+            now += ACK_CADENCE_MS;
+            left.poll(now);
+            right.poll(now);
+            pump(&mut left, &mut right, now);
+            pump(&mut right, &mut left, now);
+            // Read, so the receive ring keeps taking new fragments.
+            let mut body = [0u8; SLOT];
+            while right.take_message(VIDEO, &mut body).is_some() {}
+            left.send_message(VIDEO, &[], b"x").unwrap();
+        }
+
+        assert!(
+            left.pressure().0 > 0,
+            "the check is only worth anything with a window to misread"
+        );
+        assert_eq!(left.health(now), Health::Alive, "a delivering peer died");
     }
 
     #[test]

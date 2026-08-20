@@ -26,7 +26,7 @@ use lowlat_core::endpoint::Endpoint;
 use lowlat_core::envelope::{Cipher, ENVELOPE_LEN, Envelope};
 use lowlat_core::packet::HEADER_LEN;
 use lowlat_core::send::{SendRing, SendSlot};
-use lowlat_core::session::Session;
+use lowlat_core::session::{DELIVERY_DEADLINE_MS, Session};
 use lowlat_core::video::Rotation;
 use lowlat_net::{Guest, Shell, Socket, Wake};
 
@@ -136,6 +136,16 @@ pub enum Outcome {
     /// media path rather than from signaling, because a peer that closes a
     /// session it was using does not withdraw its offer.
     PeerGone,
+    /// Nothing sent to the peer has been acknowledged for the delivery
+    /// deadline, while there was something outstanding the whole time.
+    ///
+    /// **Distinct from [`Outcome::PeerGone`] because the peer is not
+    /// necessarily gone.** It may still be acknowledging on the cadence and
+    /// have stopped receiving, which satisfies every deadline that watches the
+    /// inbound direction while the whole send window is retransmitted for as
+    /// long as the session is allowed to last. The two are told apart only by
+    /// whether a window moves, and a live run needs to know which it saw.
+    Undeliverable,
     /// The peer said it was leaving, on the control channel.
     ///
     /// **Distinct from [`Outcome::PeerGone`], and it is the difference between
@@ -1347,14 +1357,48 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
 
         // Only once there is a path. Before that nothing has arrived by
         // definition, so liveness would read as dead from the first pass.
-        if negotiation.is_some()
-            && shell.endpoint().health(now) == lowlat_core::session::Health::Dead
-        {
-            let _ = args.emit.send(Event::Ended {
-                attempt: args.attempt_id.clone(),
-                outcome: Outcome::PeerGone,
-            });
-            return;
+        if negotiation.is_some() {
+            let outcome = match shell.endpoint().health(now) {
+                lowlat_core::session::Health::Dead => Some(Outcome::PeerGone),
+                // **The window says this and nothing else does.** A peer that
+                // keeps acknowledging while receiving nothing is alive by
+                // every inbound measure, and everything queued for it is
+                // retransmitted until something ends the session.
+                lowlat_core::session::Health::Undeliverable => {
+                    // **Both channels, because either can be the one that
+                    // stopped.** A peer whose control channel keeps up while
+                    // its video ring backs up is a different fault from a path
+                    // that has gone away, and these two numbers are what tell
+                    // them apart afterwards.
+                    let video = shell
+                        .endpoint()
+                        .session()
+                        .send_pressure(VIDEO_CHANNEL)
+                        .unwrap_or_default();
+                    let control = shell
+                        .endpoint()
+                        .session()
+                        .send_pressure(CONTROL_CHANNEL)
+                        .unwrap_or_default();
+                    lowlat_common::log_warn!(
+                        "guest: nothing acknowledged for {DELIVERY_DEADLINE_MS:.0} ms, \
+                         video window={} stale={}, control window={} stale={}",
+                        video.0,
+                        video.1,
+                        control.0,
+                        control.1
+                    );
+                    Some(Outcome::Undeliverable)
+                }
+                _ => None,
+            };
+            if let Some(outcome) = outcome {
+                let _ = args.emit.send(Event::Ended {
+                    attempt: args.attempt_id.clone(),
+                    outcome,
+                });
+                return;
+            }
         }
     }
 }

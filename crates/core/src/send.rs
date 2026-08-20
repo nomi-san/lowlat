@@ -85,6 +85,8 @@ pub struct SendRing<'a> {
     /// to carry rather than what was usefully delivered, and the rate
     /// controller is deciding how much more the path can take.
     bytes_sent: u64,
+    /// Fragments the peer has acknowledged since the ring was created.
+    acked: u64,
 }
 
 impl<'a> SendRing<'a> {
@@ -113,6 +115,7 @@ impl<'a> SendRing<'a> {
             outstanding: 0,
             stale: 0,
             bytes_sent: 0,
+            acked: 0,
         })
     }
 
@@ -128,6 +131,17 @@ impl<'a> SendRing<'a> {
     pub fn window_free(&self) -> usize {
         let depth = u32::try_from(self.meta.len()).unwrap_or(u32::MAX);
         depth.saturating_sub(self.in_flight()) as usize
+    }
+
+    /// Fragments the peer has acknowledged since the ring was created.
+    ///
+    /// **Monotonic, and it is the only evidence that anything is arriving.**
+    /// The window and the stale count describe what is outstanding, and a peer
+    /// that has stopped listening leaves both looking exactly like a peer on a
+    /// congested path: full and old. The difference between the two is whether
+    /// this figure moves.
+    pub fn acked(&self) -> u64 {
+        self.acked
     }
 
     /// Outstanding count from the last completed scan.
@@ -207,6 +221,9 @@ impl<'a> SendRing<'a> {
         let cumulative = *ack.cumulative.get(self.channel as usize)?;
         let previous = self.base;
         if seq::gt(cumulative, self.base) && seq::le(cumulative, self.next) {
+            self.acked = self
+                .acked
+                .saturating_add(u64::from(cumulative.wrapping_sub(self.base)));
             self.base = cumulative;
             if seq::lt(self.cursor, self.base) {
                 self.cursor = self.base;
