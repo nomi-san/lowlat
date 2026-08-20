@@ -103,11 +103,13 @@ impl Sender {
         if !self.said {
             self.said = true;
             lowlat_common::log_info!(
-                "guest: first pointer {}x{} at ({},{}) checksum={:#010x} caching={}",
+                "guest: first pointer {}x{} at ({},{}) hot=({},{}) checksum={:#010x} caching={}",
                 state.width,
                 state.height,
                 state.x,
                 state.y,
+                state.hot_x,
+                state.hot_y,
                 state.checksum,
                 u8::from(self.caching)
             );

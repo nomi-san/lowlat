@@ -164,6 +164,13 @@ pub struct Injector {
     absolute: bool,
     /// The last absolute position, kept only for the hidden-pointer case.
     last_abs: Option<(i32, i32)>,
+    /// The last absolute position injected, in the picture's own pixels.
+    ///
+    /// **What the pointer was told to be**, which is the only thing on this
+    /// host that knows where the pointer was *asked* to go rather than where
+    /// it ended up. Nothing reports a pointer's hotspot, and the difference
+    /// between this and where the display then drew the pointer is exactly it.
+    commanded: Option<(i32, i32)>,
     /// Whether the local pointer is hidden, which is a peer-independent
     /// statement that motion is being used to aim rather than to point.
     hidden: bool,
@@ -189,6 +196,11 @@ pub struct Injector {
 }
 
 impl Injector {
+    /// The last absolute position injected, in the picture's own pixels.
+    pub fn commanded(&self) -> Option<(i32, i32)> {
+        self.commanded
+    }
+
     /// The extents absolute coordinates arrive in.
     ///
     /// **Settled by the stream, not by configuration.** A display decides its
@@ -210,6 +222,7 @@ impl Injector {
             buttons: [false; BUTTONS],
             absolute: false,
             last_abs: None,
+            commanded: None,
             hidden: false,
             num_lock: None,
             caps_lock: None,
@@ -694,6 +707,10 @@ impl Injector {
         self.last_abs = None;
         self.absolute = true;
         self.used = 0;
+        // **Recorded where it is actually injected**, past the permission gate
+        // and past the arbiter, because it is read as evidence of where the
+        // pointer was put. A position that was refused was not commanded.
+        self.commanded = Some((x, y));
         self.push(EV_ABS, ABS_X, scale(x, self.extents.width));
         self.push(EV_ABS, ABS_Y, scale(y, self.extents.height));
         self.report();

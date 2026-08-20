@@ -1050,6 +1050,9 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     // The picture size this guest is describing, once the stream has settled
     // on one.
     let mut followed: Option<(u16, u16)> = None;
+    // The last position published as commanded, so one that has not moved is
+    // not republished on every pass.
+    let mut commanded: Option<(i32, i32)> = None;
     // Which encoder this guest's peer has been told about. Set from the seat
     // rather than from zero, because a guest that joins after a
     // reinitialization has not missed one.
@@ -1347,6 +1350,23 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 }
                 _ => lowlat_common::log_warn!("guest: seated with nothing to send on"),
             }
+        }
+
+        // **Where this guest told the pointer to be**, which is what the
+        // hotspot is derived from: nothing reports a pointer's hotspot, and
+        // the difference between a command and where the display then drew the
+        // pointer is exactly it. Read from the injector rather than from the
+        // message, so a position the permission gate or the arbiter refused is
+        // not reported as one the pointer was put at.
+        if let Some(seat) = seat.as_ref()
+            && let Some((x, y)) = input.as_ref().and_then(|i| i.injector.commanded())
+            && commanded != Some((x, y))
+        {
+            commanded = Some((x, y));
+            seat.command_pointer(
+                u16::try_from(x).unwrap_or(u16::MAX),
+                u16::try_from(y).unwrap_or(u16::MAX),
+            );
         }
 
         // **The pointer, per guest, because what it is owed depends on what it

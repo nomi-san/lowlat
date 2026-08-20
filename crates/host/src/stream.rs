@@ -34,7 +34,7 @@
 //! flight, and every index lost that way is a pool slot that never comes back.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
 
 use lowlat_capture::synthetic::{Marker, Synthetic};
@@ -219,6 +219,14 @@ struct Shared {
     /// input against a rectangle of the wrong size, and every position lands
     /// scaled by the ratio between the two.
     picture: AtomicU32,
+    /// Where a guest last told the pointer to be, and how many times one has:
+    /// the position in the low half and a count in the high.
+    ///
+    /// **The only thing on this host that knows where the pointer was asked to
+    /// go.** Nothing reports a pointer's hotspot, and the difference between
+    /// this and where the display then drew the pointer is exactly it. The
+    /// count is what says a command is not the one already accounted for.
+    commanded: AtomicU64,
     /// The pointer, as the loop last read it.
     cursor: CursorCell,
     /// Counts encoder reinitializations.
@@ -275,6 +283,19 @@ struct Held {
 }
 
 impl Shared {
+    /// Where a guest just told the pointer to be, and the count that goes with
+    /// it.
+    fn commanded(&self) -> Option<(u64, u16, u16)> {
+        let packed = self.commanded.load(Ordering::Acquire);
+        let count = packed >> 32;
+        if count == 0 {
+            return None;
+        }
+        let x = u16::try_from((packed >> 16) & 0xFFFF).ok()?;
+        let y = u16::try_from(packed & 0xFFFF).ok()?;
+        Some((count, x, y))
+    }
+
     /// Say what size the stream is really producing.
     fn publish_picture(&self, width: u32, height: u32) {
         let packed = (width.min(0xFFFF) << 16) | height.min(0xFFFF);
@@ -452,6 +473,7 @@ impl Stream {
             encode_us: AtomicU32::new(0),
             timing: TimingCells::default(),
             picture: AtomicU32::new(0),
+            commanded: AtomicU64::new(0),
             cursor: CursorCell::default(),
             stopping: AtomicU32::new(0),
             epoch: AtomicU32::new(0),
@@ -606,6 +628,21 @@ impl SeatHold {
             reason = "both halves were clamped to sixteen bits when they were stored"
         )]
         Some(((packed >> 16) as u16, (packed & 0xFFFF) as u16))
+    }
+
+    /// Say where this guest just told the pointer to be.
+    ///
+    /// **Only what was really injected.** A position the permission gate or
+    /// the arbiter refused was never commanded, and reading it as though it
+    /// were would learn a hotspot from a pointer that never moved.
+    pub fn command_pointer(&self, x: u16, y: u16) {
+        let previous = self.shared.commanded.load(Ordering::Relaxed);
+        // Wrapped inside its own half, and never back to zero, because zero is
+        // what "nothing has commanded anything" is spelled as.
+        let count = ((previous >> 32).wrapping_add(1)) & 0xFFFF_FFFF;
+        let count = if count == 0 { 1 } else { count };
+        let packed = (count << 32) | (u64::from(x) << 16) | u64::from(y);
+        self.shared.commanded.store(packed, Ordering::Release);
     }
 
     /// How many times the pointer has changed.
@@ -1113,6 +1150,19 @@ fn run_vendor(
     // that seated against the configured numbers would place every position
     // scaled by the ratio between the two.
     shared.publish_picture(width, height);
+    // **And the configuration follows it too, from here down.** Everything
+    // below this line that asks the configuration how big the picture is has
+    // to get the same answer the display gave, or it judges the picture
+    // against a rectangle the picture is not in. The pointer did exactly that:
+    // it was tested for being inside the stream against the configured size,
+    // so on a display larger than it, every update from the part of the screen
+    // beyond those bounds was dropped and a guest kept whatever shape it last
+    // had.
+    let config = Config {
+        width,
+        height,
+        ..config
+    };
     let Ok(mut encoder) = session.initialize(
         &cuda,
         lowlat_encode::nvenc::Config {
@@ -1191,16 +1241,140 @@ fn occupied(shared: &Shared) -> bool {
         .any(|seat| seat.state.load(Ordering::Acquire) != seat_state::FREE)
 }
 
-/// The frame loop, written against the trait rather than a backend, so the
-/// second implementation is a construction change and not a second loop.
+/// Hotspots learned per shape.
 ///
-/// **Two deadlines, not one.** A loop that submits a frame and then waits for
-/// it is serialised: nothing prepares the next frame while the hardware works,
-/// and the pipeline caps at one frame per encode however fast the encoder is.
-/// This one asks the encoder for a finished picture on every pass and reaches
-/// for a new frame when the frame clock says so, so an encode overlaps the
-/// acquire and the submit behind it, and a picture leaves within a poll of
-/// being ready rather than at the next frame boundary.
+/// **Nothing reports a pointer's hotspot on this backend**, and it is load
+/// bearing: the far side draws the picture against its own pointer, so the
+/// offset it applies is the one we send. Sending zero draws every pointer down
+/// and to the right of where it really is, by its own hotspot -- invisible on
+/// an arrow, obvious on an I-beam or a crosshair whose point is in the middle.
+///
+/// So it is derived from the one thing this host knows that no driver does:
+/// **we put the pointer there ourselves.** A guest commands a position, the
+/// display draws the picture with its hotspot on that point, and the
+/// difference between the command and the drawn corner is the hotspot exactly.
+#[derive(Debug)]
+struct Hotspots {
+    /// Shape checksum, then its hotspot. Small: a desktop cycles through a
+    /// handful of pointers and an entry that falls out is learned again.
+    known: [(u32, u16, u16); HOTSPOTS],
+    count: usize,
+    next: usize,
+    /// The command this last looked at, so a position that has not moved since
+    /// is not sampled twice.
+    seen: u64,
+    /// Whether the command above still owes a sample.
+    pending: bool,
+}
+
+/// Shapes whose hotspot is remembered at once.
+const HOTSPOTS: usize = 16;
+
+impl Hotspots {
+    fn new() -> Self {
+        Self {
+            known: [(0, 0, 0); HOTSPOTS],
+            count: 0,
+            next: 0,
+            seen: 0,
+            pending: false,
+        }
+    }
+
+    /// What is known about this shape, or zero.
+    fn of(&self, checksum: u32) -> (u16, u16) {
+        self.known
+            .get(..self.count)
+            .unwrap_or_default()
+            .iter()
+            .find(|(shape, _, _)| *shape == checksum)
+            .map_or((0, 0), |(_, x, y)| (*x, *y))
+    }
+
+    /// Learn this shape's hotspot from a command and where the pointer was
+    /// then drawn.
+    ///
+    /// **Refused unless the command lands inside the picture that was drawn**,
+    /// which is the whole of the validation and most of what makes this safe:
+    /// a sample taken while the pointer was moving, or one taken from a
+    /// position somebody at the desk produced rather than a guest, does not
+    /// land inside its own shape except by coincidence.
+    fn learn(&mut self, checksum: u32, command: (u16, u16), drawn: (u16, u16, u16, u16)) -> bool {
+        let (cx, cy) = command;
+        let (x, y, width, height) = drawn;
+        let (Some(hot_x), Some(hot_y)) = (cx.checked_sub(x), cy.checked_sub(y)) else {
+            return false;
+        };
+        if hot_x >= width || hot_y >= height {
+            return false;
+        }
+        if let Some(slot) = self
+            .known
+            .get_mut(..self.count)
+            .unwrap_or_default()
+            .iter_mut()
+            .find(|(shape, _, _)| *shape == checksum)
+        {
+            *slot = (checksum, hot_x, hot_y);
+            return true;
+        }
+        // **Oldest out.** A cache that filled and then refused to learn would
+        // freeze whatever sixteen shapes it happened to see first.
+        if let Some(slot) = self.known.get_mut(self.next) {
+            *slot = (checksum, hot_x, hot_y);
+        }
+        self.next = (self.next + 1) % HOTSPOTS;
+        self.count = (self.count + 1).min(HOTSPOTS);
+        true
+    }
+
+    /// Take one command into account and answer what this shape's hotspot is.
+    ///
+    /// **Sampled once per command, on the read after it.** A pointer is drawn
+    /// where it was told to be only once the display has caught up, and a
+    /// sample taken on every read afterwards would keep re-deriving from a
+    /// command that no longer says anything about where the pointer is -- which
+    /// is what somebody at the desk moving the mouse produces.
+    fn update(
+        &mut self,
+        command: Option<(u64, u16, u16)>,
+        checksum: u32,
+        drawn: (u16, u16, u16, u16),
+    ) -> (u16, u16) {
+        if let Some((count, cx, cy)) = command {
+            if count != self.seen {
+                self.seen = count;
+                self.pending = true;
+            } else if self.pending {
+                self.pending = false;
+                self.learn(checksum, (cx, cy), drawn);
+            }
+        }
+        self.of(checksum)
+    }
+}
+
+/// Where a pointer sits in the picture, or nothing when it is not in it.
+///
+/// **Skipped rather than clamped.** A pointer outside the picture is not this
+/// stream's to describe, and a clamped one is a pointer parked against an edge
+/// it is not at. The far side keeps drawing the last one it was told about,
+/// which is what it should do.
+///
+/// **The bounds are the picture's, and getting them from anywhere else is a
+/// bug that hides.** Tested against a smaller rectangle than the picture, every
+/// pointer beyond it is dropped: the guest keeps whatever shape it last had
+/// while the screen shows another, and it looks like a shape-detection fault
+/// rather than a bounds one because it depends on where the pointer is.
+fn within(x: i32, y: i32, width: u32, height: u32) -> Option<(u16, u16)> {
+    // Negative is a pointer straddling the left or top edge: not representable
+    // here, and outside by the same rule.
+    let (Ok(x), Ok(y)) = (u16::try_from(x), u16::try_from(y)) else {
+        return None;
+    };
+    (u32::from(x) < width && u32::from(y) < height).then_some((x, y))
+}
+
 /// Read the pointer and publish it for the guests to report.
 ///
 /// **Skipped rather than clamped when the pointer is not on this stream.** A
@@ -1212,6 +1386,7 @@ fn publish_pointer(
     display: Option<&mut crate::display::Display>,
     width: u32,
     height: u32,
+    hotspots: &mut Hotspots,
 ) {
     let Some(desktop) = display else { return };
     let Some(seen) = desktop.pointer() else {
@@ -1220,22 +1395,22 @@ fn publish_pointer(
         shared.publish_pointer(PointerState::default(), None);
         return;
     };
-    let (Ok(x), Ok(y)) = (u16::try_from(seen.x), u16::try_from(seen.y)) else {
-        // Negative, which is a pointer straddling the left or top edge. Not
-        // representable and not this stream's, by the same rule.
+    let Some((x, y)) = within(seen.x, seen.y, width, height) else {
         return;
     };
-    if u32::from(x) >= width || u32::from(y) >= height {
-        return;
-    }
+    // Derived from what a guest told the pointer to be, against where the
+    // display then drew it. Zero until this shape has been seen once with a
+    // command settled behind it.
+    let (hot_x, hot_y) = hotspots.update(
+        shared.commanded(),
+        seen.checksum,
+        (x, y, seen.width, seen.height),
+    );
     let state = PointerState {
         x,
         y,
-        // Nothing reports it and nothing has derived it yet, so a peer draws
-        // the picture from its corner. Wrong by a hotspot, and visibly so on
-        // a shape whose point is in its middle.
-        hot_x: 0,
-        hot_y: 0,
+        hot_x,
+        hot_y,
         width: seen.width,
         height: seen.height,
         checksum: seen.checksum,
@@ -1323,6 +1498,16 @@ impl FromDevice for lowlat_encode::vaapi::Encoder<'_> {
     }
 }
 
+/// The frame loop, written against the trait rather than a backend, so the
+/// second implementation is a construction change and not a second loop.
+///
+/// **Two deadlines, not one.** A loop that submits a frame and then waits for
+/// it is serialised: nothing prepares the next frame while the hardware works,
+/// and the pipeline caps at one frame per encode however fast the encoder is.
+/// This one asks the encoder for a finished picture on every pass and reaches
+/// for a new frame when the frame clock says so, so an encode overlaps the
+/// acquire and the submit behind it, and a picture leaves within a poll of
+/// being ready rather than at the next frame boundary.
 fn encode_loop<E: Encoder + FromDevice>(
     shared: &Shared,
     arrivals: &mpsc::Receiver<Join>,
@@ -1389,8 +1574,10 @@ fn encode_loop<E: Encoder + FromDevice>(
     let mut failures = 0u32;
     // Whether the last pass found the display dark.
     let mut held = false;
-    // When the pointer was last looked at.
+    // When the pointer was last looked at, and what is known about where each
+    // shape points.
     let mut pointer_ms = -POINTER_MS;
+    let mut hotspots = Hotspots::new();
 
     loop {
         if shared.stopping.load(Ordering::Acquire) != 0 {
@@ -1519,7 +1706,13 @@ fn encode_loop<E: Encoder + FromDevice>(
             // outside this one sees another seat or nothing at all.
             if now_ms - pointer_ms >= POINTER_MS {
                 pointer_ms = now_ms;
-                publish_pointer(shared, display.as_deref_mut(), config.width, config.height);
+                publish_pointer(
+                    shared,
+                    display.as_deref_mut(),
+                    config.width,
+                    config.height,
+                    &mut hotspots,
+                );
             }
 
             let synthetic = if display.is_none() {
@@ -2089,6 +2282,7 @@ mod tests {
                 encode_us: AtomicU32::new(0),
                 timing: TimingCells::default(),
                 picture: AtomicU32::new(0),
+                commanded: AtomicU64::new(0),
                 cursor: CursorCell::default(),
                 stopping: AtomicU32::new(0),
                 epoch: AtomicU32::new(0),
@@ -2138,6 +2332,7 @@ mod tests {
             encode_us: AtomicU32::new(0),
             timing: TimingCells::default(),
             picture: AtomicU32::new(0),
+            commanded: AtomicU64::new(0),
             cursor: CursorCell::default(),
             stopping: AtomicU32::new(0),
             epoch: AtomicU32::new(0),
@@ -2189,6 +2384,87 @@ mod tests {
     /// sent. Granting it would hand the others a stream their decoders were
     /// not built for, which they report as a decode failure rather than as a
     /// mismatch.
+    /// **The hotspot comes from the one thing this host knows and no driver
+    /// does: it put the pointer there itself.** A guest commands a position,
+    /// the display draws the shape with its point on it, and the difference
+    /// between the command and the drawn corner is the hotspot exactly.
+    #[test]
+    fn a_hotspot_is_the_difference_between_the_command_and_the_drawing() {
+        let mut hotspots = Hotspots::new();
+        let arrow = 0xAAAA_AAAA;
+        let drawn = (100u16, 100u16, 21u16, 24u16);
+
+        // A command nothing has settled behind yet teaches nothing.
+        assert_eq!(hotspots.update(Some((1, 110, 108)), arrow, drawn), (0, 0));
+        // The read after it is where the display has caught up.
+        assert_eq!(hotspots.update(Some((1, 110, 108)), arrow, drawn), (10, 8));
+        // And it is remembered for that shape without another command.
+        assert_eq!(hotspots.update(None, arrow, drawn), (10, 8));
+        // A shape nothing has been learned about is still zero, which is
+        // wrong by a hotspot rather than wrong by an unknown.
+        assert_eq!(hotspots.update(None, 0xBBBB_BBBB, drawn), (0, 0));
+    }
+
+    /// **A sample that does not land inside the shape it is meant to be in is
+    /// refused.** That is the whole of the validation, and it is what keeps
+    /// somebody at the desk moving the mouse from teaching a hotspot: a
+    /// position that was not ours does not land inside its own picture except
+    /// by coincidence.
+    #[test]
+    fn a_hotspot_outside_its_own_shape_is_refused() {
+        let mut hotspots = Hotspots::new();
+        let shape = 0xCCCC_CCCC;
+        let drawn = (100u16, 100u16, 21u16, 24u16);
+
+        // Past the right edge of the picture.
+        hotspots.update(Some((1, 500, 108)), shape, drawn);
+        assert_eq!(hotspots.update(Some((1, 500, 108)), shape, drawn), (0, 0));
+
+        // Before its corner, which is a command from above or to the left of
+        // where the pointer was drawn.
+        let mut hotspots = Hotspots::new();
+        hotspots.update(Some((1, 90, 108)), shape, drawn);
+        assert_eq!(hotspots.update(Some((1, 90, 108)), shape, drawn), (0, 0));
+    }
+
+    /// The cache holds a handful of shapes and keeps learning past that, or a
+    /// desktop that cycles more pointers than it holds would freeze on the
+    /// first ones it saw.
+    #[test]
+    fn a_full_hotspot_cache_keeps_learning() {
+        let mut hotspots = Hotspots::new();
+        let drawn = (100u16, 100u16, 21u16, 24u16);
+        let over = u32::try_from(HOTSPOTS).expect("a small cache") + 4;
+        for shape in 0..over {
+            let command = Some((u64::from(shape) + 1, 105, 104));
+            hotspots.update(command, shape, drawn);
+            assert_eq!(hotspots.update(command, shape, drawn), (5, 4), "at {shape}");
+        }
+    }
+
+    /// **A pointer is judged against the picture, not against what the host
+    /// was configured with.** A 2560x1440 display tested against 1920x1080
+    /// drops every update from the right third and the bottom quarter of the
+    /// screen, and the guest keeps whatever shape it last had while the screen
+    /// shows another. It reads as a shape-detection fault because it depends
+    /// on where the pointer is, which is why it survived a cursor that was
+    /// otherwise working.
+    #[test]
+    fn a_pointer_is_judged_against_the_whole_picture() {
+        assert_eq!(within(100, 100, 2560, 1440), Some((100, 100)));
+        assert_eq!(
+            within(2000, 1200, 2560, 1440),
+            Some((2000, 1200)),
+            "the part of a larger display that smaller bounds would drop"
+        );
+        assert_eq!(within(2000, 1200, 1920, 1080), None, "genuinely outside");
+
+        // A pointer straddling an edge is outside, not wrapped to the far one.
+        assert_eq!(within(-1, 5, 2560, 1440), None);
+        assert_eq!(within(5, -1, 2560, 1440), None);
+        assert_eq!(within(2560, 0, 2560, 1440), None, "one past the last pixel");
+    }
+
     /// **The size a peer is told is the size its input comes back in.** A
     /// display decides its own, and a guest that described the stream with the
     /// configured numbers instead put every absolute position through the
