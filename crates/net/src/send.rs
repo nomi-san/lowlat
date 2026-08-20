@@ -55,6 +55,13 @@ pub struct Batch {
     ttl: Ttl,
     /// Cleared for good the first time the kernel refuses to segment.
     offload: bool,
+    /// Datagrams the path has refused since the last one it took.
+    ///
+    /// **A refusal is loss, not a fault**, so this exists to bound the logging
+    /// rather than to gate anything: one line when the path starts refusing and
+    /// one when it takes a datagram again, instead of one per datagram at
+    /// datagram rates.
+    refused: u64,
 }
 
 impl core::fmt::Debug for Batch {
@@ -63,6 +70,7 @@ impl core::fmt::Debug for Batch {
             .field("count", &self.count)
             .field("used", &self.used)
             .field("offload", &self.offload)
+            .field("refused", &self.refused)
             .finish()
     }
 }
@@ -85,12 +93,18 @@ impl Batch {
             to: None,
             ttl: Ttl::Default,
             offload: true,
+            refused: 0,
         }
     }
 
     /// Whether offload is still in use, or the kernel refused it.
     pub fn offloading(&self) -> bool {
         self.offload
+    }
+
+    /// Datagrams the path has refused since the last one it took.
+    pub fn refused(&self) -> u64 {
+        self.refused
     }
 
     /// How many datagrams are staged.
@@ -209,7 +223,31 @@ impl Batch {
             let Some(datagram) = staged.get(at..at + len) else {
                 break;
             };
-            socket.send_to(datagram, to)?;
+            // **A datagram the path refuses is a datagram that was lost**, and
+            // the protocol already recovers from loss. A link that has gone, a
+            // route that has not come back and a local filter all surface here,
+            // and none of them is a reason to tear down a session: a peer that
+            // genuinely cannot be reached is ended by the delivery deadline,
+            // which is evidence about the peer rather than about one syscall.
+            match socket.send_to(datagram, to) {
+                Ok(_) => {
+                    if self.refused > 0 {
+                        lowlat_common::log_info!(
+                            "net: path taking datagrams again, refused={}",
+                            self.refused
+                        );
+                        self.refused = 0;
+                    }
+                }
+                Err(error) => {
+                    if self.refused == 0 {
+                        lowlat_common::log_warn!(
+                            "net: path refusing datagrams, dropped as loss, err={error}"
+                        );
+                    }
+                    self.refused = self.refused.saturating_add(1);
+                }
+            }
             at += len;
         }
         Ok(())
@@ -297,6 +335,39 @@ mod tests {
                 },
             )
             .expect("commit");
+    }
+
+    /// **A datagram the path refuses is loss, not a fault.** Returning it as
+    /// an error tears down whatever is driving the socket, and a loop that
+    /// stops in the middle of a session leaves the host believing a guest is
+    /// still connected. A path that refuses one datagram is usually carrying
+    /// again a moment later, and a peer that genuinely cannot be reached is
+    /// ended by the delivery deadline instead.
+    #[test]
+    fn a_refused_datagram_is_dropped_rather_than_returned() {
+        let sender = Socket::open(0).expect("sender");
+        let mut batch = Batch::default();
+
+        // Port zero is refused outright, which is a real send failure that
+        // needs no network state to produce.
+        let mut nowhere = loopback_of(&sender);
+        nowhere.set_port(0);
+        push(&mut batch, &sender, nowhere, Ttl::Default, b"lost");
+        batch.flush(&sender).expect("a refusal is not an error");
+        assert_eq!(batch.refused(), 1);
+
+        // And it clears when the path takes one again, which is what keeps an
+        // outage to two log lines rather than one per datagram.
+        let receiver = Socket::open(0).expect("receiver");
+        push(
+            &mut batch,
+            &sender,
+            loopback_of(&receiver),
+            Ttl::Default,
+            b"ok",
+        );
+        batch.flush(&sender).expect("flush");
+        assert_eq!(batch.refused(), 0);
     }
 
     /// The property the batch exists for: equal-size datagrams to one place

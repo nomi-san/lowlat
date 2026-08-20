@@ -162,6 +162,12 @@ pub enum Outcome {
     /// handshake, and reporting that as a peer that went away sends the next
     /// diagnosis to the network rather than to the negotiation.
     NeverDeclared,
+    /// The socket could not be driven any further.
+    ///
+    /// **Rare, and it is about this host rather than about the peer.** A
+    /// datagram the path refuses is dropped like loss and never reaches here;
+    /// what does is a socket that has stopped working, which no retry answers.
+    TransportFailed,
     /// The control stream could not be read any further.
     ///
     /// A message that cannot be taken does not advance the channel, so this is
@@ -1064,7 +1070,12 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         let mut framing = packetiser.as_mut();
         let mut declaring = negotiation.as_mut();
         let outbound = &mut sent;
-        let Ok(_) = shell.turn(now, |endpoint| {
+        // **A loop that stops has to say so.** Leaving here without an
+        // outcome strands the attempt: its port, its seat and its share of
+        // the advertised capacity are all released by the reaping the event
+        // triggers, and nothing else releases them. The session is over either
+        // way; the difference is whether the host knows.
+        if let Err(error) = shell.turn(now, |endpoint| {
             while let Ok(addr) = arrivals.try_recv() {
                 let _ = endpoint.conn().add_candidate(addr);
             }
@@ -1073,9 +1084,14 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             {
                 *outbound += send_frames(endpoint.session(), seat, packetiser, negotiation);
             }
-        }) else {
-            break;
-        };
+        }) {
+            lowlat_common::log_warn!("guest: the transport stopped, err={error}");
+            let _ = args.emit.send(Event::Ended {
+                attempt: args.attempt_id.clone(),
+                outcome: Outcome::TransportFailed,
+            });
+            return;
+        }
 
         // Release anything held while the devices were becoming usable. On
         // its own timer, so a guest that pressed one key and waited does not
