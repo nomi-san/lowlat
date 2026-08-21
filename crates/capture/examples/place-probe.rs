@@ -2,7 +2,7 @@
 //!
 //! Run it on the machine under test:
 //!
-//!   sudo -E place-probe [/dev/dri/card0]
+//!   sudo -E place-probe [/dev/dri/card0] [DP-2]
 //!
 //! The display half needs the elevated capability, for the same reason the
 //! scanout probe does. The layout half does not, and prints on its own.
@@ -41,7 +41,11 @@ fn main() {
             return;
         }
     };
-    let layout = match card.scan() {
+    // An optional second argument names the output, so the selection can be
+    // exercised without a session: a name that is not lit must refuse rather
+    // than hand back whichever screen was walked first.
+    let wanted = std::env::args().nth(2);
+    let layout = match card.scan_output(wanted.as_deref()) {
         Ok(layout) => layout,
         Err(error) => {
             println!("nothing to scan on {}: {error}", node.display());

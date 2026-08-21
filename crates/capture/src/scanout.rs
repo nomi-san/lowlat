@@ -165,6 +165,18 @@ pub struct CursorPlane {
     y: property::Handle,
 }
 
+/// One output a device is lighting, as the choice between them needs it.
+///
+/// **The name is the identity.** An index is whatever order the kernel
+/// enumerated in, which is not stable across a reboot or a cable being moved;
+/// the connector's own name is, for as long as the hardware is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Output {
+    pub connector: String,
+    pub width: u32,
+    pub height: u32,
+}
+
 /// One scan of the device.
 #[derive(Debug, Clone)]
 pub struct Layout {
@@ -235,12 +247,24 @@ impl Card {
     /// path holds on to the plane it found and re-reads only the framebuffer;
     /// this is for startup and for noticing that the pipeline changed.
     pub fn scan(&self) -> Result<Layout, Error> {
+        self.scan_output(None)
+    }
+
+    /// Describe one named output, or whichever is found first.
+    ///
+    /// **A device can be driving more than one**, and taking whichever the
+    /// kernel lists last is a coin flip between two screens. The name is the
+    /// connector's own, such as `DP-2`, and a name that is not lit here is a
+    /// refusal rather than a fallback: falling back captures somebody's other
+    /// monitor, which looks like the selection working until it is looked at.
+    pub fn scan_output(&self, wanted: Option<&str>) -> Result<Layout, Error> {
         let planes = self.plane_handles().map_err(|error| device_error(&error))?;
 
         let mut primary = None;
         let mut primary_plane = None;
         let mut cursor = None;
         let mut primary_crtc = None;
+        let mut connector = None;
         // Every pointer plane the card has, with the controller each is bound
         // to. Resolved after the walk, because the lit controller is not known
         // until the primary plane has been found and the order is the
@@ -286,9 +310,26 @@ impl Card {
             let (Some(fb), Some(crtc)) = (info.framebuffer(), info.crtc()) else {
                 continue;
             };
+            // **Named before it is chosen**, because the name is the only
+            // thing that distinguishes two lit outputs on one device and it
+            // costs a walk of the connectors to learn.
+            let named = self.connector_on(crtc);
+            if let Some(wanted) = wanted
+                && named.as_deref() != Some(wanted)
+            {
+                continue;
+            }
             primary = Some(self.framebuffer(fb)?);
             primary_plane = Some(handle);
             primary_crtc = Some(crtc);
+            connector = named;
+            // **The first match wins rather than the last.** Without a name to
+            // ask for, the walk used to keep going and end on whichever plane
+            // the kernel listed last, which on a device driving two screens is
+            // a coin flip that changes with the hardware.
+            if wanted.is_some() {
+                break;
+            }
         }
 
         // **The one on the controller that is lit**, then any that is bound at
@@ -311,10 +352,42 @@ impl Card {
                 primary_plane,
                 cursor,
                 cursor_plane,
-                connector: primary_crtc.and_then(|crtc| self.connector_on(crtc)),
+                connector,
             }),
             _ => Err(Error::NoScanout),
         }
+    }
+
+    /// Every output this device is lighting, named and measured.
+    ///
+    /// **Cheaper than a scan and answers a different question.** A scan
+    /// describes one output well enough to capture it; this says what there is
+    /// to choose between, so it reads no framebuffer contents and resolves no
+    /// plane properties.
+    pub fn outputs(&self) -> Result<Vec<Output>, Error> {
+        let planes = self.plane_handles().map_err(|error| device_error(&error))?;
+        let mut found = Vec::new();
+        for handle in planes {
+            let Ok(info) = self.get_plane(handle) else {
+                continue;
+            };
+            if self.plane_property(handle, c"type") != Some(PLANE_TYPE_PRIMARY) {
+                continue;
+            }
+            let (Some(fb), Some(crtc)) = (info.framebuffer(), info.crtc()) else {
+                continue;
+            };
+            let Some(connector) = self.connector_on(crtc) else {
+                continue;
+            };
+            let described = self.framebuffer(fb)?;
+            found.push(Output {
+                connector,
+                width: described.width,
+                height: described.height,
+            });
+        }
+        Ok(found)
     }
 
     /// What is plugged into a controller, by name.
