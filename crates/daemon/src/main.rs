@@ -152,6 +152,28 @@ fn candex<'a>(
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    // **Before anything else is set up.** It answers the one question that has
+    // to be answered before --output can be used at all, and a machine being
+    // asked what it has is not a machine about to host.
+    if flag_set("--outputs") {
+        for output in lowlat::display::Display::outputs() {
+            match output.place {
+                Some(place) => println!(
+                    "{}  {}x{} at {},{} of a {}x{} desktop",
+                    output.id,
+                    output.width,
+                    output.height,
+                    place.x,
+                    place.y,
+                    place.desktop_width,
+                    place.desktop_height
+                ),
+                None => println!("{}  {}x{}", output.id, output.width, output.height),
+            }
+        }
+        return Ok(());
+    }
+
     let configured =
         std::env::var("KESSEL_WS_SERVER").map_err(|_| "KESSEL_WS_SERVER is not set")?;
     let configured = configured.trim();
@@ -249,6 +271,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             min_mbps: MIN_BITRATE_MBPS,
             rotation,
             detail_rows,
+            // **Named, not indexed.** An index is whichever order the kernel
+            // enumerated in and moves when a cable does; the name is the
+            // system's own and is what a session knows the output by too.
+            output: flag("--output"),
             // Off unless asked for. Capture needs the elevated capability and
             // a display, and a run that has neither should generate pictures
             // rather than refuse to start.
