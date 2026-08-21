@@ -689,6 +689,20 @@ impl Stream {
         }
     }
 
+    /// What size the stream is really producing, once it is known.
+    ///
+    /// **The picture, never the configuration.** A display decides its own
+    /// size and the stream follows it, so anything describing this stream from
+    /// what it was configured with describes a stream nobody is producing
+    /// (docs/05-host.md section 7).
+    pub fn picture(&self) -> Option<(u32, u32)> {
+        let packed = self.shared.picture.load(Ordering::Acquire);
+        if packed == 0 {
+            return None;
+        }
+        Some((packed >> 16, packed & 0xFFFF))
+    }
+
     /// The last stage report the loop published.
     ///
     /// Zero until the first report is due, which is what makes a reader that

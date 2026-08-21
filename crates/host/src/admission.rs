@@ -308,12 +308,38 @@ struct Attempt {
     number: Option<u32>,
 }
 
-/// One application message on its way to a guest.
+/// One message on its way to a guest, built where the caller is.
+///
+/// **Two opcodes share this shape and it is not a coincidence.** An
+/// application message and a roster are both a body with its length in the
+/// first argument, one number in the second and nothing in the third; only
+/// what the number means differs -- a sub-identifier for one, the recipient's
+/// own guest number for the other.
 #[derive(Debug)]
 struct Said {
-    id: u32,
-    /// Already terminated. See [`Admission::send_user_data`].
+    opcode: u8,
+    /// The second argument. Its meaning belongs to the opcode.
+    a1: u32,
+    /// Already terminated. The far side reads both as C strings.
     body: Vec<u8>,
+}
+
+/// One connected guest, as the seam knows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GuestInfo {
+    /// What this guest is addressed by, and what it finds itself in a roster
+    /// by.
+    pub number: u32,
+    pub permissions: lowlat_inject::event::Permissions,
+    pub owner: bool,
+}
+
+/// A body with the terminator a peer reads it as a C string by, exactly once.
+fn terminated(text: &[u8]) -> Vec<u8> {
+    let mut body = Vec::with_capacity(lowlat_core::control::string_body_len(text.len()));
+    body.extend_from_slice(text.strip_suffix(&[0]).unwrap_or(text));
+    body.push(0);
+    body
 }
 
 /// The seam.
@@ -595,10 +621,82 @@ impl Admission {
         let Some(say) = attempt.say.as_ref() else {
             return false;
         };
-        let mut body = Vec::with_capacity(lowlat_core::control::string_body_len(text.len()));
-        body.extend_from_slice(text.strip_suffix(&[0]).unwrap_or(text));
-        body.push(0);
-        say.send(Said { id, body }).is_ok()
+        say.send(Said {
+            opcode: lowlat_core::control::op::USER_DATA,
+            a1: id,
+            body: terminated(text),
+        })
+        .is_ok()
+    }
+
+    /// Tell every guest who is connected.
+    ///
+    /// **The same body reaches all of them and the second argument does not**:
+    /// each guest is sent its own number alongside, because that is how a peer
+    /// finds itself in the list and learns what it is allowed to do. A roster
+    /// with nobody's own number in it describes a room the reader is not in.
+    ///
+    /// The body is built by the caller. It is an encoding this layer has no
+    /// business owning, and the crate that would parse it is deliberately
+    /// outside the boundary.
+    pub fn send_roster(&mut self, body: &[u8]) -> usize {
+        let terminated = terminated(body);
+        self.attempts
+            .values()
+            .filter_map(|attempt| Some((attempt.number?, attempt.say.as_ref()?)))
+            .filter(|(number, say)| {
+                say.send(Said {
+                    opcode: lowlat_core::control::op::GUEST_LIST,
+                    a1: *number,
+                    body: terminated.clone(),
+                })
+                .is_ok()
+            })
+            .count()
+    }
+
+    /// Who is connected, as much as this layer knows.
+    ///
+    /// **Only what it decides.** A name, an avatar or an account are the
+    /// application's to know; what belongs here is the number a guest is
+    /// addressed by, what it is permitted to drive, and whether it owns the
+    /// machine.
+    pub fn guests(&self) -> Vec<GuestInfo> {
+        let mut found: Vec<GuestInfo> = self
+            .attempts
+            .values()
+            .filter_map(|attempt| {
+                Some(GuestInfo {
+                    number: attempt.number?,
+                    permissions: attempt.peer.permissions,
+                    owner: attempt.peer.owner,
+                })
+            })
+            .collect();
+        // **Ordered, because a map is not.** A roster that reshuffles itself
+        // every time it is sent is one a reader cannot diff.
+        found.sort_by_key(|guest| guest.number);
+        found
+    }
+
+    /// What size the stream is really producing, once it is known.
+    ///
+    /// Nothing until a display has been opened, which is the honest answer
+    /// before then: the size is the display's to decide.
+    pub fn picture(&self) -> Option<(u32, u32)> {
+        self.stream.as_ref().and_then(Stream::picture)
+    }
+
+    /// Capture a different output, or the first one lit.
+    ///
+    /// **The seam forwards it and judges nothing.** Which outputs exist is the
+    /// application's to look up ([`crate::display::Display::outputs`]) and a
+    /// name that is not lit is refused where the display is opened, because
+    /// that is the only place that can know.
+    pub fn select_output(&self, id: Option<String>) {
+        if let Some(stream) = self.stream.as_ref() {
+            stream.select_output(id);
+        }
     }
 
     /// Send every guest the same application message.
@@ -833,24 +931,23 @@ fn past_the_cap(text: &[u8]) -> bool {
     lowlat_core::control::string_body_len(text.len()) > lowlat_core::control::USER_DATA_MAX
 }
 
-/// Send one application message.
+/// Send one message that was built elsewhere.
 ///
 /// **The body is written as it was handed over.** Building it belongs where
 /// the caller is, so nothing on this thread allocates to send one, and the
-/// terminator an established peer reads it as a C string by is already there
-/// ([`Admission::send_user_data`]).
-fn send_user_data(session: &mut Session<'_>, id: u32, body: &[u8]) {
+/// terminator a peer reads it as a C string by is already there.
+fn send_said(session: &mut Session<'_>, message: &Said) {
     send_control(
         session,
         &control::Control {
             // **The length counts the terminator**, which is what a reader
             // treating this as a C string needs, and a body sized by the text
             // alone leaves it reading one byte past what arrived.
-            a0: u32::try_from(body.len()).unwrap_or(u32::MAX),
-            a1: id,
+            a0: u32::try_from(message.body.len()).unwrap_or(u32::MAX),
+            a1: message.a1,
             a2: 0,
-            opcode: control::op::USER_DATA,
-            body,
+            opcode: message.opcode,
+            body: &message.body,
         },
     );
 }
@@ -1552,7 +1649,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         // this pass.** It is rare and small; draining it here keeps it off the
         // frame path and out of the shell's own closure.
         while let Ok(message) = args.said.try_recv() {
-            send_user_data(shell.endpoint().session(), message.id, &message.body);
+            send_said(shell.endpoint().session(), &message);
         }
 
         // What the stream's controller and gate are steered by. Cheap, and it
