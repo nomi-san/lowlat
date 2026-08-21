@@ -240,3 +240,12 @@ this document is constrained by wire compatibility. It changes only for our reas
 **Open until Phase 8:** the concrete `lowlat_host_config` field set, which depends on the
 capture backend decision in [07-platforms.md](07-platforms.md), and the status code range
 partitioning, which wants the full error surface visible before it is fixed.
+
+**One field of that set is already decided, because it is the only one whose meaning could not
+be appended later.** There is no requested resolution. The display decides the picture's size,
+the encoder follows it, and the application is told what it got -- through the status call and
+the capture-changed event -- rather than asking for it. A host that creates its own display
+chooses that display's size when it creates it, which is a different question from setting the
+mode of a display somebody else owns, and that one is nobody's here
+([impl-plan.md](impl-plan.md), *Output selection*). A frame rate is a **cap** over whatever the
+display runs at, not a target.

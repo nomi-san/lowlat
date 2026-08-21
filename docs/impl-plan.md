@@ -716,12 +716,21 @@ delivery gate does what it is meant to throughout, and no guest ever saw a broke
 
 ## Phase 8 - Public C ABI
 
-**Deferred until Phase 9 closes.** Capture is the last phase that can force a header rewrite:
-the concrete `lowlat_host_config` field set and the output enumeration both depend on the
-capture backend ([06 §14](06-api.md)), while everything after Phase 9 adds only appendable
-surface, which [06 §11](06-api.md) permits without a version change. Phase 8 itself carries no
-unresolved question - the seam it wraps has been driven against real peers since Phase 4 - so
-it is the safer of the two to hold.
+**Was deferred until Phase 9 closed; started 2026-08-21.** Capture is the last phase that can
+force a header rewrite: the concrete `lowlat_host_config` field set and the output enumeration
+both depend on the capture backend ([06 §14](06-api.md)), while everything after Phase 9 adds
+only appendable surface, which [06 §11](06-api.md) permits without a version change.
+
+**What actually held it was one field's meaning, not Phase 9's remaining work.** Appending a
+field later is permitted; redefining one is not, so the only thing that had to be settled first
+was whether a requested resolution exists and what it would mean. It does not -- see *Output
+selection* above -- and what is left in Phase 9 touches no field that does exist.
+
+**The size of the picture is reported, never requested.** The display decides it, the encoder
+follows it, and a peer adapts to what it is sent, so the configuration selects an **output** and
+caps a **frame rate** and says nothing about a resolution. A host that creates its own display
+is the one case where a size is ours to choose, and it arrives with that display rather than as
+a field that spends every other configuration reporting itself refused.
 
 - [ ] `lowlat-host` orchestration and the `extern "C"` surface from
   [06-api.md](06-api.md).
@@ -736,14 +745,47 @@ it is the safer of the two to hold.
 - [ ] Generated header, opaque handles, versioned structs, stable-numbered enums.
 - [ ] `catch_unwind` at every entry point; unwinding enabled for the shared library.
 
+**Six things the surface needs that the seam does not have yet.** The phase was written as a
+wrapper over something live, and most of it is; these are the exceptions, found by reading
+[06-api.md](06-api.md) against the code.
+
+- [ ] **A poll that blocks for its timeout, over a bounded queue.** Today's is a non-blocking
+  read behind the same lock as every other call, on a queue that grows without limit.
+  [06 §5](06-api.md) wants drop-oldest with a dropped count on the next event and `fatal` never
+  dropped, and [06 §8](06-api.md) wants every other call to stay answerable while a poll is
+  waiting -- so the queue has to come out from behind that lock. **This decides the locking
+  discipline for the whole surface and is the first thing to design**, ahead of the header.
+- [ ] **The four event types that do not exist**: guest degraded, input owner changed, capture
+  changed, and fatal. Capture changed is the load-bearing one -- an application is currently
+  reduced to asking what is being captured on a timer and comparing.
+- [ ] **Ending one guest with a reason.** Ending an attempt exists; it is addressed by attempt
+  and carries no status, while the surface ends a *guest* and tells it why. The status has to
+  reach the peer before the session goes, which the stream already knows how to wait for.
+- [ ] **Permissions and input enable, mid-session.** Both are set once when a guest's thread
+  starts and never revisited. The injector already takes a change; nothing above it can ask.
+- [ ] **A live configuration change.** Bitrate is the one an established client already asks for
+  and is refused. The rate budget can be re-based and the encoder reconfigures without a
+  keyframe ([00 §D8](00-overview.md)); what is missing is the path from a caller to either.
+- [ ] **Encoder enumeration.** Audio outputs wait for Phase 10 rather than shipping a call that
+  answers nothing: adding a function later is additive, and a stub that always reports none is a
+  worse answer than no answer.
+
 **Gate:**
 
-1. A C# application drives a full session end to end using its own signaling.
+1. A C# application drives a full session end to end using its own signaling. **It imports the
+   shared library and nothing else**: the signaling is its own, written against its own runtime's
+   sockets and JSON, because a seam proven by borrowing ours is not proven at all.
 2. The generated header compiles standalone under C and C++ with warnings as errors.
 3. **A deliberately panicking call returns a status code rather than unwinding.** *Named test;
-   this is undefined behavior if it regresses.*
+   this is undefined behavior if it regresses.* **It has to load the built shared library**, not
+   link the same code as a Rust library: the thing being tested is that the shipped object still
+   unwinds, and a test that links the library form inherits the test profile's answer instead of
+   the shipped one.
 4. Every exported symbol carries the project prefix. *Checked mechanically against the
-   symbol table.*
+   symbol table.* Cheap to put in place now, while the count is zero.
+
+*Two, three and four are one small C program*: include the generated header with warnings as
+errors, open the shared library, call the panicking entry, and walk the symbol table.
 
 ---
 
@@ -753,8 +795,9 @@ it is the safer of the two to hold.
 
 ## Phase 9 - Capture and Gate B
 
-- [ ] Capture backend selection and the display-stack decision from
-  [07-platforms.md](07-platforms.md).
+- [x] Capture backend selection and the display-stack decision from
+  [07-platforms.md](07-platforms.md). *Closed by measurement; [07 §11](07-platforms.md) carries
+  the result for each.*
 - [x] Colour conversion by compute shader, writing planes directly. *One shader for every
   input depth, because a normalized format reaches a shader as float whatever its depth; the
   two-plane result is written through a view per plane, which measurement showed is the only
@@ -825,7 +868,7 @@ it is the safer of the two to hold.
   picture puts the pointer on the neighbouring output, where this host's pointer plane goes
   empty, which it cannot tell from an application hiding the pointer -- so the peer is told to
   switch to relative motion and has to walk its cursor back by hand.
-- [ ] **A guest without the pointer is shown that it does not have it**, rather than finding
+- [x] **A guest without the pointer is shown that it does not have it**, rather than finding
   out by nothing happening ([05 §7.1](05-host.md)). Cursor updates are already per guest, so
   this is a different image to one guest and not a new mechanism.
 
@@ -916,15 +959,21 @@ same size for this reason).
 - [ ] **Selecting which output to capture is a read**, and this backend can do it alone: walk
   every device, take the lit controllers, and pick one. No permission beyond what capture
   already needs.
-- [ ] **Changing the mode of an output the session owns is not ours to do, and privilege is not
+- [x] **Changing the mode of an output the session owns is not ours to do, and privilege is not
   what is missing.** Measured on this machine: one client at a time holds a display device, the
   session's compositor holds it, and a mode commit from anyone else is refused before the request
   is even examined -- **a root service is refused identically to an ordinary user**. That is a
   different kind of restriction from the one established hosts work around on other platforms,
   where display configuration is a call any privileged process may make; the experience does not
-  transfer. **So a mode change on a session's own display has to be asked of the session**,
-  through whichever output-management protocol it speaks, which is per-compositor rather than
-  universal.
+  transfer.
+
+  **Decided 2026-08-21: this host does not set the mode of a display it does not own, and does
+  not relay a request to do so either.** The mode of somebody's desk is changed where it is
+  already changed, in their own display settings, and capture follows whatever the display
+  became -- which is the behaviour Gate B item 6 already passes and the same behaviour an
+  established host has. A peer adapts to the size it is sent, so nothing on the far side needs
+  the change to have come from it. That removes the per-compositor output-management protocol
+  from the plan entirely, and with it one of the session helper's customers.
 - [ ] **A display this host creates is the exception, and it is the more important case.** A
   virtual display has exactly one client, which is us, so its mode is ours to set with no
   session involved at all -- which is what makes a requested resolution and refresh rate work
@@ -935,9 +984,11 @@ same size for this reason).
   display runs at its own is already what this does, and it is the useful half of the request in
   every case where the mode cannot be set.
 
-**So the split to hold:** the output is selected here, the mode is requested of the session, and
-a host that cannot reach a session still selects outputs and caps the rate. That keeps the whole
-feature working at the greeter minus the one part that genuinely needs a session.
+**So the split to hold:** the output is selected here, the mode is followed rather than set, and
+a display this host creates is the one case where a requested size is ours to apply. That keeps
+the whole feature working at the greeter, and it keeps a requested size out of the public
+configuration ([06 §14](06-api.md)): a field that only ever reports itself refused describes a
+stream nobody is producing, which is the one mistake this phase has already made four times.
 
 **Gate:**
 
@@ -950,9 +1001,8 @@ feature working at the greeter minus the one part that genuinely needs a session
    unknown name is refused by failing to open a display, which ends every guest on the stream
    including the one that asked.
 3a. **A requested mode is applied on a display this host created**, and the stream follows it.
-   On a display the session owns, the request is relayed to the session, and where that cannot
-   be done it is reported as refused rather than silently ignored -- a mode that was asked for and
-   quietly not applied is a stream of the wrong shape with nothing to explain it.
+   *Deferred with the virtual display itself.* On a display the session owns there is nothing to
+   gate: a mode set anywhere is followed, which is Gate B item 6.
 4. **Absolute input lands on the newly selected output**, which is Gate B item 5 arriving from
    the other direction and fails the same way if the rectangle is not republished with the size.
 5. [x] A switch across cards either works or ends with a reason, and never streams a frozen
