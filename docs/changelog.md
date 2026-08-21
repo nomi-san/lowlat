@@ -39,6 +39,29 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   compressed mapping that difference is negative for all but the first few
   pixels, so every sample was refused and every shape fell back to no offset.
 
+- **Application messages, both directions.** The framing had existed since the
+  protocol core was written and nothing used it: one arriving was counted and
+  dropped, and there was no way to send one. A message now reaches the
+  application as an event carrying its sub-identifier and the guest it came
+  from, and can be sent to one guest or to all.
+
+  **Nothing here reads the body.** The sub-identifier and the text are an
+  application's own protocol; two applications using the same opcode are
+  speaking different languages over one channel, and a host that acted on
+  either would be choosing between them.
+
+  **The terminator is written on the way out and not required on the way in.**
+  A peer reading the body as a C string runs past one that ends without it, so
+  it is always written and always counted -- and written once, because the
+  declared length counts both and a second one becomes part of the message. On
+  the way in it is stripped if present and never insisted on: this is a
+  pass-through, and refusing a message because a peer framed its own payload
+  differently discards something there was no entitlement to judge.
+
+  **A body past the ceiling is refused locally.** One byte over is dropped at
+  the far end with nothing said, so a sender that does not check loses the
+  message and cannot find out why.
+
 - **Which output to capture, chosen by name.** A device can be driving more
   than one screen, and the walk that found the picture took whichever plane the
   kernel listed last -- a coin flip between two monitors that changes with the

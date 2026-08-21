@@ -506,6 +506,30 @@ mistaken for something else.
 Cursor images on the wire are **PNG, not raw pixels**. Cursor position is in stream space and
 requires the host-to-client transform, including a width and height swap on rotated displays.
 
+### §11.2a Application messages
+
+Opcode 17 travels in both directions and the SDK never looks inside it. The arguments are the
+body's **length**, a **sub-identifier** the application chose, and zero; the body follows.
+
+**The length counts a terminating zero byte, and the body carries one.** Established peers read
+the body as a C string, so a body sized by its text alone leaves the reader running one byte
+past what arrived. A sender MUST write the terminator and count it; a receiver MUST NOT require
+it, because this is a pass-through and refusing a message because a peer framed its own payload
+differently discards something the SDK was never entitled to judge. A trailing zero is stripped
+before the body is handed on, so an application is given the text and not the byte that ended
+it.
+
+**A declared length bounds the body and never extends it.** A peer claiming more than it sent is
+taken at what it sent.
+
+**There is a ceiling of 1 MiB including the terminator**, and it is the receiver's: one byte
+over is dropped at the far end with nothing said, so a sender that does not check loses the
+message and cannot find out. Refuse it locally instead.
+
+**The sub-identifier space belongs to the application, not to this protocol.** Two applications
+that both use opcode 17 are speaking different languages over the same channel, and a host that
+acted on a sub-identifier would be choosing one of them ([05 §5](05-host.md)).
+
 ### §11.3 Video framing
 
 Video is not a control message. It rides the ordinary message framing of §5.3 on its own

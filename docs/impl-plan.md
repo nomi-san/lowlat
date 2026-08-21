@@ -725,21 +725,11 @@ it is the safer of the two to hold.
 
 - [ ] `lowlat-host` orchestration and the `extern "C"` surface from
   [06-api.md](06-api.md).
-- [ ] **Application messaging, both directions** ([01 §11.1](01-protocol.md) opcode 17). The
-  framing exists and nothing uses it: a message arriving is counted and dropped, and there is no
-  way to send one. **This is a prerequisite for output switching against an established client**,
-  not an independent nicety: the switch request must reach the application, and the application
-  is what interprets it ([05 §5](05-host.md)), so without this the SDK would have to learn a
-  protocol that is not its own.
-  - Inbound: the body reaches the application as an event, with the sub-identifier and the
-    guest it came from, uninterpreted.
-  - Outbound: to one guest or to all.
-  - **A text body carries its terminator and is counted with it.** An established peer reads
-    these as C strings, so a body sized by the text alone is one byte short and the reader runs
-    past it. `lowlat_core::control::string_body_len` is that rule and already exists; the send
-    path must use it rather than the text length.
-- [ ] **Output enumeration and the selected output**, as a listing call plus a configuration
-  field settable while a session runs. The machinery is Phase 9's (see *Output selection*
+- [ ] **Application messaging and output selection at the C boundary.** Both are wrappers over
+  seams Phase 9 built and drove live -- `Admission::send_user_data` and the `UserData` event, the
+  output listing and the selected output -- so what belongs here is the surface and nothing else:
+  an event type in the tagged union, a send call, a listing call, and a configuration field
+  settable while a session runs. The machinery is Phase 9's (see *Output selection*
   there); what belongs here is the surface: an identity an application can store and hand back,
   and each output's rectangle, which is the same quantity the input mapping is expressed
   against.
@@ -838,6 +828,38 @@ it is the safer of the two to hold.
 - [ ] **A guest without the pointer is shown that it does not have it**, rather than finding
   out by nothing happening ([05 §7.1](05-host.md)). Cursor updates are already per guest, so
   this is a different image to one guest and not a new mechanism.
+
+### Application messaging
+
+**Not in Gate B, and it is not capture.** It sits here because this is where it was needed and
+where it can be proven: switching outputs for an established client requires the request to
+reach the *application*, since the application is what interprets it
+([05 §5](05-host.md)), and until this exists the SDK would have to learn a protocol that is not
+its own. The C surface over it is Phase 8's.
+
+- [x] **Both directions, uninterpreted** ([01 §11.2a](01-protocol.md) opcode 17). The framing had
+  existed since Phase 1 and nothing used it: a message arriving was counted and dropped, and
+  there was no way to send one.
+- [x] Inbound, the body reaches the application as an event with its sub-identifier and the guest
+  it came from. Outbound, to one guest or to all.
+- [x] **The terminator is written on the way out and not required on the way in.** A peer reads
+  the body as a C string, so one that ends without it is read past; but this is a pass-through,
+  and refusing a message because a peer framed its own payload differently discards something
+  the SDK was never entitled to judge.
+- [x] **The body is built on the caller's thread**, so the thread serving a guest allocates
+  nothing to send one.
+- [ ] **Answer what an established client asks for.** The queries it sends on connecting, and the
+  configuration and output listing it expects back, are an application's protocol rather than
+  this one's -- so this item is the daemon's, not the SDK's.
+
+**Gate:**
+
+1. A message from a stock client reaches the application with its sub-identifier and body intact.
+2. A message sent to that client arrives, and one sent to every guest reaches each of them.
+3. **A body one byte over the ceiling is refused locally** rather than sent and dropped in
+   silence at the far end.
+
+---
 
 ### Output selection, and switching mid-session
 
