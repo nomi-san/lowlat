@@ -882,12 +882,21 @@ same size for this reason).
 - [ ] **Selecting which output to capture is a read**, and this backend can do it alone: walk
   every device, take the lit controllers, and pick one. No permission beyond what capture
   already needs.
-- [ ] **Changing that output's mode is a write to hardware the session owns**, and this backend
-  cannot do it at all. The compositor holds the display device exclusively; a second client
-  cannot commit a mode, and taking the output away from the compositor to get one removes it
-  from the desktop, which is the opposite of what capturing it means. **So a mode change has to
-  be asked of the session**, through whichever output-management protocol it speaks, and that is
-  per-compositor rather than universal.
+- [ ] **Changing the mode of an output the session owns is not ours to do, and privilege is not
+  what is missing.** Measured on this machine: one client at a time holds a display device, the
+  session's compositor holds it, and a mode commit from anyone else is refused before the request
+  is even examined -- **a root service is refused identically to an ordinary user**. That is a
+  different kind of restriction from the one established hosts work around on other platforms,
+  where display configuration is a call any privileged process may make; the experience does not
+  transfer. **So a mode change on a session's own display has to be asked of the session**,
+  through whichever output-management protocol it speaks, which is per-compositor rather than
+  universal.
+- [ ] **A display this host creates is the exception, and it is the more important case.** A
+  virtual display has exactly one client, which is us, so its mode is ours to set with no
+  session involved at all -- which is what makes a requested resolution and refresh rate work
+  properly for a headless host, and it is the product [07 §2.2](07-platforms.md) already
+  separates out. **The two paths differ in who owns the display, not in what capture does with
+  it.**
 - [ ] **A frame-rate cap needs none of that.** Capping the encoder at a requested rate while the
   display runs at its own is already what this does, and it is the useful half of the request in
   every case where the mode cannot be set.
@@ -903,8 +912,10 @@ feature working at the greeter minus the one part that genuinely needs a session
 2. A host told to capture the second output streams it.
 3. **A mid-session switch keeps the session**: same guest, same channel, one coded refresh, the
    peer follows the new size.
-3a. A requested mode reaches the session and the stream follows the display into it; with no
-   session reachable, the request is reported as refused rather than silently ignored.
+3a. **A requested mode is applied on a display this host created**, and the stream follows it.
+   On a display the session owns, the request is relayed to the session, and where that cannot
+   be done it is reported as refused rather than silently ignored -- a mode that was asked for and
+   quietly not applied is a stream of the wrong shape with nothing to explain it.
 4. **Absolute input lands on the newly selected output**, which is Gate B item 5 arriving from
    the other direction and fails the same way if the rectangle is not republished with the size.
 5. A switch across cards either works or ends with a reason, and never streams a frozen picture.
