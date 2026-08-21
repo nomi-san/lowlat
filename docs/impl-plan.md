@@ -725,6 +725,11 @@ it is the safer of the two to hold.
 
 - [ ] `lowlat-host` orchestration and the `extern "C"` surface from
   [06-api.md](06-api.md).
+- [ ] **Output enumeration and the selected output**, as a listing call plus a configuration
+  field settable while a session runs. The machinery is Phase 9's (see *Output selection*
+  there); what belongs here is the surface: an identity an application can store and hand back,
+  and each output's rectangle, which is the same quantity the input mapping is expressed
+  against.
 - [ ] Generated header, opaque handles, versioned structs, stable-numbered enums.
 - [ ] `catch_unwind` at every entry point; unwinding enabled for the shared library.
 
@@ -805,12 +810,68 @@ it is the safer of the two to hold.
   is a prerequisite rather than an improvement ([07 §2.1](07-platforms.md)).
 - [ ] **Rebuild the import when the scanout format changes**, without restarting the encoder or
   costing a keyframe. Not a rare event: see [07 §3.3](07-platforms.md).
-- [ ] **Absolute input placed within the captured output**, not spread over the whole desktop
-  ([05 §7](05-host.md)). Correct today only because there is one output; a second display
-  stretches the stream across both.
+- [x] **Absolute input placed within the captured output**, not spread over the whole desktop
+  ([05 §7](05-host.md)). *The mapping is three steps -- clamp into the picture, convert into the
+  captured output's rectangle, place that rectangle in the desktop -- and it collapses to what it
+  was when there is one output.* **The rectangle and the desktop come from the session**, which
+  is the only thing that knows them: a controller reports its position inside its own
+  framebuffer, which reads as the corner whatever the desktop looks like, and a compositor's own
+  virtual output has no controller at all. Matched to the captured output by the name both sides
+  know it by, read once when the display opens, and absent is not degraded because one output
+  already spans the axis. **The clamp is part of the fix, not tidiness**: a coordinate past the
+  picture puts the pointer on the neighbouring output, where this host's pointer plane goes
+  empty, which it cannot tell from an application hiding the pointer -- so the peer is told to
+  switch to relative motion and has to walk its cursor back by hand.
 - [ ] **A guest without the pointer is shown that it does not have it**, rather than finding
   out by nothing happening ([05 §7.1](05-host.md)). Cursor updates are already per guest, so
   this is a different image to one guest and not a new mechanism.
+
+### Output selection, and switching mid-session
+
+**Not in Gate B.** It is written down now because absolute input placement made half of it
+exist: an output has a name and a rectangle in the desktop, which is what selecting one needs.
+The stream stays on the same channel throughout -- a guest is never reseated and nothing on the
+wire is renumbered; only what feeds the picture changes.
+
+- [ ] **Enumerate the outputs.** Every display node, every lit controller on it, with its
+  connector name, its picture size and its rectangle in the desktop. That last one already
+  exists for the captured output; this generalises it to all of them. **The identity has to be
+  stable and unique across cards**, because a connector name is only unique within one: two
+  cards can each present a `DP-1`. Scoping the name by its node is the cheap answer and is as
+  stable as the machine's own hardware ordering; an identity derived from the display's own
+  serial is the alternative and costs a read this backend does not do today.
+- [ ] **Select one at open**, by that identity. **No selection keeps today's behaviour** -- the
+  first controller found lit -- and a selection naming an output that is not present falls back
+  to it and says so, because refusing presents to the far side as a machine with no session.
+- [ ] **Switch mid-session, through the mechanism a resolution change already uses.** A change
+  of output is latched and the loop rebuilds around it, exactly as a mode change is
+  ([Gate B item 6](#)). It costs one coded refresh; a picture cannot be absorbed into a stream
+  built for another one, and a switch between two outputs of the same size is not a special
+  case worth having -- the content is entirely different, so the refresh is owed either way.
+  What must be republished with it is the picture's size **and its rectangle**, because both
+  are the coordinate space absolute input comes back in ([05 §7](05-host.md)).
+- [ ] **A switch to an output on another card is the harder half, and it is not new work.**
+  The device, the conversion and the encoder's registration are all bound to the node the
+  display is on, so crossing cards rebuilds the encoder rather than the plane. **This is the
+  same runtime backend re-selection the display-moved-to-another-card item needs**, and the two
+  should be built once.
+- [ ] **The request reaches the SDK through the configuration, never off the wire.** An
+  application asks for an output the same way it asks for a bitrate. **Nothing here interprets
+  application traffic** to decide what to capture ([05 §5](05-host.md)); a host that did would
+  be inventing a protocol on behalf of its application.
+
+**Gate:**
+
+1. Enumeration lists every connected output on every card, with a rectangle that agrees with
+   what the session reports.
+2. A host told to capture the second output streams it.
+3. **A mid-session switch keeps the session**: same guest, same channel, one coded refresh, the
+   peer follows the new size.
+4. **Absolute input lands on the newly selected output**, which is Gate B item 5 arriving from
+   the other direction and fails the same way if the rectangle is not republished with the size.
+5. A switch across cards either works or ends with a reason, and never streams a frozen picture.
+
+---
 
 **Gate B:**
 
@@ -833,8 +894,17 @@ it is the safer of the two to hold.
 4. [x] With the pointer arbitrated, the guest that does not have it can see that it does not.
    *Passed 2026-08-20 with two guests: the one that does not hold the pointer is shown the
    desktop theme's refused shape, and the real cursor returns when the hold lapses.*
-5. [ ] **Absolute input lands on the captured display with a second display attached**, and on
+5. [x] **Absolute input lands on the captured display with a second display attached**, and on
    the correct one. *This cannot fail with one display, which is why it is a gate item.*
+   **Passed 2026-08-21** against a stock client with a 4480x1440 desktop and a 2560x1440
+   captured output: all four edges reached, and the pointer held at the border rather than
+   crossing to the other output. *It failed first at exactly 57 percent of the width, which is
+   the ratio of the two, and only on the horizontal, because both outputs were the same height.*
+   **Two faults sat behind it and only the first was the mapping.** The second was that a peer
+   which keeps pictures is sent a name, a name carries no hotspot, and the hotspot is derived
+   after the picture has already travelled -- so every shape was frozen at no offset for any peer
+   that caches ([05 §8.5](05-host.md)). Every earlier run used a peer that does not cache, which
+   is sent the picture every time and corrected itself on the next frame.
 6. [x] Capture survives resolution change and display hotplug. *Passed 2026-08-20: a mode
    change is followed, the stream rebuilt around it and the peer told, and the display link
    pulled and restored resumes the same session.* **A display that changes size cannot be

@@ -7,6 +7,52 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 **Added**
 
+- **Absolute input placed within the captured output.** An absolute device is
+  spread by the layer above over the whole desktop, so a coordinate normalised
+  against the picture alone lands proportionally short of where it belongs on
+  any desktop bigger than that picture: a 2560-wide picture on a 4480-wide
+  desktop reached its own right edge 57 percent of the way across and the rest
+  of it could not be reached at all. The mapping now clamps into the picture,
+  converts into the captured output's rectangle, and places that rectangle in
+  the desktop; with one output the rectangle is the desktop and the two
+  conversions cancel, so nothing about the single-display case moves.
+
+  **The rectangle and the desktop come from the session, because nothing below
+  it knows them.** A controller reports its position inside its own
+  framebuffer, which reads as the corner whatever the desktop looks like, and a
+  compositor's own virtual output has no controller, no connector and no plane
+  at all. The layout is asked for once when the display opens and matched to
+  the captured output by the name both sides know it by. **A session that does
+  not answer is not a degraded case**: one output is exactly what the axis
+  already spans.
+
+  **The clamp is part of the fix rather than tidiness.** A coordinate past the
+  picture puts the pointer on the neighbouring output, where the pointer plane
+  this host reads goes empty -- which it cannot tell from an application hiding
+  the pointer, so the peer is told to switch to relative motion, its cursor
+  disappears, and it has to be walked back by hand before the mode clears. The
+  reported edge flicker was that cycle repeating, not a stream fault.
+
+  It also **restores the pointer hotspot on a multi-display desktop**, which
+  was silently lost: the hotspot is the difference between where a guest
+  commanded the pointer and where the display then drew it, and under a
+  compressed mapping that difference is negative for all but the first few
+  pixels, so every sample was refused and every shape fell back to no offset.
+
+**Found by running it**
+
+- **A cached pointer keeps the offset it arrived with.** A peer that keeps
+  pictures is sent a name, a name carries no hotspot, and the far side applies
+  one only when a picture arrives. The hotspot is derived from a guest's own
+  command, so every shape necessarily travels once before its hotspot is known
+  and carries none at all -- naming it from then on froze that, and an I-beam
+  drew half its own height low while an arrow looked right, because an arrow's
+  offset really is near nothing. What a peer holds is now the picture and the
+  offset it came with, and only both together are a name. Every earlier run
+  used a peer that does not cache and is therefore sent the picture every time,
+  which corrected itself on the next frame.
+
+
 - **A guest is shown the pointer**, read once on the thread that owns the
   display and reported per guest, because what a guest is owed depends on what
   it already holds. A peer that declared no pointer cache is sent the picture

@@ -420,14 +420,33 @@ display-server-level injection cannot match.
   dimensions; the host scales that into the absolute axis, which the input stack then spreads
   across the desktop. Neither side needs to know the other's pixel count, only its shape.
 
-  **What that hides is the offset, and it will not survive a second display.** The axis is
+  **What that hides is the offset, and it does not survive a second display.** The axis is
   spread over the *whole* desktop, so with one output it lands where it should and with two the
-  stream is stretched across both. The fix is the one the established hosts use: express the
-  point in whole-desktop coordinates including the captured output's own position, rather than
-  handing the input stack a bare fraction and letting it choose. That is arithmetic rather than
-  a per-compositor call, so it keeps working at the greeter, but it needs the captured output's
-  rectangle -- which does not exist until capture does ([09](#) and
-  [07-platforms.md](07-platforms.md)).
+  stream is stretched across both: a 2560-wide picture on a 4480-wide desktop reaches its own
+  right edge 57 percent of the way across, and the rest of the picture cannot be reached at
+  all. **The failure is per axis**, which is the cheapest check on any fix: two outputs of the
+  same height leave the vertical scale at one, so the vertical is already correct and a fix
+  applied to the pair rather than to each axis breaks it.
+
+  So the point is expressed in whole-desktop coordinates **including the captured output's own
+  position**, rather than handing the input stack a bare fraction and letting it choose. Three
+  steps: clamp into the picture, convert into the captured output's rectangle, place that
+  rectangle within the desktop. With one output the rectangle is the desktop and the two
+  conversions cancel, which is why this is one multiplication rather than a special case.
+
+  **The clamp is load bearing and is not merely tidiness.** A coordinate past the picture would
+  otherwise put the pointer on the neighbouring output, where the hardware pointer plane this
+  host reads goes empty -- indistinguishable from an application hiding the pointer, so the peer
+  is told to switch to relative motion, its cursor vanishes, and it has to be walked back by
+  hand ([§8.1](#81-three-states-never-conflated)).
+
+  **The rectangle and the desktop come from the session, which is the only thing that knows
+  them.** A display device reports a controller's position inside its own framebuffer, which is
+  the corner whatever the desktop looks like, and an output a compositor invented has no
+  controller at all. So the layout is asked for once, when the display opens, and matched to the
+  captured output by the name both sides know it by. **A session that does not answer is not a
+  degraded case**: with one output the picture is the desktop, which is exactly what the axis
+  already spans ([07-platforms.md](07-platforms.md)).
 
   **It also assumes the stream and the display are the same size**, which they are in the
   established model because a host changes the display mode rather than scaling a copy of it. A
@@ -650,6 +669,26 @@ pointer reads as relative. It self-corrects on the next genuine pointer motion, 
 debounce keeps the transient invisible. A stricter form would gate the hidden arm on the
 foreground application being fullscreen, but that is extra state for a case the self-correction
 already handles. Start without it.
+
+### §8.5 A cached picture keeps the offset it arrived with
+
+**A peer that keeps pictures is sent a name instead of a picture, and a name carries no
+hotspot.** The far side applies the offset when a picture arrives and has no way to be told a
+new one for a picture it already holds.
+
+**That makes the offset part of what the peer holds, not a property of the update.** The record
+of what a peer has is therefore the picture *and* the offset it was sent with, and only both
+together are a name; a corrected offset sends the picture again.
+
+**This is the ordinary case rather than a corner**, on any backend that derives the hotspot
+rather than being told it ([§8](#8-cursor)). The derivation needs a guest to command a position,
+so every shape necessarily travels once before its hotspot is known, carrying none at all.
+Naming it from then on freezes that: an I-beam draws half its own height low, while an arrow
+looks correct because an arrow's offset really is near nothing, which is what makes the fault
+easy to miss.
+
+**Replace the record rather than adding one.** A shape whose offset is re-learned would
+otherwise fill the peer's cache and force it to forget every picture it holds.
 
 ## §9 Audio
 
