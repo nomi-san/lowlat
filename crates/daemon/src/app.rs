@@ -91,12 +91,30 @@ struct Video {
 /// has nothing to name and nothing to switch away from, so where none was
 /// asked for the one being captured is reported: the first that is lit, which
 /// is the same one the display opens.
-fn describe(picture: Option<(u32, u32)>, listed: &[Selectable], settings: &Settings) -> Video {
-    let output = if settings.output.is_empty() {
-        listed
-            .first()
-            .map(|first| first.id.clone())
-            .unwrap_or_default()
+fn describe(
+    picture: Option<(u32, u32)>,
+    listed: &[Selectable],
+    preferred: Option<&str>,
+    captured: u32,
+    settings: &Settings,
+) -> Video {
+    // **What is being captured beats what was asked for.** A guest can switch
+    // outputs and a display can move to another card by itself, and a reader
+    // told the request rather than the result marks the wrong screen -- then
+    // picking the right one changes nothing, because the host already believes
+    // it is there.
+    let running = lowlat::display::captured(listed, captured).map(|output| output.id.clone());
+    let output = if let Some(running) = running {
+        running
+    } else if settings.output.is_empty() {
+        // **Asked, not guessed.** Which output a host takes when nobody asked
+        // is a decision with rules -- the desktop's corner, then whatever is
+        // lit -- and repeating them here would be a second answer to one
+        // question. It drifted exactly that way once: a chooser marked the
+        // screen this listed first while the stream carried the one at the
+        // corner, and picking the marked screen changed nothing because the
+        // host already believed it was there.
+        preferred.map(str::to_string).unwrap_or_default()
     } else {
         settings.output.clone()
     };
@@ -137,7 +155,13 @@ pub(crate) fn on_message(
 ) -> bool {
     match id {
         id::QUERY_CONFIG => {
-            let described = describe(seam.picture(), &Display::outputs(), settings);
+            let described = describe(
+                seam.picture(),
+                &Display::outputs(),
+                Display::preferred().as_deref(),
+                seam.captured(),
+                settings,
+            );
             let body = config(&described);
             answered(seam, guest, id::CONFIG, &body);
             true
@@ -148,7 +172,13 @@ pub(crate) fn on_message(
             true
         }
         id::CONFIG => {
-            let described = describe(seam.picture(), &Display::outputs(), settings);
+            let described = describe(
+                seam.picture(),
+                &Display::outputs(),
+                Display::preferred().as_deref(),
+                seam.captured(),
+                settings,
+            );
             apply(seam, body, &described);
             // **Not answered.** The client asks again with 9 the moment it has
             // sent one of these, so an answer here would arrive beside the one
@@ -157,6 +187,39 @@ pub(crate) fn on_message(
         }
         _ => false,
     }
+}
+
+/// Tell every guest what changed about the capture, if anything did.
+///
+/// **Nobody asked, and that is the point.** A reader asks after it acts, so a
+/// change it did not cause -- a display moving to another card, another guest
+/// switching outputs -- reaches it only if the host says so. And a change it
+/// *did* cause takes a moment to land, so the answer to its own question can
+/// still describe the world it was leaving.
+///
+/// Answers what is being captured now, so the caller can hold it and call
+/// again.
+pub(crate) fn announce_capture(seam: &mut Admission, settings: &Settings, last: u32) -> u32 {
+    let captured = seam.captured();
+    if captured == last {
+        return last;
+    }
+    let listed = Display::outputs();
+    let described = describe(
+        seam.picture(),
+        &listed,
+        Display::preferred().as_deref(),
+        captured,
+        settings,
+    );
+    let config = config(&described);
+    let outputs = outputs(settings.fake_output);
+    for guest in seam.guests() {
+        seam.send_user_data(guest.number, id::CONFIG, config.as_bytes());
+        seam.send_user_data(guest.number, id::OUTPUTS, outputs.as_bytes());
+    }
+    println!("lowlatd: capture changed, told every guest: {config}");
+    captured
 }
 
 /// Tell every guest who is in the room.
@@ -429,14 +492,65 @@ mod tests {
         // The picture wins whenever there is one, even against the display it
         // came from: a display that changed size mid-session is a picture the
         // encoder is still producing at the old one.
-        let live = describe(Some((3840, 2160)), &listed(), &settings());
+        let live = describe(
+            Some((3840, 2160)),
+            &listed(),
+            Some("card0:DP-2"),
+            0,
+            &settings(),
+        );
         assert_eq!((live.width, live.height), (3840, 2160));
 
         // And before a display has been opened, the output's own size is what
         // the stream is about to produce. What is never consulted is the
         // configuration, which carries no size at all.
-        let early = describe(None, &listed(), &settings());
+        let early = describe(None, &listed(), Some("card0:DP-2"), 0, &settings());
         assert_eq!((early.width, early.height), (2560, 1440));
+    }
+
+    /// **What a chooser marks has to be what the stream carries.** They were
+    /// derived separately once: this reported whichever output enumerated
+    /// first while the host captured the one at the desktop's corner, so the
+    /// check sat on the wrong screen and picking that screen changed nothing,
+    /// because the host already believed it was there.
+    #[test]
+    fn the_output_reported_is_the_one_the_host_would_capture() {
+        let asked = Settings {
+            output: String::new(),
+            ..settings()
+        };
+        let listed = vec![
+            Selectable {
+                id: "card0:HDMI-A-1".to_string(),
+                connector: "HDMI-A-1".to_string(),
+                width: 2560,
+                height: 1440,
+                place: None,
+            },
+            Selectable {
+                id: "card1:DP-4".to_string(),
+                connector: "DP-4".to_string(),
+                width: 2560,
+                height: 1440,
+                place: None,
+            },
+        ];
+        // The host would take the second; the first is merely first.
+        let described = describe(None, &listed, Some("card1:DP-4"), 0, &asked);
+        assert_eq!(
+            described.output, "card1:DP-4",
+            "the enumeration order was reported instead of the choice"
+        );
+
+        // An explicit request still wins over both.
+        let told = Settings {
+            output: "card0:HDMI-A-1".to_string(),
+            ..settings()
+        };
+        assert_eq!(
+            describe(None, &listed, Some("card1:DP-4"), 0, &told).output,
+            "card0:HDMI-A-1"
+        );
     }
 
     /// **The output is never empty while one is being captured.** A client
@@ -449,11 +563,17 @@ mod tests {
             output: String::new(),
             ..settings()
         };
-        assert_eq!(describe(None, &listed(), &asked).output, "card0:DP-2");
-        assert_eq!(describe(None, &listed(), &settings()).output, "card0:DP-2");
+        assert_eq!(
+            describe(None, &listed(), Some("card0:DP-2"), 0, &asked).output,
+            "card0:DP-2"
+        );
+        assert_eq!(
+            describe(None, &listed(), Some("card0:DP-2"), 0, &settings()).output,
+            "card0:DP-2"
+        );
 
         // Nothing lit is the one case where there is honestly nothing to name.
-        assert_eq!(describe(None, &[], &asked).output, "");
+        assert_eq!(describe(None, &[], None, 0, &asked).output, "");
     }
 
     /// **The shape is the client's, not ours.** It reads named fields and

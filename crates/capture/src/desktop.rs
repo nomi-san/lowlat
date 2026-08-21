@@ -73,6 +73,33 @@ pub fn placement_of(connector: &str) -> Option<Placement> {
     None
 }
 
+/// The output at the desktop's own corner, which is the one to prefer.
+///
+/// **A desktop has a corner and the screen at it is the one a person calls
+/// their main display.** Nothing in the layout protocol says "primary", but
+/// every arrangement puts one output at the origin and hangs the rest off it,
+/// so the corner is the signal that is actually there rather than one invented
+/// for the occasion.
+///
+/// Nothing when no session answers, which is the honest answer: without a
+/// layout there is no origin to be at.
+pub fn at_origin() -> Option<String> {
+    for socket in sockets() {
+        let Some(outputs) = query(&socket) else {
+            continue;
+        };
+        let found = outputs.iter().find_map(|output| {
+            let name = output.name.as_deref()?;
+            let placed = place(&outputs, name)?;
+            (placed.x == 0 && placed.y == 0).then(|| name.to_string())
+        });
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
 /// One output as the layout describes it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Output {
@@ -492,6 +519,43 @@ mod tests {
 
         let other = place(&layout, "HDMI-A-1").expect("both outputs are placeable");
         assert_eq!((other.x, other.y), (0, 0));
+    }
+
+    /// **The corner is the only "primary" a layout actually carries.** It is
+    /// what the rest of the arrangement is measured from, and every output but
+    /// one is somewhere else.
+    #[test]
+    fn the_output_at_the_corner_is_the_one_to_prefer() {
+        let layout = [
+            output("HDMI-A-1", 2560, 0, 2226, 1252),
+            output("DP-4", 0, 0, 2560, 1440),
+        ];
+        let corner = layout
+            .iter()
+            .find_map(|output| {
+                let name = output.name.as_deref()?;
+                let placed = place(&layout, name)?;
+                (placed.x == 0 && placed.y == 0).then(|| name.to_string())
+            })
+            .expect("some output is at the corner");
+        assert_eq!(corner, "DP-4", "the corner is not the first one listed");
+
+        // **And it is the desktop's corner, not the compositor's zero.** A
+        // layout laid out into negative coordinates still has exactly one
+        // output at its own corner.
+        let shifted = [
+            output("DP-4", 0, 0, 2560, 1440),
+            output("HDMI-A-1", -2226, 0, 2226, 1252),
+        ];
+        let corner = shifted
+            .iter()
+            .find_map(|output| {
+                let name = output.name.as_deref()?;
+                let placed = place(&shifted, name)?;
+                (placed.x == 0 && placed.y == 0).then(|| name.to_string())
+            })
+            .expect("some output is at the corner");
+        assert_eq!(corner, "HDMI-A-1");
     }
 
     /// **A layout that does not contain the captured output is another

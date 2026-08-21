@@ -238,9 +238,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some("hevc" | "h265") => lowlat::stream::Codec::H265,
         _ => lowlat::stream::Codec::H264,
     };
+    // **Absent means follow the display**, which is the right answer on a
+    // machine with more than one card: the encoder has to be on the device the
+    // display is on, and which device that is can change while this runs.
     let backend = match flag("--encoder").as_deref() {
-        Some("vendor" | "nvenc") => lowlat::stream::Backend::Vendor,
-        _ => lowlat::stream::Backend::Open,
+        Some("vendor" | "nvenc") => Some(lowlat::stream::Backend::Vendor),
+        Some("open" | "vaapi") => Some(lowlat::stream::Backend::Open),
+        _ => None,
     };
     let rotation = match flag("--rotate").as_deref() {
         Some("90") => lowlat::video::Rotation::Deg90,
@@ -396,6 +400,9 @@ async fn session_loop(
     reject_all: bool,
     settings: &app::Settings,
 ) -> Result<bool, Box<dyn std::error::Error>> {
+    // What was being captured the last time every guest was told. Zero until a
+    // display has been opened, which is also what a host with no stream has.
+    let mut captured: u32 = 0;
     // Resent on every connection, not just the first: the service takes it as
     // the frame that registers the session, so a reconnect without it is a
     // connection the service has not associated with this host.
@@ -518,6 +525,12 @@ async fn session_loop(
                 return Ok(true);
             }
         }
+
+        // **Watched rather than reported.** A guest asking for a different
+        // output and a display moving to another card both change what is
+        // being captured, and only the loop that rebuilt knows which happened;
+        // this notices either, once it has actually landed.
+        captured = app::announce_capture(seam, settings, captured);
 
         while let Some(event) = seam.poll_event() {
             match event {
