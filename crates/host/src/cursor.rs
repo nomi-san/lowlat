@@ -44,7 +44,16 @@ pub struct Sender {
     /// Whether the peer said it keeps pictures. **Not assumed**: a peer that
     /// did not say so gets the picture every time.
     caching: bool,
-    held: [u32; CAPACITY],
+    /// Pictures the peer holds, each with **the hotspot it was sent with**.
+    ///
+    /// **A cached picture keeps the offset it arrived with.** The far side is
+    /// told to reuse a picture by name and applies the hotspot only when a
+    /// picture travels, so a hotspot learned after the picture went out never
+    /// reaches it. That is the ordinary case rather than a corner: the hotspot
+    /// is derived from a guest's own command, so **every shape is sent once
+    /// before its hotspot is known**, and naming it from then on freezes the
+    /// wrong offset. An I-beam then draws half its own height low.
+    held: [(u32, u16, u16); CAPACITY],
     count: usize,
     /// The generation last acted on, or `None` before the first update.
     ///
@@ -98,7 +107,7 @@ impl Sender {
     pub fn new() -> Self {
         Self {
             caching: false,
-            held: [0; CAPACITY],
+            held: [(0, 0, 0); CAPACITY],
             count: 0,
             seen: None,
             image: Vec::new(),
@@ -209,7 +218,7 @@ impl Sender {
 
         // **Decided before anything is borrowed.** The picture is lent out of
         // this same object, so the bookkeeping has to be finished first.
-        let (choice, forget) = self.decide(state.checksum);
+        let (choice, forget) = self.decide(state.checksum, state.hot_x, state.hot_y);
         let image = match choice {
             Choice::Nothing => Image::Unchanged,
             Choice::Named => Image::Cached {
@@ -239,19 +248,31 @@ impl Sender {
     }
 
     /// What to say about the picture, and whether the peer must forget first.
-    fn decide(&mut self, checksum: u32) -> (Choice, bool) {
+    fn decide(&mut self, checksum: u32, hot_x: u16, hot_y: u16) -> (Choice, bool) {
         if checksum == 0 || (self.image.is_empty() && !self.refusing) {
             return (Choice::Nothing, false);
         }
         if !self.caching {
             return (Choice::Carried, false);
         }
-        if self
+        // **Named only when the hotspot matches too.** What the peer holds is
+        // the picture and the offset it came with, and only a picture carries
+        // a new offset.
+        if let Some(slot) = self
             .held
-            .get(..self.count)
-            .is_some_and(|held| held.contains(&checksum))
+            .get_mut(..self.count)
+            .unwrap_or_default()
+            .iter_mut()
+            .find(|(held, _, _)| *held == checksum)
         {
-            return (Choice::Named, false);
+            if *slot == (checksum, hot_x, hot_y) {
+                return (Choice::Named, false);
+            }
+            // The same picture with a corrected offset. It travels again and
+            // the record is updated in place: appending would fill the cache
+            // with one shape and force the peer to forget everything.
+            *slot = (checksum, hot_x, hot_y);
+            return (Choice::Carried, false);
         }
         // **Full means forget everything, not evict one.** The far side is
         // told what to drop and cannot report what it dropped, so the only
@@ -261,7 +282,7 @@ impl Sender {
             self.count = 0;
         }
         if let Some(slot) = self.held.get_mut(self.count) {
-            *slot = checksum;
+            *slot = (checksum, hot_x, hot_y);
             self.count += 1;
         }
         (Choice::Carried, forget)
@@ -415,6 +436,73 @@ mod tests {
         // A shape it has not seen is a picture again.
         let other = sender.update(state(9)).expect("an update");
         assert!(flags(other).contains(Flags::IMAGE));
+    }
+
+    /// **A hotspot only reaches the far side on a picture.** A peer told to
+    /// reuse one it holds keeps the offset it was given, so a shape whose
+    /// hotspot is corrected afterwards has to be sent again.
+    ///
+    /// **This is the ordinary case, not a corner.** The hotspot is derived
+    /// from a guest's own command, so every shape travels once before its
+    /// hotspot is known: naming it from then on freezes zero, and an I-beam
+    /// draws half its own height low. Found live against the first peer that
+    /// declared it keeps pictures.
+    #[test]
+    fn a_corrected_hotspot_sends_the_picture_again() {
+        let mut sender = sender(true);
+        let first = sender
+            .update(PointerState {
+                hot_x: 0,
+                hot_y: 0,
+                ..state(7)
+            })
+            .expect("an update");
+        assert!(flags(first).contains(Flags::IMAGE));
+
+        let corrected = sender
+            .update(PointerState {
+                hot_x: 4,
+                hot_y: 10,
+                ..state(7)
+            })
+            .expect("an update")
+            .to_vec();
+        assert!(
+            flags(&corrected).contains(Flags::IMAGE),
+            "the peer was told to reuse a picture whose offset had changed"
+        );
+        assert_eq!(field(&corrected, 15), 4);
+        assert_eq!(field(&corrected, 17), 10);
+
+        // And it settles: the corrected offset is what the peer now holds, so
+        // the picture stops travelling.
+        let again = sender
+            .update(PointerState {
+                hot_x: 4,
+                hot_y: 10,
+                ..state(7)
+            })
+            .expect("an update");
+        assert!(flags(again).contains(Flags::CACHED));
+        assert!(!flags(again).contains(Flags::IMAGE));
+    }
+
+    /// **Correcting a hotspot must not consume a cache slot.** One shape whose
+    /// offset is re-learned a few times would otherwise fill the peer's cache
+    /// and make it forget every picture it holds.
+    #[test]
+    fn a_corrected_hotspot_replaces_its_record_rather_than_adding_one() {
+        let mut sender = sender(true);
+        for hot in 0..8u16 {
+            sender
+                .update(PointerState {
+                    hot_x: hot,
+                    hot_y: hot,
+                    ..state(7)
+                })
+                .expect("an update");
+        }
+        assert_eq!(sender.count, 1, "one shape, one slot");
     }
 
     /// **A full cache is emptied, not evicted from.** The far side cannot
