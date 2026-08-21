@@ -755,6 +755,11 @@ wrapper over something live, and most of it is; these are the exceptions, found 
   dropped, and [06 §8](06-api.md) wants every other call to stay answerable while a poll is
   waiting -- so the queue has to come out from behind that lock. **This decides the locking
   discipline for the whole surface and is the first thing to design**, ahead of the header.
+  Settled with it: **one lock for the seam**, with approving an attempt holding it, rather than
+  a second lock and an ordering to get wrong; **the queue bounded in bytes as well as entries**,
+  because a body reaches a megabyte; and **the body delivered into a buffer the caller passes to
+  the poll**, so nothing is allocated on the application's behalf and no lookup key exists to go
+  stale. A buffer too small reports the length it needed and leaves the event queued.
 - [ ] **The four event types that do not exist**: guest degraded, input owner changed, capture
   changed, and fatal. Capture changed is the load-bearing one -- an application is currently
   reduced to asking what is being captured on a timer and comparing.

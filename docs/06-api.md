@@ -95,11 +95,31 @@ caller would have to ignore is worse than returning nothing.
 ## §5 Events
 
 ```c
-lowlat_status lowlat_host_poll_events(lowlat *ll, uint32_t timeout_ms, lowlat_event *out);
+lowlat_status lowlat_host_poll_events(lowlat *ll, uint32_t timeout_ms, lowlat_event *out,
+                                      void *body, uint32_t *body_len);
 ```
 
 Returns `LOWLAT_OK` with an event, or `LOWLAT_TIMEOUT` if none arrived. A `timeout_ms` of zero
 polls without blocking.
+
+**The one event that carries a body is handed it through the caller's own buffer**, which is
+why the poll call takes one. `body_len` is the buffer's capacity going in and the bytes written
+coming out; `NULL` means the application does not want bodies, and one that arrives is dropped
+with the loss counted like any other. **The event itself never carries a pointer**, only the
+body's length, so the union stays blittable ([§12](#12-bindings)).
+
+**A buffer too small does not lose the message.** The needed length is written to `body_len`,
+`LOWLAT_ERR_TOO_SMALL` is returned, and the event stays at the head of the queue for a second
+call with a larger buffer. That is what lets an application run a small scratch buffer instead
+of sizing it at the ceiling it will almost never reach, and it is the reason a poll is a peek
+that commits on delivery rather than an unconditional take.
+
+**No allocation crosses this boundary and there is no lookup key.** An application message is
+the only variable-length thing an application ever receives - frames, audio and cursor images
+are all excluded by [§13](#13-what-is-deliberately-absent) - so a side table of pending buffers
+would exist for one event type, and it would bring the two failure modes that come with it: a
+handle that is stale because the buffer was already taken, and a free performed by a runtime
+that did not allocate it.
 
 `lowlat_event` is a tagged union: a stable-numbered type followed by a union of plain
 sub-structs. Adding an event type is additive; an application that does not recognize a type
@@ -121,6 +141,10 @@ thread.
 Events are dropped oldest-first if the application stops polling, except `fatal`, which is
 never dropped. A dropped-count field on the next delivered event makes the loss visible rather
 than silent.
+
+**The queue is bounded in bytes as well as in entries**, because one of the two is not a bound:
+a body may reach a megabyte, so a queue limited only by how many events it holds is limited to
+that many megabytes. Either ceiling evicts oldest-first and both count into the same field.
 
 ## §6 Enumeration
 
@@ -157,6 +181,14 @@ Signaling outcomes are typed rather than collapsed into a generic failure
   consumer.
 - **No call blocks on a network operation.** The longest a call can take is a lock acquisition
   and a memory copy. `lowlat_host_poll_events` blocks only for its explicit timeout.
+- **One lock covers the seam, and approving an attempt holds it** while a socket is bound and
+  that guest's threads are started. That is milliseconds rather than the microseconds the line
+  above promises, and it is stated here rather than fixed because the fix is worse: a second
+  lock is a lock ordering, and a lock ordering is what produces the first deadlock the day
+  somebody adds a call that needs both. Admission happens once per guest and never on a path
+  that carries a frame.
+- **The event queue is not behind that lock.** A poll that waits out its timeout must not stop
+  every other call for the length of it.
 - **The SDK never calls into the application** except through the log callback. There is no
   reentrancy contract to violate.
 - **The SDK owns all its threads.** The application never provides one, and never runs our
@@ -186,7 +218,10 @@ undefined behavior, and this library loads into processes we do not control.
   returned as pointers. Sizes are named constants in the header.
 - **All strings are UTF-8.**
 - Binary payloads are pointer plus length, copied on the way in and copied into caller storage
-  on the way out.
+  on the way out. Inbound, that storage is the buffer handed to the poll call ([§5](#5-events)).
+- **There is no free function, and that is a property to preserve.** Every allocator that
+  crosses a library boundary eventually meets an application built against a different runtime,
+  and the failure is a corrupted heap rather than an error code.
 
 ## §11 Versioning
 
