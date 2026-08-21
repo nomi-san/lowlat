@@ -188,6 +188,39 @@ pub fn encode_header(out: &mut [u8], control: &Control<'_>) -> Result<usize> {
     Ok(CONTROL_HEADER_LEN)
 }
 
+/// The most a body may carry, its terminator counted.
+///
+/// **A peer's own ceiling, not ours.** One over it is refused at the far end
+/// without being sent, so a sender that does not check simply loses the
+/// message with nothing to say why.
+pub const USER_DATA_MAX: usize = 0x10_0000;
+
+/// The sub-identifier and text an application message carries.
+///
+/// **The SDK never looks inside the text.** The sub-identifier and the body
+/// are an application's own protocol; what belongs here is only the framing
+/// they arrive in (docs/01-protocol.md 11.1).
+///
+/// **A trailing terminator is stripped and never required.** Every sender
+/// known to us counts one, and an application reading the text as a C string
+/// needs it, so it is always written on the way out
+/// ([`string_body_len`]). On the way in it is dropped rather than insisted on:
+/// this is a pass-through, and refusing a message because a peer framed its
+/// own payload differently loses something the SDK was never entitled to
+/// judge.
+///
+/// **The declared length bounds the body and cannot extend it.** A peer that
+/// says more than it sent is taken at what it sent.
+#[must_use]
+pub fn user_data<'a>(message: &Control<'a>) -> Option<(u32, &'a [u8])> {
+    if message.opcode != op::USER_DATA {
+        return None;
+    }
+    let declared = usize::try_from(message.a0).unwrap_or(usize::MAX);
+    let body = message.body.get(..declared).unwrap_or(message.body);
+    Some((message.a1, body.strip_suffix(&[0]).unwrap_or(body)))
+}
+
 /// Length a string body must declare.
 ///
 /// **Includes the terminator.** A body sized `strlen` alone parses as valid
@@ -310,5 +343,73 @@ mod tests {
     fn string_bodies_include_the_terminator() {
         assert_eq!(string_body_len(5), 6);
         assert_eq!(string_body_len(0), 1);
+    }
+
+    /// **The terminator is counted and then stripped**, so an application is
+    /// handed the text it was sent and not the byte that ends it.
+    #[test]
+    fn application_message_text_loses_the_terminator_that_framed_it() {
+        let message = Control {
+            a0: 6,
+            a1: 11,
+            a2: 0,
+            opcode: op::USER_DATA,
+            body: b"hello\0",
+        };
+        assert_eq!(user_data(&message), Some((11, &b"hello"[..])));
+    }
+
+    /// **A body framed without one is still delivered.** This is a pass
+    /// through, and refusing a message because a peer counted its own payload
+    /// differently loses something the SDK was never entitled to judge.
+    #[test]
+    fn application_message_without_a_terminator_still_arrives() {
+        let message = Control {
+            a0: 5,
+            a1: 12,
+            a2: 0,
+            opcode: op::USER_DATA,
+            body: b"hello",
+        };
+        assert_eq!(user_data(&message), Some((12, &b"hello"[..])));
+    }
+
+    /// **A declared length bounds the body and never extends it.** A peer that
+    /// claims more than it sent is taken at what it sent, rather than the
+    /// parser reading past what arrived.
+    #[test]
+    fn a_declared_length_cannot_reach_past_what_arrived() {
+        let over = Control {
+            a0: 4096,
+            a1: 1,
+            a2: 0,
+            opcode: op::USER_DATA,
+            body: b"hi\0",
+        };
+        assert_eq!(user_data(&over), Some((1, &b"hi"[..])));
+
+        // And one that claims less is taken at its word, which is what lets a
+        // sender put its own padding after the text.
+        let under = Control {
+            a0: 3,
+            a1: 1,
+            a2: 0,
+            opcode: op::USER_DATA,
+            body: b"hi\0junk",
+        };
+        assert_eq!(user_data(&under), Some((1, &b"hi"[..])));
+    }
+
+    /// Nothing else is an application message, whatever its body looks like.
+    #[test]
+    fn only_the_application_opcode_carries_application_text() {
+        let message = Control {
+            a0: 6,
+            a1: 11,
+            a2: 0,
+            opcode: op::KEYBOARD,
+            body: b"hello\0",
+        };
+        assert_eq!(user_data(&message), None);
     }
 }
