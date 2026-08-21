@@ -319,17 +319,20 @@ impl Card {
             {
                 continue;
             }
+            // **The first match wins rather than the last**, and the walk goes
+            // on regardless. Leaving early here cost the pointer entirely: this
+            // loop has two jobs, and every cursor plane the kernel happens to
+            // list after the primary one is collected by the same pass. A
+            // device whose planes interleave then yields a display with no
+            // pointer at all, which reads as a cursor fault rather than as a
+            // selection one.
+            if primary.is_some() {
+                continue;
+            }
             primary = Some(self.framebuffer(fb)?);
             primary_plane = Some(handle);
             primary_crtc = Some(crtc);
             connector = named;
-            // **The first match wins rather than the last.** Without a name to
-            // ask for, the walk used to keep going and end on whichever plane
-            // the kernel listed last, which on a device driving two screens is
-            // a coin flip that changes with the hardware.
-            if wanted.is_some() {
-                break;
-            }
         }
 
         // **The one on the controller that is lit**, then any that is bound at
