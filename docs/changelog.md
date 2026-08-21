@@ -39,6 +39,29 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   compressed mapping that difference is negative for all but the first few
   pixels, so every sample was refused and every shape fell back to no offset.
 
+- **Which output to capture, chosen by name.** A device can be driving more
+  than one screen, and the walk that found the picture took whichever plane the
+  kernel listed last -- a coin flip between two monitors that changes with the
+  hardware. An output is now named by its connector scoped to its device, such
+  as `card0:DP-2`, because a connector name is unique within a device and not
+  across them and an index moves whenever a cable does. The listing reports
+  every lit output with its rectangle in the desktop.
+
+  **A name that is not lit is refused, never fallen back on.** Capturing a
+  different screen from the one asked for looks like the selection working, and
+  the person who asked is the one least able to see that it did not.
+
+  **Only what the display device is scanning out can be offered**, so an output
+  a compositor invented does not appear: it has no controller to read. The
+  desktop extent printed beside each output is what shows that there is more
+  screen than this.
+
+- **Capturing a different output mid-session**, through the rebuild a display
+  changing size already uses. The guests keep their seats and their channel and
+  are told the reference chain restarted; it costs one coded refresh. Two
+  outputs of the same size are not a special case, because the content is
+  entirely different and the refresh is owed either way.
+
 **Found by running it**
 
 - **A cached pointer keeps the offset it arrived with.** A peer that keeps

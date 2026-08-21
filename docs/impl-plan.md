@@ -846,17 +846,17 @@ exist: an output has a name and a rectangle in the desktop, which is what select
 The stream stays on the same channel throughout -- a guest is never reseated and nothing on the
 wire is renumbered; only what feeds the picture changes.
 
-- [ ] **Enumerate the outputs.** Every display node, every lit controller on it, with its
+- [x] **Enumerate the outputs.** Every display node, every lit controller on it, with its
   connector name, its picture size and its rectangle in the desktop. That last one already
   exists for the captured output; this generalises it to all of them. **The identity has to be
   stable and unique across cards**, because a connector name is only unique within one: two
   cards can each present a `DP-1`. Scoping the name by its node is the cheap answer and is as
   stable as the machine's own hardware ordering; an identity derived from the display's own
   serial is the alternative and costs a read this backend does not do today.
-- [ ] **Select one at open**, by that identity. **No selection keeps today's behaviour** -- the
+- [x] **Select one at open**, by that identity. **No selection keeps today's behaviour** -- the
   first controller found lit -- and a selection naming an output that is not present falls back
   to it and says so, because refusing presents to the far side as a machine with no session.
-- [ ] **Switch mid-session, through the mechanism a resolution change already uses.** A change
+- [x] **Switch mid-session, through the mechanism a resolution change already uses.** A change
   of output is latched and the loop rebuilds around it, exactly as a mode change is
   ([Gate B item 6](#)). It costs one coded refresh; a picture cannot be absorbed into a stream
   built for another one, and a switch between two outputs of the same size is not a special
@@ -864,11 +864,13 @@ wire is renumbered; only what feeds the picture changes.
   What must be republished with it is the picture's size **and its rectangle**, because both
   are the coordinate space absolute input comes back in ([05 §7](05-host.md)).
 - [ ] **A switch to an output on another card is the harder half, and it is not new work.**
+  *Still open, and the selection deliberately does not pretend otherwise: an identity naming
+  another device is accepted and the encoder is not rebuilt for it.*
   The device, the conversion and the encoder's registration are all bound to the node the
   display is on, so crossing cards rebuilds the encoder rather than the plane. **This is the
   same runtime backend re-selection the display-moved-to-another-card item needs**, and the two
   should be built once.
-- [ ] **The request reaches the SDK through the configuration, never off the wire.** An
+- [x] **The request reaches the SDK through the configuration, never off the wire.** An
   application asks for an output the same way it asks for a bitrate. **Nothing here interprets
   application traffic** to decide what to capture ([05 §5](05-host.md)); a host that did would
   be inventing a protocol on behalf of its application.
