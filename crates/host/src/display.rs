@@ -37,6 +37,33 @@ pub struct Selectable {
     pub place: Option<Placement>,
 }
 
+/// Which of these outputs a published capture checksum names.
+///
+/// **The checksum is how the loop says what it is capturing without a lock**
+/// ([`crate::stream`]), and this is the other half: a caller that can
+/// enumerate the outputs gets the one being captured without ever handling the
+/// encoding. Nothing when the loop has not opened a display, or when what it
+/// opened is no longer in the list.
+#[must_use]
+pub fn captured(listed: &[Selectable], checksum: u32) -> Option<&Selectable> {
+    if checksum == 0 {
+        return None;
+    }
+    listed
+        .iter()
+        .find(|output| lowlat_core::crc32::of(output.id.as_bytes()) == checksum)
+}
+
+/// The driver bound to a display device, by the name the system uses.
+///
+/// Read from the device's own link rather than inferred from anything about
+/// the node, which is only ever an ordering.
+fn driver_of(node: &std::path::Path) -> Option<String> {
+    let card = node.file_name()?.to_str()?;
+    let link = std::fs::read_link(format!("/sys/class/drm/{card}/device/driver")).ok()?;
+    Some(link.file_name()?.to_str()?.to_string())
+}
+
 /// Name one output the way it is asked for.
 ///
 /// The device, then the connector. Both halves are the system's own names
@@ -236,7 +263,20 @@ impl Display {
         let mut targets = Vec::with_capacity(depth);
         for _ in 0..depth {
             let frame = device.allocate_nv12(shape.width, shape.height)?;
-            let registration = register(&device, &frame)?;
+            // **A refusal here almost always means the wrong device.** The
+            // frame is allocated on whichever device the display is on, and an
+            // encoder built against another one cannot take it -- so a display
+            // that moved between cards, or a backend chosen by hand for the
+            // card that is now dark, both arrive as one unexplained refusal.
+            // The device is named because it is the missing half of that.
+            let registration = register(&device, &frame).inspect_err(|_| {
+                lowlat_common::log_error!(
+                    "display: the encoder cannot take frames from {}, which is the device {} is \
+                     on; a display and its encoder have to be on one device",
+                    device.name(),
+                    layout.connector.as_deref().unwrap_or("this output")
+                );
+            })?;
             targets.push(Target {
                 frame,
                 registration,
@@ -330,12 +370,54 @@ impl Display {
         self.selected.as_deref()
     }
 
+    /// The output this host captures when it is asked for nothing.
+    ///
+    /// **The same answer [`Display::open`] acts on, from the same code**, so
+    /// that what a peer is told it is watching cannot drift from what it is
+    /// watching. Deriving it a second time is the trap: a chooser then marks
+    /// one screen while the stream carries another, and picking the marked one
+    /// looks like a request that changes nothing, because it is.
+    pub fn preferred() -> Option<String> {
+        let (node, _, layout) = Self::find(None).ok()?;
+        Some(identity(&node, layout.connector.as_deref()?))
+    }
+
+    /// Which driver is behind the display this host would capture.
+    ///
+    /// **Asked before anything is built, because it decides what to build.** A
+    /// conversion target is allocated on the device the display is on, and an
+    /// encoder belonging to another device cannot take it -- so the encoder is
+    /// not a preference to be configured, it is a consequence of where the
+    /// display is.
+    pub fn driver(wanted: Option<&str>) -> Option<String> {
+        let (node, _, _) = Self::find(wanted).ok()?;
+        driver_of(&node)
+    }
+
     /// The first node with something on it.
     ///
     /// Nodes are tried in order and the first that reports a lit primary plane
     /// wins. A node that reports nothing is skipped rather than failed on,
     /// because that is the ordinary state of a card driving no display.
     fn find(wanted: Option<&str>) -> Result<(std::path::PathBuf, Card, scanout::Layout), Error> {
+        // **Asked for nothing means the main screen, not the first one found.**
+        // Walking the devices in order answers with whichever card the kernel
+        // enumerated first, which on a machine with two is a coin flip and on
+        // this one picks the secondary screen. The desktop's own corner is the
+        // signal that is really there, and a session that cannot say leaves the
+        // walk to decide as before.
+        if wanted.is_none()
+            && let Some(primary) = lowlat_capture::desktop::at_origin()
+            && let Ok(found) = Self::walk(Some(&primary))
+        {
+            lowlat_common::log_info!("display: {primary} is at the desktop's corner, taking it");
+            return Ok(found);
+        }
+        Self::walk(wanted)
+    }
+
+    /// Open the first device that is lighting the output asked for.
+    fn walk(wanted: Option<&str>) -> Result<(std::path::PathBuf, Card, scanout::Layout), Error> {
         let mut last = scanout::Error::NoScanout;
         for index in 0..NODES {
             let node = std::path::PathBuf::from(format!("/dev/dri/card{index}"));
@@ -611,6 +693,30 @@ mod tests {
     fn a_bare_connector_name_names_no_device() {
         assert_eq!(split("DP-2"), (None, "DP-2"));
         assert_eq!(split("eDP-1"), (None, "eDP-1"));
+    }
+
+    /// **The driver behind a display is read from the system, not guessed from
+    /// the node.** A node's number is an ordering and says nothing about what
+    /// is driving it: on this machine the vendor's card is the second one, and
+    /// on the next machine it will not be.
+    #[test]
+    fn a_driver_is_read_from_the_device_rather_than_its_number() {
+        // Whatever this machine has, the answer for a node that exists must
+        // come from the link and one for a node that does not must be absent.
+        let missing = driver_of(std::path::Path::new("/dev/dri/card9999"));
+        assert_eq!(missing, None, "a device that is not there named a driver");
+
+        for index in 0..4 {
+            let node = std::path::PathBuf::from(format!("/dev/dri/card{index}"));
+            if !node.exists() {
+                continue;
+            }
+            let named = driver_of(&node);
+            assert!(
+                named.as_ref().is_none_or(|driver| !driver.is_empty()),
+                "a device that answered named an empty driver"
+            );
+        }
     }
 
     /// A device that is not the one asked for is skipped before it is opened,

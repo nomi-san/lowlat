@@ -215,6 +215,18 @@ struct Shared {
     /// The last published stage report, so a caller can read the numbers
     /// without reaching into the thread that produces them.
     timing: TimingCells,
+    /// What is being captured, as a checksum of its name. Zero until a display
+    /// has been opened.
+    ///
+    /// **A checksum because a name is a string and this must stay lock free**,
+    /// and a reader has the names already: it matches this against the outputs
+    /// it can enumerate. A miss is not a hazard, only a reader that has to fall
+    /// back to what the host *would* choose.
+    ///
+    /// **Published rather than inferred, because the loop can change it on its
+    /// own.** A display that moves to another card is followed here, and
+    /// nothing above would know.
+    captured: AtomicU32,
     /// Bumped when a different output has been asked for.
     ///
     /// **A counter rather than the name.** The name is a string and cannot be
@@ -438,6 +450,12 @@ impl Shared {
         self.picture.store(packed, Ordering::Release);
     }
 
+    /// Say which output is being captured.
+    fn publish_captured(&self, id: Option<&str>) {
+        let checksum = id.map_or(0, |id| lowlat_core::crc32::of(id.as_bytes()));
+        self.captured.store(checksum, Ordering::Release);
+    }
+
     /// Say where the captured output sits in the desktop around it.
     ///
     /// Nothing said is one output, which needs no placing: the absolute axis
@@ -579,7 +597,15 @@ pub enum Backend {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub codec: Codec,
-    pub backend: Backend,
+    /// Which encoder to build, or **nothing to follow the display**.
+    ///
+    /// **Following is the right default and choosing is the override.** A
+    /// conversion target is allocated on the device the display is on, and an
+    /// encoder belonging to another device cannot take it: on a machine with
+    /// two cards, a backend picked in advance is right only while the display
+    /// stays where it was. Configuring one is for forcing a particular
+    /// encoder on a machine where either would do.
+    pub backend: Option<Backend>,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
@@ -651,6 +677,7 @@ impl Stream {
             commanded: AtomicU64::new(0),
             cursor: CursorCell::default(),
             stopping: AtomicU32::new(0),
+            captured: AtomicU32::new(0),
             output_asked: AtomicU32::new(0),
             epoch: AtomicU32::new(0),
         });
@@ -701,6 +728,13 @@ impl Stream {
             return None;
         }
         Some((packed >> 16, packed & 0xFFFF))
+    }
+
+    /// What is being captured, as a checksum of its name.
+    ///
+    /// Zero before a display has been opened. See [`Shared::captured`].
+    pub fn captured(&self) -> u32 {
+        self.shared.captured.load(Ordering::Acquire)
     }
 
     /// The last stage report the loop published.
@@ -1085,6 +1119,14 @@ fn run(
             );
         }
 
+        // **Resolved on every rebuild, not once.** A display can move to
+        // another card while this is running, and the rebuild that follows it
+        // is the only chance to build an encoder that can take its frames.
+        let backend = match config.backend {
+            Some(chosen) => chosen,
+            None => follow_display(&config),
+        };
+
         lowlat_common::log_info!(
             "stream: encoding w={} h={} fps={} ceiling_mbps={:.1} codec={:?} backend={:?}",
             config.width,
@@ -1092,10 +1134,9 @@ fn run(
             config.fps,
             config.configured_mbps,
             config.codec,
-            config.backend
+            backend
         );
-
-        let exit = match config.backend {
+        let exit = match backend {
             Backend::Open => run_open(shared, arrivals, config.clone(), &mut roster),
             Backend::Vendor => run_vendor(shared, arrivals, config.clone(), &mut roster),
         };
@@ -1768,6 +1809,32 @@ fn publish_pointer(
 /// with no display at all is told so rather than held.
 const DISPLAY_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// Which encoder can take frames from the device the display is on.
+///
+/// **A display and its encoder have to be on one device**, so this is read
+/// from the display rather than configured. A machine with one card answers
+/// the same thing every time and nothing about it is visible; a machine with
+/// two answers differently depending on which screen is being captured, and
+/// getting it wrong is an encoder that refuses every frame it is handed.
+///
+/// Anything that is not the vendor's own driver is served by the open stack,
+/// including the open driver for the same hardware.
+fn follow_display(config: &Config) -> Backend {
+    if !config.display {
+        return Backend::Open;
+    }
+    let driver = crate::display::Display::driver(config.output.as_deref());
+    let backend = match driver.as_deref() {
+        Some("nvidia") => Backend::Vendor,
+        _ => Backend::Open,
+    };
+    lowlat_common::log_info!(
+        "stream: the display is on {}, encoding with {backend:?}",
+        driver.as_deref().unwrap_or("a device that did not say")
+    );
+    backend
+}
+
 /// The output most recently asked for, or nothing if none was.
 ///
 /// **Only the last request matters.** A caller that changed its mind while the
@@ -1886,6 +1953,7 @@ fn encode_loop<E: Encoder + FromDevice>(
     // the display exists, so it arrives one step later and the guests pick it
     // up on the pass after.
     shared.publish_place(display.as_ref().and_then(|desktop| desktop.place()));
+    shared.publish_captured(display.as_ref().and_then(|desktop| desktop.selected()));
     // **The block says which codec is on the wire**, so a live run is
     // identifiable from the picture rather than from a log on the other
     // machine. Nothing downstream reads it; it is for the person watching.
@@ -2716,7 +2784,7 @@ mod tests {
                 height: 240,
                 fps: 240,
                 codec: Codec::H264,
-                backend: Backend::Open,
+                backend: Some(Backend::Open),
                 configured_mbps: 10.0,
                 min_mbps: 1.0,
                 rotation: lowlat_core::video::Rotation::None,
@@ -2733,6 +2801,7 @@ mod tests {
                 commanded: AtomicU64::new(0),
                 cursor: CursorCell::default(),
                 stopping: AtomicU32::new(0),
+                captured: AtomicU32::new(0),
                 output_asked: AtomicU32::new(0),
                 epoch: AtomicU32::new(0),
             });
@@ -2787,6 +2856,7 @@ mod tests {
             commanded: AtomicU64::new(0),
             cursor: CursorCell::default(),
             stopping: AtomicU32::new(0),
+            captured: AtomicU32::new(0),
             output_asked: AtomicU32::new(0),
             epoch: AtomicU32::new(0),
         });
@@ -2808,7 +2878,7 @@ mod tests {
             height: 240,
             fps: 240,
             codec,
-            backend: Backend::Open,
+            backend: Some(Backend::Open),
             configured_mbps: 10.0,
             min_mbps: 1.0,
             rotation: lowlat_core::video::Rotation::None,
@@ -2979,6 +3049,7 @@ mod tests {
             commanded: AtomicU64::new(0),
             cursor: CursorCell::default(),
             stopping: AtomicU32::new(0),
+            captured: AtomicU32::new(0),
             output_asked: AtomicU32::new(0),
             epoch: AtomicU32::new(0),
         });
@@ -3752,7 +3823,7 @@ mod tests {
             height: 1080,
             fps: 60,
             codec: Codec::H264,
-            backend: Backend::Open,
+            backend: Some(Backend::Open),
             configured_mbps: 10.0,
             min_mbps: 1.0,
             rotation: lowlat_core::video::Rotation::None,
@@ -3814,7 +3885,7 @@ mod tests {
             height: 1080,
             fps: 60,
             codec: Codec::H264,
-            backend: Backend::Open,
+            backend: Some(Backend::Open),
             configured_mbps: 10.0,
             min_mbps: 1.0,
             rotation: lowlat_core::video::Rotation::None,
@@ -3866,7 +3937,7 @@ mod tests {
             height: 1080,
             fps,
             codec: Codec::H264,
-            backend: Backend::Open,
+            backend: Some(Backend::Open),
             configured_mbps: 10.0,
             min_mbps: 1.0,
             rotation: lowlat_core::video::Rotation::None,
