@@ -18,6 +18,7 @@
 
 pub mod convert;
 pub mod cursor;
+pub mod desktop;
 pub mod scanout;
 pub mod synthetic;
 pub mod vulkan;

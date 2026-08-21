@@ -178,6 +178,14 @@ pub struct Layout {
     /// The plane that pointer is on, so it can be re-read without walking the
     /// pipeline again.
     pub cursor_plane: Option<CursorPlane>,
+    /// What the display is plugged into, named the way the rest of the system
+    /// names it, such as `DP-2`.
+    ///
+    /// **The only thing tying this output to the desktop around it.** The
+    /// device knows the output's size and nothing of where it sits; the
+    /// session knows the layout and names each output exactly this way
+    /// (see [`crate::desktop`]).
+    pub connector: Option<String>,
 }
 
 /// What [`Card::export`] asks for. Close-on-exec and nothing else; see there
@@ -303,9 +311,37 @@ impl Card {
                 primary_plane,
                 cursor,
                 cursor_plane,
+                connector: primary_crtc.and_then(|crtc| self.connector_on(crtc)),
             }),
             _ => Err(Error::NoScanout),
         }
+    }
+
+    /// What is plugged into a controller, by name.
+    ///
+    /// **Walked through the encoder rather than read off the controller**,
+    /// because a controller does not say what is attached to it: the link goes
+    /// the other way, from each connector through the encoder it is currently
+    /// driving. Absent rather than an error, which is what a controller
+    /// driving nothing plugged in honestly is.
+    ///
+    /// **A connector still bound to a controller is not a connector with
+    /// something plugged into it.** A card whose display has been unplugged
+    /// keeps the whole pipeline standing and keeps scanning out the last
+    /// picture, so the walk finds a name for an output that no longer exists.
+    /// Measured here: the second card reported a lit 2560x1440 primary and
+    /// named an output whose every connector reads disconnected.
+    fn connector_on(&self, crtc: crtc::Handle) -> Option<String> {
+        let handles = self.resource_handles().ok()?;
+        handles.connectors().iter().find_map(|handle| {
+            let info = self.get_connector(*handle, false).ok()?;
+            if info.state() != connector::State::Connected {
+                return None;
+            }
+            let encoder = self.get_encoder(info.current_encoder()?).ok()?;
+            (encoder.crtc()? == crtc)
+                .then(|| format!("{}-{}", info.interface().as_str(), info.interface_id()))
+        })
     }
 
     /// Re-read what one plane is scanning out.
