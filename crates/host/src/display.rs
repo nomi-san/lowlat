@@ -24,6 +24,44 @@ use lowlat_capture::scanout::{self, Card, CursorPlane};
 use lowlat_capture::vulkan::{self, Imports, PlaneLayout};
 use lowlat_common::clock::Time;
 
+/// One output a host can be asked to capture.
+#[derive(Debug, Clone)]
+pub struct Selectable {
+    /// What to ask for, such as `card0:DP-2`.
+    pub id: String,
+    /// The connector's own name, which is what the session knows it by.
+    pub connector: String,
+    pub width: u32,
+    pub height: u32,
+    /// Where it sits in the desktop, when a session describes it.
+    pub place: Option<Placement>,
+}
+
+/// Name one output the way it is asked for.
+///
+/// The device, then the connector. Both halves are the system's own names
+/// rather than anything invented here, so the identity a caller stores is one
+/// they can also see in the machine.
+fn identity(node: &std::path::Path, connector: &str) -> String {
+    let device = node
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("card");
+    format!("{device}:{connector}")
+}
+
+/// Split an identity back into the device and the connector.
+///
+/// **The device half is optional.** A bare connector name selects it on
+/// whichever device has it, which is what somebody typing one by hand means,
+/// and is unambiguous on the overwhelmingly common single-device machine.
+fn split(id: &str) -> (Option<&std::ffi::OsStr>, &str) {
+    match id.split_once(':') {
+        Some((device, connector)) => (Some(std::ffi::OsStr::new(device)), connector),
+        None => (None, id),
+    }
+}
+
 /// How many buffers of the display's rotation to keep imported.
 ///
 /// The pool is small -- a handful -- and an import that falls out of it is
@@ -152,6 +190,8 @@ pub struct Display {
     cursor: Watcher,
     /// Latched when the display changed size, and taken by the loop.
     resized: bool,
+    /// What is being captured, by the name one is asked for by.
+    selected: Option<String>,
     /// Where this output sits in the desktop, when a session says.
     ///
     /// **Read once, here, rather than per frame.** It costs a round trip to
@@ -185,9 +225,10 @@ impl Display {
     /// stream of the wrong shape rather than a refusal.
     pub fn open(
         depth: usize,
+        wanted: Option<&str>,
         register: impl Fn(&vulkan::Device, &Nv12) -> Result<Registration, Error>,
     ) -> Result<Self, Error> {
-        let (node, card, layout) = Self::find()?;
+        let (node, card, layout) = Self::find(wanted)?;
         let device = vulkan::Device::for_display(&node)?;
         let converter = Converter::new(&device)?;
         let shape = Shape::of(&layout.primary);
@@ -226,6 +267,10 @@ impl Display {
                 .connector
                 .as_deref()
                 .and_then(lowlat_capture::desktop::placement_of),
+            selected: layout
+                .connector
+                .as_deref()
+                .map(|connector| identity(&node, connector)),
         })
     }
 
@@ -244,9 +289,45 @@ impl Display {
     /// the size has to be readable without a device, a converter or a target.
     /// Configuring it for anything else produces a stream of the wrong shape
     /// rather than a refusal, which is a whole session wasted.
-    pub fn size_of_display() -> Option<(u32, u32)> {
-        let (_, _, layout) = Self::find().ok()?;
+    pub fn size_of_display(wanted: Option<&str>) -> Option<(u32, u32)> {
+        let (_, _, layout) = Self::find(wanted).ok()?;
         Some((layout.primary.width, layout.primary.height))
+    }
+
+    /// Every output on this machine that is lit, by the name one is asked for
+    /// by.
+    ///
+    /// **Scoped by the device it is on.** A connector name is unique within a
+    /// device and not across them: two cards each present a `DP-1`, and a bare
+    /// name would select whichever was found first. The device's own node name
+    /// is the cheapest thing that separates them and is as stable as the
+    /// machine's hardware ordering.
+    pub fn outputs() -> Vec<Selectable> {
+        let mut found = Vec::new();
+        for index in 0..NODES {
+            let node = std::path::PathBuf::from(format!("/dev/dri/card{index}"));
+            if !node.exists() {
+                continue;
+            }
+            let Ok(card) = Card::open(&node) else {
+                continue;
+            };
+            for output in card.outputs().unwrap_or_default() {
+                found.push(Selectable {
+                    id: identity(&node, &output.connector),
+                    place: lowlat_capture::desktop::placement_of(&output.connector),
+                    connector: output.connector,
+                    width: output.width,
+                    height: output.height,
+                });
+            }
+        }
+        found
+    }
+
+    /// What is being captured, by the same name [`Display::outputs`] gives.
+    pub fn selected(&self) -> Option<&str> {
+        self.selected.as_deref()
     }
 
     /// The first node with something on it.
@@ -254,20 +335,44 @@ impl Display {
     /// Nodes are tried in order and the first that reports a lit primary plane
     /// wins. A node that reports nothing is skipped rather than failed on,
     /// because that is the ordinary state of a card driving no display.
-    fn find() -> Result<(std::path::PathBuf, Card, scanout::Layout), Error> {
+    fn find(wanted: Option<&str>) -> Result<(std::path::PathBuf, Card, scanout::Layout), Error> {
         let mut last = scanout::Error::NoScanout;
         for index in 0..NODES {
             let node = std::path::PathBuf::from(format!("/dev/dri/card{index}"));
             if !node.exists() {
                 continue;
             }
-            match Card::open(&node).and_then(|card| card.scan().map(|layout| (card, layout))) {
+            // **The device is named too, so a device that is not the one asked
+            // for is skipped without being opened.** Opening one costs the
+            // capability negotiation and a walk of its planes.
+            let connector = match wanted.map(|id| split(id)) {
+                Some((device, connector)) => {
+                    if device.is_some_and(|device| Some(device) != node.file_name()) {
+                        continue;
+                    }
+                    Some(connector)
+                }
+                None => None,
+            };
+            let opened = Card::open(&node)
+                .and_then(|card| card.scan_output(connector).map(|layout| (card, layout)));
+            match opened {
                 Ok((card, layout)) => {
-                    lowlat_common::log_info!("display: capturing {}", node.display());
+                    lowlat_common::log_info!(
+                        "display: capturing {} on {}",
+                        layout.connector.as_deref().unwrap_or("an unnamed output"),
+                        node.display()
+                    );
                     return Ok((node, card, layout));
                 }
                 Err(error) => last = error,
             }
+        }
+        // **Refused rather than fallen back on.** Capturing a different screen
+        // from the one asked for looks like the selection working, and the
+        // person who asked is the one least able to see that it did not.
+        if let Some(wanted) = wanted {
+            lowlat_common::log_warn!("display: no output named {wanted} is lit");
         }
         Err(Error::Capture(last))
     }
@@ -478,5 +583,47 @@ impl Drop for Display {
         for target in self.targets.drain(..) {
             self.device.release_nv12(target.frame);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **A connector name is unique within a device and not across them.** Two
+    /// cards each present a `DP-1`, so a bare name would select whichever was
+    /// walked first, which is the kernel's order and not anybody's intent.
+    #[test]
+    fn an_identity_names_the_device_and_the_connector() {
+        let id = identity(std::path::Path::new("/dev/dri/card1"), "DP-2");
+        assert_eq!(id, "card1:DP-2");
+        assert_eq!(
+            split(&id),
+            (Some(std::ffi::OsStr::new("card1")), "DP-2"),
+            "an identity must survive the round trip it is stored across"
+        );
+    }
+
+    /// **A bare connector name is accepted and means "wherever it is".** It is
+    /// what somebody typing one by hand writes, and it is unambiguous on a
+    /// machine with one device, which is nearly all of them.
+    #[test]
+    fn a_bare_connector_name_names_no_device() {
+        assert_eq!(split("DP-2"), (None, "DP-2"));
+        assert_eq!(split("eDP-1"), (None, "eDP-1"));
+    }
+
+    /// A device that is not the one asked for is skipped before it is opened,
+    /// and the comparison is against the node's own file name rather than the
+    /// whole path.
+    #[test]
+    fn a_named_device_is_matched_by_its_node_name() {
+        let (device, connector) = split("card0:HDMI-A-1");
+        let node = std::path::Path::new("/dev/dri/card0");
+        assert_eq!(device, node.file_name());
+        assert_eq!(connector, "HDMI-A-1");
+
+        let other = std::path::Path::new("/dev/dri/card1");
+        assert_ne!(device, other.file_name());
     }
 }

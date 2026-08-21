@@ -215,6 +215,13 @@ struct Shared {
     /// The last published stage report, so a caller can read the numbers
     /// without reaching into the thread that produces them.
     timing: TimingCells,
+    /// Bumped when a different output has been asked for.
+    ///
+    /// **A counter rather than the name.** The name is a string and cannot be
+    /// an atomic, but the loop does not need it: it needs only to know that it
+    /// must hand the encoder back, and the pass that rebuilds reads the name
+    /// from the channel where it can own it.
+    output_asked: AtomicU32,
     /// Raised to end the loop; the loop checks it once per frame.
     stopping: AtomicU32,
     /// The picture the stream is really producing, as width in the high half
@@ -566,7 +573,10 @@ pub enum Backend {
 }
 
 /// How the stream is configured. Fixed for its lifetime.
-#[derive(Debug, Clone, Copy)]
+///
+/// **Not `Copy` any more**: the output is named rather than numbered, and a
+/// name is as long as the system chose to make it.
+#[derive(Debug, Clone)]
 pub struct Config {
     pub codec: Codec,
     pub backend: Backend,
@@ -591,6 +601,13 @@ pub struct Config {
     /// one fragment, which is the only way the fragmenting path here and the
     /// reassembly a peer runs are exercised together.
     pub detail_rows: u32,
+    /// Which output to capture, by the name [`crate::display::Display::outputs`]
+    /// gives, or the first one lit.
+    ///
+    /// **Not a fallback when it names nothing.** A host asked for one screen
+    /// and given another looks like it worked, and the person who asked is
+    /// looking at the wrong desk.
+    pub output: Option<String>,
     /// Capture the real display rather than generating pictures.
     ///
     /// **Not a preference between two sources of equal standing.** The
@@ -606,6 +623,12 @@ pub struct Config {
 pub struct Stream {
     shared: Arc<Shared>,
     joins: Option<mpsc::Sender<Join>>,
+    /// Where a request to capture something else is put.
+    ///
+    /// **Its own channel rather than a lock.** The loop reads it once per
+    /// rebuild and never on a frame, and a channel keeps the name owned by
+    /// one side at a time without the stream growing a second mutex.
+    outputs: Option<mpsc::Sender<Option<String>>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -628,18 +651,41 @@ impl Stream {
             commanded: AtomicU64::new(0),
             cursor: CursorCell::default(),
             stopping: AtomicU32::new(0),
+            output_asked: AtomicU32::new(0),
             epoch: AtomicU32::new(0),
         });
         let (joins, arrivals) = mpsc::channel();
+        let (outputs, asked) = mpsc::channel();
         let owned = Arc::clone(&shared);
         let thread = std::thread::Builder::new()
             .name("lowlat-stream".to_string())
-            .spawn(move || run(&owned, &arrivals, config))
+            .spawn(move || run(&owned, &arrivals, &asked, config))
             .ok();
         Self {
             shared,
             joins: Some(joins),
+            outputs: Some(outputs),
             thread,
+        }
+    }
+
+    /// Capture a different output, without ending anybody's session.
+    ///
+    /// **It costs one coded refresh and nothing else.** The encoder and the
+    /// conversion are built around one picture, so a different source is the
+    /// same rebuild a display changing size already is: the guests keep their
+    /// seats and their channel, and are told the reference chain restarted.
+    /// Nothing is special-cased for two outputs of equal size, because the
+    /// content is entirely different and the refresh is owed either way.
+    pub fn select_output(&self, id: Option<String>) {
+        let Some(outputs) = self.outputs.as_ref() else {
+            return;
+        };
+        // **Named first, then announced.** The loop reads the counter and only
+        // then takes the name, so a name that had not arrived yet would make
+        // it rebuild onto the one it already had.
+        if outputs.send(id).is_ok() {
+            self.shared.output_asked.fetch_add(1, Ordering::Release);
         }
     }
 
@@ -971,7 +1017,12 @@ struct Roster {
 }
 
 /// The loop.
-fn run(shared: &Shared, arrivals: &mpsc::Receiver<Join>, mut config: Config) {
+fn run(
+    shared: &Shared,
+    arrivals: &mpsc::Receiver<Join>,
+    asked: &mpsc::Receiver<Option<String>>,
+    mut config: Config,
+) {
     // **The construction differs and the loop does not.** Each backend owns a
     // device, a context and an encoder whose lifetimes nest, so they are built
     // here and the same generic loop is handed whichever one exists.
@@ -1008,6 +1059,18 @@ fn run(shared: &Shared, arrivals: &mpsc::Receiver<Join>, mut config: Config) {
             std::thread::sleep(IDLE_WAIT);
         }
 
+        // Drained here, where the configuration is owned.
+        if let Some(id) = requested(asked) {
+            config.output = id;
+            lowlat_common::log_info!(
+                "stream: capturing {}",
+                config
+                    .output
+                    .as_deref()
+                    .unwrap_or("the first output that is lit")
+            );
+        }
+
         lowlat_common::log_info!(
             "stream: encoding w={} h={} fps={} ceiling_mbps={:.1} codec={:?} backend={:?}",
             config.width,
@@ -1019,8 +1082,8 @@ fn run(shared: &Shared, arrivals: &mpsc::Receiver<Join>, mut config: Config) {
         );
 
         let exit = match config.backend {
-            Backend::Open => run_open(shared, arrivals, config, &mut roster),
-            Backend::Vendor => run_vendor(shared, arrivals, config, &mut roster),
+            Backend::Open => run_open(shared, arrivals, config.clone(), &mut roster),
+            Backend::Vendor => run_vendor(shared, arrivals, config.clone(), &mut roster),
         };
         match exit {
             Exit::Stopped => return,
@@ -1222,7 +1285,7 @@ fn run_open(
     // Same rule as the vendor path: a display decides its own size and
     // everything downstream has to be told the same answer.
     let (width, height) = if config.display {
-        match await_display() {
+        match await_display(config.output.as_deref()) {
             Some(size) => {
                 if size != (config.width, config.height) {
                     lowlat_common::log_info!(
@@ -1296,14 +1359,16 @@ fn run_open(
         lowlat_common::log_error!("stream: encode context could not be created");
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
-    let Ok(mut encoder) = context.encoder(params, start_bps(config)) else {
+    let Ok(mut encoder) = context.encoder(params, start_bps(&config)) else {
         lowlat_common::log_error!("stream: encoder could not be configured");
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
     let mut desktop = if config.display {
-        match crate::display::Display::open(ENCODE_DEPTH, |device, frame| {
-            crate::display::Display::register_open(device, &display, frame)
-        }) {
+        match crate::display::Display::open(
+            ENCODE_DEPTH,
+            config.output.as_deref(),
+            |device, frame| crate::display::Display::register_open(device, &display, frame),
+        ) {
             Ok(desktop) => Some(desktop),
             Err(error) => {
                 lowlat_common::log_error!("stream: the display could not be opened, {error}");
@@ -1359,7 +1424,7 @@ fn run_vendor(
         // for rather than refused. The wait is bounded because the only thing
         // that wakes a blanked display is somebody at the desk, and a guest
         // held indefinitely on a machine nobody is at learns nothing.
-        match await_display() {
+        match await_display(config.output.as_deref()) {
             Some(size) => {
                 if size != (config.width, config.height) {
                     lowlat_common::log_info!(
@@ -1412,7 +1477,7 @@ fn run_vendor(
             width,
             height,
             fps: config.fps,
-            bitrate_bps: start_bps(config),
+            bitrate_bps: start_bps(&config),
             min_qp: lowlat_encode::nvenc::DEFAULT_MIN_QP,
         },
     ) else {
@@ -1420,9 +1485,11 @@ fn run_vendor(
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
     let mut desktop = if config.display {
-        match crate::display::Display::open(lowlat_encode::nvenc::IN_FLIGHT, |device, frame| {
-            crate::display::Display::register_vendor(device, &encoder, frame)
-        }) {
+        match crate::display::Display::open(
+            lowlat_encode::nvenc::IN_FLIGHT,
+            config.output.as_deref(),
+            |device, frame| crate::display::Display::register_vendor(device, &encoder, frame),
+        ) {
             Ok(desktop) => Some(desktop),
             Err(error) => {
                 lowlat_common::log_error!("stream: the display could not be opened, {error}");
@@ -1451,7 +1518,7 @@ const H264_LEVEL: u32 = 42;
 const H265_LEVEL: u32 = 123;
 
 /// The rate an encoder opens at, before the controller has said anything.
-fn start_bps(config: Config) -> u32 {
+fn start_bps(config: &Config) -> u32 {
     #[allow(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
@@ -1687,12 +1754,25 @@ fn publish_pointer(
 /// with no display at all is told so rather than held.
 const DISPLAY_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// The output most recently asked for, or nothing if none was.
+///
+/// **Only the last request matters.** A caller that changed its mind while the
+/// loop was mid-frame meant the second answer, and rebuilding once per request
+/// would capture each output it was briefly pointed at on the way.
+fn requested(asked: &mpsc::Receiver<Option<String>>) -> Option<Option<String>> {
+    let mut last = None;
+    while let Ok(id) = asked.try_recv() {
+        last = Some(id);
+    }
+    last
+}
+
 /// Wait for something to scan out, and report what shape it is.
-fn await_display() -> Option<(u32, u32)> {
+fn await_display(wanted: Option<&str>) -> Option<(u32, u32)> {
     let began = lowlat_common::clock::Time::now();
     let mut said = false;
     loop {
-        if let Some(size) = crate::display::Display::size_of_display() {
+        if let Some(size) = crate::display::Display::size_of_display(wanted) {
             return Some(size);
         }
         if !said {
@@ -1784,6 +1864,8 @@ fn encode_loop<E: Encoder + FromDevice>(
     display: Option<&mut crate::display::Display>,
 ) -> Exit {
     let mut display = display;
+    // Read once, on the way in: the loop only has to notice that it moved.
+    let asked_at = shared.output_asked.load(Ordering::Acquire);
     // **Said once, here, where both backends meet.** The picture's size is
     // published before the display is opened, because the encoder is built
     // against it; where that picture sits in the desktop cannot be known until
@@ -1859,7 +1941,7 @@ fn encode_loop<E: Encoder + FromDevice>(
             return Exit::Stopped;
         }
 
-        let moved = admit_and_retire(shared, arrivals, config, active, guests, controllers);
+        let moved = admit_and_retire(shared, arrivals, &config, active, guests, controllers);
         if moved {
             rebind(&mut budget, active.len(), guests, controllers);
         }
@@ -2019,6 +2101,13 @@ fn encode_loop<E: Encoder + FromDevice>(
             // until it is told otherwise.
             if display.as_deref_mut().is_some_and(Display::take_resize) {
                 return Exit::Rediscover("the display changed size");
+            }
+            // **The same rebuild, for the same reason.** A picture from another
+            // output is no more absorbable than one of another size: the
+            // encoder and the conversion target are built around the one that
+            // was there when they were made.
+            if shared.output_asked.load(Ordering::Acquire) != asked_at {
+                return Exit::Rediscover("a different output was asked for");
             }
 
             let synthetic = if display.is_none() {
@@ -2245,7 +2334,7 @@ fn refresh_asked(shared: &Shared, active: &[Active]) -> bool {
 fn admit_and_retire(
     shared: &Shared,
     arrivals: &mpsc::Receiver<Join>,
-    config: Config,
+    config: &Config,
     active: &mut Vec<Active>,
     guests: &mut Vec<gate::Guest>,
     controllers: &mut Vec<Controller>,
@@ -2607,6 +2696,7 @@ mod tests {
         /// that ring still has room, so each path can be reached on its own.
         fn with_pool(slots: usize) -> Self {
             let config = Config {
+                output: None,
                 display: false,
                 width: 320,
                 height: 240,
@@ -2629,6 +2719,7 @@ mod tests {
                 commanded: AtomicU64::new(0),
                 cursor: CursorCell::default(),
                 stopping: AtomicU32::new(0),
+                output_asked: AtomicU32::new(0),
                 epoch: AtomicU32::new(0),
             });
             let (joins, arrivals) = mpsc::channel();
@@ -2653,6 +2744,7 @@ mod tests {
                 stream: Stream {
                     shared,
                     joins: Some(joins),
+                    outputs: None,
                     thread: Some(thread),
                 },
                 forced,
@@ -2681,12 +2773,14 @@ mod tests {
             commanded: AtomicU64::new(0),
             cursor: CursorCell::default(),
             stopping: AtomicU32::new(0),
+            output_asked: AtomicU32::new(0),
             epoch: AtomicU32::new(0),
         });
         let (joins, arrivals) = mpsc::channel();
         let stream = Stream {
             shared: Arc::clone(&shared),
             joins: Some(joins),
+            outputs: None,
             thread: None,
         };
         (shared, stream, arrivals)
@@ -2694,6 +2788,7 @@ mod tests {
 
     fn test_config(codec: Codec) -> Config {
         Config {
+            output: None,
             display: false,
             width: 320,
             height: 240,
@@ -2845,6 +2940,67 @@ mod tests {
             Some((30, 40)),
             "and it reports where the pointer was last seen"
         );
+    }
+
+    /// A request carries a name and says that it did.
+    ///
+    /// **The ordering between the two is not what this checks**, and it was
+    /// written as though it were: the name is put on the channel before the
+    /// counter moves, because the loop reads the counter and only then takes
+    /// the name -- but a single-threaded test sees both after the fact whichever
+    /// order they happened in, and this one passed with them reversed. The
+    /// ordering lives on the implementation, where it can be read; what is
+    /// checked here is that both halves happen at all, and that a caller which
+    /// changed its mind is answered with its last word.
+    #[test]
+    fn a_request_carries_a_name_and_the_last_one_wins() {
+        let shared = Arc::new(Shared {
+            seats: core::array::from_fn(|_| Seat::new()),
+            pool: Pool::new(2, 64),
+            encode_us: AtomicU32::new(0),
+            timing: TimingCells::default(),
+            picture: AtomicU32::new(0),
+            place_rect: AtomicU64::new(0),
+            place_desktop: AtomicU32::new(0),
+            commanded: AtomicU64::new(0),
+            cursor: CursorCell::default(),
+            stopping: AtomicU32::new(0),
+            output_asked: AtomicU32::new(0),
+            epoch: AtomicU32::new(0),
+        });
+        let (outputs, asked) = mpsc::channel();
+        let stream = Stream {
+            shared: Arc::clone(&shared),
+            joins: None,
+            outputs: Some(outputs),
+            thread: None,
+        };
+
+        assert_eq!(shared.output_asked.load(Ordering::Acquire), 0);
+        stream.select_output(Some("card0:DP-2".to_string()));
+        assert_eq!(
+            asked.try_recv().expect("the name never arrived"),
+            Some("card0:DP-2".to_string()),
+            "the counter moved without a name behind it"
+        );
+        assert_eq!(shared.output_asked.load(Ordering::Acquire), 1);
+        assert_eq!(
+            requested(&asked),
+            None,
+            "a drained channel asks for nothing"
+        );
+
+        // **Asking twice is one rebuild's worth of work, not two.** A caller
+        // that changed its mind gets what it asked for second, and the output
+        // it was briefly pointed at is never captured.
+        stream.select_output(None);
+        stream.select_output(Some("card1:HDMI-A-1".to_string()));
+        assert_eq!(
+            requested(&asked),
+            Some(Some("card1:HDMI-A-1".to_string())),
+            "a superseded request was rebuilt onto"
+        );
+        assert_eq!(shared.output_asked.load(Ordering::Acquire), 3);
     }
 
     /// **The hotspot comes from the one thing this host knows and no driver
@@ -3091,7 +3247,7 @@ mod tests {
         encode_loop(
             &shared,
             &arrivals,
-            config,
+            config.clone(),
             &mut roster,
             &mut fake_encoder(),
             None,
@@ -3576,6 +3732,7 @@ mod tests {
     #[ignore = "requires a render node"]
     fn the_real_encoder_serves_a_seated_guest() {
         let stream = Stream::start(Config {
+            output: None,
             display: false,
             width: 1920,
             height: 1080,
@@ -3637,6 +3794,7 @@ mod tests {
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
         let stream = Stream::start(Config {
+            output: None,
             display: false,
             width: 1920,
             height: 1080,
@@ -3688,6 +3846,7 @@ mod tests {
     /// table docs/05-host.md section 10 asks for.
     fn measure(fps: u32, frames: usize) -> Report {
         let stream = Stream::start(Config {
+            output: None,
             display: false,
             width: 1920,
             height: 1080,

@@ -68,7 +68,8 @@ fn main() {
         )
         .unwrap_or_else(|e| fail(&format!("configure: {e}")));
 
-    let mut desktop = Display::open(nvenc::IN_FLIGHT, |device, frame| {
+    let wanted = std::env::args().nth(1);
+    let mut desktop = Display::open(nvenc::IN_FLIGHT, wanted.as_deref(), |device, frame| {
         Display::register_vendor(device, &encoder, frame)
     })
     .unwrap_or_else(|e| fail(&format!("display: {e}")));

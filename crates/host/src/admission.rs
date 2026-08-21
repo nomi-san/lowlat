@@ -327,7 +327,7 @@ impl core::fmt::Debug for Attempt {
 impl Admission {
     pub fn new(config: Config) -> Self {
         let (emit, events) = mpsc::channel();
-        let stream = config.stream.map(Stream::start);
+        let stream = config.stream.clone().map(Stream::start);
         let floor = crate::floor::Floor::new(config.exclusive_pointer);
         Self {
             config,
@@ -450,7 +450,11 @@ impl Admission {
         let emit = self.emit.clone();
         let servers = self.config.servers.clone();
         let seats = self.stream.as_ref().map(Stream::seats);
-        let video = self.config.stream.map(|s| (s.width, s.height, s.rotation));
+        let video = self
+            .config
+            .stream
+            .as_ref()
+            .map(|s| (s.width, s.height, s.rotation));
         let ours = (local.ufrag.clone(), local.pwd.clone());
         let theirs = (attempt.peer.ufrag.clone(), attempt.peer.pwd.clone());
         let permissions = attempt.peer.permissions;
