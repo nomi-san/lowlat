@@ -892,9 +892,12 @@ wire is renumbered; only what feeds the picture changes.
   case worth having -- the content is entirely different, so the refresh is owed either way.
   What must be republished with it is the picture's size **and its rectangle**, because both
   are the coordinate space absolute input comes back in ([05 §7](05-host.md)).
-- [ ] **A switch to an output on another card is the harder half, and it is not new work.**
-  *Still open, and the selection deliberately does not pretend otherwise: an identity naming
-  another device is accepted and the encoder is not rebuilt for it.*
+- [x] **A switch to an output on another card**, which is the same work as following a display
+  that moved. *Done 2026-08-21 and verified across an AMD and an NVIDIA head on one desktop.*
+  **The encoder is not a preference, it is a consequence of where the display is**: a conversion
+  target is allocated on that device and an encoder belonging to another cannot take it. It is
+  read from the driver behind the display and resolved on **every** rebuild, so a display that
+  moves is followed rather than only noticed, and configuring one is an override.
   The device, the conversion and the encoder's registration are all bound to the node the
   display is on, so crossing cards rebuilds the encoder rather than the plane. **This is the
   same runtime backend re-selection the display-moved-to-another-card item needs**, and the two
@@ -952,7 +955,13 @@ feature working at the greeter minus the one part that genuinely needs a session
    quietly not applied is a stream of the wrong shape with nothing to explain it.
 4. **Absolute input lands on the newly selected output**, which is Gate B item 5 arriving from
    the other direction and fails the same way if the rectangle is not republished with the size.
-5. A switch across cards either works or ends with a reason, and never streams a frozen picture.
+5. [x] A switch across cards either works or ends with a reason, and never streams a frozen
+   picture. *Passed: an encoder built for the wrong device refuses every frame, and the refusal
+   used to say nothing about why; it now names the device and the output.*
+6. [x] **Capturing nothing in particular takes the main screen**, which is the output at the
+   desktop's own corner rather than the first device enumerated.
+7. [x] **What a peer is told it is watching is what the loop is capturing.** *Failed three ways
+   before it held: described from configuration, from nothing, and from enumeration order.*
 
 ---
 

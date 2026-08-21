@@ -39,6 +39,30 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   compressed mapping that difference is negative for all but the first few
   pixels, so every sample was refused and every shape fell back to no offset.
 
+- **The encoder follows the display.** A conversion target is allocated on the
+  device the display is on, and an encoder belonging to another cannot take it,
+  so the encoder is a consequence of where the display is rather than a
+  preference. It is resolved on every rebuild, which is also what makes a
+  display that moves to another card *followed* rather than merely noticed --
+  previously the guests were ended with a reason and nothing recovered.
+
+- **Capturing nothing in particular means the main screen.** The search took
+  the first device the kernel enumerated, which is an ordering, and on a
+  machine with two cards picked the secondary one. It now prefers the output at
+  the desktop's own corner: nothing in a layout says "primary", but every
+  arrangement puts one output at the origin and hangs the rest off it.
+
+- **What a peer is told about the capture is what is running**, not what was
+  asked for. A guest can switch outputs and a display can move by itself, and
+  only the loop that rebuilt knows which happened. Changes are pushed rather
+  than waited on, because a reader asks after it acts: a change it did not
+  cause never reaches it, and a change it did cause may not have landed by the
+  time it asks.
+
+- **A guest naming an output nothing is lighting is refused** where the request
+  arrives. Refusing it later means failing to open a display, which ends every
+  guest on the stream including the one that asked.
+
 - **A guest is told who else is connected** ([01 §11.2b](01-protocol.md)).
   The same body reaches every guest and the second argument does not: each is
   sent its own number alongside, because that is how a peer finds itself and
