@@ -687,6 +687,15 @@ impl Admission {
         self.stream.as_ref().and_then(Stream::picture)
     }
 
+    /// What is being captured, as a checksum of its name.
+    ///
+    /// **The loop's answer, not the request's.** A guest can ask for one
+    /// output and a display can move to another card on its own, and only the
+    /// loop knows which of those happened last.
+    pub fn captured(&self) -> u32 {
+        self.stream.as_ref().map_or(0, Stream::captured)
+    }
+
     /// Capture a different output, or the first one lit.
     ///
     /// **The seam forwards it and judges nothing.** Which outputs exist is the
