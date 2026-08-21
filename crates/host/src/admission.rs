@@ -33,7 +33,7 @@ use lowlat_net::{Guest, Shell, Socket, Wake};
 use crate::session::{Negotiation, State};
 use crate::stream::{SeatHold, Seats, Stream};
 use crate::video::Packetiser;
-use lowlat_inject::event::{Extents, Injector};
+use lowlat_inject::event::{Extents, Injector, Place};
 use lowlat_inject::uinput::Devices;
 
 /// Video, stream 0. See docs/01-protocol.md section 6.
@@ -911,7 +911,10 @@ impl Input<Devices> {
     /// failure to the one party who cannot fix it.
     fn open(label: &str, video: Option<(u32, u32, Rotation)>) -> Option<Self> {
         let (width, height, rotation) = video?;
-        let extents = desktop_extents(width, height, rotation);
+        // **Not placed yet, and it does not have to be.** A guest is seated
+        // before the loop has opened a display, so the layout is not known
+        // here; the loop below picks it up on the pass after it is.
+        let extents = desktop_extents(width, height, rotation, None);
         match Devices::create(label) {
             Ok(devices) => Some(Self {
                 injector: Injector::new(extents),
@@ -927,22 +930,26 @@ impl Input<Devices> {
     }
 }
 
-/// The extents a peer's absolute coordinates arrive in.
+/// The extents a peer's absolute coordinates arrive in, and where they land.
 ///
-/// **The desktop's shape, not the encoded frame's**, and on a quarter turn
+/// **The output's shape, not the encoded frame's**, and on a quarter turn
 /// those differ. A peer swaps the dimensions the stream declares before it
 /// transforms a pointer position, because what it is looking at is the desktop
 /// rather than the buffer, so the coordinates arrive already in that
 /// orientation. The host therefore swaps the extents it maps into and rotates
 /// nothing. Rotating here as well turns the pointer through a right angle and
 /// looks almost right, which is the worst way for it to be wrong.
-fn desktop_extents(width: u32, height: u32, rotation: Rotation) -> Extents {
-    match rotation {
-        Rotation::Deg90 | Rotation::Deg270 => Extents {
-            width: height,
-            height: width,
-        },
-        _ => Extents { width, height },
+///
+/// **The rectangle needs no turning for the same reason.** It is measured in
+/// the desktop the peer is looking at, which is already in that orientation.
+fn desktop_extents(width: u32, height: u32, rotation: Rotation, place: Option<Place>) -> Extents {
+    let (width, height) = match rotation {
+        Rotation::Deg90 | Rotation::Deg270 => (height, width),
+        _ => (width, height),
+    };
+    match place {
+        Some(place) => Extents::placed(width, height, place),
+        None => Extents::alone(width, height),
     }
 }
 
@@ -1050,6 +1057,8 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     // The picture size this guest is describing, once the stream has settled
     // on one.
     let mut followed: Option<(u16, u16)> = None;
+    // Where that picture sits in the desktop, once a session has said.
+    let mut placed: Option<Place> = None;
     // The last position published as commanded, so one that has not moved is
     // not republished on every pass.
     let mut commanded: Option<(i32, i32)> = None;
@@ -1081,27 +1090,49 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         // describing the stream with the configured size puts every position
         // through the ratio between the two: a 2560 wide display described as
         // 1920 reaches the right edge three quarters of the way across.
-        if let Some(settled) = seat.as_ref().and_then(SeatHold::picture)
-            && followed != Some(settled)
+        //
+        // **Where the picture sits in the desktop arrives separately and
+        // later**, because it is read from the session once the display is
+        // open, so the two are followed together rather than one gating the
+        // other. Only the size rebuilds the framing; the placement changes
+        // nothing a peer can see.
+        let settled = seat.as_ref().and_then(SeatHold::picture);
+        let situated = seat.as_ref().and_then(SeatHold::place);
+        if (settled, situated) != (followed, placed)
+            && let Some((width, height)) = settled
             && let Some((_, _, rotation)) = args.video
         {
-            let (width, height) = settled;
-            lowlat_common::log_info!(
-                "guest: the stream is {width}x{height}, following it for the picture and for \
-                 absolute input"
-            );
-            followed = Some(settled);
-            let mut framing = Packetiser::new(width, height, rotation);
-            framing.reconfigured();
-            if let Some(negotiation) = negotiation.as_mut() {
-                negotiation.encoder_initialised(framing.generation());
+            if followed != settled {
+                lowlat_common::log_info!(
+                    "guest: the stream is {width}x{height}, following it for the picture and for \
+                     absolute input"
+                );
+                let mut framing = Packetiser::new(width, height, rotation);
+                framing.reconfigured();
+                if let Some(negotiation) = negotiation.as_mut() {
+                    negotiation.encoder_initialised(framing.generation());
+                }
+                packetiser = Some(framing);
             }
-            packetiser = Some(framing);
+            if let Some(place) = situated.filter(|_| placed != situated) {
+                lowlat_common::log_info!(
+                    "guest: the picture is {}x{} at {},{} of a {}x{} desktop, placing input in it",
+                    place.width,
+                    place.height,
+                    place.x,
+                    place.y,
+                    place.desktop_width,
+                    place.desktop_height
+                );
+            }
+            followed = settled;
+            placed = situated;
             if let Some(input) = input.as_mut() {
                 input.injector.set_extents(desktop_extents(
                     u32::from(width),
                     u32::from(height),
                     rotation,
+                    situated,
                 ));
             }
         }
@@ -1928,10 +1959,7 @@ mod geometry {
 
     fn recording_input() -> Input<Recorder> {
         Input {
-            injector: Injector::new(Extents {
-                width: 1920,
-                height: 1080,
-            }),
+            injector: Injector::new(Extents::alone(1920, 1080)),
             sink: Recorder::default(),
         }
     }
@@ -2213,15 +2241,15 @@ mod geometry {
     /// asked for, which reads as an input bug rather than a geometry one.
     #[test]
     fn a_quarter_turn_swaps_the_extents_and_a_half_turn_does_not() {
-        let upright = desktop_extents(1920, 1080, Rotation::None);
+        let upright = desktop_extents(1920, 1080, Rotation::None, None);
         assert_eq!((upright.width, upright.height), (1920, 1080));
         for rotation in [Rotation::Deg90, Rotation::Deg270] {
-            let turned = desktop_extents(1920, 1080, rotation);
+            let turned = desktop_extents(1920, 1080, rotation, None);
             assert_eq!((turned.width, turned.height), (1080, 1920), "{rotation:?}");
         }
         // A half turn leaves the shape alone, so swapping there would be a
         // pointer that works upright and breaks upside down.
-        let half = desktop_extents(1920, 1080, Rotation::Deg180);
+        let half = desktop_extents(1920, 1080, Rotation::Deg180, None);
         assert_eq!((half.width, half.height), (1920, 1080));
     }
 

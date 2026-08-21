@@ -1452,10 +1452,7 @@ mod device_tests {
     }
 
     fn injector() -> Injector {
-        Injector::new(Extents {
-            width: 1920,
-            height: 1080,
-        })
+        Injector::new(Extents::alone(1920, 1080))
     }
 
     #[test]

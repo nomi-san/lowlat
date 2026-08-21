@@ -19,6 +19,7 @@ use std::collections::HashMap;
 
 use lowlat_capture::convert::{Converter, Nv12};
 use lowlat_capture::cursor::{Pointer, Watcher};
+use lowlat_capture::desktop::Placement;
 use lowlat_capture::scanout::{self, Card, CursorPlane};
 use lowlat_capture::vulkan::{self, Imports, PlaneLayout};
 use lowlat_common::clock::Time;
@@ -151,6 +152,12 @@ pub struct Display {
     cursor: Watcher,
     /// Latched when the display changed size, and taken by the loop.
     resized: bool,
+    /// Where this output sits in the desktop, when a session says.
+    ///
+    /// **Read once, here, rather than per frame.** It costs a round trip to
+    /// the session and it changes only when somebody rearranges their
+    /// displays, which rebuilds the stream anyway.
+    place: Option<Placement>,
 }
 
 impl core::fmt::Debug for Display {
@@ -215,7 +222,20 @@ impl Display {
             cursor_plane: layout.cursor_plane,
             cursor: Watcher::new(),
             resized: false,
+            place: layout
+                .connector
+                .as_deref()
+                .and_then(lowlat_capture::desktop::placement_of),
         })
+    }
+
+    /// Where the captured output sits in the desktop, when that is knowable.
+    ///
+    /// **Absent is not degraded.** With one output the picture is the desktop,
+    /// which is what the absolute axis already spans, so nothing at all is the
+    /// right answer rather than a missing one.
+    pub fn place(&self) -> Option<Placement> {
+        self.place
     }
 
     /// What the display is showing, before anything is built on it.

@@ -226,6 +226,21 @@ struct Shared {
     /// input against a rectangle of the wrong size, and every position lands
     /// scaled by the ratio between the two.
     picture: AtomicU32,
+    /// The captured output's rectangle in the desktop, four sixteen-bit fields
+    /// from the top: x, y, width, height. Zero until a session has described
+    /// it, and zero is also what one output honestly is.
+    ///
+    /// **The size here is the desktop's units and `picture` is the picture's**,
+    /// which differ by the display scale. Keeping both is what lets one place
+    /// convert between them instead of every reader assuming they agree.
+    place_rect: AtomicU64,
+    /// The desktop that rectangle sits in, width in the high half.
+    ///
+    /// **Stored before the rectangle and read after it**, so a reader that
+    /// sees a rectangle sees the desktop it was measured against. Written once
+    /// per display, and a reader that manages to catch the pair mid-write
+    /// takes the whole of it again on its next pass.
+    place_desktop: AtomicU32,
     /// Where a guest last told the pointer to be, and how many times one has:
     /// the position in the low half and a count in the high.
     ///
@@ -416,6 +431,27 @@ impl Shared {
         self.picture.store(packed, Ordering::Release);
     }
 
+    /// Say where the captured output sits in the desktop around it.
+    ///
+    /// Nothing said is one output, which needs no placing: the absolute axis
+    /// already spans exactly the picture.
+    fn publish_place(&self, place: Option<lowlat_capture::desktop::Placement>) {
+        let Some(place) = place else {
+            self.place_rect.store(0, Ordering::Release);
+            return;
+        };
+        let field = |value: u32| u64::from(value.min(0xFFFF));
+        self.place_desktop.store(
+            (place.desktop_width.min(0xFFFF) << 16) | place.desktop_height.min(0xFFFF),
+            Ordering::Release,
+        );
+        let packed = (field(place.x) << 48)
+            | (field(place.y) << 32)
+            | (field(place.width) << 16)
+            | field(place.height);
+        self.place_rect.store(packed, Ordering::Release);
+    }
+
     /// Publish what the loop just read of the pointer.
     ///
     /// `image` is the picture, and is present only when it is one no guest has
@@ -587,6 +623,8 @@ impl Stream {
             encode_us: AtomicU32::new(0),
             timing: TimingCells::default(),
             picture: AtomicU32::new(0),
+            place_rect: AtomicU64::new(0),
+            place_desktop: AtomicU32::new(0),
             commanded: AtomicU64::new(0),
             cursor: CursorCell::default(),
             stopping: AtomicU32::new(0),
@@ -742,6 +780,28 @@ impl SeatHold {
             reason = "both halves were clamped to sixteen bits when they were stored"
         )]
         Some(((packed >> 16) as u16, (packed & 0xFFFF) as u16))
+    }
+
+    /// Where the captured output sits in the desktop, when a session said.
+    ///
+    /// **Read every pass beside the picture's size**, and for the same reason:
+    /// a guest takes its seat before the loop has opened a display, so the
+    /// answer at that moment is that nothing is known yet.
+    pub fn place(&self) -> Option<lowlat_inject::event::Place> {
+        let rect = self.shared.place_rect.load(Ordering::Acquire);
+        if rect == 0 {
+            return None;
+        }
+        let desktop = self.shared.place_desktop.load(Ordering::Acquire);
+        let field = |shift: u32| u32::try_from((rect >> shift) & 0xFFFF).unwrap_or(0);
+        Some(lowlat_inject::event::Place {
+            x: field(48),
+            y: field(32),
+            width: field(16),
+            height: field(0),
+            desktop_width: desktop >> 16,
+            desktop_height: desktop & 0xFFFF,
+        })
     }
 
     /// Say where this guest just told the pointer to be.
@@ -1724,6 +1784,12 @@ fn encode_loop<E: Encoder + FromDevice>(
     display: Option<&mut crate::display::Display>,
 ) -> Exit {
     let mut display = display;
+    // **Said once, here, where both backends meet.** The picture's size is
+    // published before the display is opened, because the encoder is built
+    // against it; where that picture sits in the desktop cannot be known until
+    // the display exists, so it arrives one step later and the guests pick it
+    // up on the pass after.
+    shared.publish_place(display.as_ref().and_then(|desktop| desktop.place()));
     // **The block says which codec is on the wire**, so a live run is
     // identifiable from the picture rather than from a log on the other
     // machine. Nothing downstream reads it; it is for the person watching.
@@ -2558,6 +2624,8 @@ mod tests {
                 encode_us: AtomicU32::new(0),
                 timing: TimingCells::default(),
                 picture: AtomicU32::new(0),
+                place_rect: AtomicU64::new(0),
+                place_desktop: AtomicU32::new(0),
                 commanded: AtomicU64::new(0),
                 cursor: CursorCell::default(),
                 stopping: AtomicU32::new(0),
@@ -2608,6 +2676,8 @@ mod tests {
             encode_us: AtomicU32::new(0),
             timing: TimingCells::default(),
             picture: AtomicU32::new(0),
+            place_rect: AtomicU64::new(0),
+            place_desktop: AtomicU32::new(0),
             commanded: AtomicU64::new(0),
             cursor: CursorCell::default(),
             stopping: AtomicU32::new(0),

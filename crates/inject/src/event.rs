@@ -135,16 +135,74 @@ impl Default for Permissions {
     }
 }
 
-/// The extents absolute coordinates are expressed in.
+/// The extents absolute coordinates are expressed in, and where they land.
 ///
-/// **This is the desktop's shape, not the encoded frame's.** A peer viewing a
-/// rotated output already sends coordinates in the orientation the desktop is
-/// in, so a rotated stream swaps what is passed here and rotates nothing at
-/// injection.
+/// **This is the captured output's shape, not the encoded frame's.** A peer
+/// viewing a rotated output already sends coordinates in the orientation the
+/// output is in, so a rotated stream swaps what is passed here and rotates
+/// nothing at injection.
+///
+/// **The place is separate from the shape, and with one output they agree.**
+/// An absolute device is spread by the layer above over the whole desktop, so
+/// a coordinate normalised against the captured output alone lands
+/// proportionally short of where it belongs on any desktop bigger than that
+/// output, and the far part of the screen cannot be reached at all. Carrying
+/// the output's rectangle and the desktop it sits in makes that one
+/// multiplication instead of a special case.
+///
+/// **The rectangle is in the desktop's own units and the shape is in the
+/// picture's**, which are the same units only while nothing is scaled. Both
+/// ends of the mapping have to be in one space, so the picture's coordinate is
+/// converted into the desktop's rather than assumed to already be there.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Extents {
+    /// The space a peer's coordinates arrive in: the picture's own pixels.
     pub width: u32,
     pub height: u32,
+    /// The captured output's rectangle, measured from the desktop's own
+    /// corner, and the desktop it sits in.
+    pub place: Place,
+}
+
+/// Where the captured output sits in the desktop around it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Place {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+    pub desktop_width: u32,
+    pub desktop_height: u32,
+}
+
+impl Extents {
+    /// The picture is the whole desktop: one output, or a layout nothing could
+    /// be learned about, which behave identically and correctly.
+    #[must_use]
+    pub const fn alone(width: u32, height: u32) -> Self {
+        Self {
+            width,
+            height,
+            place: Place {
+                x: 0,
+                y: 0,
+                width,
+                height,
+                desktop_width: width,
+                desktop_height: height,
+            },
+        }
+    }
+
+    /// The picture is a rectangle within a larger desktop.
+    #[must_use]
+    pub const fn placed(width: u32, height: u32, place: Place) -> Self {
+        Self {
+            width,
+            height,
+            place,
+        }
+    }
 }
 
 /// One guest's input state and the expansion that reads it.
@@ -735,8 +793,29 @@ impl Injector {
         // and past the arbiter, because it is read as evidence of where the
         // pointer was put. A position that was refused was not commanded.
         self.commanded = Some((x, y));
-        self.push(EV_ABS, ABS_X, scale(x, self.extents.width));
-        self.push(EV_ABS, ABS_Y, scale(y, self.extents.height));
+        let place = self.extents.place;
+        self.push(
+            EV_ABS,
+            ABS_X,
+            scale(
+                x,
+                self.extents.width,
+                place.x,
+                place.width,
+                place.desktop_width,
+            ),
+        );
+        self.push(
+            EV_ABS,
+            ABS_Y,
+            scale(
+                y,
+                self.extents.height,
+                place.y,
+                place.height,
+                place.desktop_height,
+            ),
+        );
         self.report();
         self.flush(Device::PointerAbsolute, out);
     }
@@ -898,23 +977,37 @@ fn detents(units: i32) -> i32 {
     }
 }
 
-/// A coordinate in the output's extent, onto the absolute axis.
+/// A coordinate in the picture, onto the absolute axis the desktop is spread
+/// over.
+///
+/// Three steps, and the middle one is the whole of what a second display
+/// costs: clamp into the picture, convert into the captured output's own
+/// rectangle, then place that rectangle within the desktop. With one output
+/// the rectangle is the desktop and the two conversions cancel.
 ///
 /// **The extent is inclusive.** A peer reports the far edge as the width
 /// itself rather than one less, so dividing by the width is what puts that
 /// edge at the end of the axis.
-fn scale(value: i32, extent: u32) -> i32 {
+///
+/// **Clamping is what keeps a guest on the captured display.** A coordinate
+/// past the picture would otherwise place the pointer on the next output,
+/// where nothing here can see it: the pointer plane on this output empties,
+/// which is indistinguishable from an application hiding the pointer, and the
+/// peer is told to switch to relative motion.
+fn scale(value: i32, extent: u32, origin: u32, within: u32, desktop: u32) -> i32 {
     let extent = i64::from(extent);
-    if extent <= 0 {
+    let desktop = i64::from(desktop);
+    if extent <= 0 || desktop <= 0 {
         return 0;
     }
     let clamped = i64::from(value).clamp(0, extent);
+    let placed = i64::from(origin) + clamped * i64::from(within) / extent;
     #[allow(
         clippy::cast_possible_truncation,
-        reason = "the quotient cannot exceed the axis range, which is 65535"
+        reason = "the quotient is clamped to the axis range, which is 65535"
     )]
     {
-        (clamped * i64::from(ABS_RANGE) / extent) as i32
+        (placed * i64::from(ABS_RANGE) / desktop).clamp(0, i64::from(ABS_RANGE)) as i32
     }
 }
 
@@ -996,10 +1089,7 @@ mod tests {
     }
 
     fn injector() -> Injector {
-        Injector::new(Extents {
-            width: 1920,
-            height: 1080,
-        })
+        Injector::new(Extents::alone(1920, 1080))
     }
 
     fn control(opcode: u8, a0: u32, a1: u32, a2: u32) -> Control<'static> {
@@ -1200,6 +1290,133 @@ mod tests {
         assert!(out.devices().iter().all(|d| *d == Device::PointerAbsolute));
     }
 
+    /// The picture placed in a desktop wider than it is.
+    ///
+    /// A second output to the right, the captured one at the corner: exactly
+    /// the arrangement the failure was found in.
+    fn beside_another() -> Injector {
+        Injector::new(Extents::placed(
+            2560,
+            1440,
+            Place {
+                x: 0,
+                y: 0,
+                width: 2560,
+                height: 1440,
+                desktop_width: 4480,
+                desktop_height: 1440,
+            },
+        ))
+    }
+
+    /// Every absolute value the injector emitted, in order.
+    fn axes(out: &Recorder) -> Vec<i32> {
+        out.all()
+            .into_iter()
+            .filter(|e| e.kind == EV_ABS)
+            .map(|e| e.value)
+            .collect()
+    }
+
+    /// **The axis is spread over the whole desktop, not over the picture.** A
+    /// coordinate normalised against the picture alone puts the picture's far
+    /// edge at the desktop's far edge, so a guest reaches its own display's
+    /// edge partway across and the rest of the picture is unreachable. Here
+    /// that is 2560 of 4480, and the edge would otherwise arrive at 57 percent.
+    ///
+    /// **The failure is per axis**, which this checks in one run: both outputs
+    /// are the same height, so the vertical scale is one and the vertical is
+    /// already right. A fix applied to the pair rather than to each axis moves
+    /// the vertical too.
+    #[test]
+    fn a_picture_beside_another_output_reaches_its_own_edge_and_no_further() {
+        let (mut inject, mut out) = (beside_another(), Recorder::default());
+        inject.on_control(&control(op::MOUSE_MOTION, 0, 2560, 1440), &mut out);
+
+        let far = i32::try_from(i64::from(ABS_RANGE) * 2560 / 4480).expect("within the axis");
+        assert_eq!(axes(&out), vec![far, ABS_RANGE]);
+        assert!(far < ABS_RANGE, "the picture is not the whole desktop");
+    }
+
+    /// **A coordinate past the picture stays on the captured output.** Without
+    /// the clamp it lands on the next one, where the pointer plane this host
+    /// reads goes empty -- which is the same thing an application hiding the
+    /// pointer produces, so the peer is told to switch to relative motion and
+    /// the pointer has to be walked back by hand.
+    #[test]
+    fn a_coordinate_past_the_picture_stops_at_the_captured_output() {
+        let (mut inject, mut out) = (beside_another(), Recorder::default());
+        inject.on_control(&control(op::MOUSE_MOTION, 0, 4000, 4000), &mut out);
+
+        let far = i32::try_from(i64::from(ABS_RANGE) * 2560 / 4480).expect("within the axis");
+        assert_eq!(axes(&out), vec![far, ABS_RANGE]);
+    }
+
+    /// **An output that is not at the desktop's corner starts partway along
+    /// the axis.** Zero on the wire is the picture's own corner, never the
+    /// desktop's, and treating the two as the same puts every position a whole
+    /// output to one side.
+    #[test]
+    fn an_output_away_from_the_corner_is_offset_along_the_axis() {
+        let mut inject = Injector::new(Extents::placed(
+            2560,
+            1440,
+            Place {
+                x: 1920,
+                y: 0,
+                width: 2560,
+                height: 1440,
+                desktop_width: 4480,
+                desktop_height: 1440,
+            },
+        ));
+        let mut out = Recorder::default();
+        inject.on_control(&control(op::MOUSE_MOTION, 0, 0, 0), &mut out);
+        inject.on_control(&control(op::MOUSE_MOTION, 0, 2560, 0), &mut out);
+
+        let left = i32::try_from(i64::from(ABS_RANGE) * 1920 / 4480).expect("within the axis");
+        assert_eq!(axes(&out), vec![left, 0, ABS_RANGE, 0]);
+    }
+
+    /// **A scaled output's rectangle is smaller than its picture**, and the
+    /// two are in different units. Converting the picture's coordinate into
+    /// the rectangle's units is what keeps both ends of the ratio in one
+    /// space; skipping it walks the pointer off the output by the scale
+    /// factor.
+    #[test]
+    fn a_scaled_output_maps_through_its_own_rectangle() {
+        let mut inject = Injector::new(Extents::placed(
+            2560,
+            1440,
+            Place {
+                x: 0,
+                y: 0,
+                width: 1280,
+                height: 720,
+                desktop_width: 2560,
+                desktop_height: 720,
+            },
+        ));
+        let mut out = Recorder::default();
+        inject.on_control(&control(op::MOUSE_MOTION, 0, 2560, 1440), &mut out);
+
+        assert_eq!(axes(&out), vec![ABS_RANGE / 2, ABS_RANGE]);
+    }
+
+    /// One output is the case every earlier run was made in, and it must not
+    /// move: the rectangle is the desktop and the two conversions cancel.
+    #[test]
+    fn one_output_maps_exactly_as_it_did() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        inject.on_control(&control(op::MOUSE_MOTION, 0, 960, 540), &mut out);
+        inject.on_control(&control(op::MOUSE_MOTION, 0, 1920, 1080), &mut out);
+
+        assert_eq!(
+            axes(&out),
+            vec![ABS_RANGE / 2, ABS_RANGE / 2, ABS_RANGE, ABS_RANGE]
+        );
+    }
+
     /// **A release has to reach the device that took the press.** Which
     /// pointer device an event goes to follows whichever kind of motion
     /// arrived last, and a peer changes kind mid-gesture: a drag that begins
@@ -1209,10 +1426,7 @@ mod tests {
     /// stays held on a machine nobody is driving.
     #[test]
     fn a_button_is_released_on_the_device_that_took_it() {
-        let mut inject = Injector::new(Extents {
-            width: 1920,
-            height: 1080,
-        });
+        let mut inject = Injector::new(Extents::alone(1920, 1080));
         let mut out = Recorder::default();
 
         // Placed, then pressed: both land on the absolute device. Then the
@@ -1237,10 +1451,7 @@ mod tests {
         // **Pressed on the relative device here**, deliberately: a release
         // that simply went to whichever device the sweep visited first would
         // be right by accident if the press had been on the absolute one.
-        let mut inject = Injector::new(Extents {
-            width: 1920,
-            height: 1080,
-        });
+        let mut inject = Injector::new(Extents::alone(1920, 1080));
         let mut out = Recorder::default();
         inject.on_control(&control(op::MOUSE_MOTION, 1, 5, 5), &mut out);
         inject.on_control(&control(op::MOUSE_BUTTON, 1, 1, 0), &mut out);
@@ -1259,10 +1470,7 @@ mod tests {
     /// coordinate: the peer already sends them the way the desktop is.
     #[test]
     fn a_rotated_output_is_a_swap_of_the_extents() {
-        let mut inject = Injector::new(Extents {
-            width: 1080,
-            height: 1920,
-        });
+        let mut inject = Injector::new(Extents::alone(1080, 1920));
         let mut out = Recorder::default();
         inject.on_control(&control(op::MOUSE_MOTION, 0, 1080, 1920), &mut out);
         let values: Vec<i32> = out
