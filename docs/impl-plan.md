@@ -725,6 +725,19 @@ it is the safer of the two to hold.
 
 - [ ] `lowlat-host` orchestration and the `extern "C"` surface from
   [06-api.md](06-api.md).
+- [ ] **Application messaging, both directions** ([01 §11.1](01-protocol.md) opcode 17). The
+  framing exists and nothing uses it: a message arriving is counted and dropped, and there is no
+  way to send one. **This is a prerequisite for output switching against an established client**,
+  not an independent nicety: the switch request must reach the application, and the application
+  is what interprets it ([05 §5](05-host.md)), so without this the SDK would have to learn a
+  protocol that is not its own.
+  - Inbound: the body reaches the application as an event, with the sub-identifier and the
+    guest it came from, uninterpreted.
+  - Outbound: to one guest or to all.
+  - **A text body carries its terminator and is counted with it.** An established peer reads
+    these as C strings, so a body sized by the text alone is one byte short and the reader runs
+    past it. `lowlat_core::control::string_body_len` is that rule and already exists; the send
+    path must use it rather than the text length.
 - [ ] **Output enumeration and the selected output**, as a listing call plus a configuration
   field settable while a session runs. The machinery is Phase 9's (see *Output selection*
   there); what belongs here is the surface: an identity an application can store and hand back,
@@ -860,6 +873,29 @@ wire is renumbered; only what feeds the picture changes.
   application traffic** to decide what to capture ([05 §5](05-host.md)); a host that did would
   be inventing a protocol on behalf of its application.
 
+**Setting the mode is a different problem from selecting the output, and only one of them is
+ours.** The established model does not scale a copy of the desktop, it *changes the display
+mode*: a requested width, height and refresh are applied to the output and capture then follows
+whatever the display became ([05 §7](05-host.md) already says the stream and the display are the
+same size for this reason).
+
+- [ ] **Selecting which output to capture is a read**, and this backend can do it alone: walk
+  every device, take the lit controllers, and pick one. No permission beyond what capture
+  already needs.
+- [ ] **Changing that output's mode is a write to hardware the session owns**, and this backend
+  cannot do it at all. The compositor holds the display device exclusively; a second client
+  cannot commit a mode, and taking the output away from the compositor to get one removes it
+  from the desktop, which is the opposite of what capturing it means. **So a mode change has to
+  be asked of the session**, through whichever output-management protocol it speaks, and that is
+  per-compositor rather than universal.
+- [ ] **A frame-rate cap needs none of that.** Capping the encoder at a requested rate while the
+  display runs at its own is already what this does, and it is the useful half of the request in
+  every case where the mode cannot be set.
+
+**So the split to hold:** the output is selected here, the mode is requested of the session, and
+a host that cannot reach a session still selects outputs and caps the rate. That keeps the whole
+feature working at the greeter minus the one part that genuinely needs a session.
+
 **Gate:**
 
 1. Enumeration lists every connected output on every card, with a rectangle that agrees with
@@ -867,6 +903,8 @@ wire is renumbered; only what feeds the picture changes.
 2. A host told to capture the second output streams it.
 3. **A mid-session switch keeps the session**: same guest, same channel, one coded refresh, the
    peer follows the new size.
+3a. A requested mode reaches the session and the stream follows the display into it; with no
+   session reachable, the request is reported as refused rather than silently ignored.
 4. **Absolute input lands on the newly selected output**, which is Gate B item 5 arriving from
    the other direction and fails the same way if the rectangle is not republished with the size.
 5. A switch across cards either works or ends with a reason, and never streams a frozen picture.
