@@ -555,6 +555,28 @@ async fn session_loop(
                         &advertisement(name, capacity, occupancy(seam)),
                     )?;
                 }
+                // **Printed, not answered.** The identifier and the body are
+                // an application's own protocol, and this daemon does not yet
+                // speak one; what it does is show that the path is live and
+                // what a peer is really sending, which is what the wiring
+                // above it will be written against.
+                Event::UserData { guest, id, text } => {
+                    let printable: String = text
+                        .iter()
+                        .take(120)
+                        .map(|byte| {
+                            if byte.is_ascii_graphic() || *byte == b' ' {
+                                char::from(*byte)
+                            } else {
+                                '.'
+                            }
+                        })
+                        .collect();
+                    println!(
+                        "lowlatd: guest {guest} sent id={id} len={} body={printable}",
+                        text.len()
+                    );
+                }
                 other => println!("lowlatd: unhandled seam event {other:?}"),
             }
         }

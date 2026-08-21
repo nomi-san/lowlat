@@ -123,6 +123,12 @@ pub enum Event {
     Established { attempt: String, addr: SocketAddr },
     /// The attempt is over, with the reason typed rather than a timeout.
     Ended { attempt: String, outcome: Outcome },
+    /// A guest sent its application a message ([01 §11.1](01-protocol.md)).
+    ///
+    /// **Nothing here reads the body.** The sub-identifier and the text are an
+    /// application's own protocol, and a host that interpreted either would be
+    /// inventing one on its behalf (docs/05-host.md section 5).
+    UserData { guest: u32, id: u32, text: Vec<u8> },
 }
 
 /// Why an attempt finished.
@@ -291,6 +297,23 @@ struct Attempt {
     pending: Vec<SocketAddr>,
     guest: Option<Guest>,
     inject: Option<mpsc::Sender<SocketAddr>>,
+    /// Application messages waiting to go to this guest.
+    ///
+    /// **The body is built where the caller is**, so the thread serving the
+    /// guest allocates nothing: what travels here is already the bytes that go
+    /// on the wire, terminator included.
+    say: Option<mpsc::Sender<Said>>,
+    /// The small number this guest is addressed by, kept so a message can be
+    /// aimed at it without walking every attempt's thread.
+    number: Option<u32>,
+}
+
+/// One application message on its way to a guest.
+#[derive(Debug)]
+struct Said {
+    id: u32,
+    /// Already terminated. See [`Admission::send_user_data`].
+    body: Vec<u8>,
 }
 
 /// The seam.
@@ -365,6 +388,8 @@ impl Admission {
                 peer_ready: false,
                 pending: Vec::new(),
                 guest: None,
+                say: None,
+                number: None,
                 inject: None,
             },
         );
@@ -442,6 +467,7 @@ impl Admission {
         for addr in attempt.pending.drain(..) {
             let _ = inject.send(addr);
         }
+        let (say, said) = mpsc::channel::<Said>();
 
         let attempt_id = id.to_string();
         let guest_number = self.next_guest;
@@ -469,6 +495,7 @@ impl Admission {
                     socket,
                     servers,
                     arrivals,
+                    said,
                     ours,
                     theirs,
                     material,
@@ -489,6 +516,8 @@ impl Admission {
 
         attempt.inject = Some(inject);
         attempt.guest = Some(guest);
+        attempt.say = Some(say);
+        attempt.number = Some(guest_number);
 
         // Emitted with the answer rather than in response to anything, so a
         // peer that withholds its candidates until it sees one is unblocked as
@@ -533,6 +562,57 @@ impl Admission {
     }
 
     /// The next event, or `None`. Never blocks.
+    /// Send one guest an application message.
+    ///
+    /// **The body is built here, on the caller's thread.** What reaches the
+    /// thread serving the guest is already the bytes that go on the wire, so
+    /// nothing on the path to a peer allocates to send one.
+    ///
+    /// **The terminator is written whether or not the caller supplied one.**
+    /// An established peer reads the body as a C string, so one that ends
+    /// without it is read past; and a caller that supplied one must not be
+    /// given two, because the length counts them both and the extra byte is
+    /// then part of the message.
+    ///
+    /// Answers whether the guest is one that could be reached at all. A body
+    /// past what a peer will accept is refused here rather than being sent and
+    /// silently dropped at the far end.
+    pub fn send_user_data(&mut self, guest: u32, id: u32, text: &[u8]) -> bool {
+        if past_the_cap(text) {
+            lowlat_common::log_warn!(
+                "guest: refusing an application message of {} bytes for guest {guest}",
+                text.len()
+            );
+            return false;
+        }
+        let Some(attempt) = self
+            .attempts
+            .values()
+            .find(|attempt| attempt.number == Some(guest))
+        else {
+            return false;
+        };
+        let Some(say) = attempt.say.as_ref() else {
+            return false;
+        };
+        let mut body = Vec::with_capacity(lowlat_core::control::string_body_len(text.len()));
+        body.extend_from_slice(text.strip_suffix(&[0]).unwrap_or(text));
+        body.push(0);
+        say.send(Said { id, body }).is_ok()
+    }
+
+    /// Send every guest the same application message.
+    ///
+    /// Answers how many it reached, which is not the guest count: one whose
+    /// thread has already gone is not reachable and is not an error.
+    pub fn send_user_data_all(&mut self, id: u32, text: &[u8]) -> usize {
+        let guests: Vec<u32> = self.attempts.values().filter_map(|a| a.number).collect();
+        guests
+            .into_iter()
+            .filter(|guest| self.send_user_data(*guest, id, text))
+            .count()
+    }
+
     pub fn poll_event(&mut self) -> Option<Event> {
         self.events.try_recv().ok()
     }
@@ -545,6 +625,8 @@ struct Attached {
     socket: Socket,
     servers: Vec<SocketAddr>,
     arrivals: mpsc::Receiver<SocketAddr>,
+    /// Application messages the seam wants sent to this guest.
+    said: mpsc::Receiver<Said>,
     ours: (String, String),
     theirs: (String, String),
     /// The 256-bit key and the four-byte nonce prefix that follows it.
@@ -656,6 +738,7 @@ fn drain_control<S: lowlat_inject::event::Sink>(
     pointer: Pointer<'_>,
     inbound: &mut [u8],
     count: &mut u64,
+    said: &mut impl FnMut((u32, Vec<u8>)),
 ) -> Result<(), Outcome> {
     loop {
         let Some(taken) = session.take_message(CONTROL_CHANNEL, inbound) else {
@@ -679,6 +762,13 @@ fn drain_control<S: lowlat_inject::event::Sink>(
         // reports it, so this message is the only prompt notice there is.
         if message.opcode == control::op::DISCONNECT {
             return Err(Outcome::PeerLeft);
+        }
+        // **Handed on rather than read.** The sub-identifier and the body are
+        // an application's own protocol, and a host that acted on either would
+        // be inventing one for it (docs/05-host.md section 5). It is offered
+        // to the application and to nothing else here.
+        if let Some((id, text)) = control::user_data(&message) {
+            said((id, text.to_vec()));
         }
         // **Two consumers, one channel, and no opcode belongs to both.** Each
         // ignores what the other handles, which is why both are offered every
@@ -731,6 +821,36 @@ fn send_rumble(session: &mut Session<'_>, pad: u32, large: u8, small: u8) {
             a2: u32::from(small),
             opcode: control::op::RUMBLE,
             body: &[],
+        },
+    );
+}
+
+/// Whether a body built from this text is past what a peer will take.
+///
+/// **The terminator counts toward the ceiling**, because it is part of the
+/// body that travels: a text of exactly the maximum makes a body one over it.
+fn past_the_cap(text: &[u8]) -> bool {
+    lowlat_core::control::string_body_len(text.len()) > lowlat_core::control::USER_DATA_MAX
+}
+
+/// Send one application message.
+///
+/// **The body is written as it was handed over.** Building it belongs where
+/// the caller is, so nothing on this thread allocates to send one, and the
+/// terminator an established peer reads it as a C string by is already there
+/// ([`Admission::send_user_data`]).
+fn send_user_data(session: &mut Session<'_>, id: u32, body: &[u8]) {
+    send_control(
+        session,
+        &control::Control {
+            // **The length counts the terminator**, which is what a reader
+            // treating this as a C string needs, and a body sized by the text
+            // alone leaves it reading one byte past what arrived.
+            a0: u32::try_from(body.len()).unwrap_or(u32::MAX),
+            a1: id,
+            a2: 0,
+            opcode: control::op::USER_DATA,
+            body,
         },
     );
 }
@@ -1228,6 +1348,13 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 },
                 &mut inbound,
                 &mut inbound_messages,
+                &mut |(id, text)| {
+                    let _ = args.emit.send(Event::UserData {
+                        guest: args.guest,
+                        id,
+                        text,
+                    });
+                },
             )
         {
             let _ = args.emit.send(Event::Ended {
@@ -1421,6 +1548,13 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 .send_message(CONTROL_CHANNEL, message, &[]);
         }
 
+        // **Whatever the application asked to be sent, before anything else
+        // this pass.** It is rare and small; draining it here keeps it off the
+        // frame path and out of the shell's own closure.
+        while let Ok(message) = args.said.try_recv() {
+            send_user_data(shell.endpoint().session(), message.id, &message.body);
+        }
+
         // What the stream's controller and gate are steered by. Cheap, and it
         // reads state this loop already owns.
         if let Some(seat) = seat.as_ref()
@@ -1566,7 +1700,14 @@ mod tests {
 
     #[test]
     fn an_unknown_attempt_is_a_no_op_rather_than_a_fault() {
-        let mut seam = admission(4);
+        let mut seam = Admission::new(Config {
+            exclusive_pointer: false,
+            rumble_probe: false,
+            base_port: 0,
+            max_guests: 1,
+            servers: Vec::new(),
+            stream: None,
+        });
         // A candidate for an identifier that never existed, or has just been
         // torn down, is a race with the peer and not an error.
         seam.add_candidate("nope", "127.0.0.1:9000".parse().unwrap(), false);
@@ -1993,6 +2134,7 @@ mod geometry {
             no_pointer(),
             &mut inbound,
             &mut 0,
+            &mut |_| {},
         )
         .expect("drained");
         negotiation
@@ -2087,6 +2229,7 @@ mod geometry {
             pointer,
             &mut inbound,
             &mut 0,
+            &mut |_| {},
         )
         .expect("drained");
     }
@@ -2257,6 +2400,61 @@ mod geometry {
         assert_eq!((half.width, half.height), (1920, 1080));
     }
 
+    /// **The terminator is written whether or not the caller supplied one**,
+    /// and never twice. An established peer reads the body as a C string, so a
+    /// body that ends without one is read past; and the declared length counts
+    /// both, so a second terminator becomes part of the message.
+    #[test]
+    fn an_application_message_is_terminated_exactly_once() {
+        for text in [&b"hello"[..], b"hello\0"] {
+            let mut body = Vec::new();
+            body.extend_from_slice(text.strip_suffix(&[0]).unwrap_or(text));
+            body.push(0);
+            assert_eq!(body, b"hello\0", "text={text:?}");
+            assert_eq!(
+                body.len(),
+                lowlat_core::control::string_body_len(5),
+                "the length a peer is told must count the terminator once"
+            );
+        }
+    }
+
+    /// **A message longer than a peer will take is refused before it is sent.**
+    /// The far end drops it without a word, so a sender that does not check
+    /// loses the message with no way to find out.
+    ///
+    /// **Tested at the boundary and not through the send**, which was tried
+    /// and proved nothing: with no guest to aim at, a message refused for its
+    /// length and one refused for having nowhere to go are the same answer,
+    /// and removing the check entirely left the test passing.
+    #[test]
+    fn the_cap_counts_the_terminator_that_travels_with_the_text() {
+        let max = lowlat_core::control::USER_DATA_MAX;
+        assert!(
+            !past_the_cap(&vec![b'x'; max - 1]),
+            "the largest body that fits was refused"
+        );
+        assert!(
+            past_the_cap(&vec![b'x'; max]),
+            "a text of exactly the maximum makes a body one byte over it"
+        );
+    }
+
+    /// A guest that is not there is not an error, and not a send either.
+    #[test]
+    fn an_application_message_to_nobody_reaches_nobody() {
+        let mut seam = Admission::new(Config {
+            exclusive_pointer: false,
+            rumble_probe: false,
+            base_port: 0,
+            max_guests: 1,
+            servers: Vec::new(),
+            stream: None,
+        });
+        assert!(!seam.send_user_data(1, 0, b"hello"));
+        assert_eq!(seam.send_user_data_all(0, b"hello"), 0);
+    }
+
     /// A guest with no devices is still a guest: its input is dropped and
     /// everything else about the session carries on.
     #[test]
@@ -2309,6 +2507,7 @@ mod geometry {
             no_pointer(),
             &mut inbound,
             &mut 0,
+            &mut |_| {},
         )
         .expect("drained");
 
@@ -2441,7 +2640,8 @@ mod geometry {
                 NO_INPUT,
                 no_pointer(),
                 &mut inbound,
-                &mut 0
+                &mut 0,
+                &mut |_| {}
             ),
             Err(Outcome::ControlStalled),
             "a message that cannot be taken was not reported"
