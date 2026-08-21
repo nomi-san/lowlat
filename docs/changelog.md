@@ -118,6 +118,21 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 **Fixed**
 
+- **A button is released on the device that took it.** Which pointer device an
+  event goes to follows whichever kind of motion arrived last, and a peer
+  changes kind mid-gesture, so a release could reach a device that never saw
+  the press while the kernel went on holding the button down on the one that
+  did. The press still follows the pointer that produced its position; only
+  the release is pinned.
+- **The acquire stage measured a clock against itself** and reported zero on
+  every display run, hiding capture and colour conversion inside a figure
+  nobody could break down. Measured on the integrated device at 2560x1440, the
+  two halves of 7.5 ms are 2.1 ms of capture and conversion and 5.3 ms of
+  encode.
+- **A display that has left the device is noticed.** A controller whose
+  connector is unplugged keeps scanning out, holding the last picture it was
+  given, so every read succeeds and the only thing wrong is that the picture
+  never changes again. The connector is what says so.
 - **A framebuffer identifier is not a buffer.** GPU imports were cached against
   it and the kernel reuses them: measured over a monitor switched off and on,
   two identifiers came back naming different memory, so the encoder was fed a
