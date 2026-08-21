@@ -39,6 +39,38 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   compressed mapping that difference is negative for all but the first few
   pixels, so every sample was refused and every shape fell back to no offset.
 
+- **A guest is told who else is connected** ([01 §11.2b](01-protocol.md)).
+  The same body reaches every guest and the second argument does not: each is
+  sent its own number alongside, because that is how a peer finds itself and
+  learns what it may do. Sent whenever the room changes, because a peer has no
+  way to ask.
+
+  **This was recorded as gating nothing and that was measured against one
+  question.** Frames render without it, which is all the first gate asked. What
+  actually depends on it is everything a peer decides from knowing what it is --
+  a client that never receives one hides its own settings entirely, and finding
+  that out cost a day spent on the messages that *reply* to a question rather
+  than the one nobody asks.
+
+- **The daemon speaks an application protocol** an established client already
+  has: the queries it sends on connecting, the configuration and output listing
+  it expects back, and a configuration it sends when somebody changes one. None
+  of it is in the SDK, which carries the body and never looks inside it.
+
+  Three things running it against a real client settled that reading could not.
+  A stream is described by **what it is producing**, per query -- described from
+  configuration it reported a size nobody was streaming and named no output at
+  all. **The word for no output means opposite things in the two directions**:
+  from a host, a stream that has none; from a client, the *Auto* entry asking
+  for whichever the host would pick. And **a requested output is checked against
+  what is really lit before it is acted on**, because an unknown name is refused
+  by failing to open a display, which ends every guest on the stream including
+  the one that asked.
+
+  Outputs are named by connector and size rather than by what the display calls
+  itself, which is a deliberate divergence: a machine with two identical
+  monitors otherwise offers two entries under one label.
+
 - **Application messages, both directions.** The framing had existed since the
   protocol core was written and nothing used it: one arriving was counted and
   dropped, and there was no way to send one. A message now reaches the

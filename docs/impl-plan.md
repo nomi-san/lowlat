@@ -848,16 +848,23 @@ its own. The C surface over it is Phase 8's.
   the SDK was never entitled to judge.
 - [x] **The body is built on the caller's thread**, so the thread serving a guest allocates
   nothing to send one.
-- [ ] **Answer what an established client asks for.** The queries it sends on connecting, and the
-  configuration and output listing it expects back, are an application's protocol rather than
-  this one's -- so this item is the daemon's, not the SDK's.
+- [x] **Answer what an established client asks for**, and tell it who is connected. The queries
+  it sends, the configuration and output listing it expects back, and the roster it is never
+  able to ask for are an application's protocol rather than this one's, so they are the
+  daemon's. *Verified against a stock client: its own settings panel drives this host.*
+  **The roster is what makes that panel exist at all** ([01 §11.2b](01-protocol.md)); the
+  configuration exchange only keeps its values current, which is the opposite of what it looks
+  like and cost a day to establish.
 
 **Gate:**
 
-1. A message from a stock client reaches the application with its sub-identifier and body intact.
-2. A message sent to that client arrives, and one sent to every guest reaches each of them.
-3. **A body one byte over the ceiling is refused locally** rather than sent and dropped in
+1. [x] A message from a stock client reaches the application with its sub-identifier and body
+   intact. *Chat, clipboard and both queries, with lengths exact.*
+2. [x] A message sent to that client arrives, and one sent to every guest reaches each of them.
+3. [x] **A body one byte over the ceiling is refused locally** rather than sent and dropped in
    silence at the far end.
+4. [x] **A client's own settings drive this host.** *A stock client changed the output through
+   its panel and the stream rebuilt under it: same guest, same channel, one coded refresh.*
 
 ---
 
@@ -934,8 +941,11 @@ feature working at the greeter minus the one part that genuinely needs a session
 1. Enumeration lists every connected output on every card, with a rectangle that agrees with
    what the session reports.
 2. A host told to capture the second output streams it.
-3. **A mid-session switch keeps the session**: same guest, same channel, one coded refresh, the
-   peer follows the new size.
+3. [x] **A mid-session switch keeps the session**: same guest, same channel, one coded refresh,
+   the peer follows the new size. *Passed 2026-08-21, driven from a stock client's own display
+   chooser.* **A requested output MUST be checked against what is lit before it is acted on**: an
+   unknown name is refused by failing to open a display, which ends every guest on the stream
+   including the one that asked.
 3a. **A requested mode is applied on a display this host created**, and the stream follows it.
    On a display the session owns, the request is relayed to the session, and where that cannot
    be done it is reported as refused rather than silently ignored -- a mode that was asked for and

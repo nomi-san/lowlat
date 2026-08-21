@@ -469,7 +469,7 @@ thirty-two-bit argument, so it needs a narrowing cast and not a comparison again
 | 17 | user data | length, sub-id, 0, plus body | v1 |
 | 20 | rumble | pad, large motor, small motor | v1 |
 | 21 | encode latency | 1, microseconds, stream | v1 |
-| 25 | guest list | JSON body | later |
+| 25 | guest list | length, the recipient's own guest number, 0, plus a JSON body | v1 |
 | 28 | host mode | mode | later |
 | 29 | encoder generation | stream, generation, 0 | v1 |
 | 34 | frame timing | 0, stream, 0, plus 16-byte body | diagnostic |
@@ -529,6 +529,26 @@ message and cannot find out. Refuse it locally instead.
 **The sub-identifier space belongs to the application, not to this protocol.** Two applications
 that both use opcode 17 are speaking different languages over the same channel, and a host that
 acted on a sub-identifier would be choosing one of them ([05 §5](05-host.md)).
+
+### §11.2b The guest list
+
+Opcode 25 tells one guest who else is connected. **The body is the same for everyone and the
+second argument is not**: each guest is sent its own number alongside, because that is how a peer
+finds itself in the list and learns what it is permitted to do. A roster carrying nobody's own
+number describes a room the reader is not in.
+
+**A peer cannot ask for this**, so it is sent whenever the room changes -- a guest joining or
+leaving -- and every guest is told, not only the one that moved.
+
+**It is load bearing beyond the obvious.** A peer that never receives one does not know what it
+is, and hides whatever depends on knowing, which can be far more than a list of names. Treating
+it as decoration because a stream renders without it is a mistake this project made and paid
+for.
+
+The body is UTF-8 JSON, NUL-terminated and counted with the terminator, exactly as
+[§11.2a](#112a-application-messages) requires. Its shape is an application's, not this
+protocol's: what belongs here is that one exists per guest and carries at least that guest's
+number, its permissions and whether it owns the machine.
 
 ### §11.3 Video framing
 
