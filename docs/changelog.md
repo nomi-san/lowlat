@@ -39,6 +39,19 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   compressed mapping that difference is negative for all but the first few
   pixels, so every sample was refused and every shape fell back to no offset.
 
+**Found by running it**
+
+- **Leaving a walk early takes what the walk was also doing.** The pass that
+  finds the lit display plane is the same one that collects every pointer
+  plane, because which pointer plane to use cannot be decided until the lit
+  controller is known. Stopping at the display plane did the first job and
+  abandoned the second, so the display opened with no pointer at all and a
+  guest saw only its own client's fallback shape. It was introduced with named
+  selection and hidden by it: the exit only ran when an output was named, and
+  nothing named one until capturing the main screen made every run a named one.
+
+**Added**
+
 - **The encoder follows the display.** A conversion target is allocated on the
   device the display is on, and an encoder belonging to another cannot take it,
   so the encoder is a consequence of where the display is rather than a
