@@ -68,6 +68,8 @@ async fn main() {
     }
 }
 
+mod app;
+
 fn flag(name: &str) -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
     let at = args.iter().position(|arg| arg == name)?;
@@ -295,6 +297,26 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // seam is addressed by attempt and knows nothing about peer identity. Both
     // outlive a signaling drop, because an established guest has its own media
     // path and does not depend on the connection that introduced it.
+    // **Only what configuration decides.** What the stream is really producing
+    // is the display's answer and is read where it is known; describing it from
+    // here would report a stream nobody is producing the moment a display
+    // turned out to be a different size from the one that was asked for.
+    let settings = app::Settings {
+        output: flag("--output").unwrap_or_default(),
+        // The ceiling is configured in whole megabits; a client reads it as
+        // an integer and there is nothing below one to report.
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a configured bitrate in megabits, rounded and floored at zero"
+        )]
+        bitrate_mbps: bitrate_mbps.round().max(0.0) as u32,
+        fps: FPS,
+        rotated: !matches!(rotation, lowlat::video::Rotation::None),
+        host_os: flag("--host-os").and_then(|v| v.parse().ok()).unwrap_or(0),
+        fake_output: flag_set("--fake-output"),
+        full_fps: true,
+    };
     let mut peers: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut established: std::collections::HashSet<String> = std::collections::HashSet::new();
     let local = primary_local_address();
@@ -318,6 +340,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     max_guests,
                     local,
                     reject_all,
+                    &settings,
                 )
                 .await
                 {
@@ -371,6 +394,7 @@ async fn session_loop(
     capacity: u32,
     local: Option<IpAddr>,
     reject_all: bool,
+    settings: &app::Settings,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     // Resent on every connection, not just the first: the service takes it as
     // the frame that registers the session, so a reconnect without it is a
@@ -533,6 +557,10 @@ async fn session_loop(
                 Event::Established { attempt, addr } => {
                     println!("lowlatd: established {attempt} over {addr}");
                     established.insert(attempt.clone());
+                    // **Everyone is told, not just the arrival.** The room the
+                    // others are in changed too, and a guest that joined
+                    // earlier has no way to ask.
+                    app::announce_guests(seam);
                     client.send(
                         "conn_update",
                         &advertisement(name, capacity, occupancy(seam)),
@@ -550,16 +578,18 @@ async fn session_loop(
                     seam.end_connection(&attempt);
                     peers.remove(&attempt);
                     established.remove(&attempt);
+                    // Told after the reaping, so the roster describes the room
+                    // as it is rather than as it was a moment ago.
+                    app::announce_guests(seam);
                     client.send(
                         "conn_update",
                         &advertisement(name, capacity, occupancy(seam)),
                     )?;
                 }
-                // **Printed, not answered.** The identifier and the body are
-                // an application's own protocol, and this daemon does not yet
-                // speak one; what it does is show that the path is live and
-                // what a peer is really sending, which is what the wiring
-                // above it will be written against.
+                // **Answered here and nowhere below.** The identifier and the
+                // body are this application's protocol rather than the SDK's,
+                // so the choice of what they mean is made at this level and
+                // the layers under it stay ignorant of it.
                 Event::UserData { guest, id, text } => {
                     let printable: String = text
                         .iter()
@@ -572,9 +602,11 @@ async fn session_loop(
                             }
                         })
                         .collect();
+                    let spoken = app::on_message(seam, guest, id, &text, settings);
                     println!(
-                        "lowlatd: guest {guest} sent id={id} len={} body={printable}",
-                        text.len()
+                        "lowlatd: guest {guest} sent id={id} len={} {}body={printable}",
+                        text.len(),
+                        if spoken { "" } else { "(not ours) " }
                     );
                 }
                 other => println!("lowlatd: unhandled seam event {other:?}"),
