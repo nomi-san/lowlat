@@ -133,21 +133,46 @@ The four calls from [04 §9](04-signaling.md). This is the entire contact surfac
 signaling implementation and the SDK.
 
 ```c
-bool          lowlat_host_new_attempt(lowlat *ll, const lowlat_attempt_info *info);
+lowlat_status lowlat_host_new_attempt(lowlat *ll, const lowlat_attempt_info *info);
 void          lowlat_host_add_candidate(lowlat *ll, const char *attempt_id,
                                         const lowlat_candidate *cand);
-lowlat_status lowlat_host_begin_p2p(lowlat *ll, const char *attempt_id, uint16_t port,
+lowlat_status lowlat_host_begin_p2p(lowlat *ll, const char *attempt_id,
                                     lowlat_credentials *out);
-void          lowlat_host_end_connection(lowlat *ll, const char *attempt_id,
-                                         int32_t reason);
+void          lowlat_host_end_connection(lowlat *ll, const char *attempt_id);
 ```
 
+**Registering is not approving.** `lowlat_host_new_attempt` takes a seat's worth of
+bookkeeping and nothing else; no socket is opened and no thread is started until
+`lowlat_host_begin_p2p`. An application that decides to decline simply never calls that and
+says so over its own signaling.
+
+**Every refusal is its own status**, in the -100 band, because the correct response differs per
+outcome: a full host declines the offer, a race with teardown is retried or dropped, and a
+crypto failure is neither. `LOWLAT_ERR_AT_CAPACITY` in particular means **decline**, not stay
+quiet -- nothing in the protocol reports a host that never replied, so a peer given silence sits
+connecting until its own deadline expires.
+
 `lowlat_host_begin_p2p` writes host credentials into `out` for the application to send as its
-answer. It does not send anything, because the SDK has no transport.
+answer. It does not send anything, because the SDK has no transport. **The port it reports is
+the one that was bound**, which is not necessarily the configured one: the bind walks when a
+port is taken, and advertising the configured port produces a peer that answers checks and
+never establishes. It takes no port argument for that reason -- the port is an answer, not a
+request.
 
 `lowlat_host_add_candidate` and `lowlat_host_end_connection` accept unknown attempt
 identifiers silently. Those are races with teardown, not errors, and returning a status the
-caller would have to ignore is worse than returning nothing.
+caller would have to ignore is worse than returning nothing. A withdrawal that arrives before
+the offer it withdraws is **remembered**, so admitting that offer afterwards is refused with
+`LOWLAT_ERR_WITHDRAWN` rather than spending a socket and a thread on a guest already gone.
+
+**A candidate marked `sync` is a readiness marker rather than an address**, and whatever
+address rides along is ignored -- so it alone is accepted without one. A peer may withhold every
+real candidate until it has seen one.
+
+**`lowlat_host_end_connection` takes no reason**, for the same reason `lowlat_host_stop` does
+not: ending stops the guest's loop, and the far side learns from its own liveness deadline
+rather than from a message. The disconnect status the protocol carries exists; nothing calls it
+on the way down yet.
 
 ## §5 Events
 
