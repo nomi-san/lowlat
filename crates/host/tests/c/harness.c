@@ -53,6 +53,8 @@ int main(int argc, char **argv)
     lowlat_status (*create)(const lowlat_create_info *, lowlat **);
     void (*destroy)(lowlat *);
     lowlat_status (*poll_events)(lowlat *, uint32_t, lowlat_event *, void *, uint32_t *);
+    lowlat_status (*host_start)(lowlat *, const lowlat_host_config *);
+    lowlat_status (*host_stop)(lowlat *);
 
     RESOLVE(abi_version, lib, "lowlat_abi_version");
     RESOLVE(status_string, lib, "lowlat_status_string");
@@ -60,6 +62,8 @@ int main(int argc, char **argv)
     RESOLVE(create, lib, "lowlat_create");
     RESOLVE(destroy, lib, "lowlat_destroy");
     RESOLVE(poll_events, lib, "lowlat_host_poll_events");
+    RESOLVE(host_start, lib, "lowlat_host_start");
+    RESOLVE(host_stop, lib, "lowlat_host_stop");
 
     uint32_t version = abi_version();
     if ((version >> 16) != LOWLAT_ABI_MAJOR || (version & 0xffff) != LOWLAT_ABI_MINOR) {
@@ -94,6 +98,46 @@ int main(int argc, char **argv)
                      + (double) (after.tv_nsec - before.tv_nsec) / 1000000.0;
     if (waited_ms < 50.0) {
         fprintf(stderr, "harness: a 60 ms poll returned after %.1f ms\n", waited_ms);
+        return 1;
+    }
+
+    /* Hosting, configured the way an application would: no resolution to ask
+     * for, an output left empty so the host picks, and a frame rate that is a
+     * ceiling rather than a target. */
+    lowlat_host_config cfg;
+    memset(&cfg, 0, sizeof cfg);
+    cfg.size = (uint32_t) sizeof cfg;
+    cfg.base_port = 9100;
+    cfg.max_guests = 4;
+    cfg.codec = LOWLAT_CODEC_H264;
+    cfg.encoder = LOWLAT_ENCODER_FOLLOW_DISPLAY;
+    cfg.rotation = LOWLAT_ROTATION_NONE;
+    cfg.fps = 60;
+    cfg.bitrate_mbps = 10.0;
+    cfg.min_bitrate_mbps = 1.0;
+    if (host_start(ll, &cfg) != LOWLAT_OK) {
+        fprintf(stderr, "harness: hosting would not start\n");
+        return 1;
+    }
+    if (host_start(ll, &cfg) != LOWLAT_ERR_ALREADY_STARTED) {
+        fprintf(stderr, "harness: starting twice was not refused\n");
+        return 1;
+    }
+
+    /* A value nothing defines must be refused, not read as a variant that does
+     * not exist. */
+    lowlat_host_config bad = cfg;
+    bad.codec = 99;
+    if (host_start(ll, &bad) != LOWLAT_ERR_ALREADY_STARTED) {
+        fprintf(stderr, "harness: a running host accepted a second configuration\n");
+        return 1;
+    }
+    if (host_stop(ll) != LOWLAT_OK) {
+        fprintf(stderr, "harness: hosting would not stop\n");
+        return 1;
+    }
+    if (host_start(ll, &bad) != LOWLAT_ERR_INVALID_ARGUMENT) {
+        fprintf(stderr, "harness: a codec nothing defines was accepted\n");
         return 1;
     }
 

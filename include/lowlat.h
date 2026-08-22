@@ -26,6 +26,23 @@
 // signaling to forward has to be anyway.
 #define LOWLAT_ADDRESS_MAX 46
 
+// The longest output identity carried across this boundary.
+#define LOWLAT_OUTPUT_MAX 64
+
+// How many reflexive servers a host may be given, and how long each may be.
+//
+// **A fixed array rather than a pointer and a count**, so the structure stays
+// one blittable block with nothing in it to free. Four is already more than
+// any host here has ever been configured with.
+#define LOWLAT_SERVERS_MAX 4
+
+// The longest textual `host:port` for one of them.
+#define LOWLAT_SERVER_MAX 64
+
+// The most guests a host may advertise, which is what the ring memory per
+// guest is sized against.
+#define LOWLAT_GUESTS_MAX 16
+
 // A status code.
 //
 // **An enumeration for the names and a plain integer wherever one is
@@ -69,6 +86,9 @@ enum lowlat_status
     // longer trusted to describe its own state. Only destroying it still
     // works.
     LOWLAT_ERR_POISONED = -4,
+    // This handle is already hosting. Stopping first is the way to start
+    // again with a different configuration.
+    LOWLAT_ERR_ALREADY_STARTED = -5,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -135,6 +155,72 @@ typedef uint32_t lowlat_outcome;
 #endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
 
+// Which codec the stream is encoded with.
+//
+// **Named by an enumeration and carried as an integer**, for the reason
+// [`lowlat_status`] is: the application writes this field, so the value
+// arriving is whatever it wrote.
+enum lowlat_codec
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+    LOWLAT_CODEC_H264 = 1,
+    LOWLAT_CODEC_HEVC = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum lowlat_codec lowlat_codec;
+#else
+typedef uint32_t lowlat_codec;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+// Which encoder to build.
+enum lowlat_encoder
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+    // **The default, and the right one.** A conversion target is allocated on
+    // the device the display is on and an encoder belonging to another cannot
+    // take it, so the encoder is a consequence of where the display is rather
+    // than a preference. Choosing one is for forcing a particular encoder on a
+    // machine where either would do.
+    LOWLAT_ENCODER_FOLLOW_DISPLAY = 0,
+    LOWLAT_ENCODER_OPEN = 1,
+    LOWLAT_ENCODER_VENDOR = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum lowlat_encoder lowlat_encoder;
+#else
+typedef uint32_t lowlat_encoder;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+// How the display this stream shows is oriented.
+//
+// **The coded picture never rotates.** This travels to the peer, which is what
+// presents the picture and what maps pointer coordinates against it.
+enum lowlat_rotation
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+    LOWLAT_ROTATION_NONE = 1,
+    LOWLAT_ROTATION_90 = 2,
+    LOWLAT_ROTATION_180 = 3,
+    LOWLAT_ROTATION_270 = 4,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum lowlat_rotation lowlat_rotation;
+#else
+typedef uint32_t lowlat_rotation;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
 // One host session, as the application holds it.
 //
 // Opaque: the application holds a pointer it cannot look inside, so what is
@@ -149,6 +235,50 @@ typedef struct lowlat lowlat;
 typedef struct lowlat_create_info {
     uint32_t size;
 } lowlat_create_info;
+
+// How a host is configured.
+//
+// **There is no resolution here.** The display decides the picture's size, the
+// encoder follows it, and the application is told what it got rather than
+// asking for it; `fps` is a cap over whatever the display runs at, not a
+// target. A host that creates its own display chooses that display's size when
+// it creates it, which is a different question and not this field's.
+typedef struct lowlat_host_config {
+    // Set by the caller to `sizeof(lowlat_host_config)`.
+    uint32_t size;
+    // The base a guest's port bind walks from.
+    uint16_t base_port;
+    uint16_t reserved;
+    // Advertised capacity. Above [`LOWLAT_GUESTS_MAX`] is refused rather than
+    // quietly reduced.
+    uint32_t max_guests;
+    // One of [`lowlat_codec`].
+    uint32_t codec;
+    // One of [`lowlat_encoder`].
+    uint32_t encoder;
+    // One of [`lowlat_rotation`].
+    uint32_t rotation;
+    // **A ceiling, not a target.** Capture runs at the display's own rate and
+    // this is the most that is encoded from it.
+    uint32_t fps;
+    // What the operator asked for, before it is divided among guests.
+    double bitrate_mbps;
+    // The floor congestion control may not descend below.
+    double min_bitrate_mbps;
+    // Whether one guest at a time may drive the pointer. Off means everybody
+    // drives it, which is a configuration rather than a fault.
+    uint8_t exclusive_pointer;
+    uint8_t reserved2[3];
+    // Which output to capture, by an identity from the enumeration. **Empty
+    // means whichever this host would pick on its own**, which is the output
+    // at the desktop's corner and then whatever is lit.
+    char output[LOWLAT_OUTPUT_MAX];
+    // How many of `servers` are set.
+    uint32_t server_count;
+    // Reflexive servers, consulted for this host's own mapped address, each
+    // `host:port`.
+    char servers[LOWLAT_SERVERS_MAX][LOWLAT_SERVER_MAX];
+} lowlat_host_config;
 
 // A local candidate for the application to forward.
 typedef struct lowlat_candidate_event {
@@ -260,6 +390,34 @@ lowlat_status lowlat_create(const struct lowlat_create_info *info, struct lowlat
 // `ll` came from [`lowlat_create`] and is not used again. A null pointer is
 // accepted and does nothing.
 void lowlat_destroy(struct lowlat *ll);
+
+// Start hosting.
+//
+// Guests are admitted through the signaling seam, which is the application's
+// own; this starts what serves them once they arrive.
+//
+// # Safety
+//
+// `ll` came from [`lowlat_create`], and `cfg` points to one
+// [`lowlat_host_config`] whose `size` says how much of it is set.
+lowlat_status lowlat_host_start(struct lowlat *ll,
+                                const struct lowlat_host_config *cfg);
+
+// Stop hosting, disconnecting every guest and joining every thread.
+//
+// **Not the same as destroying the handle.** A host may be stopped and started
+// again on the same handle, and events raised before it stopped are still
+// waiting to be polled.
+//
+// **A peer is not yet told why.** Guest loops are stopped and joined, and the
+// far side learns by its own liveness deadline rather than from a message, so
+// stopping costs a peer the wait rather than being immediate to it. There is
+// no reason parameter here because there is nothing yet that could carry one.
+//
+// # Safety
+//
+// `ll` came from [`lowlat_create`].
+lowlat_status lowlat_host_stop(struct lowlat *ll);
 
 // Take one event, waiting up to `timeout_ms` for one to arrive.
 //

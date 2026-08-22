@@ -29,9 +29,13 @@ header = """
 parse_deps = false
 
 [export]
-# Only what is deliberately exported. A type that reaches the header by being
-# named in a signature is a type we published without deciding to.
 prefix = ""
+# **Named because nothing references them.** These enumerations exist to name
+# the values of configuration fields that are carried as plain integers, which
+# is deliberate -- the application writes those fields, so reading one back as a
+# variant would be reading whatever it wrote. Nothing being typed by them is the
+# point, and it is also why they have to be asked for here.
+include = ["lowlat_codec", "lowlat_encoder", "lowlat_rotation"]
 
 [enum]
 prefix_with_name = false

@@ -57,6 +57,9 @@ pub enum lowlat_status {
     /// longer trusted to describe its own state. Only destroying it still
     /// works.
     LOWLAT_ERR_POISONED = -4,
+    /// This handle is already hosting. Stopping first is the way to start
+    /// again with a different configuration.
+    LOWLAT_ERR_ALREADY_STARTED = -5,
 }
 
 /// The major version, raised only when something already published changes.
@@ -77,7 +80,7 @@ pub extern "C" fn lowlat_abi_version() -> u32 {
 ///
 /// A table rather than a match, because the value arriving is an integer and
 /// not necessarily one of these.
-const DESCRIPTIONS: [(lowlat_status, &CStr); 6] = [
+const DESCRIPTIONS: [(lowlat_status, &CStr); 7] = [
     (LOWLAT_OK, c"ok"),
     (LOWLAT_TIMEOUT, c"no event within the timeout"),
     (
@@ -87,6 +90,10 @@ const DESCRIPTIONS: [(lowlat_status, &CStr); 6] = [
     (LOWLAT_ERR_INVALID_ARGUMENT, c"an argument was not usable"),
     (LOWLAT_ERR_TOO_SMALL, c"the buffer was too small"),
     (LOWLAT_ERR_POISONED, c"the handle is poisoned"),
+    (
+        LOWLAT_ERR_ALREADY_STARTED,
+        c"this handle is already hosting",
+    ),
 ];
 
 /// Describe a status.
@@ -246,6 +253,107 @@ pub struct lowlat_event {
     pub body: lowlat_event_body,
 }
 
+/// The longest output identity carried across this boundary.
+pub const LOWLAT_OUTPUT_MAX: usize = 64;
+
+/// How many reflexive servers a host may be given, and how long each may be.
+///
+/// **A fixed array rather than a pointer and a count**, so the structure stays
+/// one blittable block with nothing in it to free. Four is already more than
+/// any host here has ever been configured with.
+pub const LOWLAT_SERVERS_MAX: usize = 4;
+/// The longest textual `host:port` for one of them.
+pub const LOWLAT_SERVER_MAX: usize = 64;
+
+/// Which codec the stream is encoded with.
+///
+/// **Named by an enumeration and carried as an integer**, for the reason
+/// [`lowlat_status`] is: the application writes this field, so the value
+/// arriving is whatever it wrote.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_codec {
+    LOWLAT_CODEC_H264 = 1,
+    LOWLAT_CODEC_HEVC = 2,
+}
+
+/// Which encoder to build.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_encoder {
+    /// **The default, and the right one.** A conversion target is allocated on
+    /// the device the display is on and an encoder belonging to another cannot
+    /// take it, so the encoder is a consequence of where the display is rather
+    /// than a preference. Choosing one is for forcing a particular encoder on a
+    /// machine where either would do.
+    LOWLAT_ENCODER_FOLLOW_DISPLAY = 0,
+    LOWLAT_ENCODER_OPEN = 1,
+    LOWLAT_ENCODER_VENDOR = 2,
+}
+
+/// How the display this stream shows is oriented.
+///
+/// **The coded picture never rotates.** This travels to the peer, which is what
+/// presents the picture and what maps pointer coordinates against it.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_rotation {
+    LOWLAT_ROTATION_NONE = 1,
+    LOWLAT_ROTATION_90 = 2,
+    LOWLAT_ROTATION_180 = 3,
+    LOWLAT_ROTATION_270 = 4,
+}
+
+/// How a host is configured.
+///
+/// **There is no resolution here.** The display decides the picture's size, the
+/// encoder follows it, and the application is told what it got rather than
+/// asking for it; `fps` is a cap over whatever the display runs at, not a
+/// target. A host that creates its own display chooses that display's size when
+/// it creates it, which is a different question and not this field's.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_host_config {
+    /// Set by the caller to `sizeof(lowlat_host_config)`.
+    pub size: u32,
+    /// The base a guest's port bind walks from.
+    pub base_port: u16,
+    pub reserved: u16,
+    /// Advertised capacity. Above [`LOWLAT_GUESTS_MAX`] is refused rather than
+    /// quietly reduced.
+    pub max_guests: u32,
+    /// One of [`lowlat_codec`].
+    pub codec: u32,
+    /// One of [`lowlat_encoder`].
+    pub encoder: u32,
+    /// One of [`lowlat_rotation`].
+    pub rotation: u32,
+    /// **A ceiling, not a target.** Capture runs at the display's own rate and
+    /// this is the most that is encoded from it.
+    pub fps: u32,
+    /// What the operator asked for, before it is divided among guests.
+    pub bitrate_mbps: f64,
+    /// The floor congestion control may not descend below.
+    pub min_bitrate_mbps: f64,
+    /// Whether one guest at a time may drive the pointer. Off means everybody
+    /// drives it, which is a configuration rather than a fault.
+    pub exclusive_pointer: u8,
+    pub reserved2: [u8; 3],
+    /// Which output to capture, by an identity from the enumeration. **Empty
+    /// means whichever this host would pick on its own**, which is the output
+    /// at the desktop's corner and then whatever is lit.
+    pub output: [c_char; LOWLAT_OUTPUT_MAX],
+    /// How many of `servers` are set.
+    pub server_count: u32,
+    /// Reflexive servers, consulted for this host's own mapped address, each
+    /// `host:port`.
+    pub servers: [[c_char; LOWLAT_SERVER_MAX]; LOWLAT_SERVERS_MAX],
+}
+
+/// The most guests a host may advertise, which is what the ring memory per
+/// guest is sized against.
+pub const LOWLAT_GUESTS_MAX: u32 = 16;
+
 /// What a handle is created with.
 ///
 /// **The caller sets `size`.** It is read rather than assumed, so this can grow
@@ -257,19 +365,40 @@ pub struct lowlat_create_info {
     pub size: u32,
 }
 
+/// Everything one handle owns, under one lock.
+///
+/// **One lock rather than two.** A second would be a lock ordering, and a lock
+/// ordering is what produces the first deadlock on the day somebody adds a call
+/// that needs both (docs/06-api.md 8).
+#[derive(Debug, Default)]
+struct Held {
+    seam: Option<crate::admission::Admission>,
+    /// **Shared rather than borrowed**, so a poll can take a handle on the
+    /// queue and release the lock before it waits. Holding the lock across a
+    /// wait would stop every other call for the length of somebody's timeout.
+    /// One consumer is still the contract; this is what keeps the lock honest,
+    /// not what makes two consumers safe.
+    events: Option<std::sync::Arc<crate::events::Receiver>>,
+}
+
 /// One host session, as the application holds it.
 ///
 /// Opaque: the application holds a pointer it cannot look inside, so what is
 /// in here changes freely.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct lowlat {
     /// Set when a call was contained, and never cleared.
     poisoned: AtomicBool,
-    /// **Held directly rather than behind the seam's lock**, because a poll
-    /// waits for as long as its caller asked and every other call must stay
-    /// answerable while it does. `None` until hosting starts, which is not an
-    /// error: an application polls from its own thread before and after.
-    events: Option<crate::events::Receiver>,
+    held: std::sync::Mutex<Held>,
+}
+
+impl lowlat {
+    /// **A poisoned lock is not a second failure to report.** The handle is
+    /// already refusing every call once a panic has been contained, and that
+    /// is the state this would be describing.
+    fn held(&self) -> std::sync::MutexGuard<'_, Held> {
+        self.held.lock().unwrap_or_else(|held| held.into_inner())
+    }
 }
 
 /// Create a handle.
@@ -295,10 +424,7 @@ pub unsafe extern "C" fn lowlat_create(
         {
             return LOWLAT_ERR_INVALID_ARGUMENT;
         }
-        let handle = Box::new(lowlat {
-            poisoned: AtomicBool::new(false),
-            events: None,
-        });
+        let handle = Box::new(lowlat::default());
         unsafe { out.write(Box::into_raw(handle)) };
         LOWLAT_OK
     })
@@ -321,6 +447,170 @@ pub unsafe extern "C" fn lowlat_destroy(ll: *mut lowlat) {
         }
         drop(unsafe { Box::from_raw(ll) });
     });
+}
+
+/// Read a fixed array back as a string, stopping at the terminator.
+///
+/// An array with no terminator in it is refused rather than read to its end:
+/// the application overran a field, and guessing which half it meant is worse
+/// than saying so.
+fn taken(from: &[c_char]) -> Option<&str> {
+    let bytes: &[u8] = unsafe { core::slice::from_raw_parts(from.as_ptr().cast(), from.len()) };
+    let end = bytes.iter().position(|byte| *byte == 0)?;
+    core::str::from_utf8(bytes.get(..end)?).ok()
+}
+
+/// Turn what the application wrote into what the seam takes.
+///
+/// **Every enumerated field is validated rather than transmuted.** The
+/// application filled this structure, so each of these is whatever it wrote,
+/// and a value nothing defined is refused here instead of becoming a variant
+/// that does not exist.
+fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
+    let codec = match cfg.codec {
+        code if code == lowlat_codec::LOWLAT_CODEC_H264 as u32 => crate::stream::Codec::H264,
+        code if code == lowlat_codec::LOWLAT_CODEC_HEVC as u32 => crate::stream::Codec::H265,
+        _ => return None,
+    };
+    let backend = match cfg.encoder {
+        code if code == lowlat_encoder::LOWLAT_ENCODER_FOLLOW_DISPLAY as u32 => None,
+        code if code == lowlat_encoder::LOWLAT_ENCODER_OPEN as u32 => {
+            Some(crate::stream::Backend::Open)
+        }
+        code if code == lowlat_encoder::LOWLAT_ENCODER_VENDOR as u32 => {
+            Some(crate::stream::Backend::Vendor)
+        }
+        _ => return None,
+    };
+    let rotation = match cfg.rotation {
+        code if code == lowlat_rotation::LOWLAT_ROTATION_NONE as u32 => {
+            lowlat_core::video::Rotation::None
+        }
+        code if code == lowlat_rotation::LOWLAT_ROTATION_90 as u32 => {
+            lowlat_core::video::Rotation::Deg90
+        }
+        code if code == lowlat_rotation::LOWLAT_ROTATION_180 as u32 => {
+            lowlat_core::video::Rotation::Deg180
+        }
+        code if code == lowlat_rotation::LOWLAT_ROTATION_270 as u32 => {
+            lowlat_core::video::Rotation::Deg270
+        }
+        _ => return None,
+    };
+    if cfg.max_guests == 0 || cfg.max_guests > LOWLAT_GUESTS_MAX || cfg.fps == 0 {
+        return None;
+    }
+    if !(cfg.bitrate_mbps.is_finite() && cfg.bitrate_mbps > 0.0)
+        || !(cfg.min_bitrate_mbps.is_finite() && cfg.min_bitrate_mbps > 0.0)
+        || cfg.min_bitrate_mbps > cfg.bitrate_mbps
+    {
+        return None;
+    }
+    let output = taken(&cfg.output)?;
+    if cfg.server_count as usize > LOWLAT_SERVERS_MAX {
+        return None;
+    }
+    let mut servers = Vec::new();
+    for server in cfg.servers.iter().take(cfg.server_count as usize) {
+        // Resolved here rather than at the first check, so a name that does not
+        // resolve is refused while the caller is still holding the call that
+        // set it.
+        let text = taken(server)?;
+        let mut found = std::net::ToSocketAddrs::to_socket_addrs(text).ok()?;
+        servers.push(found.next()?);
+    }
+
+    Some(crate::admission::Config {
+        base_port: cfg.base_port,
+        max_guests: cfg.max_guests as usize,
+        servers,
+        exclusive_pointer: cfg.exclusive_pointer != 0,
+        // A live-run aid, and nothing an application should be able to ask for.
+        rumble_probe: false,
+        stream: Some(crate::stream::Config {
+            codec,
+            backend,
+            // **The generated picture's size, which is not a product
+            // feature.** A host started through this boundary captures a
+            // display and follows whatever size it is; these exist for running
+            // the layers above capture without a screen.
+            width: 0,
+            height: 0,
+            detail_rows: 0,
+            display: true,
+            fps: cfg.fps,
+            configured_mbps: cfg.bitrate_mbps,
+            min_mbps: cfg.min_bitrate_mbps,
+            rotation,
+            output: (!output.is_empty()).then(|| output.to_string()),
+        }),
+    })
+}
+
+/// Start hosting.
+///
+/// Guests are admitted through the signaling seam, which is the application's
+/// own; this starts what serves them once they arrive.
+///
+/// # Safety
+///
+/// `ll` came from [`lowlat_create`], and `cfg` points to one
+/// [`lowlat_host_config`] whose `size` says how much of it is set.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_start(
+    ll: *mut lowlat,
+    cfg: *const lowlat_host_config,
+) -> lowlat_status {
+    unsafe {
+        entered(ll, |handle| {
+            let Some(cfg) = cfg.as_ref() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            if (cfg.size as usize) < core::mem::size_of::<lowlat_host_config>() {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let mut held = handle.held();
+            if held.seam.is_some() {
+                return LOWLAT_ERR_ALREADY_STARTED;
+            }
+            let Some(config) = configured(cfg) else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            let mut seam = crate::admission::Admission::new(config);
+            // **Taken now, and held beside the seam rather than inside it.** A
+            // poll waits for as long as its caller asked, and every other call
+            // has to stay answerable while it does.
+            held.events = seam.take_events().map(std::sync::Arc::new);
+            held.seam = Some(seam);
+            LOWLAT_OK
+        })
+    }
+}
+
+/// Stop hosting, disconnecting every guest and joining every thread.
+///
+/// **Not the same as destroying the handle.** A host may be stopped and started
+/// again on the same handle, and events raised before it stopped are still
+/// waiting to be polled.
+///
+/// **A peer is not yet told why.** Guest loops are stopped and joined, and the
+/// far side learns by its own liveness deadline rather than from a message, so
+/// stopping costs a peer the wait rather than being immediate to it. There is
+/// no reason parameter here because there is nothing yet that could carry one.
+///
+/// # Safety
+///
+/// `ll` came from [`lowlat_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_stop(ll: *mut lowlat) -> lowlat_status {
+    unsafe {
+        entered(ll, |handle| {
+            // The queue outlives the seam on purpose: what it raised on the way
+            // down is still worth polling.
+            handle.held().seam = None;
+            LOWLAT_OK
+        })
+    }
 }
 
 /// Take one event, waiting up to `timeout_ms` for one to arrive.
@@ -359,13 +649,12 @@ pub unsafe extern "C" fn lowlat_host_poll_events(
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             }
             let timeout = Duration::from_millis(u64::from(timeout_ms));
-            // Nothing is raising events yet, which is a quiet queue rather
-            // than a fault. **The timeout is still owed**: an application
-            // starts its polling thread before it starts hosting, and a poll
-            // that answers instantly turns that thread into a spin. Found by
-            // the C harness, which timed the call; the first unit test for
-            // this asked for no timeout at all and could not have seen it.
-            let Some(events) = handle.events.as_ref() else {
+            let events = handle.held().events.clone();
+            let Some(events) = events else {
+                // Nothing raises events until hosting starts. **The timeout is
+                // still owed**: an application starts its polling thread before
+                // it starts hosting, and a poll that answers instantly turns
+                // that thread into a spin.
                 std::thread::sleep(timeout);
                 return LOWLAT_TIMEOUT;
             };
@@ -605,6 +894,7 @@ mod tests {
             LOWLAT_ERR_INVALID_ARGUMENT,
             LOWLAT_ERR_TOO_SMALL,
             LOWLAT_ERR_POISONED,
+            LOWLAT_ERR_ALREADY_STARTED,
         ] {
             let text = lowlat_status_string(status as i32);
             assert!(!text.is_null());
@@ -694,5 +984,168 @@ mod tests {
         let waited = lowlat_common::clock::elapsed_ms(began);
         assert!(waited >= 50.0, "returned after {waited:.1} ms, so it spun");
         unsafe { lowlat_destroy(handle) };
+    }
+}
+
+#[cfg(test)]
+mod start_tests {
+    use super::*;
+
+    fn config() -> lowlat_host_config {
+        let mut cfg = lowlat_host_config {
+            size: u32::try_from(core::mem::size_of::<lowlat_host_config>()).unwrap_or(u32::MAX),
+            base_port: 9000,
+            reserved: 0,
+            max_guests: 4,
+            codec: lowlat_codec::LOWLAT_CODEC_H264 as u32,
+            encoder: lowlat_encoder::LOWLAT_ENCODER_FOLLOW_DISPLAY as u32,
+            rotation: lowlat_rotation::LOWLAT_ROTATION_NONE as u32,
+            fps: 60,
+            bitrate_mbps: 10.0,
+            min_bitrate_mbps: 1.0,
+            exclusive_pointer: 0,
+            reserved2: [0; 3],
+            output: [0; LOWLAT_OUTPUT_MAX],
+            server_count: 0,
+            servers: [[0; LOWLAT_SERVER_MAX]; LOWLAT_SERVERS_MAX],
+        };
+        put(&mut cfg.output, "");
+        cfg
+    }
+
+    fn handle() -> *mut lowlat {
+        let mut handle: *mut lowlat = core::ptr::null_mut();
+        assert_eq!(
+            unsafe { lowlat_create(core::ptr::null(), &raw mut handle) },
+            LOWLAT_OK
+        );
+        handle
+    }
+
+    /// Hosting starts, stops, and starts again on the same handle.
+    #[test]
+    fn a_host_starts_and_stops_and_starts_again() {
+        let handle = handle();
+        let cfg = config();
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_OK
+        );
+        // **Starting twice is refused rather than silently reconfiguring.** A
+        // second configuration that looks accepted and is not is a host running
+        // settings nobody can see.
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_ERR_ALREADY_STARTED
+        );
+        assert_eq!(unsafe { lowlat_host_stop(handle) }, LOWLAT_OK);
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_OK
+        );
+        unsafe { lowlat_destroy(handle) };
+    }
+
+    /// **Every enumerated field is checked, not transmuted.** The application
+    /// fills this structure, so each of these is whatever it wrote, and a value
+    /// nothing defined must be refused rather than become a variant that does
+    /// not exist.
+    #[test]
+    fn a_value_nothing_defines_is_refused() {
+        let handle = handle();
+        for spoil in [
+            (|cfg: &mut lowlat_host_config| cfg.codec = 99) as fn(&mut lowlat_host_config),
+            |cfg| cfg.encoder = 99,
+            |cfg| cfg.rotation = 99,
+            |cfg| cfg.max_guests = 0,
+            |cfg| cfg.max_guests = LOWLAT_GUESTS_MAX + 1,
+            |cfg| cfg.fps = 0,
+            |cfg| cfg.bitrate_mbps = 0.0,
+            |cfg| cfg.bitrate_mbps = f64::NAN,
+            // A floor above the ceiling leaves congestion control nowhere to go.
+            |cfg| cfg.min_bitrate_mbps = 100.0,
+            |cfg| cfg.server_count = u32::try_from(LOWLAT_SERVERS_MAX + 1).unwrap_or(u32::MAX),
+            // A field with no terminator was overrun by whoever filled it.
+            |cfg| cfg.output = [b'x' as c_char; LOWLAT_OUTPUT_MAX],
+            // The size field is the versioning, and one that says less than the
+            // struct holds means the caller and the header disagree.
+            |cfg| cfg.size = 4,
+        ] {
+            let mut cfg = config();
+            spoil(&mut cfg);
+            assert_eq!(
+                unsafe { lowlat_host_start(handle, &raw const cfg) },
+                LOWLAT_ERR_INVALID_ARGUMENT,
+                "a configuration that should have been refused was accepted"
+            );
+        }
+        // And none of that left it hosting.
+        let good = config();
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const good) },
+            LOWLAT_OK
+        );
+        unsafe { lowlat_destroy(handle) };
+    }
+
+    /// A reflexive server is resolved while the caller is still holding the
+    /// call that set it, rather than failing later where nothing can be done.
+    #[test]
+    fn a_server_that_does_not_resolve_is_refused_at_the_call_that_set_it() {
+        let handle = handle();
+        let mut cfg = config();
+        cfg.server_count = 1;
+        put(&mut cfg.servers[0], "no-such-host.invalid:3478");
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+
+        let mut cfg = config();
+        cfg.server_count = 1;
+        put(&mut cfg.servers[0], "127.0.0.1:3478");
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_OK
+        );
+        unsafe { lowlat_destroy(handle) };
+    }
+
+    /// **Hosting is what fills the queue**, and stopping does not empty it:
+    /// what was raised on the way down is still worth polling.
+    #[test]
+    fn events_reach_the_poll_once_hosting_has_started() {
+        let handle = handle();
+        let cfg = config();
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_OK
+        );
+
+        let mut event = core::mem::MaybeUninit::<lowlat_event>::uninit();
+        let polled = unsafe {
+            lowlat_host_poll_events(
+                handle,
+                0,
+                event.as_mut_ptr(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+        // Nobody has offered, so there is nothing yet -- but the queue is real
+        // now rather than absent, which is what the next assertion rests on.
+        assert_eq!(polled, LOWLAT_TIMEOUT);
+        assert!(handle_has_a_queue(handle));
+
+        assert_eq!(unsafe { lowlat_host_stop(handle) }, LOWLAT_OK);
+        assert!(
+            handle_has_a_queue(handle),
+            "stopping threw away events that had already been raised"
+        );
+        unsafe { lowlat_destroy(handle) };
+    }
+
+    fn handle_has_a_queue(ll: *mut lowlat) -> bool {
+        unsafe { ll.as_ref() }.is_some_and(|handle| handle.held().events.is_some())
     }
 }
