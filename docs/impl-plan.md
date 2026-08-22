@@ -1123,7 +1123,7 @@ problem and no code at all.
   *Silent on the wire: a receiver rebuilds only for a codec, channel-count or mask change, and a
   device switch is none of them.*
 - [x] **Publish the source the host is on**, not the one it asked for.
-- [ ] **The uncompressed bitrate comes out of the video ceiling** for that guest, not out of
+- [x] **The uncompressed bitrate comes out of the video ceiling** for that guest, not out of
   nothing. *The video rate controller cannot see it, and 1.54 Mbit/s is five percent of a thirty
   megabit session.*
 - [x] **Open the sound device when the first guest arrives, close it when the last leaves.**
