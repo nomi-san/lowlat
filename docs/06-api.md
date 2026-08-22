@@ -35,7 +35,7 @@ mismatch is a link error rather than silent memory corruption at the first field
 lowlat_status lowlat_create(const lowlat_create_info *info, lowlat **out);
 void          lowlat_destroy(lowlat *ll);
 void          lowlat_set_log_callback(lowlat_log_fn fn, void *opaque);
-const char   *lowlat_status_string(lowlat_status status);
+const char   *lowlat_status_string(int32_t status);
 uint32_t      lowlat_abi_version(void);
 ```
 
@@ -87,7 +87,7 @@ void          lowlat_host_add_candidate(lowlat *ll, const char *attempt_id,
 lowlat_status lowlat_host_begin_p2p(lowlat *ll, const char *attempt_id, uint16_t port,
                                     lowlat_credentials *out);
 void          lowlat_host_end_connection(lowlat *ll, const char *attempt_id,
-                                         lowlat_status reason);
+                                         int32_t reason);
 ```
 
 `lowlat_host_begin_p2p` writes host credentials into `out` for the application to send as its
