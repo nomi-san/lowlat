@@ -58,6 +58,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # Exactly one TLS provider, chosen here rather than left to feature unification
 # to decide, which resolves to none and panics at the first connection.
+opus-rs = "0.1"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [workspace.lints.rust]

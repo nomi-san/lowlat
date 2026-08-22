@@ -34,11 +34,23 @@
 
 use std::sync::mpsc;
 
-use lowlat_audio::{Capture, Config, FRAME, FRAME_BYTES, SAMPLE_RATE};
+use lowlat_audio::encode::{self, DEFAULT_BITRATE_KBPS};
+use lowlat_audio::{Capture, Config, Encoder, FRAME, FRAME_BYTES, SAMPLE_RATE};
 use lowlat_common::clock::{Time, elapsed_ms};
 
 /// How long to read for when nobody says, in frames of 20 ms.
 const FRAMES: usize = 10 * 50;
+
+/// What one captured frame cost and carried.
+struct Sample {
+    gap: f64,
+    squares: f64,
+    loudest: i32,
+    len: usize,
+    packet: usize,
+    cost: f64,
+    silent: bool,
+}
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -55,6 +67,13 @@ fn main() {
     let (sender, received) = mpsc::channel();
     let began = Time::now();
     let mut previous = Time::now();
+    let mut encoder = match Encoder::new(DEFAULT_BITRATE_KBPS) {
+        Ok(encoder) => encoder,
+        Err(error) => {
+            println!("no encoder: {error}");
+            return;
+        }
+    };
     let capture = match Capture::open(
         Config {
             server: server.clone(),
@@ -71,7 +90,22 @@ fn main() {
                 squares += f64::from(sample) * f64::from(sample);
                 loudest = loudest.max(sample.abs());
             }
-            let _ = sender.send((gap, squares, loudest, frame.len()));
+            // **Encoded on the capture thread**, which is where it will run:
+            // a frame is 20 ms and the encode is a fraction of a millisecond,
+            // so there is nothing to hand to another thread.
+            let silent = encode::is_silent(frame);
+            let started = Time::now();
+            let packet = encoder.encode(frame).map(<[u8]>::len).unwrap_or(0);
+            let cost = elapsed_ms(started);
+            let _ = sender.send(Sample {
+                gap,
+                squares,
+                loudest,
+                len: frame.len(),
+                packet,
+                cost,
+                silent,
+            });
         },
     ) {
         Ok(capture) => capture,
@@ -86,21 +120,27 @@ fn main() {
     );
 
     let mut gaps = Vec::with_capacity(frames);
+    let mut costs = Vec::with_capacity(frames);
     let mut squares = 0f64;
     let mut peak = 0i32;
     let mut silent = 0usize;
     let mut short = 0usize;
+    let mut packet_bytes = 0usize;
+    let mut silent_bytes = 0usize;
     for _ in 0..frames {
-        let Ok((gap, energy, loudest, len)) = received.recv() else {
+        let Ok(sample) = received.recv() else {
             break;
         };
-        gaps.push(gap);
-        squares += energy;
-        peak = peak.max(loudest);
-        if loudest == 0 {
+        gaps.push(sample.gap);
+        costs.push(sample.cost);
+        squares += sample.squares;
+        peak = peak.max(sample.loudest);
+        packet_bytes += sample.packet;
+        if sample.silent {
             silent += 1;
+            silent_bytes += sample.packet;
         }
-        if len != FRAME_BYTES {
+        if sample.len != FRAME_BYTES {
             short += 1;
         }
     }
@@ -109,12 +149,14 @@ fn main() {
     drop(capture);
 
     gaps.sort_by(f64::total_cmp);
+    costs.sort_by(f64::total_cmp);
     // Percent rather than a fraction, so the index is integer arithmetic and
     // the rounding is not a float cast.
-    let at = |percent: usize| -> f64 {
-        let index = gaps.len().saturating_sub(1) * percent / 100;
-        gaps.get(index).copied().unwrap_or(0.0)
+    let quantile = |sorted: &[f64], percent: usize| -> f64 {
+        let index = sorted.len().saturating_sub(1) * percent / 100;
+        sorted.get(index).copied().unwrap_or(0.0)
     };
+    let at = |percent: usize| quantile(&gaps, percent);
     let count = gaps.len();
     let captured_ms = (count * FRAME) as f64 * 1000.0 / f64::from(SAMPLE_RATE);
     let samples = (count * FRAME * lowlat_audio::CHANNELS) as f64;
@@ -133,6 +175,19 @@ fn main() {
         "clock: captured {captured_ms:.0} ms in {elapsed:.0} ms of wall time, \
          drift {:+.0} ms",
         captured_ms - elapsed
+    );
+    println!(
+        "encode ms: p50 {:.3}  p95 {:.3}  p99 {:.3}  max {:.3}",
+        quantile(&costs, 50),
+        quantile(&costs, 95),
+        quantile(&costs, 99),
+        quantile(&costs, 100)
+    );
+    println!(
+        "packets: {:.1} kbit/s over the run, and {:.1} of that is silence \
+         ({silent} frames) that a host would not send",
+        (packet_bytes * 8) as f64 / captured_ms,
+        (silent_bytes * 8) as f64 / captured_ms
     );
     println!(
         "content: rms {:.0} peak {peak} silent frames {silent} of {count}{}",

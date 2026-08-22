@@ -16,9 +16,11 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod capture;
+pub mod encode;
 mod pulse;
 
 pub use capture::{Capture, Config};
+pub use encode::Encoder;
 
 /// Samples a second, per channel. **The only rate the protocol carries**, so
 /// it comes from there rather than being declared again here.
@@ -58,6 +60,8 @@ pub enum Error {
     Refused(i32),
     /// A read failed. Carries the server's own code.
     Read(i32),
+    /// The codec refused a frame, or could not be built for this format.
+    Encode,
     /// The named device is not among those the server offers. **Checked before
     /// opening rather than after**, because a name that does not resolve is
     /// substituted rather than refused.
@@ -75,6 +79,7 @@ impl core::fmt::Display for Error {
                 write!(f, "the sound server refused the connection, code={code}")
             }
             Error::Read(code) => write!(f, "reading sound failed, code={code}"),
+            Error::Encode => f.write_str("the codec refused a frame"),
             Error::NoSuchDevice => f.write_str("no such sound device"),
         }
     }
