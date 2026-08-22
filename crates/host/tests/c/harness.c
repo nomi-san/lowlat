@@ -63,6 +63,8 @@ int main(int argc, char **argv)
     void (*end_connection)(lowlat *, const char *);
     lowlat_status (*get_guests)(lowlat *, lowlat_guest *, uint32_t *);
     lowlat_status (*send_user_data)(lowlat *, uint32_t, uint32_t, const void *, uint32_t);
+    lowlat_status (*set_permissions)(lowlat *, uint32_t, const lowlat_permissions *);
+    lowlat_status (*kick_guest)(lowlat *, uint32_t, int32_t);
 
     RESOLVE(abi_version, lib, "lowlat_abi_version");
     RESOLVE(status_string, lib, "lowlat_status_string");
@@ -80,6 +82,8 @@ int main(int argc, char **argv)
     RESOLVE(end_connection, lib, "lowlat_host_end_connection");
     RESOLVE(get_guests, lib, "lowlat_host_get_guests");
     RESOLVE(send_user_data, lib, "lowlat_host_send_user_data");
+    RESOLVE(set_permissions, lib, "lowlat_host_set_permissions");
+    RESOLVE(kick_guest, lib, "lowlat_host_kick_guest");
 
     uint32_t version = abi_version();
     if ((version >> 16) != LOWLAT_ABI_MAJOR || (version & 0xffff) != LOWLAT_ABI_MINOR) {
@@ -270,6 +274,35 @@ int main(int argc, char **argv)
     }
     if (send_user_data(ll, 4242, 9, hello, 5) != LOWLAT_ERR_UNKNOWN_GUEST) {
         fprintf(stderr, "harness: a message to nobody was accepted\n");
+        return 1;
+    }
+
+    /* What a guest may drive, changed while it is connected. There is no
+     * separate call to turn its input off: that is this one with every flag
+     * cleared. */
+    lowlat_permissions perms;
+    perms.keyboard = false;
+    perms.pointer = true;
+    perms.gamepad = false;
+    perms.reserved = 0;
+    if (set_permissions(ll, roster[0].number, &perms) != LOWLAT_OK) {
+        fprintf(stderr, "harness: permissions could not be changed\n");
+        return 1;
+    }
+    guests = 4;
+    if (get_guests(ll, roster, &guests) != LOWLAT_OK || roster[0].permissions.keyboard) {
+        fprintf(stderr, "harness: the roster did not follow the change\n");
+        return 1;
+    }
+
+    /* **Zero is not a reason.** A peer carries on through a status of zero, so
+     * a guest kicked with one is told nothing and stays exactly where it was. */
+    if (kick_guest(ll, roster[0].number, 0) != LOWLAT_ERR_INVALID_ARGUMENT) {
+        fprintf(stderr, "harness: a status a peer ignores was accepted as a reason\n");
+        return 1;
+    }
+    if (kick_guest(ll, roster[0].number, -15000) != LOWLAT_OK) {
+        fprintf(stderr, "harness: a guest could not be kicked\n");
         return 1;
     }
 

@@ -726,6 +726,42 @@ lowlat_status lowlat_host_send_user_data(struct lowlat *ll,
                                          const void *data,
                                          uint32_t len);
 
+// End one guest, telling it why.
+//
+// **`reason` is not a [`lowlat_status`].** It reaches the peer as the
+// protocol's own disconnect status, which is a different numbering that
+// happens to share a width. **Zero is not a value to pass**: a peer carries on
+// through it, so a guest kicked with zero is told nothing and stays.
+//
+// The guest is sent the reason, given a moment for it to arrive, and then its
+// seat goes back. It does not disappear from the roster the instant this
+// returns.
+//
+// # Safety
+//
+// `ll` came from [`lowlat_create`].
+lowlat_status lowlat_host_kick_guest(struct lowlat *ll,
+                                     uint32_t guest_id,
+                                     int32_t reason);
+
+// Change what one guest may drive, while it is connected.
+//
+// **This is the only way to set them.** There is no separate call to turn a
+// guest's input off, because that is this call with every flag cleared, and
+// two calls writing one field can disagree about what a guest is allowed to
+// do.
+//
+// The change reaches the roster immediately and the guest's own devices on its
+// next pass.
+//
+// # Safety
+//
+// `ll` came from [`lowlat_create`], and `perms` points to one
+// [`lowlat_permissions`].
+lowlat_status lowlat_host_set_permissions(struct lowlat *ll,
+                                          uint32_t guest_id,
+                                          const struct lowlat_permissions *perms);
+
 // Change the video settings while the host runs.
 //
 // **Everything in this structure is applied without rebuilding the session.**

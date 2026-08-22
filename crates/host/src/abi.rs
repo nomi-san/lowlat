@@ -1171,6 +1171,87 @@ pub unsafe extern "C" fn lowlat_host_send_user_data(
     }
 }
 
+/// End one guest, telling it why.
+///
+/// **`reason` is not a [`lowlat_status`].** It reaches the peer as the
+/// protocol's own disconnect status, which is a different numbering that
+/// happens to share a width. **Zero is not a value to pass**: a peer carries on
+/// through it, so a guest kicked with zero is told nothing and stays.
+///
+/// The guest is sent the reason, given a moment for it to arrive, and then its
+/// seat goes back. It does not disappear from the roster the instant this
+/// returns.
+///
+/// # Safety
+///
+/// `ll` came from [`lowlat_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_kick_guest(
+    ll: *mut lowlat,
+    guest_id: u32,
+    reason: i32,
+) -> lowlat_status {
+    unsafe {
+        entered(ll, |handle| {
+            if reason == 0 {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let mut held = handle.held();
+            let Some(seam) = held.seam.as_mut() else {
+                return LOWLAT_ERR_NOT_STARTED;
+            };
+            if seam.kick_guest(guest_id, reason) {
+                LOWLAT_OK
+            } else {
+                LOWLAT_ERR_UNKNOWN_GUEST
+            }
+        })
+    }
+}
+
+/// Change what one guest may drive, while it is connected.
+///
+/// **This is the only way to set them.** There is no separate call to turn a
+/// guest's input off, because that is this call with every flag cleared, and
+/// two calls writing one field can disagree about what a guest is allowed to
+/// do.
+///
+/// The change reaches the roster immediately and the guest's own devices on its
+/// next pass.
+///
+/// # Safety
+///
+/// `ll` came from [`lowlat_create`], and `perms` points to one
+/// [`lowlat_permissions`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_set_permissions(
+    ll: *mut lowlat,
+    guest_id: u32,
+    perms: *const lowlat_permissions,
+) -> lowlat_status {
+    unsafe {
+        entered(ll, |handle| {
+            let Some(perms) = perms.as_ref() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            let permissions = lowlat_inject::event::Permissions {
+                keyboard: perms.keyboard,
+                pointer: perms.pointer,
+                gamepad: perms.gamepad,
+            };
+            let mut held = handle.held();
+            let Some(seam) = held.seam.as_mut() else {
+                return LOWLAT_ERR_NOT_STARTED;
+            };
+            if seam.set_permissions(guest_id, permissions) {
+                LOWLAT_OK
+            } else {
+                LOWLAT_ERR_UNKNOWN_GUEST
+            }
+        })
+    }
+}
+
 /// Change the video settings while the host runs.
 ///
 /// **Everything in this structure is applied without rebuilding the session.**
@@ -2138,6 +2219,35 @@ mod roster_tests {
     use super::seam_tests::{approved, started};
     use super::*;
 
+    /// Read the whole roster, which several tests need.
+    pub(super) fn roster_of(handle: *mut lowlat) -> Vec<lowlat_guest> {
+        let mut count = 0u32;
+        assert_eq!(
+            unsafe { lowlat_host_get_guests(handle, core::ptr::null_mut(), &raw mut count) },
+            LOWLAT_OK
+        );
+        let mut room = vec![
+            lowlat_guest {
+                number: 0,
+                permissions: lowlat_permissions {
+                    keyboard: false,
+                    pointer: false,
+                    gamepad: false,
+                    reserved: 0,
+                },
+                owner: false,
+                reserved: [0; 3],
+            };
+            count as usize
+        ];
+        assert_eq!(
+            unsafe { lowlat_host_get_guests(handle, room.as_mut_ptr(), &raw mut count) },
+            LOWLAT_OK
+        );
+        room.truncate(count as usize);
+        room
+    }
+
     /// **Two calls, and the first one is allowed to answer with nothing.** An
     /// application asks how many before it decides what to allocate.
     #[test]
@@ -2267,6 +2377,71 @@ mod roster_tests {
             LOWLAT_OK
         );
 
+        unsafe { lowlat_destroy(handle) };
+    }
+}
+
+#[cfg(test)]
+mod guest_tests {
+    use super::roster_tests::roster_of;
+    use super::seam_tests::{approved, started};
+    use super::*;
+
+    /// **Permissions are recorded here and applied there**, so the roster
+    /// answers with the new ones straight away while the guest's own devices
+    /// pick them up on its next pass.
+    #[test]
+    fn changed_permissions_show_in_the_roster_at_once() {
+        let handle = started();
+        approved(handle, "a");
+        let before = roster_of(handle);
+        assert!(before[0].permissions.keyboard && before[0].permissions.gamepad);
+
+        let perms = lowlat_permissions {
+            keyboard: false,
+            pointer: true,
+            gamepad: false,
+            reserved: 0,
+        };
+        assert_eq!(
+            unsafe { lowlat_host_set_permissions(handle, before[0].number, &raw const perms) },
+            LOWLAT_OK
+        );
+        let after = roster_of(handle);
+        assert!(
+            !after[0].permissions.keyboard && after[0].permissions.pointer,
+            "the roster still reports what signaling said, not what was set"
+        );
+
+        assert_eq!(
+            unsafe { lowlat_host_set_permissions(handle, 4242, &raw const perms) },
+            LOWLAT_ERR_UNKNOWN_GUEST
+        );
+        unsafe { lowlat_destroy(handle) };
+    }
+
+    /// **A guest is kicked with a reason, and zero is not one.** A peer carries
+    /// on through a status of zero, so kicking with it tells the guest nothing
+    /// and leaves it exactly where it was.
+    #[test]
+    fn a_kick_needs_a_reason_a_peer_will_stop_on() {
+        let handle = started();
+        approved(handle, "a");
+        let guest = roster_of(handle)[0].number;
+
+        assert_eq!(
+            unsafe { lowlat_host_kick_guest(handle, guest, 0) },
+            LOWLAT_ERR_INVALID_ARGUMENT,
+            "a status a peer ignores was accepted as a reason to end it"
+        );
+        assert_eq!(
+            unsafe { lowlat_host_kick_guest(handle, 4242, -15000) },
+            LOWLAT_ERR_UNKNOWN_GUEST
+        );
+        assert_eq!(
+            unsafe { lowlat_host_kick_guest(handle, guest, -15000) },
+            LOWLAT_OK
+        );
         unsafe { lowlat_destroy(handle) };
     }
 }

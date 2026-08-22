@@ -336,9 +336,25 @@ struct Attempt {
     /// guest allocates nothing: what travels here is already the bytes that go
     /// on the wire, terminator included.
     say: Option<mpsc::Sender<Said>>,
+    /// What the application has asked of this guest, once it is running.
+    ask: Option<mpsc::Sender<Ask>>,
     /// The small number this guest is addressed by, kept so a message can be
     /// aimed at it without walking every attempt's thread.
     number: Option<u32>,
+}
+
+/// Something the application asked of one running guest.
+///
+/// **A channel rather than shared state**, for the same reason the outbound
+/// messages use one: the guest's own thread is the only thing that may touch
+/// its session or its input devices, so an ask is delivered to it rather than
+/// applied behind its back.
+#[derive(Debug)]
+enum Ask {
+    /// End this guest, telling it why on the way out.
+    Kick(i32),
+    /// Change what it may drive, from now on.
+    Permissions(lowlat_inject::event::Permissions),
 }
 
 /// One message on its way to a guest, built where the caller is.
@@ -459,6 +475,7 @@ impl Admission {
                 pending: Vec::new(),
                 guest: None,
                 say: None,
+                ask: None,
                 number: None,
                 inject: None,
             },
@@ -538,6 +555,7 @@ impl Admission {
             let _ = inject.send(addr);
         }
         let (say, said) = mpsc::channel::<Said>();
+        let (ask, asked) = mpsc::channel::<Ask>();
 
         let attempt_id = id.to_string();
         let guest_number = self.next_guest;
@@ -566,6 +584,7 @@ impl Admission {
                     servers,
                     arrivals,
                     said,
+                    asked,
                     ours,
                     theirs,
                     material,
@@ -587,6 +606,7 @@ impl Admission {
         attempt.inject = Some(inject);
         attempt.guest = Some(guest);
         attempt.say = Some(say);
+        attempt.ask = Some(ask);
         attempt.number = Some(guest_number);
 
         // Emitted with the answer rather than in response to anything, so a
@@ -705,6 +725,53 @@ impl Admission {
     /// application's to know; what belongs here is the number a guest is
     /// addressed by, what it is permitted to drive, and whether it owns the
     /// machine.
+    /// End one guest, telling it why on the way out.
+    ///
+    /// **The reason is the protocol's own**, not this crate's: it reaches the
+    /// peer as a disconnect status, and a peer carries on through a zero. What
+    /// it costs is a message, a moment for it to arrive, and the seat.
+    ///
+    /// Answers whether there was a guest of that number to end.
+    pub fn kick_guest(&mut self, guest: u32, reason: i32) -> bool {
+        let Some(attempt) = self
+            .attempts
+            .values()
+            .find(|attempt| attempt.number == Some(guest))
+        else {
+            return false;
+        };
+        attempt
+            .ask
+            .as_ref()
+            .is_some_and(|ask| ask.send(Ask::Kick(reason)).is_ok())
+    }
+
+    /// Change what one guest may drive, while it is connected.
+    ///
+    /// **Recorded here and applied there.** The roster is answered from this
+    /// side, so it has to know; the injector belongs to the guest's own thread,
+    /// so that side is asked rather than reached into.
+    ///
+    /// Answers whether there was a guest of that number to change.
+    pub fn set_permissions(
+        &mut self,
+        guest: u32,
+        permissions: lowlat_inject::event::Permissions,
+    ) -> bool {
+        let Some(attempt) = self
+            .attempts
+            .values_mut()
+            .find(|attempt| attempt.number == Some(guest))
+        else {
+            return false;
+        };
+        attempt.peer.permissions = permissions;
+        attempt
+            .ask
+            .as_ref()
+            .is_some_and(|ask| ask.send(Ask::Permissions(permissions)).is_ok())
+    }
+
     pub fn guests(&self) -> Vec<GuestInfo> {
         let mut found: Vec<GuestInfo> = self
             .attempts
@@ -804,6 +871,8 @@ struct Attached {
     arrivals: mpsc::Receiver<SocketAddr>,
     /// Application messages the seam wants sent to this guest.
     said: mpsc::Receiver<Said>,
+    /// What the application has asked of this guest.
+    asked: mpsc::Receiver<Ask>,
     ours: (String, String),
     theirs: (String, String),
     /// The 256-bit key and the four-byte nonce prefix that follows it.
@@ -1347,6 +1416,9 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             .injector
             .set_permissions(args.permissions, &mut input.sink);
     }
+    // A reason the application gave for ending this guest, waiting for the one
+    // path below that knows how to end one.
+    let mut asked_kick: Option<i32> = None;
     let mut throughput = Throughput::default();
     // What this guest has been told about the pointer, and what it holds.
     let mut pointer = crate::cursor::Sender::new();
@@ -1575,7 +1647,9 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         // and cannot write to a peer; this is the only place that can, so the
         // reason it left on the seat becomes a message.
         if kicked.is_none()
-            && let Some(reason) = seat.as_ref().and_then(SeatHold::kicked)
+            && let Some(reason) = asked_kick
+                .take()
+                .or_else(|| seat.as_ref().and_then(SeatHold::kicked))
         {
             lowlat_common::log_info!("guest: ending this session, reason={reason}");
             send_disconnect(shell.endpoint().session(), reason);
@@ -1729,6 +1803,33 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         // frame path and out of the shell's own closure.
         while let Ok(message) = args.said.try_recv() {
             send_said(shell.endpoint().session(), &message);
+        }
+
+        // **Taken here, applied by this thread.** Only this thread may touch
+        // this guest's session or its input devices, so an ask arrives as a
+        // message rather than being applied behind its back.
+        while let Ok(ask) = args.asked.try_recv() {
+            match ask {
+                Ask::Kick(reason) => {
+                    // **Left where the stream leaves one**, so the ending
+                    // below is the one path rather than a second one that has
+                    // to stay in step with it: the message, the grace period
+                    // and the seat going back are all already there.
+                    asked_kick = Some(reason);
+                }
+                Ask::Permissions(permissions) => {
+                    lowlat_common::log_info!(
+                        "guest: number={} permissions changed keyboard={} pointer={} gamepad={}",
+                        args.guest,
+                        u8::from(permissions.keyboard),
+                        u8::from(permissions.pointer),
+                        u8::from(permissions.gamepad)
+                    );
+                    if let Some(input) = input.as_mut() {
+                        input.injector.set_permissions(permissions, &mut input.sink);
+                    }
+                }
+            }
         }
 
         // What the stream's controller and gate are steered by. Cheap, and it
