@@ -732,9 +732,9 @@ caps a **frame rate** and says nothing about a resolution. A host that creates i
 is the one case where a size is ours to choose, and it arrives with that display rather than as
 a field that spends every other configuration reporting itself refused.
 
-- [ ] `lowlat-host` orchestration and the `extern "C"` surface from
+- [x] `lowlat-host` orchestration and the `extern "C"` surface from
   [06-api.md](06-api.md).
-- [ ] **Application messaging and output selection at the C boundary.** Both are wrappers over
+- [x] **Application messaging and output selection at the C boundary.** Both are wrappers over
   seams Phase 9 built and drove live -- `Admission::send_user_data` and the `UserData` event, the
   output listing and the selected output -- so what belongs here is the surface and nothing else:
   an event type in the tagged union, a send call, a listing call, and a configuration field
@@ -742,14 +742,14 @@ a field that spends every other configuration reporting itself refused.
   there); what belongs here is the surface: an identity an application can store and hand back,
   and each output's rectangle, which is the same quantity the input mapping is expressed
   against.
-- [ ] Generated header, opaque handles, versioned structs, stable-numbered enums.
-- [ ] `catch_unwind` at every entry point; unwinding enabled for the shared library.
+- [x] Generated header, opaque handles, versioned structs, stable-numbered enums.
+- [x] `catch_unwind` at every entry point; unwinding enabled for the shared library.
 
 **Six things the surface needs that the seam does not have yet.** The phase was written as a
 wrapper over something live, and most of it is; these are the exceptions, found by reading
 [06-api.md](06-api.md) against the code.
 
-- [ ] **A poll that blocks for its timeout, over a bounded queue.** Today's is a non-blocking
+- [x] **A poll that blocks for its timeout, over a bounded queue.** Today's is a non-blocking
   read behind the same lock as every other call, on a queue that grows without limit.
   [06 §5](06-api.md) wants drop-oldest with a dropped count on the next event and `fatal` never
   dropped, and [06 §8](06-api.md) wants every other call to stay answerable while a poll is
@@ -760,20 +760,23 @@ wrapper over something live, and most of it is; these are the exceptions, found 
   because a body reaches a megabyte; and **the body delivered into a buffer the caller passes to
   the poll**, so nothing is allocated on the application's behalf and no lookup key exists to go
   stale. A buffer too small reports the length it needed and leaves the event queued.
-- [ ] **The four event types that do not exist**: guest degraded, input owner changed, capture
-  changed, and fatal. Capture changed is the load-bearing one -- an application is currently
-  reduced to asking what is being captured on a timer and comparing.
-- [ ] **Ending one guest with a reason.** Ending an attempt exists; it is addressed by attempt
+- [x] **Three of the four event types**: input owner changed, capture changed, and fatal, each
+  raised where its change happens because that is the only place that can tell a change from a
+  repetition. **`guest degraded` is deliberately not built**: the skip-and-resync cycle is the
+  signal ([05 §6](05-host.md)) and what is missing is the threshold that makes a cycle chronic.
+  Firing on every skip, or choosing a number nothing measured, would both be worse than the gap.
+- [x] **Ending one guest with a reason.** Ending an attempt exists; it is addressed by attempt
   and carries no status, while the surface ends a *guest* and tells it why. The status has to
   reach the peer before the session goes, which the stream already knows how to wait for.
-- [ ] **Permissions and input enable, mid-session.** Both are set once when a guest's thread
+- [x] **Permissions mid-session.** Both are set once when a guest's thread
   starts and never revisited. The injector already takes a change; nothing above it can ask.
-- [ ] **A live configuration change.** Bitrate is the one an established client already asks for
+- [x] **A live configuration change.** Bitrate is the one an established client already asks for
   and is refused. The rate budget can be re-based and the encoder reconfigures without a
   keyframe ([00 §D8](00-overview.md)); what is missing is the path from a caller to either.
-- [ ] **Encoder enumeration.** Audio outputs wait for Phase 10 rather than shipping a call that
-  answers nothing: adding a function later is additive, and a stub that always reports none is a
-  worse answer than no answer.
+- [ ] **Encoder enumeration**, deferred for the same reason audio outputs are: the encoder
+  follows the display, so today the answer is a consequence rather than a menu and the call would
+  report nothing worth reading. Adding a function later is additive; a stub that always answers
+  none is a worse answer than no call.
 
 **Gate:**
 
@@ -783,16 +786,23 @@ wrapper over something live, and most of it is; these are the exceptions, found 
    *Written, and the boundary half passes* (`examples/csharp`): every call an integration makes
    runs from C# against the built shared object -- pre-flight, enumeration, start, the four-call
    seam, the roster, messages, permissions, a kick, the event pump and the log callback -- with
-   **no marshalling directives in any structure**. What is left is the run against a real
-   client, which needs credentials and a display this process may read.
-2. The generated header compiles standalone under C and C++ with warnings as errors.
-3. **A deliberately panicking call returns a status code rather than unwinding.** *Named test;
-   this is undefined behavior if it regresses.* **It has to load the built shared library**, not
+   **no marshalling directives in any structure**.
+   **Passed 2026-08-22 against a stock client**: offer to established to a clean end, 2465 frames
+   at 1920x1200, the codec renegotiated twice live (H.264 to HEVC and back, one reinit each,
+   nobody reseated), input landing, and `acquire p50 1.85 / encode 3.24 / interval 16.68`. The
+   client's own settings panel drove the host through the application protocol the example
+   speaks, and **the bitrate changed from 10 to 30 Mbps while streaming**.
+2. [x] The generated header compiles standalone under C and C++ with warnings as errors.
+   *Included twice on purpose, which is the only thing a guard has to survive.*
+3. [x] **A deliberately panicking call returns a status code rather than unwinding.** *Named
+   test; this is undefined behavior if it regresses.* **It has to load the built shared library**, not
    link the same code as a Rust library: the thing being tested is that the shipped object still
    unwinds, and a test that links the library form inherits the test profile's answer instead of
    the shipped one.
-4. Every exported symbol carries the project prefix. *Checked mechanically against the
-   symbol table.* Cheap to put in place now, while the count is zero.
+4. [x] Every exported symbol carries the project prefix. *Checked mechanically against the
+   symbol table, and against the header's own names, which is a second mechanism for the same
+   rule: a constant is not a symbol and would otherwise pollute an application's namespace
+   unchecked.*
 
 *Two, three and four are one small C program*: include the generated header with warnings as
 errors, open the shared library, call the panicking entry, and walk the symbol table.

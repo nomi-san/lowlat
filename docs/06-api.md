@@ -53,6 +53,11 @@ joins every thread, and returns only when all of it has happened.
 `lowlat_abi_version` lets a loader verify the library matches the header it was built against
 before calling anything else. It is the one function whose signature can never change.
 
+**`lowlat_debug_panic` is exported on purpose and is not for applications.** It panics, so that
+containment can be tested against the object that ships rather than against a copy of the same
+code linked into a test, which answers for the test's build settings instead. One symbol is a
+small price for the only check that can fail if [§9](#9-panics-and-unwinding) regresses.
+
 The log callback is the single exception to rule 5. It is cold, it fires on whichever thread
 logged, and it must not call back into the API.
 
