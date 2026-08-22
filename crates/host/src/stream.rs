@@ -494,6 +494,23 @@ impl Shared {
         (compressed, uncompressed)
     }
 
+    /// What the room's sound costs, across every guest listening to it.
+    ///
+    /// **Walked rather than counted as guests arrive**, because a guest's
+    /// choice lands after it is seated: it declares the encoding it wants when
+    /// its initialization is parsed, which is a pass or two later.
+    pub(crate) fn audio_mbps(&self, compressed_kbps: u32) -> f64 {
+        let mut total = 0.0;
+        for seat in &self.seats {
+            if seat.state.load(Ordering::Acquire) != seat_state::STREAMING {
+                continue;
+            }
+            let raw = seat.wants_raw.load(Ordering::Relaxed) != 0;
+            total += crate::audio::guest_mbps(raw, compressed_kbps);
+        }
+        total
+    }
+
     /// Hand one packet to every seat that asked for this encoding.
     ///
     /// **A slot per encoding, not per guest**: the pool holds the bytes once
@@ -1556,14 +1573,19 @@ fn rebind(
         reason = "bounded by MAX_SEATS, which is sixteen"
     )]
     budget.rebound(guests_seated as u32, controllers);
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "a rate in megabits, only used to pick one of three ceiling steps"
-    )]
-    let ceiling = budget.ceiling() as f32;
+    let ceiling = ceiling_step(budget);
     for guest in guests.iter_mut() {
         guest.set_rate(ceiling);
     }
+}
+
+/// The gate's view of a guest's ceiling.
+#[allow(
+    clippy::cast_possible_truncation,
+    reason = "a rate in megabits, only used to pick one of three ceiling steps"
+)]
+fn ceiling_step(budget: &Budget) -> f32 {
+    budget.ceiling() as f32
 }
 
 /// Seats with a guest on them, admitted or not.
@@ -2300,6 +2322,27 @@ fn encode_loop<E: Encoder + FromDevice>(
         let moved = admit_and_retire(shared, arrivals, &config, active, guests, controllers);
         if moved {
             rebind(&mut budget, active.len(), guests, controllers);
+        }
+        // **What sound costs is taken off the picture's ceiling**, and it
+        // changes without a guest arriving: a peer declares the encoding it
+        // wants a pass or two after it is seated. Compared rather than
+        // recomputed into place, because moving a ceiling reconfigures every
+        // controller.
+        let sound_mbps = if config.audio.is_some() {
+            shared.audio_mbps(lowlat_audio::encode::DEFAULT_BITRATE_KBPS)
+        } else {
+            0.0
+        };
+        if (sound_mbps - budget.audio_mbps()).abs() > crate::rate::DEADBAND_MBPS {
+            budget.set_audio(sound_mbps, controllers);
+            let ceiling = ceiling_step(&budget);
+            for guest in guests.iter_mut() {
+                guest.set_rate(ceiling);
+            }
+            lowlat_common::log_info!(
+                "stream: sound costs {sound_mbps:.2} Mibit/s, the picture may use {:.2}",
+                budget.ceiling()
+            );
         }
         if active.is_empty() {
             std::thread::sleep(IDLE_WAIT);

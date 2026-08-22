@@ -94,6 +94,29 @@ fn publish(shared: &Shared, encoder: &mut Encoder, frame: &[u8]) {
     }
 }
 
+/// What one guest's sound costs on the wire, in the unit the rate controllers
+/// are tuned in.
+///
+/// **Header and length prefix included**, because a packet is what the uplink
+/// carries rather than a payload. The uncompressed form is the whole frame; the
+/// compressed one is whatever rate the encoder was asked for, which is what it
+/// averages by construction.
+pub(crate) fn guest_mbps(raw: bool, compressed_kbps: u32) -> f64 {
+    let overhead = AUDIO_HEADER_LEN + lowlat_core::message::LENGTH_PREFIX_LEN;
+    // Packets a second, from the frame this host sends.
+    let packets = f64::from(lowlat_audio::SAMPLE_RATE) / FRAME_PER_SECOND_DIVISOR;
+    let framing = f64::from(u32::try_from(overhead * 8).unwrap_or(0)) * packets;
+    let bits = if raw {
+        f64::from(u32::try_from(FRAME_BYTES * 8).unwrap_or(0)) * packets + framing
+    } else {
+        f64::from(compressed_kbps) * 1000.0 + framing
+    };
+    bits / 1_048_576.0
+}
+
+/// Samples in one packet, as the divisor that turns a rate into a packet count.
+const FRAME_PER_SECOND_DIVISOR: f64 = FRAME as f64;
+
 /// The fifteen bytes that precede one packet of this host's sound.
 ///
 /// **Built per guest rather than shared**, because the codec is that guest's
@@ -113,4 +136,46 @@ pub(crate) fn header(raw: bool) -> [u8; AUDIO_HEADER_LEN] {
 /// uncompressed frame, which is exactly what capture delivers.
 pub(crate) fn pool() -> crate::frames::Pool {
     crate::frames::Pool::new(POOL_SLOTS, FRAME_BYTES)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **What a guest's sound costs, in the unit the controllers are tuned
+    /// in.** The uncompressed form is the number the whole decision rests on:
+    /// if it is wrong, the picture is given back the wrong share.
+    #[test]
+    fn the_uncompressed_form_costs_what_the_wire_carries() {
+        // 3840 bytes of samples plus nineteen of framing, fifty times a
+        // second, in mebibits.
+        let expected = ((FRAME_BYTES + AUDIO_HEADER_LEN + 4) * 8 * 50) as f64 / 1_048_576.0;
+        let measured = guest_mbps(true, 128);
+        assert!(
+            (measured - expected).abs() < 1e-9,
+            "measured {measured}, expected {expected}"
+        );
+        // Which is about a megabit and a half.
+        assert!((1.4..1.6).contains(&measured), "{measured} Mibit/s");
+    }
+
+    /// The compressed form is the rate that was asked for, plus its framing.
+    #[test]
+    fn the_compressed_form_costs_the_rate_it_was_asked_for() {
+        let measured = guest_mbps(false, 128);
+        let payload = 128_000.0 / 1_048_576.0;
+        assert!(measured > payload, "framing was not counted");
+        assert!(
+            measured < payload * 1.1,
+            "framing dominated the rate: {measured}"
+        );
+    }
+
+    /// **The two differ by an order of magnitude**, which is the whole reason
+    /// the choice is a guest's to make and the cost is the host's to account
+    /// for.
+    #[test]
+    fn uncompressed_costs_an_order_of_magnitude_more() {
+        assert!(guest_mbps(true, 128) > guest_mbps(false, 128) * 10.0);
+    }
 }

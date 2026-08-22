@@ -47,6 +47,14 @@ pub struct Budget {
     min_mbps: f64,
     guests: u32,
     applied_mbps: f64,
+    /// What the room's sound costs, across every guest, in the same unit.
+    ///
+    /// **Taken off the top rather than ignored.** The controllers measure the
+    /// video channel and know nothing of it, so a host that did not subtract it
+    /// would send the configured rate plus whatever sound costs -- which for a
+    /// guest receiving the uncompressed form is five percent of a thirty
+    /// megabit session, spent without anybody asking for it.
+    audio_mbps: f64,
 }
 
 impl Budget {
@@ -56,7 +64,23 @@ impl Budget {
             min_mbps,
             guests: 0,
             applied_mbps: 0.0,
+            audio_mbps: 0.0,
         }
+    }
+
+    /// What the room's sound costs now.
+    pub fn audio_mbps(&self) -> f64 {
+        self.audio_mbps
+    }
+
+    /// Say what sound costs, and move every controller's ceiling with it.
+    ///
+    /// **A guest declaring the uncompressed form is the same event as a guest
+    /// arriving**, because both change what is left for the picture.
+    pub fn set_audio(&mut self, audio_mbps: f64, controllers: &mut [Controller]) {
+        self.audio_mbps = audio_mbps.max(0.0);
+        let guests = self.guests;
+        self.rebound(guests, controllers);
     }
 
     /// The ceiling one guest's controller may climb to.
@@ -65,7 +89,12 @@ impl Budget {
     /// the same guard the reference carries: the stream is torn down when the
     /// last guest leaves, so a zero here is a race rather than a state.
     pub fn ceiling(&self) -> f64 {
-        self.configured_mbps / f64::from(self.guests.max(1))
+        let left = (self.configured_mbps - self.audio_mbps).max(0.0);
+        // **The floor still applies.** Sound costing more than the whole
+        // configured rate is a configuration nobody can serve; pinning the
+        // picture at its floor is the least surprising answer, and the
+        // alternative is a stream that stops.
+        (left / f64::from(self.guests.max(1))).max(self.min_mbps)
     }
 
     /// The rate last handed to the encoder.
@@ -139,6 +168,64 @@ impl Budget {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **Sound comes off the top, before the division.** Every guest carries
+    /// its own sound, so the room's total is what the picture cannot have --
+    /// dividing the configured rate first and subtracting after would take it
+    /// out once instead of once per guest.
+    #[test]
+    fn sound_is_taken_off_the_picture_ceiling() {
+        let mut controllers = vec![Controller::new(1, 0.5, 30.0), Controller::new(1, 0.5, 30.0)];
+        let mut budget = Budget::new(30.0, 0.5);
+        budget.rebound(2, &mut controllers);
+        assert!(
+            (budget.ceiling() - 15.0).abs() < 1e-9,
+            "no sound, no change"
+        );
+
+        // Two guests on the uncompressed form, near 1.5 Mibit/s each.
+        budget.set_audio(3.0, &mut controllers);
+        assert!(
+            (budget.ceiling() - 13.5).abs() < 1e-9,
+            "the ceiling was {}",
+            budget.ceiling()
+        );
+    }
+
+    /// A room whose sound costs more than the whole configured rate is a
+    /// configuration nobody can serve. The picture goes to its floor rather
+    /// than to nothing.
+    #[test]
+    fn sound_past_the_whole_budget_pins_the_picture_at_its_floor() {
+        let mut controllers = vec![Controller::new(1, 0.5, 30.0)];
+        let mut budget = Budget::new(2.0, 0.5);
+        budget.rebound(1, &mut controllers);
+        budget.set_audio(10.0, &mut controllers);
+        assert!((budget.ceiling() - 0.5).abs() < 1e-9);
+    }
+
+    /// **The controllers are told, not left to find out.** A ceiling that
+    /// moved without reaching them leaves every one of them holding a rate the
+    /// operator has just said is too high -- and a test that only watches what
+    /// a controller climbs to does not see it, because climbing is slow and
+    /// the difference takes minutes of ticks to appear. **That version passed
+    /// with the notification deleted.** This one asks the controller what
+    /// ceiling it is under.
+    #[test]
+    fn the_controllers_learn_the_new_ceiling() {
+        let mut controllers = vec![Controller::new(1, 0.5, 30.0)];
+        let mut budget = Budget::new(30.0, 0.5);
+        budget.rebound(1, &mut controllers);
+        assert!((controllers[0].max_mbps() - 30.0).abs() < 1e-9);
+
+        budget.set_audio(6.0, &mut controllers);
+        assert!(
+            (controllers[0].max_mbps() - 24.0).abs() < 1e-9,
+            "the controller is still under {}",
+            controllers[0].max_mbps()
+        );
+    }
+
     use lowlat_core::congestion::{DEFAULT_LEVEL, WINDOW_FLOOR};
 
     /// Below the window floor nothing is congestion, whatever the stale count.
