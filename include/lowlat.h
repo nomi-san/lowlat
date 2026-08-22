@@ -6,6 +6,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <stdbool.h>
 
 // The major version, raised only when something already published changes.
 #define LOWLAT_ABI_MAJOR 0
@@ -288,7 +289,7 @@ typedef struct lowlat_host_video_config {
     // **Clearing it is a permission, not an instruction.** There is no damage
     // signal here, so nothing yet skips a repeated picture; a host that keeps
     // sending costs bitrate rather than being wrong.
-    uint8_t full_fps;
+    bool full_fps;
     uint8_t reserved[3];
     // Which output to capture, by an identity from the enumeration. **Empty
     // means whichever this host would pick on its own**, which is the output
@@ -325,7 +326,7 @@ typedef struct lowlat_host_config {
     uint32_t exclusive_hold_ms;
     // Whether one guest at a time may drive the pointer. Off means everybody
     // drives it, which is a configuration rather than a fault.
-    uint8_t exclusive_pointer;
+    bool exclusive_pointer;
     uint8_t reserved2[3];
     // How many of `servers` are set.
     uint32_t server_count;
@@ -341,8 +342,8 @@ typedef struct lowlat_candidate_event {
     char attempt[LOWLAT_ATTEMPT_MAX];
     char address[LOWLAT_ADDRESS_MAX];
     uint16_t port;
-    // Non-zero if a reflexive server reported this one.
-    uint8_t from_stun;
+    // Whether a reflexive server reported this one.
+    bool from_stun;
     uint8_t reserved;
 } lowlat_candidate_event;
 

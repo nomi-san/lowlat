@@ -121,7 +121,7 @@ int main(int argc, char **argv)
     cfg.video.fps = 60;
     cfg.video.bitrate_mbps = 10.0;
     cfg.video.min_bitrate_mbps = 1.0;
-    cfg.video.full_fps = 1;
+    cfg.video.full_fps = true;
     if (host_start(ll, &cfg) != LOWLAT_OK) {
         fprintf(stderr, "harness: hosting would not start\n");
         return 1;
@@ -157,7 +157,7 @@ int main(int argc, char **argv)
     lowlat_host_video_config video = cfg.video;
     video.fps = 30;
     video.bitrate_mbps = 4.0;
-    video.full_fps = 0;
+    video.full_fps = false;
     if (set_video(ll, &video) != LOWLAT_OK) {
         fprintf(stderr, "harness: a live video change was refused\n");
         return 1;
@@ -169,9 +169,9 @@ int main(int argc, char **argv)
         fprintf(stderr, "harness: the live video settings could not be read back\n");
         return 1;
     }
-    if (back.fps != 30 || back.bitrate_mbps != 4.0 || back.full_fps != 0) {
+    if (back.fps != 30 || back.bitrate_mbps != 4.0 || back.full_fps != false) {
         fprintf(stderr, "harness: read back fps=%u bitrate=%.1f full=%u after setting 30/4.0/0\n",
-                back.fps, back.bitrate_mbps, back.full_fps);
+                back.fps, back.bitrate_mbps, (unsigned) back.full_fps);
         return 1;
     }
     /* A floor above the ceiling is refused rather than silently reordered. */

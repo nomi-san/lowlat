@@ -15,7 +15,7 @@ pragma_once = true
 cpp_compat = true
 documentation_style = "c99"
 no_includes = true
-sys_includes = ["stdint.h"]
+sys_includes = ["stdint.h", "stdbool.h"]
 line_length = 88
 tab_width = 4
 

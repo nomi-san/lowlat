@@ -173,8 +173,8 @@ pub struct lowlat_candidate_event {
     pub attempt: [c_char; LOWLAT_ATTEMPT_MAX],
     pub address: [c_char; LOWLAT_ADDRESS_MAX],
     pub port: u16,
-    /// Non-zero if a reflexive server reported this one.
-    pub from_stun: u8,
+    /// Whether a reflexive server reported this one.
+    pub from_stun: bool,
     pub reserved: u8,
 }
 
@@ -349,7 +349,7 @@ pub struct lowlat_host_video_config {
     /// **Clearing it is a permission, not an instruction.** There is no damage
     /// signal here, so nothing yet skips a repeated picture; a host that keeps
     /// sending costs bitrate rather than being wrong.
-    pub full_fps: u8,
+    pub full_fps: bool,
     pub reserved: [u8; 3],
     /// Which output to capture, by an identity from the enumeration. **Empty
     /// means whichever this host would pick on its own**, which is the output
@@ -388,7 +388,7 @@ pub struct lowlat_host_config {
     pub exclusive_hold_ms: u32,
     /// Whether one guest at a time may drive the pointer. Off means everybody
     /// drives it, which is a configuration rather than a fault.
-    pub exclusive_pointer: u8,
+    pub exclusive_pointer: bool,
     pub reserved2: [u8; 3],
     /// How many of `servers` are set.
     pub server_count: u32,
@@ -559,7 +559,7 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
         base_port: cfg.base_port,
         max_guests: cfg.max_guests as usize,
         servers,
-        exclusive_pointer: cfg.exclusive_pointer != 0,
+        exclusive_pointer: cfg.exclusive_pointer,
         exclusive_hold_ms: f64::from(cfg.exclusive_hold_ms),
         cg_level,
         // A live-run aid, and nothing an application should be able to ask for.
@@ -609,7 +609,7 @@ fn video_configured(cfg: &lowlat_host_video_config) -> Option<crate::stream::Liv
         fps: cfg.fps,
         bitrate_mbps: cfg.bitrate_mbps,
         min_mbps: cfg.min_bitrate_mbps,
-        full_fps: cfg.full_fps != 0,
+        full_fps: cfg.full_fps,
     })
 }
 
@@ -732,7 +732,7 @@ pub unsafe extern "C" fn lowlat_host_get_video_config(
             slot.fps = video.fps;
             slot.bitrate_mbps = video.bitrate_mbps;
             slot.min_bitrate_mbps = video.min_mbps;
-            slot.full_fps = u8::from(video.full_fps);
+            slot.full_fps = video.full_fps;
             slot.reserved = [0; 3];
             // **What is being captured, not what was asked for.** A guest can
             // switch outputs and a display can move by itself; an application
@@ -904,7 +904,7 @@ fn described(received: &crate::events::Received) -> lowlat_event {
                 attempt: [0; LOWLAT_ATTEMPT_MAX],
                 address: [0; LOWLAT_ADDRESS_MAX],
                 port: 0,
-                from_stun: u8::from(*from_stun),
+                from_stun: *from_stun,
                 reserved: 0,
             };
             put(&mut body.attempt, attempt);
@@ -1158,7 +1158,7 @@ mod start_tests {
             fps: 60,
             bitrate_mbps: 10.0,
             min_bitrate_mbps: 1.0,
-            full_fps: 1,
+            full_fps: true,
             reserved: [0; 3],
             output: [0; LOWLAT_OUTPUT_MAX],
         }
@@ -1174,7 +1174,7 @@ mod start_tests {
             encoder: lowlat_encoder::LOWLAT_ENCODER_FOLLOW_DISPLAY as u32,
             cg_level: lowlat_cg_level::LOWLAT_CG_LEVEL_SENSITIVE as u32,
             exclusive_hold_ms: 500,
-            exclusive_pointer: 0,
+            exclusive_pointer: false,
             reserved2: [0; 3],
             server_count: 0,
             servers: [[0; LOWLAT_SERVER_MAX]; LOWLAT_SERVERS_MAX],
