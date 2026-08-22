@@ -9,6 +9,7 @@ pub mod abi;
 pub mod admission;
 pub mod cursor;
 pub mod display;
+pub mod events;
 pub mod floor;
 pub mod frames;
 pub mod gate;

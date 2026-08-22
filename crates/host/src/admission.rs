@@ -352,8 +352,12 @@ pub struct Admission {
     attempts: HashMap<String, Attempt>,
     /// Attempts withdrawn before they were ever registered.
     withdrawn: Vec<String>,
-    events: mpsc::Receiver<Event>,
-    emit: mpsc::Sender<Event>,
+    /// **Handed out once**, to whoever is going to consume it. A poll waits
+    /// for as long as its caller asked, and the seam's own lock must not be
+    /// held for that long, so the consumer holds the queue directly rather
+    /// than reaching it through here (docs/06-api.md 8).
+    events: Option<crate::events::Receiver>,
+    emit: crate::events::Sender,
     /// Who has the pointer, shared by every guest thread.
     floor: crate::floor::Floor,
     /// **A small number for each guest, and the only identifier that is one.**
@@ -375,7 +379,7 @@ impl core::fmt::Debug for Attempt {
 
 impl Admission {
     pub fn new(config: Config) -> Self {
-        let (emit, events) = mpsc::channel();
+        let (emit, events) = crate::events::queue();
         let stream = config.stream.clone().map(Stream::start);
         let floor = crate::floor::Floor::new(config.exclusive_pointer);
         Self {
@@ -383,7 +387,7 @@ impl Admission {
             stream,
             attempts: HashMap::new(),
             withdrawn: Vec::new(),
-            events,
+            events: Some(events),
             emit,
             floor,
             next_guest: 1,
@@ -548,7 +552,7 @@ impl Admission {
         // Emitted with the answer rather than in response to anything, so a
         // peer that withholds its candidates until it sees one is unblocked as
         // early as possible.
-        let _ = self.emit.send(Event::Ready {
+        self.emit.send(Event::Ready {
             attempt: id.to_string(),
         });
 
@@ -720,15 +724,25 @@ impl Admission {
             .count()
     }
 
-    pub fn poll_event(&mut self) -> Option<Event> {
-        self.events.try_recv().ok()
+    pub fn poll_event(&mut self) -> Option<crate::events::Received> {
+        self.events.as_ref()?.try_recv()
+    }
+
+    /// Take the queue, so a caller can poll it without holding this.
+    ///
+    /// **Once, and then this stops answering.** Two consumers would each see
+    /// part of the stream and each be told a different fraction of what was
+    /// dropped, so the queue has one owner and handing it over is what makes
+    /// that true rather than a rule somebody has to remember.
+    pub fn take_events(&mut self) -> Option<crate::events::Receiver> {
+        self.events.take()
     }
 }
 
 /// Everything one guest's loop owns for its lifetime.
 struct Attached {
     attempt_id: String,
-    emit: mpsc::Sender<Event>,
+    emit: crate::events::Sender,
     socket: Socket,
     servers: Vec<SocketAddr>,
     arrivals: mpsc::Receiver<SocketAddr>,
@@ -1388,7 +1402,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             }
         }) {
             lowlat_common::log_warn!("guest: the transport stopped, err={error}");
-            let _ = args.emit.send(Event::Ended {
+            args.emit.send(Event::Ended {
                 attempt: args.attempt_id.clone(),
                 outcome: Outcome::TransportFailed,
             });
@@ -1455,7 +1469,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 &mut inbound,
                 &mut inbound_messages,
                 &mut |(id, text)| {
-                    let _ = args.emit.send(Event::UserData {
+                    args.emit.send(Event::UserData {
                         guest: args.guest,
                         id,
                         text,
@@ -1463,7 +1477,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 },
             )
         {
-            let _ = args.emit.send(Event::Ended {
+            args.emit.send(Event::Ended {
                 attempt: args.attempt_id.clone(),
                 outcome,
             });
@@ -1486,13 +1500,13 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         match shell.endpoint().conn().state() {
             lowlat_core::conn::State::Established(addr) if negotiation.is_none() => {
                 negotiation = Some(Negotiation::opened(now));
-                let _ = args.emit.send(Event::Established {
+                args.emit.send(Event::Established {
                     attempt: args.attempt_id.clone(),
                     addr,
                 });
             }
             lowlat_core::conn::State::Failed(_) => {
-                let _ = args.emit.send(Event::Ended {
+                args.emit.send(Event::Ended {
                     attempt: args.attempt_id.clone(),
                     outcome: Outcome::ConnectivityFailed,
                 });
@@ -1521,7 +1535,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         if let Some((reason, at)) = kicked
             && now - at >= KICK_GRACE_MS
         {
-            let _ = args.emit.send(Event::Ended {
+            args.emit.send(Event::Ended {
                 attempt: args.attempt_id.clone(),
                 outcome: Outcome::Kicked(reason),
             });
@@ -1531,7 +1545,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         if let Some(negotiation) = negotiation.as_mut()
             && negotiation.tick(now) == State::Abandoned
         {
-            let _ = args.emit.send(Event::Ended {
+            args.emit.send(Event::Ended {
                 attempt: args.attempt_id.clone(),
                 outcome: Outcome::NeverDeclared,
             });
@@ -1717,7 +1731,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             .collect();
         for addr in fresh {
             reported.push(addr);
-            let _ = args.emit.send(Event::Candidate {
+            args.emit.send(Event::Candidate {
                 attempt: args.attempt_id.clone(),
                 addr,
                 from_stun: true,
@@ -1762,7 +1776,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 _ => None,
             };
             if let Some(outcome) = outcome {
-                let _ = args.emit.send(Event::Ended {
+                args.emit.send(Event::Ended {
                     attempt: args.attempt_id.clone(),
                     outcome,
                 });
@@ -1938,8 +1952,8 @@ mod tests {
         seam.begin_p2p("a").expect("approve");
 
         let mut saw_ready = false;
-        while let Some(event) = seam.poll_event() {
-            if event
+        while let Some(received) = seam.poll_event() {
+            if received.event
                 == (Event::Ready {
                     attempt: "a".to_string(),
                 })
@@ -1971,6 +1985,38 @@ mod tests {
         seam.end_connection("late");
     }
 
+    /// **The queue is handed over once, and the seam stops answering for it.**
+    /// A poll waits for as long as its caller asked and the seam's lock must
+    /// not be held for that long, so whoever polls holds the queue itself. Two
+    /// consumers would each see part of the stream and each be told a
+    /// different fraction of what was lost.
+    #[test]
+    fn the_event_queue_is_handed_over_once_and_carries_what_the_seam_raises() {
+        let mut seam = admission(4);
+        let events = seam.take_events().expect("the queue is there to take");
+        assert!(
+            seam.take_events().is_none(),
+            "the queue was handed to a second consumer"
+        );
+
+        seam.new_attempt("a", peer()).expect("register");
+        seam.begin_p2p("a").expect("approve");
+
+        // It reaches the holder rather than the seam, which now reports
+        // nothing at all.
+        assert!(seam.poll_event().is_none(), "the seam still answers polls");
+        let taken = events
+            .recv_timeout(core::time::Duration::from_secs(5))
+            .expect("approval raises the readiness marker");
+        assert_eq!(
+            taken.event,
+            Event::Ready {
+                attempt: "a".to_string()
+            }
+        );
+        seam.end_connection("a");
+    }
+
     #[test]
     fn ending_an_attempt_frees_the_slot_without_reporting_it() {
         let mut seam = admission(1);
@@ -1983,8 +2029,8 @@ mod tests {
         // terminal event for an attempt that already reported one is what this
         // asserts against.
         let mut terminal = 0;
-        while let Some(event) = seam.poll_event() {
-            if matches!(event, Event::Ended { .. }) {
+        while let Some(received) = seam.poll_event() {
+            if matches!(received.event, Event::Ended { .. }) {
                 terminal += 1;
             }
         }

@@ -532,8 +532,17 @@ async fn session_loop(
         // this notices either, once it has actually landed.
         captured = app::announce_capture(seam, settings, captured);
 
-        while let Some(event) = seam.poll_event() {
-            match event {
+        while let Some(received) = seam.poll_event() {
+            // **Said out loud, because the queue is bounded.** An application
+            // that stopped polling long enough loses the oldest events, and a
+            // loss nobody reports looks like a peer that never did anything.
+            if received.dropped > 0 {
+                println!(
+                    "lowlatd: {} event(s) were dropped before this one",
+                    received.dropped
+                );
+            }
+            match received.event {
                 Event::Candidate { attempt, addr, .. } => {
                     let Some(to) = peers.get(&attempt) else {
                         continue;
