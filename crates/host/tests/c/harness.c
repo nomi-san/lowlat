@@ -34,8 +34,21 @@
         memcpy(&(fn), &raw, sizeof raw);                                       \
     } while (0)
 
+/* Counts the lines the library hands over, and proves each is a usable C
+ * string with the caller's own pointer alongside it. */
+static void logged(uint32_t level, const char *message, void *opaque)
+{
+    (void) level;
+    if (message == NULL || opaque == NULL || message[0] == '\0') {
+        return;
+    }
+    (void) strlen(message);   /* runs off the end if it is not terminated */
+    *(unsigned *) opaque += 1;
+}
+
 int main(int argc, char **argv)
 {
+    unsigned log_lines = 0;
     if (argc < 2) {
         fprintf(stderr, "usage: harness <path to shared object>\n");
         return 2;
@@ -67,6 +80,8 @@ int main(int argc, char **argv)
     lowlat_status (*kick_guest)(lowlat *, uint32_t, int32_t);
     lowlat_status (*can_host)(void);
     lowlat_status (*get_outputs)(lowlat_output *, uint32_t *);
+    lowlat_status (*get_status)(lowlat *, lowlat_host_status *);
+    lowlat_status (*set_log_callback)(void (*)(uint32_t, const char *, void *), void *);
 
     RESOLVE(abi_version, lib, "lowlat_abi_version");
     RESOLVE(status_string, lib, "lowlat_status_string");
@@ -88,12 +103,21 @@ int main(int argc, char **argv)
     RESOLVE(kick_guest, lib, "lowlat_host_kick_guest");
     RESOLVE(can_host, lib, "lowlat_can_host");
     RESOLVE(get_outputs, lib, "lowlat_get_outputs");
+    RESOLVE(get_status, lib, "lowlat_host_get_status");
+    RESOLVE(set_log_callback, lib, "lowlat_set_log_callback");
 
     uint32_t version = abi_version();
     if ((version >> 16) != LOWLAT_ABI_MAJOR || (version & 0xffff) != LOWLAT_ABI_MINOR) {
         fprintf(stderr, "harness: the object reports version %u.%u, the header says %u.%u\n",
                 version >> 16, version & 0xffff,
                 (unsigned) LOWLAT_ABI_MAJOR, (unsigned) LOWLAT_ABI_MINOR);
+        return 1;
+    }
+
+    /* Log lines reach the application, terminated, with its own pointer handed
+     * back. This is the single place the library calls out. */
+    if (set_log_callback(logged, &log_lines) != LOWLAT_OK) {
+        fprintf(stderr, "harness: a log callback could not be registered\n");
         return 1;
     }
 
@@ -305,6 +329,18 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    /* What the host is doing, which is not what it was asked to do: the
+     * picture's size is the display's answer and the guest count is the
+     * room's. */
+    lowlat_host_status state;
+    memset(&state, 0, sizeof state);
+    state.size = (uint32_t) sizeof state;
+    if (get_status(ll, &state) != LOWLAT_OK || !state.running || state.guests != 1) {
+        fprintf(stderr, "harness: the host reports running=%u guests=%u\n",
+                (unsigned) state.running, state.guests);
+        return 1;
+    }
+
     /* What a guest may drive, changed while it is connected. There is no
      * separate call to turn its input off: that is this one with every flag
      * cleared. */
@@ -378,6 +414,11 @@ int main(int argc, char **argv)
     }
 
     destroy(ll);
+
+    if (log_lines == 0) {
+        fprintf(stderr, "harness: a whole session produced no log lines\n");
+        return 1;
+    }
 
     printf("harness: version %u.%u, a panic returned %d (%s)\n",
            version >> 16, version & 0xffff, (int) contained, described);

@@ -69,19 +69,44 @@ pub fn enabled(level: Level) -> bool {
     (level as u8) <= LEVEL.load(Ordering::Relaxed)
 }
 
+/// When this process started logging, so every default line can say how far
+/// into the run it is.
+static SINCE: OnceLock<crate::clock::Time> = OnceLock::new();
+
 /// Emit a pre-formatted message. Prefer the macros.
+///
+/// **The default sink stamps the elapsed time and a sink of the application's
+/// own does not.** Every diagnosis this project has made from logs came down
+/// to an interval -- how long a wait actually waited, how far apart two frames
+/// left, whether a periodic line stopped -- and a log with no clock cannot
+/// answer any of them. It is monotonic seconds since the first line rather
+/// than a wall clock, because that is the quantity being read and it needs no
+/// timezone to be unambiguous. An application that installed a sink has its own
+/// timestamps and would get two.
 pub fn emit(level: Level, message: &str) {
     if !enabled(level) {
         return;
     }
     match SINK.get() {
         Some(sink) => sink(level, message),
-        None => eprintln!("[{}] {}", level.tag(), message),
+        None => {
+            let since = SINCE.get_or_init(crate::clock::Time::now);
+            eprintln!(
+                "[{:9.3}] [{}] {}",
+                crate::clock::elapsed_ms(*since) / 1000.0,
+                level.tag(),
+                message
+            );
+        }
     }
 }
 
 #[doc(hidden)]
 pub fn emit_args(level: Level, args: core::fmt::Arguments<'_>) {
+    // **Checked here, before the formatting.** The macros expand their
+    // arguments lazily into `format_args!`, so a line that is filtered out
+    // costs the comparison and nothing else; letting it through to `emit`
+    // first would format the message in order to throw it away.
     if !enabled(level) {
         return;
     }

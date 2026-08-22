@@ -636,6 +636,126 @@ pub struct lowlat_guest {
     pub reserved: [u8; 3],
 }
 
+/// How severe a log line is.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_log_level {
+    LOWLAT_LOG_ERROR = 0,
+    LOWLAT_LOG_WARN = 1,
+    LOWLAT_LOG_INFO = 2,
+    LOWLAT_LOG_DEBUG = 3,
+    LOWLAT_LOG_TRACE = 4,
+}
+
+/// Where log lines go.
+///
+/// **The one place this library calls into an application**, and the single
+/// exception to being poll-based. It is cold, it fires on whichever thread
+/// logged, and it must not call back in.
+pub type lowlat_log_fn =
+    Option<unsafe extern "C" fn(level: u32, message: *const c_char, opaque: *mut c_void)>;
+
+/// The callback and whatever the application wanted handed back with it.
+///
+/// **A lock rather than an atomic pair**, because the two must be read
+/// together: a callback taken with the previous registration's opaque pointer
+/// would hand an application a pointer belonging to something it has already
+/// forgotten. Logging is cold enough to afford it.
+static LOGGER: std::sync::Mutex<(lowlat_log_fn, usize)> = std::sync::Mutex::new((None, 0));
+
+/// Hand one already-formatted line to whatever the application registered.
+///
+/// **Installed once and replaceable behind that**, so an application may
+/// change where its logs go without the underlying sink -- which is
+/// process-wide and takes one installation -- having to be changed with it.
+fn to_application(level: lowlat_common::log::Level, message: &str) {
+    let Ok(logger) = LOGGER.lock() else {
+        return;
+    };
+    let (Some(callback), opaque) = *logger else {
+        return;
+    };
+    // **A copy, because a Rust string has no terminator and C reads one.**
+    // Logging allocates here and nowhere else on this path; a line with an
+    // interior NUL is truncated at it rather than dropped, since a short
+    // message beats a lost one.
+    let Ok(text) = std::ffi::CString::new(message) else {
+        let Ok(truncated) = std::ffi::CString::new(
+            message
+                .split('\0')
+                .next()
+                .unwrap_or_default()
+                .as_bytes()
+                .to_vec(),
+        ) else {
+            return;
+        };
+        unsafe { callback(level as u32, truncated.as_ptr(), opaque as *mut c_void) };
+        return;
+    };
+    unsafe { callback(level as u32, text.as_ptr(), opaque as *mut c_void) };
+}
+
+/// Receive log messages from every part of this library.
+///
+/// Passing `NULL` stops delivery and returns the library to writing lines on
+/// standard error itself.
+///
+/// **The callback may be replaced.** The underlying sink is process-wide and
+/// installed once; what an application registers here sits behind it, so
+/// calling this again changes where lines go rather than being refused.
+///
+/// # Safety
+///
+/// `fn_` must remain callable, and `opaque` valid, until this is called again
+/// with something else or with `NULL`. It may fire on any thread, and it must
+/// not call back into this library.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_set_log_callback(
+    fn_: lowlat_log_fn,
+    opaque: *mut c_void,
+) -> lowlat_status {
+    guard(LOWLAT_ERR_INTERNAL, || {
+        {
+            let Ok(mut logger) = LOGGER.lock() else {
+                return LOWLAT_ERR_INTERNAL;
+            };
+            *logger = (fn_, opaque as usize);
+        }
+        // Installed on the first registration and never again; a later one
+        // only changes what the shim finds.
+        lowlat_common::log::set_sink(to_application);
+        LOWLAT_OK
+    })
+}
+
+/// Set how much is logged. Lines above this level are not formatted at all.
+#[unsafe(no_mangle)]
+pub extern "C" fn lowlat_set_log_level(level: u32) -> lowlat_status {
+    guard(LOWLAT_ERR_INTERNAL, || {
+        let level = match level {
+            code if code == lowlat_log_level::LOWLAT_LOG_ERROR as u32 => {
+                lowlat_common::log::Level::Error
+            }
+            code if code == lowlat_log_level::LOWLAT_LOG_WARN as u32 => {
+                lowlat_common::log::Level::Warn
+            }
+            code if code == lowlat_log_level::LOWLAT_LOG_INFO as u32 => {
+                lowlat_common::log::Level::Info
+            }
+            code if code == lowlat_log_level::LOWLAT_LOG_DEBUG as u32 => {
+                lowlat_common::log::Level::Debug
+            }
+            code if code == lowlat_log_level::LOWLAT_LOG_TRACE as u32 => {
+                lowlat_common::log::Level::Trace
+            }
+            _ => return LOWLAT_ERR_INVALID_ARGUMENT,
+        };
+        lowlat_common::log::set_level(level);
+        LOWLAT_OK
+    })
+}
+
 /// One host session, as the application holds it.
 ///
 /// Opaque: the application holds a pointer it cannot look inside, so what is
@@ -1359,6 +1479,71 @@ fn status_of(found: crate::display::Capturable) -> lowlat_status {
         crate::display::Capturable::Yes => LOWLAT_OK,
         crate::display::Capturable::NothingLit => LOWLAT_ERR_NO_DISPLAY,
         crate::display::Capturable::NotReachable => LOWLAT_ERR_DISPLAY_UNREACHABLE,
+    }
+}
+
+/// What a host is doing right now.
+///
+/// **What is happening, not what was asked for.** The picture's size is the
+/// display's answer and the guest count is the room's; the settings that
+/// produced them are read back through [`lowlat_host_get_video_config`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_host_status {
+    /// Set by the caller to `sizeof(lowlat_host_status)`.
+    pub size: u32,
+    /// Guests that are connected and addressable.
+    pub guests: u32,
+    /// The picture the stream is producing. **Zero before a display has been
+    /// opened**, which is the honest answer: until then the size is the
+    /// display's to decide and nothing here knows it.
+    pub width: u32,
+    pub height: u32,
+    /// Whether this handle is hosting.
+    pub running: bool,
+    pub reserved: [u8; 3],
+}
+
+/// Read what the host is doing.
+///
+/// Answers on a handle that is not hosting too, with `running` clear: an
+/// application asking what state something is in should not have to know the
+/// answer first.
+///
+/// # Safety
+///
+/// `out` points to one [`lowlat_host_status`] whose `size` says how much of it
+/// is set.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_get_status(
+    ll: *mut lowlat,
+    out: *mut lowlat_host_status,
+) -> lowlat_status {
+    unsafe {
+        entered(ll, |handle| {
+            let Some(slot) = out.as_mut() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            if (slot.size as usize) < core::mem::size_of::<lowlat_host_status>() {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let held = handle.held();
+            let Some(seam) = held.seam.as_ref() else {
+                slot.guests = 0;
+                slot.width = 0;
+                slot.height = 0;
+                slot.running = false;
+                slot.reserved = [0; 3];
+                return LOWLAT_OK;
+            };
+            let (width, height) = seam.picture().unwrap_or((0, 0));
+            slot.guests = u32::try_from(seam.guests().len()).unwrap_or(u32::MAX);
+            slot.width = width;
+            slot.height = height;
+            slot.running = true;
+            slot.reserved = [0; 3];
+            LOWLAT_OK
+        })
     }
 }
 
@@ -2589,5 +2774,152 @@ mod preflight_tests {
             .contains(&answer),
             "the pre-flight answered {answer:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::seam_tests::approved;
+    use super::start_tests::{config, handle};
+    use super::*;
+
+    fn empty_status() -> lowlat_host_status {
+        lowlat_host_status {
+            size: u32::try_from(core::mem::size_of::<lowlat_host_status>()).unwrap_or(u32::MAX),
+            guests: 0,
+            width: 0,
+            height: 0,
+            running: false,
+            reserved: [0; 3],
+        }
+    }
+
+    /// **A handle that is not hosting answers too.** An application asking
+    /// what state something is in should not have to know the answer to ask
+    /// the question.
+    #[test]
+    fn status_answers_before_hosting_and_after() {
+        let handle = handle();
+        let mut status = empty_status();
+        assert_eq!(
+            unsafe { lowlat_host_get_status(handle, &raw mut status) },
+            LOWLAT_OK
+        );
+        assert!(!status.running && status.guests == 0);
+
+        let cfg = config();
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_OK
+        );
+        approved(handle, "a");
+        let mut status = empty_status();
+        assert_eq!(
+            unsafe { lowlat_host_get_status(handle, &raw mut status) },
+            LOWLAT_OK
+        );
+        assert!(status.running);
+        assert_eq!(status.guests, 1);
+
+        // **Zero before a display has been opened**, which is the honest
+        // answer rather than the size that was configured -- there is no such
+        // size, and reporting one would describe a stream nobody is making.
+        assert_eq!((status.width, status.height), (0, 0));
+
+        unsafe { lowlat_destroy(handle) };
+    }
+}
+
+#[cfg(test)]
+mod logging_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    /// **Only this test's own lines are counted.** The sink is process-wide
+    /// and every other test in this binary logs into it, so counting
+    /// everything would make this pass or fail on what else happened to be
+    /// running.
+    const MARK: &str = "logtest:";
+
+    static SEEN: AtomicU32 = AtomicU32::new(0);
+    static LEVEL_SEEN: AtomicU32 = AtomicU32::new(99);
+    static TERMINATED: AtomicU32 = AtomicU32::new(0);
+    static OPAQUE_KEPT: AtomicU32 = AtomicU32::new(0);
+
+    unsafe extern "C" fn counted(level: u32, message: *const c_char, opaque: *mut c_void) {
+        if message.is_null() {
+            return;
+        }
+        // **Read as a C string, which is the whole reason for the copy.** A
+        // message that was not terminated would run off the end here rather
+        // than parse, so reaching this at all is half the assertion.
+        let text = unsafe { CStr::from_ptr(message) };
+        let Ok(text) = text.to_str() else {
+            return;
+        };
+        if !text.starts_with(MARK) {
+            return;
+        }
+        TERMINATED.fetch_add(1, Ordering::Relaxed);
+        if opaque as usize == 0x1234 {
+            OPAQUE_KEPT.fetch_add(1, Ordering::Relaxed);
+        }
+        LEVEL_SEEN.store(level, Ordering::Relaxed);
+        SEEN.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Forward to standard error, so clearing the callback at the end of this
+    /// test does not silence every test that runs after it.
+    unsafe extern "C" fn to_stderr(level: u32, message: *const c_char, _opaque: *mut c_void) {
+        if message.is_null() {
+            return;
+        }
+        let text = unsafe { CStr::from_ptr(message) };
+        eprintln!("[{level}] {}", text.to_string_lossy());
+    }
+
+    /// **The line reaches the application terminated, with its own pointer
+    /// handed back**, and the level still decides what is formatted at all.
+    #[test]
+    fn a_registered_callback_receives_lines_and_its_own_pointer() {
+        assert_eq!(
+            unsafe { lowlat_set_log_callback(Some(counted), 0x1234 as *mut c_void) },
+            LOWLAT_OK
+        );
+        SEEN.store(0, Ordering::Relaxed);
+        lowlat_common::log_warn!("{MARK} a line, key=value");
+        assert_eq!(SEEN.load(Ordering::Relaxed), 1);
+        assert_eq!(TERMINATED.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            OPAQUE_KEPT.load(Ordering::Relaxed),
+            1,
+            "the opaque pointer did not survive the round trip"
+        );
+        assert_eq!(
+            LEVEL_SEEN.load(Ordering::Relaxed),
+            lowlat_log_level::LOWLAT_LOG_WARN as u32
+        );
+
+        // **Replaceable**, which the sink underneath is not: clearing stops
+        // delivery rather than being refused because something is installed.
+        assert_eq!(
+            unsafe { lowlat_set_log_callback(None, core::ptr::null_mut()) },
+            LOWLAT_OK
+        );
+        lowlat_common::log_warn!("{MARK} after clearing");
+        assert_eq!(
+            SEEN.load(Ordering::Relaxed),
+            1,
+            "a line arrived after the callback was cleared"
+        );
+
+        // A level nothing defines is refused rather than quietly clamped.
+        assert_eq!(lowlat_set_log_level(99), LOWLAT_ERR_INVALID_ARGUMENT);
+        assert_eq!(
+            lowlat_set_log_level(lowlat_log_level::LOWLAT_LOG_INFO as u32),
+            LOWLAT_OK
+        );
+
+        unsafe { lowlat_set_log_callback(Some(to_stderr), core::ptr::null_mut()) };
     }
 }

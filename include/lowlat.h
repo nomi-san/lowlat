@@ -293,11 +293,38 @@ typedef uint32_t lowlat_cg_level;
 #endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
 
+// How severe a log line is.
+enum lowlat_log_level
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+    LOWLAT_LOG_ERROR = 0,
+    LOWLAT_LOG_WARN = 1,
+    LOWLAT_LOG_INFO = 2,
+    LOWLAT_LOG_DEBUG = 3,
+    LOWLAT_LOG_TRACE = 4,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum lowlat_log_level lowlat_log_level;
+#else
+typedef uint32_t lowlat_log_level;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
 // One host session, as the application holds it.
 //
 // Opaque: the application holds a pointer it cannot look inside, so what is
 // in here changes freely.
 typedef struct lowlat lowlat;
+
+// Where log lines go.
+//
+// **The one place this library calls into an application**, and the single
+// exception to being poll-based. It is cold, it fires on whichever thread
+// logged, and it must not call back in.
+typedef void (*lowlat_log_fn)(uint32_t level, const char *message, void *opaque);
 
 // What a handle is created with.
 //
@@ -495,6 +522,26 @@ typedef struct lowlat_output {
     uint32_t y;
 } lowlat_output;
 
+// What a host is doing right now.
+//
+// **What is happening, not what was asked for.** The picture's size is the
+// display's answer and the guest count is the room's; the settings that
+// produced them are read back through [`lowlat_host_get_video_config`].
+typedef struct lowlat_host_status {
+    // Set by the caller to `sizeof(lowlat_host_status)`.
+    uint32_t size;
+    // Guests that are connected and addressable.
+    uint32_t guests;
+    // The picture the stream is producing. **Zero before a display has been
+    // opened**, which is the honest answer: until then the size is the
+    // display's to decide and nothing here knows it.
+    uint32_t width;
+    uint32_t height;
+    // Whether this handle is hosting.
+    bool running;
+    uint8_t reserved[3];
+} lowlat_host_status;
+
 // A local candidate for the application to forward.
 typedef struct lowlat_candidate_event {
     char attempt[LOWLAT_ATTEMPT_MAX];
@@ -611,6 +658,25 @@ uint32_t lowlat_abi_version(void);
 // The pointer is to storage that outlives the library, so it is never freed
 // and never copied out of.
 const char *lowlat_status_string(int32_t status);
+
+// Receive log messages from every part of this library.
+//
+// Passing `NULL` stops delivery and returns the library to writing lines on
+// standard error itself.
+//
+// **The callback may be replaced.** The underlying sink is process-wide and
+// installed once; what an application registers here sits behind it, so
+// calling this again changes where lines go rather than being refused.
+//
+// # Safety
+//
+// `fn_` must remain callable, and `opaque` valid, until this is called again
+// with something else or with `NULL`. It may fire on any thread, and it must
+// not call back into this library.
+lowlat_status lowlat_set_log_callback(lowlat_log_fn fn_, void *opaque);
+
+// Set how much is logged. Lines above this level are not formatted at all.
+lowlat_status lowlat_set_log_level(uint32_t level);
 
 // Create a handle.
 //
@@ -808,6 +874,18 @@ lowlat_status lowlat_get_outputs(struct lowlat_output *out, uint32_t *count);
 // [`LOWLAT_OK`] means a display is lit and its framebuffer can be reached.
 // It is a read: no encoder is built and no thread is started.
 lowlat_status lowlat_can_host(void);
+
+// Read what the host is doing.
+//
+// Answers on a handle that is not hosting too, with `running` clear: an
+// application asking what state something is in should not have to know the
+// answer first.
+//
+// # Safety
+//
+// `out` points to one [`lowlat_host_status`] whose `size` says how much of it
+// is set.
+lowlat_status lowlat_host_get_status(struct lowlat *ll, struct lowlat_host_status *out);
 
 // Change the video settings while the host runs.
 //
