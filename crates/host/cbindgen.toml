@@ -1,0 +1,35 @@
+# How the C header is generated from the Rust definitions.
+#
+# The header is committed at include/lowlat.h and a test regenerates it and
+# compares, so a definition that changes without the header changing fails the
+# build (docs/06-api.md 12). Regenerate with:
+#
+#   LOWLAT_BLESS_HEADER=1 cargo test -p lowlat-host --test abi
+
+language = "C"
+include_guard = "LOWLAT_H"
+# One header that compiles as C and as C++, which is the gate. Without this the
+# C++ translation unit mangles every name and links against nothing.
+cpp_compat = true
+documentation_style = "c99"
+no_includes = true
+sys_includes = ["stdint.h"]
+line_length = 88
+tab_width = 4
+
+header = """
+/* lowlat - the public C ABI.
+ *
+ * Generated from the Rust definitions. Do not edit; see crates/host/cbindgen.toml.
+ */"""
+
+[parse]
+parse_deps = false
+
+[export]
+# Only what is deliberately exported. A type that reaches the header by being
+# named in a signature is a type we published without deciding to.
+prefix = ""
+
+[enum]
+prefix_with_name = true

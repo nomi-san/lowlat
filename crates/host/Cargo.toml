@@ -29,3 +29,11 @@ loom = "0.7"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+# Generates the C header from these definitions, so the two cannot drift
+# (docs/06-api.md 12). A dev-dependency rather than a build one: the header is
+# committed, nothing on a build machine regenerates it, and a test is what
+# fails when it is stale. Default features off drops the command-line parser,
+# which is ten crates we would carry to call a library function.
+cbindgen = { version = "0.29.4", default-features = false }

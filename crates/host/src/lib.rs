@@ -5,6 +5,7 @@
 
 // Phase 8 lands the ABI. Phases 4 through 7 land the orchestration.
 
+pub mod abi;
 pub mod admission;
 pub mod cursor;
 pub mod display;
