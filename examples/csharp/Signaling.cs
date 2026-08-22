@@ -103,7 +103,11 @@ internal sealed class Signaling : IDisposable
     /// **On state change only, never on a timer.** The service derives liveness
     /// from the connection itself, so a periodic advertisement adds load and
     /// buys nothing.
-    public Task AdvertiseAsync(string name, uint capacity, uint players, CancellationToken token)
+    /// **The guests travel with it.** A listing that says how many are
+    /// connected without saying who they are is one a reader cannot act on,
+    /// and the field exists in the shape either way.
+    public Task AdvertiseAsync(
+        string name, uint capacity, JsonArray guests, CancellationToken token)
     {
         var payload = new JsonObject
         {
@@ -124,9 +128,9 @@ internal sealed class Signaling : IDisposable
             // Read from what admission will actually grant: a listing that
             // promises more capacity than that is a listing that lies.
             ["max_players"] = capacity,
-            ["players"] = players,
+            ["players"] = (uint)guests.Count,
             ["public"] = false,
-            ["guests"] = new JsonArray(),
+            ["guests"] = guests,
         };
         return SendAsync("conn_update", payload, token);
     }

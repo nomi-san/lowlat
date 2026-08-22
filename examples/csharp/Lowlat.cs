@@ -181,8 +181,31 @@ internal struct Guest
     public Permissions Permissions;
     public byte OwnerByte;
     private byte reserved0, reserved1, reserved2;
+    [InlineArray(Sizes.Attempt)] public struct AttemptId { private byte first; }
+    /// The identifier this attempt was registered under, which is the link
+    /// between the seam's two halves: before a guest is seated it is addressed
+    /// by attempt, after it by number.
+    public AttemptId Attempt;
 
     public bool Owner => OwnerByte != 0;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct Metrics
+{
+    public uint Size;
+    public uint ConnectedMs;
+    /// Zero means never, which is not zero milliseconds ago.
+    public uint KeyboardMs;
+    public uint PointerMs;
+    public uint GamepadMs;
+    public uint Frames;
+    public uint Window;
+    public uint Stale;
+    public uint CgEvents;
+    public float BitrateMbps;
+    public float EncodeMs;
+    public float NetworkMs;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -330,6 +353,22 @@ internal static partial class Native
 
     [LibraryImport(Library)]
     internal static partial Status lowlat_host_kick_guest(IntPtr handle, uint guestId, int reason);
+
+    [LibraryImport(Library)]
+    internal static unsafe partial Status lowlat_host_send_roster(
+        IntPtr handle, byte* data, uint len, uint* reached);
+
+    [LibraryImport(Library)]
+    internal static unsafe partial Status lowlat_host_get_metrics(
+        IntPtr handle, uint guestId, Metrics* metrics);
+
+    [LibraryImport(Library)]
+    internal static unsafe partial Status lowlat_host_set_video_config(
+        IntPtr handle, HostVideoConfig* cfg);
+
+    [LibraryImport(Library)]
+    internal static unsafe partial Status lowlat_host_get_video_config(
+        IntPtr handle, HostVideoConfig* cfg);
 }
 
 internal static class Text

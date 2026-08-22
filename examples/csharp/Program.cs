@@ -89,7 +89,8 @@ while (!cancel.IsCancellationRequested)
         current = signaling;
         backoff.Reset();
         Console.WriteLine($"signaling: connected to {server}");
-        await signaling.AdvertiseAsync("lowlat (C#)", host.Capacity, host.Guests(), cancel.Token);
+        await signaling.AdvertiseAsync(
+            "lowlat (C#)", host.Capacity, AppProtocol.Guests(host), cancel.Token);
         await Session.RunAsync(host, signaling, peers, cancel.Token);
         Console.WriteLine("signaling: closed");
     }
@@ -264,9 +265,10 @@ internal static class Logging
 
 internal static class Enumeration
 {
-    public static List<(string id, uint width, uint height, uint x, uint y)> Outputs()
+    public static List<(string id, string connector, uint width, uint height, uint x, uint y)>
+        Outputs()
     {
-        var found = new List<(string, uint, uint, uint, uint)>();
+        var found = new List<(string, string, uint, uint, uint, uint)>();
         unsafe
         {
             uint count = 0;
@@ -286,6 +288,7 @@ internal static class Enumeration
             {
                 found.Add((
                     Text.Take(((ReadOnlySpan<byte>)listed[at].Id)[..Sizes.Output]),
+                    Text.Take(((ReadOnlySpan<byte>)listed[at].Connector)[..Sizes.Output]),
                     listed[at].Width,
                     listed[at].Height,
                     listed[at].X,

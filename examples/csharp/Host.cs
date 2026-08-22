@@ -79,12 +79,120 @@ internal sealed class Host
         handle = IntPtr.Zero;
     }
 
-    public uint Guests()
+    /// Every connected guest, with what it may drive and the attempt it came
+    /// from.
+    public List<Guest> Roster()
     {
+        var found = new List<Guest>();
         unsafe
         {
             uint count = 0;
-            return Native.lowlat_host_get_guests(handle, null, &count) == Status.Ok ? count : 0;
+            if (Native.lowlat_host_get_guests(handle, null, &count) != Status.Ok || count == 0)
+            {
+                return found;
+            }
+            var room = new Guest[count];
+            fixed (Guest* into = room)
+            {
+                if (Native.lowlat_host_get_guests(handle, into, &count) != Status.Ok)
+                {
+                    return found;
+                }
+            }
+            found.AddRange(room.Take((int)count));
+        }
+        return found;
+    }
+
+    /// What one guest is doing.
+    public Metrics Metrics(uint guest)
+    {
+        unsafe
+        {
+            var metrics = new Metrics { Size = (uint)sizeof(Metrics) };
+            return Native.lowlat_host_get_metrics(handle, guest, &metrics) == Status.Ok
+                ? metrics
+                : default;
+        }
+    }
+
+    /// What the stream is running at, read back rather than remembered: a
+    /// guest may have changed it, and a display may have moved by itself.
+    public (uint fps, double bitrateMbps, double minBitrateMbps, bool fullFps, string output)
+        VideoConfig()
+    {
+        unsafe
+        {
+            var cfg = new HostVideoConfig { Size = (uint)sizeof(HostVideoConfig) };
+            if (Native.lowlat_host_get_video_config(handle, &cfg) != Status.Ok)
+            {
+                return (0, 0, 0, true, "");
+            }
+            return (
+                cfg.Fps,
+                cfg.BitrateMbps,
+                cfg.MinBitrateMbps,
+                cfg.FullFps,
+                Text.Take(((ReadOnlySpan<byte>)cfg.Output)[..Sizes.Output]));
+        }
+    }
+
+    public Status SetVideoConfig(
+        uint fps, double bitrateMbps, double minBitrateMbps, bool fullFps, string output)
+    {
+        unsafe
+        {
+            var cfg = new HostVideoConfig
+            {
+                Size = (uint)sizeof(HostVideoConfig),
+                Fps = fps,
+                BitrateMbps = bitrateMbps,
+                MinBitrateMbps = minBitrateMbps,
+                FullFps = fullFps,
+            };
+            Text.Put(((Span<byte>)cfg.Output)[..Sizes.Output], output);
+            return Native.lowlat_host_set_video_config(handle, &cfg);
+        }
+    }
+
+    public HostStatus State()
+    {
+        unsafe
+        {
+            var state = new HostStatus { Size = (uint)sizeof(HostStatus) };
+            return Native.lowlat_host_get_status(handle, &state) == Status.Ok ? state : default;
+        }
+    }
+
+    public void SendUserData(uint guest, uint id, string body)
+    {
+        unsafe
+        {
+            var bytes = System.Text.Encoding.UTF8.GetBytes(body);
+            fixed (byte* data = bytes)
+            {
+                var sent = Native.lowlat_host_send_user_data(
+                    handle, guest, id, data, (uint)bytes.Length);
+                Console.WriteLine(
+                    sent == Status.Ok
+                        ? $"app: answered guest {guest} id={id} {body}"
+                        : $"app: guest {guest} could not be answered with id={id}");
+            }
+        }
+    }
+
+    /// Tell every guest who is in the room. Answers how many it reached.
+    public uint SendRosterBody(string body)
+    {
+        unsafe
+        {
+            var bytes = System.Text.Encoding.UTF8.GetBytes(body);
+            uint reached = 0;
+            fixed (byte* data = bytes)
+            {
+                Native.lowlat_host_send_roster(handle, data, (uint)bytes.Length, &reached);
+            }
+            return reached;
         }
     }
 
@@ -250,6 +358,29 @@ internal sealed class Host
         }
         Expect(Native.lowlat_host_kick_guest(handle, guest, -15000), "kick_guest");
 
+        // The application protocol, driven the way a client drives it: it asks
+        // 9 and 10 on connecting and again after it acts.
+        if (!AppProtocol.OnMessage(this, guest, 9, "") || !AppProtocol.OnMessage(this, guest, 10, ""))
+        {
+            throw new InvalidOperationException("a query this application speaks was not handled");
+        }
+        if (AppProtocol.OnMessage(this, guest, 4242, ""))
+        {
+            throw new InvalidOperationException("a message meant for something else was swallowed");
+        }
+        var described = AppProtocol.Describe(this);
+        foreach (var field in new[] { "output", "encoderFPS", "resolutionX", "fullFPS" })
+        {
+            if (described["video"]?[0]?[field] is null)
+            {
+                throw new InvalidOperationException($"the description carries no {field}");
+            }
+        }
+        // A client sending one back, which is how it asks for a different
+        // output or rate.
+        AppProtocol.OnMessage(this, guest, 11, described.ToJsonString());
+        AppProtocol.SendRoster(this);
+
         // Whatever the seam raised on the way through, drained rather than
         // discarded: the queue outlives the session that filled it.
         DrainEvents();
@@ -392,9 +523,15 @@ internal sealed class Host
                 }
                 case EventType.Established:
                     Console.WriteLine($"established {Events.Attempt(ev)}");
+                    // **The roster is what makes a client's settings panel
+                    // exist at all.** A peer cannot ask for one and finds
+                    // itself in the list by number; without it a guest does
+                    // not know what it is.
+                    AppProtocol.SendRoster(this);
                     if (signaling is not null)
                     {
-                        await signaling.AdvertiseAsync("lowlat (C#)", Capacity, Guests(), token);
+                        await signaling.AdvertiseAsync(
+                            "lowlat (C#)", Capacity, AppProtocol.Guests(this), token);
                     }
                     break;
                 case EventType.Ended:
@@ -402,9 +539,11 @@ internal sealed class Host
                     var (attempt, outcome, reason) = Events.Ended(ev);
                     Console.WriteLine($"ended {attempt}: {outcome} reason={reason}");
                     peers.Remove(attempt);
+                    AppProtocol.SendRoster(this);
                     if (signaling is not null)
                     {
-                        await signaling.AdvertiseAsync("lowlat (C#)", Capacity, Guests(), token);
+                        await signaling.AdvertiseAsync(
+                            "lowlat (C#)", Capacity, AppProtocol.Guests(this), token);
                     }
                     break;
                 }
@@ -413,13 +552,28 @@ internal sealed class Host
                     var (guest, id, length) = Events.UserData(ev);
                     var text = System.Text.Encoding.UTF8.GetString(
                         body, 0, (int)Math.Min(written, (uint)body.Length));
-                    Console.WriteLine($"guest {guest} said id={id} len={length}: {text}");
+                    // **Handled, or said out loud.** A body meant for something
+                    // this application does not speak is visible rather than
+                    // silently swallowed.
+                    if (!AppProtocol.OnMessage(this, guest, id, text))
+                    {
+                        Console.WriteLine($"guest {guest} said id={id} len={length}: {text}");
+                    }
                     break;
                 }
                 case EventType.CaptureChanged:
                 {
                     var (width, height, output) = Events.CaptureChanged(ev);
                     Console.WriteLine($"capturing {output} at {width}x{height}");
+                    // **Nobody asked, and that is the point.** A reader asks
+                    // after it acts, so a change it did not cause -- a display
+                    // moving, another guest switching outputs -- reaches it
+                    // only if the host says so.
+                    var described = AppProtocol.Describe(this).ToJsonString();
+                    foreach (var guest in Roster())
+                    {
+                        SendUserData(guest.Number, 11, described);
+                    }
                     break;
                 }
                 case EventType.InputOwnerChanged:
