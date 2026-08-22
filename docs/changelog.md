@@ -66,6 +66,28 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   it does not want bodies; the event still reports how long the one it gave up
   was.
 
+- **Hosting starts and stops from the boundary**, and the configuration field
+  set is settled with it. No resolution: the display decides the picture's
+  size, the encoder follows, and `fps` is a ceiling over whatever the display
+  runs at rather than a target. An output identity, empty meaning whichever the
+  host would pick on its own. Reflexive servers as a fixed array with a count
+  rather than a pointer and a length, so the structure stays one blittable
+  block with nothing in it to free.
+
+  **Codec, encoder and rotation are named by enumerations and carried as plain
+  integers**, and every one of them is checked at the boundary rather than
+  converted. The application fills that structure, so each field is whatever it
+  wrote; reading one back as a variant would be reading a value nothing
+  defined. That is the same rule the status codes follow, arriving from the
+  other direction -- and it is why the enumerations have to be asked for
+  explicitly in the header, since nothing in a signature references them.
+
+  Starting twice is refused rather than quietly reconfiguring: a second
+  configuration that looks accepted and is not is a host running settings
+  nobody can see. Stopping and starting again on one handle works, and the
+  queue outlives the seam, because what was raised on the way down is still
+  worth polling.
+
 **Found by running it**
 
 - **A poll with nothing to poll must still cost the time it was given.** With
