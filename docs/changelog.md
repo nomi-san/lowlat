@@ -29,6 +29,30 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   undefined behaviour, so the type that crosses is one where every bit pattern
   is valid.
 
+- **A bounded event queue, and the seam does not hold it.** Every other call
+  into the seam is a lock and a copy; a poll waits for as long as its caller
+  asked. If the two shared a lock, a poll with a hundred millisecond timeout
+  would stop a hundred milliseconds of everything else, so the queue is handed
+  to its consumer once and the seam only pushes into it. Handing it over is
+  what makes the single-consumer rule true rather than something to remember:
+  two consumers would each see part of the stream and each be told a different
+  fraction of what was lost.
+
+  **Bounded in bytes as well as in events, because a count of events is not a
+  bound.** A message body may carry a megabyte, so a queue limited only by how
+  many it holds is limited to that many megabytes. The oldest go first, the
+  count of what went travels with the next event delivered -- the only place it
+  can be reported, since the drop happened because nobody was listening -- and
+  **what was just handed over is never what gets dropped**, so a body larger
+  than the whole budget empties the queue and is still delivered rather than
+  vanishing with nothing to say it did.
+
+  Waiting is the wait and wake pair rather than a condition variable, which is
+  the house rule and the reason it is: the two halves are one primitive. The
+  arrival count is sampled before the queue is found empty, so a push landing
+  in between changes the value the sleeper is parked against and the wait
+  returns at once instead of sleeping through it.
+
 **Found by running it**
 
 - **A gate that tests the wrong artifact reports on the wrong artifact.** The
