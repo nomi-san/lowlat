@@ -38,6 +38,7 @@
 #[cfg(test)]
 extern crate std;
 
+pub mod audio;
 pub mod channel;
 pub mod congestion;
 pub mod conn;
