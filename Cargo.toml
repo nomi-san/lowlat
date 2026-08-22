@@ -7,6 +7,7 @@ members = [
     "crates/net",
     "crates/sim",
     "crates/capture",
+    "crates/audio",
     "crates/encode",
     "crates/inject",
     "crates/host",
@@ -30,6 +31,7 @@ lowlat-crypto = { path = "crates/crypto" }
 lowlat-net = { path = "crates/net" }
 lowlat-sim = { path = "crates/sim" }
 lowlat-capture = { path = "crates/capture" }
+lowlat-audio = { path = "crates/audio" }
 lowlat-encode = { path = "crates/encode" }
 lowlat-inject = { path = "crates/inject" }
 lowlat-host = { path = "crates/host" }

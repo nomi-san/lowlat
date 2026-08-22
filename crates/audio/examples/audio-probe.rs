@@ -47,15 +47,9 @@
 
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 
+use lowlat_audio::{CHANNELS, FRAME, FRAME_BYTES, SAMPLE_RATE};
 use lowlat_common::clock::{Time, elapsed_ms};
 use lowlat_common::dynlib::Library;
-
-/// The frame every sender here is built around: 20 ms of 48 kHz stereo.
-const RATE: u32 = 48000;
-const CHANNELS: u8 = 2;
-const FRAME: usize = 960;
-/// Interleaved sixteen-bit samples, which is what one frame occupies.
-const FRAME_BYTES: usize = FRAME * CHANNELS as usize * 2;
 
 /// How long to read for when nobody says, in frames of 20 ms.
 const FRAMES: usize = 10 * 50;
@@ -150,8 +144,8 @@ fn main() {
 
     let spec = SampleSpec {
         format: SAMPLE_S16LE,
-        rate: RATE,
-        channels: CHANNELS,
+        rate: SAMPLE_RATE,
+        channels: u8::try_from(CHANNELS).expect("a channel count"),
     };
     let attr = BufferAttr {
         maxlength: DEFAULT,
@@ -188,7 +182,7 @@ fn main() {
         return;
     }
     println!(
-        "open ok device={device} server={} rate={RATE} channels={CHANNELS} fragment={FRAME_BYTES}B",
+        "open ok device={device} server={} rate={SAMPLE_RATE} channels={CHANNELS} fragment={FRAME_BYTES}B",
         server.unwrap_or_else(|| "<environment>".to_owned())
     );
 
@@ -248,8 +242,8 @@ fn main() {
         gaps.get(index).copied().unwrap_or(0.0)
     };
     let read_count = gaps.len();
-    let captured_ms = (read_count * FRAME) as f64 * 1000.0 / f64::from(RATE);
-    let samples = (read_count * FRAME * CHANNELS as usize) as f64;
+    let captured_ms = (read_count * FRAME) as f64 * 1000.0 / f64::from(SAMPLE_RATE);
+    let samples = (read_count * FRAME * CHANNELS) as f64;
     let rms = (sum_squares / samples.max(1.0)).sqrt();
 
     println!("reads: {read_count} of {frames}");
