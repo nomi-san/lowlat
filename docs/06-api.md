@@ -209,19 +209,40 @@ ignores it, which is why the type field is first.
 
 | Event | Meaning |
 |---|---|
-| guest state changed | connecting, connected, disconnected, with reason |
 | candidate | a local candidate to forward over signaling |
+| ready | tell the peer this host is ready to be checked, once |
+| established | a path was found and media is flowing |
+| ended | the attempt is over, with a typed outcome |
 | user data | an application message from a guest |
-| guest degraded | a guest is chronically behind ([05 §6](05-host.md)) |
-| input owner changed | the most recent injecting guest changed |
-| capture changed | resolution, refresh, or output topology changed |
-| fatal | the session cannot continue |
+| capture changed | a different output, or the same one at a different size |
+| input owner changed | the guest holding the pointer changed |
+| fatal | the host could not serve anyone and every guest was told |
+
+**A guest's state changes are the four attempt events**, not one event with a
+state field: candidate and ready while it negotiates, established when a path is found, ended
+with a typed outcome. Splitting them is what lets an application respond to each without
+switching on a state inside a state.
+
+**Each of the last three is raised where its change happens**, which is the only place that can
+tell a change from a repetition. The capture one comes from the loop that rebuilt, because
+nothing above it knows whether the output moved or the display resized. The input owner comes
+from inside the arbiter's own lock, because a guest thread can only report that the pointer is
+now its own -- which is also what it would report on every message while it merely keeps
+holding it.
+
+**A guest that is chronically behind is not yet an event.** The skip-and-resync cycle exists
+([05 §6](05-host.md)) and what is missing is the threshold that makes a cycle "chronic"; adding
+the event before deciding that would mean either firing on every skip or picking a number
+nothing measured.
 
 **Poll from one thread.** The queue is single-consumer. Every other call is safe from any
 thread.
 
-Events are dropped oldest-first if the application stops polling, except `fatal`, which is
-never dropped. A dropped-count field on the next delivered event makes the loss visible rather
+Events are dropped **oldest-droppable-first** if the application stops polling, and `fatal` is
+never dropped -- so a fatal event sitting at the front of a full queue is not the first thing
+thrown away, which is what a plain oldest-first rule would do to the one event whose loss no
+count can convey. Holding it does not make the queue unbounded: everything droppable still
+goes. A dropped-count field on the next delivered event makes the loss visible rather
 than silent.
 
 **The queue is bounded in bytes as well as in entries**, because one of the two is not a bound:
