@@ -27,20 +27,14 @@
 // signaling to forward has to be anyway.
 #define LOWLAT_ADDRESS_MAX 46
 
-// One host session, as the application holds it.
-//
-// Opaque: the application holds a pointer it cannot look inside, so what is
-// in here changes freely.
-typedef struct lowlat lowlat;
-
 // A status code.
 //
-// **An integer with named constants rather than an enumeration**, and the
-// reason is soundness rather than taste: a status travels back into this
-// library -- ending a guest carries one as its reason -- and an application is
-// free to hand back a number we never defined. Reading an undefined
-// discriminant into a Rust enumeration is undefined behaviour, so the type
-// that crosses the boundary is one where every bit pattern is valid.
+// **An enumeration for the names and a plain integer wherever one is
+// accepted.** Grouping the codes under a type is what tells a reader that
+// `LOWLAT_TIMEOUT` is a status and `LOWLAT_ATTEMPT_MAX` is a size; taking one
+// back by value as this type would be something else entirely, because
+// reading a discriminant nothing defined is undefined behaviour and an
+// application is free to hand back any integer it has.
 //
 // Zero succeeds, positive is a non-fatal condition, negative is an error, and
 // the error space is partitioned by subsystem so that a number says where it
@@ -56,7 +50,97 @@ typedef struct lowlat lowlat;
 //
 // A value is assigned once and never reused, including for a condition that
 // is removed.
+enum lowlat_status
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : int32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+    // The call succeeded.
+    LOWLAT_OK = 0,
+    // No event arrived within the timeout. Not an error.
+    LOWLAT_TIMEOUT = 1,
+    // A fault was contained at the boundary. The handle no longer runs.
+    LOWLAT_ERR_INTERNAL = -1,
+    // An argument was missing, out of range, or contradicted another.
+    LOWLAT_ERR_INVALID_ARGUMENT = -2,
+    // The buffer was too small. What it would have taken has been written
+    // back, and nothing has been consumed.
+    LOWLAT_ERR_TOO_SMALL = -3,
+    // A previous call was contained at the boundary, so this handle is no
+    // longer trusted to describe its own state. Only destroying it still
+    // works.
+    LOWLAT_ERR_POISONED = -4,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum lowlat_status lowlat_status;
+#else
 typedef int32_t lowlat_status;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+// Which member of an event is the valid one.
+enum lowlat_event_type
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+    // A local candidate, to be sent to the peer as it is found.
+    LOWLAT_EVENT_CANDIDATE = 1,
+    // Send the peer a candidate marked ready, once.
+    LOWLAT_EVENT_READY = 2,
+    // Connectivity completed and media can flow.
+    LOWLAT_EVENT_ESTABLISHED = 3,
+    // The attempt is over, with a reason.
+    LOWLAT_EVENT_ENDED = 4,
+    // A guest sent its application a message.
+    LOWLAT_EVENT_USER_DATA = 5,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum lowlat_event_type lowlat_event_type;
+#else
+typedef uint32_t lowlat_event_type;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+// Why an attempt finished.
+enum lowlat_outcome
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+    // Negotiated, and no path was found.
+    LOWLAT_OUTCOME_CONNECTIVITY_FAILED = 1,
+    // The peer stopped answering.
+    LOWLAT_OUTCOME_PEER_GONE = 2,
+    // Nothing sent has been acknowledged for the delivery deadline, while
+    // something was outstanding the whole time.
+    LOWLAT_OUTCOME_UNDELIVERABLE = 3,
+    // The peer said it was leaving.
+    LOWLAT_OUTCOME_PEER_LEFT = 4,
+    // Connected, then never said what it could decode.
+    LOWLAT_OUTCOME_NEVER_DECLARED = 5,
+    // The socket could not be driven any further.
+    LOWLAT_OUTCOME_TRANSPORT_FAILED = 6,
+    // The control stream could not be read any further.
+    LOWLAT_OUTCOME_CONTROL_STALLED = 7,
+    // The host ended it, and `reason` carries what the peer was told.
+    LOWLAT_OUTCOME_KICKED = 8,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum lowlat_outcome lowlat_outcome;
+#else
+typedef uint32_t lowlat_outcome;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
+// One host session, as the application holds it.
+//
+// Opaque: the application holds a pointer it cannot look inside, so what is
+// in here changes freely.
+typedef struct lowlat lowlat;
 
 // What a handle is created with.
 //
@@ -66,13 +150,6 @@ typedef int32_t lowlat_status;
 typedef struct lowlat_create_info {
     uint32_t size;
 } lowlat_create_info;
-
-// Which member of an event is the valid one.
-//
-// An integer with constants for the same reason a status is: a value read out
-// of a structure and passed back in must not be able to be one nothing
-// defined.
-typedef uint32_t lowlat_event_type;
 
 // A local candidate for the application to forward.
 typedef struct lowlat_candidate_event {
@@ -96,9 +173,6 @@ typedef struct lowlat_established_event {
     uint16_t port;
     uint8_t reserved[2];
 } lowlat_established_event;
-
-// Why an attempt finished.
-typedef uint32_t lowlat_outcome;
 
 // The attempt is over.
 typedef struct lowlat_ended_event {
@@ -148,66 +222,6 @@ typedef struct lowlat_event {
     union lowlat_event_body body;
 } lowlat_event;
 
-// The call succeeded.
-#define LOWLAT_OK 0
-
-// No event arrived within the timeout. Not an error.
-#define LOWLAT_TIMEOUT 1
-
-// A fault was contained at the boundary. The handle no longer runs.
-#define LOWLAT_ERR_INTERNAL -1
-
-// An argument was missing, out of range, or contradicted another.
-#define LOWLAT_ERR_INVALID_ARGUMENT -2
-
-// The buffer was too small. What it would have taken has been written back,
-// and nothing has been consumed.
-#define LOWLAT_ERR_TOO_SMALL -3
-
-// A previous call was contained at the boundary, so this handle is no longer
-// trusted to describe its own state. Only destroying it still works.
-#define LOWLAT_ERR_POISONED -4
-
-// A local candidate, to be sent to the peer as it is found.
-#define LOWLAT_EVENT_CANDIDATE 1
-
-// Send the peer a candidate marked ready, once.
-#define LOWLAT_EVENT_READY 2
-
-// Connectivity completed and media can flow.
-#define LOWLAT_EVENT_ESTABLISHED 3
-
-// The attempt is over, with a reason.
-#define LOWLAT_EVENT_ENDED 4
-
-// A guest sent its application a message.
-#define LOWLAT_EVENT_USER_DATA 5
-
-// Negotiated, and no path was found.
-#define LOWLAT_OUTCOME_CONNECTIVITY_FAILED 1
-
-// The peer stopped answering.
-#define LOWLAT_OUTCOME_PEER_GONE 2
-
-// Nothing sent has been acknowledged for the delivery deadline, while
-// something was outstanding the whole time.
-#define LOWLAT_OUTCOME_UNDELIVERABLE 3
-
-// The peer said it was leaving.
-#define LOWLAT_OUTCOME_PEER_LEFT 4
-
-// Connected, then never said what it could decode.
-#define LOWLAT_OUTCOME_NEVER_DECLARED 5
-
-// The socket could not be driven any further.
-#define LOWLAT_OUTCOME_TRANSPORT_FAILED 6
-
-// The control stream could not be read any further.
-#define LOWLAT_OUTCOME_CONTROL_STALLED 7
-
-// The host ended it, and `reason` carries what the peer was told.
-#define LOWLAT_OUTCOME_KICKED 8
-
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
@@ -220,11 +234,14 @@ uint32_t lowlat_abi_version(void);
 
 // Describe a status.
 //
+// **It takes a plain integer rather than the enumeration**, so that a value
+// from anywhere can be described -- including one this version of the library
+// does not define, which is exactly the case an application reaches for this
+// in. Passing a status to it is an ordinary widening conversion.
+//
 // The pointer is to storage that outlives the library, so it is never freed
-// and never copied out of. An unrecognised value is described as one rather
-// than refused: this is what a caller reaches for while diagnosing, and
-// returning nothing there is the least useful thing it could do.
-const char *lowlat_status_string(lowlat_status status);
+// and never copied out of.
+const char *lowlat_status_string(int32_t status);
 
 // Create a handle.
 //

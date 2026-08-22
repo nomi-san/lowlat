@@ -269,6 +269,15 @@ fn the_header_declares_no_name_without_the_prefix() {
             // `typedef int32_t lowlat_status;` and the closing line of a
             // struct or enum, which is where its name is.
             line.trim_end_matches(';').split_whitespace().last()
+        } else if line.split_once(" = ").is_some_and(|(name, _)| {
+            !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+        }) {
+            // An enumerator. These carry the codes now, so they are exactly
+            // the names an application collides with.
+            line.split_once(" = ").map(|(name, _)| name)
         } else if line.ends_with(");") {
             // A function declaration. The name is what sits against the
             // opening parenthesis.
@@ -280,7 +289,11 @@ fn the_header_declares_no_name_without_the_prefix() {
         } else {
             None
         };
-        if let Some(name) = name.filter(|name| !name.is_empty()) {
+        // A closing brace with no name after it is a block ending, not a
+        // declaration: `};` closes an enum whose name was on the opening line.
+        if let Some(name) =
+            name.filter(|name| name.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_'))
+        {
             declared.push(name);
         }
     }

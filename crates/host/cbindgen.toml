@@ -32,4 +32,4 @@ parse_deps = false
 prefix = ""
 
 [enum]
-prefix_with_name = true
+prefix_with_name = false

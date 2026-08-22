@@ -12,15 +12,18 @@ use core::time::Duration;
 
 use crate::admission::{Event, Outcome};
 use crate::events::Delivery;
+use lowlat_event_type::*;
+use lowlat_outcome::*;
+use lowlat_status::*;
 
 /// A status code.
 ///
-/// **An integer with named constants rather than an enumeration**, and the
-/// reason is soundness rather than taste: a status travels back into this
-/// library -- ending a guest carries one as its reason -- and an application is
-/// free to hand back a number we never defined. Reading an undefined
-/// discriminant into a Rust enumeration is undefined behaviour, so the type
-/// that crosses the boundary is one where every bit pattern is valid.
+/// **An enumeration for the names and a plain integer wherever one is
+/// accepted.** Grouping the codes under a type is what tells a reader that
+/// `LOWLAT_TIMEOUT` is a status and `LOWLAT_ATTEMPT_MAX` is a size; taking one
+/// back by value as this type would be something else entirely, because
+/// reading a discriminant nothing defined is undefined behaviour and an
+/// application is free to hand back any integer it has.
 ///
 /// Zero succeeds, positive is a non-fatal condition, negative is an error, and
 /// the error space is partitioned by subsystem so that a number says where it
@@ -36,23 +39,25 @@ use crate::events::Delivery;
 ///
 /// A value is assigned once and never reused, including for a condition that
 /// is removed.
-pub type lowlat_status = i32;
-
-/// The call succeeded.
-pub const LOWLAT_OK: lowlat_status = 0;
-/// No event arrived within the timeout. Not an error.
-pub const LOWLAT_TIMEOUT: lowlat_status = 1;
-
-/// A fault was contained at the boundary. The handle no longer runs.
-pub const LOWLAT_ERR_INTERNAL: lowlat_status = -1;
-/// An argument was missing, out of range, or contradicted another.
-pub const LOWLAT_ERR_INVALID_ARGUMENT: lowlat_status = -2;
-/// The buffer was too small. What it would have taken has been written back,
-/// and nothing has been consumed.
-pub const LOWLAT_ERR_TOO_SMALL: lowlat_status = -3;
-/// A previous call was contained at the boundary, so this handle is no longer
-/// trusted to describe its own state. Only destroying it still works.
-pub const LOWLAT_ERR_POISONED: lowlat_status = -4;
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_status {
+    /// The call succeeded.
+    LOWLAT_OK = 0,
+    /// No event arrived within the timeout. Not an error.
+    LOWLAT_TIMEOUT = 1,
+    /// A fault was contained at the boundary. The handle no longer runs.
+    LOWLAT_ERR_INTERNAL = -1,
+    /// An argument was missing, out of range, or contradicted another.
+    LOWLAT_ERR_INVALID_ARGUMENT = -2,
+    /// The buffer was too small. What it would have taken has been written
+    /// back, and nothing has been consumed.
+    LOWLAT_ERR_TOO_SMALL = -3,
+    /// A previous call was contained at the boundary, so this handle is no
+    /// longer trusted to describe its own state. Only destroying it still
+    /// works.
+    LOWLAT_ERR_POISONED = -4,
+}
 
 /// The major version, raised only when something already published changes.
 pub const LOWLAT_ABI_MAJOR: u32 = 0;
@@ -68,23 +73,37 @@ pub extern "C" fn lowlat_abi_version() -> u32 {
     (LOWLAT_ABI_MAJOR << 16) | LOWLAT_ABI_MINOR
 }
 
+/// What each status says about itself.
+///
+/// A table rather than a match, because the value arriving is an integer and
+/// not necessarily one of these.
+const DESCRIPTIONS: [(lowlat_status, &CStr); 6] = [
+    (LOWLAT_OK, c"ok"),
+    (LOWLAT_TIMEOUT, c"no event within the timeout"),
+    (
+        LOWLAT_ERR_INTERNAL,
+        c"a fault was contained at the boundary",
+    ),
+    (LOWLAT_ERR_INVALID_ARGUMENT, c"an argument was not usable"),
+    (LOWLAT_ERR_TOO_SMALL, c"the buffer was too small"),
+    (LOWLAT_ERR_POISONED, c"the handle is poisoned"),
+];
+
 /// Describe a status.
 ///
+/// **It takes a plain integer rather than the enumeration**, so that a value
+/// from anywhere can be described -- including one this version of the library
+/// does not define, which is exactly the case an application reaches for this
+/// in. Passing a status to it is an ordinary widening conversion.
+///
 /// The pointer is to storage that outlives the library, so it is never freed
-/// and never copied out of. An unrecognised value is described as one rather
-/// than refused: this is what a caller reaches for while diagnosing, and
-/// returning nothing there is the least useful thing it could do.
+/// and never copied out of.
 #[unsafe(no_mangle)]
-pub extern "C" fn lowlat_status_string(status: lowlat_status) -> *const c_char {
-    let text: &CStr = match status {
-        LOWLAT_OK => c"ok",
-        LOWLAT_TIMEOUT => c"no event within the timeout",
-        LOWLAT_ERR_INTERNAL => c"a fault was contained at the boundary",
-        LOWLAT_ERR_INVALID_ARGUMENT => c"an argument was not usable",
-        LOWLAT_ERR_TOO_SMALL => c"the buffer was too small",
-        LOWLAT_ERR_POISONED => c"the handle is poisoned",
-        _ => c"unknown status",
-    };
+pub extern "C" fn lowlat_status_string(status: i32) -> *const c_char {
+    let text: &CStr = DESCRIPTIONS
+        .iter()
+        .find(|(code, _)| *code as i32 == status)
+        .map_or(c"unknown status", |(_, text)| text);
     text.as_ptr()
 }
 
@@ -102,43 +121,43 @@ pub const LOWLAT_ATTEMPT_MAX: usize = 128;
 pub const LOWLAT_ADDRESS_MAX: usize = 46;
 
 /// Which member of an event is the valid one.
-///
-/// An integer with constants for the same reason a status is: a value read out
-/// of a structure and passed back in must not be able to be one nothing
-/// defined.
-pub type lowlat_event_type = u32;
-
-/// A local candidate, to be sent to the peer as it is found.
-pub const LOWLAT_EVENT_CANDIDATE: lowlat_event_type = 1;
-/// Send the peer a candidate marked ready, once.
-pub const LOWLAT_EVENT_READY: lowlat_event_type = 2;
-/// Connectivity completed and media can flow.
-pub const LOWLAT_EVENT_ESTABLISHED: lowlat_event_type = 3;
-/// The attempt is over, with a reason.
-pub const LOWLAT_EVENT_ENDED: lowlat_event_type = 4;
-/// A guest sent its application a message.
-pub const LOWLAT_EVENT_USER_DATA: lowlat_event_type = 5;
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_event_type {
+    /// A local candidate, to be sent to the peer as it is found.
+    LOWLAT_EVENT_CANDIDATE = 1,
+    /// Send the peer a candidate marked ready, once.
+    LOWLAT_EVENT_READY = 2,
+    /// Connectivity completed and media can flow.
+    LOWLAT_EVENT_ESTABLISHED = 3,
+    /// The attempt is over, with a reason.
+    LOWLAT_EVENT_ENDED = 4,
+    /// A guest sent its application a message.
+    LOWLAT_EVENT_USER_DATA = 5,
+}
 
 /// Why an attempt finished.
-pub type lowlat_outcome = u32;
-
-/// Negotiated, and no path was found.
-pub const LOWLAT_OUTCOME_CONNECTIVITY_FAILED: lowlat_outcome = 1;
-/// The peer stopped answering.
-pub const LOWLAT_OUTCOME_PEER_GONE: lowlat_outcome = 2;
-/// Nothing sent has been acknowledged for the delivery deadline, while
-/// something was outstanding the whole time.
-pub const LOWLAT_OUTCOME_UNDELIVERABLE: lowlat_outcome = 3;
-/// The peer said it was leaving.
-pub const LOWLAT_OUTCOME_PEER_LEFT: lowlat_outcome = 4;
-/// Connected, then never said what it could decode.
-pub const LOWLAT_OUTCOME_NEVER_DECLARED: lowlat_outcome = 5;
-/// The socket could not be driven any further.
-pub const LOWLAT_OUTCOME_TRANSPORT_FAILED: lowlat_outcome = 6;
-/// The control stream could not be read any further.
-pub const LOWLAT_OUTCOME_CONTROL_STALLED: lowlat_outcome = 7;
-/// The host ended it, and `reason` carries what the peer was told.
-pub const LOWLAT_OUTCOME_KICKED: lowlat_outcome = 8;
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_outcome {
+    /// Negotiated, and no path was found.
+    LOWLAT_OUTCOME_CONNECTIVITY_FAILED = 1,
+    /// The peer stopped answering.
+    LOWLAT_OUTCOME_PEER_GONE = 2,
+    /// Nothing sent has been acknowledged for the delivery deadline, while
+    /// something was outstanding the whole time.
+    LOWLAT_OUTCOME_UNDELIVERABLE = 3,
+    /// The peer said it was leaving.
+    LOWLAT_OUTCOME_PEER_LEFT = 4,
+    /// Connected, then never said what it could decode.
+    LOWLAT_OUTCOME_NEVER_DECLARED = 5,
+    /// The socket could not be driven any further.
+    LOWLAT_OUTCOME_TRANSPORT_FAILED = 6,
+    /// The control stream could not be read any further.
+    LOWLAT_OUTCOME_CONTROL_STALLED = 7,
+    /// The host ended it, and `reason` carries what the peer was told.
+    LOWLAT_OUTCOME_KICKED = 8,
+}
 
 /// A local candidate for the application to forward.
 #[repr(C)]
@@ -425,23 +444,13 @@ fn put_address(into: &mut [c_char], port: &mut u16, addr: &std::net::SocketAddr)
 
 /// Describe one event in the shape the boundary publishes.
 fn described(received: &crate::events::Received) -> lowlat_event {
-    let mut event = lowlat_event {
-        kind: 0,
-        dropped: received.dropped,
-        // Every member is written before it is read, and the tag says which.
-        body: lowlat_event_body {
-            ready: lowlat_ready_event {
-                attempt: [0; LOWLAT_ATTEMPT_MAX],
-            },
-        },
-    };
+    let dropped = received.dropped;
     match &received.event {
         Event::Candidate {
             attempt,
             addr,
             from_stun,
         } => {
-            event.kind = LOWLAT_EVENT_CANDIDATE;
             let mut body = lowlat_candidate_event {
                 attempt: [0; LOWLAT_ATTEMPT_MAX],
                 address: [0; LOWLAT_ADDRESS_MAX],
@@ -451,18 +460,24 @@ fn described(received: &crate::events::Received) -> lowlat_event {
             };
             put(&mut body.attempt, attempt);
             put_address(&mut body.address, &mut body.port, addr);
-            event.body.candidate = body;
+            lowlat_event {
+                kind: LOWLAT_EVENT_CANDIDATE,
+                dropped,
+                body: lowlat_event_body { candidate: body },
+            }
         }
         Event::Ready { attempt } => {
-            event.kind = LOWLAT_EVENT_READY;
             let mut body = lowlat_ready_event {
                 attempt: [0; LOWLAT_ATTEMPT_MAX],
             };
             put(&mut body.attempt, attempt);
-            event.body.ready = body;
+            lowlat_event {
+                kind: LOWLAT_EVENT_READY,
+                dropped,
+                body: lowlat_event_body { ready: body },
+            }
         }
         Event::Established { attempt, addr } => {
-            event.kind = LOWLAT_EVENT_ESTABLISHED;
             let mut body = lowlat_established_event {
                 attempt: [0; LOWLAT_ATTEMPT_MAX],
                 address: [0; LOWLAT_ADDRESS_MAX],
@@ -471,10 +486,13 @@ fn described(received: &crate::events::Received) -> lowlat_event {
             };
             put(&mut body.attempt, attempt);
             put_address(&mut body.address, &mut body.port, addr);
-            event.body.established = body;
+            lowlat_event {
+                kind: LOWLAT_EVENT_ESTABLISHED,
+                dropped,
+                body: lowlat_event_body { established: body },
+            }
         }
         Event::Ended { attempt, outcome } => {
-            event.kind = LOWLAT_EVENT_ENDED;
             // Exhaustive on purpose: a new way for an attempt to finish should
             // break this build rather than reach an application as a number it
             // has no name for.
@@ -494,18 +512,24 @@ fn described(received: &crate::events::Received) -> lowlat_event {
                 reason,
             };
             put(&mut body.attempt, attempt);
-            event.body.ended = body;
+            lowlat_event {
+                kind: LOWLAT_EVENT_ENDED,
+                dropped,
+                body: lowlat_event_body { ended: body },
+            }
         }
-        Event::UserData { guest, id, text } => {
-            event.kind = LOWLAT_EVENT_USER_DATA;
-            event.body.user_data = lowlat_user_data_event {
-                guest: *guest,
-                id: *id,
-                body_len: u32::try_from(text.len()).unwrap_or(u32::MAX),
-            };
-        }
+        Event::UserData { guest, id, text } => lowlat_event {
+            kind: LOWLAT_EVENT_USER_DATA,
+            dropped,
+            body: lowlat_event_body {
+                user_data: lowlat_user_data_event {
+                    guest: *guest,
+                    id: *id,
+                    body_len: u32::try_from(text.len()).unwrap_or(u32::MAX),
+                },
+            },
+        },
     }
-    event
 }
 
 /// Run an entry point that needs the handle.
@@ -582,13 +606,14 @@ mod tests {
             LOWLAT_ERR_TOO_SMALL,
             LOWLAT_ERR_POISONED,
         ] {
-            let text = lowlat_status_string(status);
+            let text = lowlat_status_string(status as i32);
             assert!(!text.is_null());
             // Safe: the pointer is to a literal with static storage.
             let text = unsafe { CStr::from_ptr(text) };
-            assert!(
-                !text.to_bytes().is_empty(),
-                "status {status} describes itself as nothing"
+            assert_ne!(
+                text.to_bytes(),
+                b"unknown status",
+                "{status:?} is missing from the description table"
             );
         }
         let unknown = unsafe { CStr::from_ptr(lowlat_status_string(-31337)) };
