@@ -77,6 +77,8 @@ pub enum lowlat_status {
     LOWLAT_ERR_IO = -104,
     /// Credentials could not be produced.
     LOWLAT_ERR_CRYPTO = -105,
+    /// No guest with that number is connected.
+    LOWLAT_ERR_UNKNOWN_GUEST = -106,
 }
 
 /// The major version, raised only when something already published changes.
@@ -97,7 +99,7 @@ pub extern "C" fn lowlat_abi_version() -> u32 {
 ///
 /// A table rather than a match, because the value arriving is an integer and
 /// not necessarily one of these.
-const DESCRIPTIONS: [(lowlat_status, &CStr); 14] = [
+const DESCRIPTIONS: [(lowlat_status, &CStr); 15] = [
     (LOWLAT_OK, c"ok"),
     (LOWLAT_TIMEOUT, c"no event within the timeout"),
     (
@@ -127,6 +129,7 @@ const DESCRIPTIONS: [(lowlat_status, &CStr); 14] = [
     ),
     (LOWLAT_ERR_IO, c"a socket or thread could not be created"),
     (LOWLAT_ERR_CRYPTO, c"credentials could not be produced"),
+    (LOWLAT_ERR_UNKNOWN_GUEST, c"no guest with that number"),
 ];
 
 /// Describe a status.
@@ -549,6 +552,37 @@ pub struct lowlat_credentials {
     pub pwd: [c_char; LOWLAT_ICE_MAX],
     pub fingerprint: [c_char; LOWLAT_FINGERPRINT_MAX],
     pub aes256: [c_char; LOWLAT_ICE_MAX],
+}
+
+/// Every guest at once, where a guest number is taken.
+///
+/// **Zero, because guest numbers start at one.** A message aimed here reaches
+/// everyone seated rather than nobody.
+pub const LOWLAT_GUEST_ALL: u32 = 0;
+
+/// One connected guest.
+///
+/// **No leading `size` field, and it is the one structure that cannot have
+/// one.** The caller passes an array of these and walks it by stride, so a
+/// size written per element says nothing about how far apart they are; the
+/// count is the versioning instead, and this stays fixed for the major
+/// version. Anything learned about a guest later arrives through a call of its
+/// own rather than by growing this.
+///
+/// **Every guest here is connected.** One that is still negotiating has no
+/// number yet and nothing to address, and the state it passes through is what
+/// the guest-state event reports.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_guest {
+    /// What this guest is addressed by, and what it finds itself by in a
+    /// roster the application sends.
+    pub number: u32,
+    pub permissions: lowlat_permissions,
+    /// Whether this guest owns the machine, which decides exactly one thing:
+    /// it takes the pointer from another guest rather than waiting for it.
+    pub owner: bool,
+    pub reserved: [u8; 3],
 }
 
 /// One host session, as the application holds it.
@@ -976,6 +1010,128 @@ pub unsafe extern "C" fn lowlat_host_end_connection(ll: *mut lowlat, attempt_id:
     }
 }
 
+/// List the guests that are connected.
+///
+/// **Two calls, and the caller owns the buffer.** Pass `NULL` for `out` to
+/// learn how many there are, then an array of that many. Nothing here is
+/// allocated on the application's behalf, so there is nothing to free.
+///
+/// `count` carries the array's capacity in and the number written out. A
+/// buffer smaller than the roster is filled as far as it goes and answered
+/// with [`LOWLAT_ERR_TOO_SMALL`], `count` set to what it would have taken --
+/// the roster moves, and a caller that sized its array a moment ago must not
+/// be made to lose the call.
+///
+/// # Safety
+///
+/// `count` must be readable and writable, and `out`, when not null, must point
+/// to at least `*count` elements.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_get_guests(
+    ll: *mut lowlat,
+    out: *mut lowlat_guest,
+    count: *mut u32,
+) -> lowlat_status {
+    unsafe {
+        entered(ll, |handle| {
+            if count.is_null() {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let held = handle.held();
+            let Some(seam) = held.seam.as_ref() else {
+                return LOWLAT_ERR_NOT_STARTED;
+            };
+            let guests = seam.guests();
+            let found = u32::try_from(guests.len()).unwrap_or(u32::MAX);
+            if out.is_null() {
+                count.write(found);
+                return LOWLAT_OK;
+            }
+            let room = count.read() as usize;
+            let writing = guests.len().min(room);
+            for (at, guest) in guests.iter().take(writing).enumerate() {
+                out.add(at).write(lowlat_guest {
+                    number: guest.number,
+                    permissions: lowlat_permissions {
+                        keyboard: guest.permissions.keyboard,
+                        pointer: guest.permissions.pointer,
+                        gamepad: guest.permissions.gamepad,
+                        reserved: 0,
+                    },
+                    owner: guest.owner,
+                    reserved: [0; 3],
+                });
+            }
+            if writing < guests.len() {
+                count.write(found);
+                return LOWLAT_ERR_TOO_SMALL;
+            }
+            count.write(u32::try_from(writing).unwrap_or(u32::MAX));
+            LOWLAT_OK
+        })
+    }
+}
+
+/// Send one guest an application message, or every guest at once.
+///
+/// **Nothing here reads the body.** The sub-identifier and the bytes are an
+/// agreement between an application and the clients it serves; a host that
+/// interpreted either would be inventing a protocol on its behalf
+/// ([05 §5](../../../docs/05-host.md)).
+///
+/// `guest_id` of [`LOWLAT_GUEST_ALL`] reaches everyone seated. A body past
+/// what a peer will accept is refused here rather than sent and dropped in
+/// silence at the far end.
+///
+/// # Safety
+///
+/// `data` must point to at least `len` bytes when `len` is not zero. It is
+/// copied before the call returns and never retained.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_send_user_data(
+    ll: *mut lowlat,
+    guest_id: u32,
+    id: u32,
+    data: *const c_void,
+    len: u32,
+) -> lowlat_status {
+    unsafe {
+        entered(ll, |handle| {
+            if data.is_null() && len != 0 {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let body: &[u8] = if len == 0 {
+                &[]
+            } else {
+                core::slice::from_raw_parts(data.cast::<u8>(), len as usize)
+            };
+            // Refused here, where the caller can still do something about it,
+            // rather than at a far end that says nothing.
+            if lowlat_core::control::string_body_len(body.len())
+                > lowlat_core::control::USER_DATA_MAX
+            {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let mut held = handle.held();
+            let Some(seam) = held.seam.as_mut() else {
+                return LOWLAT_ERR_NOT_STARTED;
+            };
+            if guest_id == LOWLAT_GUEST_ALL {
+                seam.send_user_data_all(id, body);
+                // **Reaching nobody is not a failure.** An application
+                // announcing something to an empty room has not made a
+                // mistake, and reporting one would make it look like it had.
+                return LOWLAT_OK;
+            }
+            if seam.send_user_data(guest_id, id, body) {
+                LOWLAT_OK
+            } else {
+                LOWLAT_ERR_UNKNOWN_GUEST
+            }
+        })
+    }
+}
+
 /// Change the video settings while the host runs.
 ///
 /// **Everything in this structure is applied without rebuilding the session.**
@@ -1399,6 +1555,7 @@ mod tests {
             LOWLAT_ERR_WITHDRAWN,
             LOWLAT_ERR_IO,
             LOWLAT_ERR_CRYPTO,
+            LOWLAT_ERR_UNKNOWN_GUEST,
         ] {
             let text = lowlat_status_string(status as i32);
             assert!(!text.is_null());
@@ -1692,7 +1849,22 @@ mod seam_tests {
         info
     }
 
-    fn started() -> *mut lowlat {
+    /// Register and approve one attempt, which is what gives it a number.
+    pub(super) fn approved(handle: *mut lowlat, id: &str) {
+        let info = attempt(id);
+        assert_eq!(
+            unsafe { lowlat_host_new_attempt(handle, &raw const info) },
+            LOWLAT_OK
+        );
+        let mut ours = credentials();
+        let id = std::ffi::CString::new(id).expect("no interior nul");
+        assert_eq!(
+            unsafe { lowlat_host_begin_p2p(handle, id.as_ptr(), &raw mut ours) },
+            LOWLAT_OK
+        );
+    }
+
+    pub(super) fn started() -> *mut lowlat {
         let handle = handle();
         let cfg = config();
         assert_eq!(
@@ -1883,6 +2055,144 @@ mod seam_tests {
             unsafe { lowlat_host_new_attempt(handle, &raw const info) },
             LOWLAT_ERR_NOT_STARTED
         );
+        unsafe { lowlat_destroy(handle) };
+    }
+}
+
+#[cfg(test)]
+mod roster_tests {
+    use super::seam_tests::{approved, started};
+    use super::*;
+
+    /// **Two calls, and the first one is allowed to answer with nothing.** An
+    /// application asks how many before it decides what to allocate.
+    #[test]
+    fn the_count_comes_first_and_the_roster_second() {
+        let handle = started();
+        let mut count = 0u32;
+        assert_eq!(
+            unsafe { lowlat_host_get_guests(handle, core::ptr::null_mut(), &raw mut count) },
+            LOWLAT_OK
+        );
+        assert_eq!(count, 0, "a host with no guests reported some");
+
+        approved(handle, "a");
+        approved(handle, "b");
+
+        let mut count = 0u32;
+        assert_eq!(
+            unsafe { lowlat_host_get_guests(handle, core::ptr::null_mut(), &raw mut count) },
+            LOWLAT_OK
+        );
+        assert_eq!(count, 2);
+
+        let mut room = [lowlat_guest {
+            number: 0,
+            permissions: lowlat_permissions {
+                keyboard: false,
+                pointer: false,
+                gamepad: false,
+                reserved: 0,
+            },
+            owner: false,
+            reserved: [0; 3],
+        }; 4];
+        let mut count = 4u32;
+        assert_eq!(
+            unsafe { lowlat_host_get_guests(handle, room.as_mut_ptr(), &raw mut count) },
+            LOWLAT_OK
+        );
+        assert_eq!(count, 2);
+        // **Ordered by number.** A roster that reshuffles itself is one an
+        // application cannot diff against the last one it drew.
+        assert!(room[0].number < room[1].number);
+        assert!(room[0].permissions.keyboard && room[0].permissions.pointer);
+
+        unsafe { lowlat_destroy(handle) };
+    }
+
+    /// **A buffer too small is filled as far as it goes and says what it
+    /// needed.** The roster moves; a caller that sized its array a moment ago
+    /// must not lose the call for it.
+    #[test]
+    fn a_roster_larger_than_the_buffer_reports_what_it_needed() {
+        let handle = started();
+        approved(handle, "a");
+        approved(handle, "b");
+
+        let mut room = [lowlat_guest {
+            number: 0,
+            permissions: lowlat_permissions {
+                keyboard: false,
+                pointer: false,
+                gamepad: false,
+                reserved: 0,
+            },
+            owner: false,
+            reserved: [0; 3],
+        }; 1];
+        let mut count = 1u32;
+        assert_eq!(
+            unsafe { lowlat_host_get_guests(handle, room.as_mut_ptr(), &raw mut count) },
+            LOWLAT_ERR_TOO_SMALL
+        );
+        assert_eq!(count, 2, "it did not say how many there really were");
+        assert_ne!(room[0].number, 0, "the room it had was left unfilled");
+
+        unsafe { lowlat_destroy(handle) };
+    }
+
+    /// A message aimed at nobody in particular reaches everyone, and one aimed
+    /// at a guest that is not there says so.
+    #[test]
+    fn a_message_reaches_a_guest_or_says_it_could_not() {
+        let handle = started();
+        approved(handle, "a");
+
+        let body = b"hello";
+        assert_eq!(
+            unsafe {
+                lowlat_host_send_user_data(
+                    handle,
+                    LOWLAT_GUEST_ALL,
+                    9,
+                    body.as_ptr().cast(),
+                    u32::try_from(body.len()).unwrap_or(0),
+                )
+            },
+            LOWLAT_OK
+        );
+        assert_eq!(
+            unsafe { lowlat_host_send_user_data(handle, 4242, 9, body.as_ptr().cast(), 5) },
+            LOWLAT_ERR_UNKNOWN_GUEST
+        );
+
+        // **A body past what a peer accepts is refused here**, where the
+        // caller can still do something, rather than at a far end that says
+        // nothing about why it vanished.
+        let huge = vec![b'x'; lowlat_core::control::USER_DATA_MAX];
+        assert_eq!(
+            unsafe {
+                lowlat_host_send_user_data(
+                    handle,
+                    LOWLAT_GUEST_ALL,
+                    9,
+                    huge.as_ptr().cast(),
+                    u32::try_from(huge.len()).unwrap_or(u32::MAX),
+                )
+            },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+
+        // An empty body is a message, not a mistake: the sub-identifier alone
+        // is what some of them mean.
+        assert_eq!(
+            unsafe {
+                lowlat_host_send_user_data(handle, LOWLAT_GUEST_ALL, 9, core::ptr::null(), 0)
+            },
+            LOWLAT_OK
+        );
+
         unsafe { lowlat_destroy(handle) };
     }
 }

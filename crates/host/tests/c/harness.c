@@ -61,6 +61,8 @@ int main(int argc, char **argv)
     void (*add_candidate)(lowlat *, const char *, const lowlat_candidate *);
     lowlat_status (*begin_p2p)(lowlat *, const char *, lowlat_credentials *);
     void (*end_connection)(lowlat *, const char *);
+    lowlat_status (*get_guests)(lowlat *, lowlat_guest *, uint32_t *);
+    lowlat_status (*send_user_data)(lowlat *, uint32_t, uint32_t, const void *, uint32_t);
 
     RESOLVE(abi_version, lib, "lowlat_abi_version");
     RESOLVE(status_string, lib, "lowlat_status_string");
@@ -76,6 +78,8 @@ int main(int argc, char **argv)
     RESOLVE(add_candidate, lib, "lowlat_host_add_candidate");
     RESOLVE(begin_p2p, lib, "lowlat_host_begin_p2p");
     RESOLVE(end_connection, lib, "lowlat_host_end_connection");
+    RESOLVE(get_guests, lib, "lowlat_host_get_guests");
+    RESOLVE(send_user_data, lib, "lowlat_host_send_user_data");
 
     uint32_t version = abi_version();
     if ((version >> 16) != LOWLAT_ABI_MAJOR || (version & 0xffff) != LOWLAT_ABI_MINOR) {
@@ -239,6 +243,36 @@ int main(int argc, char **argv)
         fprintf(stderr, "harness: approving twice was not refused\n");
         return 1;
     }
+    /* The roster, in the two calls an application makes: how many, then who.
+     * Nothing is allocated on the caller's behalf, so there is nothing to
+     * free. */
+    uint32_t guests = 0;
+    if (get_guests(ll, NULL, &guests) != LOWLAT_OK || guests != 1) {
+        fprintf(stderr, "harness: an approved guest is not on the roster (%u)\n", guests);
+        return 1;
+    }
+    lowlat_guest roster[4];
+    guests = 4;
+    if (get_guests(ll, roster, &guests) != LOWLAT_OK || guests != 1) {
+        fprintf(stderr, "harness: the roster could not be read\n");
+        return 1;
+    }
+    if (!roster[0].permissions.keyboard || roster[0].number == 0) {
+        fprintf(stderr, "harness: the roster lost what signaling said about the guest\n");
+        return 1;
+    }
+
+    /* An application message, uninterpreted in both directions. */
+    const char *hello = "hello";
+    if (send_user_data(ll, roster[0].number, 9, hello, 5) != LOWLAT_OK) {
+        fprintf(stderr, "harness: a message to a seated guest was refused\n");
+        return 1;
+    }
+    if (send_user_data(ll, 4242, 9, hello, 5) != LOWLAT_ERR_UNKNOWN_GUEST) {
+        fprintf(stderr, "harness: a message to nobody was accepted\n");
+        return 1;
+    }
+
     end_connection(ll, offer.attempt_id);
 
     if (host_stop(ll) != LOWLAT_OK) {

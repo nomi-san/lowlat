@@ -54,6 +54,12 @@
 // The longest fingerprint.
 #define LOWLAT_FINGERPRINT_MAX 112
 
+// Every guest at once, where a guest number is taken.
+//
+// **Zero, because guest numbers start at one.** A message aimed here reaches
+// everyone seated rather than nobody.
+#define LOWLAT_GUEST_ALL 0
+
 // A status code.
 //
 // **An enumeration for the names and a plain integer wherever one is
@@ -116,6 +122,8 @@ enum lowlat_status
     LOWLAT_ERR_IO = -104,
     // Credentials could not be produced.
     LOWLAT_ERR_CRYPTO = -105,
+    // No guest with that number is connected.
+    LOWLAT_ERR_UNKNOWN_GUEST = -106,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -433,6 +441,29 @@ typedef struct lowlat_credentials {
     char aes256[LOWLAT_ICE_MAX];
 } lowlat_credentials;
 
+// One connected guest.
+//
+// **No leading `size` field, and it is the one structure that cannot have
+// one.** The caller passes an array of these and walks it by stride, so a
+// size written per element says nothing about how far apart they are; the
+// count is the versioning instead, and this stays fixed for the major
+// version. Anything learned about a guest later arrives through a call of its
+// own rather than by growing this.
+//
+// **Every guest here is connected.** One that is still negotiating has no
+// number yet and nothing to address, and the state it passes through is what
+// the guest-state event reports.
+typedef struct lowlat_guest {
+    // What this guest is addressed by, and what it finds itself by in a
+    // roster the application sends.
+    uint32_t number;
+    struct lowlat_permissions permissions;
+    // Whether this guest owns the machine, which decides exactly one thing:
+    // it takes the pointer from another guest rather than waiting for it.
+    bool owner;
+    uint8_t reserved[3];
+} lowlat_guest;
+
 // A local candidate for the application to forward.
 typedef struct lowlat_candidate_event {
     char attempt[LOWLAT_ATTEMPT_MAX];
@@ -620,6 +651,47 @@ lowlat_status lowlat_host_begin_p2p(struct lowlat *ll,
 // `ll` came from [`lowlat_create`] and `attempt_id` is a NUL-terminated
 // string.
 void lowlat_host_end_connection(struct lowlat *ll, const char *attempt_id);
+
+// List the guests that are connected.
+//
+// **Two calls, and the caller owns the buffer.** Pass `NULL` for `out` to
+// learn how many there are, then an array of that many. Nothing here is
+// allocated on the application's behalf, so there is nothing to free.
+//
+// `count` carries the array's capacity in and the number written out. A
+// buffer smaller than the roster is filled as far as it goes and answered
+// with [`LOWLAT_ERR_TOO_SMALL`], `count` set to what it would have taken --
+// the roster moves, and a caller that sized its array a moment ago must not
+// be made to lose the call.
+//
+// # Safety
+//
+// `count` must be readable and writable, and `out`, when not null, must point
+// to at least `*count` elements.
+lowlat_status lowlat_host_get_guests(struct lowlat *ll,
+                                     struct lowlat_guest *out,
+                                     uint32_t *count);
+
+// Send one guest an application message, or every guest at once.
+//
+// **Nothing here reads the body.** The sub-identifier and the bytes are an
+// agreement between an application and the clients it serves; a host that
+// interpreted either would be inventing a protocol on its behalf
+// ([05 §5](../../../docs/05-host.md)).
+//
+// `guest_id` of [`LOWLAT_GUEST_ALL`] reaches everyone seated. A body past
+// what a peer will accept is refused here rather than sent and dropped in
+// silence at the far end.
+//
+// # Safety
+//
+// `data` must point to at least `len` bytes when `len` is not zero. It is
+// copied before the call returns and never retained.
+lowlat_status lowlat_host_send_user_data(struct lowlat *ll,
+                                         uint32_t guest_id,
+                                         uint32_t id,
+                                         const void *data,
+                                         uint32_t len);
 
 // Change the video settings while the host runs.
 //
