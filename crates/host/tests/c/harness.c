@@ -57,6 +57,10 @@ int main(int argc, char **argv)
     lowlat_status (*host_stop)(lowlat *);
     lowlat_status (*set_video)(lowlat *, const lowlat_host_video_config *);
     lowlat_status (*get_video)(lowlat *, lowlat_host_video_config *);
+    lowlat_status (*new_attempt)(lowlat *, const lowlat_attempt_info *);
+    void (*add_candidate)(lowlat *, const char *, const lowlat_candidate *);
+    lowlat_status (*begin_p2p)(lowlat *, const char *, lowlat_credentials *);
+    void (*end_connection)(lowlat *, const char *);
 
     RESOLVE(abi_version, lib, "lowlat_abi_version");
     RESOLVE(status_string, lib, "lowlat_status_string");
@@ -68,6 +72,10 @@ int main(int argc, char **argv)
     RESOLVE(host_stop, lib, "lowlat_host_stop");
     RESOLVE(set_video, lib, "lowlat_host_set_video_config");
     RESOLVE(get_video, lib, "lowlat_host_get_video_config");
+    RESOLVE(new_attempt, lib, "lowlat_host_new_attempt");
+    RESOLVE(add_candidate, lib, "lowlat_host_add_candidate");
+    RESOLVE(begin_p2p, lib, "lowlat_host_begin_p2p");
+    RESOLVE(end_connection, lib, "lowlat_host_end_connection");
 
     uint32_t version = abi_version();
     if ((version >> 16) != LOWLAT_ABI_MAJOR || (version & 0xffff) != LOWLAT_ABI_MINOR) {
@@ -180,6 +188,59 @@ int main(int argc, char **argv)
         fprintf(stderr, "harness: a floor above the ceiling was accepted\n");
         return 1;
     }
+    /* The signaling seam, in the order an application drives it. Everything
+     * here arrived over a transport this library does not have: registering an
+     * offer, trickling what the peer said it might be reachable at, approving,
+     * and answering with credentials the application sends itself. */
+    lowlat_attempt_info offer;
+    memset(&offer, 0, sizeof offer);
+    offer.size = (uint32_t) sizeof offer;
+    snprintf(offer.attempt_id, sizeof offer.attempt_id, "%s", "3dea9cd3-3dc4a5c3");
+    snprintf(offer.ufrag, sizeof offer.ufrag, "%s", "G+sZxQ==");
+    snprintf(offer.pwd, sizeof offer.pwd, "%s", "Det3D+arYViymh6I2v7UaOnrsHieoTRE");
+    offer.permissions.keyboard = true;
+    offer.permissions.pointer = true;
+    offer.permissions.gamepad = true;
+    if (new_attempt(ll, &offer) != LOWLAT_OK) {
+        fprintf(stderr, "harness: an offer could not be registered\n");
+        return 1;
+    }
+
+    lowlat_candidate cand;
+    memset(&cand, 0, sizeof cand);
+    cand.size = (uint32_t) sizeof cand;
+    cand.port = 41000;
+    cand.sync = true;   /* a readiness marker, which carries no address */
+    add_candidate(ll, offer.attempt_id, &cand);
+    cand.sync = false;
+    snprintf(cand.address, sizeof cand.address, "%s", "192.168.1.100");
+    add_candidate(ll, offer.attempt_id, &cand);
+
+    lowlat_credentials ours;
+    memset(&ours, 0, sizeof ours);
+    ours.size = (uint32_t) sizeof ours;
+    if (begin_p2p(ll, offer.attempt_id, &ours) != LOWLAT_OK) {
+        fprintf(stderr, "harness: an attempt could not be approved\n");
+        return 1;
+    }
+    /* The port that was bound, which is not necessarily the one configured:
+     * the bind walks when a port is taken, and advertising the configured one
+     * gives the peer an address that answers checks and never establishes. */
+    if (ours.port == 0 || ours.ufrag[0] == '\0' || ours.fingerprint[0] == '\0') {
+        fprintf(stderr, "harness: approval answered with nothing to send back\n");
+        return 1;
+    }
+    if (strlen(ours.aes256) != 254) {
+        fprintf(stderr, "harness: the media key is %zu characters, not 254\n",
+                strlen(ours.aes256));
+        return 1;
+    }
+    if (begin_p2p(ll, offer.attempt_id, &ours) != LOWLAT_ERR_ALREADY_BEGUN) {
+        fprintf(stderr, "harness: approving twice was not refused\n");
+        return 1;
+    }
+    end_connection(ll, offer.attempt_id);
+
     if (host_stop(ll) != LOWLAT_OK) {
         fprintf(stderr, "harness: hosting would not stop again\n");
         return 1;

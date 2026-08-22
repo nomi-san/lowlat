@@ -60,6 +60,23 @@ pub enum lowlat_status {
     /// This handle is already hosting. Stopping first is the way to start
     /// again with a different configuration.
     LOWLAT_ERR_ALREADY_STARTED = -5,
+    /// This handle is not hosting, so there is nothing for the call to act on.
+    LOWLAT_ERR_NOT_STARTED = -6,
+
+    /// Every seat is taken. **The offer should be declined**, not left
+    /// unanswered: silence reads to a peer as a host still thinking about it.
+    LOWLAT_ERR_AT_CAPACITY = -100,
+    /// No attempt with that identifier.
+    LOWLAT_ERR_UNKNOWN_ATTEMPT = -101,
+    /// The attempt has already been approved.
+    LOWLAT_ERR_ALREADY_BEGUN = -102,
+    /// Withdrawn before it was registered, so it was over before it began. A
+    /// withdrawal can overtake the offer it withdraws.
+    LOWLAT_ERR_WITHDRAWN = -103,
+    /// A socket could not be opened, or a thread could not be started.
+    LOWLAT_ERR_IO = -104,
+    /// Credentials could not be produced.
+    LOWLAT_ERR_CRYPTO = -105,
 }
 
 /// The major version, raised only when something already published changes.
@@ -80,7 +97,7 @@ pub extern "C" fn lowlat_abi_version() -> u32 {
 ///
 /// A table rather than a match, because the value arriving is an integer and
 /// not necessarily one of these.
-const DESCRIPTIONS: [(lowlat_status, &CStr); 7] = [
+const DESCRIPTIONS: [(lowlat_status, &CStr); 14] = [
     (LOWLAT_OK, c"ok"),
     (LOWLAT_TIMEOUT, c"no event within the timeout"),
     (
@@ -94,6 +111,22 @@ const DESCRIPTIONS: [(lowlat_status, &CStr); 7] = [
         LOWLAT_ERR_ALREADY_STARTED,
         c"this handle is already hosting",
     ),
+    (LOWLAT_ERR_NOT_STARTED, c"this handle is not hosting"),
+    (LOWLAT_ERR_AT_CAPACITY, c"every seat is taken"),
+    (
+        LOWLAT_ERR_UNKNOWN_ATTEMPT,
+        c"no attempt with that identifier",
+    ),
+    (
+        LOWLAT_ERR_ALREADY_BEGUN,
+        c"the attempt was already approved",
+    ),
+    (
+        LOWLAT_ERR_WITHDRAWN,
+        c"the attempt was withdrawn before it was registered",
+    ),
+    (LOWLAT_ERR_IO, c"a socket or thread could not be created"),
+    (LOWLAT_ERR_CRYPTO, c"credentials could not be produced"),
 ];
 
 /// Describe a status.
@@ -430,6 +463,94 @@ struct Held {
     events: Option<std::sync::Arc<crate::events::Receiver>>,
 }
 
+/// The longest credential this boundary carries.
+///
+/// **Sized by the largest of them, which is the media key.** It travels as
+/// text and measures 254 characters, so anything shorter than this truncates a
+/// key into something that decrypts nothing and reports no reason.
+pub const LOWLAT_ICE_MAX: usize = 256;
+
+/// The longest fingerprint.
+pub const LOWLAT_FINGERPRINT_MAX: usize = 112;
+
+/// What a guest may drive.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_permissions {
+    pub keyboard: bool,
+    pub pointer: bool,
+    pub gamepad: bool,
+    pub reserved: u8,
+}
+
+/// What signaling learned about a peer, handed over to register an attempt.
+///
+/// **Signaling is the application's**, so everything here arrived over a
+/// transport this library does not have and does not want
+/// ([04 §1](../../../docs/04-signaling.md)).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_attempt_info {
+    /// Set by the caller to `sizeof(lowlat_attempt_info)`.
+    pub size: u32,
+    pub reserved: u32,
+    /// The application's own identifier for this attempt. Everything else in
+    /// the seam is addressed by it.
+    pub attempt_id: [c_char; LOWLAT_ATTEMPT_MAX],
+    pub ufrag: [c_char; LOWLAT_ICE_MAX],
+    pub pwd: [c_char; LOWLAT_ICE_MAX],
+    /// The peer's media key material, as text.
+    ///
+    /// **Empty selects the legacy path**, which is a decision rather than a
+    /// degradation: the offer either carried one or it did not, and which
+    /// crypto a session uses follows from that ([00 §D2](../../../docs/00-overview.md)).
+    pub aes256: [c_char; LOWLAT_ICE_MAX],
+    /// What signaling says this peer may drive.
+    pub permissions: lowlat_permissions,
+    /// Whether this peer owns the machine, which decides exactly one thing: it
+    /// takes the pointer from another guest rather than waiting for it.
+    pub owner: bool,
+    pub reserved2: [u8; 3],
+}
+
+/// One address a peer might be reachable at.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_candidate {
+    /// Set by the caller to `sizeof(lowlat_candidate)`.
+    pub size: u32,
+    pub port: u16,
+    /// **A readiness marker rather than an address**, and whatever address
+    /// rides along with it is ignored. A peer may withhold every real
+    /// candidate until it has seen one, so an application that never forwards
+    /// one negotiates against a peer that never offers anything to check.
+    pub sync: bool,
+    pub reserved: u8,
+    pub address: [c_char; LOWLAT_ADDRESS_MAX],
+}
+
+/// What this host answers an offer with.
+///
+/// **Generated at approval, not at registration.** They are bound to the
+/// socket that was just opened for this attempt, so producing them earlier
+/// binds them to nothing.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_credentials {
+    /// Set by the caller to `sizeof(lowlat_credentials)`.
+    pub size: u32,
+    /// **The port this guest was actually bound to**, which is not necessarily
+    /// the configured one: the bind walks when a port is taken. Advertising the
+    /// configured port instead produces a peer that answers checks and never
+    /// establishes.
+    pub port: u16,
+    pub reserved: u16,
+    pub ufrag: [c_char; LOWLAT_ICE_MAX],
+    pub pwd: [c_char; LOWLAT_ICE_MAX],
+    pub fingerprint: [c_char; LOWLAT_FINGERPRINT_MAX],
+    pub aes256: [c_char; LOWLAT_ICE_MAX],
+}
+
 /// One host session, as the application holds it.
 ///
 /// Opaque: the application holds a pointer it cannot look inside, so what is
@@ -650,6 +771,208 @@ pub unsafe extern "C" fn lowlat_host_start(
             held.seam = Some(seam);
             LOWLAT_OK
         })
+    }
+}
+
+/// Map a seam error onto the status an application reads.
+///
+/// Exhaustive on purpose: a new way for admission to refuse should break this
+/// build rather than reach an application as a generic failure.
+fn refused(error: crate::admission::Error) -> lowlat_status {
+    use crate::admission::Error;
+    match error {
+        Error::UnknownAttempt => LOWLAT_ERR_UNKNOWN_ATTEMPT,
+        Error::AtCapacity => LOWLAT_ERR_AT_CAPACITY,
+        Error::AlreadyBegun => LOWLAT_ERR_ALREADY_BEGUN,
+        Error::Withdrawn => LOWLAT_ERR_WITHDRAWN,
+        Error::Io => LOWLAT_ERR_IO,
+        Error::Crypto => LOWLAT_ERR_CRYPTO,
+    }
+}
+
+/// Register an attempt from an offer signaling delivered.
+///
+/// **Registering is not approving.** This takes a seat's worth of bookkeeping
+/// and nothing else; no socket is opened and no thread is started until
+/// [`lowlat_host_begin_p2p`]. An application that decides to decline simply
+/// never calls that, and says so over its own signaling.
+///
+/// [`LOWLAT_ERR_AT_CAPACITY`] means the offer should be declined rather than
+/// left unanswered: nothing in the protocol reports a host that never replied,
+/// so a peer given silence sits connecting until its own deadline.
+///
+/// # Safety
+///
+/// `ll` came from [`lowlat_create`], and `info` points to one
+/// [`lowlat_attempt_info`] whose `size` says how much of it is set.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_new_attempt(
+    ll: *mut lowlat,
+    info: *const lowlat_attempt_info,
+) -> lowlat_status {
+    unsafe {
+        entered(ll, |handle| {
+            let Some(info) = info.as_ref() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            if (info.size as usize) < core::mem::size_of::<lowlat_attempt_info>() {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let (Some(attempt), Some(ufrag), Some(pwd), Some(aes256)) = (
+                taken(&info.attempt_id),
+                taken(&info.ufrag),
+                taken(&info.pwd),
+                taken(&info.aes256),
+            ) else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            // An attempt with no identifier cannot be addressed again, so every
+            // later call about it would find nothing.
+            if attempt.is_empty() || ufrag.is_empty() || pwd.is_empty() {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let peer = crate::admission::Peer {
+                ufrag: ufrag.to_string(),
+                pwd: pwd.to_string(),
+                aes256: (!aes256.is_empty()).then(|| aes256.to_string()),
+                permissions: lowlat_inject::event::Permissions {
+                    keyboard: info.permissions.keyboard,
+                    pointer: info.permissions.pointer,
+                    gamepad: info.permissions.gamepad,
+                },
+                owner: info.owner,
+            };
+            let mut held = handle.held();
+            let Some(seam) = held.seam.as_mut() else {
+                return LOWLAT_ERR_NOT_STARTED;
+            };
+            match seam.new_attempt(attempt, peer) {
+                Ok(()) => LOWLAT_OK,
+                Err(error) => refused(error),
+            }
+        })
+    }
+}
+
+/// Offer one address the peer might be reachable at.
+///
+/// **An unknown attempt is accepted silently.** Candidates trickle and a
+/// withdrawal can overtake them, so this is a race with teardown rather than a
+/// fault, and a status the caller would have to ignore is worse than no status.
+///
+/// # Safety
+///
+/// `ll` came from [`lowlat_create`], `attempt_id` is a NUL-terminated string,
+/// and `cand` points to one [`lowlat_candidate`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_add_candidate(
+    ll: *mut lowlat,
+    attempt_id: *const c_char,
+    cand: *const lowlat_candidate,
+) {
+    unsafe {
+        entered(ll, |handle| {
+            let (Some(attempt), Some(cand)) = (read_c_str(attempt_id), cand.as_ref()) else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            if (cand.size as usize) < core::mem::size_of::<lowlat_candidate>() {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let Some(address) = taken(&cand.address) else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            // **A readiness marker carries no usable address**, so one is not
+            // required of it; every other candidate is refused without one
+            // rather than checked against nothing.
+            let addr = match address.parse::<std::net::IpAddr>() {
+                Ok(ip) => std::net::SocketAddr::new(ip, cand.port),
+                Err(_) if cand.sync => std::net::SocketAddr::from(([0, 0, 0, 0], cand.port)),
+                Err(_) => return LOWLAT_ERR_INVALID_ARGUMENT,
+            };
+            let mut held = handle.held();
+            let Some(seam) = held.seam.as_mut() else {
+                return LOWLAT_ERR_NOT_STARTED;
+            };
+            seam.add_candidate(attempt, addr, cand.sync);
+            LOWLAT_OK
+        });
+    }
+}
+
+/// Approve an attempt and answer it with this host's own credentials.
+///
+/// This is where a socket is opened and this guest's threads are started, so
+/// it is the one call in the seam that costs more than bookkeeping. It sends
+/// nothing: the answer travels over the application's signaling, because this
+/// library has no transport for it.
+///
+/// # Safety
+///
+/// `ll` came from [`lowlat_create`], `attempt_id` is a NUL-terminated string,
+/// and `out` points to one [`lowlat_credentials`] whose `size` says how much of
+/// it is set.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_begin_p2p(
+    ll: *mut lowlat,
+    attempt_id: *const c_char,
+    out: *mut lowlat_credentials,
+) -> lowlat_status {
+    unsafe {
+        entered(ll, |handle| {
+            let (Some(attempt), Some(slot)) = (read_c_str(attempt_id), out.as_mut()) else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            if (slot.size as usize) < core::mem::size_of::<lowlat_credentials>() {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let mut held = handle.held();
+            let Some(seam) = held.seam.as_mut() else {
+                return LOWLAT_ERR_NOT_STARTED;
+            };
+            let ours = match seam.begin_p2p(attempt) {
+                Ok(ours) => ours,
+                Err(error) => return refused(error),
+            };
+            slot.port = ours.port;
+            slot.reserved = 0;
+            put(&mut slot.ufrag, &ours.ufrag);
+            put(&mut slot.pwd, &ours.pwd);
+            put(&mut slot.fingerprint, &ours.fingerprint);
+            put(&mut slot.aes256, &ours.aes256);
+            LOWLAT_OK
+        })
+    }
+}
+
+/// End an attempt, whether or not it was ever approved.
+///
+/// **An unknown identifier is accepted silently**, and remembered: a
+/// withdrawal can arrive before the offer it withdraws, and admitting that
+/// offer afterwards spends a socket and a thread on a guest that has already
+/// gone.
+///
+/// **The peer is not told why.** Ending stops this guest's loop; the far side
+/// learns from its own liveness deadline rather than from a message, for the
+/// same reason [`lowlat_host_stop`] does.
+///
+/// # Safety
+///
+/// `ll` came from [`lowlat_create`] and `attempt_id` is a NUL-terminated
+/// string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_end_connection(ll: *mut lowlat, attempt_id: *const c_char) {
+    unsafe {
+        entered(ll, |handle| {
+            let Some(attempt) = read_c_str(attempt_id) else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            let mut held = handle.held();
+            let Some(seam) = held.seam.as_mut() else {
+                return LOWLAT_ERR_NOT_STARTED;
+            };
+            seam.end_connection(attempt);
+            LOWLAT_OK
+        });
     }
 }
 
@@ -876,6 +1199,20 @@ pub unsafe extern "C" fn lowlat_debug_panic(ll: *mut lowlat) -> lowlat_status {
     }
 }
 
+/// Read a caller's NUL-terminated string.
+///
+/// **Bounded rather than trusted.** A pointer with no terminator inside a
+/// sane length is a caller that handed over something that is not a string,
+/// and walking it to find out is how a library reads somebody else's memory.
+unsafe fn read_c_str<'a>(text: *const c_char) -> Option<&'a str> {
+    if text.is_null() {
+        return None;
+    }
+    let bytes: &[u8] = unsafe { core::slice::from_raw_parts(text.cast(), LOWLAT_ATTEMPT_MAX) };
+    let end = bytes.iter().position(|byte| *byte == 0)?;
+    core::str::from_utf8(bytes.get(..end)?).ok()
+}
+
 /// Copy text into a fixed array, terminated, truncating if it must.
 fn put(into: &mut [c_char], text: &str) {
     into.fill(0);
@@ -1055,6 +1392,13 @@ mod tests {
             LOWLAT_ERR_TOO_SMALL,
             LOWLAT_ERR_POISONED,
             LOWLAT_ERR_ALREADY_STARTED,
+            LOWLAT_ERR_NOT_STARTED,
+            LOWLAT_ERR_AT_CAPACITY,
+            LOWLAT_ERR_UNKNOWN_ATTEMPT,
+            LOWLAT_ERR_ALREADY_BEGUN,
+            LOWLAT_ERR_WITHDRAWN,
+            LOWLAT_ERR_IO,
+            LOWLAT_ERR_CRYPTO,
         ] {
             let text = lowlat_status_string(status as i32);
             assert!(!text.is_null());
@@ -1151,7 +1495,7 @@ mod tests {
 mod start_tests {
     use super::*;
 
-    fn video() -> lowlat_host_video_config {
+    pub(super) fn video() -> lowlat_host_video_config {
         lowlat_host_video_config {
             size: u32::try_from(core::mem::size_of::<lowlat_host_video_config>())
                 .unwrap_or(u32::MAX),
@@ -1164,7 +1508,7 @@ mod start_tests {
         }
     }
 
-    fn config() -> lowlat_host_config {
+    pub(super) fn config() -> lowlat_host_config {
         lowlat_host_config {
             size: u32::try_from(core::mem::size_of::<lowlat_host_config>()).unwrap_or(u32::MAX),
             base_port: 9000,
@@ -1182,7 +1526,7 @@ mod start_tests {
         }
     }
 
-    fn handle() -> *mut lowlat {
+    pub(super) fn handle() -> *mut lowlat {
         let mut handle: *mut lowlat = core::ptr::null_mut();
         assert_eq!(
             unsafe { lowlat_create(core::ptr::null(), &raw mut handle) },
@@ -1317,5 +1661,228 @@ mod start_tests {
 
     fn handle_has_a_queue(ll: *mut lowlat) -> bool {
         unsafe { ll.as_ref() }.is_some_and(|handle| handle.held().events.is_some())
+    }
+}
+
+#[cfg(test)]
+mod seam_tests {
+    use super::start_tests::{config, handle};
+    use super::*;
+
+    fn attempt(id: &str) -> lowlat_attempt_info {
+        let mut info = lowlat_attempt_info {
+            size: u32::try_from(core::mem::size_of::<lowlat_attempt_info>()).unwrap_or(u32::MAX),
+            reserved: 0,
+            attempt_id: [0; LOWLAT_ATTEMPT_MAX],
+            ufrag: [0; LOWLAT_ICE_MAX],
+            pwd: [0; LOWLAT_ICE_MAX],
+            aes256: [0; LOWLAT_ICE_MAX],
+            permissions: lowlat_permissions {
+                keyboard: true,
+                pointer: true,
+                gamepad: true,
+                reserved: 0,
+            },
+            owner: false,
+            reserved2: [0; 3],
+        };
+        put(&mut info.attempt_id, id);
+        put(&mut info.ufrag, "G+sZxQ==");
+        put(&mut info.pwd, "Det3D+arYViymh6I2v7UaOnrsHieoTRE");
+        info
+    }
+
+    fn started() -> *mut lowlat {
+        let handle = handle();
+        let cfg = config();
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_OK
+        );
+        handle
+    }
+
+    fn credentials() -> lowlat_credentials {
+        lowlat_credentials {
+            size: u32::try_from(core::mem::size_of::<lowlat_credentials>()).unwrap_or(u32::MAX),
+            port: 0,
+            reserved: 0,
+            ufrag: [0; LOWLAT_ICE_MAX],
+            pwd: [0; LOWLAT_ICE_MAX],
+            fingerprint: [0; LOWLAT_FINGERPRINT_MAX],
+            aes256: [0; LOWLAT_ICE_MAX],
+        }
+    }
+
+    /// The four calls, in the order an application makes them.
+    #[test]
+    fn an_attempt_is_registered_approved_and_ended() {
+        let handle = started();
+        let info = attempt("a");
+        assert_eq!(
+            unsafe { lowlat_host_new_attempt(handle, &raw const info) },
+            LOWLAT_OK
+        );
+
+        let mut ours = credentials();
+        assert_eq!(
+            unsafe { lowlat_host_begin_p2p(handle, c"a".as_ptr(), &raw mut ours) },
+            LOWLAT_OK
+        );
+        // **The port that was bound, not the one that was configured.** The
+        // bind walks when a port is taken, and advertising the configured one
+        // produces a peer that answers checks and never establishes.
+        assert_ne!(ours.port, 0);
+        for field in [&ours.ufrag[..], &ours.pwd[..], &ours.fingerprint[..]] {
+            assert!(
+                taken(field).is_some_and(|text| !text.is_empty()),
+                "a credential came back empty"
+            );
+        }
+        assert_eq!(
+            taken(&ours.aes256).map(str::len),
+            Some(254),
+            "the media key is the field this array is sized for"
+        );
+
+        unsafe { lowlat_host_end_connection(handle, c"a".as_ptr()) };
+        unsafe { lowlat_destroy(handle) };
+    }
+
+    /// **Every refusal is its own status.** An application declines an offer
+    /// for a full host and retries a race with teardown; collapsing them into
+    /// one failure leaves it unable to tell which it is looking at.
+    #[test]
+    fn each_way_of_refusing_an_attempt_has_its_own_status() {
+        let handle = started();
+
+        // Approving something never registered.
+        let mut ours = credentials();
+        assert_eq!(
+            unsafe { lowlat_host_begin_p2p(handle, c"nothing".as_ptr(), &raw mut ours) },
+            LOWLAT_ERR_UNKNOWN_ATTEMPT
+        );
+
+        // A withdrawal that overtook its own offer.
+        unsafe { lowlat_host_end_connection(handle, c"late".as_ptr()) };
+        let late = attempt("late");
+        assert_eq!(
+            unsafe { lowlat_host_new_attempt(handle, &raw const late) },
+            LOWLAT_ERR_WITHDRAWN
+        );
+
+        // Approving twice.
+        let info = attempt("a");
+        assert_eq!(
+            unsafe { lowlat_host_new_attempt(handle, &raw const info) },
+            LOWLAT_OK
+        );
+        assert_eq!(
+            unsafe { lowlat_host_begin_p2p(handle, c"a".as_ptr(), &raw mut ours) },
+            LOWLAT_OK
+        );
+        assert_eq!(
+            unsafe { lowlat_host_begin_p2p(handle, c"a".as_ptr(), &raw mut ours) },
+            LOWLAT_ERR_ALREADY_BEGUN
+        );
+
+        // And a full house. **Capacity counts guests that were approved, not
+        // offers that were registered**, so filling it means approving each
+        // one: registering costs bookkeeping and approving costs a socket and
+        // a thread, and it is the second that the limit exists to bound.
+        let mut ids: Vec<String> = Vec::new();
+        for extra in 0..8 {
+            let id = format!("guest{extra}");
+            let info = attempt(&id);
+            let status = unsafe { lowlat_host_new_attempt(handle, &raw const info) };
+            if status == LOWLAT_ERR_AT_CAPACITY {
+                for id in &ids {
+                    let id = std::ffi::CString::new(id.as_str()).expect("no interior nul");
+                    unsafe { lowlat_host_end_connection(handle, id.as_ptr()) };
+                }
+                unsafe { lowlat_host_end_connection(handle, c"a".as_ptr()) };
+                unsafe { lowlat_destroy(handle) };
+                return;
+            }
+            assert_eq!(status, LOWLAT_OK);
+            let id_c = std::ffi::CString::new(id.as_str()).expect("no interior nul");
+            assert_eq!(
+                unsafe { lowlat_host_begin_p2p(handle, id_c.as_ptr(), &raw mut ours) },
+                LOWLAT_OK
+            );
+            ids.push(id);
+        }
+        panic!("the guest limit was never reached");
+    }
+
+    /// **An attempt with nothing to address it by is refused**, because every
+    /// later call in the seam finds it by that identifier.
+    #[test]
+    fn an_attempt_without_the_parts_that_identify_it_is_refused() {
+        let handle = started();
+        for spoil in [
+            (|info: &mut lowlat_attempt_info| info.attempt_id = [0; LOWLAT_ATTEMPT_MAX])
+                as fn(&mut lowlat_attempt_info),
+            |info| info.ufrag = [0; LOWLAT_ICE_MAX],
+            |info| info.pwd = [0; LOWLAT_ICE_MAX],
+            // A field with no terminator was overrun by whoever filled it.
+            |info| info.pwd = [b'x' as c_char; LOWLAT_ICE_MAX],
+            |info| info.size = 4,
+        ] {
+            let mut info = attempt("a");
+            spoil(&mut info);
+            assert_eq!(
+                unsafe { lowlat_host_new_attempt(handle, &raw const info) },
+                LOWLAT_ERR_INVALID_ARGUMENT
+            );
+        }
+        unsafe { lowlat_destroy(handle) };
+    }
+
+    /// **A readiness marker carries no address and is still forwarded**, while
+    /// an ordinary candidate without one is refused. A peer may withhold every
+    /// real candidate until it has seen the marker.
+    #[test]
+    fn a_readiness_marker_needs_no_address_and_a_candidate_does() {
+        let handle = started();
+        let info = attempt("a");
+        assert_eq!(
+            unsafe { lowlat_host_new_attempt(handle, &raw const info) },
+            LOWLAT_OK
+        );
+
+        let mut cand = lowlat_candidate {
+            size: u32::try_from(core::mem::size_of::<lowlat_candidate>()).unwrap_or(u32::MAX),
+            port: 41000,
+            sync: true,
+            reserved: 0,
+            address: [0; LOWLAT_ADDRESS_MAX],
+        };
+        // Accepted with nothing in the address at all.
+        unsafe { lowlat_host_add_candidate(handle, c"a".as_ptr(), &raw const cand) };
+
+        cand.sync = false;
+        put(&mut cand.address, "192.168.1.100");
+        unsafe { lowlat_host_add_candidate(handle, c"a".as_ptr(), &raw const cand) };
+
+        // **An unknown attempt is a race with teardown, not a fault**, so it
+        // is swallowed rather than reported.
+        unsafe { lowlat_host_add_candidate(handle, c"gone".as_ptr(), &raw const cand) };
+
+        unsafe { lowlat_host_end_connection(handle, c"a".as_ptr()) };
+        unsafe { lowlat_destroy(handle) };
+    }
+
+    /// The seam needs a host. Registering against one that never started is a
+    /// mistake worth naming rather than a silent no-op.
+    #[test]
+    fn the_seam_refuses_a_handle_that_is_not_hosting() {
+        let handle = handle();
+        let info = attempt("a");
+        assert_eq!(
+            unsafe { lowlat_host_new_attempt(handle, &raw const info) },
+            LOWLAT_ERR_NOT_STARTED
+        );
+        unsafe { lowlat_destroy(handle) };
     }
 }

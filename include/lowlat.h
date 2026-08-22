@@ -44,6 +44,16 @@
 // guest is sized against.
 #define LOWLAT_GUESTS_MAX 16
 
+// The longest credential this boundary carries.
+//
+// **Sized by the largest of them, which is the media key.** It travels as
+// text and measures 254 characters, so anything shorter than this truncates a
+// key into something that decrypts nothing and reports no reason.
+#define LOWLAT_ICE_MAX 256
+
+// The longest fingerprint.
+#define LOWLAT_FINGERPRINT_MAX 112
+
 // A status code.
 //
 // **An enumeration for the names and a plain integer wherever one is
@@ -90,6 +100,22 @@ enum lowlat_status
     // This handle is already hosting. Stopping first is the way to start
     // again with a different configuration.
     LOWLAT_ERR_ALREADY_STARTED = -5,
+    // This handle is not hosting, so there is nothing for the call to act on.
+    LOWLAT_ERR_NOT_STARTED = -6,
+    // Every seat is taken. **The offer should be declined**, not left
+    // unanswered: silence reads to a peer as a host still thinking about it.
+    LOWLAT_ERR_AT_CAPACITY = -100,
+    // No attempt with that identifier.
+    LOWLAT_ERR_UNKNOWN_ATTEMPT = -101,
+    // The attempt has already been approved.
+    LOWLAT_ERR_ALREADY_BEGUN = -102,
+    // Withdrawn before it was registered, so it was over before it began. A
+    // withdrawal can overtake the offer it withdraws.
+    LOWLAT_ERR_WITHDRAWN = -103,
+    // A socket could not be opened, or a thread could not be started.
+    LOWLAT_ERR_IO = -104,
+    // Credentials could not be produced.
+    LOWLAT_ERR_CRYPTO = -105,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -337,6 +363,76 @@ typedef struct lowlat_host_config {
     struct lowlat_host_video_config video;
 } lowlat_host_config;
 
+// What a guest may drive.
+typedef struct lowlat_permissions {
+    bool keyboard;
+    bool pointer;
+    bool gamepad;
+    uint8_t reserved;
+} lowlat_permissions;
+
+// What signaling learned about a peer, handed over to register an attempt.
+//
+// **Signaling is the application's**, so everything here arrived over a
+// transport this library does not have and does not want
+// ([04 §1](../../../docs/04-signaling.md)).
+typedef struct lowlat_attempt_info {
+    // Set by the caller to `sizeof(lowlat_attempt_info)`.
+    uint32_t size;
+    uint32_t reserved;
+    // The application's own identifier for this attempt. Everything else in
+    // the seam is addressed by it.
+    char attempt_id[LOWLAT_ATTEMPT_MAX];
+    char ufrag[LOWLAT_ICE_MAX];
+    char pwd[LOWLAT_ICE_MAX];
+    // The peer's media key material, as text.
+    //
+    // **Empty selects the legacy path**, which is a decision rather than a
+    // degradation: the offer either carried one or it did not, and which
+    // crypto a session uses follows from that ([00 §D2](../../../docs/00-overview.md)).
+    char aes256[LOWLAT_ICE_MAX];
+    // What signaling says this peer may drive.
+    struct lowlat_permissions permissions;
+    // Whether this peer owns the machine, which decides exactly one thing: it
+    // takes the pointer from another guest rather than waiting for it.
+    bool owner;
+    uint8_t reserved2[3];
+} lowlat_attempt_info;
+
+// One address a peer might be reachable at.
+typedef struct lowlat_candidate {
+    // Set by the caller to `sizeof(lowlat_candidate)`.
+    uint32_t size;
+    uint16_t port;
+    // **A readiness marker rather than an address**, and whatever address
+    // rides along with it is ignored. A peer may withhold every real
+    // candidate until it has seen one, so an application that never forwards
+    // one negotiates against a peer that never offers anything to check.
+    bool sync;
+    uint8_t reserved;
+    char address[LOWLAT_ADDRESS_MAX];
+} lowlat_candidate;
+
+// What this host answers an offer with.
+//
+// **Generated at approval, not at registration.** They are bound to the
+// socket that was just opened for this attempt, so producing them earlier
+// binds them to nothing.
+typedef struct lowlat_credentials {
+    // Set by the caller to `sizeof(lowlat_credentials)`.
+    uint32_t size;
+    // **The port this guest was actually bound to**, which is not necessarily
+    // the configured one: the bind walks when a port is taken. Advertising the
+    // configured port instead produces a peer that answers checks and never
+    // establishes.
+    uint16_t port;
+    uint16_t reserved;
+    char ufrag[LOWLAT_ICE_MAX];
+    char pwd[LOWLAT_ICE_MAX];
+    char fingerprint[LOWLAT_FINGERPRINT_MAX];
+    char aes256[LOWLAT_ICE_MAX];
+} lowlat_credentials;
+
 // A local candidate for the application to forward.
 typedef struct lowlat_candidate_event {
     char attempt[LOWLAT_ATTEMPT_MAX];
@@ -459,6 +555,71 @@ void lowlat_destroy(struct lowlat *ll);
 // [`lowlat_host_config`] whose `size` says how much of it is set.
 lowlat_status lowlat_host_start(struct lowlat *ll,
                                 const struct lowlat_host_config *cfg);
+
+// Register an attempt from an offer signaling delivered.
+//
+// **Registering is not approving.** This takes a seat's worth of bookkeeping
+// and nothing else; no socket is opened and no thread is started until
+// [`lowlat_host_begin_p2p`]. An application that decides to decline simply
+// never calls that, and says so over its own signaling.
+//
+// [`LOWLAT_ERR_AT_CAPACITY`] means the offer should be declined rather than
+// left unanswered: nothing in the protocol reports a host that never replied,
+// so a peer given silence sits connecting until its own deadline.
+//
+// # Safety
+//
+// `ll` came from [`lowlat_create`], and `info` points to one
+// [`lowlat_attempt_info`] whose `size` says how much of it is set.
+lowlat_status lowlat_host_new_attempt(struct lowlat *ll,
+                                      const struct lowlat_attempt_info *info);
+
+// Offer one address the peer might be reachable at.
+//
+// **An unknown attempt is accepted silently.** Candidates trickle and a
+// withdrawal can overtake them, so this is a race with teardown rather than a
+// fault, and a status the caller would have to ignore is worse than no status.
+//
+// # Safety
+//
+// `ll` came from [`lowlat_create`], `attempt_id` is a NUL-terminated string,
+// and `cand` points to one [`lowlat_candidate`].
+void lowlat_host_add_candidate(struct lowlat *ll,
+                               const char *attempt_id,
+                               const struct lowlat_candidate *cand);
+
+// Approve an attempt and answer it with this host's own credentials.
+//
+// This is where a socket is opened and this guest's threads are started, so
+// it is the one call in the seam that costs more than bookkeeping. It sends
+// nothing: the answer travels over the application's signaling, because this
+// library has no transport for it.
+//
+// # Safety
+//
+// `ll` came from [`lowlat_create`], `attempt_id` is a NUL-terminated string,
+// and `out` points to one [`lowlat_credentials`] whose `size` says how much of
+// it is set.
+lowlat_status lowlat_host_begin_p2p(struct lowlat *ll,
+                                    const char *attempt_id,
+                                    struct lowlat_credentials *out);
+
+// End an attempt, whether or not it was ever approved.
+//
+// **An unknown identifier is accepted silently**, and remembered: a
+// withdrawal can arrive before the offer it withdraws, and admitting that
+// offer afterwards spends a socket and a thread on a guest that has already
+// gone.
+//
+// **The peer is not told why.** Ending stops this guest's loop; the far side
+// learns from its own liveness deadline rather than from a message, for the
+// same reason [`lowlat_host_stop`] does.
+//
+// # Safety
+//
+// `ll` came from [`lowlat_create`] and `attempt_id` is a NUL-terminated
+// string.
+void lowlat_host_end_connection(struct lowlat *ll, const char *attempt_id);
 
 // Change the video settings while the host runs.
 //
