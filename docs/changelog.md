@@ -3,6 +3,46 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 8: public C ABI (in progress)
+
+**Added**
+
+- **The boundary's skeleton, and the four mechanical gates.** Version, status
+  codes and their descriptions, the containment every entry point runs inside,
+  and one entry that panics on purpose so the containment can be tested. The
+  header is generated from the definitions and committed, and a test that
+  regenerates it fails when the two disagree.
+
+  **The generated header is built from the ABI module alone, not from the
+  crate.** Generating from the crate publishes every public constant in it: the
+  first header carried the guest cap, the pointer hold and four other numbers
+  that have nothing to do with the boundary, and an application including it
+  would find its own names redefined. Naming the one file makes publishing a
+  decision, and it forces the other half of the rule -- a type that crosses the
+  boundary is defined at the boundary, because nothing else is visible from
+  there.
+
+  **Status codes are an integer with named constants rather than an
+  enumeration.** A status travels back in as well as out, ending a guest
+  carries one as its reason, and an application is free to hand back a number
+  nobody defined. Reading an undefined discriminant into an enumeration is
+  undefined behaviour, so the type that crosses is one where every bit pattern
+  is valid.
+
+**Found by running it**
+
+- **A gate that tests the wrong artifact reports on the wrong artifact.** The
+  containment check loads the built shared object on purpose, because the
+  library form linked into a test answers for the test's build settings rather
+  than for the shipped one. It then passed with the containment deleted: a test
+  binary depends on the library form and nothing asks for the shared one, so
+  the file being opened was eight hours old and belonged to an earlier command.
+  The gate now builds the object it is about to open. **Every check here was
+  then made to fail on the fault it exists for** -- a panic crossing the
+  boundary, a name exported without the prefix, a stale header, a header that
+  does not compile, and a header that compiles as C but not as C++ -- because
+  until it has failed once, a check has only been shown to pass.
+
 ## 9: capture (in progress)
 
 **Added**
