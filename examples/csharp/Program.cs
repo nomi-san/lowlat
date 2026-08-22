@@ -48,6 +48,11 @@ var host = new Host();
 host.Create();
 host.Start();
 
+foreach (var (id, name) in Host.AudioOutputs())
+{
+    Console.WriteLine($"audio output: {name}  [{id}]");
+}
+
 if (offline || session is null)
 {
     // Everything except the service: the boundary is driven end to end with a

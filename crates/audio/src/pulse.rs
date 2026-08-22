@@ -152,6 +152,8 @@ type ContextGetInfoByName = unsafe extern "C" fn(
     Option<DeviceInfoCb>,
     *mut c_void,
 ) -> *mut c_void;
+type ContextGetInfoList =
+    unsafe extern "C" fn(*mut Context, Option<DeviceInfoCb>, *mut c_void) -> *mut c_void;
 type ContextSetSinkMute = unsafe extern "C" fn(
     *mut Context,
     *const c_char,
@@ -197,6 +199,7 @@ pub(crate) struct Pulse {
     pub source_info_by_name: ContextGetInfoByName,
     pub sink_info_by_name: ContextGetInfoByName,
     pub set_sink_mute_by_name: ContextSetSinkMute,
+    pub sink_info_list: ContextGetInfoList,
     pub stream_new: StreamNew,
     pub stream_connect_record: StreamConnectRecord,
     pub stream_disconnect: StreamDisconnect,
@@ -284,6 +287,9 @@ impl Pulse {
                     .ok_or(Error::Incomplete)?,
                 set_sink_mute_by_name: library
                     .symbol(c"pa_context_set_sink_mute_by_name")
+                    .ok_or(Error::Incomplete)?,
+                sink_info_list: library
+                    .symbol(c"pa_context_get_sink_info_list")
                     .ok_or(Error::Incomplete)?,
                 stream_new: library.symbol(c"pa_stream_new").ok_or(Error::Incomplete)?,
                 stream_connect_record: library

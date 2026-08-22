@@ -552,6 +552,11 @@ impl Shared {
         self.sound.on.load(Ordering::Relaxed) != 0
     }
 
+    /// Whether a guest that asked for the uncompressed form may have it.
+    pub(crate) fn sound_allow_raw(&self) -> bool {
+        self.sound.allow_raw.load(Ordering::Relaxed) != 0
+    }
+
     /// What the compressed form is encoded at.
     pub(crate) fn sound_kbps(&self) -> u32 {
         self.sound.kbps.load(Ordering::Relaxed)
@@ -978,6 +983,16 @@ impl Stream {
     pub fn set_audio(&self, on: bool, allow_raw: bool, kbps: u32, live: &lowlat_audio::Live) {
         self.shared.set_sound(on, allow_raw, kbps);
         self.shared.sound_wanted().set(live);
+    }
+
+    /// What sound is set to now.
+    pub fn audio(&self) -> (bool, bool, u32, lowlat_audio::Live) {
+        (
+            self.shared.sound_on(),
+            self.shared.sound_allow_raw(),
+            self.shared.sound_kbps(),
+            self.shared.sound_wanted().read(),
+        )
     }
 
     /// Capture a different output, without ending anybody's session.

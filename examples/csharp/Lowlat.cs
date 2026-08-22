@@ -137,6 +137,44 @@ internal struct HostVideoConfig
 }
 
 [StructLayout(LayoutKind.Sequential)]
+internal struct HostAudioConfig
+{
+    public uint Size;
+    public uint BitrateKbps;
+    public byte EnabledByte;
+    public byte AllowUncompressedByte;
+    public byte MuteLocalByte;
+    private byte reserved0;
+
+    public bool Enabled
+    {
+        get => EnabledByte != 0;
+        set => EnabledByte = value ? (byte)1 : (byte)0;
+    }
+    public bool AllowUncompressed
+    {
+        get => AllowUncompressedByte != 0;
+        set => AllowUncompressedByte = value ? (byte)1 : (byte)0;
+    }
+    public bool MuteLocal
+    {
+        get => MuteLocalByte != 0;
+        set => MuteLocalByte = value ? (byte)1 : (byte)0;
+    }
+    [InlineArray(Sizes.Output)] public struct DeviceName { private byte first; }
+    public DeviceName Device;
+}
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct AudioOutput
+{
+    [InlineArray(Sizes.Output)] public struct Id { private byte first; }
+    public Id OutputId;
+    [InlineArray(Sizes.Output)] public struct Name { private byte first; }
+    public Name OutputName;
+}
+
+[StructLayout(LayoutKind.Sequential)]
 internal struct HostConfig
 {
     public uint Size;
@@ -159,6 +197,7 @@ internal struct HostConfig
     [InlineArray(Sizes.Servers * Sizes.Server)] public struct ServerList { private byte first; }
     public ServerList Servers;
     public HostVideoConfig Video;
+    public HostAudioConfig Audio;
 }
 
 [StructLayout(LayoutKind.Sequential)]
@@ -365,6 +404,18 @@ internal static partial class Native
     [LibraryImport(Library)]
     internal static unsafe partial Status lowlat_host_set_video_config(
         IntPtr handle, HostVideoConfig* cfg);
+
+    [LibraryImport(Library)]
+    internal static unsafe partial Status lowlat_host_set_audio_config(
+        IntPtr handle, HostAudioConfig* cfg);
+
+    [LibraryImport(Library)]
+    internal static unsafe partial Status lowlat_host_get_audio_config(
+        IntPtr handle, HostAudioConfig* cfg);
+
+    [LibraryImport(Library)]
+    internal static unsafe partial Status lowlat_get_audio_outputs(
+        AudioOutput* outputs, uint* count);
 
     [LibraryImport(Library)]
     internal static unsafe partial Status lowlat_host_get_video_config(

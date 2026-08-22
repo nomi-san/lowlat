@@ -130,7 +130,8 @@ impl Wanted {
         }
     }
 
-    fn read(&self) -> Live {
+    /// What is in force now.
+    pub fn read(&self) -> Live {
         match self.live.lock() {
             Ok(held) => held.clone(),
             Err(held) => held.into_inner().clone(),
@@ -1148,4 +1149,102 @@ mod tests {
         assert_eq!(seen.len(), FRAME_BYTES * 3);
         assert_eq!(seen, source[..seen.len()]);
     }
+}
+
+/// One output a host can capture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Output {
+    /// What to put in a configuration: the **monitor** of this output, which is
+    /// the device a host actually reads.
+    pub id: String,
+    /// What a person calls it.
+    pub name: String,
+}
+
+/// Every output on this machine that a host could capture.
+///
+/// **The identity is the monitor and the name is the speaker's**, because those
+/// are two different things and an application needs both: one goes back into
+/// the configuration, and the other is what a person chooses from.
+///
+/// Opens its own short-lived connection, so it answers before a host is started
+/// and without disturbing one that is running.
+pub fn outputs(server: Option<&str>) -> Result<Vec<Output>, Error> {
+    if PULSE.get().is_none() {
+        let _ = PULSE.set(Pulse::load()?);
+    }
+    let pulse = pulse().ok_or(Error::Unavailable)?;
+    let stop = AtomicBool::new(false);
+    let config = Settings {
+        server: server.map(str::to_owned),
+        wanted: Arc::new(Wanted::default()),
+    };
+    let session = Session::open::<fn(&[u8])>(&config, std::ptr::null_mut())?;
+    session.wait_ready(&stop)?;
+
+    let mut ask = Listing::default();
+    let ask: *mut Listing = &raw mut ask;
+    // SAFETY: the listing outlives the query, because this waits for it; the
+    // context is ready and belongs to this thread.
+    unsafe {
+        let op = (pulse.sink_info_list)(session.context, Some(on_listed), ask.cast::<c_void>());
+        if op.is_null() {
+            return Err(Error::Refused(session.errno()));
+        }
+        (pulse.operation_unref)(op);
+    }
+    let began = lowlat_common::clock::Time::now();
+    loop {
+        // SAFETY: as above.
+        if unsafe { (*ask).done } {
+            break;
+        }
+        if lowlat_common::clock::elapsed_ms(began) > READY_MS {
+            return Err(Error::Refused(session.errno()));
+        }
+        session.iterate();
+    }
+    // SAFETY: the query has finished and nothing else holds the listing.
+    Ok(unsafe { core::mem::take(&mut (*ask).found) })
+}
+
+/// What a listing has collected so far.
+#[derive(Debug, Default)]
+struct Listing {
+    found: Vec<Output>,
+    done: bool,
+}
+
+/// One entry of a listing, or its end.
+unsafe extern "C" fn on_listed(
+    _context: *mut pulse::Context,
+    info: *const pulse::DeviceInfo,
+    end: c_int,
+    opaque: *mut c_void,
+) {
+    // SAFETY: the pointer is the listing the query was issued with.
+    let listing = unsafe { &mut *opaque.cast::<Listing>() };
+    if end != 0 || info.is_null() {
+        listing.done = true;
+        return;
+    }
+    // SAFETY: the interface guarantees the pointer for the call's duration.
+    let info = unsafe { &*info };
+    // **An output with no monitor cannot be captured**, so it is not offered.
+    if info.paired_name.is_null() {
+        return;
+    }
+    // SAFETY: non-null strings from the interface are NUL terminated.
+    let id = unsafe { CStr::from_ptr(info.paired_name) }
+        .to_string_lossy()
+        .into_owned();
+    let name = if info.description.is_null() {
+        id.clone()
+    } else {
+        // SAFETY: as above.
+        unsafe { CStr::from_ptr(info.description) }
+            .to_string_lossy()
+            .into_owned()
+    };
+    listing.found.push(Output { id, name });
 }

@@ -1029,6 +1029,23 @@ impl Admission {
         }
     }
 
+    /// Change what sound is set to, while a host runs.
+    pub fn set_audio(&self, on: bool, allow_raw: bool, kbps: u32, live: &lowlat_audio::Live) {
+        if let Some(stream) = self.stream.as_ref() {
+            stream.set_audio(on, allow_raw, kbps, live);
+        }
+    }
+
+    /// What sound is set to now.
+    ///
+    /// **Asked of the stream rather than remembered here**, which is what makes
+    /// a read-back the host's answer rather than a copy of the last call.
+    pub fn audio(&self) -> (bool, bool, u32, lowlat_audio::Live) {
+        self.stream
+            .as_ref()
+            .map_or_else(Default::default, crate::stream::Stream::audio)
+    }
+
     /// What the stream is running at now.
     pub fn video(&self) -> Option<crate::stream::LiveVideo> {
         self.stream.as_ref().map(crate::stream::Stream::video)

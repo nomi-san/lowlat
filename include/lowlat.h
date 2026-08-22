@@ -60,6 +60,13 @@
 // everyone seated rather than nobody.
 #define LOWLAT_GUEST_ALL 0
 
+// The most this host will encode sound at.
+//
+// **A ceiling rather than a range**, because the codec silently clamps its own
+// and an application that asked for ten megabits would be told yes and given
+// something else. Well above any rate stereo desktop sound is worth.
+#define LOWLAT_AUDIO_KBPS_MAX 512
+
 // A status code.
 //
 // **An enumeration for the names and a plain integer wherever one is
@@ -373,6 +380,39 @@ typedef struct lowlat_host_video_config {
     char output[LOWLAT_OUTPUT_MAX];
 } lowlat_host_video_config;
 
+// How sound is configured.
+//
+// **Every field here is live.** Sound has no half that must be settled when
+// hosting starts: the device and the mute cost a reconnect the loop performs,
+// and the rest are read on the frame that uses them. So this is both what a
+// host starts with and what [`lowlat_host_set_audio_config`] takes.
+typedef struct lowlat_host_audio_config {
+    // Set by the caller to `sizeof(lowlat_host_audio_config)`.
+    uint32_t size;
+    // What the compressed form is encoded at, in kilobits a second.
+    uint32_t bitrate_kbps;
+    // Whether sound is captured at all. Off gives the device back and puts
+    // the speakers at the desk back with it.
+    bool enabled;
+    // Whether a guest that asked for the uncompressed form may have it.
+    //
+    // **A permission, not a request**, and off by default: it costs an order
+    // of magnitude more of the uplink than the compressed form, which comes
+    // out of what is left for the picture.
+    bool allow_uncompressed;
+    // Silence the speakers at the desk while a guest is connected.
+    //
+    // **The tap is ahead of the device's own mute**, so a guest still hears
+    // everything; it is the person at the machine who stops hearing what they
+    // are sending. Restored when the last guest leaves, and only if this host
+    // is what silenced them.
+    bool mute_local;
+    uint8_t reserved[1];
+    // Which device to capture, by an identity from the enumeration. **Empty
+    // means the default output's monitor**, followed as the default changes.
+    char device[LOWLAT_OUTPUT_MAX];
+} lowlat_host_audio_config;
+
 // How a host is configured.
 //
 // **There is no resolution here.** The display decides the picture's size, the
@@ -411,6 +451,8 @@ typedef struct lowlat_host_config {
     char servers[LOWLAT_SERVERS_MAX][LOWLAT_SERVER_MAX];
     // The half of this that can also be set while the host runs.
     struct lowlat_host_video_config video;
+    // Sound, every field of which can also be set while the host runs.
+    struct lowlat_host_audio_config audio;
 } lowlat_host_config;
 
 // What a guest may drive.
@@ -512,6 +554,17 @@ typedef struct lowlat_guest {
     // tell which peer an event about guest three concerns.
     char attempt[LOWLAT_ATTEMPT_MAX];
 } lowlat_guest;
+
+// One sound output a host could capture.
+typedef struct lowlat_audio_output {
+    // What to put in [`lowlat_host_audio_config::device`].
+    //
+    // **The monitor of the output, not the output**, because that is the
+    // device a host reads: it carries what the speakers are playing.
+    char id[LOWLAT_OUTPUT_MAX];
+    // What a person calls it, which is the name to show them.
+    char name[LOWLAT_OUTPUT_MAX];
+} lowlat_audio_output;
 
 // One output this host could be asked to capture.
 typedef struct lowlat_output {
@@ -896,6 +949,22 @@ lowlat_status lowlat_host_set_permissions(struct lowlat *ll,
                                           uint32_t guest_id,
                                           const struct lowlat_permissions *perms);
 
+// List the sound outputs this host could capture.
+//
+// **Available before hosting starts**, and it does not disturb a host that is
+// running: it asks over a connection of its own. Two calls and the caller's
+// own buffer, like the video one.
+//
+// A machine with no sound server answers with none rather than failing, which
+// is the same thing an application does with it: offer what there is.
+//
+// # Safety
+//
+// `count` must be readable and writable, and `out`, when not null, must point
+// to at least `*count` elements.
+lowlat_status lowlat_get_audio_outputs(struct lowlat_audio_output *out,
+                                       uint32_t *count);
+
 // List the outputs this host could capture.
 //
 // **Available before hosting starts**, so an application can present a choice
@@ -990,6 +1059,32 @@ lowlat_status lowlat_host_get_metrics(struct lowlat *ll,
 // [`lowlat_host_video_config`] whose `size` says how much of it is set.
 lowlat_status lowlat_host_set_video_config(struct lowlat *ll,
                                            const struct lowlat_host_video_config *cfg);
+
+// Change what sound is set to, while a host runs.
+//
+// **Every field takes effect without a restart.** Switching sound off gives
+// the device back and restores the speakers; switching it on takes it again.
+// A device that does not resolve is refused rather than substituted, and the
+// host keeps the one it has.
+//
+// # Safety
+//
+// `ll` came from [`lowlat_create`], and `cfg` points to one
+// [`lowlat_host_audio_config`] whose `size` says how much of it is set.
+lowlat_status lowlat_host_set_audio_config(struct lowlat *ll,
+                                           const struct lowlat_host_audio_config *cfg);
+
+// What sound is set to now.
+//
+// **Read back rather than remembered**, for the reason the video one is: what
+// a host is doing is the host's answer.
+//
+// # Safety
+//
+// `ll` came from [`lowlat_create`], and `out` points to one
+// [`lowlat_host_audio_config`] whose `size` says how much of it is set.
+lowlat_status lowlat_host_get_audio_config(struct lowlat *ll,
+                                           struct lowlat_host_audio_config *out);
 
 // What the host is running at now.
 //

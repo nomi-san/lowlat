@@ -70,6 +70,9 @@ int main(int argc, char **argv)
     lowlat_status (*host_stop)(lowlat *);
     lowlat_status (*set_video)(lowlat *, const lowlat_host_video_config *);
     lowlat_status (*get_video)(lowlat *, lowlat_host_video_config *);
+    lowlat_status (*set_audio)(lowlat *, const lowlat_host_audio_config *);
+    lowlat_status (*get_audio)(lowlat *, lowlat_host_audio_config *);
+    lowlat_status (*get_audio_outputs)(lowlat_audio_output *, uint32_t *);
     lowlat_status (*new_attempt)(lowlat *, const lowlat_attempt_info *);
     void (*add_candidate)(lowlat *, const char *, const lowlat_candidate *);
     lowlat_status (*begin_p2p)(lowlat *, const char *, lowlat_credentials *);
@@ -107,6 +110,9 @@ int main(int argc, char **argv)
     RESOLVE(kick_guest, lib, "lowlat_host_kick_guest");
     RESOLVE(can_host, lib, "lowlat_can_host");
     RESOLVE(get_outputs, lib, "lowlat_get_outputs");
+    RESOLVE(set_audio, lib, "lowlat_host_set_audio_config");
+    RESOLVE(get_audio, lib, "lowlat_host_get_audio_config");
+    RESOLVE(get_audio_outputs, lib, "lowlat_get_audio_outputs");
     RESOLVE(get_status, lib, "lowlat_host_get_status");
     RESOLVE(set_log_callback, lib, "lowlat_set_log_callback");
 
@@ -194,6 +200,13 @@ int main(int argc, char **argv)
     cfg.video.bitrate_mbps = 10.0;
     cfg.video.min_bitrate_mbps = 1.0;
     cfg.video.full_fps = true;
+    cfg.audio.size = (uint32_t) sizeof cfg.audio;
+    cfg.audio.bitrate_kbps = 128;
+    /* Off, because a harness that opened a sound device would be testing the
+     * machine it runs on rather than this boundary. */
+    cfg.audio.enabled = false;
+    cfg.audio.allow_uncompressed = false;
+    cfg.audio.mute_local = false;
     if (host_start(ll, &cfg) != LOWLAT_OK) {
         fprintf(stderr, "harness: hosting would not start\n");
         return 1;
@@ -251,6 +264,64 @@ int main(int argc, char **argv)
     if (set_video(ll, &video) != LOWLAT_ERR_INVALID_ARGUMENT) {
         fprintf(stderr, "harness: a floor above the ceiling was accepted\n");
         return 1;
+    }
+
+    /* Sound, every field of which is live. Read back through the host rather
+     * than from the copy that was written, so a setting that reached nothing
+     * shows up here. */
+    lowlat_host_audio_config audio = cfg.audio;
+    audio.bitrate_kbps = 96;
+    audio.allow_uncompressed = true;
+    if (set_audio(ll, &audio) != LOWLAT_OK) {
+        fprintf(stderr, "harness: a live audio change was refused\n");
+        return 1;
+    }
+    lowlat_host_audio_config audio_back;
+    memset(&audio_back, 0, sizeof audio_back);
+    audio_back.size = (uint32_t) sizeof audio_back;
+    if (get_audio(ll, &audio_back) != LOWLAT_OK) {
+        fprintf(stderr, "harness: the live audio settings could not be read back\n");
+        return 1;
+    }
+    if (audio_back.bitrate_kbps != 96 || audio_back.allow_uncompressed != true) {
+        fprintf(stderr, "harness: read back %u kbit/s uncompressed=%u after setting 96/1\n",
+                audio_back.bitrate_kbps, (unsigned) audio_back.allow_uncompressed);
+        return 1;
+    }
+    /* A rate nothing can serve is refused rather than clamped in silence. */
+    audio.bitrate_kbps = 0;
+    if (set_audio(ll, &audio) != LOWLAT_ERR_INVALID_ARGUMENT) {
+        fprintf(stderr, "harness: a rate of zero was accepted\n");
+        return 1;
+    }
+    audio.bitrate_kbps = LOWLAT_AUDIO_KBPS_MAX + 1;
+    if (set_audio(ll, &audio) != LOWLAT_ERR_INVALID_ARGUMENT) {
+        fprintf(stderr, "harness: a rate past the ceiling was accepted\n");
+        return 1;
+    }
+
+    /* Enumerating sound outputs, which answers before a host is started and
+     * without disturbing one that is. A machine with none answers zero. */
+    uint32_t sound_outputs = 0;
+    if (get_audio_outputs(NULL, &sound_outputs) != LOWLAT_OK) {
+        fprintf(stderr, "harness: counting sound outputs failed\n");
+        return 1;
+    }
+    if (sound_outputs > 0) {
+        lowlat_audio_output found[8];
+        uint32_t room = sound_outputs < 8 ? sound_outputs : 8;
+        lowlat_status listed = get_audio_outputs(found, &room);
+        if ((listed != LOWLAT_OK && listed != LOWLAT_ERR_TOO_SMALL) || found[0].id[0] == '\0') {
+            fprintf(stderr, "harness: a sound output came back without an identity\n");
+            return 1;
+        }
+        /* No room at all: told what it needs, and nothing written past the
+         * end. */
+        room = 0;
+        if (get_audio_outputs(found, &room) != LOWLAT_ERR_TOO_SMALL || room != sound_outputs) {
+            fprintf(stderr, "harness: a short buffer did not report the count needed\n");
+            return 1;
+        }
     }
     /* The signaling seam, in the order an application drives it. Everything
      * here arrived over a transport this library does not have: registering an

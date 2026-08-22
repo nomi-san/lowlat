@@ -445,6 +445,42 @@ pub struct lowlat_host_video_config {
     pub output: [c_char; LOWLAT_OUTPUT_MAX],
 }
 
+/// How sound is configured.
+///
+/// **Every field here is live.** Sound has no half that must be settled when
+/// hosting starts: the device and the mute cost a reconnect the loop performs,
+/// and the rest are read on the frame that uses them. So this is both what a
+/// host starts with and what [`lowlat_host_set_audio_config`] takes.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+#[allow(non_camel_case_types)]
+pub struct lowlat_host_audio_config {
+    /// Set by the caller to `sizeof(lowlat_host_audio_config)`.
+    pub size: u32,
+    /// What the compressed form is encoded at, in kilobits a second.
+    pub bitrate_kbps: u32,
+    /// Whether sound is captured at all. Off gives the device back and puts
+    /// the speakers at the desk back with it.
+    pub enabled: bool,
+    /// Whether a guest that asked for the uncompressed form may have it.
+    ///
+    /// **A permission, not a request**, and off by default: it costs an order
+    /// of magnitude more of the uplink than the compressed form, which comes
+    /// out of what is left for the picture.
+    pub allow_uncompressed: bool,
+    /// Silence the speakers at the desk while a guest is connected.
+    ///
+    /// **The tap is ahead of the device's own mute**, so a guest still hears
+    /// everything; it is the person at the machine who stops hearing what they
+    /// are sending. Restored when the last guest leaves, and only if this host
+    /// is what silenced them.
+    pub mute_local: bool,
+    pub reserved: [u8; 1],
+    /// Which device to capture, by an identity from the enumeration. **Empty
+    /// means the default output's monitor**, followed as the default changes.
+    pub device: [c_char; LOWLAT_OUTPUT_MAX],
+}
+
 /// How a host is configured.
 ///
 /// **There is no resolution here.** The display decides the picture's size, the
@@ -485,6 +521,8 @@ pub struct lowlat_host_config {
     pub servers: [[c_char; LOWLAT_SERVER_MAX]; LOWLAT_SERVERS_MAX],
     /// The half of this that can also be set while the host runs.
     pub video: lowlat_host_video_config,
+    /// Sound, every field of which can also be set while the host runs.
+    pub audio: lowlat_host_audio_config,
 }
 
 /// The most guests a host may advertise, which is what the ring memory per
@@ -899,6 +937,7 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
     }
     let video = video_configured(&cfg.video)?;
     let output = taken(&cfg.video.output)?;
+    let (sound_on, allow_raw, audio_kbps, audio_live) = audio_configured(&cfg.audio)?;
 
     Some(crate::admission::Config {
         base_port: cfg.base_port,
@@ -910,13 +949,15 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
         // A live-run aid, and nothing an application should be able to ask for.
         rumble_probe: false,
         stream: Some(crate::stream::Config {
-            // **On by default and not yet configurable.** The boundary grows a
-            // field for it with the rest of the audio surface; until then a
-            // host reads the session's default output, and a machine with no
-            // sound server simply has no sound.
-            audio_kbps: lowlat_audio::encode::DEFAULT_BITRATE_KBPS,
-            allow_raw_audio: false,
-            audio: Some(lowlat_audio::Config::default()),
+            audio_kbps,
+            allow_raw_audio: allow_raw,
+            // **Absent means a host that streams pictures only**, which is what
+            // switching sound off asks for; the cells behind it still carry
+            // what was set, so switching it back on needs no second call.
+            audio: sound_on.then(|| lowlat_audio::Config {
+                server: None,
+                wanted: std::sync::Arc::new(lowlat_audio::Wanted::new(audio_live)),
+            }),
             codec,
             backend,
             cg_level,
@@ -965,6 +1006,35 @@ fn video_configured(cfg: &lowlat_host_video_config) -> Option<crate::stream::Liv
         full_fps: cfg.full_fps,
     })
 }
+
+/// Turn what an application wrote about sound into what the host takes.
+fn audio_configured(
+    cfg: &lowlat_host_audio_config,
+) -> Option<(bool, bool, u32, lowlat_audio::Live)> {
+    if (cfg.size as usize) < core::mem::size_of::<lowlat_host_audio_config>() {
+        return None;
+    }
+    if cfg.bitrate_kbps == 0 || cfg.bitrate_kbps > LOWLAT_AUDIO_KBPS_MAX {
+        return None;
+    }
+    let device = taken(&cfg.device)?;
+    Some((
+        cfg.enabled,
+        cfg.allow_uncompressed,
+        cfg.bitrate_kbps,
+        lowlat_audio::Live {
+            device: (!device.is_empty()).then(|| device.to_owned()),
+            mute_local: cfg.mute_local,
+        },
+    ))
+}
+
+/// The most this host will encode sound at.
+///
+/// **A ceiling rather than a range**, because the codec silently clamps its own
+/// and an application that asked for ten megabits would be told yes and given
+/// something else. Well above any rate stereo desktop sound is worth.
+pub const LOWLAT_AUDIO_KBPS_MAX: u32 = 512;
 
 /// Start hosting.
 ///
@@ -1434,6 +1504,68 @@ pub struct lowlat_output {
     pub y: u32,
 }
 
+/// One sound output a host could capture.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+#[allow(non_camel_case_types)]
+pub struct lowlat_audio_output {
+    /// What to put in [`lowlat_host_audio_config::device`].
+    ///
+    /// **The monitor of the output, not the output**, because that is the
+    /// device a host reads: it carries what the speakers are playing.
+    pub id: [c_char; LOWLAT_OUTPUT_MAX],
+    /// What a person calls it, which is the name to show them.
+    pub name: [c_char; LOWLAT_OUTPUT_MAX],
+}
+
+/// List the sound outputs this host could capture.
+///
+/// **Available before hosting starts**, and it does not disturb a host that is
+/// running: it asks over a connection of its own. Two calls and the caller's
+/// own buffer, like the video one.
+///
+/// A machine with no sound server answers with none rather than failing, which
+/// is the same thing an application does with it: offer what there is.
+///
+/// # Safety
+///
+/// `count` must be readable and writable, and `out`, when not null, must point
+/// to at least `*count` elements.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_get_audio_outputs(
+    out: *mut lowlat_audio_output,
+    count: *mut u32,
+) -> lowlat_status {
+    guard(LOWLAT_ERR_INTERNAL, || {
+        if count.is_null() {
+            return LOWLAT_ERR_INVALID_ARGUMENT;
+        }
+        let listed = lowlat_audio::outputs(None).unwrap_or_default();
+        let found = u32::try_from(listed.len()).unwrap_or(u32::MAX);
+        if out.is_null() {
+            unsafe { count.write(found) };
+            return LOWLAT_OK;
+        }
+        let room = unsafe { count.read() } as usize;
+        let writing = listed.len().min(room);
+        for (at, output) in listed.iter().take(writing).enumerate() {
+            let mut slot = lowlat_audio_output {
+                id: [0; LOWLAT_OUTPUT_MAX],
+                name: [0; LOWLAT_OUTPUT_MAX],
+            };
+            put(&mut slot.id, &output.id);
+            put(&mut slot.name, &output.name);
+            unsafe { out.add(at).write(slot) };
+        }
+        if writing < listed.len() {
+            unsafe { count.write(found) };
+            return LOWLAT_ERR_TOO_SMALL;
+        }
+        unsafe { count.write(u32::try_from(writing).unwrap_or(u32::MAX)) };
+        LOWLAT_OK
+    })
+}
+
 /// List the outputs this host could capture.
 ///
 /// **Available before hosting starts**, so an application can present a choice
@@ -1763,6 +1895,78 @@ pub unsafe extern "C" fn lowlat_host_set_video_config(
             };
             seam.set_video(video);
             seam.select_output((!output.is_empty()).then(|| output.to_string()));
+            LOWLAT_OK
+        })
+    }
+}
+
+/// Change what sound is set to, while a host runs.
+///
+/// **Every field takes effect without a restart.** Switching sound off gives
+/// the device back and restores the speakers; switching it on takes it again.
+/// A device that does not resolve is refused rather than substituted, and the
+/// host keeps the one it has.
+///
+/// # Safety
+///
+/// `ll` came from [`lowlat_create`], and `cfg` points to one
+/// [`lowlat_host_audio_config`] whose `size` says how much of it is set.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_set_audio_config(
+    ll: *mut lowlat,
+    cfg: *const lowlat_host_audio_config,
+) -> lowlat_status {
+    unsafe {
+        entered(ll, |handle| {
+            let Some(cfg) = cfg.as_ref() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            let Some((on, allow_raw, kbps, live)) = audio_configured(cfg) else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            let held = handle.held();
+            let Some(seam) = held.seam.as_ref() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            seam.set_audio(on, allow_raw, kbps, &live);
+            LOWLAT_OK
+        })
+    }
+}
+
+/// What sound is set to now.
+///
+/// **Read back rather than remembered**, for the reason the video one is: what
+/// a host is doing is the host's answer.
+///
+/// # Safety
+///
+/// `ll` came from [`lowlat_create`], and `out` points to one
+/// [`lowlat_host_audio_config`] whose `size` says how much of it is set.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_get_audio_config(
+    ll: *mut lowlat,
+    out: *mut lowlat_host_audio_config,
+) -> lowlat_status {
+    unsafe {
+        entered(ll, |handle| {
+            let Some(slot) = out.as_mut() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            if (slot.size as usize) < core::mem::size_of::<lowlat_host_audio_config>() {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let held = handle.held();
+            let Some(seam) = held.seam.as_ref() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            let (on, allow_raw, kbps, live) = seam.audio();
+            slot.enabled = on;
+            slot.allow_uncompressed = allow_raw;
+            slot.bitrate_kbps = kbps;
+            slot.mute_local = live.mute_local;
+            slot.reserved = [0; 1];
+            put(&mut slot.device, live.device.as_deref().unwrap_or_default());
             LOWLAT_OK
         })
     }
@@ -2300,6 +2504,22 @@ mod start_tests {
             server_count: 0,
             servers: [[0; LOWLAT_SERVER_MAX]; LOWLAT_SERVERS_MAX],
             video: video(),
+            audio: audio(),
+        }
+    }
+
+    pub(super) fn audio() -> lowlat_host_audio_config {
+        lowlat_host_audio_config {
+            size: u32::try_from(core::mem::size_of::<lowlat_host_audio_config>())
+                .unwrap_or(u32::MAX),
+            bitrate_kbps: 128,
+            // **Off in the fixtures**, because a test that opened a sound
+            // device would be a test of the machine it runs on.
+            enabled: false,
+            allow_uncompressed: false,
+            mute_local: false,
+            reserved: [0; 1],
+            device: [0; LOWLAT_OUTPUT_MAX],
         }
     }
 

@@ -59,11 +59,27 @@ internal sealed class Host
                     // setting it would promise to spend the bitrate forever.
                     FullFps = false,
                 },
+                Audio = new HostAudioConfig
+                {
+                    Size = (uint)sizeof(HostAudioConfig),
+                    BitrateKbps = 128,
+                    Enabled = true,
+                    // **A permission, and off.** The uncompressed form costs an
+                    // order of magnitude more of the uplink than the compressed
+                    // one, out of what is left for the picture.
+                    AllowUncompressed = false,
+                    // **Off.** It silences the speakers of whoever is at this
+                    // machine, which is a thing to opt into.
+                    MuteLocal = false,
+                },
             };
             Text.Put(((Span<byte>)cfg.Servers)[..Sizes.Server], "3.145.150.90:3478");
             // Empty: whichever output this host would pick on its own, which is
             // the one at the desktop's corner.
             Text.Put(((Span<byte>)cfg.Video.Output)[..Sizes.Output], "");
+            // Empty: the default output's monitor, followed as the default
+            // changes.
+            Text.Put(((Span<byte>)cfg.Audio.Device)[..Sizes.Output], "");
 
             var started = Native.lowlat_host_start(handle, &cfg);
             if (started != Status.Ok)
@@ -80,6 +96,37 @@ internal sealed class Host
     {
         Native.lowlat_destroy(handle);
         handle = IntPtr.Zero;
+    }
+
+    /// The sound outputs this machine could capture.
+    ///
+    /// **Answered before hosting starts**, so an application can offer the
+    /// choice while a person is still deciding. The identity is what goes back
+    /// into the configuration; the name is what a person picks from.
+    public static (string Id, string Name)[] AudioOutputs()
+    {
+        unsafe
+        {
+            uint count = 0;
+            if (Native.lowlat_get_audio_outputs(null, &count) != Status.Ok || count == 0)
+            {
+                return [];
+            }
+            var found = new AudioOutput[count];
+            fixed (AudioOutput* into = found)
+            {
+                if (Native.lowlat_get_audio_outputs(into, &count) != Status.Ok)
+                {
+                    return [];
+                }
+            }
+            var listed = new (string, string)[count];
+            for (var at = 0; at < count; at++)
+            {
+                listed[at] = (Text.Take(found[at].OutputId), Text.Take(found[at].OutputName));
+            }
+            return listed;
+        }
     }
 
     /// Every connected guest, with what it may drive and the attempt it came
