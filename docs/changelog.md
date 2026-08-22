@@ -109,6 +109,28 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   the same request as asking for a mode. Nothing reads it from the display yet,
   so a stream is declared flat until something does.
 
+- **The signaling seam at the boundary**, which is the last thing standing
+  between an application and a connected guest: register an offer, trickle
+  candidates, approve, end. Everything it carries arrived over a transport this
+  library does not have and does not want, so all of it crosses as fixed arrays
+  with nothing to free.
+
+  **Registering is not approving**, and the two costs are why: registering is
+  bookkeeping, approving opens a socket and starts this guest's threads. An
+  application that declines simply never approves. **Every refusal is its own
+  status**, in the band the partition set aside for admission, because the
+  right response differs per outcome -- a full host declines the offer, a race
+  with teardown is dropped, and neither is a crypto failure. A full host in
+  particular must *decline*: nothing in the protocol reports a host that never
+  replied, so a peer given silence sits connecting until its own deadline.
+
+  **Approval reports the port that was bound, and takes none.** The bind walks
+  when a port is taken, so the port is an answer rather than a request;
+  advertising the configured one gives a peer an address that answers checks
+  and never establishes. The credential arrays are sized by the media key,
+  which travels as 254 characters -- anything shorter truncates a key into one
+  that decrypts nothing and reports no reason.
+
 **Found by running it**
 
 - **Every guest ran the most aggressive congestion control.** The controller
