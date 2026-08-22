@@ -872,6 +872,70 @@ mod tests {
         );
     }
 
+    /// **Two servers, two answers, and both are kept.**
+    ///
+    /// This is what more than one reflexive server is for: a translator that
+    /// maps endpoint-independently reports one address to both, and a symmetric
+    /// one reports a different port to each. Keeping only the newest would
+    /// erase exactly the difference that distinguishes them, and would send the
+    /// peer one candidate where two were learned.
+    ///
+    /// Every other test here uses one server, so the whole multi-server path --
+    /// four slots, a probe per server, an answer retained per server -- ran
+    /// unexercised until this.
+    #[test]
+    fn two_servers_that_see_us_differently_both_have_their_say() {
+        let mut conn = conn();
+        let first = addr(50, 3478);
+        let second = addr(51, 3478);
+        conn.add_server(first).unwrap();
+        conn.add_server(second).unwrap();
+
+        // One probe each, not one between them.
+        let sent = drain(&mut conn, 0.0);
+        let probed = |to: SocketAddr| sent.iter().any(|(egress, _)| egress.to == to);
+        assert!(
+            probed(first) && probed(second),
+            "one probe went out where two servers were added"
+        );
+
+        // A symmetric translator gives each server a different port.
+        let seen_by_first = addr(9, 41_000);
+        let seen_by_second = addr(9, 41_001);
+        for (server, seen) in [(first, seen_by_first), (second, seen_by_second)] {
+            let (egress, buf) = sent
+                .iter()
+                .copied()
+                .find(|(egress, _)| egress.to == server)
+                .expect("a probe for this server");
+            let request = Message::parse(&buf[..egress.len]).unwrap();
+            let mut response = [0u8; 256];
+            let len =
+                stun::encode_binding_response(&mut response, request.transaction_id(), seen, "any")
+                    .unwrap();
+            assert_eq!(
+                conn.process_input(&response[..len], server).unwrap(),
+                Inbound::Reflexive(seen)
+            );
+        }
+
+        let learned = |addr: SocketAddr| conn.reflexive().any(|seen| seen == addr);
+        assert!(
+            learned(seen_by_first) && learned(seen_by_second),
+            "one server's answer overwrote the other's"
+        );
+
+        // And an answered server is not probed again, or every session would
+        // keep asking a question it already has the answer to.
+        let again = drain(&mut conn, CHECK_CADENCE_MS * 2.0);
+        assert!(
+            !again
+                .iter()
+                .any(|(egress, _)| egress.to == first || egress.to == second),
+            "a server that already answered was probed again"
+        );
+    }
+
     #[test]
     fn a_reflexive_server_teaches_us_our_own_address() {
         let mut conn = conn();

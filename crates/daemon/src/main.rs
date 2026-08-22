@@ -197,10 +197,20 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let base_port: u16 = flag("--port")
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_PORT);
-    let stun: SocketAddr = std::env::var("LOWLAT_STUN")
+    // **A list, comma separated.** One reflexive server answers what address it
+    // sees; two answering differently is how an endpoint-independent
+    // translator is told from a symmetric one, and both answers travel to the
+    // peer as candidates. The engine holds four.
+    let stun: Vec<SocketAddr> = std::env::var("LOWLAT_STUN")
         .unwrap_or_else(|_| DEFAULT_STUN.to_string())
-        .parse()
-        .map_err(|_| "LOWLAT_STUN is not an address")?;
+        .split(',')
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(|text| {
+            text.parse::<SocketAddr>()
+                .map_err(|_| "LOWLAT_STUN is not a comma-separated list of addresses")
+        })
+        .collect::<Result<_, _>>()?;
 
     let bitrate_mbps: f64 = flag("--bitrate")
         .and_then(|v| v.parse().ok())
@@ -280,7 +290,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         rumble_probe,
         base_port,
         max_guests: max_guests as usize,
-        servers: vec![stun],
+        servers: stun,
         stream: Some(lowlat::stream::Config {
             codec,
             backend,
