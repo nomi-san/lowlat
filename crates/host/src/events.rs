@@ -151,27 +151,76 @@ impl Receiver {
     }
 
     /// Take one, waiting up to `timeout` for it to arrive.
+    pub fn recv_timeout(&self, timeout: Duration) -> Option<Received> {
+        match self.wait_for(timeout, |state| state.take().map(Delivery::Took)) {
+            Delivery::Took(received) => Some(received),
+            _ => None,
+        }
+    }
+
+    /// Take one into the caller's own buffer, waiting up to `timeout`.
+    ///
+    /// **A body that does not fit is not consumed.** The length it needed is
+    /// reported and the event stays at the head, so an application running a
+    /// small buffer loses nothing by trying: it calls again with more room.
+    /// That is what a poll being a peek that commits on delivery buys, and it
+    /// is why the alternative -- publish the ceiling and make every caller
+    /// carry a megabyte of scratch -- was not taken.
+    pub fn recv_timeout_into(&self, timeout: Duration, body: &mut [u8]) -> Delivery {
+        self.wait_for(timeout, |state| {
+            let needed = weight(state.queued.front()?);
+            if needed > body.len() {
+                return Some(Delivery::TooSmall { needed });
+            }
+            let received = state.take()?;
+            if let Event::UserData { text, .. } = &received.event {
+                body.get_mut(..text.len())?.copy_from_slice(text);
+            }
+            Some(Delivery::Took(received))
+        })
+    }
+
+    /// The wait, shared by both ways of taking.
     ///
     /// Spurious wakes are permitted and the predicate is rechecked, which is
     /// also what makes the sampled arrival count correct: it is read before the
     /// queue is found empty, so a push between the two cannot be slept through.
-    pub fn recv_timeout(&self, timeout: Duration) -> Option<Received> {
+    fn wait_for(
+        &self,
+        timeout: Duration,
+        mut take: impl FnMut(&mut State) -> Option<Delivery>,
+    ) -> Delivery {
         let began = clock::Time::now();
         loop {
             // Sampled first, because a push after this point changes it and the
             // wait below then returns immediately.
             let seen = self.shared.arrivals.load(Ordering::Acquire);
-            if let Some(received) = self.try_recv() {
-                return Some(received);
+            if let Some(delivery) = take(&mut self.shared.state()) {
+                return delivery;
             }
             let waited = Duration::from_secs_f64(clock::elapsed_ms(began) / 1000.0);
-            let left = timeout.checked_sub(waited)?;
+            let Some(left) = timeout.checked_sub(waited) else {
+                return Delivery::Empty;
+            };
             if left.is_zero() {
-                return None;
+                return Delivery::Empty;
             }
             lowlat_common::wait::wait(&self.shared.arrivals, seen, left);
         }
     }
+}
+
+/// What one take produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Delivery {
+    /// Nothing arrived before the timeout.
+    Empty,
+    /// An event, its body already copied into the caller's buffer if it had
+    /// one.
+    Took(Received),
+    /// The head carries more than the buffer offered. **Nothing was
+    /// consumed**, so calling again with this much room delivers it.
+    TooSmall { needed: usize },
 }
 
 /// One queue, as the two ends of it.
@@ -364,6 +413,97 @@ mod tests {
         assert!(matches!(
             receiver.try_recv().map(|taken| taken.event),
             Some(Event::Established { .. })
+        ));
+    }
+}
+
+#[cfg(test)]
+mod delivery_tests {
+    use super::*;
+
+    fn user_data(bytes: usize) -> Event {
+        Event::UserData {
+            guest: 3,
+            id: 11,
+            text: vec![b'z'; bytes],
+        }
+    }
+
+    /// The body lands in the caller's buffer and nothing is allocated for it.
+    #[test]
+    fn a_body_is_copied_into_the_callers_buffer() {
+        let (sender, receiver) = queue();
+        sender.send(user_data(5));
+
+        let mut buffer = [0u8; 64];
+        let delivery = receiver.recv_timeout_into(Duration::ZERO, &mut buffer);
+        let Delivery::Took(taken) = delivery else {
+            panic!("expected a delivery, got {delivery:?}");
+        };
+        assert!(matches!(
+            taken.event,
+            Event::UserData {
+                guest: 3,
+                id: 11,
+                ..
+            }
+        ));
+        assert_eq!(&buffer[..5], b"zzzzz");
+    }
+
+    /// **Too small does not consume it.** The message survives a caller that
+    /// guessed its buffer size wrong, which is the whole reason a poll peeks
+    /// before it commits.
+    #[test]
+    fn a_body_that_does_not_fit_is_left_where_it_was() {
+        let (sender, receiver) = queue();
+        sender.send(user_data(100));
+
+        let mut small = [0u8; 8];
+        assert_eq!(
+            receiver.recv_timeout_into(Duration::ZERO, &mut small),
+            Delivery::TooSmall { needed: 100 },
+            "a body that did not fit should say how much room it wanted"
+        );
+
+        // And it is still there, undamaged, for a caller that brought more.
+        let mut room = [0u8; 128];
+        let Delivery::Took(taken) = receiver.recv_timeout_into(Duration::ZERO, &mut room) else {
+            panic!("the message was consumed by the attempt that could not take it");
+        };
+        assert_eq!(taken.dropped, 0);
+        assert_eq!(&room[..100], &[b'z'; 100]);
+    }
+
+    /// An event with no body needs no room at all, so a caller that never
+    /// expects one can offer nothing.
+    #[test]
+    fn an_event_without_a_body_needs_no_buffer() {
+        let (sender, receiver) = queue();
+        sender.send(Event::Ready {
+            attempt: "a".to_string(),
+        });
+        assert!(matches!(
+            receiver.recv_timeout_into(Duration::ZERO, &mut []),
+            Delivery::Took(_)
+        ));
+    }
+
+    /// An empty queue reports empty rather than a zero-length body, which a
+    /// caller would otherwise read as a message that said nothing.
+    #[test]
+    fn an_empty_queue_is_told_apart_from_an_empty_body() {
+        let (sender, receiver) = queue();
+        let mut buffer = [0u8; 16];
+        assert_eq!(
+            receiver.recv_timeout_into(Duration::ZERO, &mut buffer),
+            Delivery::Empty
+        );
+
+        sender.send(user_data(0));
+        assert!(matches!(
+            receiver.recv_timeout_into(Duration::ZERO, &mut buffer),
+            Delivery::Took(_)
         ));
     }
 }

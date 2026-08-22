@@ -289,9 +289,11 @@ fn the_header_declares_no_name_without_the_prefix() {
         declared.len() >= 6,
         "only found {declared:?} in the header, so this check cannot have proven anything"
     );
+    // The handle's own type is the bare project name, which owns the
+    // namespace just as surely as the prefixed names do.
     let stray: Vec<&&str> = declared
         .iter()
-        .filter(|name| !name.starts_with("lowlat_") && !name.starts_with("LOWLAT_"))
+        .filter(|name| !name.starts_with("lowlat") && !name.starts_with("LOWLAT"))
         .collect();
     assert!(
         stray.is_empty(),
