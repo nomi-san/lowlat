@@ -37,6 +37,18 @@ pub struct Selectable {
     pub place: Option<Placement>,
 }
 
+/// What a pre-flight found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Capturable {
+    /// A display is lit and its framebuffer can be reached.
+    Yes,
+    /// Nothing is lit: no display, or no session driving one.
+    NothingLit,
+    /// Something is lit and its framebuffer cannot be reached, which is the
+    /// privilege rather than the hardware.
+    NotReachable,
+}
+
 /// Which of these outputs a published capture checksum names.
 ///
 /// **The checksum is how the loop says what it is capturing without a lock**
@@ -363,6 +375,55 @@ impl Display {
             }
         }
         found
+    }
+
+    /// Whether this machine could capture right now, and if not, which half is
+    /// missing.
+    ///
+    /// **Two failures that look identical from outside, told apart.** Nothing
+    /// lit means there is no display to capture -- a headless machine, or one
+    /// whose session has not started. A display that is lit but whose
+    /// framebuffer cannot be read means the process lacks what reaching it
+    /// takes, which on this platform is the elevated capability: the plane is
+    /// there, the buffer handles are not, and every later stage fails with the
+    /// same message as an empty desktop.
+    ///
+    /// **A read, and nothing more.** No device is opened for encode, no thread
+    /// starts, and nothing is left behind.
+    pub fn capturable() -> Capturable {
+        let mut lit = false;
+        for index in 0..NODES {
+            let node = std::path::PathBuf::from(format!("/dev/dri/card{index}"));
+            if !node.exists() {
+                continue;
+            }
+            let Ok(card) = Card::open(&node) else {
+                continue;
+            };
+            if card.outputs().unwrap_or_default().is_empty() {
+                continue;
+            }
+            lit = true;
+            // **Not merely that a plane is lit.** Enumerating a connector and
+            // finding its framebuffer both work without the capability; what
+            // does not is getting the buffer handles back out of it, and a
+            // framebuffer with none is what every later stage fails on. So the
+            // probe reads the handles, which is the same step capture takes.
+            let Ok(layout) = card.scan() else {
+                continue;
+            };
+            let Ok(frame) = card.framebuffer_on(layout.primary_plane) else {
+                continue;
+            };
+            if frame.planes().next().is_some() {
+                return Capturable::Yes;
+            }
+        }
+        if lit {
+            Capturable::NotReachable
+        } else {
+            Capturable::NothingLit
+        }
     }
 
     /// What is being captured, by the same name [`Display::outputs`] gives.

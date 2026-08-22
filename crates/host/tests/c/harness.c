@@ -65,6 +65,8 @@ int main(int argc, char **argv)
     lowlat_status (*send_user_data)(lowlat *, uint32_t, uint32_t, const void *, uint32_t);
     lowlat_status (*set_permissions)(lowlat *, uint32_t, const lowlat_permissions *);
     lowlat_status (*kick_guest)(lowlat *, uint32_t, int32_t);
+    lowlat_status (*can_host)(void);
+    lowlat_status (*get_outputs)(lowlat_output *, uint32_t *);
 
     RESOLVE(abi_version, lib, "lowlat_abi_version");
     RESOLVE(status_string, lib, "lowlat_status_string");
@@ -84,6 +86,8 @@ int main(int argc, char **argv)
     RESOLVE(send_user_data, lib, "lowlat_host_send_user_data");
     RESOLVE(set_permissions, lib, "lowlat_host_set_permissions");
     RESOLVE(kick_guest, lib, "lowlat_host_kick_guest");
+    RESOLVE(can_host, lib, "lowlat_can_host");
+    RESOLVE(get_outputs, lib, "lowlat_get_outputs");
 
     uint32_t version = abi_version();
     if ((version >> 16) != LOWLAT_ABI_MAJOR || (version & 0xffff) != LOWLAT_ABI_MINOR) {
@@ -91,6 +95,30 @@ int main(int argc, char **argv)
                 version >> 16, version & 0xffff,
                 (unsigned) LOWLAT_ABI_MAJOR, (unsigned) LOWLAT_ABI_MINOR);
         return 1;
+    }
+
+    /* Both of these answer before anything is created, which is the point of
+     * them: an application presents a choice, or explains why it cannot. */
+    lowlat_status host_able = can_host();
+    if (host_able != LOWLAT_OK && host_able != LOWLAT_ERR_NO_DISPLAY
+        && host_able != LOWLAT_ERR_DISPLAY_UNREACHABLE) {
+        fprintf(stderr, "harness: the pre-flight answered %d (%s)\n",
+                (int) host_able, status_string(host_able));
+        return 1;
+    }
+    uint32_t outputs = 0;
+    if (get_outputs(NULL, &outputs) != LOWLAT_OK) {
+        fprintf(stderr, "harness: the outputs could not be counted\n");
+        return 1;
+    }
+    if (outputs > 0) {
+        lowlat_output listed[8];
+        uint32_t room = outputs < 8 ? outputs : 8;
+        lowlat_status got = get_outputs(listed, &room);
+        if ((got != LOWLAT_OK && got != LOWLAT_ERR_TOO_SMALL) || listed[0].id[0] == '\0') {
+            fprintf(stderr, "harness: an output was listed with no identity\n");
+            return 1;
+        }
     }
 
     lowlat_create_info info;

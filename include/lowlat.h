@@ -124,6 +124,12 @@ enum lowlat_status
     LOWLAT_ERR_CRYPTO = -105,
     // No guest with that number is connected.
     LOWLAT_ERR_UNKNOWN_GUEST = -106,
+    // Nothing is lit. There is no display to capture: a headless machine, or
+    // one whose session has not started.
+    LOWLAT_ERR_NO_DISPLAY = -200,
+    // A display is lit and its framebuffer cannot be reached, which is what
+    // this process is allowed to do rather than what the machine has.
+    LOWLAT_ERR_DISPLAY_UNREACHABLE = -201,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -472,6 +478,23 @@ typedef struct lowlat_guest {
     uint8_t reserved[3];
 } lowlat_guest;
 
+// One output this host could be asked to capture.
+typedef struct lowlat_output {
+    // What to ask for, and what a capture-changed event reports. **Stable
+    // across a mode change**, which is why it is not the size.
+    char id[LOWLAT_OUTPUT_MAX];
+    // The connector's own name, which is what the session knows it by and
+    // what a person recognises.
+    char name[LOWLAT_OUTPUT_MAX];
+    uint32_t width;
+    uint32_t height;
+    // Where it sits in the desktop around it, which is the space absolute
+    // input is expressed against. Zero when no session said, which is also
+    // the corner: with one output the two are the same answer.
+    uint32_t x;
+    uint32_t y;
+} lowlat_output;
+
 // A local candidate for the application to forward.
 typedef struct lowlat_candidate_event {
     char attempt[LOWLAT_ATTEMPT_MAX];
@@ -761,6 +784,30 @@ lowlat_status lowlat_host_kick_guest(struct lowlat *ll,
 lowlat_status lowlat_host_set_permissions(struct lowlat *ll,
                                           uint32_t guest_id,
                                           const struct lowlat_permissions *perms);
+
+// List the outputs this host could capture.
+//
+// **Available before hosting starts**, so an application can present a choice
+// before committing to one. Two calls and the caller's own buffer, like the
+// roster: pass `NULL` to learn the count.
+//
+// # Safety
+//
+// `count` must be readable and writable, and `out`, when not null, must point
+// to at least `*count` elements.
+lowlat_status lowlat_get_outputs(struct lowlat_output *out, uint32_t *count);
+
+// Whether this machine could host right now.
+//
+// **A pre-flight, and the reason it exists is that the two ways of failing
+// look identical afterwards.** Starting a host that cannot capture fails deep
+// in the stream loop, where an application can tell "there is no display"
+// from "this process may not read one" only by reading a log. This answers
+// which, before anything is started.
+//
+// [`LOWLAT_OK`] means a display is lit and its framebuffer can be reached.
+// It is a read: no encoder is built and no thread is started.
+lowlat_status lowlat_can_host(void);
 
 // Change the video settings while the host runs.
 //

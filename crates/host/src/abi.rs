@@ -79,6 +79,13 @@ pub enum lowlat_status {
     LOWLAT_ERR_CRYPTO = -105,
     /// No guest with that number is connected.
     LOWLAT_ERR_UNKNOWN_GUEST = -106,
+
+    /// Nothing is lit. There is no display to capture: a headless machine, or
+    /// one whose session has not started.
+    LOWLAT_ERR_NO_DISPLAY = -200,
+    /// A display is lit and its framebuffer cannot be reached, which is what
+    /// this process is allowed to do rather than what the machine has.
+    LOWLAT_ERR_DISPLAY_UNREACHABLE = -201,
 }
 
 /// The major version, raised only when something already published changes.
@@ -99,7 +106,7 @@ pub extern "C" fn lowlat_abi_version() -> u32 {
 ///
 /// A table rather than a match, because the value arriving is an integer and
 /// not necessarily one of these.
-const DESCRIPTIONS: [(lowlat_status, &CStr); 15] = [
+const DESCRIPTIONS: [(lowlat_status, &CStr); 17] = [
     (LOWLAT_OK, c"ok"),
     (LOWLAT_TIMEOUT, c"no event within the timeout"),
     (
@@ -130,6 +137,11 @@ const DESCRIPTIONS: [(lowlat_status, &CStr); 15] = [
     (LOWLAT_ERR_IO, c"a socket or thread could not be created"),
     (LOWLAT_ERR_CRYPTO, c"credentials could not be produced"),
     (LOWLAT_ERR_UNKNOWN_GUEST, c"no guest with that number"),
+    (LOWLAT_ERR_NO_DISPLAY, c"nothing is lit"),
+    (
+        LOWLAT_ERR_DISPLAY_UNREACHABLE,
+        c"a display is lit and its framebuffer cannot be reached",
+    ),
 ];
 
 /// Describe a status.
@@ -1252,6 +1264,104 @@ pub unsafe extern "C" fn lowlat_host_set_permissions(
     }
 }
 
+/// One output this host could be asked to capture.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_output {
+    /// What to ask for, and what a capture-changed event reports. **Stable
+    /// across a mode change**, which is why it is not the size.
+    pub id: [c_char; LOWLAT_OUTPUT_MAX],
+    /// The connector's own name, which is what the session knows it by and
+    /// what a person recognises.
+    pub name: [c_char; LOWLAT_OUTPUT_MAX],
+    pub width: u32,
+    pub height: u32,
+    /// Where it sits in the desktop around it, which is the space absolute
+    /// input is expressed against. Zero when no session said, which is also
+    /// the corner: with one output the two are the same answer.
+    pub x: u32,
+    pub y: u32,
+}
+
+/// List the outputs this host could capture.
+///
+/// **Available before hosting starts**, so an application can present a choice
+/// before committing to one. Two calls and the caller's own buffer, like the
+/// roster: pass `NULL` to learn the count.
+///
+/// # Safety
+///
+/// `count` must be readable and writable, and `out`, when not null, must point
+/// to at least `*count` elements.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_get_outputs(
+    out: *mut lowlat_output,
+    count: *mut u32,
+) -> lowlat_status {
+    guard(LOWLAT_ERR_INTERNAL, || {
+        if count.is_null() {
+            return LOWLAT_ERR_INVALID_ARGUMENT;
+        }
+        let listed = crate::display::Display::outputs();
+        let found = u32::try_from(listed.len()).unwrap_or(u32::MAX);
+        if out.is_null() {
+            unsafe { count.write(found) };
+            return LOWLAT_OK;
+        }
+        let room = unsafe { count.read() } as usize;
+        let writing = listed.len().min(room);
+        for (at, output) in listed.iter().take(writing).enumerate() {
+            let mut slot = lowlat_output {
+                id: [0; LOWLAT_OUTPUT_MAX],
+                name: [0; LOWLAT_OUTPUT_MAX],
+                width: output.width,
+                height: output.height,
+                x: 0,
+                y: 0,
+            };
+            put(&mut slot.id, &output.id);
+            put(&mut slot.name, &output.connector);
+            if let Some(place) = output.place {
+                slot.x = place.x;
+                slot.y = place.y;
+            }
+            unsafe { out.add(at).write(slot) };
+        }
+        if writing < listed.len() {
+            unsafe { count.write(found) };
+            return LOWLAT_ERR_TOO_SMALL;
+        }
+        unsafe { count.write(u32::try_from(writing).unwrap_or(u32::MAX)) };
+        LOWLAT_OK
+    })
+}
+
+/// Whether this machine could host right now.
+///
+/// **A pre-flight, and the reason it exists is that the two ways of failing
+/// look identical afterwards.** Starting a host that cannot capture fails deep
+/// in the stream loop, where an application can tell "there is no display"
+/// from "this process may not read one" only by reading a log. This answers
+/// which, before anything is started.
+///
+/// [`LOWLAT_OK`] means a display is lit and its framebuffer can be reached.
+/// It is a read: no encoder is built and no thread is started.
+#[unsafe(no_mangle)]
+pub extern "C" fn lowlat_can_host() -> lowlat_status {
+    guard(LOWLAT_ERR_INTERNAL, || {
+        status_of(crate::display::Display::capturable())
+    })
+}
+
+/// What each answer means at the boundary.
+fn status_of(found: crate::display::Capturable) -> lowlat_status {
+    match found {
+        crate::display::Capturable::Yes => LOWLAT_OK,
+        crate::display::Capturable::NothingLit => LOWLAT_ERR_NO_DISPLAY,
+        crate::display::Capturable::NotReachable => LOWLAT_ERR_DISPLAY_UNREACHABLE,
+    }
+}
+
 /// Change the video settings while the host runs.
 ///
 /// **Everything in this structure is applied without rebuilding the session.**
@@ -1711,6 +1821,8 @@ mod tests {
             LOWLAT_ERR_IO,
             LOWLAT_ERR_CRYPTO,
             LOWLAT_ERR_UNKNOWN_GUEST,
+            LOWLAT_ERR_NO_DISPLAY,
+            LOWLAT_ERR_DISPLAY_UNREACHABLE,
         ] {
             let text = lowlat_status_string(status as i32);
             assert!(!text.is_null());
@@ -2443,5 +2555,39 @@ mod guest_tests {
             LOWLAT_OK
         );
         unsafe { lowlat_destroy(handle) };
+    }
+}
+
+#[cfg(test)]
+mod preflight_tests {
+    use super::*;
+    use crate::display::Capturable;
+
+    /// **Each way of not being able to capture keeps its own status.** The two
+    /// are indistinguishable once hosting has failed, which is the whole
+    /// reason for asking beforehand: measured on a real display, an
+    /// unprivileged process in the `video` group enumerates the output and
+    /// reads its framebuffer and still gets no buffer handles, while the same
+    /// binary as root gets them.
+    #[test]
+    fn every_answer_the_preflight_can_give_has_its_own_status() {
+        for (found, expected) in [
+            (Capturable::Yes, LOWLAT_OK),
+            (Capturable::NothingLit, LOWLAT_ERR_NO_DISPLAY),
+            (Capturable::NotReachable, LOWLAT_ERR_DISPLAY_UNREACHABLE),
+        ] {
+            assert_eq!(status_of(found), expected);
+        }
+        // And the live answer is one of them rather than something else.
+        let answer = lowlat_can_host();
+        assert!(
+            [
+                LOWLAT_OK,
+                LOWLAT_ERR_NO_DISPLAY,
+                LOWLAT_ERR_DISPLAY_UNREACHABLE
+            ]
+            .contains(&answer),
+            "the pre-flight answered {answer:?}"
+        );
     }
 }
