@@ -7,7 +7,9 @@
 #   LOWLAT_BLESS_HEADER=1 cargo test -p lowlat-host --test abi
 
 language = "C"
-include_guard = "LOWLAT_H"
+# One line that every compiler in use understands, instead of a macro name an
+# application can collide with.
+pragma_once = true
 # One header that compiles as C and as C++, which is the gate. Without this the
 # C++ translation unit mangles every name and links against nothing.
 cpp_compat = true

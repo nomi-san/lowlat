@@ -3,8 +3,7 @@
  * Generated from the Rust definitions. Do not edit; see crates/host/cbindgen.toml.
  */
 
-#ifndef LOWLAT_H
-#define LOWLAT_H
+#pragma once
 
 #include <stdint.h>
 
@@ -306,5 +305,3 @@ lowlat_status lowlat_debug_panic(struct lowlat *ll);
 #ifdef __cplusplus
 }  // extern "C"
 #endif  // __cplusplus
-
-#endif  /* LOWLAT_H */

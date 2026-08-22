@@ -7,3 +7,8 @@
  */
 
 #include "lowlat.h"
+
+/* Twice on purpose. Including a header a second time is the only thing a guard
+ * has to survive, and this one uses `#pragma once` rather than a macro name an
+ * application could collide with. */
+#include "lowlat.h"
