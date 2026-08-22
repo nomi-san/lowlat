@@ -76,6 +76,7 @@ int main(int argc, char **argv)
     void (*end_connection)(lowlat *, const char *);
     lowlat_status (*get_guests)(lowlat *, lowlat_guest *, uint32_t *);
     lowlat_status (*send_user_data)(lowlat *, uint32_t, uint32_t, const void *, uint32_t);
+    lowlat_status (*send_roster)(lowlat *, const void *, uint32_t, uint32_t *);
     lowlat_status (*set_permissions)(lowlat *, uint32_t, const lowlat_permissions *);
     lowlat_status (*kick_guest)(lowlat *, uint32_t, int32_t);
     lowlat_status (*can_host)(void);
@@ -99,6 +100,7 @@ int main(int argc, char **argv)
     RESOLVE(end_connection, lib, "lowlat_host_end_connection");
     RESOLVE(get_guests, lib, "lowlat_host_get_guests");
     RESOLVE(send_user_data, lib, "lowlat_host_send_user_data");
+    RESOLVE(send_roster, lib, "lowlat_host_send_roster");
     RESOLVE(set_permissions, lib, "lowlat_host_set_permissions");
     RESOLVE(kick_guest, lib, "lowlat_host_kick_guest");
     RESOLVE(can_host, lib, "lowlat_can_host");
@@ -338,6 +340,15 @@ int main(int argc, char **argv)
     if (get_status(ll, &state) != LOWLAT_OK || !state.running || state.guests != 1) {
         fprintf(stderr, "harness: the host reports running=%u guests=%u\n",
                 (unsigned) state.running, state.guests);
+        return 1;
+    }
+
+    /* The roster, which is what tells a guest what it is: a peer has no way to
+     * ask for one and finds itself in the list by number. */
+    const char *who = "[{\"id\":1}]";
+    uint32_t reached = 0;
+    if (send_roster(ll, who, (uint32_t) strlen(who), &reached) != LOWLAT_OK || reached != 1) {
+        fprintf(stderr, "harness: the roster reached %u guest(s)\n", reached);
         return 1;
     }
 

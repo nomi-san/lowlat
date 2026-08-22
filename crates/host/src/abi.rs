@@ -1547,6 +1547,59 @@ pub unsafe extern "C" fn lowlat_host_get_status(
     }
 }
 
+/// Tell every guest who is in the room.
+///
+/// **A different message from an application message, and not a variant of
+/// one.** It travels on its own opcode, it is addressed to everybody rather
+/// than to a guest, and each peer finds *itself* in the list by number and
+/// takes that entry as what it is allowed to do. A peer has no way to ask for
+/// it, so one that is never sent one does not know what it is.
+///
+/// **The body's shape belongs to the clients an application serves**, exactly
+/// as an application message's does; nothing here reads it.
+///
+/// Answers how many guests it reached, which is zero for an empty room and not
+/// an error.
+///
+/// # Safety
+///
+/// `data` must point to at least `len` bytes when `len` is not zero. It is
+/// copied before the call returns and never retained.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_send_roster(
+    ll: *mut lowlat,
+    data: *const c_void,
+    len: u32,
+    reached: *mut u32,
+) -> lowlat_status {
+    unsafe {
+        entered(ll, |handle| {
+            if data.is_null() && len != 0 {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let body: &[u8] = if len == 0 {
+                &[]
+            } else {
+                core::slice::from_raw_parts(data.cast::<u8>(), len as usize)
+            };
+            if lowlat_core::control::string_body_len(body.len())
+                > lowlat_core::control::USER_DATA_MAX
+            {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let mut held = handle.held();
+            let Some(seam) = held.seam.as_mut() else {
+                return LOWLAT_ERR_NOT_STARTED;
+            };
+            let sent = seam.send_roster(body);
+            if let Some(slot) = reached.as_mut() {
+                *slot = u32::try_from(sent).unwrap_or(u32::MAX);
+            }
+            LOWLAT_OK
+        })
+    }
+}
+
 /// Change the video settings while the host runs.
 ///
 /// **Everything in this structure is applied without rebuilding the session.**
@@ -2619,6 +2672,63 @@ mod roster_tests {
         );
         assert_eq!(count, 2, "it did not say how many there really were");
         assert_ne!(room[0].number, 0, "the room it had was left unfilled");
+
+        unsafe { lowlat_destroy(handle) };
+    }
+
+    /// **The roster reaches everybody and is not a message.** A peer has no way
+    /// to ask for one, and it finds itself in the list by number; a host that
+    /// never sends one leaves every guest not knowing what it is.
+    #[test]
+    fn a_roster_reaches_every_guest_and_an_empty_room_is_not_a_failure() {
+        let handle = started();
+        let body = br#"[{"id":1}]"#;
+
+        // Nobody seated: reaching zero guests is what an empty room means.
+        let mut reached = u32::MAX;
+        assert_eq!(
+            unsafe {
+                lowlat_host_send_roster(
+                    handle,
+                    body.as_ptr().cast(),
+                    u32::try_from(body.len()).unwrap_or(0),
+                    &raw mut reached,
+                )
+            },
+            LOWLAT_OK
+        );
+        assert_eq!(reached, 0);
+
+        approved(handle, "a");
+        approved(handle, "b");
+        let mut reached = 0u32;
+        assert_eq!(
+            unsafe {
+                lowlat_host_send_roster(
+                    handle,
+                    body.as_ptr().cast(),
+                    u32::try_from(body.len()).unwrap_or(0),
+                    &raw mut reached,
+                )
+            },
+            LOWLAT_OK
+        );
+        assert_eq!(reached, 2, "the roster did not reach both guests");
+
+        // Past what a peer accepts, refused here rather than at a far end that
+        // says nothing about why it vanished.
+        let huge = vec![b'x'; lowlat_core::control::USER_DATA_MAX];
+        assert_eq!(
+            unsafe {
+                lowlat_host_send_roster(
+                    handle,
+                    huge.as_ptr().cast(),
+                    u32::try_from(huge.len()).unwrap_or(u32::MAX),
+                    core::ptr::null_mut(),
+                )
+            },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
 
         unsafe { lowlat_destroy(handle) };
     }

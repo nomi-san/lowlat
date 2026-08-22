@@ -887,6 +887,29 @@ lowlat_status lowlat_can_host(void);
 // is set.
 lowlat_status lowlat_host_get_status(struct lowlat *ll, struct lowlat_host_status *out);
 
+// Tell every guest who is in the room.
+//
+// **A different message from an application message, and not a variant of
+// one.** It travels on its own opcode, it is addressed to everybody rather
+// than to a guest, and each peer finds *itself* in the list by number and
+// takes that entry as what it is allowed to do. A peer has no way to ask for
+// it, so one that is never sent one does not know what it is.
+//
+// **The body's shape belongs to the clients an application serves**, exactly
+// as an application message's does; nothing here reads it.
+//
+// Answers how many guests it reached, which is zero for an empty room and not
+// an error.
+//
+// # Safety
+//
+// `data` must point to at least `len` bytes when `len` is not zero. It is
+// copied before the call returns and never retained.
+lowlat_status lowlat_host_send_roster(struct lowlat *ll,
+                                      const void *data,
+                                      uint32_t len,
+                                      uint32_t *reached);
+
 // Change the video settings while the host runs.
 //
 // **Everything in this structure is applied without rebuilding the session.**
