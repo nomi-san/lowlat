@@ -88,7 +88,43 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   queue outlives the seam, because what was raised on the way down is still
   worth polling.
 
+- **A configuration split into what is settled and what changes.** Frame rate,
+  bitrate, its floor, the full-rate permission and the output can all be
+  changed while a host runs; the codec, the encoder, the congestion level, the
+  ports and the guest limit are settled when it starts. They are separate
+  structures rather than one with a comment, so an application cannot ask for
+  something whose answer is "not while this is running". The live half is
+  applied without rebuilding anything: a bitrate re-bases the budget and
+  reaches the encoder through the reconfigure the rate loop already performs,
+  and a frame rate changes the pacing from the next frame. The output is the
+  exception in cost rather than in kind, rebuilding around the new source for
+  one coded refresh.
+
+  **The floor moves down with the ceiling.** A ceiling lowered under a floor
+  that stayed leaves every controller pinned at a rate the operator has just
+  asked not to exceed, which reads as a bitrate setting that does nothing.
+
+  **Rotation left the configuration with the resolution.** A display decides
+  its own orientation exactly as it decides its own size, so asking for one is
+  the same request as asking for a mode. Nothing reads it from the display yet,
+  so a stream is declared flat until something does.
+
 **Found by running it**
+
+- **Every guest ran the most aggressive congestion control.** The controller
+  built for each guest was pinned at level zero, which the level table names as
+  compatibility-only and explicitly not the default -- its threshold declares
+  congestion on any stale fragment once the send window passes its floor, so
+  the bitrate was cut more eagerly than any measurement intended. Found while
+  deciding whether the level was worth making configurable; it turned out to be
+  worth fixing.
+
+- **A check that watched the wrong side of the change.** The live settings were
+  read back through the same cell the setter had just written, so pinning the
+  counter the loop reads -- making it blind to every change -- passed the entire
+  suite. The decision is now a function of its own with a test that fails both
+  ways: once when a change would not be seen, once when it would be applied
+  again on every pass.
 
 - **A poll with nothing to poll must still cost the time it was given.** With
   no queue yet -- an application starts its polling thread before it starts
