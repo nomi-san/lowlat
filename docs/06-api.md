@@ -9,19 +9,26 @@ compilers, runtimes, and toolchain versions.
 
 ## §1 Shape
 
-Five rules, each of which removes a class of integration failure.
+Six rules, each of which removes a class of integration failure.
 
 1. **Opaque handles.** The application holds a pointer it cannot dereference. Internal layout
    changes freely.
 2. **Plain data structs with a leading `size` field.** The caller sets it. We read it and
    behave according to what the caller knows about, so a struct can grow without breaking
-   binaries compiled against an older header.
-3. **Stable-numbered enums.** Values are assigned once and never reused, never renumbered, and
-   never reordered. New variants append.
-4. **Poll based, not callback based.** The application asks for events on its own thread at its
+   binaries compiled against an older header. It is also what makes a translation unit that
+   disagrees with the library about a structure's size fail to start rather than misread every
+   field after the first.
+3. **Stable-numbered enums, and never a parameter.** Values are assigned once and never
+   reused, never renumbered, and never reordered; new variants append. A code travels **outward**
+   as its enumeration and **inward** as a plain integer, because a value the application wrote
+   is whatever the application wrote, and reading one nothing defined is undefined behaviour.
+   Every such field is checked at the boundary rather than converted.
+4. **A boolean field is a `bool`.** One byte on every target this builds for, asserted at
+   compile time by the header's own test, and C normalizes anything assigned to one.
+5. **Poll based, not callback based.** The application asks for events on its own thread at its
    own cadence. No callback fires from inside our threads, so there is no reentrancy contract
    and no lock the application can deadlock against.
-5. **Prefixed symbols.** Every exported name begins `lowlat_`. This is checked mechanically
+6. **Prefixed symbols.** Every exported name begins `lowlat_`. This is checked mechanically
    against the symbol table ([impl-plan §Phase 8](impl-plan.md)).
 
 The **call shape follows the established host SDK** ([00-overview.md](00-overview.md) D6), so
@@ -45,7 +52,7 @@ joins every thread, and returns only when all of it has happened.
 `lowlat_abi_version` lets a loader verify the library matches the header it was built against
 before calling anything else. It is the one function whose signature can never change.
 
-The log callback is the single exception to rule 4. It is cold, it fires on whichever thread
+The log callback is the single exception to rule 5. It is cold, it fires on whichever thread
 logged, and it must not call back into the API.
 
 ## §3 Host
@@ -54,7 +61,9 @@ logged, and it must not call back into the API.
 lowlat_status lowlat_host_start(lowlat *ll, const lowlat_host_config *cfg);
 lowlat_status lowlat_host_stop(lowlat *ll);
 lowlat_status lowlat_host_get_status(lowlat *ll, lowlat_host_status *out);
-lowlat_status lowlat_host_set_config(lowlat *ll, const lowlat_host_config *cfg);
+
+lowlat_status lowlat_host_set_video_config(lowlat *ll, const lowlat_host_video_config *cfg);
+lowlat_status lowlat_host_get_video_config(lowlat *ll, lowlat_host_video_config *out);
 
 uint32_t      lowlat_host_get_guests(lowlat *ll, lowlat_guest *out, uint32_t *count);
 lowlat_status lowlat_host_kick_guest(lowlat *ll, uint32_t guest_id, int32_t reason);
@@ -82,9 +91,41 @@ the way out, which belongs to the protocol's own numbering rather than to this A
 ([01 §11.2](01-protocol.md)); the two spaces share a width and nothing else. Zero is not a
 value to pass: a peer carries on through it.
 
-`lowlat_host_set_config` applies live. Bitrate, frame rate, congestion mode, and guest limit
-change without restarting the session. Changing the capture source or codec restarts the
-video pipeline but not the sessions.
+### The two halves of a configuration
+
+**A setting is either settled when hosting starts or changeable while it runs, and which one it
+is follows from what changing it costs.** They are separate structures rather than one struct
+with a comment, so an application cannot ask for something the answer to which is "not while
+this is running".
+
+`lowlat_host_video_config` is the live half, and `lowlat_host_start` takes it nested inside the
+whole:
+
+| Field | Live | Why |
+|---|---|---|
+| `fps` | yes | A **ceiling** over the display's own rate, not a target. Changes the pacing from the next frame. |
+| `bitrate_mbps` | yes | Re-bases the rate budget and reaches the encoder through the reconfigure the rate loop already performs every pass. No keyframe, no interruption ([00 §D8](00-overview.md)). |
+| `min_bitrate_mbps` | yes | The floor congestion control may not descend below, and it **moves down with the ceiling**: a ceiling lowered under a floor that stayed leaves every controller pinned at a rate the operator just asked not to exceed. |
+| `full_fps` | yes | Emit at `fps` even when the picture has not changed. **Clearing it is a permission, not an instruction** -- there is no damage signal here, so nothing yet skips a repeated picture, and continuing to send costs bitrate rather than being wrong. |
+| `output` | yes | The exception in cost rather than in kind: a picture from another output cannot be absorbed into a stream built for one, so it rebuilds around the new source for **one coded refresh** and every guest keeps its seat and its channel. |
+
+Everything in `lowlat_host_config` outside that structure is settled at `lowlat_host_start`:
+
+| Field | Why not live |
+|---|---|
+| `codec` | One encode serves every seat and a session has one video configuration ([00 §D11](00-overview.md)). |
+| `encoder` | A consequence of where the display is rather than a preference, and changing it rebuilds the pipeline. Absent means **follow the display**, which is the right default; choosing one is an override. |
+| `cg_level` | Every guest's controller is built with it. **Zero is the most aggressive, not "off"**: its threshold declares congestion on any stale fragment once the send window passes its floor, and it exists only for compatibility with an older scheme. |
+| `base_port`, `servers` | Bound and consulted per attempt; moving them under running guests moves nothing that is already connected. |
+| `max_guests` | Advertised capacity, read when a guest asks for a seat. |
+| `exclusive_pointer`, `exclusive_hold_ms` | The pointer arbiter is built once with them. The hold is **clamped rather than refused**: it is a comfort setting, and the nearest usable value beats a host that will not start.
+
+Starting a host that is already running is refused rather than quietly reconfiguring, because a
+second configuration that looks accepted and is not is a host running settings nobody can see.
+
+**What is being captured is read back, never remembered.** `lowlat_host_get_video_config`
+reports the output the loop is actually on, which a guest may have switched and a display may
+have moved by itself; an application that kept its own copy would mark the wrong screen.
 
 ## §4 Signaling seam
 
@@ -296,12 +337,18 @@ and struct blittability at once. It is the Phase 8 gate.
 **Ours by design:** all of it. The API shape follows an established convention, but no part of
 this document is constrained by wire compatibility. It changes only for our reasons.
 
-**Settled 2026-08-21, and the shape it took:** no resolution, an `output` identity, `fps` as a
-ceiling, codec and encoder and rotation named by enumerations but **carried as plain integers**,
-because the application writes those fields and reading one back as a variant would be reading
-whatever it wrote. Every one of them is checked at the boundary rather than converted. Reflexive
-servers are a fixed array with a count rather than a pointer and a length, so the structure stays
-one blittable block with nothing in it to free.
+**Settled 2026-08-21, and the shape it took:** no resolution and no rotation, an `output`
+identity, `fps` as a ceiling, and a split between what is settled at start and what changes
+while the host runs (§3). Codec, encoder and congestion level are named by enumerations but
+**carried as plain integers**, because the application writes those fields and reading one back
+as a variant would be reading whatever it wrote; every one is checked at the boundary rather
+than converted. Reflexive servers are a fixed array with a count rather than a pointer and a
+length, so the structure stays one blittable block with nothing in it to free.
+
+**Rotation is followed, not configured.** A display decides its own orientation exactly as it
+decides its own size, so asking for one is the same request as asking for a mode. Nothing here
+reads it from the display yet, so a stream is declared flat until something does; that is a gap
+rather than a decision, and it is the one thing removing the field cost.
 
 **Was open until Phase 8:** the concrete `lowlat_host_config` field set, which depends on the
 capture backend decision in [07-platforms.md](07-platforms.md), and the status code range
