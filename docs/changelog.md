@@ -183,6 +183,21 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   something C cannot read to the end of. The level decides what is **formatted**
   and not only what is delivered.
 
+- **A host in C#**, which is what the boundary was built for. It imports the
+  shared object and no package: the signaling is written against what its own
+  runtime ships with, because a seam proven by borrowing this library's own
+  signaling is not proven at all. Every call an integration makes runs from
+  there -- the pre-flight, enumeration, start, the four-call seam, the roster,
+  messages, permissions, a kick, the event pump, the log callback -- and the
+  application's own admission policy sits where it belongs, which is outside.
+
+  **No marshalling directives in any structure.** A managed boolean is four
+  bytes to a marshaller and pinning it to one takes the directive that stops a
+  structure being blittable, so the mirrors carry a byte with a property over
+  it. That is what lets the interop be generated at compile time rather than
+  walked field by field at run time, and it is the property the boundary was
+  shaped around.
+
 **Found by running it**
 
 - **A log with no clock answers none of the questions logs are read for.**

@@ -780,6 +780,11 @@ wrapper over something live, and most of it is; these are the exceptions, found 
 1. A C# application drives a full session end to end using its own signaling. **It imports the
    shared library and nothing else**: the signaling is its own, written against its own runtime's
    sockets and JSON, because a seam proven by borrowing ours is not proven at all.
+   *Written, and the boundary half passes* (`examples/csharp`): every call an integration makes
+   runs from C# against the built shared object -- pre-flight, enumeration, start, the four-call
+   seam, the roster, messages, permissions, a kick, the event pump and the log callback -- with
+   **no marshalling directives in any structure**. What is left is the run against a real
+   client, which needs credentials and a display this process may read.
 2. The generated header compiles standalone under C and C++ with warnings as errors.
 3. **A deliberately panicking call returns a status code rather than unwinding.** *Named test;
    this is undefined behavior if it regresses.* **It has to load the built shared library**, not
