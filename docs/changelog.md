@@ -53,7 +53,27 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   in between changes the value the sleeper is parked against and the wait
   returns at once instead of sleeping through it.
 
+- **The handle, the event union, and the poll that fills the caller's buffer.**
+  An opaque handle the application holds, created and destroyed, poisoned by a
+  contained panic and refusing everything afterwards except being destroyed.
+  Events cross as a tagged union of plain structs with fixed arrays and no
+  pointers, so there is nothing to free and nothing to marshal.
+
+  **A body that does not fit consumes nothing.** The length it needed is
+  reported, the event stays at the head, and the next call with room delivers
+  it -- which is what lets an application run a small buffer instead of sizing
+  every poller at the ceiling. A caller that passes no buffer at all is saying
+  it does not want bodies; the event still reports how long the one it gave up
+  was.
+
 **Found by running it**
+
+- **A poll with nothing to poll must still cost the time it was given.** With
+  no queue yet -- an application starts its polling thread before it starts
+  hosting -- the call answered immediately, which turns that thread into a spin
+  on a core. **The C harness found it by timing the call**, and the unit test
+  written for the same behaviour could not have: it asked for a timeout of
+  zero, which is the one value that makes returning at once correct.
 
 - **A gate that tests the wrong artifact reports on the wrong artifact.** The
   containment check loads the built shared object on purpose, because the
