@@ -219,7 +219,35 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   frames are the peer's to know, and reporting either would be reporting a
   number this host made up.
 
+- **The event queue outlives the host on it.** It exists from the moment a
+  handle does rather than arriving with a host, so a poll before hosting waits
+  on something real instead of a placeholder that slept for the timeout, and
+  what a host raised on the way down is still there to be taken after it has
+  stopped.
+
+- **The daemon's own lines go through the log**, so one run is one account:
+  the same level, the same timestamp, the same stream. It had been printing
+  operational lines on standard output while the library wrote to standard
+  error, which is two stories about one session in two formats. The `--outputs`
+  listing stays on standard output, because that is a question answered rather
+  than a run reported.
+
+- **Emitting at the frame rate when nothing changed is off by default.** It is
+  a permission rather than a behaviour -- nothing here skips a repeated picture,
+  and a host that keeps sending costs bitrate rather than being wrong -- so
+  defaulting it on would promise to spend that bitrate whatever becomes
+  possible later.
+
 **Found by running it**
+
+- **A field the boundary accepted and then dropped.** The permission above was
+  read from the configuration at start, checked, and never carried into the
+  stream, because the stream's own configuration had no such field: the live
+  cell was built from a default and what the caller asked for went nowhere. It
+  reads back wrong immediately, which is how it was noticed -- an application
+  setting it and then asking would be told the opposite. **A field silently
+  ignored is worse than one refused**, because the application believes it
+  asked.
 
 - **An attempt that is not ended holds its seat.** A guest's loop stopping is
   reported as an event, but the attempt stays registered until the application
