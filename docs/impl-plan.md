@@ -1095,34 +1095,34 @@ problem and no code at all.
   mask and the channel count as fields rather than as constants. *Both are read by a receiver and
   a change of either rebuilds its decoder, so a host that hard-codes the pair is one layout change
   away from a header that disagrees with its own payload.*
-- [ ] **Capture from the default output's monitor**, over the sound server's own socket, with the
+- [x] **Capture from the default output's monitor**, over the sound server's own socket, with the
   library loaded at runtime. *A service is admitted to the session's socket without a credential,
   which is what makes this a stream rather than a helper. A named device is checked against the
   enumeration before it is opened, because one that does not resolve is substituted rather than
   refused.*
-- [ ] **Paced by the source, never by a timer.** *A read returns when the server has a fragment.
+- [x] **Paced by the source, never by a timer.** *A read returns when the server has a fragment.
   Nothing here holds a frame clock, and nothing resamples, because there is no second clock to
   drift against.*
-- [ ] **Encode, with both codecs.** Opus for a guest that did not ask for anything else, and
+- [x] **Encode, with both codecs.** Opus for a guest that did not ask for anything else, and
   uncompressed for one that did and is allowed to. *The uncompressed payload is what capture
   already delivered, so the second encoding costs nothing to produce and only the bitrate is
   real.*
-- [ ] **One encode, fanned out**, with the per-guest choice made where the packet is handed over
+- [x] **One encode, fanned out**, with the per-guest choice made where the packet is handed over
   rather than where it is produced. *The same shape as a picture: a pool slot and an index, never
   a copy per guest.*
-- [ ] **Send whole or not at all**, and drop before numbering. *The channel is reliable and
+- [x] **Send whole or not at all**, and drop before numbering. *The channel is reliable and
   ordered, so a packet dropped after it is numbered is a hole the receiver waits on. A full window
   discards the packet instead, and the next one takes its place.*
-- [ ] **Decide what silence costs, per guest.** *A monitor delivers zeros rather than stopping.
+- [x] **Decide what silence costs, per guest.** *A monitor delivers zeros rather than stopping.
   Measured: the compressed path already collapses them to 1.2 kbit/s against 128, so skipping is
   worth almost nothing there and worth the whole 1.54 Mbit/s on the uncompressed one -- and a peer
   whose buffer drains pays for it when sound returns. The encoder reports silence; the sender
   decides.*
-- [ ] **Follow the source, live.** The default output changing, the application naming a device,
+- [x] **Follow the source, live.** The default output changing, the application naming a device,
   and something else in the session moving this host's stream all resolve to one path.
   *Silent on the wire: a receiver rebuilds only for a codec, channel-count or mask change, and a
   device switch is none of them.*
-- [ ] **Publish the source the host is on**, not the one it asked for.
+- [x] **Publish the source the host is on**, not the one it asked for.
 - [ ] **The uncompressed bitrate comes out of the video ceiling** for that guest, not out of
   nothing. *The video rate controller cannot see it, and 1.54 Mbit/s is five percent of a thirty
   megabit session.*

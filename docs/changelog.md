@@ -3,6 +3,75 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 10: audio (in progress)
+
+**Added**
+
+- **The framing, in the protocol core.** Fifteen bytes ahead of the
+  payload on the audio channel: a channel mask, the sample count per
+  channel, the rate, the codec, and the channel count. Three of those
+  rebuild a receiver's decoder when they change and nothing else does,
+  which is what makes changing sound device mid-session free and
+  changing the layout expensive.
+
+  **Two of the fields are not what a writer's description of them
+  says**, and a reader is the authority on a header. The leading word
+  is the channel mask rather than a reserved zero: it selects the
+  stream layout a decoder is built with, and only its low-frequency bit
+  is consulted, so stereo decodes identically whether it is written or
+  not -- and it is written, because it describes the payload. The byte
+  beside the codec is the channel count, not half of a two-byte tag;
+  the pair only looks like one because stereo makes both of them two.
+
+- **Its own crate**, `lowlat-audio`. The two crates that look like its
+  home carry a display stack and two vendor runtimes between them, and
+  sound needs none of it: a machine with no graphics device still has
+  audio. What the three share is the shape of the problem.
+
+- **Capture from the desktop's own output**, over the sound server's
+  socket, with the client library loaded at runtime rather than linked.
+  A service outside the session is admitted to that socket without a
+  credential, which is what makes this a stream rather than a helper.
+
+  **The source is the clock.** Frames are reassembled from whatever the
+  server delivers rather than pulled on a timer: fragments arrive on
+  its graph's own period of 21.33 ms and not the 20 ms asked for, and
+  the rate is exact even so -- sixty seconds of reading came out 47 ms
+  short of the wall clock, the same figure a five second run gives, so
+  it is the connect and not a drift.
+
+  **A device name that does not resolve is substituted rather than
+  refused**, so what the stream landed on is read back and compared.
+  And a capture does not follow the default output on its own, so the
+  loop is told when the server's state changes and reconnects. The
+  device a host is actually on is published, never the one it asked
+  for, because somebody else's volume control can move the stream.
+
+- **The codec**, as a pure-Rust port rather than bindings: no runtime
+  library to find, nothing new that is `unsafe`, and a bitstream the
+  reference implementation was measured to decode correctly to within
+  half a percent of amplitude. Encoding a frame costs 0.078 ms at the
+  median and allocates nothing, asserted under the counting allocator.
+
+- **One capture serving both codecs, and a slot per encoding somebody
+  wants.** A guest that asked for the uncompressed form is sent the
+  frame exactly as it was read; a guest that did not is sent the
+  packet. The choice is the guest's own, from its initialization, so a
+  room may hold both at once and neither costs anything per guest.
+
+  Sound has its own channel, window and wake, and is sent whether or
+  not a picture can be. Nothing is retransmitted: a window with no room
+  refuses the whole message, which drops a packet rather than leaving a
+  gap a peer would wait on, and a guest that stops draining loses its
+  own packets without holding a slot the room needs.
+
+- **Silence costs what it costs, which is not what the plan assumed.**
+  Measured: the compressed path collapses digital silence to 1.2 kbit/s
+  against the 128 it carries with sound. So it is sent compressed --
+  a peer whose buffer drains pays for it audibly when sound returns --
+  and skipped uncompressed, where it would spend the whole 1.54 Mbit/s
+  saying nothing.
+
 ## 8: public C ABI (in progress)
 
 **Added**
