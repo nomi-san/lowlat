@@ -32,13 +32,21 @@ internal static class AppProtocol
     /// `Ctrl+Alt+Del` reaches on Windows.
     private const uint SecureAttention = 14;
 
-    /// The size a client sends to mean "keep whatever the host has".
+    /// The size a client sends to mean "keep whatever the host started with".
     ///
-    /// **A magic number, not a resolution.** Observed from a real client, which
-    /// sends it in both axes when its panel is left on the host's own size; a
-    /// host reading it as a request would report a refusal for a request nobody
-    /// made.
+    /// **A sentinel, not a resolution**, and it has a companion: **zero means
+    /// use the client's own initial size**, which it already told the host in
+    /// its session initialization. Anything else is a real request. A host
+    /// reading either sentinel as a request reports a refusal for a request
+    /// nobody made.
+    ///
+    /// **Reporting them back is what ticks the panel's options**, and that half
+    /// is deliberately not built: it means remembering which of the three modes
+    /// was asked for and echoing the sentinel rather than the picture's size.
+    /// It changes nothing about what is streamed, and this host does not set
+    /// modes at all.
     private const int KeepHostResolution = 65535;
+    private const int UseClientResolution = 0;
 
     /// The name a reader sends for "choose for me".
     ///
@@ -248,10 +256,9 @@ internal static class AppProtocol
                  })
         {
             var asked = first[field]?.GetValue<int>() ?? 0;
-            // Zero is nothing said and the magic number is "keep yours".
-            // Neither is a request, and reporting either as one refused would
-            // be answering a question nobody asked.
-            if (asked == 0 || asked == KeepHostResolution || asked == current)
+            // Neither sentinel is a request, and reporting one as refused
+            // would be answering a question nobody asked.
+            if (asked == UseClientResolution || asked == KeepHostResolution || asked == current)
             {
                 continue;
             }
