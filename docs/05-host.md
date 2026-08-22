@@ -721,10 +721,18 @@ and occasionally two at once. The rate is exact even when the spacing is not, wh
 property that matters: a packet declares how many samples it carries and a receiver plays them
 in order.
 
-**Silence is skipped.** A source with nothing playing delivers zeros rather than stopping, and
-sending them costs the full bitrate to reproduce silence the far side already has. A host that
-goes quiet is a case every established client handles, because a source that produces nothing is
-ordinary.
+**Silence is not what it looked like, and the measurement decides the policy.** A source with
+nothing playing delivers zeros rather than stopping, so a host has to choose what to do with
+them -- but the compressed path collapses digital silence on its own: measured on this pipeline,
+400 silent frames cost **1.2 kbit/s**, against the 128 the same stream carries when something is
+playing. So skipping silence saves almost nothing on the compressed path and **the whole 1.54
+Mbit/s on the uncompressed one**, which is where the decision actually lives.
+
+The other half is behaviour rather than cost. A host that goes quiet is ordinary and every
+established client handles it, but a peer whose buffer drains has to prime it again when sound
+returns, which is audible at the start of the first word. **So the policy belongs where packets
+are sent, per guest**, and not in the encoder: the encoder says whether a frame is silent and the
+sender decides what that is worth to the guest in front of it.
 
 ### §9.2 Losing a packet, and never leaving a hole
 

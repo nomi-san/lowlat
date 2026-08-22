@@ -1113,8 +1113,11 @@ problem and no code at all.
 - [ ] **Send whole or not at all**, and drop before numbering. *The channel is reliable and
   ordered, so a packet dropped after it is numbered is a hole the receiver waits on. A full window
   discards the packet instead, and the next one takes its place.*
-- [ ] **Skip silence.** *A monitor delivers zeros rather than stopping, and sending them spends the
-  whole bitrate reproducing silence the far side already has.*
+- [ ] **Decide what silence costs, per guest.** *A monitor delivers zeros rather than stopping.
+  Measured: the compressed path already collapses them to 1.2 kbit/s against 128, so skipping is
+  worth almost nothing there and worth the whole 1.54 Mbit/s on the uncompressed one -- and a peer
+  whose buffer drains pays for it when sound returns. The encoder reports silence; the sender
+  decides.*
 - [ ] **Follow the source, live.** The default output changing, the application naming a device,
   and something else in the session moving this host's stream all resolve to one path.
   *Silent on the wire: a receiver rebuilds only for a codec, channel-count or mask change, and a
