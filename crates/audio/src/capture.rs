@@ -36,6 +36,13 @@ const ITERATE_US: c_int = 100_000;
 /// How long to wait for a connection or a stream before giving up.
 const READY_MS: f64 = 5_000.0;
 
+/// How long the restore of somebody's speakers may take.
+///
+/// **Shorter, because it runs while everything is stopping.** A sound server
+/// that has itself gone away would otherwise hold a teardown for the full wait
+/// above, twice, to undo something that no longer exists.
+const RESTORE_MS: f64 = 1_000.0;
+
 /// **Resolved once for the process and never unloaded.**
 ///
 /// The interface is reached from callbacks it invokes and from the drop of
@@ -58,6 +65,12 @@ pub struct Config {
     pub server: Option<String>,
     /// A device to capture, or `None` for the default output's monitor.
     pub device: Option<String>,
+    /// Silence the speakers at the desk while this capture runs.
+    ///
+    /// **The tap is ahead of the device's own mute**, so what a guest hears is
+    /// unaffected; it is the person in front of the machine who stops hearing
+    /// what they are sending ([05 §9.4](../../../docs/05-host.md)).
+    pub mute_local: bool,
 }
 
 impl Config {
@@ -249,7 +262,41 @@ where
     };
     publish(&stream, device);
     let _ = report.send(Ok(()));
+    let mut muted = if config.mute_local {
+        mute_local(&session, &stream.name(), stop)
+    } else {
+        LocalMute::default()
+    };
 
+    // **However this loop leaves, the speakers come back.** A return on an
+    // error path that skipped the restore would silence somebody's machine
+    // until they noticed and fixed it by hand.
+    let outcome = serve_loop::<S>(
+        &session,
+        &mut stream,
+        config,
+        stop,
+        device,
+        opaque,
+        &mut muted,
+    );
+    restore_local(&session, &muted);
+    outcome
+}
+
+/// The loop proper, so that whatever it returns the speakers are restored.
+fn serve_loop<S>(
+    session: &Session,
+    stream: &mut Stream,
+    config: &Config,
+    stop: &AtomicBool,
+    device: &Mutex<String>,
+    opaque: *mut c_void,
+    muted: &mut LocalMute,
+) -> Result<(), Error>
+where
+    S: FnMut(&[u8]),
+{
     while !stop.load(Ordering::Acquire) {
         session.iterate();
         if !stream.ready() {
@@ -265,22 +312,94 @@ where
         let changed = core::mem::take(&mut state.server_changed);
 
         if moved {
-            publish(&stream, device);
+            publish(stream, device);
             lowlat_common::log_info!("audio: the stream was moved to {}", stream.name());
         }
         // A new default output only concerns a stream that is following one.
         if changed && config.wanted().is_none() {
             let before = stream.name();
-            let fresh = Stream::open::<S>(&session, config, opaque, stop)?;
-            stream = fresh;
+            // **The speakers move with the device.** A host that followed the
+            // default output and left the old sink muted would silence a
+            // machine nobody is streaming from.
+            restore_local(session, muted);
+            let fresh = Stream::open::<S>(session, config, opaque, stop)?;
+            *stream = fresh;
             let after = stream.name();
             if before != after {
                 lowlat_common::log_info!("audio: the default output is now {after}");
             }
-            publish(&stream, device);
+            publish(stream, device);
+            *muted = if config.mute_local {
+                mute_local(session, &after, stop)
+            } else {
+                LocalMute::default()
+            };
         }
     }
     Ok(())
+}
+
+/// Silence the speakers behind the device being captured.
+///
+/// **Only what this host did is remembered**, so only that is ever undone. A
+/// device that is not a monitor has no speakers to silence and is left alone,
+/// which is the right answer for a host told to capture a microphone.
+fn mute_local(session: &Session, monitor: &str, stop: &AtomicBool) -> LocalMute {
+    let stop = Some(stop);
+    let mut state = LocalMute::default();
+    let Ok(monitor) = CString::new(monitor) else {
+        return state;
+    };
+    let Some(source) = session.describe(false, &monitor, stop, READY_MS) else {
+        lowlat_common::log_warn!("audio: the source did not describe itself, speakers left alone");
+        return state;
+    };
+    let Some(sink) = source.paired else {
+        // Not a monitor: there is nothing at the desk playing what we hear.
+        return state;
+    };
+    let Some(described) = session.describe(true, &sink, stop, READY_MS) else {
+        return state;
+    };
+    if described.mute {
+        // **Already muted, by somebody who is not us.** Leave it, and leave the
+        // record empty so that nothing is undone later.
+        state.sink = Some(sink);
+        return state;
+    }
+    if session.set_sink_mute(&sink, true, stop, READY_MS).is_some() {
+        lowlat_common::log_info!(
+            "audio: the speakers are silenced, sink={}",
+            sink.to_string_lossy()
+        );
+        state.applied = true;
+    }
+    state.sink = Some(sink);
+    state
+}
+
+/// Put the speakers back, if this host is what silenced them.
+fn restore_local(session: &Session, state: &LocalMute) {
+    if !state.applied {
+        return;
+    }
+    let Some(sink) = state.sink.as_deref() else {
+        return;
+    };
+    // **Still muted, and by us.** Somebody who unmuted during the session is
+    // not re-muted, and one who muted their own speakers keeps them muted.
+    if session
+        .describe(true, sink, None, RESTORE_MS)
+        .is_some_and(|described| described.mute)
+        && session
+            .set_sink_mute(sink, false, None, RESTORE_MS)
+            .is_some()
+    {
+        lowlat_common::log_info!(
+            "audio: the speakers are back, sink={}",
+            sink.to_string_lossy()
+        );
+    }
 }
 
 /// Record which device the stream is on, for whoever asks.
@@ -290,6 +409,99 @@ fn publish(stream: &Stream, device: &Mutex<String>) {
         Ok(mut held) => *held = name,
         Err(held) => *held.into_inner() = name,
     }
+}
+
+/// Ask the server one question and wait for the answer.
+///
+/// The interface answers asynchronously and this loop is the one that drives
+/// it, so the wait is turns of that loop rather than a block: an operation
+/// nobody iterates never completes.
+struct Ask<T> {
+    answer: Option<T>,
+    done: bool,
+    /// The name this asked about, so the callback can check that the structure
+    /// it is reading is laid out where it thinks.
+    asked: Option<CString>,
+}
+
+impl<T> Ask<T> {
+    fn about(name: Option<&CStr>) -> Self {
+        Self {
+            answer: None,
+            done: false,
+            asked: name.map(CStr::to_owned),
+        }
+    }
+}
+
+/// The device description a query answered with, reduced to what is read.
+struct Described {
+    mute: bool,
+    paired: Option<CString>,
+    /// Whether the name at offset zero was the one asked for, which is the
+    /// check that the transcribed layout is being read correctly.
+    matched: bool,
+}
+
+/// The callback both device queries use.
+///
+/// **It checks the layout it is reading**, because a structure transcribed from
+/// a header is right until the day it is not: the name it was asked for has to
+/// come back at offset zero, and anything else means the other fields are being
+/// read from the wrong place and must not be acted on.
+unsafe extern "C" fn on_device(
+    _context: *mut pulse::Context,
+    info: *const pulse::DeviceInfo,
+    end: c_int,
+    opaque: *mut c_void,
+) {
+    // SAFETY: the pointer is the `Ask` the query was issued with, which lives
+    // on the stack of the call that is driving this loop.
+    let ask = unsafe { &mut *opaque.cast::<Ask<Described>>() };
+    if end != 0 || info.is_null() {
+        ask.done = true;
+        return;
+    }
+    // SAFETY: the interface guarantees the pointer for the call's duration.
+    let info = unsafe { &*info };
+    let paired = if info.paired_name.is_null() {
+        None
+    } else {
+        // SAFETY: a non-null name from the interface is NUL terminated.
+        Some(unsafe { CStr::from_ptr(info.paired_name) }.to_owned())
+    };
+    let name = if info.name.is_null() {
+        None
+    } else {
+        // SAFETY: a non-null name from the interface is NUL terminated.
+        Some(unsafe { CStr::from_ptr(info.name) }.to_owned())
+    };
+    ask.answer = Some(Described {
+        mute: info.mute != 0,
+        paired,
+        matched: name == ask.asked,
+    });
+}
+
+/// The callback a setting reports through. Nothing is read from it; the answer
+/// is that it finished.
+unsafe extern "C" fn on_done(_context: *mut pulse::Context, _success: c_int, opaque: *mut c_void) {
+    // SAFETY: as in `on_device`.
+    let ask = unsafe { &mut *opaque.cast::<Ask<()>>() };
+    ask.done = true;
+}
+
+/// Speakers this host silenced, and what to put back.
+///
+/// **Restore, never unmute.** Undoing more than was done switches on the
+/// speakers of somebody who muted them for their own reasons, in their absence,
+/// with the sound as the first they know of it.
+#[derive(Debug, Default)]
+struct LocalMute {
+    /// The sink behind the monitor being captured, when there is one.
+    sink: Option<CString>,
+    /// Whether this host is the one that muted it.
+    applied: bool,
 }
 
 /// The loop and the connection to the server.
@@ -386,6 +598,113 @@ impl Session {
         };
         // SAFETY: the context is live until this value is dropped.
         unsafe { (pulse.context_errno)(self.context) }
+    }
+
+    /// Ask about a device by name, and run the loop until it answers.
+    ///
+    /// **The name it answers with is checked against the name asked for**,
+    /// which is what makes reading a transcribed structure safe: a mismatch
+    /// says the layout is wrong and the answer is discarded rather than acted
+    /// on.
+    fn describe(
+        &self,
+        sink: bool,
+        name: &CStr,
+        stop: Option<&AtomicBool>,
+        within: f64,
+    ) -> Option<Described> {
+        let pulse = pulse()?;
+        let mut ask = Ask::<Described>::about(Some(name));
+        // **Reached only through the pointer, including from here.** A
+        // reference taken to it afterwards would invalidate the one the
+        // interface is writing through.
+        let ask: *mut Ask<Described> = &raw mut ask;
+        let query = if sink {
+            pulse.sink_info_by_name
+        } else {
+            pulse.source_info_by_name
+        };
+        // SAFETY: the context is ready, the name outlives the call, and the
+        // `Ask` outlives every callback because this function waits for it.
+        unsafe {
+            let op = query(
+                self.context,
+                name.as_ptr(),
+                Some(on_device),
+                ask.cast::<c_void>(),
+            );
+            if op.is_null() {
+                return None;
+            }
+            (pulse.operation_unref)(op);
+        }
+        self.settle(ask, stop, within)?;
+        // SAFETY: the query has finished, so nothing else holds it; it lives
+        // on this stack frame until the function returns.
+        let answer = unsafe { (*ask).answer.take() };
+        let wanted = answer.filter(|described| described.matched);
+        if wanted.is_none() {
+            lowlat_common::log_warn!(
+                "audio: {} did not describe itself as asked",
+                name.to_string_lossy()
+            );
+        }
+        wanted
+    }
+
+    /// Mute or unmute a sink by name, and wait for it to take effect.
+    fn set_sink_mute(
+        &self,
+        sink: &CStr,
+        mute: bool,
+        stop: Option<&AtomicBool>,
+        within: f64,
+    ) -> Option<()> {
+        let pulse = pulse()?;
+        let mut ask = Ask::<()>::about(None);
+        let ask: *mut Ask<()> = &raw mut ask;
+        // SAFETY: as in `describe`.
+        unsafe {
+            let op = (pulse.set_sink_mute_by_name)(
+                self.context,
+                sink.as_ptr(),
+                c_int::from(mute),
+                Some(on_done),
+                ask.cast::<c_void>(),
+            );
+            if op.is_null() {
+                return None;
+            }
+            (pulse.operation_unref)(op);
+        }
+        self.settle(ask, stop, within)
+    }
+
+    /// Turn the loop until the answer arrives, or give up.
+    ///
+    /// **The flag is written by a callback the interface runs**, which is why
+    /// it is read through the pointer rather than a reference and why nothing
+    /// here can see it change.
+    fn settle<T>(&self, ask: *mut Ask<T>, stop: Option<&AtomicBool>, within: f64) -> Option<()> {
+        let began = lowlat_common::clock::Time::now();
+        loop {
+            // SAFETY: the caller owns the value this points at for the whole
+            // of this call, and only this thread touches it -- the callbacks
+            // run inside `iterate`, below, and never in parallel with it.
+            if unsafe { (*ask).done } {
+                return Some(());
+            }
+            // **A teardown is not a reason to abandon this.** Restoring what
+            // this host changed runs while the loop is already stopping, so it
+            // passes no flag and is bounded only by time; a wait that gave up
+            // on the stop flag would leave somebody's speakers muted, which is
+            // exactly what it did before this line said so.
+            let cancelled = stop.is_some_and(|stop| stop.load(Ordering::Acquire));
+            if cancelled || lowlat_common::clock::elapsed_ms(began) > within {
+                return None;
+            }
+            self.iterate();
+        }
     }
 
     /// One turn of the loop, bounded so a stop is noticed even when the server

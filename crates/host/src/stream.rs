@@ -812,9 +812,6 @@ impl Default for LiveVideo {
 #[derive(Debug)]
 pub struct Stream {
     shared: Arc<Shared>,
-    /// Sound, for as long as the stream lasts. Dropping it stops the capture
-    /// and joins its thread.
-    sound: Option<crate::audio::Sound>,
     joins: Option<mpsc::Sender<Join>>,
     /// Where a request to capture something else is put.
     ///
@@ -863,12 +860,6 @@ impl Stream {
             }),
             epoch: AtomicU32::new(0),
         });
-        // **Started before the loop**, so a guest that arrives immediately
-        // finds sound already flowing rather than a device still opening.
-        let sound = config
-            .audio
-            .clone()
-            .map(|audio| crate::audio::Sound::start(&shared, audio));
         let (joins, arrivals) = mpsc::channel();
         let (outputs, asked) = mpsc::channel();
         let owned = Arc::clone(&shared);
@@ -878,18 +869,10 @@ impl Stream {
             .ok();
         Self {
             shared,
-            sound,
             joins: Some(joins),
             outputs: Some(outputs),
             thread,
         }
-    }
-
-    /// The device sound is being read from, or empty when there is none.
-    pub fn audio_device(&self) -> String {
-        self.sound
-            .as_ref()
-            .map_or_else(String::new, crate::audio::Sound::device)
     }
 
     /// Capture a different output, without ending anybody's session.
@@ -1315,7 +1298,7 @@ struct Roster {
 
 /// The loop.
 fn run(
-    shared: &Shared,
+    shared: &Arc<Shared>,
     arrivals: &mpsc::Receiver<Join>,
     asked: &mpsc::Receiver<Option<String>>,
     mut config: Config,
@@ -1330,6 +1313,14 @@ fn run(
     // another. The guests outlive that; see [`Roster`].
     let mut roster = Roster::default();
     let mut previous: Option<Codec> = None;
+    // **Sound is held while somebody is listening and not otherwise.** Holding
+    // a capture nobody receives keeps the sound device awake for no reason, and
+    // it is also what the local mute rides: the speakers are silenced when the
+    // first guest arrives and restored when the last one leaves.
+    //
+    // It outlives an encoder rebuild, which a guest does not notice and which
+    // would otherwise cost a gap in the sound for a change to the picture.
+    let mut sound: Option<crate::audio::Sound> = None;
     loop {
         // Waiting rather than holding hardware. A host advertises itself long
         // before anyone connects, and an encoder open across that whole time
@@ -1350,10 +1341,21 @@ fn run(
             if occupied(shared) {
                 break;
             }
+            // The room is empty: give the sound device back, and with it the
+            // speakers.
+            sound = None;
             if shared.stopping.load(Ordering::Acquire) != 0 {
                 return;
             }
             std::thread::sleep(IDLE_WAIT);
+        }
+
+        // **Started before the encoder**, so the first guest is hearing the
+        // desktop while the picture is still being built.
+        if sound.is_none()
+            && let Some(audio) = config.audio.clone()
+        {
+            sound = Some(crate::audio::Sound::start(shared, audio));
         }
 
         // Drained here, where the configuration is owned.
@@ -3208,7 +3210,6 @@ mod tests {
                 .expect("thread");
             Self {
                 stream: Stream {
-                    sound: None,
                     shared,
                     joins: Some(joins),
                     outputs: None,
@@ -3253,7 +3254,6 @@ mod tests {
         });
         let (joins, arrivals) = mpsc::channel();
         let stream = Stream {
-            sound: None,
             shared: Arc::clone(&shared),
             joins: Some(joins),
             outputs: None,
@@ -3454,7 +3454,6 @@ mod tests {
         });
         let (outputs, asked) = mpsc::channel();
         let stream = Stream {
-            sound: None,
             shared: Arc::clone(&shared),
             joins: None,
             outputs: Some(outputs),

@@ -95,6 +95,9 @@ fn audio_config() -> Option<lowlat_audio::Config> {
     Some(lowlat_audio::Config {
         server: flag("--audio-server"),
         device: flag("--audio-device"),
+        // **Off unless asked for.** It silences the speakers of whoever is at
+        // the machine, which is a thing to opt into rather than a default.
+        mute_local: flag_set("--mute-local"),
     })
 }
 

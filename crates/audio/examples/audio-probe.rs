@@ -78,6 +78,9 @@ fn main() {
         Config {
             server: server.clone(),
             device: device.clone(),
+            // **Off unless the fourth argument asks**, because this is run by
+            // hand and usually while something is playing on purpose.
+            mute_local: std::env::args().any(|arg| arg == "--mute-local"),
         },
         move |frame: &[u8]| {
             let now = Time::now();

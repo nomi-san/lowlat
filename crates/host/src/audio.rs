@@ -72,13 +72,6 @@ impl Sound {
             }
         }
     }
-
-    /// The device sound is read from, or empty when there is none.
-    pub(crate) fn device(&self) -> String {
-        self.capture
-            .as_ref()
-            .map_or_else(String::new, Capture::device)
-    }
 }
 
 /// One captured frame, to every seat that wants it.

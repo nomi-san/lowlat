@@ -80,6 +80,44 @@ impl BufferAttr {
     }
 }
 
+/// The prefix of a device's description that this crate reads.
+///
+/// **Transcribed from the interface's own headers and checked against them**,
+/// not guessed: the assertions below are the compiler repeating what `offsetof`
+/// says. A source and a sink describe themselves with different structures
+/// whose first ten fields are laid out identically, which is why one definition
+/// serves both -- and why the last two fields are named for what each kind uses
+/// them for rather than for one of them.
+///
+/// Only the prefix is defined. Nothing here allocates one; they arrive by
+/// pointer from the interface, so a definition that stops early is a definition
+/// that reads less.
+#[repr(C)]
+#[derive(Debug)]
+pub(crate) struct DeviceInfo {
+    /// The device's own name, which is **also how a reader checks that this
+    /// layout is right**: it was asked for by name, so a mismatch means the
+    /// bytes are being read at the wrong offsets.
+    pub name: *const c_char,
+    pub index: u32,
+    pub description: *const c_char,
+    pub sample_spec: SampleSpec,
+    /// Opaque here: 132 bytes at four-byte alignment.
+    pub channel_map: [u32; 33],
+    pub owner_module: u32,
+    /// Opaque here: 132 bytes at four-byte alignment.
+    pub volume: [u32; 33],
+    pub mute: c_int,
+    /// For a source, the sink it monitors. For a sink, its monitor source.
+    pub paired: u32,
+    /// The name of that pair, or null.
+    pub paired_name: *const c_char,
+}
+
+const _: () = assert!(core::mem::offset_of!(DeviceInfo, mute) == 304);
+const _: () = assert!(core::mem::offset_of!(DeviceInfo, paired) == 308);
+const _: () = assert!(core::mem::offset_of!(DeviceInfo, paired_name) == 312);
+
 pub(crate) type NotifyStream = unsafe extern "C" fn(*mut Stream, *mut c_void);
 pub(crate) type RequestStream = unsafe extern "C" fn(*mut Stream, usize, *mut c_void);
 pub(crate) type SubscribeContext = unsafe extern "C" fn(*mut Context, u32, u32, *mut c_void);
@@ -103,6 +141,24 @@ type ContextSubscribe =
 type ContextSetSubscribeCallback =
     unsafe extern "C" fn(*mut Context, Option<SubscribeContext>, *mut c_void);
 type OperationUnref = unsafe extern "C" fn(*mut c_void);
+
+pub(crate) type DeviceInfoCb =
+    unsafe extern "C" fn(*mut Context, *const DeviceInfo, c_int, *mut c_void);
+pub(crate) type SuccessCb = unsafe extern "C" fn(*mut Context, c_int, *mut c_void);
+
+type ContextGetInfoByName = unsafe extern "C" fn(
+    *mut Context,
+    *const c_char,
+    Option<DeviceInfoCb>,
+    *mut c_void,
+) -> *mut c_void;
+type ContextSetSinkMute = unsafe extern "C" fn(
+    *mut Context,
+    *const c_char,
+    c_int,
+    Option<SuccessCb>,
+    *mut c_void,
+) -> *mut c_void;
 
 type StreamNew = unsafe extern "C" fn(
     *mut Context,
@@ -138,6 +194,9 @@ pub(crate) struct Pulse {
     pub context_subscribe: ContextSubscribe,
     pub context_set_subscribe_callback: ContextSetSubscribeCallback,
     pub operation_unref: OperationUnref,
+    pub source_info_by_name: ContextGetInfoByName,
+    pub sink_info_by_name: ContextGetInfoByName,
+    pub set_sink_mute_by_name: ContextSetSinkMute,
     pub stream_new: StreamNew,
     pub stream_connect_record: StreamConnectRecord,
     pub stream_disconnect: StreamDisconnect,
@@ -216,6 +275,15 @@ impl Pulse {
                     .ok_or(Error::Incomplete)?,
                 operation_unref: library
                     .symbol(c"pa_operation_unref")
+                    .ok_or(Error::Incomplete)?,
+                source_info_by_name: library
+                    .symbol(c"pa_context_get_source_info_by_name")
+                    .ok_or(Error::Incomplete)?,
+                sink_info_by_name: library
+                    .symbol(c"pa_context_get_sink_info_by_name")
+                    .ok_or(Error::Incomplete)?,
+                set_sink_mute_by_name: library
+                    .symbol(c"pa_context_set_sink_mute_by_name")
                     .ok_or(Error::Incomplete)?,
                 stream_new: library.symbol(c"pa_stream_new").ok_or(Error::Incomplete)?,
                 stream_connect_record: library
