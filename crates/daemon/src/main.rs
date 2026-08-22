@@ -295,6 +295,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             codec,
             backend,
             cg_level,
+            full_fps: flag_set("--full-fps"),
             width,
             height,
             fps: FPS,

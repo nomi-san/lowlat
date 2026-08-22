@@ -656,6 +656,12 @@ pub struct Config {
     /// that is is not configured, because it is discovered: see
     /// [`crate::display::Display::open`].
     pub display: bool,
+    /// Whether to emit at `fps` even when the picture has not changed.
+    ///
+    /// **The initial value of the live setting**, which is why it is here as
+    /// well as there: without it the cell is built from a default and whatever
+    /// a caller set when the host started is silently dropped.
+    pub full_fps: bool,
     /// Which congestion control level every guest's controller runs at.
     ///
     /// **Level 0 is the most aggressive, not "off"** ([`lowlat_core::congestion`]),
@@ -747,7 +753,7 @@ impl Stream {
                 fps: config.fps,
                 bitrate_mbps: config.configured_mbps,
                 min_mbps: config.min_mbps,
-                full_fps: false,
+                full_fps: config.full_fps,
             }),
             epoch: AtomicU32::new(0),
         });
@@ -2861,6 +2867,7 @@ mod tests {
             height: 240,
             fps: 60,
             cg_level: 1,
+            full_fps: false,
             codec: Codec::H264,
             backend: Some(Backend::Open),
             configured_mbps: 10.0,
@@ -2996,6 +3003,7 @@ mod tests {
                 min_mbps: 1.0,
                 rotation: lowlat_core::video::Rotation::None,
                 detail_rows: 0,
+                full_fps: false,
                 cg_level: 1,
             };
             let shared = Arc::new(Shared {
@@ -3097,6 +3105,7 @@ mod tests {
             min_mbps: 1.0,
             rotation: lowlat_core::video::Rotation::None,
             detail_rows: 0,
+            full_fps: false,
             cg_level: 1,
         }
     }
@@ -4041,6 +4050,7 @@ mod tests {
             height: 1080,
             fps: 60,
             cg_level: 1,
+            full_fps: false,
             codec: Codec::H264,
             backend: Some(Backend::Open),
             configured_mbps: 10.0,
@@ -4104,6 +4114,7 @@ mod tests {
             height: 1080,
             fps: 60,
             cg_level: 1,
+            full_fps: false,
             codec: Codec::H264,
             backend: Some(Backend::Open),
             configured_mbps: 10.0,
@@ -4162,6 +4173,7 @@ mod tests {
             min_mbps: 1.0,
             rotation: lowlat_core::video::Rotation::None,
             detail_rows: 0,
+            full_fps: false,
             cg_level: 1,
         });
         let wake = lowlat_net::Wake::new().expect("wake");

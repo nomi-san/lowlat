@@ -928,6 +928,7 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
             fps: video.fps,
             configured_mbps: video.bitrate_mbps,
             min_mbps: video.min_mbps,
+            full_fps: video.full_fps,
             output: (!output.is_empty()).then(|| output.to_string()),
         }),
     })
@@ -2325,6 +2326,32 @@ mod start_tests {
             unsafe { lowlat_host_start(handle, &raw const cfg) },
             LOWLAT_OK
         );
+        unsafe { lowlat_destroy(handle) };
+    }
+
+    /// **What a caller sets at start is what it reads back.** A field the
+    /// boundary accepts and then drops is worse than one it refuses: the
+    /// application believes it asked for something. This one was dropped --
+    /// the stream's configuration had no such field, so the live cell was
+    /// built from a default and the start-time value went nowhere.
+    #[test]
+    fn a_setting_made_at_start_is_the_one_read_back() {
+        let handle = handle();
+        let mut cfg = config();
+        cfg.video.full_fps = true;
+        cfg.video.fps = 45;
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_OK
+        );
+
+        let mut back = video();
+        assert_eq!(
+            unsafe { lowlat_host_get_video_config(handle, &raw mut back) },
+            LOWLAT_OK
+        );
+        assert!(back.full_fps, "a permission set at start was dropped");
+        assert_eq!(back.fps, 45);
         unsafe { lowlat_destroy(handle) };
     }
 
