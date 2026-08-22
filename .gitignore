@@ -118,3 +118,6 @@ fuzz/coverage/
 AGENTS.md
 CLAUDE.md
 local/
+# C# example build output.
+examples/csharp/bin/
+examples/csharp/obj/

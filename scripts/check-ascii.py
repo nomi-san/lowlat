@@ -20,6 +20,7 @@ ALLOWED = {"§"}
 EXTENSIONS = {
     ".rs", ".md", ".toml", ".py", ".sh", ".c", ".h", ".ts", ".js",
     ".json", ".yml", ".yaml", ".glsl", ".hlsl", ".comp", ".service",
+    ".cs", ".csproj",
 }
 
 BASENAMES = {
