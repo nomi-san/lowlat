@@ -174,7 +174,24 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   capture fails deep in the stream loop, and only a log separates "nothing is
   lit" from "this process may not read what is".
 
+- **Host status, and log lines an application can receive.** The callback is
+  replaceable although the sink beneath it takes one installation, so an
+  application changes where its logs go rather than being refused because
+  something is already there. The message crosses as a NUL-terminated copy,
+  which is the one allocation on that path: a Rust string carries a length
+  rather than a terminator, and handing out a pointer to one hands out
+  something C cannot read to the end of. The level decides what is **formatted**
+  and not only what is delivered.
+
 **Found by running it**
+
+- **A log with no clock answers none of the questions logs are read for.**
+  Every diagnosis this project has made from a log came down to an interval --
+  how long a wait actually waited, how far apart two frames left, whether a
+  periodic line stopped -- and the default sink printed a level and a message
+  and nothing else. It now stamps the elapsed time since the first line:
+  monotonic rather than a wall clock, because that is the quantity being read
+  and it needs no timezone to mean something.
 
 - **A pre-flight that only checks whether a plane is lit passes when capture
   will fail.** Enumerating a connector and finding its framebuffer both succeed
