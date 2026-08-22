@@ -28,6 +28,17 @@ internal static class AppProtocol
     private const uint QueryOutputs = 10;
     private const uint Config = 11;
     private const uint Outputs = 12;
+    /// The client asking for the secure attention sequence -- what
+    /// `Ctrl+Alt+Del` reaches on Windows.
+    private const uint SecureAttention = 14;
+
+    /// The size a client sends to mean "keep whatever the host has".
+    ///
+    /// **A magic number, not a resolution.** Observed from a real client, which
+    /// sends it in both axes when its panel is left on the host's own size; a
+    /// host reading it as a request would report a refusal for a request nobody
+    /// made.
+    private const int KeepHostResolution = 65535;
 
     /// The name a reader sends for "choose for me".
     ///
@@ -55,6 +66,18 @@ internal static class AppProtocol
                 // **Not answered.** The client asks again with 9 the moment it
                 // has sent one of these, so an answer here would arrive beside
                 // the one it is about to ask for.
+                return true;
+            case SecureAttention:
+                // **Nothing to do here, and that is the platform's answer
+                // rather than a gap.** What this asks for on Windows is a
+                // sequence user space is not allowed to synthesise, which is
+                // exactly why it needs a message of its own. Nothing on Linux
+                // is protected that way: `Ctrl+Alt+Del` is an ordinary
+                // combination, so a guest that wants it presses it and the
+                // keys arrive through the same path as any others.
+                Console.WriteLine(
+                    $"app: guest {guest} asked for the secure attention sequence, "
+                    + "which this platform does not have");
                 return true;
             default:
                 return false;
@@ -225,10 +248,14 @@ internal static class AppProtocol
                  })
         {
             var asked = first[field]?.GetValue<int>() ?? 0;
-            if (asked != 0 && asked != current)
+            // Zero is nothing said and the magic number is "keep yours".
+            // Neither is a request, and reporting either as one refused would
+            // be answering a question nobody asked.
+            if (asked == 0 || asked == KeepHostResolution || asked == current)
             {
-                Console.WriteLine($"app: guest asked for {field}={asked}, which is the display's");
+                continue;
             }
+            Console.WriteLine($"app: guest asked for {field}={asked}, which is the display's");
         }
     }
 

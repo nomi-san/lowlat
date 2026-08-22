@@ -384,7 +384,18 @@ internal sealed class Host
         // Whatever the seam raised on the way through, drained rather than
         // discarded: the queue outlives the session that filled it.
         DrainEvents();
+
+        // **An attempt that is not reaped holds its seat.** The guest's loop
+        // has stopped, but the attempt stays registered until the application
+        // says so, and until then the roster still lists it and capacity still
+        // counts it. A live run found this: a peer that had gone stayed in the
+        // listing and its seat never came back.
         EndConnection(attempt);
+        if (Roster().Count != 0)
+        {
+            throw new InvalidOperationException(
+                "a guest whose attempt was ended is still on the roster");
+        }
         Console.WriteLine("offline: the whole boundary ran");
     }
 
@@ -538,7 +549,16 @@ internal sealed class Host
                 {
                     var (attempt, outcome, reason) = Events.Ended(ev);
                     Console.WriteLine($"ended {attempt}: {outcome} reason={reason}");
+                    // **Reaped whatever the reason.** The guest's loop has
+                    // stopped, but the attempt stays registered until the
+                    // application says so -- and a registered attempt holds its
+                    // guest number, its seat and its port for the life of the
+                    // host. Leaving it is why a peer that has gone still shows
+                    // in the roster and still counts against capacity.
+                    EndConnection(attempt);
                     peers.Remove(attempt);
+                    // Told after the reaping, so the roster describes the room
+                    // as it is rather than as it was a moment ago.
                     AppProtocol.SendRoster(this);
                     if (signaling is not null)
                     {
