@@ -41,7 +41,8 @@ mismatch is a link error rather than silent memory corruption at the first field
 ```c
 lowlat_status lowlat_create(const lowlat_create_info *info, lowlat **out);
 void          lowlat_destroy(lowlat *ll);
-void          lowlat_set_log_callback(lowlat_log_fn fn, void *opaque);
+lowlat_status lowlat_set_log_callback(lowlat_log_fn fn, void *opaque);
+lowlat_status lowlat_set_log_level(uint32_t level);
 const char   *lowlat_status_string(int32_t status);
 uint32_t      lowlat_abi_version(void);
 ```
@@ -54,6 +55,24 @@ before calling anything else. It is the one function whose signature can never c
 
 The log callback is the single exception to rule 5. It is cold, it fires on whichever thread
 logged, and it must not call back into the API.
+
+**It is replaceable, and passing `NULL` returns the library to writing lines itself.** The sink
+underneath is process-wide and takes one installation; what an application registers sits behind
+that, so registering again changes where lines go rather than being refused.
+
+**The message is a NUL-terminated copy**, which is the one allocation on that path: a Rust
+string carries its length rather than a terminator, and handing out a pointer to one would be
+handing out something C cannot read to the end of.
+
+**`lowlat_set_log_level` decides what is formatted at all**, not only what is delivered. A line
+above the level costs a comparison; below it, the message is built. That is why the level is a
+call rather than a filter the callback applies.
+
+**With no callback registered, lines carry the elapsed time** since the first of them and go to
+standard error. Every diagnosis made from these logs has come down to an interval -- how long a
+wait actually waited, whether a periodic line stopped -- and a log with no clock answers none of
+them. It is monotonic rather than a wall clock: that is the quantity being read, and it needs no
+timezone to mean something.
 
 ## §3 Host
 
@@ -78,6 +97,12 @@ lowlat_status lowlat_host_send_user_data(lowlat *ll, uint32_t guest_id, uint32_t
 removed 2026-08-21 before anything was built against it: it is `lowlat_host_set_permissions`
 with every flag cleared, and two calls that write one field can disagree about what a guest is
 allowed to do. Permissions are the field; there is one way to set them.
+
+**`lowlat_host_get_status` reports what is happening, not what was asked for**, which is why
+it carries the picture's size and the guest count and not the settings that produced them: the
+display decides its own size and the room decides its own occupancy. It answers on a handle that
+is not hosting too, with `running` clear -- an application asking what state something is in
+should not have to know the answer to ask.
 
 **`lowlat_host_stop` takes no reason, and that is a gap rather than a design.**
 Stopping ends every guest loop and joins every thread, and the far side learns from its own
