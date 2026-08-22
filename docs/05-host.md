@@ -692,14 +692,84 @@ otherwise fill the peer's cache and force it to forget every picture it holds.
 
 ## §9 Audio
 
-Gate B, with capture ([00-overview.md](00-overview.md) D9).
+**48 kHz stereo, 20 ms a packet, one encode fanned out to every guest**, on the audio channel
+with the framing in [01 §11.4](01-protocol.md). One encode serves the room exactly as one
+picture does, and a guest is handed the packet rather than a copy of its own.
 
-Shape is fixed now: capture from the system monitor source, encode at 48 kHz stereo in short
-frames, fan out on the audio channel, newest-wins under pressure. Audio is never retransmitted;
-a late packet is worse than a missing one.
+**Two codecs, because a guest chooses.** Opus by default; uncompressed sixteen-bit stereo for a
+guest that asks for it in its initialization and a host that permits it. The choice is per guest
+and per packet, so a room may hold both at once, and the second encoding costs nothing to
+produce because it is what capture already delivered.
 
-The capture surface choice carries the same session-versus-system-daemon question as video and
-is decided with it in [07-platforms.md](07-platforms.md). Uplink is deferred.
+**Uncompressed is not free on the wire and must be paid for.** A packet is 3840 bytes against
+Opus's few hundred: four fragments instead of one, 200 a second instead of 50, and 1.54 Mbit/s
+per guest against 0.14. That is five percent of a thirty megabit session, taken from a budget
+the video rate controller cannot see, so **it is subtracted from the video ceiling for that
+guest** rather than spent on top of it.
+
+### §9.1 The sound source is the clock
+
+**Capture is paced by the source and never by a timer.** A read returns when the sound server
+has a fragment, and the host encodes and sends what it got; a host that pulled on its own clock
+would drift against the sound device for as long as the session lasted and would have to
+resample to hide it. Measured over five minutes, the source's own rate and the host's sample
+accounting agree to within a constant offset.
+
+**The cadence is not the fragment.** A sound server delivers on its graph's own period, which
+need not be the frame the host asked for, so fragments arrive a little early or a little late
+and occasionally two at once. The rate is exact even when the spacing is not, which is the
+property that matters: a packet declares how many samples it carries and a receiver plays them
+in order.
+
+**Silence is skipped.** A source with nothing playing delivers zeros rather than stopping, and
+sending them costs the full bitrate to reproduce silence the far side already has. A host that
+goes quiet is a case every established client handles, because a source that produces nothing is
+ordinary.
+
+### §9.2 Losing a packet, and never leaving a hole
+
+The audio channel is reliable and ordered like every other, so **a packet cannot be dropped once
+it is sent**: the gap would stall the receiver until retransmission filled it, and a
+retransmitted packet arrives long after it was due. The drop therefore happens **before the
+sequence number is assigned** -- if the send window cannot take the whole message, the packet is
+discarded and the next one takes its place. Nothing is retransmitted late because nothing late
+was ever numbered.
+
+That also makes the size question a correctness question: a message is enqueued whole or not at
+all, so an uncompressed packet's four fragments never half-arrive.
+
+### §9.3 The source may change under the session
+
+**A host follows the sound device rather than pinning it.** Three things move it: the person
+changes their default output, the application names a device, or something else in the session
+moves this host's stream. All three end in the same place -- resolve the wanted source again,
+move the stream, and **publish the source the host is actually on rather than the one it asked
+for**.
+
+**A source change is silent on the wire.** A receiver rebuilds its decoder only for a codec,
+channel-count or mask change ([01 §11.4](01-protocol.md)), and a device switch changes none of
+them: the host keeps asking for 48 kHz stereo and the sound server converts. So unlike an output
+switch on the video side there is no refresh owed, nothing is renegotiated, and the audible cost
+is the few tens of milliseconds the move itself takes.
+
+**A device that is not there is substituted, not refused.** A sound server hands out something
+plausible rather than failing, so a requested device is checked against the enumeration before it
+is opened -- the same rule a requested output follows in §7.
+
+### §9.4 What this host does not do
+
+**No per-application exclusion.** An established host on another platform can capture everything
+except one named program, which is what keeps a voice call from echoing back to the person on the
+other end of it. That call has no equivalent here, and imitating it means tapping each program's
+own output and re-linking as programs come and go -- a mechanism with a lifetime problem, whose
+failures are silent and whose symptom is somebody hearing themselves. **A person mutes the
+application instead**, which is a control they already have and which works whatever sound server
+is running.
+
+**No uplink yet.** A guest's microphone reaches a host as its own message and is not part of
+this: what a host would do with it is create a capture device in somebody's session, which is an
+application's business rather than a shared library's ([06 §13](06-api.md)). The framing is
+known and the work is scoped separately.
 
 ## §10 Latency budget and instrumentation
 
@@ -742,6 +812,6 @@ restart also costs orders of magnitude more, and it self-throttles only because 
 force the keyframe and throttle it explicitly at roughly twice a second, which reaches the same
 invariant at a cost that does not have to be hidden.
 
-**Pending, and deliberately not yet decided:** the capture backend and therefore the concrete
-frame variant, the audio capture surface, and whether dirty rectangles earn their complexity.
-All three land at Gate B against real hardware ([impl-plan §Phase 9](impl-plan.md)).
+**Pending, and deliberately not yet decided:** whether dirty rectangles earn their complexity.
+The capture backend and the concrete frame variant were settled at Gate B against real hardware
+([impl-plan §Phase 9](impl-plan.md)); the audio capture surface is settled in §9 above.

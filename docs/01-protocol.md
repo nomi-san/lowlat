@@ -607,8 +607,52 @@ absolute offsets are: length at 0, frame identifier at 4, dimensions at 8 and 10
 
 ### §11.4 Audio framing
 
-Audio rides channel 2 with its own short header ahead of an Opus packet. The exact layout is
-recorded at Phase 10 with the rest of the audio work; it is not on the Phase 1 path.
+Audio rides channel 2 with a fifteen-byte header ahead of the payload, inside the ordinary
+message framing, so the offsets below are relative to the message **content**: what follows the
+four-byte length prefix. Every field is little endian, as in §11.3.
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 4 | channel mask |
+| 4 | 4 | samples per channel in this packet |
+| 8 | 4 | sample rate, always 48000 |
+| 12 | 1 | codec: `2` is uncompressed, anything else is Opus |
+| 13 | 1 | written as `2` and never read |
+| 14 | 1 | channel count |
+
+**The codec is per packet, not per session.** A receiver rebuilds its decoder when the codec,
+the channel count or the channel mask changes, and on nothing else -- so a host may change its
+sound device mid-session without renegotiating anything, and must not change the layout without
+expecting a rebuild.
+
+**Uncompressed means interleaved sixteen-bit samples**, and a receiver derives their count from
+the payload length rather than from the header: bytes over two over channels. The header's own
+sample count is what a compressed packet declares.
+
+Two traps, both of which read as something else.
+
+**The channel mask is not a reserved zero.** It selects the stream layout a compressed decoder
+is built with, and **only the low-frequency bit within it is consulted**: for two channels
+without that bit the answer is one stream, one coupled pair, which is what an ordinary stereo
+encoder produces. So zero and the stereo mask of `3` decode identically, and a host that emits
+zero is describing a layout it does not have while getting away with it. **We emit the mask.**
+
+**Bytes 13 and 14 are not one field.** Both are `2` for stereo, which makes the pair look like a
+single tag with a self-verifying value; it is not, and the second byte is the channel count a
+receiver builds its decoder from. A host that hard-codes the pair and later grows a layout with
+a different channel count will emit a header that says stereo and a payload that is not.
+
+**There is a ceiling on an uncompressed packet.** A receiver refuses one whose payload exceeds
+32000 bytes, so a frame longer than about 160 ms of stereo is not deliverable uncompressed. At
+the 20 ms this host sends, a packet is 3840 bytes.
+
+### §11.4a Audio latency reports
+
+Both ends volunteer a decode or encode figure on the control channel as opcode 21, on a cadence
+rather than per packet: **microseconds in one argument and the media kind in the other**, `1` for
+video and `2` for audio. The two directions carry the pair in opposite order -- a host sends the
+kind first, a peer sends the figure first. Nothing depends on receiving one, and a host that
+ignores every one it receives is not missing anything a stream needs.
 
 ### §11.5 Session initialization
 

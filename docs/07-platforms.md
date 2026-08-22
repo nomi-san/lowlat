@@ -398,14 +398,34 @@ entitled to choose the lower-privilege backend with the reduced feature set inst
 
 ## §7 Audio
 
-Same session-versus-system question as video, decided with it ([05 §9](05-host.md)).
+**Closed 2026-08-22, and the session question turned out not to arise.** The sound server is
+per-session -- its socket sits in that session's own runtime directory, which is private to the
+user -- but a service already privileged enough to reach the directory **is admitted to the
+socket and is never challenged for a credential**. Measured both ways, with and without the
+session user's authentication cookie: identical. So audio is reached exactly as the desktop
+layout is reached in §2.1 -- find the session's socket, open it -- and **no helper is required
+for it**.
 
-- A system-wide sound server instance, or a per-session one the daemon reaches through a
-  helper, mirroring §5.
-- A kernel loopback device is the fully session-independent option, at the cost of a module and
-  manual routing.
+- **The PulseAudio client interface, loaded at runtime**, is what this host speaks. PipeWire
+  serves it as well as PulseAudio does, so one path reaches both, and it is a handful of symbols
+  out of two shared libraries rather than a linked dependency: a machine without them has no
+  audio rather than a service that will not start. The native PipeWire interface is the
+  alternative, and it buys a smaller capture period than the graph's own -- which is worth
+  nothing while a packet is 20 ms of it.
+- **The device is the default output's monitor**, which the server will name on request, so
+  finding it costs no enumeration. A named device is checked against the enumeration first,
+  because **a name that does not resolve is substituted rather than refused** ([05 §9.3](05-host.md)).
+- **A kernel loopback device is not needed** and is not used. It was the fully
+  session-independent option and its cost was a module and manual routing on the user's machine.
 
-If capture lands on a session helper, audio rides the same helper and the question disappears.
+**What the platform will not do**, both measured rather than assumed:
+
+1. **A capture does not follow the default output.** The device is resolved once, when the stream
+   is connected; changing the default afterwards leaves the capture on the old one. Following it
+   is this host's work, not the server's ([05 §9.3](05-host.md)).
+2. **There is no per-application exclusion.** Capturing everything except one named program is an
+   operating-system call on another platform and has no equivalent here, which is why this host
+   does not offer it ([05 §9.4](05-host.md)).
 
 ## §8 GPU and encoder
 
@@ -468,7 +488,7 @@ None of this reaches the protocol core, the IO shell's logic, or the public API.
 | scanout format stability | **closed**: it changes several times a minute in ordinary use (§3.3) |
 | framebuffer export, classic module of the second vendor | open, not run here, off the path |
 | virtual display | open: the software virtual driver is absent from this kernel |
-| audio capture surface | open, Phase 10 |
+| audio capture surface | **closed**: the session's sound server, reached over its own socket, no helper (§7) |
 
 Six of the ten were closed by one probe, run before Phase 0 rather than at Phase 9. A second
 run of the same probe on different hardware closed the seventh (§3.2), and the first run of the

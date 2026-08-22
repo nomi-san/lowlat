@@ -1078,10 +1078,74 @@ stream nobody is producing, which is the one mistake this phase has already made
 
 ## Phase 10 - Audio
 
-- [ ] Capture from the system monitor source, encode, fan out on the audio channel.
+**The shape was decided 2026-08-22, before anything was written**, from one probe against the
+real sound server and from what a client's own settings already offer. It is in
+[05 §9](05-host.md); the framing is [01 §11.4](01-protocol.md); the platform question that used
+to sit here is closed in [07 §7](07-platforms.md).
 
-**Gate:** audio downlink to a stock client with no drift over 30 minutes, and clean recovery
-from a source change.
+**Downlink first, in one phase. The guest microphone is a separate step below**, because nothing
+can prove it end to end until an application owns a capture device in somebody's session.
+
+- [ ] **The framing**, in the protocol core: fifteen bytes, encode and parse, with the channel
+  mask and the channel count as fields rather than as constants. *Both are read by a receiver and
+  a change of either rebuilds its decoder, so a host that hard-codes the pair is one layout change
+  away from a header that disagrees with its own payload.*
+- [ ] **Capture from the default output's monitor**, over the sound server's own socket, with the
+  library loaded at runtime. *A service is admitted to the session's socket without a credential,
+  which is what makes this a stream rather than a helper. A named device is checked against the
+  enumeration before it is opened, because one that does not resolve is substituted rather than
+  refused.*
+- [ ] **Paced by the source, never by a timer.** *A read returns when the server has a fragment.
+  Nothing here holds a frame clock, and nothing resamples, because there is no second clock to
+  drift against.*
+- [ ] **Encode, with both codecs.** Opus for a guest that did not ask for anything else, and
+  uncompressed for one that did and is allowed to. *The uncompressed payload is what capture
+  already delivered, so the second encoding costs nothing to produce and only the bitrate is
+  real.*
+- [ ] **One encode, fanned out**, with the per-guest choice made where the packet is handed over
+  rather than where it is produced. *The same shape as a picture: a pool slot and an index, never
+  a copy per guest.*
+- [ ] **Send whole or not at all**, and drop before numbering. *The channel is reliable and
+  ordered, so a packet dropped after it is numbered is a hole the receiver waits on. A full window
+  discards the packet instead, and the next one takes its place.*
+- [ ] **Skip silence.** *A monitor delivers zeros rather than stopping, and sending them spends the
+  whole bitrate reproducing silence the far side already has.*
+- [ ] **Follow the source, live.** The default output changing, the application naming a device,
+  and something else in the session moving this host's stream all resolve to one path.
+  *Silent on the wire: a receiver rebuilds only for a codec, channel-count or mask change, and a
+  device switch is none of them.*
+- [ ] **Publish the source the host is on**, not the one it asked for.
+- [ ] **The uncompressed bitrate comes out of the video ceiling** for that guest, not out of
+  nothing. *The video rate controller cannot see it, and 1.54 Mbit/s is five percent of a thirty
+  megabit session.*
+- [ ] **The boundary**: enable, bitrate, permit-uncompressed and device, with the device and the
+  bitrate live; enumeration behind `lowlat_get_audio_outputs`. *Written when it exists, and not
+  before: [06-api.md](06-api.md) and the library agree exactly today and that property is worth
+  more than a documented field nobody can call.*
+
+**Gate:**
+
+1. Audio reaches a stock client and plays, from the real desktop.
+2. **Thirty minutes with no drift**, measured as the packets a host sent against the samples a
+   client played, not as an impression.
+3. **A source change is survived cleanly** -- the person switches their output device mid-session
+   and audio follows it, with no reconnection and no picture disturbed.
+4. **A guest that asks for uncompressed gets it**, and a guest that did not is unaffected in the
+   same room.
+5. **Silence costs nothing**, checked on the wire rather than by listening.
+
+### The guest microphone, after the gate
+
+Its own message rather than the audio channel, mono at 48 kHz in 10 ms packets, compressed or
+not. **A shared library has no business creating a capture device in somebody's session**
+([06 §13](06-api.md)), so the SDK decodes and the application receives sixteen-bit samples and
+decides what to do with them.
+
+- [ ] Its own poll, not the event queue. *The queue is bounded and drops oldest; a hundred audio
+  packets a second competing with control events would evict what must not be dropped.*
+- [ ] Decoded at the boundary. *The codec is already loaded for the downlink, and an application
+  that has to learn one is an application that will get it wrong.*
+- [ ] The example grows a capture device, or the uplink cannot be shown to work at all.
 
 ---
 
