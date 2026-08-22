@@ -253,9 +253,23 @@ that many megabytes. Either ceiling evicts oldest-first and both count into the 
 
 ```c
 lowlat_status lowlat_get_outputs(lowlat_output *out, uint32_t *count);
-lowlat_status lowlat_get_audio_outputs(lowlat_audio_output *out, uint32_t *count);
-lowlat_status lowlat_get_encoders(lowlat_encoder_info *out, uint32_t *count);
+lowlat_status lowlat_can_host(void);
 ```
+
+**`lowlat_can_host` exists because the two ways of failing look identical afterwards.** A host
+that cannot capture fails deep in the stream loop, where an application can tell "there is no
+display" from "this process may not read one" only by reading a log. This answers which, before
+anything starts, and it is a read: no encoder is built and no thread starts.
+
+**It reads the framebuffer's buffer handles, not merely whether a plane is lit**, and that is
+the whole difficulty. Enumerating a connector and finding its framebuffer both succeed without
+the capability; getting the handles back out does not. Measured on a real display: the same
+binary answers `LOWLAT_ERR_DISPLAY_UNREACHABLE` as an unprivileged user in the `video` group and
+`LOWLAT_OK` as root. A weaker probe reports a machine ready to host that cannot.
+
+`lowlat_get_audio_outputs` arrives with audio, and `lowlat_get_encoders` when there is a choice
+worth reporting: the encoder follows the display, so today the answer is a consequence rather
+than a menu. Adding a function is additive; a call that answers nothing is worse than no call.
 
 Two-call pattern: pass `NULL` to learn the count, then a buffer. **Nothing returned by this API
 is heap allocated on the caller's behalf**, so there is no free function and no ownership

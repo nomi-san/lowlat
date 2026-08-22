@@ -160,7 +160,30 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   cycle chronic, and adding the event first would mean firing on every skip or
   choosing a number nothing measured.
 
+- **Ending a guest and changing what it may drive**, both through one
+  per-guest channel: only that guest's own thread may touch its session or its
+  input devices, so an ask is delivered to it rather than applied behind its
+  back. A kick leaves its reason where the stream leaves one, so the ending is
+  the single path that already knows how to end a guest -- the message, the
+  moment for it to arrive, and the seat going back. **Zero is refused as a
+  reason**: a peer carries on through a status of zero, so a guest kicked with
+  one is told nothing and stays exactly where it was.
+
+- **Output enumeration, and a pre-flight that says why a host cannot start.**
+  The two ways of failing are indistinguishable afterwards -- a host that cannot
+  capture fails deep in the stream loop, and only a log separates "nothing is
+  lit" from "this process may not read what is".
+
 **Found by running it**
+
+- **A pre-flight that only checks whether a plane is lit passes when capture
+  will fail.** Enumerating a connector and finding its framebuffer both succeed
+  without the capability; getting the buffer handles back out of it does not,
+  and a framebuffer with none is what every later stage fails on. The first
+  version asked the weaker question and answered that this machine could host
+  while running as an ordinary user. Measured both ways on a real display: the
+  same binary now reports the display unreachable as a user in the `video`
+  group and ready as root.
 
 - **Every guest ran the most aggressive congestion control.** The controller
   built for each guest was pinned at level zero, which the level table names as
