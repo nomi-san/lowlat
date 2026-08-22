@@ -89,6 +89,9 @@ lowlat_status lowlat_host_get_status(lowlat *ll, lowlat_host_status *out);
 lowlat_status lowlat_host_set_video_config(lowlat *ll, const lowlat_host_video_config *cfg);
 lowlat_status lowlat_host_get_video_config(lowlat *ll, lowlat_host_video_config *out);
 
+lowlat_status lowlat_host_set_audio_config(lowlat *ll, const lowlat_host_audio_config *cfg);
+lowlat_status lowlat_host_get_audio_config(lowlat *ll, lowlat_host_audio_config *out);
+
 uint32_t      lowlat_host_get_guests(lowlat *ll, lowlat_guest *out, uint32_t *count);
 lowlat_status lowlat_host_kick_guest(lowlat *ll, uint32_t guest_id, int32_t reason);
 lowlat_status lowlat_host_set_permissions(lowlat *ll, uint32_t guest_id,
@@ -179,6 +182,21 @@ Everything in `lowlat_host_config` outside that structure is settled at `lowlat_
 | `base_port`, `servers` | Bound and consulted per attempt; moving them under running guests moves nothing that is already connected. |
 | `max_guests` | Advertised capacity, read when a guest asks for a seat. |
 | `exclusive_pointer`, `exclusive_hold_ms` | The pointer arbiter is built once with them. The hold is **clamped rather than refused**: it is a comfort setting, and the nearest usable value beats a host that will not start.
+
+**Sound has no settled half at all**, so `lowlat_host_audio_config` is both what a host starts
+with and what `lowlat_host_set_audio_config` takes:
+
+| Field | Why it can change | |
+|---|---|---|
+| `enabled` | Switching it off gives the sound device back and restores the speakers, exactly as the last guest leaving does. Switching it on takes the device again. |
+| `bitrate_kbps` | Read on the frame that uses it, so a change costs no rebuild and no discontinuity a listener would hear. **A rate of zero or one past the ceiling is refused** rather than clamped in silence, because the codec would clamp its own and the application would be told yes and given something else. |
+| `allow_uncompressed` | **A permission, not a request, and off by default.** A guest asks for the uncompressed form in its own initialization; this is whether a host will serve it. It costs an order of magnitude more of the uplink than the compressed form, and that comes out of what is left for the picture ([05 §9](05-host.md)). A guest denied it is sent the compressed form, priced as the compressed form, and told it is the compressed form. |
+| `mute_local` | Silences the speakers at the desk while a guest is connected, off by default. The tap is ahead of the device's own mute, so a guest still hears everything. **It restores rather than unmutes**: a device somebody had already muted stays muted, and one they unmuted mid-session is not muted again. |
+| `device` | Empty means the default output's monitor, **followed as the default changes**. A named one is checked against what the stream landed on, because a name that does not resolve is substituted by the sound server rather than refused. |
+
+**The sound device is held only while somebody is listening.** It is opened when the first guest
+arrives and given back when the last leaves, so a host that is advertised but empty holds no
+capture and no speakers.
 
 Starting a host that is already running is refused rather than quietly reconfiguring, because a
 second configuration that looks accepted and is not is a host running settings nobody can see.
@@ -327,9 +345,15 @@ the capability; getting the handles back out does not. Measured on a real displa
 binary answers `LOWLAT_ERR_DISPLAY_UNREACHABLE` as an unprivileged user in the `video` group and
 `LOWLAT_OK` as root. A weaker probe reports a machine ready to host that cannot.
 
-`lowlat_get_audio_outputs` arrives with audio, and `lowlat_get_encoders` when there is a choice
-worth reporting: the encoder follows the display, so today the answer is a consequence rather
-than a menu. Adding a function is additive; a call that answers nothing is worse than no call.
+`lowlat_get_audio_outputs` lists what sound could be captured from. **The identity it returns is
+the monitor of an output, not the output**, because that is the device a host reads: it carries
+what the speakers are playing. The name beside it is what a person calls the speakers, which is
+what an application shows them. A machine with no sound server answers with none rather than
+failing, which is the same thing an application does with the answer.
+
+`lowlat_get_encoders` arrives when there is a choice worth reporting: the encoder follows the
+display, so today the answer is a consequence rather than a menu. Adding a function is additive;
+a call that answers nothing is worse than no call.
 
 Two-call pattern: pass `NULL` to learn the count, then a buffer. **Nothing returned by this API
 is heap allocated on the caller's behalf**, so there is no free function and no ownership
