@@ -57,7 +57,7 @@ lowlat_status lowlat_host_get_status(lowlat *ll, lowlat_host_status *out);
 lowlat_status lowlat_host_set_config(lowlat *ll, const lowlat_host_config *cfg);
 
 uint32_t      lowlat_host_get_guests(lowlat *ll, lowlat_guest *out, uint32_t *count);
-lowlat_status lowlat_host_kick_guest(lowlat *ll, uint32_t guest_id, lowlat_status reason);
+lowlat_status lowlat_host_kick_guest(lowlat *ll, uint32_t guest_id, int32_t reason);
 lowlat_status lowlat_host_set_permissions(lowlat *ll, uint32_t guest_id,
                                           const lowlat_permissions *perms);
 lowlat_status lowlat_host_set_input_enabled(lowlat *ll, uint32_t guest_id, bool enabled);
@@ -65,6 +65,11 @@ lowlat_status lowlat_host_set_input_enabled(lowlat *ll, uint32_t guest_id, bool 
 lowlat_status lowlat_host_send_user_data(lowlat *ll, uint32_t guest_id, uint32_t id,
                                          const void *data, uint32_t len);
 ```
+
+**`lowlat_host_kick_guest`'s reason is not a `lowlat_status`.** It is what the peer is told on
+the way out, which belongs to the protocol's own numbering rather than to this API's
+([01 §11.2](01-protocol.md)); the two spaces share a width and nothing else. Zero is not a
+value to pass: a peer carries on through it.
 
 `lowlat_host_set_config` applies live. Bitrate, frame rate, congestion mode, and guest limit
 change without restarting the session. Changing the capture source or codec restarts the
@@ -165,6 +170,14 @@ interface before committing.
 
 A single `lowlat_status` enum spans success, warnings, and errors. Zero is success; negative
 values are errors; positive values are non-fatal conditions such as `LOWLAT_TIMEOUT`.
+
+**An enumeration for the names, and never a parameter.** Grouping the codes under a type is
+what tells a reader that `LOWLAT_TIMEOUT` is a status and `LOWLAT_ATTEMPT_MAX` is a size, which
+a header full of bare defines cannot. Accepting one back by value would be a different
+question: reading a value nothing defined is undefined behaviour, and an application is free to
+hand back any integer it holds. So statuses travel outward as the enumeration and every call
+that takes one in declares a plain integer. `lowlat_status_string` is the case that makes it
+obvious -- describing a code this version does not define is the reason somebody calls it.
 
 Ranges are partitioned by subsystem so a numeric code identifies its origin without a lookup.
 Codes are assigned once and never reused, including for removed conditions.
