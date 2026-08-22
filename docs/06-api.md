@@ -91,7 +91,37 @@ lowlat_status lowlat_host_set_permissions(lowlat *ll, uint32_t guest_id,
 
 lowlat_status lowlat_host_send_user_data(lowlat *ll, uint32_t guest_id, uint32_t id,
                                          const void *data, uint32_t len);
+lowlat_status lowlat_host_send_roster(lowlat *ll, const void *data, uint32_t len,
+                                      uint32_t *reached);
+lowlat_status lowlat_host_get_metrics(lowlat *ll, uint32_t guest_id, lowlat_metrics *out);
 ```
+
+**The roster is not a variant of an application message.** It travels on its own opcode, it is
+addressed to everybody rather than to a guest, and each peer finds *itself* in the list by
+number and takes that entry as what it is allowed to do. A peer has no way to ask for one, so a
+guest that is never sent one does not know what it is. Its body's shape belongs to the clients
+an application serves, exactly as a message's does.
+
+**A guest carries the attempt it was registered under**, which is the link between the seam's
+two halves: everything before a guest is seated is addressed by attempt and everything after by
+number, and without it an application holding one peer per attempt cannot tell which peer an
+event about guest three concerns.
+
+**Metrics live behind their own call rather than inside `lowlat_guest`, and that follows from
+rule 2.** A guest is delivered as an array element, an array element cannot usefully carry a
+`size` -- the caller walks it by stride -- so `lowlat_guest` is fixed for the major version.
+Metrics are the numbers most likely to grow, so they live where growing them is free.
+
+**One stream, not an array of them.** This host produces one and switches which display feeds
+it, so there is nothing to index.
+
+**They report what this host can answer for and nothing else.** A peer's own decode time and how
+many frames it has queued waiting to decode are the peer's to know; reporting either would be
+reporting a number this host made up. What is here is what the congestion controller already
+reads -- outstanding fragments, how many are past due, the measured rate, encode time, the
+smoothed round trip -- plus when each kind of input last arrived, which is the one question an
+application kicking idle guests can ask nobody else. **Zero means never, which is not zero
+milliseconds ago.**
 
 **There is no separate call to enable or disable a guest's input.** It was declared here and
 removed 2026-08-21 before anything was built against it: it is `lowlat_host_set_permissions`

@@ -198,7 +198,35 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   walked field by field at run time, and it is the property the boundary was
   shaped around.
 
+- **Telling every guest who is in the room**, which the boundary could not do
+  at all. It travels on its own opcode and is addressed to everybody; a peer
+  cannot ask for one and finds itself in the list by number, so a guest never
+  sent one does not know what it is. An application had `send_user_data` and no
+  way to send this.
+
+- **What a guest is, and what it is doing.** A guest now carries the attempt it
+  was registered under -- the link between the seam's two halves, since
+  everything before a guest is seated is addressed by attempt and everything
+  after by number. Metrics live behind their own call rather than inside the
+  guest, because a guest is an array element and an array element cannot carry
+  a size: it is fixed for the major version and metrics are the numbers most
+  likely to grow.
+
+  **They report what this host can answer for.** The congestion controller's
+  own inputs, the measured rate, encode time and the smoothed round trip, plus
+  when each kind of input last arrived -- the one question an application
+  kicking idle guests can ask nobody else. A peer's decode time and its queued
+  frames are the peer's to know, and reporting either would be reporting a
+  number this host made up.
+
 **Found by running it**
+
+- **A rule the test could not have exercised.** A stamp landing at the very
+  first millisecond must not be written as zero, because zero is how "never"
+  is spelled -- an application would read a guest that typed as the session
+  opened as one that has never typed. The test for it went through a seated
+  guest that sends nothing, so the stamping was never reached and deleting the
+  rule changed no result. It is now tested against the stamping itself.
 
 - **A log with no clock answers none of the questions logs are read for.**
   Every diagnosis this project has made from a log came down to an interval --
