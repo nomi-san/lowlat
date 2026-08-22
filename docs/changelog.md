@@ -86,6 +86,26 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   and on somebody else's machine. The restore now takes no cancellation
   and a short deadline of its own.
 
+- **What sound costs comes off the picture's ceiling.** The rate
+  controllers measure the video channel and know nothing of the audio
+  one, so a host that ignored it would send the configured rate plus
+  whatever sound costs -- five percent of a thirty megabit session for
+  a guest on the uncompressed form. It is taken off the top, before the
+  division, because every guest carries its own.
+
+- **Sound is configured from the boundary, and every field is live.**
+  Unlike video there is no settled half: one structure is both what a
+  host starts with and what the setter takes. Switching sound off gives
+  the device back and restores the speakers; the rate is read on the
+  frame that uses it; the permission for the uncompressed form is read
+  by everything that produces, prices or labels a packet, through one
+  accessor, because a guest sent one encoding and told it is another
+  hears noise.
+
+  Enumeration answers before hosting starts and without disturbing a
+  host that is running. **The identity is the monitor of an output
+  rather than the output**, because that is the device a host reads.
+
 - **Silence costs what it costs, which is not what the plan assumed.**
   Measured: the compressed path collapses digital silence to 1.2 kbit/s
   against the 128 it carries with sound. So it is sent compressed --

@@ -1134,10 +1134,11 @@ problem and no code at all.
   undo only what this host did, or somebody who muted their own speakers has them switched back on
   by a guest leaving -- in their absence, with the sound as the first warning. Read from the live
   configuration at every open, so the second guest of a session behaves like the first.
-- [ ] **The boundary**: enable, bitrate, permit-uncompressed, device and the local mute, with the
-  device, the bitrate and the mute live; enumeration behind `lowlat_get_audio_outputs`. *Written when it exists, and not
-  before: [06-api.md](06-api.md) and the library agree exactly today and that property is worth
-  more than a documented field nobody can call.*
+- [x] **The boundary**: enable, bitrate, permit-uncompressed, device and the local mute --
+  **all of them live**, so unlike video there is no settled half and one structure serves as both
+  what a host starts with and what the setter takes. Enumeration behind
+  `lowlat_get_audio_outputs`, whose identity is the **monitor** of an output rather than the
+  output, because that is the device a host reads.
 
 **Gate:**
 
