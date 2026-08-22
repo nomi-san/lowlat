@@ -177,6 +177,14 @@ pub enum lowlat_event_type {
     LOWLAT_EVENT_ENDED = 4,
     /// A guest sent its application a message.
     LOWLAT_EVENT_USER_DATA = 5,
+    /// What is being captured changed: a different output, or the same one at
+    /// a different size.
+    LOWLAT_EVENT_CAPTURE_CHANGED = 6,
+    /// The guest holding the pointer changed, or nobody holds it now.
+    LOWLAT_EVENT_INPUT_OWNER_CHANGED = 7,
+    /// The host cannot continue. **Never dropped**, whatever the queue is
+    /// doing, because it is the only explanation for everything that stopped.
+    LOWLAT_EVENT_FATAL = 8,
 }
 
 /// Why an attempt finished.
@@ -242,6 +250,34 @@ pub struct lowlat_ended_event {
     pub reason: i32,
 }
 
+/// What the loop is capturing now.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_capture_changed_event {
+    pub width: u32,
+    pub height: u32,
+    /// The identity of the output being captured, which is what a chooser
+    /// marks and what absolute input is expressed against.
+    pub output: [c_char; LOWLAT_OUTPUT_MAX],
+}
+
+/// Who holds the pointer now.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_input_owner_event {
+    /// [`LOWLAT_GUEST_ALL`] -- zero -- when nobody holds it.
+    pub guest: u32,
+}
+
+/// The host cannot continue.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_fatal_event {
+    /// What every guest was told on the way out, in the protocol's own
+    /// numbering rather than this API's.
+    pub reason: i32,
+}
+
 /// An application message from a guest.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -268,6 +304,9 @@ pub union lowlat_event_body {
     pub established: lowlat_established_event,
     pub ended: lowlat_ended_event,
     pub user_data: lowlat_user_data_event,
+    pub capture_changed: lowlat_capture_changed_event,
+    pub input_owner: lowlat_input_owner_event,
+    pub fatal: lowlat_fatal_event,
 }
 
 /// One event.
@@ -1460,6 +1499,41 @@ fn described(received: &crate::events::Received) -> lowlat_event {
                 body: lowlat_event_body { ended: body },
             }
         }
+        Event::CaptureChanged {
+            width,
+            height,
+            output,
+        } => {
+            let mut body = lowlat_capture_changed_event {
+                width: *width,
+                height: *height,
+                output: [0; LOWLAT_OUTPUT_MAX],
+            };
+            put(&mut body.output, output);
+            lowlat_event {
+                kind: LOWLAT_EVENT_CAPTURE_CHANGED,
+                dropped,
+                body: lowlat_event_body {
+                    capture_changed: body,
+                },
+            }
+        }
+        Event::InputOwnerChanged { guest } => lowlat_event {
+            kind: LOWLAT_EVENT_INPUT_OWNER_CHANGED,
+            dropped,
+            body: lowlat_event_body {
+                input_owner: lowlat_input_owner_event {
+                    guest: guest.unwrap_or(LOWLAT_GUEST_ALL),
+                },
+            },
+        },
+        Event::Fatal { reason } => lowlat_event {
+            kind: LOWLAT_EVENT_FATAL,
+            dropped,
+            body: lowlat_event_body {
+                fatal: lowlat_fatal_event { reason: *reason },
+            },
+        },
         Event::UserData { guest, id, text } => lowlat_event {
             kind: LOWLAT_EVENT_USER_DATA,
             dropped,

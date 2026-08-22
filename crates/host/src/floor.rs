@@ -42,6 +42,12 @@ struct Shared {
     /// **Absent means nobody arbitrates**, which is the default and makes
     /// every question below answer yes.
     enabled: bool,
+    /// Where a change of holder is announced.
+    ///
+    /// **Raised here rather than by whichever guest thread noticed.** The
+    /// transfer happens under this lock and nowhere else, so this is the one
+    /// place that can tell a change from a guest simply still holding it.
+    raise: Option<crate::events::Sender>,
     /// How long a guest keeps the pointer after its last movement.
     hold_ms: f64,
     state: Mutex<State>,
@@ -73,6 +79,11 @@ impl Floor {
     /// outside the bounds is somebody experimenting, and the nearest usable
     /// one is a better answer than a host that will not start.
     pub fn with_hold(enabled: bool, hold_ms: f64) -> Self {
+        Self::announcing(enabled, hold_ms, None)
+    }
+
+    /// The same, announcing every change of holder.
+    pub fn announcing(enabled: bool, hold_ms: f64, raise: Option<crate::events::Sender>) -> Self {
         let hold_ms = if hold_ms.is_finite() {
             hold_ms.clamp(HOLD_MIN_MS, HOLD_MAX_MS)
         } else {
@@ -82,6 +93,7 @@ impl Floor {
             shared: Arc::new(Shared {
                 enabled,
                 hold_ms,
+                raise,
                 state: Mutex::new(State::default()),
             }),
         }
@@ -114,6 +126,11 @@ impl Floor {
             _ => {
                 if state.holder != Some(guest) {
                     lowlat_common::log_info!("input: the pointer is guest {guest}'s");
+                    if let Some(raise) = self.shared.raise.as_ref() {
+                        raise.send(crate::admission::Event::InputOwnerChanged {
+                            guest: Some(guest),
+                        });
+                    }
                 }
                 state.holder = Some(guest);
                 state.since_ms = now_ms;
@@ -177,6 +194,35 @@ mod tests {
     use super::*;
 
     /// Off is off: nobody waits for anybody.
+    /// **The transfer is announced from the one place it happens.** A guest
+    /// thread that noticed could only say the pointer is now its own, which is
+    /// also what it says on every message while it simply keeps holding it.
+    #[test]
+    fn a_change_of_holder_is_announced_once_and_holding_it_is_not() {
+        let (sender, receiver) = crate::events::queue();
+        let floor = Floor::announcing(true, HOLD_MS, Some(sender));
+
+        assert!(floor.claim(1, false, 0.0));
+        assert_eq!(
+            receiver.try_recv().map(|taken| taken.event),
+            Some(crate::admission::Event::InputOwnerChanged { guest: Some(1) })
+        );
+
+        // Still guest one's, and still moving: nothing changed hands.
+        assert!(floor.claim(1, false, 10.0));
+        assert!(
+            receiver.try_recv().is_none(),
+            "a guest keeping the pointer was announced as taking it"
+        );
+
+        // Past the hold, somebody else takes it.
+        assert!(floor.claim(2, false, HOLD_MS + 20.0));
+        assert_eq!(
+            receiver.try_recv().map(|taken| taken.event),
+            Some(crate::admission::Event::InputOwnerChanged { guest: Some(2) })
+        );
+    }
+
     #[test]
     fn nothing_is_arbitrated_when_it_is_disabled() {
         let floor = Floor::new(false);

@@ -129,6 +129,29 @@ pub enum Event {
     /// application's own protocol, and a host that interpreted either would be
     /// inventing one on its behalf (docs/05-host.md section 5).
     UserData { guest: u32, id: u32, text: Vec<u8> },
+    /// What is being captured changed: a different output, or the same one at
+    /// a different size.
+    ///
+    /// **Raised where the change happened**, by the loop that rebuilt around
+    /// it. Nothing else knows which of the two it was, and an application left
+    /// to notice by comparing what it last asked for is an application polling
+    /// on a timer for something the host already knew.
+    CaptureChanged {
+        width: u32,
+        height: u32,
+        output: String,
+    },
+    /// The guest holding the pointer changed, or nobody holds it now.
+    ///
+    /// Only raised where one guest at a time may drive; with arbitration off
+    /// there is no owner to change.
+    InputOwnerChanged { guest: Option<u32> },
+    /// The host cannot continue, and every guest has been told why.
+    ///
+    /// **The one event that is never dropped**, because a bounded queue that
+    /// discards this discards the only explanation for everything that stopped
+    /// working.
+    Fatal { reason: i32 },
 }
 
 /// Why an attempt finished.
@@ -390,9 +413,15 @@ impl core::fmt::Debug for Attempt {
 impl Admission {
     pub fn new(config: Config) -> Self {
         let (emit, events) = crate::events::queue();
-        let stream = config.stream.clone().map(Stream::start);
-        let floor =
-            crate::floor::Floor::with_hold(config.exclusive_pointer, config.exclusive_hold_ms);
+        let stream = config
+            .stream
+            .clone()
+            .map(|stream| Stream::announcing(stream, Some(emit.clone())));
+        let floor = crate::floor::Floor::announcing(
+            config.exclusive_pointer,
+            config.exclusive_hold_ms,
+            Some(emit.clone()),
+        );
         Self {
             config,
             stream,

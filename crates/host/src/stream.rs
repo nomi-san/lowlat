@@ -242,6 +242,12 @@ struct Shared {
     /// per frame (AGENTS 6.8).
     video_asked: AtomicU32,
     video: std::sync::Mutex<LiveVideo>,
+    /// Where this loop announces what only it knows.
+    ///
+    /// **Here rather than threaded through every call.** Everything else the
+    /// loop publishes goes through this structure already, and what is being
+    /// captured is published from the one place both backends meet.
+    raise: Option<crate::events::Sender>,
     /// Raised to end the loop; the loop checks it once per frame.
     stopping: AtomicU32,
     /// The picture the stream is really producing, as width in the high half
@@ -714,6 +720,12 @@ impl Stream {
     /// released with the last, on this thread, because that is where the
     /// device context has to live.
     pub fn start(config: Config) -> Self {
+        Self::announcing(config, None)
+    }
+
+    /// The same, raising what only this loop can know: what it is capturing
+    /// now, and that it cannot continue.
+    pub fn announcing(config: Config, raise: Option<crate::events::Sender>) -> Self {
         let shared = Arc::new(Shared {
             seats: core::array::from_fn(|_| Seat::new()),
             pool: Pool::new(POOL_SLOTS, max_frame_bytes()),
@@ -727,6 +739,7 @@ impl Stream {
             stopping: AtomicU32::new(0),
             captured: AtomicU32::new(0),
             output_asked: AtomicU32::new(0),
+            raise: raise.clone(),
             video_asked: AtomicU32::new(0),
             video: std::sync::Mutex::new(LiveVideo {
                 fps: config.fps,
@@ -1233,6 +1246,12 @@ fn run(
                         reason
                     );
                     kick_all(shared, &roster.active, reason);
+                    // **Nobody could be served, and every guest was told.**
+                    // The loop goes back to waiting rather than dying, but for
+                    // the application this is the session not continuing.
+                    if let Some(raise) = shared.raise.as_ref() {
+                        raise.send(crate::admission::Event::Fatal { reason });
+                    }
                     // Back to waiting rather than out. The seats free as their
                     // guests read the reason, and the next arrival gets its own
                     // attempt at the device.
@@ -2030,7 +2049,19 @@ fn encode_loop<E: Encoder + FromDevice>(
     // the display exists, so it arrives one step later and the guests pick it
     // up on the pass after.
     shared.publish_place(display.as_ref().and_then(|desktop| desktop.place()));
-    shared.publish_captured(display.as_ref().and_then(|desktop| desktop.selected()));
+    let selected = display.as_ref().and_then(|desktop| desktop.selected());
+    shared.publish_captured(selected);
+    // **Announced from the one place that knows both halves.** The size and
+    // the output are what a peer is told it is watching and what its absolute
+    // input is expressed against, and an application left to notice by polling
+    // is one asking a question this loop already answered.
+    if let Some(raise) = shared.raise.as_ref() {
+        raise.send(crate::admission::Event::CaptureChanged {
+            width: config.width,
+            height: config.height,
+            output: selected.unwrap_or_default().to_string(),
+        });
+    }
     // **The block says which codec is on the wire**, so a live run is
     // identifiable from the picture rather than from a log on the other
     // machine. Nothing downstream reads it; it is for the person watching.
@@ -2978,6 +3009,7 @@ mod tests {
                 stopping: AtomicU32::new(0),
                 captured: AtomicU32::new(0),
                 output_asked: AtomicU32::new(0),
+                raise: None,
                 video_asked: AtomicU32::new(0),
                 video: std::sync::Mutex::new(LiveVideo::default()),
                 epoch: AtomicU32::new(0),
@@ -3035,6 +3067,7 @@ mod tests {
             stopping: AtomicU32::new(0),
             captured: AtomicU32::new(0),
             output_asked: AtomicU32::new(0),
+            raise: None,
             video_asked: AtomicU32::new(0),
             video: std::sync::Mutex::new(LiveVideo::default()),
             epoch: AtomicU32::new(0),
@@ -3231,6 +3264,7 @@ mod tests {
             stopping: AtomicU32::new(0),
             captured: AtomicU32::new(0),
             output_asked: AtomicU32::new(0),
+            raise: None,
             video_asked: AtomicU32::new(0),
             video: std::sync::Mutex::new(LiveVideo::default()),
             epoch: AtomicU32::new(0),

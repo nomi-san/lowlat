@@ -149,6 +149,14 @@ enum lowlat_event_type
     LOWLAT_EVENT_ENDED = 4,
     // A guest sent its application a message.
     LOWLAT_EVENT_USER_DATA = 5,
+    // What is being captured changed: a different output, or the same one at
+    // a different size.
+    LOWLAT_EVENT_CAPTURE_CHANGED = 6,
+    // The guest holding the pointer changed, or nobody holds it now.
+    LOWLAT_EVENT_INPUT_OWNER_CHANGED = 7,
+    // The host cannot continue. **Never dropped**, whatever the queue is
+    // doing, because it is the only explanation for everything that stopped.
+    LOWLAT_EVENT_FATAL = 8,
 };
 #ifndef __cplusplus
 #if __STDC_VERSION__ >= 202311L
@@ -507,6 +515,28 @@ typedef struct lowlat_user_data_event {
     uint32_t body_len;
 } lowlat_user_data_event;
 
+// What the loop is capturing now.
+typedef struct lowlat_capture_changed_event {
+    uint32_t width;
+    uint32_t height;
+    // The identity of the output being captured, which is what a chooser
+    // marks and what absolute input is expressed against.
+    char output[LOWLAT_OUTPUT_MAX];
+} lowlat_capture_changed_event;
+
+// Who holds the pointer now.
+typedef struct lowlat_input_owner_event {
+    // [`LOWLAT_GUEST_ALL`] -- zero -- when nobody holds it.
+    uint32_t guest;
+} lowlat_input_owner_event;
+
+// The host cannot continue.
+typedef struct lowlat_fatal_event {
+    // What every guest was told on the way out, in the protocol's own
+    // numbering rather than this API's.
+    int32_t reason;
+} lowlat_fatal_event;
+
 // Whichever event this is.
 //
 // A union cannot describe itself, and the tag beside it is what says which
@@ -517,6 +547,9 @@ typedef union lowlat_event_body {
     struct lowlat_established_event established;
     struct lowlat_ended_event ended;
     struct lowlat_user_data_event user_data;
+    struct lowlat_capture_changed_event capture_changed;
+    struct lowlat_input_owner_event input_owner;
+    struct lowlat_fatal_event fatal;
 } lowlat_event_body;
 
 // One event.

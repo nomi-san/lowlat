@@ -197,6 +197,12 @@ pub(crate) fn on_message(
 /// *did* cause takes a moment to land, so the answer to its own question can
 /// still describe the world it was leaving.
 ///
+/// **Compared rather than told, and it no longer has to be.** The stream now
+/// raises a capture-changed event from the one place that knows both the size
+/// and the output; this remains because the daemon drives the seam directly
+/// rather than through the boundary, and an application on the boundary should
+/// use the event.
+///
 /// Answers what is being captured now, so the caller can hold it and call
 /// again.
 pub(crate) fn announce_capture(seam: &mut Admission, settings: &Settings, last: u32) -> u32 {

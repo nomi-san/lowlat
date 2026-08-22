@@ -69,6 +69,16 @@ struct State {
     dropped: u32,
 }
 
+/// Whether an event survives the queue being full.
+///
+/// **Only the fatal one does.** A bound that discards the message saying why
+/// everything stopped leaves an application with a session that went quiet and
+/// nothing to report; every other event is one of a stream of them, and losing
+/// the oldest is what the dropped count is for.
+fn undroppable(event: &Event) -> bool {
+    matches!(event, Event::Fatal { .. })
+}
+
 impl State {
     fn push(&mut self, event: Event) {
         let arriving = weight(&event);
@@ -77,11 +87,18 @@ impl State {
         // bound that discards what it was just handed loses the message and
         // reports the loss to nobody. So the oldest go until it fits or until
         // there is nothing left to give up.
-        while !self.queued.is_empty()
+        while self.queued.iter().any(|queued| !undroppable(queued))
             && (self.queued.len() >= MAX_EVENTS || self.bytes + arriving > MAX_BYTES)
         {
-            if let Some(oldest) = self.queued.pop_front() {
-                self.bytes -= weight(&oldest);
+            // **The oldest droppable one, not simply the oldest.** A fatal
+            // event at the front would otherwise be the first thing a full
+            // queue threw away, which is the one loss that cannot be reported
+            // by a count.
+            let Some(at) = self.queued.iter().position(|queued| !undroppable(queued)) else {
+                break;
+            };
+            if let Some(dropped) = self.queued.remove(at) {
+                self.bytes -= weight(&dropped);
                 self.dropped = self.dropped.saturating_add(1);
             }
         }
@@ -289,6 +306,50 @@ mod tests {
 
         // And the count is reported once, not on every event after it.
         assert_eq!(receiver.try_recv().expect("the next").dropped, 0);
+    }
+
+    /// **The one event a full queue may not discard.** Everything else is one
+    /// of a stream and the dropped count says how many went; a fatal event
+    /// lost that way takes with it the only explanation for why everything
+    /// stopped, and no count can convey that.
+    #[test]
+    fn a_fatal_event_survives_a_queue_that_is_dropping() {
+        let (sender, receiver) = queue();
+        // Oldest, so a plain drop-oldest policy would take it first.
+        sender.send(Event::Fatal { reason: -15000 });
+        for index in 0..MAX_EVENTS + 10 {
+            sender.send(ready(&index.to_string()));
+        }
+
+        let taken = receiver.try_recv().expect("something survived");
+        assert_eq!(
+            taken.event,
+            Event::Fatal { reason: -15000 },
+            "the fatal event was dropped by a queue under pressure"
+        );
+        assert!(
+            taken.dropped > 0,
+            "nothing was dropped, so this proves nothing about a full queue"
+        );
+    }
+
+    /// And it does not make the queue unbounded: everything droppable still
+    /// goes, so a fatal event held at the front cannot pin a backlog behind it.
+    #[test]
+    fn holding_a_fatal_event_still_bounds_the_queue() {
+        let (sender, receiver) = queue();
+        sender.send(Event::Fatal { reason: -1 });
+        for index in 0..MAX_EVENTS * 2 {
+            sender.send(ready(&index.to_string()));
+        }
+        let mut held = 0;
+        while receiver.try_recv().is_some() {
+            held += 1;
+        }
+        assert!(
+            held <= MAX_EVENTS,
+            "the queue grew to {held}, past its own ceiling"
+        );
     }
 
     /// **The byte budget is a second ceiling, and it is the one that matters.**
