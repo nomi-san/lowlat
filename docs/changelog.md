@@ -221,6 +221,15 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 **Found by running it**
 
+- **An attempt that is not ended holds its seat.** A guest's loop stopping is
+  reported as an event, but the attempt stays registered until the application
+  ends it -- and while it does, it holds that guest's number, its seat and its
+  port. An application that removes the peer from its own bookkeeping and stops
+  there leaves a peer that has gone still on the roster and still counting
+  against capacity, so a host fills up over a few disconnects and refuses
+  offers with nothing connected. Found against a real client, which showed one
+  guest still present after it had left.
+
 - **A rule the test could not have exercised.** A stamp landing at the very
   first millisecond must not be written as zero, because zero is how "never"
   is spelled -- an application would read a guest that typed as the session

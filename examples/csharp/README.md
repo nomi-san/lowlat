@@ -51,6 +51,12 @@ marshaller walking each field.
 arrive when the library raises them. Polling one from inside the other's wait
 is what makes a host that answers late.
 
+**An event that says a guest ended is not the guest being reaped.** The loop
+has stopped, but the attempt stays registered until the application ends it,
+and until then it holds that guest's number, its seat and its port. A live run
+found this the obvious way: a peer that had disconnected was still on the
+roster and still counted against capacity.
+
 **A dropped signaling connection is not a dropped session.** The event pump
 outlives a reconnect because guests do. The service's edge closes an idle
 socket after about a hundred seconds, so the connection carries a keepalive and
