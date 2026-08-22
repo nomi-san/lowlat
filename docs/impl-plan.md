@@ -1118,8 +1118,16 @@ can prove it end to end until an application owns a capture device in somebody's
 - [ ] **The uncompressed bitrate comes out of the video ceiling** for that guest, not out of
   nothing. *The video rate controller cannot see it, and 1.54 Mbit/s is five percent of a thirty
   megabit session.*
-- [ ] **The boundary**: enable, bitrate, permit-uncompressed and device, with the device and the
-  bitrate live; enumeration behind `lowlat_get_audio_outputs`. *Written when it exists, and not
+- [ ] **Open the sound device when the first guest arrives, close it when the last leaves.**
+  *Nothing should hold a capture nobody is listening to, and it is what the setting below rides.*
+- [ ] **Silence the speakers at the desk while a guest is connected**, off by default
+  ([05 §9.4](05-host.md)). *The tap is ahead of the device's own mute, so the speakers go quiet
+  and the guest still hears everything.* **Restore rather than unmute**: read the state first and
+  undo only what this host did, or somebody who muted their own speakers has them switched back on
+  by a guest leaving -- in their absence, with the sound as the first warning. Read from the live
+  configuration at every open, so the second guest of a session behaves like the first.
+- [ ] **The boundary**: enable, bitrate, permit-uncompressed, device and the local mute, with the
+  device, the bitrate and the mute live; enumeration behind `lowlat_get_audio_outputs`. *Written when it exists, and not
   before: [06-api.md](06-api.md) and the library agree exactly today and that property is worth
   more than a documented field nobody can call.*
 
@@ -1133,6 +1141,8 @@ can prove it end to end until an application owns a capture device in somebody's
 4. **A guest that asks for uncompressed gets it**, and a guest that did not is unaffected in the
    same room.
 5. **Silence costs nothing**, checked on the wire rather than by listening.
+6. **The local mute silences the speakers and not the stream**, and a device the person had
+   already muted is still muted after the last guest leaves.
 
 ### The guest microphone, after the gate
 

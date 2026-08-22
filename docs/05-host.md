@@ -756,7 +756,31 @@ is the few tens of milliseconds the move itself takes.
 plausible rather than failing, so a requested device is checked against the enumeration before it
 is opened -- the same rule a requested output follows in §7.
 
-### §9.4 What this host does not do
+### §9.4 Silencing the speakers at the desk
+
+**A person hosting their own machine usually does not want to hear what they are sending.** The
+tap is ahead of the sound device's own mute -- measured, and it is what makes this possible at all
+-- so the speakers can be silenced while a guest keeps hearing the full-scale mix.
+
+**It rides the capture's lifetime, which is the guests' presence.** The sound device is opened
+when the first guest arrives and closed when the last one leaves: nothing should hold a capture
+nobody is listening to, and the mute then needs no trigger of its own.
+
+**Restore, never unmute.** The device's state is read before anything is changed, and it is
+changed back only when all three hold: it is muted now, it was not muted when the host took it,
+and the setting is still on. A host that simply unmutes on the way out switches on the speakers of
+somebody who had muted them for their own reasons, and that is a worse failure than not muting at
+all -- it happens in their absence and the sound is the first they know of it.
+
+**Read from the live configuration at every open**, so a session with two guests in a row behaves
+the same on the second as on the first. A flag consumed once is a setting that describes something
+it does not do.
+
+**The local volume is not a level control for the stream.** The tap is ahead of that too, so
+turning the speakers down does not turn a guest down and turning them up cannot clip one. Nothing
+in this path reads it.
+
+### §9.5 What this host does not do
 
 **No per-application exclusion.** An established host on another platform can capture everything
 except one named program, which is what keeps a voice call from echoing back to the person on the

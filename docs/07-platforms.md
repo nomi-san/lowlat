@@ -425,7 +425,7 @@ for it**.
    is this host's work, not the server's ([05 §9.3](05-host.md)).
 2. **There is no per-application exclusion.** Capturing everything except one named program is an
    operating-system call on another platform and has no equivalent here, which is why this host
-   does not offer it ([05 §9.4](05-host.md)).
+   does not offer it ([05 §9.5](05-host.md)).
 
 ## §8 GPU and encoder
 
