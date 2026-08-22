@@ -65,6 +65,27 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   gap a peer would wait on, and a guest that stops draining loses its
   own packets without holding a slot the room needs.
 
+- **The sound device is held while somebody is listening and not
+  otherwise**, opened for the first guest and given back with the last.
+  It outlives an encoder rebuild, which a guest does not notice and
+  which would otherwise cost a gap in the sound for a change to the
+  picture.
+
+- **The speakers at the desk can be silenced while a guest is
+  connected**, off by default. The tap is ahead of the device's own
+  mute, so what a guest hears is unaffected. It **restores rather than
+  unmutes**: the state is read first and undone only when this host is
+  what changed it and it is still that way, so somebody who muted their
+  own speakers keeps them muted and somebody who unmuted mid-session is
+  not re-muted. It moves with the device.
+
+  **Its live test failed the first time**, which is why it is written
+  down here: the restore waited on the same flag that had just stopped
+  the loop, so it gave up at once and left the speakers muted after the
+  process exited. That is the worst failure this feature has -- silent,
+  and on somebody else's machine. The restore now takes no cancellation
+  and a short deadline of its own.
+
 - **Silence costs what it costs, which is not what the plan assumed.**
   Measured: the compressed path collapses digital silence to 1.2 kbit/s
   against the 128 it carries with sound. So it is sent compressed --

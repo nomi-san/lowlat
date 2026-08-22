@@ -1126,9 +1126,9 @@ problem and no code at all.
 - [ ] **The uncompressed bitrate comes out of the video ceiling** for that guest, not out of
   nothing. *The video rate controller cannot see it, and 1.54 Mbit/s is five percent of a thirty
   megabit session.*
-- [ ] **Open the sound device when the first guest arrives, close it when the last leaves.**
+- [x] **Open the sound device when the first guest arrives, close it when the last leaves.**
   *Nothing should hold a capture nobody is listening to, and it is what the setting below rides.*
-- [ ] **Silence the speakers at the desk while a guest is connected**, off by default
+- [x] **Silence the speakers at the desk while a guest is connected**, off by default
   ([05 §9.4](05-host.md)). *The tap is ahead of the device's own mute, so the speakers go quiet
   and the guest still hears everything.* **Restore rather than unmute**: read the state first and
   undo only what this host did, or somebody who muted their own speakers has them switched back on
