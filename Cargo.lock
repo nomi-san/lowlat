@@ -576,6 +576,7 @@ dependencies = [
 name = "lowlatd"
 version = "0.0.0"
 dependencies = [
+ "lowlat-common",
  "lowlat-host",
  "lowlat-kessel",
  "serde_json",

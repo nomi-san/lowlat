@@ -361,9 +361,10 @@ typedef struct lowlat_host_video_config {
     double min_bitrate_mbps;
     // Emit at `fps` even when the picture has not changed.
     //
-    // **Clearing it is a permission, not an instruction.** There is no damage
-    // signal here, so nothing yet skips a repeated picture; a host that keeps
-    // sending costs bitrate rather than being wrong.
+    // **A permission, not an instruction, and off by default.** There is no
+    // damage signal here, so nothing yet skips a repeated picture; a host that
+    // keeps sending costs bitrate rather than being wrong. Setting it promises
+    // to spend that bitrate whatever else becomes possible later.
     bool full_fps;
     uint8_t reserved[3];
     // Which output to capture, by an identity from the enumeration. **Empty

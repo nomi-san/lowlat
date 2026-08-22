@@ -433,9 +433,10 @@ pub struct lowlat_host_video_config {
     pub min_bitrate_mbps: f64,
     /// Emit at `fps` even when the picture has not changed.
     ///
-    /// **Clearing it is a permission, not an instruction.** There is no damage
-    /// signal here, so nothing yet skips a repeated picture; a host that keeps
-    /// sending costs bitrate rather than being wrong.
+    /// **A permission, not an instruction, and off by default.** There is no
+    /// damage signal here, so nothing yet skips a repeated picture; a host that
+    /// keeps sending costs bitrate rather than being wrong. Setting it promises
+    /// to spend that bitrate whatever else becomes possible later.
     pub full_fps: bool,
     pub reserved: [u8; 3],
     /// Which output to capture, by an identity from the enumeration. **Empty
@@ -506,15 +507,9 @@ pub struct lowlat_create_info {
 /// **One lock rather than two.** A second would be a lock ordering, and a lock
 /// ordering is what produces the first deadlock on the day somebody adds a call
 /// that needs both (docs/06-api.md 8).
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct Held {
     seam: Option<crate::admission::Admission>,
-    /// **Shared rather than borrowed**, so a poll can take a handle on the
-    /// queue and release the lock before it waits. Holding the lock across a
-    /// wait would stop every other call for the length of somebody's timeout.
-    /// One consumer is still the contract; this is what keeps the lock honest,
-    /// not what makes two consumers safe.
-    events: Option<std::sync::Arc<crate::events::Receiver>>,
 }
 
 /// The longest credential this boundary carries.
@@ -767,11 +762,22 @@ pub extern "C" fn lowlat_set_log_level(level: u32) -> lowlat_status {
 ///
 /// Opaque: the application holds a pointer it cannot look inside, so what is
 /// in here changes freely.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct lowlat {
     /// Set when a call was contained, and never cleared.
     poisoned: AtomicBool,
     held: std::sync::Mutex<Held>,
+    /// **The queue exists from the moment the handle does**, and outlives any
+    /// one host on it. An application starts its polling thread before it
+    /// starts hosting, so a poll has something real to wait on from the first
+    /// call; and events a host raised on the way down are still there to be
+    /// taken after it has stopped.
+    ///
+    /// Held outside the lock because a poll waits for as long as its caller
+    /// asked and every other call must stay answerable while it does.
+    events: crate::events::Receiver,
+    /// The other end, handed to each host as it starts.
+    raise: crate::events::Sender,
 }
 
 impl lowlat {
@@ -806,7 +812,13 @@ pub unsafe extern "C" fn lowlat_create(
         {
             return LOWLAT_ERR_INVALID_ARGUMENT;
         }
-        let handle = Box::new(lowlat::default());
+        let (raise, events) = crate::events::queue();
+        let handle = Box::new(lowlat {
+            poisoned: AtomicBool::new(false),
+            held: std::sync::Mutex::new(Held { seam: None }),
+            events,
+            raise,
+        });
         unsafe { out.write(Box::into_raw(handle)) };
         LOWLAT_OK
     })
@@ -975,12 +987,13 @@ pub unsafe extern "C" fn lowlat_host_start(
             let Some(config) = configured(cfg) else {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             };
-            let mut seam = crate::admission::Admission::new(config);
-            // **Taken now, and held beside the seam rather than inside it.** A
-            // poll waits for as long as its caller asked, and every other call
-            // has to stay answerable while it does.
-            held.events = seam.take_events().map(std::sync::Arc::new);
-            held.seam = Some(seam);
+            // **Raising into the handle's queue rather than its own**, so a
+            // host starting and stopping does not take the queue with it.
+            held.seam = Some(crate::admission::Admission::raising(
+                config,
+                handle.raise.clone(),
+                None,
+            ));
             LOWLAT_OK
         })
     }
@@ -1857,15 +1870,7 @@ pub unsafe extern "C" fn lowlat_host_poll_events(
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             }
             let timeout = Duration::from_millis(u64::from(timeout_ms));
-            let events = handle.held().events.clone();
-            let Some(events) = events else {
-                // Nothing raises events until hosting starts. **The timeout is
-                // still owed**: an application starts its polling thread before
-                // it starts hosting, and a poll that answers instantly turns
-                // that thread into a spin.
-                std::thread::sleep(timeout);
-                return LOWLAT_TIMEOUT;
-            };
+            let events = &handle.events;
 
             if body.is_null() {
                 // The body is dropped, and the event still reports its length
@@ -2223,10 +2228,11 @@ mod tests {
         unsafe { lowlat_destroy(core::ptr::null_mut()) };
     }
 
-    /// **Polling a host that has not started is quiet, not broken** -- and it
-    /// still costs the time it was asked for. An application starts its
-    /// polling thread before it starts hosting, so a poll that answers
-    /// instantly makes that thread a spin.
+    /// **Polling a host that has not started waits on a real queue.** An
+    /// application starts its polling thread before it starts hosting, so a
+    /// poll that answered instantly would make that thread a spin -- and the
+    /// queue exists from creation rather than arriving with a host, so there
+    /// is nothing to special-case.
     #[test]
     fn polling_before_hosting_waits_and_then_times_out() {
         let mut handle: *mut lowlat = core::ptr::null_mut();
@@ -2388,8 +2394,9 @@ mod start_tests {
         unsafe { lowlat_destroy(handle) };
     }
 
-    /// **Hosting is what fills the queue**, and stopping does not empty it:
-    /// what was raised on the way down is still worth polling.
+    /// **The queue outlives the host on it.** It exists from creation, so a
+    /// poll before hosting waits on something real; and stopping does not empty
+    /// it, because what was raised on the way down is still worth taking.
     #[test]
     fn events_reach_the_poll_once_hosting_has_started() {
         let handle = handle();
@@ -2412,18 +2419,25 @@ mod start_tests {
         // Nobody has offered, so there is nothing yet -- but the queue is real
         // now rather than absent, which is what the next assertion rests on.
         assert_eq!(polled, LOWLAT_TIMEOUT);
-        assert!(handle_has_a_queue(handle));
 
+        // Raised by the seam and still takeable after the host that raised it
+        // has gone.
         assert_eq!(unsafe { lowlat_host_stop(handle) }, LOWLAT_OK);
+        let mut event = core::mem::MaybeUninit::<lowlat_event>::uninit();
+        let after = unsafe {
+            lowlat_host_poll_events(
+                handle,
+                0,
+                event.as_mut_ptr(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
         assert!(
-            handle_has_a_queue(handle),
-            "stopping threw away events that had already been raised"
+            after == LOWLAT_OK || after == LOWLAT_TIMEOUT,
+            "the queue went away with the host that was raising into it"
         );
         unsafe { lowlat_destroy(handle) };
-    }
-
-    fn handle_has_a_queue(ll: *mut lowlat) -> bool {
-        unsafe { ll.as_ref() }.is_some_and(|handle| handle.held().events.is_some())
     }
 }
 

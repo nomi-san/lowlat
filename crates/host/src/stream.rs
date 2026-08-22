@@ -680,10 +680,12 @@ pub struct LiveVideo {
     pub min_mbps: f64,
     /// Whether to emit at `fps` even when the picture has not changed.
     ///
-    /// **Always honoured as true, and clearing it costs nothing but bitrate.**
-    /// There is no damage signal here at all, so this cannot yet be acted on;
-    /// what it permits is skipping, and not skipping is the conservative
-    /// answer rather than a wrong one.
+    /// **Off by default, which is a statement of intent rather than of
+    /// behaviour.** There is no damage signal here at all, so nothing yet
+    /// skips a repeated picture; what this clears is the *permission* to send
+    /// one anyway, and a host that keeps sending costs bitrate rather than
+    /// being wrong. Defaulting it on would promise to spend that bitrate
+    /// forever, which is not what anybody wants asked for on their behalf.
     pub full_fps: bool,
 }
 
@@ -693,7 +695,7 @@ impl Default for LiveVideo {
             fps: 60,
             bitrate_mbps: 10.0,
             min_mbps: 1.0,
-            full_fps: true,
+            full_fps: false,
         }
     }
 }
@@ -745,7 +747,7 @@ impl Stream {
                 fps: config.fps,
                 bitrate_mbps: config.configured_mbps,
                 min_mbps: config.min_mbps,
-                full_fps: true,
+                full_fps: false,
             }),
             epoch: AtomicU32::new(0),
         });

@@ -224,7 +224,7 @@ pub(crate) fn announce_capture(seam: &mut Admission, settings: &Settings, last: 
         seam.send_user_data(guest.number, id::CONFIG, config.as_bytes());
         seam.send_user_data(guest.number, id::OUTPUTS, outputs.as_bytes());
     }
-    println!("lowlatd: capture changed, told every guest: {config}");
+    lowlat_common::log_info!("lowlatd: capture changed, told every guest: {config}");
     captured
 }
 
@@ -271,7 +271,7 @@ pub(crate) fn announce_guests(seam: &mut Admission) {
         .collect();
     let body = serde_json::Value::Array(guests).to_string();
     let reached = seam.send_roster(body.as_bytes());
-    println!("lowlatd: told {reached} guest(s) the roster: {body}");
+    lowlat_common::log_info!("lowlatd: told {reached} guest(s) the roster: {body}");
 }
 
 /// One block of per-guest telemetry, all of it zero.
@@ -298,9 +298,9 @@ fn metrics() -> serde_json::Value {
 fn answered(seam: &mut Admission, guest: u32, id: u32, body: &str) {
     let sent = seam.send_user_data(guest, id, body.as_bytes());
     if sent {
-        println!("lowlatd: answered guest {guest} id={id} {body}");
+        lowlat_common::log_info!("lowlatd: answered guest {guest} id={id} {body}");
     } else {
-        println!("lowlatd: guest {guest} could not be answered with id={id}");
+        lowlat_common::log_info!("lowlatd: guest {guest} could not be answered with id={id}");
     }
 }
 
@@ -385,11 +385,13 @@ fn outputs(fake: bool) -> String {
 /// Take what a client asked for, and act on the part of it that is ours.
 fn apply(seam: &mut Admission, body: &[u8], video: &Video) {
     let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(body) else {
-        println!("lowlatd: a configuration arrived that is not JSON, ignoring it");
+        lowlat_common::log_info!("lowlatd: a configuration arrived that is not JSON, ignoring it");
         return;
     };
     let Some(first) = parsed.get("video").and_then(|v| v.get(0)) else {
-        println!("lowlatd: a configuration arrived describing no stream, ignoring it");
+        lowlat_common::log_info!(
+            "lowlatd: a configuration arrived describing no stream, ignoring it"
+        );
         return;
     };
 
@@ -403,7 +405,7 @@ fn apply(seam: &mut Admission, body: &[u8], video: &Video) {
         // somewhere, so the host goes back to whichever output it would have
         // taken on its own.
         AUTO if !video.output.is_empty() => {
-            println!("lowlatd: guest asked for whichever output this host picks");
+            lowlat_common::log_info!("lowlatd: guest asked for whichever output this host picks");
             seam.select_output(None);
         }
         AUTO => {}
@@ -414,11 +416,13 @@ fn apply(seam: &mut Admission, body: &[u8], video: &Video) {
         // guest on the stream, including the one that asked. A guest naming
         // something that is not there must cost nothing.
         chosen if Display::outputs().iter().any(|real| real.id == chosen) => {
-            println!("lowlatd: guest asked to capture {chosen}");
+            lowlat_common::log_info!("lowlatd: guest asked to capture {chosen}");
             seam.select_output(Some(chosen.to_string()));
         }
         chosen => {
-            println!("lowlatd: guest asked to capture {chosen}, which nothing here is lighting");
+            lowlat_common::log_info!(
+                "lowlatd: guest asked to capture {chosen}, which nothing here is lighting"
+            );
         }
     }
 
@@ -436,7 +440,9 @@ fn apply(seam: &mut Admission, body: &[u8], video: &Video) {
             && asked != 0
             && asked != u64::from(current)
         {
-            println!("lowlatd: guest asked for {field}={asked}, which this host cannot set yet");
+            lowlat_common::log_info!(
+                "lowlatd: guest asked for {field}={asked}, which this host cannot set yet"
+            );
         }
     }
     if let Some(asked) = first
@@ -445,7 +451,9 @@ fn apply(seam: &mut Admission, body: &[u8], video: &Video) {
         && asked != 0
         && asked != u64::from(video.bitrate_mbps)
     {
-        println!("lowlatd: guest asked for {asked} Mbps, which needs a live reconfigure");
+        lowlat_common::log_info!(
+            "lowlatd: guest asked for {asked} Mbps, which needs a live reconfigure"
+        );
     }
 }
 

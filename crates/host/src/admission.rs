@@ -586,6 +586,20 @@ impl core::fmt::Debug for Attempt {
 impl Admission {
     pub fn new(config: Config) -> Self {
         let (emit, events) = crate::events::queue();
+        Self::raising(config, emit, Some(events))
+    }
+
+    /// The same, raising into a queue somebody else already holds.
+    ///
+    /// **For a caller that must be able to poll before there is a host.** An
+    /// application starts its polling thread before it starts hosting, so the
+    /// queue outlives any one seam rather than arriving with it -- and events
+    /// raised on the way down survive the seam that raised them.
+    pub fn raising(
+        config: Config,
+        emit: crate::events::Sender,
+        events: Option<crate::events::Receiver>,
+    ) -> Self {
         let stream = config
             .stream
             .clone()
@@ -600,7 +614,7 @@ impl Admission {
             stream,
             attempts: HashMap::new(),
             withdrawn: Vec::new(),
-            events: Some(events),
+            events,
             emit,
             floor,
             next_guest: 1,

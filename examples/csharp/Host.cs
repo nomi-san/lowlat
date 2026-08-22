@@ -54,7 +54,10 @@ internal sealed class Host
                     Fps = 60,
                     BitrateMbps = 10.0,
                     MinBitrateMbps = 1.0,
-                    FullFps = true,
+                    // **The permission, not the behaviour.** Nothing skips a
+                    // repeated picture yet, so clearing this costs nothing;
+                    // setting it would promise to spend the bitrate forever.
+                    FullFps = false,
                 },
             };
             Text.Put(((Span<byte>)cfg.Servers)[..Sizes.Server], "3.145.150.90:3478");

@@ -63,7 +63,7 @@ const READY_PORT: u16 = 1234;
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
-        eprintln!("lowlatd: {error}");
+        lowlat_common::log_error!("lowlatd: {error}");
         std::process::exit(1);
     }
 }
@@ -344,7 +344,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         rotated: !matches!(rotation, lowlat::video::Rotation::None),
         host_os: flag("--host-os").and_then(|v| v.parse().ok()).unwrap_or(0),
         fake_output: flag_set("--fake-output"),
-        full_fps: true,
+        // **Off unless asked for.** Nothing here skips a repeated picture, so
+        // this is the permission rather than the behaviour; promising to spend
+        // the bitrate forever is not a default worth having.
+        full_fps: flag_set("--full-fps"),
     };
     let mut peers: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut established: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -374,11 +377,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .await
                 {
                     Ok(true) => return Ok(()),
-                    Ok(false) => println!("lowlatd: signaling closed"),
-                    Err(error) => println!("lowlatd: session failed: {error}"),
+                    Ok(false) => lowlat_common::log_info!("lowlatd: signaling closed"),
+                    Err(error) => lowlat_common::log_info!("lowlatd: session failed: {error}"),
                 }
             }
-            Err(error) => println!("lowlatd: connect failed: {error}"),
+            Err(error) => lowlat_common::log_info!("lowlatd: connect failed: {error}"),
         }
 
         // Attempts that were still negotiating are gone: the peer abandoned
@@ -391,17 +394,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .cloned()
             .collect();
         for id in abandoned {
-            println!("lowlatd: abandoning in-flight {id}");
+            lowlat_common::log_info!("lowlatd: abandoning in-flight {id}");
             seam.end_connection(&id);
             peers.remove(&id);
         }
 
         let delay = backoff.next_delay();
-        println!("lowlatd: reconnecting in {:.1}s", delay.as_secs_f64());
+        lowlat_common::log_info!("lowlatd: reconnecting in {:.1}s", delay.as_secs_f64());
         tokio::select! {
             _ = tokio::time::sleep(delay) => {}
             _ = tokio::signal::ctrl_c() => {
-                println!("lowlatd: stopping");
+                lowlat_common::log_info!("lowlatd: stopping");
                 return Ok(());
             }
         }
@@ -436,7 +439,7 @@ async fn session_loop(
         "conn_update",
         &advertisement(name, capacity, occupancy(seam)),
     )?;
-    println!(
+    lowlat_common::log_info!(
         "lowlatd: advertised as {name:?}, capacity {capacity}, {} guest(s) carried over",
         seam.occupancy()
     );
@@ -448,7 +451,7 @@ async fn session_loop(
                 match message.action.as_str() {
                     "offer_relay" => {
                         let offer: OfferRelay = serde_json::from_value(message.payload)?;
-                        println!("lowlatd: offer {} from {}", offer.attempt_id, offer.from);
+                        lowlat_common::log_info!("lowlatd: offer {} from {}", offer.attempt_id, offer.from);
                         peers.insert(offer.attempt_id.clone(), offer.from.clone());
 
                         // Admission is the application's decision, and this
@@ -476,7 +479,7 @@ async fn session_loop(
                             .map(|error| error.to_string())
                         };
                         if let Some(why) = refusal {
-                            println!("lowlatd: declining {}: {why}", offer.attempt_id);
+                            lowlat_common::log_info!("lowlatd: declining {}: {why}", offer.attempt_id);
                             let empty = no_credentials();
                             client.send("answer", &Answer {
                                 approved: false,
@@ -505,7 +508,7 @@ async fn session_loop(
                             data: AnswerData { base: HostDataBase::default(), creds: &creds },
                             to: &offer.from,
                         })?;
-                        println!("lowlatd: answered, guest bound to port {}", host.port);
+                        lowlat_common::log_info!("lowlatd: answered, guest bound to port {}", host.port);
 
                         // The port that was bound, not the one that was asked
                         // for: they differ as soon as a second guest walks.
@@ -529,7 +532,7 @@ async fn session_loop(
                     }
                     "offer_cancel_relay" => {
                         let cancel: CancelRelay = serde_json::from_value(message.payload)?;
-                        println!("lowlatd: cancelled {}", cancel.attempt_id);
+                        lowlat_common::log_info!("lowlatd: cancelled {}", cancel.attempt_id);
                         seam.end_connection(&cancel.attempt_id);
                         peers.remove(&cancel.attempt_id);
                         client.send("conn_update", &advertisement(name, capacity, occupancy(seam)))?;
@@ -537,16 +540,16 @@ async fn session_loop(
                     // The service closes with a reason, and the reason is the
                     // only thing that distinguishes a bad session from a host
                     // that is simply unknown.
-                    "close" => println!("lowlatd: closed by the service: {}", message.payload),
+                    "close" => lowlat_common::log_info!("lowlatd: closed by the service: {}", message.payload),
                     // An opaque passthrough channel the schema does not list.
                     // Reported rather than dropped, so its arrival is visible.
-                    "sdk" => println!("lowlatd: sdk message: {}", message.payload),
-                    other => println!("lowlatd: ignoring {other}"),
+                    "sdk" => lowlat_common::log_info!("lowlatd: sdk message: {}", message.payload),
+                    other => lowlat_common::log_info!("lowlatd: ignoring {other}"),
                 }
             }
             _ = tokio::time::sleep(std::time::Duration::from_millis(IDLE_MS)) => {}
             _ = tokio::signal::ctrl_c() => {
-                println!("lowlatd: stopping");
+                lowlat_common::log_info!("lowlatd: stopping");
                 return Ok(true);
             }
         }
@@ -562,7 +565,7 @@ async fn session_loop(
             // that stopped polling long enough loses the oldest events, and a
             // loss nobody reports looks like a peer that never did anything.
             if received.dropped > 0 {
-                println!(
+                lowlat_common::log_info!(
                     "lowlatd: {} event(s) were dropped before this one",
                     received.dropped
                 );
@@ -572,7 +575,7 @@ async fn session_loop(
                     let Some(to) = peers.get(&attempt) else {
                         continue;
                     };
-                    println!("lowlatd: local candidate {addr} for {attempt}");
+                    lowlat_common::log_info!("lowlatd: local candidate {addr} for {attempt}");
                     client.send(
                         "candex",
                         &candex(
@@ -602,7 +605,7 @@ async fn session_loop(
                     )?;
                 }
                 Event::Established { attempt, addr } => {
-                    println!("lowlatd: established {attempt} over {addr}");
+                    lowlat_common::log_info!("lowlatd: established {attempt} over {addr}");
                     established.insert(attempt.clone());
                     // **Everyone is told, not just the arrival.** The room the
                     // others are in changed too, and a guest that joined
@@ -618,7 +621,7 @@ async fn session_loop(
                 // otherwise avoids. Logged rather than dropped silently, so a
                 // variant added later announces itself at runtime.
                 Event::Ended { attempt, outcome } => {
-                    println!("lowlatd: ended {attempt}, {outcome:?}");
+                    lowlat_common::log_info!("lowlatd: ended {attempt}, {outcome:?}");
                     // Reaped whatever the reason: the loop has stopped, and
                     // leaving the attempt registered holds its port for the
                     // life of the host.
@@ -650,13 +653,13 @@ async fn session_loop(
                         })
                         .collect();
                     let spoken = app::on_message(seam, guest, id, &text, settings);
-                    println!(
+                    lowlat_common::log_info!(
                         "lowlatd: guest {guest} sent id={id} len={} {}body={printable}",
                         text.len(),
                         if spoken { "" } else { "(not ours) " }
                     );
                 }
-                other => println!("lowlatd: unhandled seam event {other:?}"),
+                other => lowlat_common::log_info!("lowlatd: unhandled seam event {other:?}"),
             }
         }
     }
