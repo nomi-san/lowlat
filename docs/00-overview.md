@@ -61,6 +61,7 @@ lowlat-net       IO shell: sockets, threads, timers, wakeups
 lowlat-sim       deterministic simulator and network namespace fixtures (dev-dependency)
 lowlat-capture   frame trait plus synthetic source; real backends at Gate B
 lowlat-encode    NVENC, then FFmpeg software, then VAAPI
+lowlat-audio     sound capture, encode, and decode; no display stack, no vendor runtime
 lowlat-inject    uinput
 lowlat-host      orchestration plus the C ABI cdylib
 lowlat-kessel    signaling client; async permitted; the SDK does not link it

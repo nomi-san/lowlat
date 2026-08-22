@@ -1086,7 +1086,12 @@ to sit here is closed in [07 §7](07-platforms.md).
 **Downlink first, in one phase. The guest microphone is a separate step below**, because nothing
 can prove it end to end until an application owns a capture device in somebody's session.
 
-- [ ] **The framing**, in the protocol core: fifteen bytes, encode and parse, with the channel
+**It lives in `lowlat-audio`**, its own crate. `lowlat-capture` carries a display stack and
+`lowlat-encode` two vendor runtimes, and sound needs none of it: a machine with no graphics
+device still has audio, and the reverse holds too. What the three share is the shape of the
+problem and no code at all.
+
+- [x] **The framing**, in the protocol core: fifteen bytes, encode and parse, with the channel
   mask and the channel count as fields rather than as constants. *Both are read by a receiver and
   a change of either rebuilds its decoder, so a host that hard-codes the pair is one layout change
   away from a header that disagrees with its own payload.*

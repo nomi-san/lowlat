@@ -54,6 +54,7 @@ lowlat-net       IO shell: sockets, threads, timers, wakeups
 lowlat-sim       deterministic simulator and network namespace fixtures
 lowlat-capture   frame source trait and backends
 lowlat-encode    NVENC, FFmpeg software, VAAPI
+lowlat-audio     sound capture, encode, and decode
 lowlat-inject    uinput
 lowlat-host      orchestration and the C ABI shared library
 lowlat-kessel    signaling client

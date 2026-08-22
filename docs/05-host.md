@@ -1,7 +1,7 @@
 # 05 - Host pipeline
 
 **Status:** locked 2026-08-15. Implemented by `lowlat-capture`, `lowlat-encode`,
-`lowlat-inject`, and the orchestration in `lowlat-host`.
+`lowlat-audio`, `lowlat-inject`, and the orchestration in `lowlat-host`.
 
 Capture and audio land at Gate B on bare metal ([00-overview.md](00-overview.md) D9). The
 traits, the pipeline shape, and every rule below are fixed now, because they are what the

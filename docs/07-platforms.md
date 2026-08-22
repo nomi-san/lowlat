@@ -11,7 +11,7 @@ variant, process topology, and privilege requirement are settled; §3.2 lists wh
 | Windows host | planned, after Gate B |
 | Clients | any platform with an existing client; nothing to install |
 
-Platform-specific code is confined to `lowlat-capture`, `lowlat-inject`, and the platform
+Platform-specific code is confined to `lowlat-capture`, `lowlat-audio`, `lowlat-inject`, and the platform
 receive strategy in `lowlat-net` ([02 §6](02-io-shell.md)). Everything else is portable by
 construction, because the protocol core is `no_std` and touches no operating system.
 
