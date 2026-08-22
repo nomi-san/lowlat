@@ -60,11 +60,15 @@ uint32_t      lowlat_host_get_guests(lowlat *ll, lowlat_guest *out, uint32_t *co
 lowlat_status lowlat_host_kick_guest(lowlat *ll, uint32_t guest_id, int32_t reason);
 lowlat_status lowlat_host_set_permissions(lowlat *ll, uint32_t guest_id,
                                           const lowlat_permissions *perms);
-lowlat_status lowlat_host_set_input_enabled(lowlat *ll, uint32_t guest_id, bool enabled);
 
 lowlat_status lowlat_host_send_user_data(lowlat *ll, uint32_t guest_id, uint32_t id,
                                          const void *data, uint32_t len);
 ```
+
+**There is no separate call to enable or disable a guest's input.** It was declared here and
+removed 2026-08-21 before anything was built against it: it is `lowlat_host_set_permissions`
+with every flag cleared, and two calls that write one field can disagree about what a guest is
+allowed to do. Permissions are the field; there is one way to set them.
 
 **`lowlat_host_stop` takes no reason, and that is a gap rather than a design.**
 Stopping ends every guest loop and joins every thread, and the far side learns from its own
