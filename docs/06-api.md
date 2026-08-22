@@ -52,7 +52,7 @@ logged, and it must not call back into the API.
 
 ```c
 lowlat_status lowlat_host_start(lowlat *ll, const lowlat_host_config *cfg);
-void          lowlat_host_stop(lowlat *ll, const char *reason);
+lowlat_status lowlat_host_stop(lowlat *ll);
 lowlat_status lowlat_host_get_status(lowlat *ll, lowlat_host_status *out);
 lowlat_status lowlat_host_set_config(lowlat *ll, const lowlat_host_config *cfg);
 
@@ -65,6 +65,13 @@ lowlat_status lowlat_host_set_input_enabled(lowlat *ll, uint32_t guest_id, bool 
 lowlat_status lowlat_host_send_user_data(lowlat *ll, uint32_t guest_id, uint32_t id,
                                          const void *data, uint32_t len);
 ```
+
+**`lowlat_host_stop` takes no reason, and that is a gap rather than a design.**
+Stopping ends every guest loop and joins every thread, and the far side learns from its own
+liveness deadline rather than from a message -- so a peer pays the wait instead of being told.
+Telling it means sending the disconnect status the protocol already carries
+([01 §11.2](01-protocol.md)) on the way down, which the seam has no path for yet. A reason
+parameter appends when it does.
 
 **`lowlat_host_kick_guest`'s reason is not a `lowlat_status`.** It is what the peer is told on
 the way out, which belongs to the protocol's own numbering rather than to this API's
@@ -285,7 +292,14 @@ and struct blittability at once. It is the Phase 8 gate.
 **Ours by design:** all of it. The API shape follows an established convention, but no part of
 this document is constrained by wire compatibility. It changes only for our reasons.
 
-**Open until Phase 8:** the concrete `lowlat_host_config` field set, which depends on the
+**Settled 2026-08-21, and the shape it took:** no resolution, an `output` identity, `fps` as a
+ceiling, codec and encoder and rotation named by enumerations but **carried as plain integers**,
+because the application writes those fields and reading one back as a variant would be reading
+whatever it wrote. Every one of them is checked at the boundary rather than converted. Reflexive
+servers are a fixed array with a count rather than a pointer and a length, so the structure stays
+one blittable block with nothing in it to free.
+
+**Was open until Phase 8:** the concrete `lowlat_host_config` field set, which depends on the
 capture backend decision in [07-platforms.md](07-platforms.md), and the status code range
 partitioning, which wants the full error surface visible before it is fixed.
 
