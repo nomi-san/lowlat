@@ -15,6 +15,11 @@
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
+pub mod capture;
+mod pulse;
+
+pub use capture::{Capture, Config};
+
 /// Samples a second, per channel. **The only rate the protocol carries**, so
 /// it comes from there rather than being declared again here.
 pub use lowlat_core::audio::SAMPLE_RATE;
