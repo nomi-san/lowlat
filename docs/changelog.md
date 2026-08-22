@@ -131,6 +131,35 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   which travels as 254 characters -- anything shorter truncates a key into one
   that decrypts nothing and reports no reason.
 
+- **The roster and application messages at the boundary**, in the two-call
+  shape: ask how many guests there are, then pass an array of that many.
+  Nothing is allocated on the caller's behalf. A buffer smaller than the roster
+  is filled as far as it goes and told what it needed, because the roster moves
+  and a caller that sized its array a moment ago must not lose the call for it.
+  **The guest structure is the one that cannot carry its own size**: the caller
+  walks an array of them by stride, so a size written per element says nothing
+  about how far apart they are, and the count is the versioning instead.
+
+- **The three events only their own producer can raise.** What is being
+  captured comes from the loop that rebuilt, because nothing above it knows
+  whether the output moved or the display resized. The pointer's owner comes
+  from inside the arbiter's lock, because a guest thread can only report that
+  the pointer is now its own -- which is also what it would report on every
+  message while it merely keeps holding it. And the fatal one comes from the
+  loop that could not build an encoder for anybody.
+
+  **The fatal event is never dropped, and the rule is not oldest-first with an
+  exception.** A queue under pressure discards the oldest *droppable* event, so
+  a fatal one sitting at the front is not the first thing thrown away -- which
+  is exactly what a plain oldest-first rule does to the one event whose loss no
+  count can convey. Holding it does not make the queue unbounded; everything
+  droppable still goes.
+
+  **A guest that is chronically behind is still not an event.** The
+  skip-and-resync cycle exists; what is missing is the threshold that makes a
+  cycle chronic, and adding the event first would mean firing on every skip or
+  choosing a number nothing measured.
+
 **Found by running it**
 
 - **Every guest ran the most aggressive congestion control.** The controller
