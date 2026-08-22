@@ -15,9 +15,10 @@
 //! attempt becomes that guest's media socket for the whole session rather than
 //! being handed back.
 
+use core::sync::atomic::{AtomicU32, Ordering};
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 
 use lowlat_core::channel::{RecvRing, SlotMeta};
 use lowlat_core::conn::{Conn, Credentials};
@@ -338,9 +339,157 @@ struct Attempt {
     say: Option<mpsc::Sender<Said>>,
     /// What the application has asked of this guest, once it is running.
     ask: Option<mpsc::Sender<Ask>>,
+    /// What this guest is doing, written by its own thread.
+    telemetry: Arc<Telemetry>,
     /// The small number this guest is addressed by, kept so a message can be
     /// aimed at it without walking every attempt's thread.
     number: Option<u32>,
+}
+
+/// What one guest is doing, published by its own thread and read by anyone.
+///
+/// **Atomics rather than a lock, because the writer is on a frame path.** The
+/// guest's loop updates these every pass and a reader asks whenever it likes;
+/// a lock here would put a reader's cadence on the writer's path. Nothing here
+/// is read as a set, so a torn read across two fields is a snapshot taken a
+/// pass apart rather than a wrong answer.
+#[derive(Debug, Default)]
+pub(crate) struct Telemetry {
+    /// Milliseconds since this guest's loop began.
+    connected_ms: AtomicU32,
+    /// When each kind of input last arrived, on the same clock. Zero means it
+    /// never has, which is what an application asking "idle for how long"
+    /// needs to tell apart from "idle since the start".
+    keyboard_ms: AtomicU32,
+    pointer_ms: AtomicU32,
+    gamepad_ms: AtomicU32,
+    frames: AtomicU32,
+    window: AtomicU32,
+    stale: AtomicU32,
+    /// Times the rate this guest is allowed dropped, which is what congestion
+    /// costs it.
+    cg_events: AtomicU32,
+    /// The three rates, as `f32` bits: an atomic float is not portable and the
+    /// bits are.
+    bitrate_bits: AtomicU32,
+    encode_bits: AtomicU32,
+    network_bits: AtomicU32,
+}
+
+impl Telemetry {
+    fn store(cell: &AtomicU32, value: f64) {
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "a reported rate, whose precision beyond f32 nobody reads"
+        )]
+        cell.store((value as f32).to_bits(), Ordering::Relaxed);
+    }
+
+    fn load(cell: &AtomicU32) -> f32 {
+        f32::from_bits(cell.load(Ordering::Relaxed))
+    }
+
+    /// What the loop measured this pass.
+    pub(crate) fn measured(&self, window: u32, stale: u32, mbps: f64, encode_ms: f64, srtt: f64) {
+        self.window.store(window, Ordering::Relaxed);
+        self.stale.store(stale, Ordering::Relaxed);
+        Self::store(&self.bitrate_bits, mbps);
+        Self::store(&self.encode_bits, encode_ms);
+        Self::store(&self.network_bits, srtt);
+    }
+
+    /// Note that this guest's loop has begun, and when.
+    pub(crate) fn began(&self) {
+        self.connected_ms.store(1, Ordering::Relaxed);
+    }
+
+    /// Record how far into the session this guest is, and how many frames it
+    /// has been sent.
+    pub(crate) fn progressed(&self, now_ms: f64, frames: u32) {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a session duration in milliseconds, which overflows after forty-nine days"
+        )]
+        self.connected_ms.store(now_ms as u32, Ordering::Relaxed);
+        self.frames.store(frames, Ordering::Relaxed);
+    }
+
+    /// Stamp whichever kinds of input moved since the last pass.
+    pub(crate) fn stamped(
+        &self,
+        before: &lowlat_inject::event::Tally,
+        now: &lowlat_inject::event::Tally,
+        now_ms: f64,
+    ) {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a session duration in milliseconds"
+        )]
+        let at = now_ms as u32;
+        // **One, not zero, when a stamp lands at the very first millisecond.**
+        // Zero is what "never" is written as, and an application cannot tell a
+        // guest that has never touched the keyboard from one that touched it
+        // as the session opened unless the two differ.
+        let at = at.max(1);
+        if now.keys != before.keys {
+            self.keyboard_ms.store(at, Ordering::Relaxed);
+        }
+        if now.buttons != before.buttons
+            || now.wheels != before.wheels
+            || now.motions != before.motions
+        {
+            self.pointer_ms.store(at, Ordering::Relaxed);
+        }
+        if now.pads != before.pads {
+            self.gamepad_ms.store(at, Ordering::Relaxed);
+        }
+    }
+
+    /// A snapshot, as the boundary publishes it.
+    pub(crate) fn read(&self) -> Metrics {
+        Metrics {
+            connected_ms: self.connected_ms.load(Ordering::Relaxed),
+            keyboard_ms: self.keyboard_ms.load(Ordering::Relaxed),
+            pointer_ms: self.pointer_ms.load(Ordering::Relaxed),
+            gamepad_ms: self.gamepad_ms.load(Ordering::Relaxed),
+            frames: self.frames.load(Ordering::Relaxed),
+            window: self.window.load(Ordering::Relaxed),
+            stale: self.stale.load(Ordering::Relaxed),
+            cg_events: self.cg_events.load(Ordering::Relaxed),
+            bitrate_mbps: Self::load(&self.bitrate_bits),
+            encode_ms: Self::load(&self.encode_bits),
+            network_ms: Self::load(&self.network_bits),
+        }
+    }
+}
+
+/// One guest's telemetry, as a reader sees it.
+///
+/// **What this host can answer for, and nothing else.** A peer's own decode
+/// time and how many frames it has queued are the peer's to know; a host that
+/// reported either would be reporting a number it made up.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Metrics {
+    pub connected_ms: u32,
+    /// When each kind of input last arrived, on the same clock as
+    /// `connected_ms`. **Zero means never**, which is not the same as zero
+    /// milliseconds ago.
+    pub keyboard_ms: u32,
+    pub pointer_ms: u32,
+    pub gamepad_ms: u32,
+    pub frames: u32,
+    /// Fragments outstanding, and how many of those are past due. These are
+    /// what the congestion controller reads, and together they are what
+    /// "chronically behind" means.
+    pub window: u32,
+    pub stale: u32,
+    pub cg_events: u32,
+    pub bitrate_mbps: f32,
+    pub encode_ms: f32,
+    /// The smoothed round trip to this peer.
+    pub network_ms: f32,
 }
 
 /// Something the application asked of one running guest.
@@ -374,13 +523,21 @@ struct Said {
 }
 
 /// One connected guest, as the seam knows it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GuestInfo {
     /// What this guest is addressed by, and what it finds itself in a roster
     /// by.
     pub number: u32,
+    /// The identifier the application registered this attempt under.
+    ///
+    /// **The link between the seam's two halves.** Everything before a guest
+    /// is seated is addressed by attempt and everything after is addressed by
+    /// number, and without this an application holding a peer per attempt
+    /// cannot tell which peer an event about guest three is about.
+    pub attempt: String,
     pub permissions: lowlat_inject::event::Permissions,
     pub owner: bool,
+    pub metrics: Metrics,
 }
 
 /// A body with the terminator a peer reads it as a C string by, exactly once.
@@ -476,6 +633,7 @@ impl Admission {
                 guest: None,
                 say: None,
                 ask: None,
+                telemetry: Arc::new(Telemetry::default()),
                 number: None,
                 inject: None,
             },
@@ -556,6 +714,7 @@ impl Admission {
         }
         let (say, said) = mpsc::channel::<Said>();
         let (ask, asked) = mpsc::channel::<Ask>();
+        let telemetry = Arc::clone(&attempt.telemetry);
 
         let attempt_id = id.to_string();
         let guest_number = self.next_guest;
@@ -585,6 +744,7 @@ impl Admission {
                     arrivals,
                     said,
                     asked,
+                    telemetry,
                     ours,
                     theirs,
                     material,
@@ -775,12 +935,14 @@ impl Admission {
     pub fn guests(&self) -> Vec<GuestInfo> {
         let mut found: Vec<GuestInfo> = self
             .attempts
-            .values()
-            .filter_map(|attempt| {
+            .iter()
+            .filter_map(|(id, attempt)| {
                 Some(GuestInfo {
                     number: attempt.number?,
+                    attempt: id.clone(),
                     permissions: attempt.peer.permissions,
                     owner: attempt.peer.owner,
+                    metrics: attempt.telemetry.read(),
                 })
             })
             .collect();
@@ -873,6 +1035,8 @@ struct Attached {
     said: mpsc::Receiver<Said>,
     /// What the application has asked of this guest.
     asked: mpsc::Receiver<Ask>,
+    /// Where this guest publishes what it is doing.
+    telemetry: Arc<Telemetry>,
     ours: (String, String),
     theirs: (String, String),
     /// The 256-bit key and the four-byte nonce prefix that follows it.
@@ -1378,6 +1542,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
 
     let mut shell = Shell::new(args.socket, wake, Endpoint::new(conn, session));
     let started = lowlat_common::clock::Time::now();
+    args.telemetry.began();
     let mut reported: Vec<SocketAddr> = Vec::new();
     // The negotiation, from the moment the media path exists. Absent before
     // that, because the five-second deadline runs from there and not from
@@ -1419,6 +1584,9 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     // A reason the application gave for ending this guest, waiting for the one
     // path below that knows how to end one.
     let mut asked_kick: Option<i32> = None;
+    // What the tally said last pass, so a stamp is written when input arrived
+    // rather than on every pass regardless.
+    let mut counted = lowlat_inject::event::Tally::default();
     let mut throughput = Throughput::default();
     // What this guest has been told about the pointer, and what it holds.
     let mut pointer = crate::cursor::Sender::new();
@@ -1832,6 +2000,17 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             }
         }
 
+        // **When each kind of input last arrived**, which is the one question an
+        // application asking about an idle guest can ask nobody else. Stamped
+        // from the tally moving rather than from a message arriving, so input
+        // the permission gate or the arbiter refused does not count as a guest
+        // still being there.
+        if let Some(input) = input.as_ref() {
+            let now_tally = input.injector.tally();
+            args.telemetry.stamped(&counted, &now_tally, now);
+            counted = now_tally;
+        }
+
         // What the stream's controller and gate are steered by. Cheap, and it
         // reads state this loop already owns.
         if let Some(seat) = seat.as_ref()
@@ -1840,6 +2019,17 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         {
             let measured = throughput.sample(bytes, now);
             seat.report(window, stale, measured);
+            // **Published where it is already computed.** These are the
+            // controller's own inputs; an application asking what a guest is
+            // doing gets the numbers the host is steering by rather than a
+            // second set derived somewhere else.
+            args.telemetry.measured(
+                window,
+                stale,
+                measured,
+                seat.encode_latency_ms(),
+                shell.endpoint().session().srtt_ms(),
+            );
 
             // **The line a live run is read from.** Frames leaving, the window
             // the gate is judging, and what the path is actually carrying: a
@@ -1860,6 +2050,8 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                     .as_ref()
                     .map(|i| i.injector.tally())
                     .unwrap_or_default();
+                args.telemetry
+                    .progressed(now, u32::try_from(sent).unwrap_or(u32::MAX));
                 lowlat_common::log_info!(
                     "guest: attempt={} frames={sent} window={window} stale={stale} mbps={measured:.2} encode_ms={:.2} rx_frag={rx} rx_msg={inbound_messages} keys={} btn={} wheel={} motion={} pad={}",
                     args.attempt_id,
@@ -2132,6 +2324,51 @@ mod tests {
     /// then spends a socket and a thread on a guest that has already gone, and
     /// nothing later arrives to say so -- the port stays held for the life of
     /// the host. *Named regression test.*
+    /// **A stamp at the very first millisecond must not read as never.** Zero
+    /// is how "this has never happened" is written, so an application kicking
+    /// idle guests would see a guest that touched the keyboard as the session
+    /// opened as one that has never touched it at all.
+    ///
+    /// The seated-guest test cannot catch this: a guest that sends nothing
+    /// never reaches the stamping at all, so the rule went unexercised until
+    /// deleting it changed no result.
+    #[test]
+    fn input_at_the_first_millisecond_is_not_reported_as_never() {
+        let telemetry = Telemetry::default();
+        let quiet = lowlat_inject::event::Tally::default();
+        assert_eq!(telemetry.read().keyboard_ms, 0, "nothing has happened yet");
+
+        let typed = lowlat_inject::event::Tally {
+            keys: 1,
+            ..Default::default()
+        };
+        telemetry.stamped(&quiet, &typed, 0.0);
+        assert_ne!(
+            telemetry.read().keyboard_ms,
+            0,
+            "input at millisecond zero was recorded as never having happened"
+        );
+
+        // And the other two kinds are stamped by their own counters, not by
+        // whichever moved: a guest driving the pointer has not touched the pad.
+        let moved = lowlat_inject::event::Tally {
+            keys: 1,
+            motions: 5,
+            ..Default::default()
+        };
+        telemetry.stamped(&typed, &moved, 40.0);
+        let read = telemetry.read();
+        assert_eq!(read.pointer_ms, 40);
+        assert_eq!(
+            read.gamepad_ms, 0,
+            "a pad that was never touched was stamped"
+        );
+        assert_ne!(
+            read.keyboard_ms, 40,
+            "a keyboard that did not move was restamped"
+        );
+    }
+
     #[test]
     fn a_withdrawal_that_overtakes_its_offer_refuses_the_offer() {
         let mut seam = admission(4);

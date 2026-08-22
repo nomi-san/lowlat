@@ -634,6 +634,13 @@ pub struct lowlat_guest {
     /// it takes the pointer from another guest rather than waiting for it.
     pub owner: bool,
     pub reserved: [u8; 3],
+    /// The identifier this attempt was registered under.
+    ///
+    /// **The link between the seam's two halves.** Everything before a guest is
+    /// seated is addressed by attempt and everything after is addressed by
+    /// number; without this, an application holding one peer per attempt cannot
+    /// tell which peer an event about guest three concerns.
+    pub attempt: [c_char; LOWLAT_ATTEMPT_MAX],
 }
 
 /// How severe a log line is.
@@ -1221,7 +1228,7 @@ pub unsafe extern "C" fn lowlat_host_get_guests(
             let room = count.read() as usize;
             let writing = guests.len().min(room);
             for (at, guest) in guests.iter().take(writing).enumerate() {
-                out.add(at).write(lowlat_guest {
+                let mut slot = lowlat_guest {
                     number: guest.number,
                     permissions: lowlat_permissions {
                         keyboard: guest.permissions.keyboard,
@@ -1231,7 +1238,10 @@ pub unsafe extern "C" fn lowlat_host_get_guests(
                     },
                     owner: guest.owner,
                     reserved: [0; 3],
-                });
+                    attempt: [0; LOWLAT_ATTEMPT_MAX],
+                };
+                put(&mut slot.attempt, &guest.attempt);
+                out.add(at).write(slot);
             }
             if writing < guests.len() {
                 count.write(found);
@@ -1595,6 +1605,97 @@ pub unsafe extern "C" fn lowlat_host_send_roster(
             if let Some(slot) = reached.as_mut() {
                 *slot = u32::try_from(sent).unwrap_or(u32::MAX);
             }
+            LOWLAT_OK
+        })
+    }
+}
+
+/// What one guest is doing.
+///
+/// **Its own structure behind its own call, and that is deliberate.** A guest
+/// is delivered as an array element and an array element cannot carry a `size`
+/// -- the caller walks it by stride -- so [`lowlat_guest`] is fixed for the
+/// major version. These are the numbers most likely to grow, so they live
+/// where growing them is free.
+///
+/// **One stream, not three.** This host produces one and switches which
+/// display feeds it, so there is nothing to index.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_metrics {
+    /// Set by the caller to `sizeof(lowlat_metrics)`.
+    pub size: u32,
+    /// How long this guest has been connected.
+    pub connected_ms: u32,
+    /// When each kind of input last arrived, on the same clock as
+    /// `connected_ms`. **Zero means never**, which is not zero milliseconds
+    /// ago -- an application kicking idle guests has to tell the two apart.
+    pub keyboard_ms: u32,
+    pub pointer_ms: u32,
+    pub gamepad_ms: u32,
+    /// Video frames sent to this guest.
+    pub frames: u32,
+    /// Fragments outstanding, and how many are past due. **These are the
+    /// controller's own inputs**, so an application reads what the host is
+    /// steering by rather than a second set derived elsewhere; together they
+    /// are what "chronically behind" means.
+    pub window: u32,
+    pub stale: u32,
+    /// Times congestion cost this guest rate.
+    pub cg_events: u32,
+    pub bitrate_mbps: f32,
+    pub encode_ms: f32,
+    /// The smoothed round trip to this peer.
+    pub network_ms: f32,
+}
+
+/// Read what one guest is doing.
+///
+/// **What this host can answer for, and nothing else.** A peer's own decode
+/// time and how many frames it has queued waiting to decode are the peer's to
+/// know; reporting either would be reporting a number this host made up.
+///
+/// # Safety
+///
+/// `out` points to one [`lowlat_metrics`] whose `size` says how much of it is
+/// set.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_get_metrics(
+    ll: *mut lowlat,
+    guest_id: u32,
+    out: *mut lowlat_metrics,
+) -> lowlat_status {
+    unsafe {
+        entered(ll, |handle| {
+            let Some(slot) = out.as_mut() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            if (slot.size as usize) < core::mem::size_of::<lowlat_metrics>() {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let held = handle.held();
+            let Some(seam) = held.seam.as_ref() else {
+                return LOWLAT_ERR_NOT_STARTED;
+            };
+            let Some(found) = seam
+                .guests()
+                .into_iter()
+                .find(|guest| guest.number == guest_id)
+            else {
+                return LOWLAT_ERR_UNKNOWN_GUEST;
+            };
+            let metrics = found.metrics;
+            slot.connected_ms = metrics.connected_ms;
+            slot.keyboard_ms = metrics.keyboard_ms;
+            slot.pointer_ms = metrics.pointer_ms;
+            slot.gamepad_ms = metrics.gamepad_ms;
+            slot.frames = metrics.frames;
+            slot.window = metrics.window;
+            slot.stale = metrics.stale;
+            slot.cg_events = metrics.cg_events;
+            slot.bitrate_mbps = metrics.bitrate_mbps;
+            slot.encode_ms = metrics.encode_ms;
+            slot.network_ms = metrics.network_ms;
             LOWLAT_OK
         })
     }
@@ -2587,6 +2688,7 @@ mod roster_tests {
                 },
                 owner: false,
                 reserved: [0; 3],
+                attempt: [0; LOWLAT_ATTEMPT_MAX],
             };
             count as usize
         ];
@@ -2630,6 +2732,7 @@ mod roster_tests {
             },
             owner: false,
             reserved: [0; 3],
+            attempt: [0; LOWLAT_ATTEMPT_MAX],
         }; 4];
         let mut count = 4u32;
         assert_eq!(
@@ -2664,6 +2767,7 @@ mod roster_tests {
             },
             owner: false,
             reserved: [0; 3],
+            attempt: [0; LOWLAT_ATTEMPT_MAX],
         }; 1];
         let mut count = 1u32;
         assert_eq!(
@@ -3031,5 +3135,85 @@ mod logging_tests {
         );
 
         unsafe { lowlat_set_log_callback(Some(to_stderr), core::ptr::null_mut()) };
+    }
+}
+
+#[cfg(test)]
+mod metrics_tests {
+    use super::roster_tests::roster_of;
+    use super::seam_tests::{approved, started};
+    use super::*;
+
+    fn empty() -> lowlat_metrics {
+        lowlat_metrics {
+            size: u32::try_from(core::mem::size_of::<lowlat_metrics>()).unwrap_or(u32::MAX),
+            connected_ms: 0,
+            keyboard_ms: 0,
+            pointer_ms: 0,
+            gamepad_ms: 0,
+            frames: 0,
+            window: 0,
+            stale: 0,
+            cg_events: 0,
+            bitrate_mbps: 0.0,
+            encode_ms: 0.0,
+            network_ms: 0.0,
+        }
+    }
+
+    /// **A guest carries the attempt it was registered under.** Everything
+    /// before a guest is seated is addressed by attempt and everything after by
+    /// number; without the link an application holding one peer per attempt
+    /// cannot tell which peer an event about a guest concerns.
+    #[test]
+    fn a_guest_carries_the_attempt_it_was_registered_under() {
+        let handle = started();
+        approved(handle, "an-attempt-with-a-name");
+
+        let roster = roster_of(handle);
+        assert_eq!(roster.len(), 1);
+        assert_eq!(
+            taken(&roster[0].attempt).unwrap_or_default(),
+            "an-attempt-with-a-name"
+        );
+        unsafe { lowlat_destroy(handle) };
+    }
+
+    /// **Never is not zero milliseconds ago.** An application kicking idle
+    /// guests reads these two the same way and must be able to tell them apart:
+    /// a guest that has touched nothing since it arrived is not a guest that
+    /// touched the keyboard as the session opened.
+    #[test]
+    fn metrics_answer_for_a_seated_guest_and_say_never_where_nothing_happened() {
+        let handle = started();
+        approved(handle, "a");
+        let guest = roster_of(handle)[0].number;
+
+        let mut metrics = empty();
+        assert_eq!(
+            unsafe { lowlat_host_get_metrics(handle, guest, &raw mut metrics) },
+            LOWLAT_OK
+        );
+        assert_eq!(
+            metrics.keyboard_ms, 0,
+            "a guest that has sent nothing reported a time it last did"
+        );
+        assert_eq!(metrics.pointer_ms, 0);
+        assert_eq!(metrics.gamepad_ms, 0);
+
+        assert_eq!(
+            unsafe { lowlat_host_get_metrics(handle, 4242, &raw mut metrics) },
+            LOWLAT_ERR_UNKNOWN_GUEST
+        );
+        // The size field is the versioning, and one saying less than the
+        // structure holds means the caller and the header disagree.
+        let mut stale = empty();
+        stale.size = 4;
+        assert_eq!(
+            unsafe { lowlat_host_get_metrics(handle, guest, &raw mut stale) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+
+        unsafe { lowlat_destroy(handle) };
     }
 }

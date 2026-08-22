@@ -503,6 +503,13 @@ typedef struct lowlat_guest {
     // it takes the pointer from another guest rather than waiting for it.
     bool owner;
     uint8_t reserved[3];
+    // The identifier this attempt was registered under.
+    //
+    // **The link between the seam's two halves.** Everything before a guest is
+    // seated is addressed by attempt and everything after is addressed by
+    // number; without this, an application holding one peer per attempt cannot
+    // tell which peer an event about guest three concerns.
+    char attempt[LOWLAT_ATTEMPT_MAX];
 } lowlat_guest;
 
 // One output this host could be asked to capture.
@@ -541,6 +548,43 @@ typedef struct lowlat_host_status {
     bool running;
     uint8_t reserved[3];
 } lowlat_host_status;
+
+// What one guest is doing.
+//
+// **Its own structure behind its own call, and that is deliberate.** A guest
+// is delivered as an array element and an array element cannot carry a `size`
+// -- the caller walks it by stride -- so [`lowlat_guest`] is fixed for the
+// major version. These are the numbers most likely to grow, so they live
+// where growing them is free.
+//
+// **One stream, not three.** This host produces one and switches which
+// display feeds it, so there is nothing to index.
+typedef struct lowlat_metrics {
+    // Set by the caller to `sizeof(lowlat_metrics)`.
+    uint32_t size;
+    // How long this guest has been connected.
+    uint32_t connected_ms;
+    // When each kind of input last arrived, on the same clock as
+    // `connected_ms`. **Zero means never**, which is not zero milliseconds
+    // ago -- an application kicking idle guests has to tell the two apart.
+    uint32_t keyboard_ms;
+    uint32_t pointer_ms;
+    uint32_t gamepad_ms;
+    // Video frames sent to this guest.
+    uint32_t frames;
+    // Fragments outstanding, and how many are past due. **These are the
+    // controller's own inputs**, so an application reads what the host is
+    // steering by rather than a second set derived elsewhere; together they
+    // are what "chronically behind" means.
+    uint32_t window;
+    uint32_t stale;
+    // Times congestion cost this guest rate.
+    uint32_t cg_events;
+    float bitrate_mbps;
+    float encode_ms;
+    // The smoothed round trip to this peer.
+    float network_ms;
+} lowlat_metrics;
 
 // A local candidate for the application to forward.
 typedef struct lowlat_candidate_event {
@@ -909,6 +953,20 @@ lowlat_status lowlat_host_send_roster(struct lowlat *ll,
                                       const void *data,
                                       uint32_t len,
                                       uint32_t *reached);
+
+// Read what one guest is doing.
+//
+// **What this host can answer for, and nothing else.** A peer's own decode
+// time and how many frames it has queued waiting to decode are the peer's to
+// know; reporting either would be reporting a number this host made up.
+//
+// # Safety
+//
+// `out` points to one [`lowlat_metrics`] whose `size` says how much of it is
+// set.
+lowlat_status lowlat_host_get_metrics(struct lowlat *ll,
+                                      uint32_t guest_id,
+                                      struct lowlat_metrics *out);
 
 // Change the video settings while the host runs.
 //

@@ -77,6 +77,7 @@ int main(int argc, char **argv)
     lowlat_status (*get_guests)(lowlat *, lowlat_guest *, uint32_t *);
     lowlat_status (*send_user_data)(lowlat *, uint32_t, uint32_t, const void *, uint32_t);
     lowlat_status (*send_roster)(lowlat *, const void *, uint32_t, uint32_t *);
+    lowlat_status (*get_metrics)(lowlat *, uint32_t, lowlat_metrics *);
     lowlat_status (*set_permissions)(lowlat *, uint32_t, const lowlat_permissions *);
     lowlat_status (*kick_guest)(lowlat *, uint32_t, int32_t);
     lowlat_status (*can_host)(void);
@@ -101,6 +102,7 @@ int main(int argc, char **argv)
     RESOLVE(get_guests, lib, "lowlat_host_get_guests");
     RESOLVE(send_user_data, lib, "lowlat_host_send_user_data");
     RESOLVE(send_roster, lib, "lowlat_host_send_roster");
+    RESOLVE(get_metrics, lib, "lowlat_host_get_metrics");
     RESOLVE(set_permissions, lib, "lowlat_host_set_permissions");
     RESOLVE(kick_guest, lib, "lowlat_host_kick_guest");
     RESOLVE(can_host, lib, "lowlat_can_host");
@@ -340,6 +342,35 @@ int main(int argc, char **argv)
     if (get_status(ll, &state) != LOWLAT_OK || !state.running || state.guests != 1) {
         fprintf(stderr, "harness: the host reports running=%u guests=%u\n",
                 (unsigned) state.running, state.guests);
+        return 1;
+    }
+
+    /* The guest carries the attempt it was registered under, which is the link
+     * between the two halves of the seam: everything before a guest is seated
+     * is addressed by attempt and everything after by number. */
+    if (strcmp(roster[0].attempt, offer.attempt_id) != 0) {
+        fprintf(stderr, "harness: guest %u reports attempt %s, not %s\n",
+                roster[0].number, roster[0].attempt, offer.attempt_id);
+        return 1;
+    }
+
+    /* Metrics behind their own call, because a guest is an array element and
+     * cannot carry a size of its own. */
+    lowlat_metrics metrics;
+    memset(&metrics, 0, sizeof metrics);
+    metrics.size = (uint32_t) sizeof metrics;
+    if (get_metrics(ll, roster[0].number, &metrics) != LOWLAT_OK) {
+        fprintf(stderr, "harness: metrics could not be read\n");
+        return 1;
+    }
+    /* Zero is how "never" is written, and a guest that has sent nothing has
+     * never touched anything. */
+    if (metrics.keyboard_ms != 0 || metrics.pointer_ms != 0) {
+        fprintf(stderr, "harness: a guest that sent nothing reported input times\n");
+        return 1;
+    }
+    if (get_metrics(ll, 4242, &metrics) != LOWLAT_ERR_UNKNOWN_GUEST) {
+        fprintf(stderr, "harness: metrics answered for a guest that is not there\n");
         return 1;
     }
 
