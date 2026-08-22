@@ -63,23 +63,82 @@ pub struct Config {
     /// The sound server's socket, when this process is outside the session that
     /// owns it. `None` takes whatever the environment names.
     pub server: Option<String>,
-    /// A device to capture, or `None` for the default output's monitor.
-    pub device: Option<String>,
-    /// Silence the speakers at the desk while this capture runs.
+    /// The half that can change while a capture runs: which device, and
+    /// whether the speakers at the desk are silenced.
     ///
     /// **The tap is ahead of the device's own mute**, so what a guest hears is
     /// unaffected; it is the person in front of the machine who stops hearing
     /// what they are sending ([05 §9.4](../../../docs/05-host.md)).
+    pub wanted: Arc<Wanted>,
+}
+
+/// What can be changed while a capture runs.
+///
+/// **Both cost a reconnect or a call to the server**, so they are asked for
+/// rather than applied: the loop owns the connection and nothing else may touch
+/// it. A change is noticed on the pass after it is made.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Live {
+    /// A device to capture, or `None` for the default output's monitor.
+    pub device: Option<String>,
+    /// Silence the speakers at the desk while this capture runs.
     pub mute_local: bool,
 }
 
-impl Config {
-    /// The device asked for, if one was.
-    fn wanted(&self) -> Option<CString> {
-        self.device
-            .as_ref()
-            .filter(|name| !name.is_empty())
-            .and_then(|name| CString::new(name.as_str()).ok())
+/// Where those settings live, shared between whoever sets them and the loop.
+///
+/// **Held by the owner rather than by the capture**, so a setting survives the
+/// capture being closed and reopened -- which happens when the room empties and
+/// fills again, and would otherwise silently forget what an application asked
+/// for.
+#[derive(Debug, Default)]
+pub struct Wanted {
+    live: Mutex<Live>,
+    asked: std::sync::atomic::AtomicU32,
+}
+
+impl Wanted {
+    /// Start from what a host is configured with.
+    pub fn new(live: Live) -> Self {
+        Self {
+            live: Mutex::new(live),
+            asked: std::sync::atomic::AtomicU32::new(0),
+        }
+    }
+
+    /// Ask for something different.
+    ///
+    /// **Repeating what is already in force costs nothing**, so an application
+    /// free to call this every second does not reconnect every second.
+    pub fn set(&self, live: &Live) {
+        let changed = match self.live.lock() {
+            Ok(mut held) => {
+                let moved = *held != *live;
+                *held = live.clone();
+                moved
+            }
+            Err(held) => {
+                let mut held = held.into_inner();
+                let moved = *held != *live;
+                *held = live.clone();
+                moved
+            }
+        };
+        if changed {
+            self.asked
+                .fetch_add(1, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    fn read(&self) -> Live {
+        match self.live.lock() {
+            Ok(held) => held.clone(),
+            Err(held) => held.into_inner().clone(),
+        }
+    }
+
+    fn generation(&self) -> u32 {
+        self.asked.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 
@@ -87,6 +146,7 @@ impl Config {
 #[derive(Debug)]
 pub struct Capture {
     stop: Arc<AtomicBool>,
+    wanted: Arc<Wanted>,
     /// **The device the loop is on**, which is not always the one asked for:
     /// the server may move a stream, and the default output can change under a
     /// session.
@@ -115,14 +175,27 @@ impl Capture {
         }
         let stop = Arc::new(AtomicBool::new(false));
         let device = Arc::new(Mutex::new(String::new()));
+        let wanted = Arc::clone(&config.wanted);
         let (report, opened) = std::sync::mpsc::channel();
 
         let thread = {
             let stop = Arc::clone(&stop);
             let device = Arc::clone(&device);
+            let wanted = Arc::clone(&wanted);
             std::thread::Builder::new()
                 .name("lowlat-audio".to_owned())
-                .spawn(move || run(&config, &stop, &device, &report, sink))
+                .spawn(move || {
+                    run(
+                        &Settings {
+                            server: config.server,
+                            wanted,
+                        },
+                        &stop,
+                        &device,
+                        &report,
+                        sink,
+                    );
+                })
                 .map_err(|_| Error::Unavailable)?
         };
 
@@ -131,6 +204,7 @@ impl Capture {
         match opened.recv() {
             Ok(Ok(())) => Ok(Self {
                 stop,
+                wanted,
                 device,
                 thread: Some(thread),
             }),
@@ -143,6 +217,16 @@ impl Capture {
                 Err(Error::Refused(0))
             }
         }
+    }
+
+    /// Ask for a different device, or for the speakers to be silenced or let
+    /// go.
+    ///
+    /// **Repeating what is already in force costs nothing.** The loop compares
+    /// before it acts, so an application free to call this every second does
+    /// not reconnect every second.
+    pub fn set_live(&self, live: &Live) {
+        self.wanted.set(live);
     }
 
     /// The device this capture is on now.
@@ -207,8 +291,29 @@ impl<S: FnMut(&[u8])> State<S> {
     }
 }
 
+/// What the loop is given: the fixed half, and where to read the rest.
+struct Settings {
+    server: Option<String>,
+    wanted: Arc<Wanted>,
+}
+
+impl Settings {
+    /// What is asked for now.
+    fn live(&self) -> Live {
+        self.wanted.read()
+    }
+
+    /// The device asked for, if one was.
+    fn wanted_device(&self) -> Option<CString> {
+        self.live()
+            .device
+            .filter(|name| !name.is_empty())
+            .and_then(|name| CString::new(name).ok())
+    }
+}
+
 fn run<S>(
-    config: &Config,
+    config: &Settings,
     stop: &AtomicBool,
     device: &Mutex<String>,
     report: &std::sync::mpsc::Sender<Result<(), Error>>,
@@ -234,7 +339,7 @@ fn run<S>(
 
 /// The loop, from connecting to the last frame.
 fn serve<S>(
-    config: &Config,
+    config: &Settings,
     stop: &AtomicBool,
     device: &Mutex<String>,
     report: &std::sync::mpsc::Sender<Result<(), Error>>,
@@ -262,7 +367,7 @@ where
     };
     publish(&stream, device);
     let _ = report.send(Ok(()));
-    let mut muted = if config.mute_local {
+    let mut muted = if config.live().mute_local {
         mute_local(&session, &stream.name(), stop)
     } else {
         LocalMute::default()
@@ -288,7 +393,7 @@ where
 fn serve_loop<S>(
     session: &Session,
     stream: &mut Stream,
-    config: &Config,
+    config: &Settings,
     stop: &AtomicBool,
     device: &Mutex<String>,
     opaque: *mut c_void,
@@ -297,10 +402,43 @@ fn serve_loop<S>(
 where
     S: FnMut(&[u8]),
 {
+    let mut seen = config.wanted.generation();
     while !stop.load(Ordering::Acquire) {
         session.iterate();
         if !stream.ready() {
             return Err(Error::Read(session.errno()));
+        }
+
+        // **What an owner asked for, acted on between iterations.** The
+        // connection belongs to this thread, so a change is a request rather
+        // than something another thread may apply.
+        let now = config.wanted.generation();
+        if now != seen {
+            seen = now;
+            let live = config.live();
+            let before = stream.name();
+            // The device is compared by what the stream landed on, not by what
+            // was asked for: following the default output means those differ.
+            let moving = live
+                .device
+                .as_deref()
+                .filter(|name| !name.is_empty())
+                .is_some_and(|name| name != before);
+            if moving {
+                restore_local(session, muted);
+                *stream = Stream::open::<S>(session, config, opaque, stop)?;
+                publish(stream, device);
+                lowlat_common::log_info!("audio: now capturing {}", stream.name());
+                *muted = LocalMute::default();
+            }
+            match (live.mute_local, muted.applied) {
+                (true, false) => *muted = mute_local(session, &stream.name(), stop),
+                (false, true) => {
+                    restore_local(session, muted);
+                    *muted = LocalMute::default();
+                }
+                _ => {}
+            }
         }
 
         // **Read the flags after dispatching, never during it.** A callback
@@ -316,7 +454,7 @@ where
             lowlat_common::log_info!("audio: the stream was moved to {}", stream.name());
         }
         // A new default output only concerns a stream that is following one.
-        if changed && config.wanted().is_none() {
+        if changed && config.wanted_device().is_none() {
             let before = stream.name();
             // **The speakers move with the device.** A host that followed the
             // default output and left the old sink muted would silence a
@@ -329,7 +467,7 @@ where
                 lowlat_common::log_info!("audio: the default output is now {after}");
             }
             publish(stream, device);
-            *muted = if config.mute_local {
+            *muted = if config.live().mute_local {
                 mute_local(session, &after, stop)
             } else {
                 LocalMute::default()
@@ -511,7 +649,7 @@ struct Session {
 }
 
 impl Session {
-    fn open<S: FnMut(&[u8])>(config: &Config, opaque: *mut c_void) -> Result<Self, Error> {
+    fn open<S: FnMut(&[u8])>(config: &Settings, opaque: *mut c_void) -> Result<Self, Error> {
         let pulse = pulse().ok_or(Error::Unavailable)?;
         let server = config
             .server
@@ -749,7 +887,7 @@ struct Stream {
 impl Stream {
     fn open<S: FnMut(&[u8])>(
         session: &Session,
-        config: &Config,
+        config: &Settings,
         opaque: *mut c_void,
         stop: &AtomicBool,
     ) -> Result<Self, Error> {
@@ -760,7 +898,7 @@ impl Stream {
             channels: u8::try_from(crate::CHANNELS).unwrap_or(2),
         };
         let attr = pulse::BufferAttr::fragments_of(u32::try_from(FRAME_BYTES).unwrap_or(u32::MAX));
-        let asked = config.wanted();
+        let asked = config.wanted_device();
         let device = asked.as_deref().unwrap_or(DEFAULT_MONITOR);
 
         // SAFETY: the specification and the attributes outlive the calls, which

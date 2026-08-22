@@ -57,7 +57,18 @@ impl Sound {
             }
         };
         let owned = Arc::clone(shared);
+        let mut kbps = shared.sound_kbps();
+        encoder.set_bitrate(kbps);
         match Capture::open(config, move |frame: &[u8]| {
+            // **Read every frame and applied when it moves.** A rate that
+            // needed a new encoder would cost a discontinuity a listener hears,
+            // and one latched at start would be a setting that does nothing.
+            let wanted = owned.sound_kbps();
+            if wanted != kbps {
+                kbps = wanted;
+                encoder.set_bitrate(kbps);
+                lowlat_common::log_info!("audio: encoding at {kbps} kbit/s");
+            }
             publish(&owned, &mut encoder, frame);
         }) {
             Ok(capture) => {

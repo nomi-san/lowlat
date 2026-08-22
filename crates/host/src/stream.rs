@@ -121,6 +121,30 @@ mod seat_state {
     pub(super) const LEAVING: u32 = 3;
 }
 
+/// What can be changed about sound while a host runs.
+///
+/// **Atomics rather than a lock**, because two of these are read on the path
+/// that publishes every packet and the third on the path that prices it.
+#[derive(Debug)]
+struct SoundCells {
+    /// Whether sound is captured at all.
+    on: AtomicU32,
+    /// Whether a guest that asked for the uncompressed form may have it.
+    allow_raw: AtomicU32,
+    /// What the compressed form is encoded at.
+    kbps: AtomicU32,
+}
+
+impl SoundCells {
+    fn new(config: &Config) -> Self {
+        Self {
+            on: AtomicU32::new(u32::from(config.audio.is_some())),
+            allow_raw: AtomicU32::new(u32::from(config.allow_raw_audio)),
+            kbps: AtomicU32::new(config.audio_kbps),
+        }
+    }
+}
+
 /// One guest's place on the stream.
 #[derive(Debug)]
 struct Seat {
@@ -234,6 +258,18 @@ pub(crate) struct Shared {
     /// own cadence. One slot per encoding a room actually wants, never one per
     /// guest.
     audio: Pool,
+    /// The half of sound's settings the capture thread reads for itself.
+    ///
+    /// **Held here rather than by the capture**, so what an application asked
+    /// for survives the device being closed and reopened when the room empties
+    /// and fills again.
+    sound_live: Arc<lowlat_audio::Wanted>,
+    /// What sound is set to now.
+    ///
+    /// **Read on the frame that uses it rather than latched**, because every
+    /// one of these is cheap to consult and a stale copy would be a host
+    /// running settings nobody can see.
+    sound: SoundCells,
     /// Capture to bitstream collected for the last picture, in microseconds.
     ///
     /// **A property of the stream, not of a guest**: one encode serves every
@@ -481,17 +517,53 @@ impl Shared {
     pub(crate) fn audio_wanted(&self) -> (bool, bool) {
         let mut compressed = false;
         let mut uncompressed = false;
-        for seat in &self.seats {
-            if seat.state.load(Ordering::Acquire) != seat_state::STREAMING {
-                continue;
-            }
-            if seat.wants_raw.load(Ordering::Relaxed) == 0 {
-                compressed = true;
-            } else {
-                uncompressed = true;
+        for index in 0..self.seats.len() {
+            match self.seat_raw(index) {
+                None => {}
+                Some(false) => compressed = true,
+                Some(true) => uncompressed = true,
             }
         }
         (compressed, uncompressed)
+    }
+
+    /// What one seat is actually sent, or `None` when it is not listening.
+    ///
+    /// **A guest asks and a host permits**, and this is where the two meet.
+    /// Everything that produces, prices or labels a packet reads it here, so a
+    /// permission withdrawn while a guest is connected reaches all three at
+    /// once rather than in whatever order they happen to be called.
+    pub(crate) fn seat_raw(&self, index: usize) -> Option<bool> {
+        let seat = self.seats.get(index)?;
+        if seat.state.load(Ordering::Acquire) != seat_state::STREAMING {
+            return None;
+        }
+        let asked = seat.wants_raw.load(Ordering::Relaxed) != 0;
+        Some(asked && self.sound.allow_raw.load(Ordering::Relaxed) != 0)
+    }
+
+    /// The settings the capture thread reads for itself.
+    pub(crate) fn sound_wanted(&self) -> &Arc<lowlat_audio::Wanted> {
+        &self.sound_live
+    }
+
+    /// Whether sound is being captured at all.
+    pub(crate) fn sound_on(&self) -> bool {
+        self.sound.on.load(Ordering::Relaxed) != 0
+    }
+
+    /// What the compressed form is encoded at.
+    pub(crate) fn sound_kbps(&self) -> u32 {
+        self.sound.kbps.load(Ordering::Relaxed)
+    }
+
+    /// Change what sound is set to, while it runs.
+    pub(crate) fn set_sound(&self, on: bool, allow_raw: bool, kbps: u32) {
+        self.sound.on.store(u32::from(on), Ordering::Relaxed);
+        self.sound
+            .allow_raw
+            .store(u32::from(allow_raw), Ordering::Relaxed);
+        self.sound.kbps.store(kbps.max(1), Ordering::Relaxed);
     }
 
     /// What the room's sound costs, across every guest listening to it.
@@ -501,12 +573,10 @@ impl Shared {
     /// its initialization is parsed, which is a pass or two later.
     pub(crate) fn audio_mbps(&self, compressed_kbps: u32) -> f64 {
         let mut total = 0.0;
-        for seat in &self.seats {
-            if seat.state.load(Ordering::Acquire) != seat_state::STREAMING {
-                continue;
+        for index in 0..self.seats.len() {
+            if let Some(raw) = self.seat_raw(index) {
+                total += crate::audio::guest_mbps(raw, compressed_kbps);
             }
-            let raw = seat.wants_raw.load(Ordering::Relaxed) != 0;
-            total += crate::audio::guest_mbps(raw, compressed_kbps);
         }
         total
     }
@@ -533,10 +603,7 @@ impl Shared {
         let mut waking: [usize; MAX_SEATS] = [0; MAX_SEATS];
         let mut n = 0usize;
         for (index, seat) in self.seats.iter().enumerate() {
-            if seat.state.load(Ordering::Acquire) != seat_state::STREAMING {
-                continue;
-            }
-            if (seat.wants_raw.load(Ordering::Relaxed) != 0) != raw {
+            if self.seat_raw(index) != Some(raw) {
                 continue;
             }
             if let (Some(target), Some(who)) = (rings.get_mut(n), waking.get_mut(n)) {
@@ -729,6 +796,12 @@ pub struct Config {
     /// A failure to open it is not a failure to host: sound goes off, the
     /// reason is logged once, and the session runs.
     pub audio: Option<lowlat_audio::Config>,
+    /// What the compressed form is encoded at.
+    pub audio_kbps: u32,
+    /// **A permission, not a request.** A guest asks for the uncompressed form
+    /// in its own initialization; this is whether a host will serve it, and it
+    /// costs an order of magnitude more of the uplink.
+    pub allow_raw_audio: bool,
     pub codec: Codec,
     /// Which encoder to build, or **nothing to follow the display**.
     ///
@@ -857,6 +930,11 @@ impl Stream {
             seats: core::array::from_fn(|_| Seat::new()),
             pool: Pool::new(POOL_SLOTS, max_frame_bytes()),
             audio: crate::audio::pool(),
+            sound_live: config.audio.as_ref().map_or_else(
+                || Arc::new(lowlat_audio::Wanted::default()),
+                |audio| Arc::clone(&audio.wanted),
+            ),
+            sound: SoundCells::new(&config),
             encode_us: AtomicU32::new(0),
             timing: TimingCells::default(),
             picture: AtomicU32::new(0),
@@ -890,6 +968,16 @@ impl Stream {
             outputs: Some(outputs),
             thread,
         }
+    }
+
+    /// Change what sound is set to, while a host runs.
+    ///
+    /// **Every one of these is live.** Turning sound off gives the device back
+    /// and restores the speakers, exactly as the last guest leaving does; the
+    /// rest are read on the frame that uses them.
+    pub fn set_audio(&self, on: bool, allow_raw: bool, kbps: u32, live: &lowlat_audio::Live) {
+        self.shared.set_sound(on, allow_raw, kbps);
+        self.shared.sound_wanted().set(live);
     }
 
     /// Capture a different output, without ending anybody's session.
@@ -1079,6 +1167,15 @@ impl SeatHold {
         let seat = self.shared.seats.get(self.index)?;
         let index = seat.audio.pop()?;
         self.shared.audio.claim(index)
+    }
+
+    /// What this guest is actually sent: what it asked for, as far as the host
+    /// permits.
+    ///
+    /// **The header must say what the payload is**, so the guest's own loop
+    /// reads this rather than remembering what the peer asked for.
+    pub fn audio_raw(&self) -> bool {
+        self.shared.seat_raw(self.index).unwrap_or(false)
     }
 
     /// Say which encoding this guest asked for.
@@ -1368,8 +1465,12 @@ fn run(
         }
 
         // **Started before the encoder**, so the first guest is hearing the
-        // desktop while the picture is still being built.
-        if sound.is_none()
+        // desktop while the picture is still being built. Switched off while a
+        // host runs, the device goes back the same way it does when the last
+        // guest leaves.
+        if !shared.sound_on() {
+            sound = None;
+        } else if sound.is_none()
             && let Some(audio) = config.audio.clone()
         {
             sound = Some(crate::audio::Sound::start(shared, audio));
@@ -2328,8 +2429,8 @@ fn encode_loop<E: Encoder + FromDevice>(
         // wants a pass or two after it is seated. Compared rather than
         // recomputed into place, because moving a ceiling reconfigures every
         // controller.
-        let sound_mbps = if config.audio.is_some() {
-            shared.audio_mbps(lowlat_audio::encode::DEFAULT_BITRATE_KBPS)
+        let sound_mbps = if shared.sound_on() {
+            shared.audio_mbps(shared.sound_kbps())
         } else {
             0.0
         };
@@ -3068,6 +3169,8 @@ mod tests {
     fn a_live_video_change_is_taken_once_and_then_not_again() {
         let stream = Stream::start(Config {
             audio: None,
+            audio_kbps: 128,
+            allow_raw_audio: false,
             output: None,
             display: false,
             width: 320,
@@ -3200,6 +3303,8 @@ mod tests {
         fn with_pool(slots: usize) -> Self {
             let config = Config {
                 audio: None,
+                audio_kbps: 128,
+                allow_raw_audio: false,
                 output: None,
                 display: false,
                 width: 320,
@@ -3216,6 +3321,8 @@ mod tests {
             };
             let shared = Arc::new(Shared {
                 audio: crate::audio::pool(),
+                sound: SoundCells::new(&test_config(Codec::H264)),
+                sound_live: Arc::new(lowlat_audio::Wanted::default()),
                 seats: core::array::from_fn(|_| Seat::new()),
                 pool: Pool::new(slots, max_frame_bytes()),
                 encode_us: AtomicU32::new(0),
@@ -3278,6 +3385,8 @@ mod tests {
     fn parked() -> (Arc<Shared>, Stream, mpsc::Receiver<Join>) {
         let shared = Arc::new(Shared {
             audio: crate::audio::pool(),
+            sound: SoundCells::new(&test_config(Codec::H264)),
+            sound_live: Arc::new(lowlat_audio::Wanted::default()),
             seats: core::array::from_fn(|_| Seat::new()),
             pool: Pool::new(POOL_SLOTS, max_frame_bytes()),
             encode_us: AtomicU32::new(0),
@@ -3308,6 +3417,8 @@ mod tests {
     fn test_config(codec: Codec) -> Config {
         Config {
             audio: None,
+            audio_kbps: 128,
+            allow_raw_audio: false,
             output: None,
             display: false,
             width: 320,
@@ -3478,6 +3589,8 @@ mod tests {
     fn a_request_carries_a_name_and_the_last_one_wins() {
         let shared = Arc::new(Shared {
             audio: crate::audio::pool(),
+            sound: SoundCells::new(&test_config(Codec::H264)),
+            sound_live: Arc::new(lowlat_audio::Wanted::default()),
             seats: core::array::from_fn(|_| Seat::new()),
             pool: Pool::new(2, 64),
             encode_us: AtomicU32::new(0),
@@ -3779,6 +3892,8 @@ mod tests {
             .expect("a seat");
         streaming(&shared, 0);
         streaming(&shared, 1);
+        // The uncompressed form is a permission as well as a request.
+        shared.set_sound(true, true, 128);
         compressed.declare_audio(false);
         uncompressed.declare_audio(true);
         assert_eq!(shared.audio_wanted(), (true, true));
@@ -3803,6 +3918,58 @@ mod tests {
         assert!(compressed.next_audio().is_none());
     }
 
+    /// **A guest asks and a host permits, and the header follows the host.** A
+    /// peer that asked for the uncompressed form and was not granted it is sent
+    /// the compressed one, and everything that produces, prices or labels a
+    /// packet has to agree about which -- a guest sent one and told the other
+    /// hears noise.
+    #[test]
+    fn a_guest_denied_the_uncompressed_form_is_sent_the_compressed_one() {
+        let (shared, stream, _arrivals) = parked();
+        let hold = stream
+            .seats()
+            .take(wake_handle(), wake_handle())
+            .expect("a seat");
+        streaming(&shared, 0);
+        hold.declare_audio(true);
+
+        shared.set_sound(true, false, 128);
+        assert!(!hold.audio_raw(), "the permission was not consulted");
+        assert_eq!(shared.audio_wanted(), (true, false));
+        shared.publish_audio(false, b"compressed");
+        assert!(hold.next_audio().is_some(), "nothing was sent");
+
+        // Granted, the same guest gets what it asked for.
+        shared.set_sound(true, true, 128);
+        assert!(hold.audio_raw());
+        assert_eq!(shared.audio_wanted(), (false, true));
+        shared.publish_audio(true, b"uncompressed");
+        let taken = hold.next_audio().expect("nothing was sent");
+        assert_eq!(taken.bytes(), b"uncompressed");
+    }
+
+    /// **What sound costs follows the permission too**, or a host would price a
+    /// guest at ten times what it is actually sending it.
+    #[test]
+    fn the_price_follows_what_is_actually_sent() {
+        let (shared, stream, _arrivals) = parked();
+        let hold = stream
+            .seats()
+            .take(wake_handle(), wake_handle())
+            .expect("a seat");
+        streaming(&shared, 0);
+        hold.declare_audio(true);
+
+        shared.set_sound(true, false, 128);
+        let denied = shared.audio_mbps(128);
+        shared.set_sound(true, true, 128);
+        let granted = shared.audio_mbps(128);
+        assert!(
+            granted > denied * 5.0,
+            "denied {denied} and granted {granted} were priced the same"
+        );
+    }
+
     /// **A room produces only what somebody is listening for**, which is what
     /// keeps the codec off a machine where every guest asked for the
     /// uncompressed form, and both off a machine with nobody in it.
@@ -3817,6 +3984,7 @@ mod tests {
         // A seat that is claimed but not yet admitted is not listening either.
         assert_eq!(shared.audio_wanted(), (false, false));
         streaming(&shared, 0);
+        shared.set_sound(true, true, 128);
         hold.declare_audio(false);
         assert_eq!(shared.audio_wanted(), (true, false));
         hold.declare_audio(true);
@@ -3839,6 +4007,7 @@ mod tests {
             .expect("a seat");
         streaming(&shared, 0);
         streaming(&shared, 1);
+        shared.set_sound(true, true, 128);
         behind.declare_audio(false);
         listening.declare_audio(false);
 
@@ -4408,6 +4577,8 @@ mod tests {
     fn the_real_encoder_serves_a_seated_guest() {
         let stream = Stream::start(Config {
             audio: None,
+            audio_kbps: 128,
+            allow_raw_audio: false,
             output: None,
             display: false,
             width: 1920,
@@ -4476,6 +4647,8 @@ mod tests {
             .unwrap_or(0);
         let stream = Stream::start(Config {
             audio: None,
+            audio_kbps: 128,
+            allow_raw_audio: false,
             output: None,
             display: false,
             width: 1920,
@@ -4534,6 +4707,8 @@ mod tests {
     fn measure(fps: u32, frames: usize) -> Report {
         let stream = Stream::start(Config {
             audio: None,
+            audio_kbps: 128,
+            allow_raw_audio: false,
             output: None,
             display: false,
             width: 1920,

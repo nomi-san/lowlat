@@ -94,10 +94,14 @@ fn audio_config() -> Option<lowlat_audio::Config> {
     }
     Some(lowlat_audio::Config {
         server: flag("--audio-server"),
-        device: flag("--audio-device"),
-        // **Off unless asked for.** It silences the speakers of whoever is at
-        // the machine, which is a thing to opt into rather than a default.
-        mute_local: flag_set("--mute-local"),
+        wanted: std::sync::Arc::new(lowlat_audio::capture::Wanted::new(
+            lowlat_audio::capture::Live {
+                device: flag("--audio-device"),
+                // **Off unless asked for.** It silences the speakers of whoever
+                // is at the machine, which is opted into rather than defaulted.
+                mute_local: flag_set("--mute-local"),
+            },
+        )),
     })
 }
 
@@ -312,6 +316,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         max_guests: max_guests as usize,
         servers: stun,
         stream: Some(lowlat::stream::Config {
+            audio_kbps: flag("--audio-kbps")
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(lowlat_audio::encode::DEFAULT_BITRATE_KBPS),
+            allow_raw_audio: flag_set("--allow-raw-audio"),
             audio: audio_config(),
             codec,
             backend,

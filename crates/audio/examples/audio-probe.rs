@@ -77,10 +77,14 @@ fn main() {
     let capture = match Capture::open(
         Config {
             server: server.clone(),
-            device: device.clone(),
-            // **Off unless the fourth argument asks**, because this is run by
-            // hand and usually while something is playing on purpose.
-            mute_local: std::env::args().any(|arg| arg == "--mute-local"),
+            wanted: std::sync::Arc::new(lowlat_audio::capture::Wanted::new(
+                lowlat_audio::capture::Live {
+                    device: device.clone(),
+                    // **Off unless an argument asks**, because this is run by
+                    // hand and usually while something is playing on purpose.
+                    mute_local: std::env::args().any(|arg| arg == "--mute-local"),
+                },
+            )),
         },
         move |frame: &[u8]| {
             let now = Time::now();
@@ -121,6 +125,18 @@ fn main() {
         "open ok device={} rate={SAMPLE_RATE} frame={FRAME} ({FRAME_BYTES} bytes)",
         capture.device()
     );
+
+    // **A live change, made from outside the capture thread**, which is what
+    // an application asking for one looks like. Frames keep arriving into the
+    // channel while this waits, so nothing is lost by asking late.
+    if std::env::args().any(|arg| arg == "--live-mute") {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        println!("-> asking for the speakers to be silenced");
+        capture.set_live(&lowlat_audio::capture::Live {
+            device: device.clone(),
+            mute_local: true,
+        });
+    }
 
     let mut gaps = Vec::with_capacity(frames);
     let mut costs = Vec::with_capacity(frames);

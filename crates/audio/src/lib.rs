@@ -19,7 +19,7 @@ pub mod capture;
 pub mod encode;
 mod pulse;
 
-pub use capture::{Capture, Config};
+pub use capture::{Capture, Config, Live, Wanted};
 pub use encode::Encoder;
 
 /// Samples a second, per channel. **The only rate the protocol carries**, so

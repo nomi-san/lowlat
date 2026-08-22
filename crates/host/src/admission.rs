@@ -1547,10 +1547,6 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     let mut audio_send_bodies = vec![0u8; SLOT * AUDIO_SEND_SLOTS];
     let mut audio_send_meta = vec![SendSlot::default(); AUDIO_SEND_SLOTS];
     let mut inbound = vec![0u8; MAX_INBOUND];
-    // Which encoding this guest asked for, from its initialization. It decides
-    // the header sent with every packet, so the sending loop keeps it rather
-    // than reaching for the seat's copy on each one.
-    let mut raw_audio = false;
 
     let Ok(envelope) = Envelope::from_credential(&args.material, Cipher::Aes256) else {
         return;
@@ -1755,7 +1751,10 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             // still hears the desktop, which is the difference between a
             // session that is broken and one that is blank.
             if let Some(seat) = seated {
-                send_audio(endpoint.session(), seat, raw_audio);
+                // **What the seat says, not what the peer asked for.** A host
+                // that does not permit the uncompressed form sends the
+                // compressed one, and the header has to agree with the bytes.
+                send_audio(endpoint.session(), seat, seat.audio_raw());
             }
         }) {
             lowlat_common::log_warn!("guest: the transport stopped, err={error}");
@@ -1964,13 +1963,19 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 seat.as_ref(),
                 negotiation.as_ref().and_then(Negotiation::asked),
             ) {
-                // **The permission, read from the guest's own initialization.**
-                // Absent means the compressed form, which every peer decodes.
-                raw_audio = asked.raw_audio;
-                seat.declare_audio(raw_audio);
+                // **What the peer asked for, which is not always what it
+                // gets.** The uncompressed form is a permission a host grants
+                // as well as one a guest requests, and the seat is where the
+                // two meet.
+                seat.declare_audio(asked.raw_audio);
                 lowlat_common::log_info!(
-                    "guest: sound is {}",
-                    if raw_audio {
+                    "guest: sound asked for is {}, sent as {}",
+                    if asked.raw_audio {
+                        "uncompressed"
+                    } else {
+                        "compressed"
+                    },
+                    if seat.audio_raw() {
                         "uncompressed"
                     } else {
                         "compressed"

@@ -914,10 +914,9 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
             // field for it with the rest of the audio surface; until then a
             // host reads the session's default output, and a machine with no
             // sound server simply has no sound.
-            audio: Some(lowlat_audio::Config {
-                mute_local: false,
-                ..lowlat_audio::Config::default()
-            }),
+            audio_kbps: lowlat_audio::encode::DEFAULT_BITRATE_KBPS,
+            allow_raw_audio: false,
+            audio: Some(lowlat_audio::Config::default()),
             codec,
             backend,
             cg_level,
