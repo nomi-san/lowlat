@@ -234,6 +234,14 @@ struct Shared {
     /// must hand the encoder back, and the pass that rebuilds reads the name
     /// from the channel where it can own it.
     output_asked: AtomicU32,
+    /// Bumped when a live video setting changes.
+    ///
+    /// **A counter and a lock, rather than packed atomics.** The loop reads the
+    /// counter every pass and takes the lock only when it moved, so the frame
+    /// path pays one load and the lock is held once per change rather than once
+    /// per frame (AGENTS 6.8).
+    video_asked: AtomicU32,
+    video: std::sync::Mutex<LiveVideo>,
     /// Raised to end the loop; the loop checks it once per frame.
     stopping: AtomicU32,
     /// The picture the stream is really producing, as width in the high half
@@ -642,6 +650,46 @@ pub struct Config {
     /// that is is not configured, because it is discovered: see
     /// [`crate::display::Display::open`].
     pub display: bool,
+    /// Which congestion control level every guest's controller runs at.
+    ///
+    /// **Level 0 is the most aggressive, not "off"** ([`lowlat_core::congestion`]),
+    /// and it is compatibility-only. This was pinned at 0 in the guest loop and
+    /// nothing configured it, so every session ran the setting that declares
+    /// congestion on any stale fragment.
+    pub cg_level: usize,
+}
+
+/// The part of a video configuration that changes while the stream runs.
+///
+/// **Everything here is applied without rebuilding anything.** The bitrate
+/// re-bases the budget and reaches the encoder through the reconfigure it
+/// already does every pass; the frame rate changes the pacing. A field that
+/// needed the encoder rebuilt would belong with the codec instead, which is
+/// settled once and never moves.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LiveVideo {
+    /// **A ceiling, not a target.** Capture runs at the display's own rate.
+    pub fps: u32,
+    pub bitrate_mbps: f64,
+    pub min_mbps: f64,
+    /// Whether to emit at `fps` even when the picture has not changed.
+    ///
+    /// **Always honoured as true, and clearing it costs nothing but bitrate.**
+    /// There is no damage signal here at all, so this cannot yet be acted on;
+    /// what it permits is skipping, and not skipping is the conservative
+    /// answer rather than a wrong one.
+    pub full_fps: bool,
+}
+
+impl Default for LiveVideo {
+    fn default() -> Self {
+        Self {
+            fps: 60,
+            bitrate_mbps: 10.0,
+            min_mbps: 1.0,
+            full_fps: true,
+        }
+    }
 }
 
 /// The running loop, and the handle the seam holds it by.
@@ -679,6 +727,13 @@ impl Stream {
             stopping: AtomicU32::new(0),
             captured: AtomicU32::new(0),
             output_asked: AtomicU32::new(0),
+            video_asked: AtomicU32::new(0),
+            video: std::sync::Mutex::new(LiveVideo {
+                fps: config.fps,
+                bitrate_mbps: config.configured_mbps,
+                min_mbps: config.min_mbps,
+                full_fps: true,
+            }),
             epoch: AtomicU32::new(0),
         });
         let (joins, arrivals) = mpsc::channel();
@@ -714,6 +769,28 @@ impl Stream {
         if outputs.send(id).is_ok() {
             self.shared.output_asked.fetch_add(1, Ordering::Release);
         }
+    }
+
+    /// Change what can be changed without rebuilding anything.
+    ///
+    /// **Named before it is announced**, exactly as an output change is: the
+    /// loop reads the counter and only then takes the values, so a value that
+    /// had not landed yet would be applied a pass late.
+    pub fn set_video(&self, video: LiveVideo) {
+        let Ok(mut held) = self.shared.video.lock() else {
+            return;
+        };
+        *held = video;
+        drop(held);
+        self.shared.video_asked.fetch_add(1, Ordering::Release);
+    }
+
+    /// What the stream is running at now.
+    pub fn video(&self) -> LiveVideo {
+        self.shared
+            .video
+            .lock()
+            .map_or_else(|held| *held.into_inner(), |held| *held)
     }
 
     /// What size the stream is really producing, once it is known.
@@ -2003,7 +2080,12 @@ fn encode_loop<E: Encoder + FromDevice>(
     )> = std::collections::VecDeque::with_capacity(ENCODE_DEPTH + 1);
 
     let started = lowlat_common::clock::Time::now();
-    let interval_ms = 1000.0 / f64::from(config.fps.max(1));
+    let mut live = shared
+        .video
+        .lock()
+        .map_or_else(|held| *held.into_inner(), |held| *held);
+    let mut video_seen = shared.video_asked.load(Ordering::Acquire);
+    let mut interval_ms = 1000.0 / f64::from(live.fps.max(1));
     let mut next_frame_ms = 0.0f64;
     let mut previous_submit: Option<lowlat_common::clock::Time> = None;
     let mut force_keyframe = false;
@@ -2191,6 +2273,23 @@ fn encode_loop<E: Encoder + FromDevice>(
             if shared.output_asked.load(Ordering::Acquire) != asked_at {
                 return Exit::Rediscover("a different output was asked for");
             }
+            // **Applied without rebuilding, which is what separates these from
+            // an output change.** The bitrate re-bases the budget and reaches
+            // the encoder through the reconfigure the rate loop already does;
+            // the frame rate changes the pacing from the next frame on. Read
+            // only when the counter moved, so an unchanged stream pays one
+            // load a pass.
+            if take_live_video(shared, &mut video_seen, &mut live) {
+                interval_ms = 1000.0 / f64::from(live.fps.max(1));
+                budget.reconfigure(live.bitrate_mbps, live.min_mbps, controllers);
+                lowlat_common::log_info!(
+                    "stream: live video change, fps={} bitrate={:.1} floor={:.1} full_fps={}",
+                    live.fps,
+                    live.bitrate_mbps,
+                    live.min_mbps,
+                    u8::from(live.full_fps)
+                );
+            }
 
             let synthetic = if display.is_none() {
                 Some(source.acquire())
@@ -2348,6 +2447,28 @@ fn tick_rate<E: Encoder>(
     }
 }
 
+/// Take a live video change if one was asked for.
+///
+/// **Extracted so the decision can be tested without a display.** The loop it
+/// belongs to needs a render node and does not run by default, and a check that
+/// never runs proves nothing: pinning this counter so no change was ever seen
+/// passed the entire suite, because the only test watching read the settings
+/// back out of the cell rather than out of the loop.
+///
+/// Answers whether anything moved, so the caller recomputes only then.
+fn take_live_video(shared: &Shared, seen: &mut u32, live: &mut LiveVideo) -> bool {
+    let asked = shared.video_asked.load(Ordering::Acquire);
+    if asked == *seen {
+        return false;
+    }
+    *seen = asked;
+    *live = shared
+        .video
+        .lock()
+        .map_or_else(|held| *held.into_inner(), |held| *held);
+    true
+}
+
 /// Whether any guest has asked for the encoder to be reinitialized, clearing
 /// the requests.
 fn reconfigure_asked(shared: &Shared, active: &[Active]) -> bool {
@@ -2444,7 +2565,11 @@ fn admit_and_retire(
             reason = "a configured rate in megabits, only used to pick a ceiling step"
         )]
         guests.push(gate::Guest::joining(config.configured_mbps as f32));
-        controllers.push(Controller::new(0, config.min_mbps, config.configured_mbps));
+        controllers.push(Controller::new(
+            config.cg_level,
+            config.min_mbps,
+            config.configured_mbps,
+        ));
         moved = true;
     }
 
@@ -2686,6 +2811,55 @@ fn fragments_for(len: usize) -> u32 {
 // obligation is met; these drive real threads and real time.
 #[cfg(all(test, not(loom)))]
 mod tests {
+
+    /// **A live change reaches the loop, and only when one was asked for.**
+    ///
+    /// The loop that consumes this needs a render node and does not run by
+    /// default, so the decision is tested here instead. It is not hypothetical:
+    /// pinning the counter so no change was ever seen passed the whole suite,
+    /// because the only test watching read the settings back out of the cell
+    /// the setter had just written.
+    #[test]
+    fn a_live_video_change_is_taken_once_and_then_not_again() {
+        let stream = Stream::start(Config {
+            output: None,
+            display: false,
+            width: 320,
+            height: 240,
+            fps: 60,
+            cg_level: 1,
+            codec: Codec::H264,
+            backend: Some(Backend::Open),
+            configured_mbps: 10.0,
+            min_mbps: 1.0,
+            rotation: lowlat_core::video::Rotation::None,
+            detail_rows: 0,
+        });
+        let shared = Arc::clone(&stream.shared);
+        let mut seen = shared.video_asked.load(Ordering::Acquire);
+        let mut live = stream.video();
+        assert!(
+            !take_live_video(&shared, &mut seen, &mut live),
+            "a change was taken when none was asked for"
+        );
+
+        let wanted = LiveVideo {
+            fps: 30,
+            bitrate_mbps: 4.0,
+            min_mbps: 2.0,
+            full_fps: false,
+        };
+        stream.set_video(wanted);
+        assert!(
+            take_live_video(&shared, &mut seen, &mut live),
+            "a change was asked for and the loop would not have seen it"
+        );
+        assert_eq!(live, wanted);
+
+        // And exactly once: a second pass over an unchanged counter must not
+        // re-apply, or every frame would re-base the budget.
+        assert!(!take_live_video(&shared, &mut seen, &mut live));
+    }
     use super::*;
 
     /// An encoder that answers at once with a canned access unit.
@@ -2789,6 +2963,7 @@ mod tests {
                 min_mbps: 1.0,
                 rotation: lowlat_core::video::Rotation::None,
                 detail_rows: 0,
+                cg_level: 1,
             };
             let shared = Arc::new(Shared {
                 seats: core::array::from_fn(|_| Seat::new()),
@@ -2803,6 +2978,8 @@ mod tests {
                 stopping: AtomicU32::new(0),
                 captured: AtomicU32::new(0),
                 output_asked: AtomicU32::new(0),
+                video_asked: AtomicU32::new(0),
+                video: std::sync::Mutex::new(LiveVideo::default()),
                 epoch: AtomicU32::new(0),
             });
             let (joins, arrivals) = mpsc::channel();
@@ -2858,6 +3035,8 @@ mod tests {
             stopping: AtomicU32::new(0),
             captured: AtomicU32::new(0),
             output_asked: AtomicU32::new(0),
+            video_asked: AtomicU32::new(0),
+            video: std::sync::Mutex::new(LiveVideo::default()),
             epoch: AtomicU32::new(0),
         });
         let (joins, arrivals) = mpsc::channel();
@@ -2883,6 +3062,7 @@ mod tests {
             min_mbps: 1.0,
             rotation: lowlat_core::video::Rotation::None,
             detail_rows: 0,
+            cg_level: 1,
         }
     }
 
@@ -3051,6 +3231,8 @@ mod tests {
             stopping: AtomicU32::new(0),
             captured: AtomicU32::new(0),
             output_asked: AtomicU32::new(0),
+            video_asked: AtomicU32::new(0),
+            video: std::sync::Mutex::new(LiveVideo::default()),
             epoch: AtomicU32::new(0),
         });
         let (outputs, asked) = mpsc::channel();
@@ -3822,6 +4004,7 @@ mod tests {
             width: 1920,
             height: 1080,
             fps: 60,
+            cg_level: 1,
             codec: Codec::H264,
             backend: Some(Backend::Open),
             configured_mbps: 10.0,
@@ -3884,6 +4067,7 @@ mod tests {
             width: 1920,
             height: 1080,
             fps: 60,
+            cg_level: 1,
             codec: Codec::H264,
             backend: Some(Backend::Open),
             configured_mbps: 10.0,
@@ -3942,6 +4126,7 @@ mod tests {
             min_mbps: 1.0,
             rotation: lowlat_core::video::Rotation::None,
             detail_rows: 0,
+            cg_level: 1,
         });
         let wake = lowlat_net::Wake::new().expect("wake");
         let seat = stream

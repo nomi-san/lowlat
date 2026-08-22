@@ -221,6 +221,29 @@ typedef uint32_t lowlat_rotation;
 #endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
 
+// Which congestion control level a session runs at.
+//
+// **Zero is the most aggressive, not "off".** Its threshold declares
+// congestion on any stale fragment once the send window passes its floor, and
+// it exists only for compatibility with an older scheme. Sensitive is the
+// default and the one to leave alone.
+enum lowlat_cg_level
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+    LOWLAT_CG_LEVEL_LEGACY = 0,
+    LOWLAT_CG_LEVEL_SENSITIVE = 1,
+    LOWLAT_CG_LEVEL_RELAXED = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum lowlat_cg_level lowlat_cg_level;
+#else
+typedef uint32_t lowlat_cg_level;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
 // One host session, as the application holds it.
 //
 // Opaque: the application holds a pointer it cannot look inside, so what is
@@ -235,6 +258,43 @@ typedef struct lowlat lowlat;
 typedef struct lowlat_create_info {
     uint32_t size;
 } lowlat_create_info;
+
+// The video settings that can change while a host is running.
+//
+// **Split out because the split is real.** Everything here is applied without
+// rebuilding anything the session rests on: a bitrate re-bases the budget and
+// reaches the encoder through the reconfigure the rate loop already performs,
+// and a frame rate changes the pacing from the next frame. What is not here --
+// the codec, the encoder, the guest limit, the ports -- is settled when
+// hosting starts, because changing it means building the pipeline again.
+//
+// **There is no resolution and no rotation.** The display decides its own size
+// and orientation and this host follows; asking it to be something else is a
+// request to whoever owns the display, which is not this library
+// ([impl-plan](../../../docs/impl-plan.md), *Output selection*).
+typedef struct lowlat_host_video_config {
+    // Set by the caller to `sizeof(lowlat_host_video_config)`.
+    uint32_t size;
+    // **A ceiling, not a target.** Capture runs at the display's own rate and
+    // this is the most that is encoded from it.
+    uint32_t fps;
+    // What the operator asked for, before it is divided among guests.
+    double bitrate_mbps;
+    // The floor congestion control may not descend below. Lowered with the
+    // ceiling when it would otherwise sit above it.
+    double min_bitrate_mbps;
+    // Emit at `fps` even when the picture has not changed.
+    //
+    // **Clearing it is a permission, not an instruction.** There is no damage
+    // signal here, so nothing yet skips a repeated picture; a host that keeps
+    // sending costs bitrate rather than being wrong.
+    uint8_t full_fps;
+    uint8_t reserved[3];
+    // Which output to capture, by an identity from the enumeration. **Empty
+    // means whichever this host would pick on its own**, which is the output
+    // at the desktop's corner and then whatever is lit.
+    char output[LOWLAT_OUTPUT_MAX];
+} lowlat_host_video_config;
 
 // How a host is configured.
 //
@@ -252,32 +312,28 @@ typedef struct lowlat_host_config {
     // Advertised capacity. Above [`LOWLAT_GUESTS_MAX`] is refused rather than
     // quietly reduced.
     uint32_t max_guests;
-    // One of [`lowlat_codec`].
+    // One of [`lowlat_codec`]. Settled when hosting starts: one encode serves
+    // every seat and a session has one video configuration.
     uint32_t codec;
     // One of [`lowlat_encoder`].
     uint32_t encoder;
-    // One of [`lowlat_rotation`].
-    uint32_t rotation;
-    // **A ceiling, not a target.** Capture runs at the display's own rate and
-    // this is the most that is encoded from it.
-    uint32_t fps;
-    // What the operator asked for, before it is divided among guests.
-    double bitrate_mbps;
-    // The floor congestion control may not descend below.
-    double min_bitrate_mbps;
+    // One of [`lowlat_cg_level`].
+    uint32_t cg_level;
+    // How long a guest keeps the pointer after its last movement, when
+    // `exclusive_pointer` is set. Clamped rather than refused: this is a
+    // comfort setting and the nearest usable value beats refusing to start.
+    uint32_t exclusive_hold_ms;
     // Whether one guest at a time may drive the pointer. Off means everybody
     // drives it, which is a configuration rather than a fault.
     uint8_t exclusive_pointer;
     uint8_t reserved2[3];
-    // Which output to capture, by an identity from the enumeration. **Empty
-    // means whichever this host would pick on its own**, which is the output
-    // at the desktop's corner and then whatever is lit.
-    char output[LOWLAT_OUTPUT_MAX];
     // How many of `servers` are set.
     uint32_t server_count;
     // Reflexive servers, consulted for this host's own mapped address, each
     // `host:port`.
     char servers[LOWLAT_SERVERS_MAX][LOWLAT_SERVER_MAX];
+    // The half of this that can also be set while the host runs.
+    struct lowlat_host_video_config video;
 } lowlat_host_config;
 
 // A local candidate for the application to forward.
@@ -402,6 +458,41 @@ void lowlat_destroy(struct lowlat *ll);
 // [`lowlat_host_config`] whose `size` says how much of it is set.
 lowlat_status lowlat_host_start(struct lowlat *ll,
                                 const struct lowlat_host_config *cfg);
+
+// Change the video settings while the host runs.
+//
+// **Everything in this structure is applied without rebuilding the session.**
+// The bitrate re-bases the budget and reaches the encoder through the
+// reconfigure the rate loop already does, so it costs no keyframe and no
+// interruption; the frame rate changes the pacing from the next frame. The
+// output is the exception in cost rather than in kind: a different picture
+// cannot be absorbed into a stream built for another one, so it rebuilds
+// around the new source and costs one coded refresh, keeping every guest on
+// its seat and its channel.
+//
+// Refused with [`LOWLAT_ERR_INVALID_ARGUMENT`] when the host is not running,
+// because there is nothing yet for the values to apply to and accepting them
+// silently would report settings that never took.
+//
+// # Safety
+//
+// `ll` came from [`lowlat_create`], and `cfg` points to one
+// [`lowlat_host_video_config`] whose `size` says how much of it is set.
+lowlat_status lowlat_host_set_video_config(struct lowlat *ll,
+                                           const struct lowlat_host_video_config *cfg);
+
+// What the host is running at now.
+//
+// **Read back rather than remembered.** What a stream is doing is the
+// stream's answer, and an application that kept its own copy would be
+// describing settings another guest may have changed underneath it.
+//
+// # Safety
+//
+// `ll` came from [`lowlat_create`], and `out` points to one
+// [`lowlat_host_video_config`] whose `size` says how much of it is set.
+lowlat_status lowlat_host_get_video_config(struct lowlat *ll,
+                                           struct lowlat_host_video_config *out);
 
 // Stop hosting, disconnecting every guest and joining every thread.
 //

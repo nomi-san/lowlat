@@ -304,6 +304,59 @@ pub enum lowlat_rotation {
     LOWLAT_ROTATION_270 = 4,
 }
 
+/// Which congestion control level a session runs at.
+///
+/// **Zero is the most aggressive, not "off".** Its threshold declares
+/// congestion on any stale fragment once the send window passes its floor, and
+/// it exists only for compatibility with an older scheme. Sensitive is the
+/// default and the one to leave alone.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_cg_level {
+    LOWLAT_CG_LEVEL_LEGACY = 0,
+    LOWLAT_CG_LEVEL_SENSITIVE = 1,
+    LOWLAT_CG_LEVEL_RELAXED = 2,
+}
+
+/// The video settings that can change while a host is running.
+///
+/// **Split out because the split is real.** Everything here is applied without
+/// rebuilding anything the session rests on: a bitrate re-bases the budget and
+/// reaches the encoder through the reconfigure the rate loop already performs,
+/// and a frame rate changes the pacing from the next frame. What is not here --
+/// the codec, the encoder, the guest limit, the ports -- is settled when
+/// hosting starts, because changing it means building the pipeline again.
+///
+/// **There is no resolution and no rotation.** The display decides its own size
+/// and orientation and this host follows; asking it to be something else is a
+/// request to whoever owns the display, which is not this library
+/// ([impl-plan](../../../docs/impl-plan.md), *Output selection*).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_host_video_config {
+    /// Set by the caller to `sizeof(lowlat_host_video_config)`.
+    pub size: u32,
+    /// **A ceiling, not a target.** Capture runs at the display's own rate and
+    /// this is the most that is encoded from it.
+    pub fps: u32,
+    /// What the operator asked for, before it is divided among guests.
+    pub bitrate_mbps: f64,
+    /// The floor congestion control may not descend below. Lowered with the
+    /// ceiling when it would otherwise sit above it.
+    pub min_bitrate_mbps: f64,
+    /// Emit at `fps` even when the picture has not changed.
+    ///
+    /// **Clearing it is a permission, not an instruction.** There is no damage
+    /// signal here, so nothing yet skips a repeated picture; a host that keeps
+    /// sending costs bitrate rather than being wrong.
+    pub full_fps: u8,
+    pub reserved: [u8; 3],
+    /// Which output to capture, by an identity from the enumeration. **Empty
+    /// means whichever this host would pick on its own**, which is the output
+    /// at the desktop's corner and then whatever is lit.
+    pub output: [c_char; LOWLAT_OUTPUT_MAX],
+}
+
 /// How a host is configured.
 ///
 /// **There is no resolution here.** The display decides the picture's size, the
@@ -322,32 +375,28 @@ pub struct lowlat_host_config {
     /// Advertised capacity. Above [`LOWLAT_GUESTS_MAX`] is refused rather than
     /// quietly reduced.
     pub max_guests: u32,
-    /// One of [`lowlat_codec`].
+    /// One of [`lowlat_codec`]. Settled when hosting starts: one encode serves
+    /// every seat and a session has one video configuration.
     pub codec: u32,
     /// One of [`lowlat_encoder`].
     pub encoder: u32,
-    /// One of [`lowlat_rotation`].
-    pub rotation: u32,
-    /// **A ceiling, not a target.** Capture runs at the display's own rate and
-    /// this is the most that is encoded from it.
-    pub fps: u32,
-    /// What the operator asked for, before it is divided among guests.
-    pub bitrate_mbps: f64,
-    /// The floor congestion control may not descend below.
-    pub min_bitrate_mbps: f64,
+    /// One of [`lowlat_cg_level`].
+    pub cg_level: u32,
+    /// How long a guest keeps the pointer after its last movement, when
+    /// `exclusive_pointer` is set. Clamped rather than refused: this is a
+    /// comfort setting and the nearest usable value beats refusing to start.
+    pub exclusive_hold_ms: u32,
     /// Whether one guest at a time may drive the pointer. Off means everybody
     /// drives it, which is a configuration rather than a fault.
     pub exclusive_pointer: u8,
     pub reserved2: [u8; 3],
-    /// Which output to capture, by an identity from the enumeration. **Empty
-    /// means whichever this host would pick on its own**, which is the output
-    /// at the desktop's corner and then whatever is lit.
-    pub output: [c_char; LOWLAT_OUTPUT_MAX],
     /// How many of `servers` are set.
     pub server_count: u32,
     /// Reflexive servers, consulted for this host's own mapped address, each
     /// `host:port`.
     pub servers: [[c_char; LOWLAT_SERVER_MAX]; LOWLAT_SERVERS_MAX],
+    /// The half of this that can also be set while the host runs.
+    pub video: lowlat_host_video_config,
 }
 
 /// The most guests a host may advertise, which is what the ring memory per
@@ -482,31 +531,15 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
         }
         _ => return None,
     };
-    let rotation = match cfg.rotation {
-        code if code == lowlat_rotation::LOWLAT_ROTATION_NONE as u32 => {
-            lowlat_core::video::Rotation::None
-        }
-        code if code == lowlat_rotation::LOWLAT_ROTATION_90 as u32 => {
-            lowlat_core::video::Rotation::Deg90
-        }
-        code if code == lowlat_rotation::LOWLAT_ROTATION_180 as u32 => {
-            lowlat_core::video::Rotation::Deg180
-        }
-        code if code == lowlat_rotation::LOWLAT_ROTATION_270 as u32 => {
-            lowlat_core::video::Rotation::Deg270
-        }
+    let cg_level = match cfg.cg_level {
+        code if code == lowlat_cg_level::LOWLAT_CG_LEVEL_LEGACY as u32 => 0,
+        code if code == lowlat_cg_level::LOWLAT_CG_LEVEL_SENSITIVE as u32 => 1,
+        code if code == lowlat_cg_level::LOWLAT_CG_LEVEL_RELAXED as u32 => 2,
         _ => return None,
     };
-    if cfg.max_guests == 0 || cfg.max_guests > LOWLAT_GUESTS_MAX || cfg.fps == 0 {
+    if cfg.max_guests == 0 || cfg.max_guests > LOWLAT_GUESTS_MAX {
         return None;
     }
-    if !(cfg.bitrate_mbps.is_finite() && cfg.bitrate_mbps > 0.0)
-        || !(cfg.min_bitrate_mbps.is_finite() && cfg.min_bitrate_mbps > 0.0)
-        || cfg.min_bitrate_mbps > cfg.bitrate_mbps
-    {
-        return None;
-    }
-    let output = taken(&cfg.output)?;
     if cfg.server_count as usize > LOWLAT_SERVERS_MAX {
         return None;
     }
@@ -519,17 +552,22 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
         let mut found = std::net::ToSocketAddrs::to_socket_addrs(text).ok()?;
         servers.push(found.next()?);
     }
+    let video = video_configured(&cfg.video)?;
+    let output = taken(&cfg.video.output)?;
 
     Some(crate::admission::Config {
         base_port: cfg.base_port,
         max_guests: cfg.max_guests as usize,
         servers,
         exclusive_pointer: cfg.exclusive_pointer != 0,
+        exclusive_hold_ms: f64::from(cfg.exclusive_hold_ms),
+        cg_level,
         // A live-run aid, and nothing an application should be able to ask for.
         rumble_probe: false,
         stream: Some(crate::stream::Config {
             codec,
             backend,
+            cg_level,
             // **The generated picture's size, which is not a product
             // feature.** A host started through this boundary captures a
             // display and follows whatever size it is; these exist for running
@@ -538,12 +576,40 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
             height: 0,
             detail_rows: 0,
             display: true,
-            fps: cfg.fps,
-            configured_mbps: cfg.bitrate_mbps,
-            min_mbps: cfg.min_bitrate_mbps,
-            rotation,
+            // **Followed rather than configured.** The display decides its own
+            // orientation and this reports what it found; there is nothing to
+            // read it from yet, so it is declared flat until there is.
+            rotation: lowlat_core::video::Rotation::None,
+            fps: video.fps,
+            configured_mbps: video.bitrate_mbps,
+            min_mbps: video.min_mbps,
             output: (!output.is_empty()).then(|| output.to_string()),
         }),
+    })
+}
+
+/// Check the half that can also be set while a host runs.
+fn video_configured(cfg: &lowlat_host_video_config) -> Option<crate::stream::LiveVideo> {
+    if (cfg.size as usize) < core::mem::size_of::<lowlat_host_video_config>() {
+        return None;
+    }
+    if cfg.fps == 0 {
+        return None;
+    }
+    if !(cfg.bitrate_mbps.is_finite() && cfg.bitrate_mbps > 0.0)
+        || !(cfg.min_bitrate_mbps.is_finite() && cfg.min_bitrate_mbps > 0.0)
+        || cfg.min_bitrate_mbps > cfg.bitrate_mbps
+    {
+        return None;
+    }
+    // Read for its terminator even where the value is not wanted here: a field
+    // that was overrun is refused rather than half-read.
+    taken(&cfg.output)?;
+    Some(crate::stream::LiveVideo {
+        fps: cfg.fps,
+        bitrate_mbps: cfg.bitrate_mbps,
+        min_mbps: cfg.min_bitrate_mbps,
+        full_fps: cfg.full_fps != 0,
     })
 }
 
@@ -582,6 +648,100 @@ pub unsafe extern "C" fn lowlat_host_start(
             // has to stay answerable while it does.
             held.events = seam.take_events().map(std::sync::Arc::new);
             held.seam = Some(seam);
+            LOWLAT_OK
+        })
+    }
+}
+
+/// Change the video settings while the host runs.
+///
+/// **Everything in this structure is applied without rebuilding the session.**
+/// The bitrate re-bases the budget and reaches the encoder through the
+/// reconfigure the rate loop already does, so it costs no keyframe and no
+/// interruption; the frame rate changes the pacing from the next frame. The
+/// output is the exception in cost rather than in kind: a different picture
+/// cannot be absorbed into a stream built for another one, so it rebuilds
+/// around the new source and costs one coded refresh, keeping every guest on
+/// its seat and its channel.
+///
+/// Refused with [`LOWLAT_ERR_INVALID_ARGUMENT`] when the host is not running,
+/// because there is nothing yet for the values to apply to and accepting them
+/// silently would report settings that never took.
+///
+/// # Safety
+///
+/// `ll` came from [`lowlat_create`], and `cfg` points to one
+/// [`lowlat_host_video_config`] whose `size` says how much of it is set.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_set_video_config(
+    ll: *mut lowlat,
+    cfg: *const lowlat_host_video_config,
+) -> lowlat_status {
+    unsafe {
+        entered(ll, |handle| {
+            let Some(cfg) = cfg.as_ref() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            let Some(video) = video_configured(cfg) else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            let Ok(output) = taken(&cfg.output).ok_or(()) else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            let held = handle.held();
+            let Some(seam) = held.seam.as_ref() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            seam.set_video(video);
+            seam.select_output((!output.is_empty()).then(|| output.to_string()));
+            LOWLAT_OK
+        })
+    }
+}
+
+/// What the host is running at now.
+///
+/// **Read back rather than remembered.** What a stream is doing is the
+/// stream's answer, and an application that kept its own copy would be
+/// describing settings another guest may have changed underneath it.
+///
+/// # Safety
+///
+/// `ll` came from [`lowlat_create`], and `out` points to one
+/// [`lowlat_host_video_config`] whose `size` says how much of it is set.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_get_video_config(
+    ll: *mut lowlat,
+    out: *mut lowlat_host_video_config,
+) -> lowlat_status {
+    unsafe {
+        entered(ll, |handle| {
+            let Some(slot) = out.as_mut() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            if (slot.size as usize) < core::mem::size_of::<lowlat_host_video_config>() {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let held = handle.held();
+            let Some(seam) = held.seam.as_ref() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            let Some(video) = seam.video() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            slot.fps = video.fps;
+            slot.bitrate_mbps = video.bitrate_mbps;
+            slot.min_bitrate_mbps = video.min_mbps;
+            slot.full_fps = u8::from(video.full_fps);
+            slot.reserved = [0; 3];
+            // **What is being captured, not what was asked for.** A guest can
+            // switch outputs and a display can move by itself; an application
+            // told the request marks the wrong screen.
+            let listed = crate::display::Display::outputs();
+            let running = crate::display::captured(&listed, seam.captured())
+                .map(|output| output.id.clone())
+                .unwrap_or_default();
+            put(&mut slot.output, &running);
             LOWLAT_OK
         })
     }
@@ -991,26 +1151,35 @@ mod tests {
 mod start_tests {
     use super::*;
 
+    fn video() -> lowlat_host_video_config {
+        lowlat_host_video_config {
+            size: u32::try_from(core::mem::size_of::<lowlat_host_video_config>())
+                .unwrap_or(u32::MAX),
+            fps: 60,
+            bitrate_mbps: 10.0,
+            min_bitrate_mbps: 1.0,
+            full_fps: 1,
+            reserved: [0; 3],
+            output: [0; LOWLAT_OUTPUT_MAX],
+        }
+    }
+
     fn config() -> lowlat_host_config {
-        let mut cfg = lowlat_host_config {
+        lowlat_host_config {
             size: u32::try_from(core::mem::size_of::<lowlat_host_config>()).unwrap_or(u32::MAX),
             base_port: 9000,
             reserved: 0,
             max_guests: 4,
             codec: lowlat_codec::LOWLAT_CODEC_H264 as u32,
             encoder: lowlat_encoder::LOWLAT_ENCODER_FOLLOW_DISPLAY as u32,
-            rotation: lowlat_rotation::LOWLAT_ROTATION_NONE as u32,
-            fps: 60,
-            bitrate_mbps: 10.0,
-            min_bitrate_mbps: 1.0,
+            cg_level: lowlat_cg_level::LOWLAT_CG_LEVEL_SENSITIVE as u32,
+            exclusive_hold_ms: 500,
             exclusive_pointer: 0,
             reserved2: [0; 3],
-            output: [0; LOWLAT_OUTPUT_MAX],
             server_count: 0,
             servers: [[0; LOWLAT_SERVER_MAX]; LOWLAT_SERVERS_MAX],
-        };
-        put(&mut cfg.output, "");
-        cfg
+            video: video(),
+        }
     }
 
     fn handle() -> *mut lowlat {
@@ -1056,20 +1225,21 @@ mod start_tests {
         for spoil in [
             (|cfg: &mut lowlat_host_config| cfg.codec = 99) as fn(&mut lowlat_host_config),
             |cfg| cfg.encoder = 99,
-            |cfg| cfg.rotation = 99,
+            |cfg| cfg.cg_level = 99,
             |cfg| cfg.max_guests = 0,
             |cfg| cfg.max_guests = LOWLAT_GUESTS_MAX + 1,
-            |cfg| cfg.fps = 0,
-            |cfg| cfg.bitrate_mbps = 0.0,
-            |cfg| cfg.bitrate_mbps = f64::NAN,
+            |cfg| cfg.video.fps = 0,
+            |cfg| cfg.video.bitrate_mbps = 0.0,
+            |cfg| cfg.video.bitrate_mbps = f64::NAN,
             // A floor above the ceiling leaves congestion control nowhere to go.
-            |cfg| cfg.min_bitrate_mbps = 100.0,
+            |cfg| cfg.video.min_bitrate_mbps = 100.0,
             |cfg| cfg.server_count = u32::try_from(LOWLAT_SERVERS_MAX + 1).unwrap_or(u32::MAX),
             // A field with no terminator was overrun by whoever filled it.
-            |cfg| cfg.output = [b'x' as c_char; LOWLAT_OUTPUT_MAX],
+            |cfg| cfg.video.output = [b'x' as c_char; LOWLAT_OUTPUT_MAX],
             // The size field is the versioning, and one that says less than the
             // struct holds means the caller and the header disagree.
             |cfg| cfg.size = 4,
+            |cfg| cfg.video.size = 4,
         ] {
             let mut cfg = config();
             spoil(&mut cfg);

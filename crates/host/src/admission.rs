@@ -279,6 +279,16 @@ pub struct Config {
     /// peer's controller without a game is to raise an effect ourselves. Holding
     /// A and B on a pad sends one, and zero half a second later.
     pub rumble_probe: bool,
+    /// How long a guest keeps the pointer after its last movement, when
+    /// [`Config::exclusive_pointer`] is set. Clamped into the bounds in
+    /// [`crate::floor`].
+    pub exclusive_hold_ms: f64,
+    /// Which congestion control level every guest's controller runs at.
+    ///
+    /// **Level 0 is the most aggressive, not "off".** Its threshold of zero
+    /// declares congestion on any stale fragment once the window exceeds the
+    /// floor, and it exists for compatibility with an older scheme.
+    pub cg_level: usize,
 }
 
 /// How many withdrawn attempts are remembered.
@@ -381,7 +391,8 @@ impl Admission {
     pub fn new(config: Config) -> Self {
         let (emit, events) = crate::events::queue();
         let stream = config.stream.clone().map(Stream::start);
-        let floor = crate::floor::Floor::new(config.exclusive_pointer);
+        let floor =
+            crate::floor::Floor::with_hold(config.exclusive_pointer, config.exclusive_hold_ms);
         Self {
             config,
             stream,
@@ -726,6 +737,22 @@ impl Admission {
 
     pub fn poll_event(&mut self) -> Option<crate::events::Received> {
         self.events.as_ref()?.try_recv()
+    }
+
+    /// Change the video settings that do not need anything rebuilt.
+    ///
+    /// **The output is not one of them and travels separately.** A different
+    /// output is a different picture, so it costs the rebuild an output change
+    /// has always cost; everything else here reaches the running loop.
+    pub fn set_video(&self, video: crate::stream::LiveVideo) {
+        if let Some(stream) = self.stream.as_ref() {
+            stream.set_video(video);
+        }
+    }
+
+    /// What the stream is running at now.
+    pub fn video(&self) -> Option<crate::stream::LiveVideo> {
+        self.stream.as_ref().map(crate::stream::Stream::video)
     }
 
     /// Take the queue, so a caller can poll it without holding this.
@@ -1810,6 +1837,8 @@ mod tests {
         Admission::new(Config {
             exclusive_pointer: false,
             rumble_probe: false,
+            exclusive_hold_ms: crate::floor::HOLD_MS,
+            cg_level: 1,
             // Ephemeral, so the tests do not fight the machine for a fixed port.
             base_port: 0,
             max_guests,
@@ -1823,6 +1852,8 @@ mod tests {
         let mut seam = Admission::new(Config {
             exclusive_pointer: false,
             rumble_probe: false,
+            exclusive_hold_ms: crate::floor::HOLD_MS,
+            cg_level: 1,
             base_port: 0,
             max_guests: 1,
             servers: Vec::new(),
@@ -1901,6 +1932,8 @@ mod tests {
         let mut seam = Admission::new(Config {
             exclusive_pointer: false,
             rumble_probe: false,
+            exclusive_hold_ms: crate::floor::HOLD_MS,
+            cg_level: 1,
             base_port: base,
             max_guests: 4,
             servers: Vec::new(),
@@ -2598,6 +2631,8 @@ mod geometry {
         let mut seam = Admission::new(Config {
             exclusive_pointer: false,
             rumble_probe: false,
+            exclusive_hold_ms: crate::floor::HOLD_MS,
+            cg_level: 1,
             base_port: 0,
             max_guests: 1,
             servers: Vec::new(),
@@ -2822,6 +2857,8 @@ mod reclamation {
         let mut seam = Admission::new(Config {
             exclusive_pointer: false,
             rumble_probe: false,
+            exclusive_hold_ms: crate::floor::HOLD_MS,
+            cg_level: 1,
             base_port: base,
             max_guests: 4,
             servers: Vec::new(),

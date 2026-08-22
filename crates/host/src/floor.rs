@@ -23,6 +23,14 @@ use std::sync::{Arc, Mutex};
 /// inside a gesture and well under the point where waiting feels like a fault.
 pub const HOLD_MS: f64 = 500.0;
 
+/// Bounds the hold is clamped into.
+///
+/// **Neither end is a preference.** Below the low end a pause inside a gesture
+/// hands the pointer away mid-drag; above the high end taking over reads as a
+/// host that stopped responding.
+pub const HOLD_MIN_MS: f64 = 50.0;
+pub const HOLD_MAX_MS: f64 = 5000.0;
+
 /// The pointer, and who last moved it.
 #[derive(Debug)]
 pub struct Floor {
@@ -34,6 +42,8 @@ struct Shared {
     /// **Absent means nobody arbitrates**, which is the default and makes
     /// every question below answer yes.
     enabled: bool,
+    /// How long a guest keeps the pointer after its last movement.
+    hold_ms: f64,
     state: Mutex<State>,
 }
 
@@ -54,9 +64,24 @@ impl Clone for Floor {
 impl Floor {
     #[must_use]
     pub fn new(enabled: bool) -> Self {
+        Self::with_hold(enabled, HOLD_MS)
+    }
+
+    /// The same, with the hold chosen rather than taken from the default.
+    ///
+    /// **Clamped rather than refused.** This is a comfort setting; a value
+    /// outside the bounds is somebody experimenting, and the nearest usable
+    /// one is a better answer than a host that will not start.
+    pub fn with_hold(enabled: bool, hold_ms: f64) -> Self {
+        let hold_ms = if hold_ms.is_finite() {
+            hold_ms.clamp(HOLD_MIN_MS, HOLD_MAX_MS)
+        } else {
+            HOLD_MS
+        };
         Self {
             shared: Arc::new(Shared {
                 enabled,
+                hold_ms,
                 state: Mutex::new(State::default()),
             }),
         }
@@ -81,7 +106,11 @@ impl Floor {
             return true;
         };
         match state.holder {
-            Some(held) if held != guest && !owner && now_ms - state.since_ms < HOLD_MS => false,
+            Some(held)
+                if held != guest && !owner && now_ms - state.since_ms < self.shared.hold_ms =>
+            {
+                false
+            }
             _ => {
                 if state.holder != Some(guest) {
                     lowlat_common::log_info!("input: the pointer is guest {guest}'s");
@@ -127,7 +156,7 @@ impl Floor {
             return true;
         };
         match state.holder {
-            Some(held) => held == guest || now_ms - state.since_ms >= HOLD_MS,
+            Some(held) => held == guest || now_ms - state.since_ms >= self.shared.hold_ms,
             None => true,
         }
     }

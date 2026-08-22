@@ -91,8 +91,18 @@ impl Budget {
     }
 
     /// Reconfigure the rate this stream runs at.
-    pub fn reconfigure(&mut self, configured_mbps: f64, controllers: &mut [Controller]) {
+    ///
+    /// **The floor moves with the ceiling.** A ceiling lowered under a floor
+    /// that stayed leaves every controller pinned at a rate the operator just
+    /// asked not to exceed, which reads as a bitrate setting that does nothing.
+    pub fn reconfigure(
+        &mut self,
+        configured_mbps: f64,
+        min_mbps: f64,
+        controllers: &mut [Controller],
+    ) {
         self.configured_mbps = configured_mbps;
+        self.min_mbps = min_mbps.min(configured_mbps);
         let guests = self.guests;
         self.rebound(guests, controllers);
     }
@@ -276,7 +286,7 @@ mod tests {
         assert!(before > 1.0, "the guest never climbed at all: {before}");
 
         let lowered = before / 2.0;
-        budget.reconfigure(lowered, &mut guests);
+        budget.reconfigure(lowered, 1.0, &mut guests);
         assert!(
             guests[0].rate_mbps() <= lowered + 1e-9,
             "a guest kept {} after the budget dropped to {lowered}",

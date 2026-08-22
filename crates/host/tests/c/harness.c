@@ -55,6 +55,8 @@ int main(int argc, char **argv)
     lowlat_status (*poll_events)(lowlat *, uint32_t, lowlat_event *, void *, uint32_t *);
     lowlat_status (*host_start)(lowlat *, const lowlat_host_config *);
     lowlat_status (*host_stop)(lowlat *);
+    lowlat_status (*set_video)(lowlat *, const lowlat_host_video_config *);
+    lowlat_status (*get_video)(lowlat *, lowlat_host_video_config *);
 
     RESOLVE(abi_version, lib, "lowlat_abi_version");
     RESOLVE(status_string, lib, "lowlat_status_string");
@@ -64,6 +66,8 @@ int main(int argc, char **argv)
     RESOLVE(poll_events, lib, "lowlat_host_poll_events");
     RESOLVE(host_start, lib, "lowlat_host_start");
     RESOLVE(host_stop, lib, "lowlat_host_stop");
+    RESOLVE(set_video, lib, "lowlat_host_set_video_config");
+    RESOLVE(get_video, lib, "lowlat_host_get_video_config");
 
     uint32_t version = abi_version();
     if ((version >> 16) != LOWLAT_ABI_MAJOR || (version & 0xffff) != LOWLAT_ABI_MINOR) {
@@ -111,10 +115,13 @@ int main(int argc, char **argv)
     cfg.max_guests = 4;
     cfg.codec = LOWLAT_CODEC_H264;
     cfg.encoder = LOWLAT_ENCODER_FOLLOW_DISPLAY;
-    cfg.rotation = LOWLAT_ROTATION_NONE;
-    cfg.fps = 60;
-    cfg.bitrate_mbps = 10.0;
-    cfg.min_bitrate_mbps = 1.0;
+    cfg.cg_level = LOWLAT_CG_LEVEL_SENSITIVE;
+    cfg.exclusive_hold_ms = 500;
+    cfg.video.size = (uint32_t) sizeof cfg.video;
+    cfg.video.fps = 60;
+    cfg.video.bitrate_mbps = 10.0;
+    cfg.video.min_bitrate_mbps = 1.0;
+    cfg.video.full_fps = 1;
     if (host_start(ll, &cfg) != LOWLAT_OK) {
         fprintf(stderr, "harness: hosting would not start\n");
         return 1;
@@ -138,6 +145,48 @@ int main(int argc, char **argv)
     }
     if (host_start(ll, &bad) != LOWLAT_ERR_INVALID_ARGUMENT) {
         fprintf(stderr, "harness: a codec nothing defines was accepted\n");
+        return 1;
+    }
+
+    /* The live half, changed while the host runs and without rebuilding the
+     * session: what the boundary can set is what it reads back. */
+    if (host_start(ll, &cfg) != LOWLAT_OK) {
+        fprintf(stderr, "harness: hosting would not restart\n");
+        return 1;
+    }
+    lowlat_host_video_config video = cfg.video;
+    video.fps = 30;
+    video.bitrate_mbps = 4.0;
+    video.full_fps = 0;
+    if (set_video(ll, &video) != LOWLAT_OK) {
+        fprintf(stderr, "harness: a live video change was refused\n");
+        return 1;
+    }
+    lowlat_host_video_config back;
+    memset(&back, 0, sizeof back);
+    back.size = (uint32_t) sizeof back;
+    if (get_video(ll, &back) != LOWLAT_OK) {
+        fprintf(stderr, "harness: the live video settings could not be read back\n");
+        return 1;
+    }
+    if (back.fps != 30 || back.bitrate_mbps != 4.0 || back.full_fps != 0) {
+        fprintf(stderr, "harness: read back fps=%u bitrate=%.1f full=%u after setting 30/4.0/0\n",
+                back.fps, back.bitrate_mbps, back.full_fps);
+        return 1;
+    }
+    /* A floor above the ceiling is refused rather than silently reordered. */
+    video.min_bitrate_mbps = 100.0;
+    if (set_video(ll, &video) != LOWLAT_ERR_INVALID_ARGUMENT) {
+        fprintf(stderr, "harness: a floor above the ceiling was accepted\n");
+        return 1;
+    }
+    if (host_stop(ll) != LOWLAT_OK) {
+        fprintf(stderr, "harness: hosting would not stop again\n");
+        return 1;
+    }
+    /* And with nothing running there is nothing for it to apply to. */
+    if (set_video(ll, &cfg.video) != LOWLAT_ERR_INVALID_ARGUMENT) {
+        fprintf(stderr, "harness: a video change was accepted with no host running\n");
         return 1;
     }
 

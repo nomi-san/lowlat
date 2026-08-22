@@ -261,8 +261,22 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // so without it the path back to a peer's controller cannot be exercised
     // without running a game that raises an effect.
     let rumble_probe = flag_set("--rumble-probe");
+    // **Not zero.** Level 0 declares congestion on any stale fragment once the
+    // window passes its floor; it is compatibility-only and the guest loop was
+    // pinned to it.
+    // 1 is the default the core names; see its LEVELS table.
+    let cg_level = flag("--cg-level")
+        .and_then(|text| text.parse().ok())
+        .filter(|level| *level < 3)
+        .unwrap_or(1);
     let mut seam = Admission::new(Config {
         exclusive_pointer,
+        // The figure the pointer arbitration was tuned to. A flag exists so a
+        // two-guest run can try another without a rebuild.
+        exclusive_hold_ms: flag("--pointer-hold-ms")
+            .and_then(|text| text.parse().ok())
+            .unwrap_or(lowlat::floor::HOLD_MS),
+        cg_level,
         rumble_probe,
         base_port,
         max_guests: max_guests as usize,
@@ -270,6 +284,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         stream: Some(lowlat::stream::Config {
             codec,
             backend,
+            cg_level,
             width,
             height,
             fps: FPS,

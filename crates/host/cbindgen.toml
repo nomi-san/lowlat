@@ -35,7 +35,7 @@ prefix = ""
 # is deliberate -- the application writes those fields, so reading one back as a
 # variant would be reading whatever it wrote. Nothing being typed by them is the
 # point, and it is also why they have to be asked for here.
-include = ["lowlat_codec", "lowlat_encoder", "lowlat_rotation"]
+include = ["lowlat_codec", "lowlat_encoder", "lowlat_rotation", "lowlat_cg_level"]
 
 [enum]
 prefix_with_name = false

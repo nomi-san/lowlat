@@ -684,6 +684,8 @@ mod tests {
         let mut seam = super::Admission::new(lowlat::admission::Config {
             exclusive_pointer: false,
             rumble_probe: false,
+            exclusive_hold_ms: lowlat::floor::HOLD_MS,
+            cg_level: 1,
             base_port: 0,
             max_guests: 1,
             servers: Vec::new(),
