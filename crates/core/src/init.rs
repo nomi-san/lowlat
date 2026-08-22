@@ -60,6 +60,14 @@ pub struct Init {
     /// is a pointer stuck in the shape it happened to be in when the guest
     /// joined.
     pub caches_cursor: bool,
+    /// The peer will accept uncompressed audio.
+    ///
+    /// **A permission, not a request.** It says the far side allows the
+    /// uncompressed form; a host that only ever sends the compressed one is not
+    /// refusing anything, because the codec travels in every packet's own
+    /// header. A client offers this as a choice between quality and the
+    /// bandwidth it costs.
+    pub raw_audio: bool,
 }
 
 impl Init {
@@ -194,6 +202,7 @@ pub fn parse(body: &[u8]) -> Result<Init> {
         media_container: field(body, "mediaContainer", 0),
         refresh_rate: field(body, "refreshRate", 60),
         caches_cursor: truth(body, "_cache_cursor"),
+        raw_audio: truth(body, "rawAudio"),
     })
 }
 
@@ -223,6 +232,7 @@ mod tests {
             media_container: 0,
             refresh_rate: 60,
             caches_cursor: false,
+            raw_audio: false,
         };
         assert!(!none.has_size_limit(), "zero was read as a ceiling");
 
@@ -282,6 +292,7 @@ mod tests {
             media_container: 0,
             refresh_rate: 60,
             caches_cursor: false,
+            raw_audio: false,
         };
         assert!(!with(0x04).ten_bit(), "bit two was read as ten-bit");
         assert!(with(0x10).ten_bit());
@@ -325,6 +336,24 @@ mod tests {
         ] {
             assert_eq!(parse(body), Err(Error::Malformed), "accepted {body:?}");
         }
+    }
+
+    /// **The uncompressed-audio permission, which one client offers as a
+    /// choice in its own settings.** It is read exactly like the pointer-cache
+    /// flag beside it, and absent means the compressed form only.
+    #[test]
+    fn uncompressed_audio_is_read_when_a_peer_allows_it() {
+        let of = |body: &[u8]| parse(body).expect("parsed").raw_audio;
+        assert!(of(b"{\"_version\":1,\"rawAudio\":true}"));
+        assert!(of(b"{\"_version\":1, \"rawAudio\" : true }"));
+        assert!(!of(b"{\"_version\":1,\"rawAudio\":false}"));
+        assert!(!of(b"{\"_version\":1}"));
+        // A key that merely starts the same is a different key.
+        assert!(!of(b"{\"_version\":1,\"rawAudioX\":true}"));
+        // The two booleans are independent, which a shared parser could hide.
+        let init =
+            parse(b"{\"_version\":1,\"rawAudio\":true,\"_cache_cursor\":false}").expect("parsed");
+        assert!(init.raw_audio && !init.caches_cursor);
     }
 
     /// A host must tolerate keys it does not know: peers send different

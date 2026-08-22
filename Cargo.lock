@@ -524,6 +524,7 @@ dependencies = [
  "cbindgen",
  "drm",
  "loom",
+ "lowlat-audio",
  "lowlat-capture",
  "lowlat-common",
  "lowlat-core",
@@ -585,6 +586,7 @@ dependencies = [
 name = "lowlatd"
 version = "0.0.0"
 dependencies = [
+ "lowlat-audio",
  "lowlat-common",
  "lowlat-host",
  "lowlat-kessel",

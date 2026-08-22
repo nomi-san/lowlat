@@ -910,6 +910,11 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
         // A live-run aid, and nothing an application should be able to ask for.
         rumble_probe: false,
         stream: Some(crate::stream::Config {
+            // **On by default and not yet configurable.** The boundary grows a
+            // field for it with the rest of the audio surface; until then a
+            // host reads the session's default output, and a machine with no
+            // sound server simply has no sound.
+            audio: Some(lowlat_audio::Config::default()),
             codec,
             backend,
             cg_level,

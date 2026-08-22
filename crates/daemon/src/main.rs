@@ -81,6 +81,23 @@ fn flag_set(name: &str) -> bool {
     std::env::args().any(|arg| arg == name)
 }
 
+/// Where sound comes from, or nothing when it is switched off.
+///
+/// **A service outside the session has to be told which one**, because the
+/// sound server's socket lives in that session's own runtime directory. Absent,
+/// the environment answers -- which is right when the daemon runs inside the
+/// session and wrong nowhere else, since a machine with no sound server simply
+/// reports that it has none.
+fn audio_config() -> Option<lowlat_audio::Config> {
+    if flag_set("--no-audio") {
+        return None;
+    }
+    Some(lowlat_audio::Config {
+        server: flag("--audio-server"),
+        device: flag("--audio-device"),
+    })
+}
+
 fn read(path: &str) -> String {
     std::fs::read_to_string(path)
         .map(|s| s.trim().to_string())
@@ -292,6 +309,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         max_guests: max_guests as usize,
         servers: stun,
         stream: Some(lowlat::stream::Config {
+            audio: audio_config(),
             codec,
             backend,
             cg_level,

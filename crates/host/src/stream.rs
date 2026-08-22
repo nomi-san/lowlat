@@ -62,6 +62,13 @@ pub const MAX_SEATS: usize = gate::MAX_GUESTS;
 /// the gate and resynchronised on a keyframe, and a deep queue only delays
 /// that decision while spending pool slots.
 const PUBLISH_DEPTH: usize = 2;
+/// Audio packets a guest may be behind before one is dropped.
+///
+/// **Deeper than the picture ring and still short.** A packet is 20 ms, so
+/// this is a tenth of a second of slack for a guest whose thread was busy; past
+/// that, a late packet is worth less than the one behind it and is dropped
+/// rather than queued.
+const AUDIO_DEPTH: usize = 5;
 
 /// Encoded frames held at once.
 ///
@@ -162,6 +169,21 @@ struct Seat {
     /// that a build which then fails can be reported to the guests that asked
     /// for it and to no others.
     asked_last: AtomicU32,
+    /// Audio packets, loop to guest, in the same shape as the picture ring
+    /// beside it: single producer, single consumer, indices into the audio
+    /// pool.
+    audio: Ring<u32, AUDIO_DEPTH>,
+    /// Whether this guest asked for the uncompressed form, from its own
+    /// initialization. Read by the thread that captures, so it knows which
+    /// encodings the room actually wants.
+    wants_raw: AtomicU32,
+    /// How to wake this guest when sound is published to it.
+    ///
+    /// **A second handle, because sound is published by a different thread**
+    /// from the one that publishes pictures, and neither may hold the other's.
+    /// Locked once per packet and never contended: only this seat's own guest
+    /// writes it, and only when taking or leaving the seat.
+    audio_wake: std::sync::Mutex<Option<WakeHandle>>,
     /// A reason this guest is being ended, or zero.
     ///
     /// **Zero is not a reason**, which is what makes it usable as the absent
@@ -185,6 +207,9 @@ impl Seat {
             reconfigure: AtomicU32::new(0),
             asked_last: AtomicU32::new(0),
             kick: AtomicI32::new(0),
+            audio: Ring::new(),
+            wants_raw: AtomicU32::new(0),
+            audio_wake: std::sync::Mutex::new(None),
         }
     }
 }
@@ -202,9 +227,13 @@ struct Join {
 
 /// Everything both sides of the handoff can see.
 #[derive(Debug)]
-struct Shared {
+pub(crate) struct Shared {
     seats: [Seat; MAX_SEATS],
     pool: Pool,
+    /// Sound, in its own pool because it is produced by its own thread on its
+    /// own cadence. One slot per encoding a room actually wants, never one per
+    /// guest.
+    audio: Pool,
     /// Capture to bitstream collected for the last picture, in microseconds.
     ///
     /// **A property of the stream, not of a guest**: one encode serves every
@@ -445,6 +474,73 @@ struct Held {
 }
 
 impl Shared {
+    /// Which encodings the seated guests actually want.
+    ///
+    /// **Asked once per frame rather than assumed.** A room with nobody in it
+    /// wants neither, and producing either would be work nobody receives.
+    pub(crate) fn audio_wanted(&self) -> (bool, bool) {
+        let mut compressed = false;
+        let mut uncompressed = false;
+        for seat in &self.seats {
+            if seat.state.load(Ordering::Acquire) != seat_state::STREAMING {
+                continue;
+            }
+            if seat.wants_raw.load(Ordering::Relaxed) == 0 {
+                compressed = true;
+            } else {
+                uncompressed = true;
+            }
+        }
+        (compressed, uncompressed)
+    }
+
+    /// Hand one packet to every seat that asked for this encoding.
+    ///
+    /// **A slot per encoding, not per guest**: the pool holds the bytes once
+    /// and every guest is given the index. A seat whose ring is full keeps its
+    /// place and loses this packet, which is what a late packet is worth.
+    pub(crate) fn publish_audio(&self, raw: bool, payload: &[u8]) {
+        let Some(mut writer) = self.audio.acquire() else {
+            // Every slot is still held, which means every guest is behind on
+            // sound. Dropping is the whole policy: nothing here is
+            // retransmitted and nothing depends on the packet before it.
+            return;
+        };
+        if !writer.fill(payload) {
+            return;
+        }
+        let Some(filler) = self.seats.first() else {
+            return;
+        };
+        let mut rings: [&Ring<u32, AUDIO_DEPTH>; MAX_SEATS] = [&filler.audio; MAX_SEATS];
+        let mut waking: [usize; MAX_SEATS] = [0; MAX_SEATS];
+        let mut n = 0usize;
+        for (index, seat) in self.seats.iter().enumerate() {
+            if seat.state.load(Ordering::Acquire) != seat_state::STREAMING {
+                continue;
+            }
+            if (seat.wants_raw.load(Ordering::Relaxed) != 0) != raw {
+                continue;
+            }
+            if let (Some(target), Some(who)) = (rings.get_mut(n), waking.get_mut(n)) {
+                *target = &seat.audio;
+                *who = index;
+                n += 1;
+            }
+        }
+        // The keyframe flag means nothing to sound; the pool carries one for
+        // pictures and this path leaves it clear.
+        let _ = writer.publish(false, rings.get(..n).unwrap_or(&[]));
+        for index in waking.get(..n).unwrap_or(&[]) {
+            if let Some(seat) = self.seats.get(*index)
+                && let Ok(held) = seat.audio_wake.lock()
+                && let Some(wake) = held.as_ref()
+            {
+                let _ = wake.notify();
+            }
+        }
+    }
+
     /// Where a guest just told the pointer to be, and the count that goes with
     /// it.
     fn commanded(&self) -> Option<(u64, u16, u16)> {
@@ -610,6 +706,12 @@ pub enum Backend {
 /// name is as long as the system chose to make it.
 #[derive(Debug, Clone)]
 pub struct Config {
+    /// Where sound is read from, or **nothing for a host that streams pictures
+    /// only**.
+    ///
+    /// A failure to open it is not a failure to host: sound goes off, the
+    /// reason is logged once, and the session runs.
+    pub audio: Option<lowlat_audio::Config>,
     pub codec: Codec,
     /// Which encoder to build, or **nothing to follow the display**.
     ///
@@ -710,6 +812,9 @@ impl Default for LiveVideo {
 #[derive(Debug)]
 pub struct Stream {
     shared: Arc<Shared>,
+    /// Sound, for as long as the stream lasts. Dropping it stops the capture
+    /// and joins its thread.
+    sound: Option<crate::audio::Sound>,
     joins: Option<mpsc::Sender<Join>>,
     /// Where a request to capture something else is put.
     ///
@@ -737,6 +842,7 @@ impl Stream {
         let shared = Arc::new(Shared {
             seats: core::array::from_fn(|_| Seat::new()),
             pool: Pool::new(POOL_SLOTS, max_frame_bytes()),
+            audio: crate::audio::pool(),
             encode_us: AtomicU32::new(0),
             timing: TimingCells::default(),
             picture: AtomicU32::new(0),
@@ -757,6 +863,12 @@ impl Stream {
             }),
             epoch: AtomicU32::new(0),
         });
+        // **Started before the loop**, so a guest that arrives immediately
+        // finds sound already flowing rather than a device still opening.
+        let sound = config
+            .audio
+            .clone()
+            .map(|audio| crate::audio::Sound::start(&shared, audio));
         let (joins, arrivals) = mpsc::channel();
         let (outputs, asked) = mpsc::channel();
         let owned = Arc::clone(&shared);
@@ -766,10 +878,18 @@ impl Stream {
             .ok();
         Self {
             shared,
+            sound,
             joins: Some(joins),
             outputs: Some(outputs),
             thread,
         }
+    }
+
+    /// The device sound is being read from, or empty when there is none.
+    pub fn audio_device(&self) -> String {
+        self.sound
+            .as_ref()
+            .map_or_else(String::new, crate::audio::Sound::device)
     }
 
     /// Capture a different output, without ending anybody's session.
@@ -880,7 +1000,7 @@ impl Seats {
     /// Called by the guest's thread once it is streamable, never before: a
     /// seat taken by a guest that has not declared itself is a share of the
     /// bitrate budget spent on a peer that may never decode anything.
-    pub fn take(&self, wake: WakeHandle) -> Option<SeatHold> {
+    pub fn take(&self, wake: WakeHandle, audio_wake: WakeHandle) -> Option<SeatHold> {
         let joins = self.joins.as_ref()?;
         for (index, seat) in self.shared.seats.iter().enumerate() {
             if seat
@@ -906,7 +1026,17 @@ impl Seats {
                 seat.reconfigure.store(0, Ordering::Relaxed);
                 seat.asked_last.store(0, Ordering::Relaxed);
                 seat.kick.store(0, Ordering::Relaxed);
+                // **Cleared with the rest of the declaration**, or an arriving
+                // guest is sent whatever encoding the last occupant asked for
+                // until its own initialization lands.
+                seat.wants_raw.store(0, Ordering::Relaxed);
+                if let Ok(mut held) = seat.audio_wake.lock() {
+                    *held = Some(audio_wake);
+                }
                 if joins.send(Join { seat: index, wake }).is_err() {
+                    if let Ok(mut held) = seat.audio_wake.lock() {
+                        *held = None;
+                    }
                     seat.state.store(seat_state::FREE, Ordering::Release);
                     return None;
                 }
@@ -939,6 +1069,27 @@ impl SeatHold {
         let seat = self.shared.seats.get(self.index)?;
         let index = seat.ring.pop()?;
         self.shared.pool.claim(index)
+    }
+
+    /// The next published packet of sound, or `None`.
+    ///
+    /// Releases its hold on the pool slot when it is dropped, exactly as a
+    /// picture does.
+    pub fn next_audio(&self) -> Option<frames::Frame<'_>> {
+        let seat = self.shared.seats.get(self.index)?;
+        let index = seat.audio.pop()?;
+        self.shared.audio.claim(index)
+    }
+
+    /// Say which encoding this guest asked for.
+    ///
+    /// **From its own initialization, and it may say so more than once.** A
+    /// peer that repeats its declaration is not changing anything; a peer that
+    /// changes it is answered from the next packet.
+    pub fn declare_audio(&self, raw: bool) {
+        if let Some(seat) = self.shared.seats.get(self.index) {
+            seat.wants_raw.store(u32::from(raw), Ordering::Relaxed);
+        }
     }
 
     /// Report this guest's transport pressure. Once per pass, from the loop
@@ -1381,7 +1532,7 @@ fn kick_all(shared: &Shared, active: &[Active], reason: i32) {
 fn retire_leaving(shared: &Shared) {
     for seat in &shared.seats {
         if seat.state.load(Ordering::Acquire) == seat_state::LEAVING {
-            release(seat, &shared.pool);
+            release(seat, shared);
             seat.state.store(seat_state::FREE, Ordering::Release);
         }
     }
@@ -2589,7 +2740,7 @@ fn admit_and_retire(
         };
         // A guest that gave up between claiming and being admitted.
         if seat.state.load(Ordering::Acquire) != seat_state::CLAIMED {
-            release(seat, &shared.pool);
+            release(seat, shared);
             continue;
         }
         seat.state.store(seat_state::STREAMING, Ordering::Release);
@@ -2624,7 +2775,7 @@ fn admit_and_retire(
         }
         // Nothing is pushed here any more, so what is left is ours to release.
         // Every index dropped instead is a pool slot that never comes back.
-        release(seat, &shared.pool);
+        release(seat, shared);
         seat.state.store(seat_state::FREE, Ordering::Release);
         active.swap_remove(at);
         guests.swap_remove(at);
@@ -2636,7 +2787,17 @@ fn admit_and_retire(
 }
 
 /// Empty a seat's ring, giving every queued frame back to the pool.
-fn release(seat: &Seat, pool: &Pool) {
+fn release(seat: &Seat, shared: &Shared) {
+    // **Both rings, and the wake.** A slot left in either pool never comes
+    // back, and a wake left standing points at a descriptor the departing
+    // guest is about to close.
+    while let Some(index) = seat.audio.pop() {
+        drop(shared.audio.claim(index));
+    }
+    if let Ok(mut held) = seat.audio_wake.lock() {
+        *held = None;
+    }
+    let pool = &shared.pool;
     while let Some(index) = seat.ring.pop() {
         drop(pool.claim(index));
     }
@@ -2861,6 +3022,7 @@ mod tests {
     #[test]
     fn a_live_video_change_is_taken_once_and_then_not_again() {
         let stream = Stream::start(Config {
+            audio: None,
             output: None,
             display: false,
             width: 320,
@@ -2992,6 +3154,7 @@ mod tests {
         /// that ring still has room, so each path can be reached on its own.
         fn with_pool(slots: usize) -> Self {
             let config = Config {
+                audio: None,
                 output: None,
                 display: false,
                 width: 320,
@@ -3007,6 +3170,7 @@ mod tests {
                 cg_level: 1,
             };
             let shared = Arc::new(Shared {
+                audio: crate::audio::pool(),
                 seats: core::array::from_fn(|_| Seat::new()),
                 pool: Pool::new(slots, max_frame_bytes()),
                 encode_us: AtomicU32::new(0),
@@ -3044,6 +3208,7 @@ mod tests {
                 .expect("thread");
             Self {
                 stream: Stream {
+                    sound: None,
                     shared,
                     joins: Some(joins),
                     outputs: None,
@@ -3057,7 +3222,10 @@ mod tests {
             let wake = lowlat_net::Wake::new().expect("wake");
             self.stream
                 .seats()
-                .take(wake.handle().expect("handle"))
+                .take(
+                    wake.handle().expect("handle"),
+                    wake.handle().expect("a second handle"),
+                )
                 .expect("a free seat")
         }
     }
@@ -3065,6 +3233,7 @@ mod tests {
     /// A stream whose loop this thread drives, so a return can be observed.
     fn parked() -> (Arc<Shared>, Stream, mpsc::Receiver<Join>) {
         let shared = Arc::new(Shared {
+            audio: crate::audio::pool(),
             seats: core::array::from_fn(|_| Seat::new()),
             pool: Pool::new(POOL_SLOTS, max_frame_bytes()),
             encode_us: AtomicU32::new(0),
@@ -3084,6 +3253,7 @@ mod tests {
         });
         let (joins, arrivals) = mpsc::channel();
         let stream = Stream {
+            sound: None,
             shared: Arc::clone(&shared),
             joins: Some(joins),
             outputs: None,
@@ -3094,6 +3264,7 @@ mod tests {
 
     fn test_config(codec: Codec) -> Config {
         Config {
+            audio: None,
             output: None,
             display: false,
             width: 320,
@@ -3263,6 +3434,7 @@ mod tests {
     #[test]
     fn a_request_carries_a_name_and_the_last_one_wins() {
         let shared = Arc::new(Shared {
+            audio: crate::audio::pool(),
             seats: core::array::from_fn(|_| Seat::new()),
             pool: Pool::new(2, 64),
             encode_us: AtomicU32::new(0),
@@ -3282,6 +3454,7 @@ mod tests {
         });
         let (outputs, asked) = mpsc::channel();
         let stream = Stream {
+            sound: None,
             shared: Arc::clone(&shared),
             joins: None,
             outputs: Some(outputs),
@@ -3408,7 +3581,10 @@ mod tests {
         let wake = lowlat_net::Wake::new().expect("wake");
         let seat = stream
             .seats()
-            .take(wake.handle().expect("handle"))
+            .take(
+                wake.handle().expect("handle"),
+                wake.handle().expect("a second handle"),
+            )
             .expect("a free seat");
 
         assert_eq!(seat.picture(), None, "a size nothing has settled on yet");
@@ -3476,7 +3652,10 @@ mod tests {
     #[test]
     fn a_claimed_seat_declares_nothing_until_its_guest_does() {
         let (shared, stream, _arrivals) = parked();
-        let held = stream.seats().take(wake_handle()).expect("a seat");
+        let held = stream
+            .seats()
+            .take(wake_handle(), wake_handle())
+            .expect("a seat");
         held.declare(lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC);
         held.request_reconfigure();
         drop(held);
@@ -3485,7 +3664,10 @@ mod tests {
         shared.seats[0]
             .state
             .store(seat_state::FREE, Ordering::Release);
-        let next = stream.seats().take(wake_handle()).expect("a seat");
+        let next = stream
+            .seats()
+            .take(wake_handle(), wake_handle())
+            .expect("a seat");
         assert_eq!(
             shared.seats[0].flags.load(Ordering::Relaxed),
             0,
@@ -3531,6 +3713,112 @@ mod tests {
             .expect("handle")
     }
 
+    /// Promote a taken seat without running the loop, which is what admits one
+    /// in a session.
+    fn streaming(shared: &Shared, index: usize) {
+        shared.seats[index]
+            .state
+            .store(seat_state::STREAMING, Ordering::Release);
+    }
+
+    /// **One packet, one slot, and only the guests that asked for that
+    /// encoding.** A room holding both kinds of guest is the case that cannot
+    /// be checked by watching one of them.
+    #[test]
+    fn sound_reaches_only_the_seats_that_asked_for_that_encoding() {
+        let (shared, stream, _arrivals) = parked();
+        let compressed = stream
+            .seats()
+            .take(wake_handle(), wake_handle())
+            .expect("a seat");
+        let uncompressed = stream
+            .seats()
+            .take(wake_handle(), wake_handle())
+            .expect("a seat");
+        streaming(&shared, 0);
+        streaming(&shared, 1);
+        compressed.declare_audio(false);
+        uncompressed.declare_audio(true);
+        assert_eq!(shared.audio_wanted(), (true, true));
+
+        shared.publish_audio(false, b"compressed");
+        let taken = compressed
+            .next_audio()
+            .expect("the compressed guest heard nothing");
+        assert_eq!(taken.bytes(), b"compressed");
+        drop(taken);
+        assert!(
+            uncompressed.next_audio().is_none(),
+            "a guest was sent an encoding it did not ask for"
+        );
+
+        shared.publish_audio(true, b"uncompressed");
+        let taken = uncompressed
+            .next_audio()
+            .expect("the uncompressed guest heard nothing");
+        assert_eq!(taken.bytes(), b"uncompressed");
+        drop(taken);
+        assert!(compressed.next_audio().is_none());
+    }
+
+    /// **A room produces only what somebody is listening for**, which is what
+    /// keeps the codec off a machine where every guest asked for the
+    /// uncompressed form, and both off a machine with nobody in it.
+    #[test]
+    fn an_empty_room_wants_neither_encoding() {
+        let (shared, stream, _arrivals) = parked();
+        assert_eq!(shared.audio_wanted(), (false, false));
+        let hold = stream
+            .seats()
+            .take(wake_handle(), wake_handle())
+            .expect("a seat");
+        // A seat that is claimed but not yet admitted is not listening either.
+        assert_eq!(shared.audio_wanted(), (false, false));
+        streaming(&shared, 0);
+        hold.declare_audio(false);
+        assert_eq!(shared.audio_wanted(), (true, false));
+        hold.declare_audio(true);
+        assert_eq!(shared.audio_wanted(), (false, true));
+    }
+
+    /// **A guest behind on sound loses packets and the room does not.** The
+    /// pool is shared, so a guest that stopped draining would otherwise hold
+    /// every slot and silence everybody.
+    #[test]
+    fn a_guest_that_stops_listening_loses_packets_rather_than_the_room() {
+        let (shared, stream, _arrivals) = parked();
+        let behind = stream
+            .seats()
+            .take(wake_handle(), wake_handle())
+            .expect("a seat");
+        let listening = stream
+            .seats()
+            .take(wake_handle(), wake_handle())
+            .expect("a seat");
+        streaming(&shared, 0);
+        streaming(&shared, 1);
+        behind.declare_audio(false);
+        listening.declare_audio(false);
+
+        // Far more than either ring holds, with one guest never draining.
+        for _ in 0..AUDIO_DEPTH * 4 {
+            shared.publish_audio(false, b"packet");
+            let taken = listening
+                .next_audio()
+                .expect("the listening guest fell behind");
+            assert_eq!(taken.bytes(), b"packet");
+        }
+        let mut held = 0usize;
+        while let Some(packet) = behind.next_audio() {
+            assert_eq!(packet.bytes(), b"packet");
+            held += 1;
+        }
+        assert_eq!(
+            held, AUDIO_DEPTH,
+            "the ring grew or lost more than it holds"
+        );
+    }
+
     /// **A rebuilt encoder arrives with its guests already seated**, and the
     /// budget that divides the stream between them does not: it is rebound
     /// when a guest joins or leaves, which a rebuild is not, so it starts
@@ -3545,8 +3833,14 @@ mod tests {
     #[test]
     fn a_rebuilt_encoder_divides_the_stream_between_the_guests_it_inherited() {
         let (shared, stream, arrivals) = parked();
-        let first = stream.seats().take(wake_handle()).expect("a seat");
-        let second = stream.seats().take(wake_handle()).expect("a seat");
+        let first = stream
+            .seats()
+            .take(wake_handle(), wake_handle())
+            .expect("a seat");
+        let second = stream
+            .seats()
+            .take(wake_handle(), wake_handle())
+            .expect("a seat");
         first.declare(lowlat_core::init::FLAG_BASE);
         second.declare(lowlat_core::init::FLAG_BASE);
 
@@ -3597,7 +3891,10 @@ mod tests {
     #[test]
     fn a_rebuilt_encoder_keeps_the_largest_frame_the_session_has_seen() {
         let (shared, stream, arrivals) = parked();
-        let held = stream.seats().take(wake_handle()).expect("a seat");
+        let held = stream
+            .seats()
+            .take(wake_handle(), wake_handle())
+            .expect("a seat");
         held.declare(lowlat_core::init::FLAG_BASE);
 
         let mut roster = Roster::default();
@@ -3667,7 +3964,10 @@ mod tests {
     #[test]
     fn a_request_for_the_other_codec_hands_the_encoder_back() {
         let (shared, stream, arrivals) = parked();
-        let held = stream.seats().take(wake_handle()).expect("a seat");
+        let held = stream
+            .seats()
+            .take(wake_handle(), wake_handle())
+            .expect("a seat");
         held.declare(lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC);
         held.request_reconfigure();
 
@@ -3744,7 +4044,10 @@ mod tests {
     #[test]
     fn a_request_for_what_is_already_running_is_answered_with_a_refresh() {
         let (shared, stream, arrivals) = parked();
-        let held = stream.seats().take(wake_handle()).expect("a seat");
+        let held = stream
+            .seats()
+            .take(wake_handle(), wake_handle())
+            .expect("a seat");
         held.declare(lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC);
 
         let mut roster = Roster::default();
@@ -3816,7 +4119,10 @@ mod tests {
     #[test]
     fn an_encoder_that_stops_answering_ends_the_guests_with_a_reason() {
         let (shared, stream, arrivals) = parked();
-        let held = stream.seats().take(wake_handle()).expect("a seat");
+        let held = stream
+            .seats()
+            .take(wake_handle(), wake_handle())
+            .expect("a seat");
         held.declare(lowlat_core::init::FLAG_BASE);
 
         let mut roster = Roster::default();
@@ -3875,7 +4181,10 @@ mod tests {
     fn a_single_refusal_is_not_a_stopped_encoder() {
         for refusals in [1u32, 2] {
             let (shared, stream, arrivals) = parked();
-            let held = stream.seats().take(wake_handle()).expect("a seat");
+            let held = stream
+                .seats()
+                .take(wake_handle(), wake_handle())
+                .expect("a seat");
             held.declare(lowlat_core::init::FLAG_BASE);
 
             let mut roster = Roster::default();
@@ -3905,8 +4214,14 @@ mod tests {
     #[test]
     fn a_reason_reaches_every_seat() {
         let (shared, stream, _arrivals) = parked();
-        let first = stream.seats().take(wake_handle()).expect("a seat");
-        let second = stream.seats().take(wake_handle()).expect("a seat");
+        let first = stream
+            .seats()
+            .take(wake_handle(), wake_handle())
+            .expect("a seat");
+        let second = stream
+            .seats()
+            .take(wake_handle(), wake_handle())
+            .expect("a seat");
         let active = [seat_of(0), seat_of(1)];
 
         assert_eq!(first.kicked(), None);
@@ -3922,8 +4237,14 @@ mod tests {
     #[test]
     fn a_failed_request_ends_only_whoever_asked_for_it() {
         let (shared, stream, _arrivals) = parked();
-        let asker = stream.seats().take(wake_handle()).expect("a seat");
-        let watcher = stream.seats().take(wake_handle()).expect("a seat");
+        let asker = stream
+            .seats()
+            .take(wake_handle(), wake_handle())
+            .expect("a seat");
+        let watcher = stream
+            .seats()
+            .take(wake_handle(), wake_handle())
+            .expect("a seat");
         let active = [seat_of(0), seat_of(1)];
 
         asker.request_reconfigure();
@@ -4044,6 +4365,7 @@ mod tests {
     #[ignore = "requires a render node"]
     fn the_real_encoder_serves_a_seated_guest() {
         let stream = Stream::start(Config {
+            audio: None,
             output: None,
             display: false,
             width: 1920,
@@ -4061,7 +4383,10 @@ mod tests {
         let wake = lowlat_net::Wake::new().expect("wake");
         let seat = stream
             .seats()
-            .take(wake.handle().expect("handle"))
+            .take(
+                wake.handle().expect("handle"),
+                wake.handle().expect("a second handle"),
+            )
             .expect("a free seat");
 
         let mut received = 0usize;
@@ -4108,6 +4433,7 @@ mod tests {
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
         let stream = Stream::start(Config {
+            audio: None,
             output: None,
             display: false,
             width: 1920,
@@ -4125,7 +4451,10 @@ mod tests {
         let wake = lowlat_net::Wake::new().expect("wake");
         let seat = stream
             .seats()
-            .take(wake.handle().expect("handle"))
+            .take(
+                wake.handle().expect("handle"),
+                wake.handle().expect("a second handle"),
+            )
             .expect("a free seat");
 
         let mut out = Vec::new();
@@ -4162,6 +4491,7 @@ mod tests {
     /// table docs/05-host.md section 10 asks for.
     fn measure(fps: u32, frames: usize) -> Report {
         let stream = Stream::start(Config {
+            audio: None,
             output: None,
             display: false,
             width: 1920,
@@ -4179,7 +4509,10 @@ mod tests {
         let wake = lowlat_net::Wake::new().expect("wake");
         let seat = stream
             .seats()
-            .take(wake.handle().expect("handle"))
+            .take(
+                wake.handle().expect("handle"),
+                wake.handle().expect("a second handle"),
+            )
             .expect("a free seat");
 
         let mut received = 0usize;

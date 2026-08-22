@@ -7,6 +7,7 @@
 
 pub mod abi;
 pub mod admission;
+pub(crate) mod audio;
 pub mod cursor;
 pub mod display;
 pub mod events;

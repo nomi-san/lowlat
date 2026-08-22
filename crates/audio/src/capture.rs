@@ -248,7 +248,6 @@ where
         }
     };
     publish(&stream, device);
-    lowlat_common::log_info!("audio: capturing {}", stream.name());
     let _ = report.send(Ok(()));
 
     while !stop.load(Ordering::Acquire) {

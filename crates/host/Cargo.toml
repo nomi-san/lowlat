@@ -19,6 +19,9 @@ lowlat-net.workspace = true
 # Credentials are generated at approval; the core owns no generator.
 lowlat-crypto.workspace = true
 lowlat-capture.workspace = true
+# Sound: capture and the codec, in their own crate for the reason its own
+# documentation gives.
+lowlat-audio.workspace = true
 # The display source names plane and format types from the capture interface.
 drm.workspace = true
 lowlat-encode.workspace = true

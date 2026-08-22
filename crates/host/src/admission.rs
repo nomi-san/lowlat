@@ -39,6 +39,7 @@ use lowlat_inject::uinput::Devices;
 
 /// Video, stream 0. See docs/01-protocol.md section 6.
 const VIDEO_CHANNEL: u8 = 1;
+const AUDIO_CHANNEL: u8 = 2;
 
 /// How long a session stays up after the peer has been told it is over.
 ///
@@ -69,6 +70,12 @@ const SLOT: usize = BODY;
 /// top ceiling comes from, so the video ring is exactly that depth: anything
 /// less would refuse a frame the gate had already admitted.
 const VIDEO_SEND_SLOTS: usize = 4000;
+/// Sound, which is fifty packets a second and never a burst.
+///
+/// **Four fragments a packet at the uncompressed rate**, times the queue a
+/// guest may be behind by, times a margin. A window smaller than one packet
+/// would refuse every one of them and the guest would simply be deaf.
+const AUDIO_SEND_SLOTS: usize = 128;
 /// Control we send is a handful of small messages per second.
 const CONTROL_SEND_SLOTS: usize = 256;
 /// Control we receive has to hold the peer's in-flight window plus whatever
@@ -1373,6 +1380,25 @@ fn send_frames(
     sent
 }
 
+/// Hand this guest whatever sound has been published to it.
+///
+/// **Refused rather than retransmitted.** The channel is reliable and ordered,
+/// so a packet dropped after it is numbered is a gap the peer waits on; a
+/// window with no room for the whole message means this packet is discarded and
+/// the next one takes its place. Nothing is latched and no refresh is owed,
+/// because no packet depends on the one before it.
+fn send_audio(session: &mut Session<'_>, seat: &SeatHold, raw: bool) {
+    let header = crate::audio::header(raw);
+    while let Some(packet) = seat.next_audio() {
+        if session
+            .send_message(AUDIO_CHANNEL, &header, packet.bytes())
+            .is_err()
+        {
+            return;
+        }
+    }
+}
+
 /// Queue one control message.
 ///
 /// A refusal is dropped rather than reported: everything sent this way is a
@@ -1515,7 +1541,16 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     let mut control_send_meta = vec![SendSlot::default(); CONTROL_SEND_SLOTS];
     let mut video_send_bodies = vec![0u8; SLOT * VIDEO_SEND_SLOTS];
     let mut video_send_meta = vec![SendSlot::default(); VIDEO_SEND_SLOTS];
+    // **Sound gets its own window, because it is its own channel.** Sized for
+    // the deepest packet either codec produces times the queue a guest may be
+    // behind by, which is a fifth of a second.
+    let mut audio_send_bodies = vec![0u8; SLOT * AUDIO_SEND_SLOTS];
+    let mut audio_send_meta = vec![SendSlot::default(); AUDIO_SEND_SLOTS];
     let mut inbound = vec![0u8; MAX_INBOUND];
+    // Which encoding this guest asked for, from its initialization. It decides
+    // the header sent with every packet, so the sending loop keeps it rather
+    // than reaching for the seat's copy on each one.
+    let mut raw_audio = false;
 
     let Ok(envelope) = Envelope::from_credential(&args.material, Cipher::Aes256) else {
         return;
@@ -1536,6 +1571,11 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         VIDEO_CHANNEL,
         &mut video_send_bodies,
         &mut video_send_meta,
+    ) || !attach_send(
+        &mut session,
+        AUDIO_CHANNEL,
+        &mut audio_send_bodies,
+        &mut audio_send_meta,
     ) {
         return;
     }
@@ -1709,6 +1749,13 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 (seated, framing.as_deref_mut(), declaring.as_deref_mut())
             {
                 *outbound += send_frames(endpoint.session(), seat, packetiser, negotiation);
+            }
+            // **Sound needs no packetiser and no negotiation**, so it is sent
+            // whether or not a picture can be: a guest whose encoder failed
+            // still hears the desktop, which is the difference between a
+            // session that is broken and one that is blank.
+            if let Some(seat) = seated {
+                send_audio(endpoint.session(), seat, raw_audio);
             }
         }) {
             lowlat_common::log_warn!("guest: the transport stopped, err={error}");
@@ -1907,8 +1954,29 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             && negotiation.as_ref().is_some_and(Negotiation::ready)
             && let Some(seats) = args.seats.as_ref()
             && let Ok(handle) = shell.wake_handle()
+            // **A second handle for sound**, because the thread that publishes
+            // it is not the one that publishes pictures and neither may hold
+            // the other's. Both point at this loop's own wake.
+            && let Ok(for_sound) = shell.wake_handle()
         {
-            seat = seats.take(handle);
+            seat = seats.take(handle, for_sound);
+            if let (Some(seat), Some(asked)) = (
+                seat.as_ref(),
+                negotiation.as_ref().and_then(Negotiation::asked),
+            ) {
+                // **The permission, read from the guest's own initialization.**
+                // Absent means the compressed form, which every peer decodes.
+                raw_audio = asked.raw_audio;
+                seat.declare_audio(raw_audio);
+                lowlat_common::log_info!(
+                    "guest: sound is {}",
+                    if raw_audio {
+                        "uncompressed"
+                    } else {
+                        "compressed"
+                    }
+                );
+            }
             match (seat.is_some(), negotiation.as_mut(), packetiser.as_ref()) {
                 (true, Some(negotiation), Some(packetiser)) => {
                     // **The generation goes out on the frame after this**, so
