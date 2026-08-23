@@ -156,6 +156,21 @@ fn primary_local_addresses() -> Vec<IpAddr> {
         .collect()
 }
 
+/// Everything we would offer or ask over IPv6, removed.
+///
+/// **Both lists, or the flag does not do what it says.** Dropping the host
+/// candidates while leaving a v6 reflexive server configured just produces a v6
+/// server-reflexive candidate in their place, and a run meant to prove the v4
+/// path still stands goes over v6 without saying so.
+///
+/// This exists to make the v4 path testable on a machine that has working v6.
+/// The punch has no family preference and the first candidate to answer wins,
+/// so a host that offers both is running a race rather than a test.
+fn drop_ipv6(local: &mut Vec<IpAddr>, servers: &mut Vec<SocketAddr>) {
+    local.retain(IpAddr::is_ipv4);
+    servers.retain(SocketAddr::is_ipv4);
+}
+
 /// Guests currently admitted, in the width the wire uses.
 ///
 /// Bounded by the configured limit, which is a small number, so the conversion
@@ -317,6 +332,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         })
         .collect::<Result<_, _>>()?;
 
+    // Gathered here, beside the reflexive servers, because the two are filtered
+    // together and the servers are handed to the seam a few lines below.
+    let mut stun = stun;
+    let mut local = primary_local_addresses();
+    if flag_set("--no-ipv6") {
+        drop_ipv6(&mut local, &mut stun);
+        lowlat_common::log_info!("lowlatd: --no-ipv6, offering and asking on v4 only");
+    }
+
     let bitrate_mbps: f64 = flag("--bitrate")
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_BITRATE_MBPS);
@@ -462,7 +486,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut peers: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut established: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let local = primary_local_addresses();
     lowlat_common::log_info!(
         "lowlatd: host candidates: {}",
         local
@@ -879,6 +902,39 @@ mod tests {
             relayed(false, "1c4d9ae8-f7a8-4513-affb-dcbb40048922.local", 58667),
             Relayed::Unreadable
         );
+    }
+
+    /// **Refusing v6 has to reach the reflexive servers too.**
+    ///
+    /// Dropping the host candidates alone leaves a v6 server to ask, which
+    /// answers with a v6 reflexive candidate that goes out in their place. The
+    /// run then goes over v6 while claiming to test v4, which is worse than not
+    /// having the switch: it reports the opposite of what happened.
+    #[test]
+    fn refusing_ipv6_empties_both_lists() {
+        let mut local = vec![
+            "192.168.1.192".parse::<IpAddr>().expect("v4"),
+            "2405:4802:a695:2130:5f5c:a7bb:b4c7:4722"
+                .parse::<IpAddr>()
+                .expect("v6"),
+        ];
+        let mut servers = vec![
+            "74.125.250.129:19302".parse::<SocketAddr>().expect("v4"),
+            "[2001:4860:4864:5:8000::1]:19302"
+                .parse::<SocketAddr>()
+                .expect("v6"),
+        ];
+
+        drop_ipv6(&mut local, &mut servers);
+
+        assert_eq!(local.len(), 1, "a v6 host candidate survived: {local:?}");
+        assert!(local[0].is_ipv4());
+        assert_eq!(
+            servers.len(),
+            1,
+            "a v6 reflexive server survived, and it answers with a v6 candidate: {servers:?}"
+        );
+        assert!(servers[0].is_ipv4());
     }
 
     /// **Host candidates are one per family and only ones a peer could reach.**
