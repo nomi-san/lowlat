@@ -2018,6 +2018,25 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   rungs above the minimum were reportable on a path that could only carry them
   in pieces.
 
+- **IPv4 host candidates are enumerated, not probed.** This machine sits on one
+  subnet through both a wired and a wireless interface, and the routing-table
+  probe named only the wired one -- a peer that could reach the other was
+  offered nothing it could use. Every interface that is up is walked now, and
+  only private address space is kept: a publicly routable address is already
+  discoverable reflexively, so offering it as a host candidate too is a
+  duplicate that costs part of a bounded check budget.
+
+  **The v6 side stays probed, which is the opposite treatment for the same
+  reason.** There is no translation on that family, so the address a peer sees
+  is the source we would send from, and one interface here carries three global
+  addresses at once -- a stable one, a temporary one and a route-local one -- of
+  which only the kernel's chosen source is worth advertising. Enumerating offers
+  all three and makes the peer spend checks finding out which answers.
+
+  Shared address space is offered behind `--shared-address-space`, reachable
+  only when both ends are behind the same carrier translation or on the same
+  overlay network. The list is capped and a cap that binds is logged.
+
 - **Reflexive servers are named, and both families of a name are asked.** A
   literal can only ever be one family, and a v4 literal is why this host had no
   v6 reflexive candidate to offer: a dual-stack name answers with an A and an

@@ -78,15 +78,27 @@ Gathering rules:
   nothing, which is the ordinary outcome for v6 and is not an error. A globally routable v6
   address gathered this way is a **host** candidate, not a reflexive one
   ([04 §3](04-signaling.md)).
-- **The source is the routing table, not the interface list.** Asking which source address
-  would be chosen for a routable destination needs no packet and no enumeration, and it
-  answers the question that actually matters: what a peer would see us arrive from. An earlier
-  description here called for enumerating every usable interface and excluding loopback,
-  link-local and down interfaces. That is what peers do -- observed ones offer a host candidate
-  per interface, four in one capture -- and it remains the more thorough option; what is built
-  offers one per family instead, which is fewer candidates for a peer to try. The exclusions
-  fall out of the routing table rather than being applied by hand, except that a source which
-  is loopback or unspecified is still dropped, because neither is somewhere a peer can reach.
+- **IPv4 host candidates are enumerated; the IPv6 one is probed.** The two are
+  opposite on purpose. On v4 a machine can sit on one segment through several
+  interfaces -- a wired and a wireless leg of the same network -- and asking the
+  routing table names only one of them, so a peer that could reach the other is
+  offered nothing it can use. On v6 there is no translation, so the address a
+  peer sees is the source we would send from; an interface commonly carries a
+  stable, a temporary and a route-local global address at once, and offering all
+  three makes the peer spend checks discovering which one answers.
+- **Only private address space is offered.** A host candidate exists to
+  advertise what a reflexive probe cannot see. A publicly routable address is
+  discoverable that way already, so offering it here as well is a duplicate that
+  costs part of a bounded check budget; a private address is invisible to every
+  server and is the only way to reach a shared segment. Interfaces that are down
+  are skipped, and loopback and link-local fall outside the ranges rather than
+  needing a rule of their own.
+- **Shared address space is offered only when asked for.** It is reachable when
+  both ends are behind the same carrier translation or on the same overlay
+  network, and a wasted check for every peer that is not, so it is opted into.
+- **The list is capped, and a cap that binds is reported.** A machine with
+  several bridges can present a long list and each entry costs the peer part of
+  a budget bounded in both attempts and time.
 - **Address family is determined structurally, never by scanning the text form for a colon.**
   A v4-mapped address contains colons and is IPv4. Classifying it as IPv6 removes every v4
   candidate and kills connectivity on v4-only paths. *Named regression test,
