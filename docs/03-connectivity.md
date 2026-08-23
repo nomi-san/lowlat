@@ -70,6 +70,11 @@ The source of a **verified** check is admitted; nothing weaker is. Authenticatio
 sender holds the password from the credential exchange, and an unauthenticated source address
 would let anyone able to reach the socket point us anywhere.
 
+**Gathering is the SDK's, not the application's.** The rules below carry reasons that are not
+obvious from an address, and an integration that had to re-derive them would reach a different
+answer each time. Host candidates are raised as ordinary candidate events alongside the
+reflexive ones, so an application relays what it is given and decides nothing.
+
 Gathering rules:
 
 - **Both address families are gathered, and both are offered.** They are not substitutes: a

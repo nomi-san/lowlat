@@ -2018,6 +2018,21 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   rungs above the minimum were reportable on a path that could only carry them
   in pieces.
 
+- **Host candidates are gathered by the SDK, not by the application.** Which
+  local addresses are worth offering is a connectivity decision with a rule
+  behind it, and an application that had to re-derive that rule would reach a
+  different answer per integration -- the daemon had the whole filter in its
+  own `main`, where nothing else could reach it. It lives beside the socket
+  now, and the seam raises a host candidate as an ordinary candidate event, so
+  an application relays what it is given and decides nothing. **The readiness
+  marker is raised before them**, since a peer may withhold its own candidates
+  until it has seen one and anything queued ahead of it delays both directions.
+
+  Reading a peer's candidate exchange moved the other way, into the signaling
+  crate that already owns the message: the barrier and the address parse are
+  what that message means, not what a host does with it. The daemon's `main` is
+  wiring again and carries no tests, because it carries nothing to test.
+
 - **IPv4 host candidates are enumerated, not probed.** This machine sits on one
   subnet through both a wired and a wireless interface, and the routing-table
   probe named only the wired one -- a peer that could reach the other was
