@@ -57,6 +57,15 @@ pub(crate) struct Settings {
     /// found. It is exposed so the question can be answered by trying values
     /// against a real client rather than by guessing one onto the wire.
     pub(crate) host_os: u32,
+    /// Whether this host takes a guest's microphone.
+    ///
+    /// **A client reads it from the configuration this host publishes, not
+    /// from the message that enables it.** The two are one decision and both
+    /// have to say the same thing: the message tells a connected peer whether
+    /// to send, and this is what its settings panel reads to know the feature
+    /// exists at all. Published as zero while it does not, which is what a
+    /// host with no microphone support has always said.
+    pub(crate) accept_microphone: bool,
     /// Offer one output that does not exist.
     ///
     /// **A probe, off by default.** Whether a reader draws a chooser at all
@@ -162,7 +171,7 @@ pub(crate) fn on_message(
                 seam.captured(),
                 settings,
             );
-            let body = config(&described);
+            let body = config(&described, settings.accept_microphone);
             answered(seam, guest, id::CONFIG, &body);
             true
         }
@@ -218,7 +227,7 @@ pub(crate) fn announce_capture(seam: &mut Admission, settings: &Settings, last: 
         captured,
         settings,
     );
-    let config = config(&described);
+    let config = config(&described, settings.accept_microphone);
     let outputs = outputs(settings.fake_output);
     for guest in seam.guests() {
         seam.send_user_data(guest.number, id::CONFIG, config.as_bytes());
@@ -314,7 +323,7 @@ fn answered(seam: &mut Admission, guest: u32, id: u32, body: &str) {
 const STREAMS: usize = 1;
 
 /// The video configuration, as this host would describe itself.
-fn config(video: &Video) -> String {
+fn config(video: &Video, accept_microphone: bool) -> String {
     let streams: Vec<serde_json::Value> = (0..STREAMS)
         .map(|_| {
             serde_json::json!({
@@ -332,7 +341,12 @@ fn config(video: &Video) -> String {
         .collect();
     serde_json::json!({
         "virtualTablet": 0,
-        "virtualMicrophone": 0,
+        // **Not a boolean, and zero is "there is none".** A reader takes this
+        // as the mode a virtual microphone runs in; one means it exists while
+        // the session does, which is what this host offers. A host that says
+        // zero here is a host whose client will never offer the feature,
+        // however willing the rest of it is.
+        "virtualMicrophone": u32::from(accept_microphone),
         "video": streams,
     })
     .to_string()
@@ -486,6 +500,7 @@ mod tests {
 
     fn settings() -> Settings {
         Settings {
+            accept_microphone: false,
             output: "card0:DP-2".to_string(),
             bitrate_mbps: 10,
             fps: 60,
@@ -530,6 +545,7 @@ mod tests {
     #[test]
     fn the_output_reported_is_the_one_the_host_would_capture() {
         let asked = Settings {
+            accept_microphone: false,
             output: String::new(),
             ..settings()
         };
@@ -558,6 +574,7 @@ mod tests {
 
         // An explicit request still wins over both.
         let told = Settings {
+            accept_microphone: false,
             output: "card0:HDMI-A-1".to_string(),
             ..settings()
         };
@@ -574,6 +591,7 @@ mod tests {
     #[test]
     fn an_output_is_named_even_when_none_was_asked_for() {
         let asked = Settings {
+            accept_microphone: false,
             output: String::new(),
             ..settings()
         };
@@ -596,9 +614,23 @@ mod tests {
     /// a silent revert rather than an error.
     #[test]
     fn the_configuration_carries_every_field_the_client_requires() {
-        let parsed: serde_json::Value = serde_json::from_str(&config(&video())).expect("json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&config(&video(), true)).expect("json");
         assert!(parsed.get("virtualTablet").is_some());
-        assert!(parsed.get("virtualMicrophone").is_some());
+        // **Not merely present: it has to say yes when the host takes one.**
+        // A client reads this to know the feature exists at all, so a host
+        // that publishes zero here has a client that never offers it, however
+        // willing the rest of the host is.
+        assert_eq!(
+            parsed.get("virtualMicrophone").and_then(|v| v.as_u64()),
+            Some(1)
+        );
+        let without =
+            serde_json::from_str::<serde_json::Value>(&config(&video(), false)).expect("json");
+        assert_eq!(
+            without.get("virtualMicrophone").and_then(|v| v.as_u64()),
+            Some(0)
+        );
         let streams = parsed
             .get("video")
             .and_then(serde_json::Value::as_array)
@@ -635,7 +667,8 @@ mod tests {
     /// configure one of them.
     #[test]
     fn only_streams_that_exist_are_described() {
-        let parsed: serde_json::Value = serde_json::from_str(&config(&video())).expect("json");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&config(&video(), true)).expect("json");
         let streams = parsed
             .get("video")
             .and_then(serde_json::Value::as_array)

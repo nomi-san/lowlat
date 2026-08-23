@@ -444,6 +444,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // here would report a stream nobody is producing the moment a display
     // turned out to be a different size from the one that was asked for.
     let settings = app::Settings {
+        accept_microphone: flag_set("--accept-microphone"),
         output: flag("--output").unwrap_or_default(),
         // The ceiling is configured in whole megabits; a client reads it as
         // an integer and there is nothing below one to report.
