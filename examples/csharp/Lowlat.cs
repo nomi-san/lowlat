@@ -146,6 +146,13 @@ internal struct HostAudioConfig
     public byte MuteLocalByte;
     public byte AcceptMicrophoneByte;
 
+    // The header's `reserved[1]`. **Every byte of padding is mirrored**, or the
+    // fields after it sit at the wrong offset and `size` no longer matches what
+    // the boundary computes -- which is refused as an unusable argument rather
+    // than read wrongly.
+    private byte reservedPad;
+
+
     public bool Enabled
     {
         get => EnabledByte != 0;
@@ -338,7 +345,11 @@ internal struct Event
 {
     public uint Kind;
     public uint Dropped;
-    [InlineArray(192)] public struct Body { private byte first; }
+    // `sizeof(lowlat_event) - 8`. **The union is as large as its largest
+    // member**, which is the capture-changed body: an output identity of
+    // `Sizes.Output` plus a width and a height. Sizing it short does not
+    // truncate an event, it lets the boundary write past the buffer.
+    [InlineArray(Sizes.Output + 8)] public struct Body { private byte first; }
     public Body Payload;
 }
 
