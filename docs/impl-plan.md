@@ -1207,10 +1207,19 @@ not. **A shared library has no business creating a capture device in somebody's 
 ([06 §13](06-api.md)), so the SDK decodes and the application receives sixteen-bit samples and
 decides what to do with them.
 
+- [ ] **The enable, which is what makes a peer send at all.** A peer streams its microphone only
+  when it has been told this host will take it; told nothing, it mutes itself and sends nothing,
+  however its own settings are configured. *This is the half that was missing from this section:
+  a host cannot simply listen. The willingness to receive and the message announcing it are one
+  switch, and a host that will not take microphone audio must not claim it will.*
 - [ ] Its own poll, not the event queue. *The queue is bounded and drops oldest; a hundred audio
   packets a second competing with control events would evict what must not be dropped.*
 - [ ] Decoded at the boundary. *The codec is already loaded for the downlink, and an application
   that has to learn one is an application that will get it wrong.*
+- [ ] **Contained, because these are a guest's bytes.** The decoder is the first thing in this
+  system to parse something a peer chose, and it is a port that panics on a malformed packet
+  often enough to be found by fuzzing rather than by luck. Fuzz it and catch what it throws before
+  it ships.
 - [ ] The example grows a capture device, or the uplink cannot be shown to work at all.
 
 ---
