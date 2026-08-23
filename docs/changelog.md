@@ -13,6 +13,29 @@ owes is its long-run half.
 
 **Fixed**
 
+- **Silencing the speakers could silence every guest.** Whether the tap
+  is ahead of a device's mute is a property of the device, which this
+  had assumed away. A device with its own mixer applies mute and volume
+  in the device, and the mix that reaches the monitor is untouched --
+  which is what the local mute rests on. A device without one has both
+  applied by the sound server to the mix the monitor is fed from, so
+  muting it silences everybody listening and the volume control at the
+  desk scales what they hear.
+
+  Measured both ways on one machine: a capture of a virtual output goes
+  to digital silence for exactly as long as the mute lasts, 301 frames
+  of 600 with a tone playing throughout, and a capture of the hardware
+  output is unchanged across the same mute. **A virtual output is always
+  of the second kind**, and so is any device the system mixes for.
+
+  The mute is now refused on such a device and says so, rather than
+  keeping the promise to the person at the desk by breaking the one made
+  to every guest. The setting is still accepted, because the device can
+  change under a running host, so the check belongs where the device is
+  rather than at the call. **The volume half is not refusable and is not
+  ours**: on such a device the person's own control sits upstream of the
+  capture, and nothing here can separate the two.
+
 - **A capture that stopped stayed stopped.** A capture ends on its own
   thread when the sound server goes away, and it tells nobody: the host
   held a thread that had already returned, with the room still saying

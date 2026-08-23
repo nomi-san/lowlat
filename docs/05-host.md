@@ -780,8 +780,23 @@ blocks the loop trying to encode, on a question whose answer does not change.
 ### §9.4 Silencing the speakers at the desk
 
 **A person hosting their own machine usually does not want to hear what they are sending.** The
-tap is ahead of the sound device's own mute -- measured, and it is what makes this possible at all
--- so the speakers can be silenced while a guest keeps hearing the full-scale mix.
+tap is ahead of the mute on a device that applies its own -- measured -- so the speakers can be
+silenced while a guest keeps hearing the full-scale mix.
+
+**Whether that is true is a property of the device, not of the system.** A device with its own
+mixer applies mute and volume in the device; the mix that reaches the monitor is untouched, and
+a capture is unaffected by either. A device without one has both applied by the sound server to
+the mix itself, and that is the same mix the monitor is fed from: muting silences every listener,
+and the volume control scales what they hear. Measured both ways on one machine -- a capture of a
+hardware output is unchanged across a mute, and a capture of a virtual one goes to digital
+silence for exactly as long as the mute lasts.
+
+Two things follow, and only one of them is ours to fix. **The local mute is refused on a device
+of the second kind** and says so in the log, because silencing every guest is the opposite of
+what it asks for. **The volume is not refusable**: on such a device the person's own volume
+control is upstream of the capture, so it scales what a guest hears, and nothing on this host can
+separate the two. An output being of the second kind is not exotic -- a virtual output is always
+one, and so is any device the system mixes for.
 
 **It rides the capture's lifetime, which is the guests' presence.** The sound device is opened
 when the first guest arrives and closed when the last one leaves: nothing should hold a capture
@@ -797,9 +812,10 @@ all -- it happens in their absence and the sound is the first they know of it.
 the same on the second as on the first. A flag consumed once is a setting that describes something
 it does not do.
 
-**The local volume is not a level control for the stream.** The tap is ahead of that too, so
-turning the speakers down does not turn a guest down and turning them up cannot clip one. Nothing
-in this path reads it.
+**The local volume is not a level control for the stream, on a device that applies its own.**
+The tap is ahead of that too, so turning the speakers down does not turn a guest down and turning
+them up cannot clip one. Nothing in this path reads it. On a device whose volume the server
+applies, the opposite is true and it is the device's doing rather than this host's: see above.
 
 ### §9.5 What this host does not do
 
