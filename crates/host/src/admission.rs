@@ -2203,12 +2203,30 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                     .as_ref()
                     .map(|i| i.injector.tally())
                     .unwrap_or_default();
+                // **Datagrams, not fragments.** `rx_frag` counts what arrived
+                // on a channel and reached the application; an acknowledgement
+                // is neither. Without the raw count the two ways a stream dies
+                // look identical in this line: a peer that has stopped reading
+                // and a peer whose acknowledgements are arriving and not being
+                // applied both show a window that only grows.
+                let datagrams = shell.stats();
+                // **The round trip is the proof an acknowledgement landed.** A
+                // sample exists only where one named a fragment still held, so
+                // a smoothed trip that never leaves zero says the inbound
+                // datagrams are not acknowledgements this session applied --
+                // which is a different fault from a peer that has stopped
+                // sending them at all, and the two are otherwise identical
+                // from here.
+                let srtt = shell.endpoint().session().srtt_ms();
                 args.telemetry
                     .progressed(now, u32::try_from(sent).unwrap_or(u32::MAX));
                 lowlat_common::log_info!(
-                    "guest: attempt={} frames={sent} window={window} stale={stale} mbps={measured:.2} encode_ms={:.2} rx_frag={rx} rx_msg={inbound_messages} keys={} btn={} wheel={} motion={} pad={}",
+                    "guest: attempt={} frames={sent} window={window} stale={stale} mbps={measured:.2} encode_ms={:.2} rx_frag={rx} rx_msg={inbound_messages} dg_in={} dg_out={} srtt={:.1} keys={} btn={} wheel={} motion={} pad={}",
                     args.attempt_id,
                     seat.encode_latency_ms(),
+                    datagrams.datagrams_in,
+                    datagrams.datagrams_out,
+                    srtt,
                     input_tally.keys,
                     input_tally.buttons,
                     input_tally.wheels,

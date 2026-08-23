@@ -218,8 +218,17 @@ impl<'a> SendRing<'a> {
     /// are still holding. The sample comes from the fragment's **first** send,
     /// so a retransmitted fragment does not report an artificially short trip.
     pub fn on_ack(&mut self, ack: &Ack, now_ms: f64) -> Option<f64> {
-        let cumulative = *ack.cumulative.get(self.channel as usize)?;
         let previous = self.base;
+        // **Only a channel the sender actually reported.** Peers differ in how
+        // many they carry, and a value that is not there says nothing about
+        // this channel. The trigger below is in the header and is read either
+        // way.
+        let cumulative = ack
+            .cumulative
+            .get(self.channel as usize)
+            .copied()
+            .filter(|_| (self.channel as usize) < ack.reported)
+            .unwrap_or(self.base);
         if seq::gt(cumulative, self.base) && seq::le(cumulative, self.next) {
             self.acked = self
                 .acked
@@ -441,12 +450,72 @@ mod tests {
             *slot = cumulative;
         }
         Ack {
+            reported: CHANNEL_COUNT,
             kind: AckKind::Ack,
             nack,
             trigger_channel: CHANNEL,
             trigger_seq,
             cumulative: values,
         }
+    }
+
+    /// **A peer that reports fewer channels than we carry still frees our
+    /// window.**
+    ///
+    /// A peer generation reports four cumulative values where this one reports
+    /// nineteen. Ignoring what it sends leaves the base where it started, so
+    /// every fragment goes stale, the scan retransmits all of it, and the
+    /// session ends undeliverable while that peer is receiving perfectly well.
+    /// The channel this ring is on is inside the four, which is what makes the
+    /// short report usable at all.
+    #[test]
+    fn a_peer_reporting_fewer_channels_still_frees_the_window() {
+        const REPORTED: usize = 4;
+        assert!(
+            (CHANNEL as usize) < REPORTED,
+            "this ring's channel has to be one the peer reports"
+        );
+
+        let mut storage = Storage::new();
+        let mut ring = storage.ring();
+        for _ in 0..8 {
+            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+        }
+        drain(&mut ring, 0.0, 10.0);
+        assert_eq!(ring.in_flight(), 8, "nothing has been acknowledged yet");
+
+        let mut short = ack_with(5, false, 0);
+        short.reported = REPORTED;
+        ring.on_ack(&short, 1.0);
+
+        assert_eq!(
+            ring.in_flight(),
+            3,
+            "a short report left the window where it was"
+        );
+    }
+
+    /// A channel the peer did not report is left alone, rather than read as an
+    /// acknowledgement of nothing.
+    #[test]
+    fn a_channel_the_peer_did_not_report_is_untouched() {
+        let mut storage = Storage::new();
+        let mut ring = storage.ring();
+        for _ in 0..4 {
+            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+        }
+        drain(&mut ring, 0.0, 10.0);
+        let before = ring.in_flight();
+
+        let mut unreported = ack_with(3, false, 0);
+        unreported.reported = CHANNEL as usize;
+        ring.on_ack(&unreported, 1.0);
+
+        assert_eq!(
+            ring.in_flight(),
+            before,
+            "a channel the peer never reported moved the window"
+        );
     }
 
     /// Drain one scan pass, returning the sequences emitted.

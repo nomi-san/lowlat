@@ -105,6 +105,9 @@ fn group_acknowledgements_round_trip() {
         }
         let keepalive = rng.next() & 1 == 0;
         let ack = Ack {
+            // Encoding always writes every channel, so a round trip reports
+            // every channel back.
+            reported: CHANNEL_COUNT,
             kind: if keepalive {
                 AckKind::Keepalive
             } else {

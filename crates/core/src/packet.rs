@@ -58,6 +58,12 @@ pub struct Ack {
     pub trigger_seq: u32,
     /// Next sequence expected per channel, so everything below is acknowledged.
     pub cumulative: [u32; CHANNEL_COUNT],
+    /// How many of [`Ack::cumulative`] the sender actually reported.
+    ///
+    /// **A channel a peer did not report is not a channel it acknowledged
+    /// nothing on**, and confusing the two would either do nothing or, near a
+    /// sequence wrap, look like an acknowledgement that never happened.
+    pub reported: usize,
 }
 
 /// The acknowledgement variant is much larger than the data variant, because
@@ -127,14 +133,23 @@ pub fn parse(cleartext: &[u8]) -> Result<Packet<'_>> {
         }));
     }
 
-    // Acknowledgements and keepalives carry 19 cumulative values. A peer sizes
-    // this read from a fixed buffer rather than the packet, so a short one
-    // would read whatever followed it; we refuse instead.
-    if cleartext.len() < ACK_LEN {
+    // **A peer reports one cumulative value per channel it has, and peers do
+    // not all have the same number of channels.** An older generation sends
+    // four where the current one sends nineteen, so a fixed length refuses
+    // every acknowledgement that generation sends -- and a peer whose
+    // acknowledgements are all refused is indistinguishable from one that has
+    // stopped receiving, which is the reading that ends the session.
+    //
+    // Read what is there and remember how much that was. Reading past the end
+    // is the hazard the fixed length guarded against, and the bound below is
+    // what actually prevents it.
+    let reported = cleartext.len().saturating_sub(HEADER_LEN) / 4;
+    if reported == 0 {
         return Err(Error::ShortAck);
     }
+    let reported = reported.min(CHANNEL_COUNT);
     let mut cumulative = [0u32; CHANNEL_COUNT];
-    for (index, slot) in cumulative.iter_mut().enumerate() {
+    for (index, slot) in cumulative.iter_mut().take(reported).enumerate() {
         *slot = be32(cleartext, HEADER_LEN + index * 4)?;
     }
     Ok(Packet::Ack(Ack {
@@ -147,6 +162,7 @@ pub fn parse(cleartext: &[u8]) -> Result<Packet<'_>> {
         trigger_channel: channel,
         trigger_seq: seq,
         cumulative,
+        reported,
     }))
 }
 
@@ -217,6 +233,7 @@ mod tests {
             trigger_channel: 5,
             trigger_seq: 0x1234_5678,
             cumulative,
+            reported: CHANNEL_COUNT,
         }
     }
 
@@ -332,8 +349,59 @@ mod tests {
 
     #[test]
     fn rejects_a_short_acknowledgement() {
+        // Nothing to report at all is still refused: a header on its own says
+        // nothing about any channel.
         let buf = header_with_flags(FLAG_ACK);
-        assert_eq!(parse(&buf[..ACK_LEN - 1]), Err(Error::ShortAck));
+        for len in HEADER_LEN..HEADER_LEN + 4 {
+            assert_eq!(parse(&buf[..len]), Err(Error::ShortAck), "len {len}");
+        }
+    }
+
+    /// **An acknowledgement carrying fewer channels than we do is read, not
+    /// refused.**
+    ///
+    /// A peer generation exists that carries four where this one carries
+    /// nineteen, and its acknowledgement is 23 bytes: the seven-byte header
+    /// and four cumulative values. Refusing it drops every acknowledgement
+    /// that peer sends, which presents as a peer that has stopped receiving --
+    /// a window that only grows, every fragment stale, and a session ended for
+    /// undeliverability while the peer is decoding happily.
+    #[test]
+    fn an_acknowledgement_reporting_fewer_channels_is_read() {
+        const LEGACY_CHANNELS: usize = 4;
+        const LEGACY_LEN: usize = HEADER_LEN + LEGACY_CHANNELS * 4;
+        assert_eq!(LEGACY_LEN, 23, "the length a peer generation really sends");
+
+        let mut buf = header_with_flags(FLAG_ACK);
+        for channel in 0..LEGACY_CHANNELS {
+            let at = HEADER_LEN + channel * 4;
+            let value = 0x0A00_0000u32 + channel as u32;
+            buf[at..at + 4].copy_from_slice(&value.to_be_bytes());
+        }
+
+        let Ok(Packet::Ack(ack)) = parse(&buf[..LEGACY_LEN]) else {
+            panic!("a 23-byte acknowledgement was refused");
+        };
+        assert_eq!(ack.reported, LEGACY_CHANNELS);
+        for channel in 0..LEGACY_CHANNELS {
+            assert_eq!(
+                ack.cumulative[channel],
+                0x0A00_0000u32 + channel as u32,
+                "channel {channel} did not survive"
+            );
+        }
+        // Everything past what it reported stays absent rather than reading as
+        // an acknowledgement of nothing.
+        for channel in LEGACY_CHANNELS..CHANNEL_COUNT {
+            assert_eq!(ack.cumulative[channel], 0);
+        }
+
+        // And a full-length one still reports every channel.
+        let full = header_with_flags(FLAG_ACK);
+        let Ok(Packet::Ack(ack)) = parse(&full) else {
+            panic!("a full acknowledgement was refused");
+        };
+        assert_eq!(ack.reported, CHANNEL_COUNT);
     }
 
     #[test]

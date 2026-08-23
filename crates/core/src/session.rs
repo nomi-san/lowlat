@@ -469,6 +469,9 @@ impl<'a> Session<'a> {
             trigger_channel: if keepalive { 0 } else { self.trigger.0 },
             trigger_seq: if keepalive { 0 } else { self.trigger.1 },
             cumulative,
+            // We carry every channel, and [`packet::encode_ack`] writes them
+            // all. A peer with fewer reads the prefix it understands.
+            reported: CHANNEL_COUNT,
         };
         let body = out.get_mut(ENVELOPE_LEN..).ok_or(Error::BufferTooSmall)?;
         let written = packet::encode_ack(body, &ack)?;
