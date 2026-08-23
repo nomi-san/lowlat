@@ -226,6 +226,12 @@ thousands of connections.
 - Every log line carries the identifiers needed to correlate across threads: guest, channel,
   sequence.
 - Counters the shell owns and exposes: datagrams received and sent, bytes, batch sizes, wake
-  reasons, poll timeouts hit versus packet wakes, granted socket buffer sizes, probe outcomes.
+  reasons, poll timeouts hit versus packet wakes, granted socket buffer sizes, probe outcomes,
+  and **datagrams the endpoint refused**.
+- **A datagram dropped for being unparseable or unauthenticated is counted.** Dropping it is
+  right -- hostile and corrupt input is ordinary on a network -- but a drop that leaves no
+  trace makes a peer speaking the wire differently and a path carrying nothing into the same
+  picture, and the counters that describe a channel never see it, because a rejected datagram
+  reached no channel. That gap hid a real wire mismatch through several rounds of diagnosis.
 - The granted `SO_RCVBUF` is logged at open, every time. A silently clamped request is
   otherwise invisible until a burst is lost.

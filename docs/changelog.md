@@ -1998,6 +1998,12 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   reading an absent entry as a zero does nothing most of the time and, near a
   sequence wrap, looks like an acknowledgement that never happened.
 
+- **A datagram the endpoint refuses is counted rather than only dropped.** The
+  drop itself is right, but it left no trace, so a peer speaking the wire
+  differently and a path carrying nothing produced identical logs -- and the
+  per-channel counters cannot see it, because a rejected datagram reaches no
+  channel. That is where a real mismatch hid.
+
 - **The progress line carries datagrams and the smoothed round trip.**
   `rx_frag` counts what reached a channel, which an acknowledgement never does,
   so the line could not tell a peer that had stopped reading from one whose
