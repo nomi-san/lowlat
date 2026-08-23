@@ -656,6 +656,57 @@ a different channel count will emit a header that says stereo and a payload that
 32000 bytes, so a frame longer than about 160 ms of stereo is not deliverable uncompressed. At
 the 20 ms this host sends, a packet is 3840 bytes.
 
+### §11.4b The guest microphone
+
+**The other direction, and it is not on the audio channel.** Sound to a guest rides channel 2
+with the framing above; sound from one rides the **control channel** as a virtual device: one
+opcode carrying several kinds of device, told apart by the header's own arguments rather than by
+the opcode.
+
+| Field | Value |
+|---|---|
+| opcode | 32 |
+| argument 0 | `1` |
+| argument 1 | `0xF055F055` |
+| body | a fixed 1932 bytes |
+
+**Both arguments select together.** Another device on the same opcode uses `0` in the first, so
+neither alone identifies a microphone, and a body whose own kind disagrees with the header is
+refused rather than believed: one sender writes both in one call.
+
+The body is little endian and is **the same 1932 bytes whatever it carries**, with the payload's
+real length inside it:
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 4 | device kind, `12` for a microphone |
+| 4 | 1920 | payload |
+| 1924 | 4 | payload length in bytes |
+| 1928 | 1 | encoding: `1` compressed, `0` uncompressed |
+| 1929 | 3 | padding |
+
+**The encoding byte is not the audio channel's codec tag.** That one spells uncompressed `2`;
+this one spells it `0`. The two are close enough to swap without noticing until a listener hears
+static.
+
+**48 kHz mono, ten milliseconds a packet.** A sender folds whatever its device captured down to
+one channel before encoding, so the layout question is settled before it leaves; compressed
+packets are the codec's voice mode, and uncompressed is 960 bytes of sixteen-bit samples. A
+receiver bounds what it will decode rather than trusting the length: the codec can be asked for
+far longer frames than ten milliseconds, and the length is the sender's to write.
+
+**A peer sends nothing until it is told it may.** The host announces whether it will take a
+microphone as an application message (§11.2a) under sub-identifier 18, whose body is a decimal
+string: `"0"` means no and anything else means yes. A peer told no -- or never told at all --
+keeps its microphone muted however it is configured itself, so a host that merely listens
+receives silence.
+
+**It costs what it costs, on the channel that carries control.** A packet every ten milliseconds
+of 1932 bytes is around 193 kB/s in two fragments, roughly 200 fragments a second, reliable and
+ordered, sharing head-of-line with the guest list, the cursor and the latency reports. A lost
+fragment delays whatever is queued behind it. That is the reason a host decides whether to take
+one rather than always taking it.
+
 ### §11.4a Audio latency reports
 
 Both ends volunteer a decode or encode figure on the control channel as opcode 21, on a cadence

@@ -85,6 +85,8 @@ timezone to mean something.
 lowlat_status lowlat_host_start(lowlat *ll, const lowlat_host_config *cfg);
 lowlat_status lowlat_host_stop(lowlat *ll);
 lowlat_status lowlat_host_get_status(lowlat *ll, lowlat_host_status *out);
+lowlat_status lowlat_host_poll_microphone(lowlat *ll, uint32_t timeout_ms, int16_t *samples,
+                                          uint32_t *count, uint32_t *guest, uint32_t *dropped);
 
 lowlat_status lowlat_host_set_video_config(lowlat *ll, const lowlat_host_video_config *cfg);
 lowlat_status lowlat_host_get_video_config(lowlat *ll, lowlat_host_video_config *out);
@@ -135,6 +137,20 @@ milliseconds ago.**
 removed 2026-08-21 before anything was built against it: it is `lowlat_host_set_permissions`
 with every flag cleared, and two calls that write one field can disagree about what a guest is
 allowed to do. Permissions are the field; there is one way to set them.
+
+**`lowlat_host_poll_microphone` is a poll of its own, not an event.** A hundred packets a
+second sharing the event queue would evict the events it is there to deliver, so sound from a
+guest has its own queue and an application that wants both polls both. **It hands over samples
+rather than a codec**: sixteen-bit, mono, 48 kHz, whichever way the guest encoded them. The
+buffer must hold `LOWLAT_MICROPHONE_SAMPLES_MAX`, because a packet cannot be larger and there is
+therefore no partial delivery to call back for. `dropped` reports what a queue nobody drained
+had to discard -- oldest first, because late sound is worth less than the sound behind it -- and
+travels with the next delivery, which is the only place it can.
+
+**It refuses rather than waits when the microphone is not accepted.**
+`LOWLAT_ERR_NOT_STARTED` comes back immediately: a host that is not taking microphones will
+never have one, and spending the caller's timeout to say so would read as sound that is merely
+late.
 
 **`lowlat_host_get_status` reports what is happening, not what was asked for**, which is why
 it carries the picture's size and the guest count and not the settings that produced them: the
@@ -202,6 +218,7 @@ with and what `lowlat_host_set_audio_config` takes:
 | `enabled` | Switching it off gives the sound device back and restores the speakers, exactly as the last guest leaving does. Switching it on takes the device again -- **including on a host that started with it off**, which is what makes this field live rather than a settled one wearing a setter. |
 | `bitrate_kbps` | Read on the frame that uses it, so a change costs no rebuild and no discontinuity a listener would hear. **A rate of zero or one past the ceiling is refused** rather than clamped in silence, because the codec would clamp its own and the application would be told yes and given something else. |
 | `allow_uncompressed` | **A permission, not a request, and off by default.** A guest asks for the uncompressed form in its own initialization; this is whether a host will serve it. It costs an order of magnitude more of the uplink than the compressed form, and that comes out of what is left for the picture ([05 §9](05-host.md)). A guest denied it is sent the compressed form, priced as the compressed form, and told it is the compressed form. |
+| `accept_microphone` | Whether a guest's microphone is taken, **off by default**. It is two things at once and they cannot be separated: this host decodes what arrives, and it tells the peer it will -- **a peer sends nothing until it is told**, so nothing arrives while this is clear however the guest configured itself. It costs a packet every ten milliseconds on the channel that carries control messages ([05 §9.6](05-host.md)), which is why it is a decision rather than something switched on by polling for it. Live, like the rest: switching it off tells every connected peer to stop. |
 | `mute_local` | Silences the speakers at the desk while a guest is connected, off by default. On a device that applies its own mute the tap is ahead of it, so a guest still hears everything. **On a device whose mute the sound server applies, nothing is silenced and the log says why** -- the mix the mute reaches is the one being captured, so obeying would silence every guest ([05 §9.4](05-host.md)); the setting is still accepted, because the device can change under a running host. **It restores rather than unmutes**: a device somebody had already muted stays muted, and one they unmuted mid-session is not muted again. |
 | `device` | Empty means the default output's monitor, **followed as the default changes**. A named one is checked against the enumeration at the call and refused with `LOWLAT_ERR_INVALID_ARGUMENT` if it is not there, because a name that does not resolve is substituted by the sound server rather than refused -- and the loop that opens it runs long after the call returned, so the call is the only place that can say no. Refused changes nothing: the host keeps the device it has. **The start does not check**, because a host whose sound server is not up yet must still be able to stream pictures. |
 
@@ -485,8 +502,14 @@ and struct blittability at once. It is the Phase 8 gate.
 
 - **No client API.** lowlat is a host. The far side is an existing client.
 - **No signaling.** [04 §1](04-signaling.md).
-- **No callbacks on data paths.** Frames and audio never cross this boundary; the SDK captures
-  and encodes internally. An application that wants the frames wants a different product.
+- **No callbacks on data paths.** Frames and the sound a host sends never cross this boundary;
+  the SDK captures and encodes internally. An application that wants the frames wants a
+  different product. **A guest's microphone is the one exception and it is still not a
+  callback**: it is polled, on a call of its own, and what crosses is samples.
+- **No microphone device.** A shared library has no business creating a capture device in
+  somebody's session -- it owns neither the session nor the naming nor the lifetime -- so what a
+  host does with a guest's microphone is the application's decision. The SDK decodes and hands
+  over sixteen-bit samples.
 - **No configuration file parsing.** The application decides where configuration comes from
   and passes structs.
 - **No threading knobs.** Thread counts scale to available parallelism and are not exposed.

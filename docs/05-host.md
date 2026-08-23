@@ -827,10 +827,44 @@ failures are silent and whose symptom is somebody hearing themselves. **A person
 application instead**, which is a control they already have and which works whatever sound server
 is running.
 
-**No uplink yet.** A guest's microphone reaches a host as its own message and is not part of
-this: what a host would do with it is create a capture device in somebody's session, which is an
-application's business rather than a shared library's ([06 §13](06-api.md)). The framing is
-known and the work is scoped separately.
+**No echo cancellation of the guest's own sound**, which the section below is about instead.
+
+### §9.6 The guest microphone, which is the other direction
+
+**Taken only when a host says it will**, off by default. Two things follow from that one
+setting, and they are the same decision: this host decodes what arrives, and it tells the peer
+it will -- a peer sends nothing at all until it is told, so a host that merely listened would
+receive silence and look broken from both ends ([01 §11.4b](01-protocol.md)).
+
+**It is not on the audio channel.** It arrives on the control channel, which makes it reliable
+and ordered and puts it head-of-line with the guest list, the cursor and the latency reports: a
+packet every ten milliseconds, about 193 kB/s in two fragments each. That cost is the reason the
+setting exists rather than the feature simply being on.
+
+**The application receives samples, never a codec.** A guest chooses how it encodes and this
+host decodes whichever it chose, so what crosses the boundary is sixteen-bit mono at 48 kHz and
+an application that wants a microphone does not have to learn a codec or link one
+([06 §13](06-api.md)).
+
+**What a host does with it is not this library's business.** Creating a capture device in
+somebody's session is an application's decision -- it owns the session, the naming and the
+lifetime -- so the samples are handed over and the story ends here.
+
+**The decoder is the first thing here to read bytes a peer chose, and it is treated that way.**
+What it may produce is bounded before it runs, from a constant rather than from the packet's own
+length; a packet that ends in a panic is caught, counted, and the state it unwound through is
+thrown away rather than decoded against again. That is not precautionary: sweeping random
+payloads, seventeen in forty thousand ended in a panic rather than an error, and the failure is
+a property of the decoder's accumulated state rather than of any one packet -- the same bytes
+handed to a fresh decoder decode cleanly.
+
+**One decoder per guest**, because a codec carries state between packets and two guests' packets
+through one decoder produce sound that is neither guest's.
+
+**A queue of its own, and it drops the oldest.** A hundred packets a second sharing the event
+queue would evict the events; and sound that arrives late is worth less than the sound behind
+it, which is the same reason the downlink never retransmits. What was dropped travels with the
+next delivery.
 
 ## §10 Latency budget and instrumentation
 
