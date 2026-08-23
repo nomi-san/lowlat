@@ -1113,7 +1113,10 @@ problem and no code at all.
 - [x] **Send whole or not at all**, and drop before numbering. *The channel is reliable and
   ordered, so a packet dropped after it is numbered is a hole the receiver waits on. A full window
   discards the packet instead, and the next one takes its place.*
-- [x] **Decide what silence costs, per guest.** *A monitor delivers zeros rather than stopping.
+- [x] **Decide what silence costs, per guest, and do not stop the instant sound does.** *A peer
+  plays only once it has queued its minimum and waits that out again if it ever reaches zero, so
+  the uncompressed path holds for two seconds after sound stops: past any pause inside speech,
+  and still short enough that a quiet desktop stops paying for silence.* *A monitor delivers zeros rather than stopping.
   Measured: the compressed path already collapses them to 1.2 kbit/s against 128, so skipping is
   worth almost nothing there and worth the whole 1.54 Mbit/s on the uncompressed one -- and a peer
   whose buffer drains pays for it when sound returns. The encoder reports silence; the sender
@@ -1142,16 +1145,25 @@ problem and no code at all.
 
 **Gate:**
 
-1. Audio reaches a stock client and plays, from the real desktop.
-2. **Thirty minutes with no drift**, measured as the packets a host sent against the samples a
-   client played, not as an impression.
-3. **A source change is survived cleanly** -- the person switches their output device mid-session
-   and audio follows it, with no reconnection and no picture disturbed.
-4. **A guest that asks for uncompressed gets it**, and a guest that did not is unaffected in the
-   same room.
-5. **Silence costs nothing**, checked on the wire rather than by listening.
-6. **The local mute silences the speakers and not the stream**, and a device the person had
-   already muted is still muted after the last guest leaves.
+1. [x] Audio reaches a stock client and plays, from the real desktop. *Passed 2026-08-23, both
+   codecs, on a peer that chose each in its own settings.*
+2. [ ] **Thirty minutes with no drift**, measured as the packets a host sent against the samples a
+   client played, not as an impression. **Expect at most one resync rather than none**: a peer
+   plays out of a buffer it flushes at either edge, and two sound-card clocks differ by tens of
+   parts per million, so one edge is reached every twelve to fifty minutes depending on the peer.
+   A host that produced none would be one resampling to a feedback loop.
+3. [ ] **A source change is survived cleanly** -- the person switches their output device
+   mid-session and audio follows it, with no reconnection and no picture disturbed.
+4. [ ] **A guest that asks for uncompressed gets it**, and a guest that did not is unaffected in
+   the same room. *Each half is proven alone; the mixed room is not.*
+5. [ ] **Silence costs nothing**, checked on the wire rather than by listening.
+6. [x] **The local mute silences the speakers and not the stream**, and a device the person had
+   already muted is still muted after the last guest leaves. *Passed 2026-08-23.*
+
+**A packet must decode to less than about 40 ms**, whatever the codec would allow: a peer holds
+one packet per slot of its decoded queue and the slot is 8000 bytes, which is 41.6 ms of stereo.
+The 20 ms this host sends is half of it, and that is the reason not to trade latency for bitrate
+with longer frames later.
 
 ### The guest microphone, after the gate
 

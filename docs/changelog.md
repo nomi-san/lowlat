@@ -5,6 +5,34 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 ## 10: audio (in progress)
 
+**Live against a stock client, 2026-08-23**: both codecs heard on a real
+peer that chose each in its own settings, the speakers at the desk
+silenced while it was connected and restored when it left, and the
+sound device taken and given back with the room. What the gate still
+owes is its long-run half.
+
+**Fixed**
+
+- **A sound device held after everybody had gone.** It was taken by the
+  loop that waits for a guest and given back by that same loop -- which
+  is never reached again, because the encode loop sleeps through an
+  empty room rather than returning. One host held a capture, and
+  somebody's muted speakers, across three sessions.
+
+  The decision now lives where the room's size is known and is taken on
+  every pass, because a room empties without anything else happening:
+  no rebuild, no arrival, no error. The device moved off that loop's
+  stack into the shared state, so the loop that notices need not be the
+  one that built it.
+
+- **Silence is not skipped the instant sound stops.** A peer plays only
+  once it has queued its minimum -- measured at 75 to 150 ms on a
+  desktop and 150 to 300 on a phone -- and reaching zero makes it wait
+  that out again, so stopping at the first silent frame clipped the
+  next word. The uncompressed path now holds for two seconds: past any
+  pause inside speech, and still short enough that a quiet desktop
+  stops spending 1.54 Mbit/s on nothing.
+
 **Added**
 
 - **The framing, in the protocol core.** Fifteen bytes ahead of the
