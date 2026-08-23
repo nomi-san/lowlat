@@ -229,6 +229,8 @@ enum Relayed {
     Probe(SocketAddr),
     /// Not an address this host can probe.
     Unreadable,
+    /// An address on a family this host has been told not to use.
+    Declined,
 }
 
 /// Read one relayed candidate exchange.
@@ -240,11 +242,20 @@ enum Relayed {
 /// on a field nothing reads, and a barrier that is dropped leaves a peer that
 /// withholds its real candidates waiting for something that already arrived --
 /// silent at both ends.
-fn relayed(sync: bool, ip: &str, port: u16) -> Relayed {
+/// **`v4_only` refuses the peer's v6 candidates too, and it has to.** Not
+/// offering our own leaves the family fully available: the media socket is dual
+/// stack, so a v6 address the peer offers is probed like any other and can
+/// carry the session. A switch that silenced only our half would let a run meant
+/// to prove the v4 path go over v6 and report that it had tested v4.
+///
+/// The barrier is family-independent and is still honoured, because it is not
+/// an address at all.
+fn relayed(sync: bool, ip: &str, port: u16, v4_only: bool) -> Relayed {
     if sync {
         return Relayed::Ready;
     }
     match peer_candidate(ip, port) {
+        Some(addr) if v4_only && addr.is_ipv6() => Relayed::Declined,
         Some(addr) => Relayed::Probe(addr),
         None => Relayed::Unreadable,
     }
@@ -336,9 +347,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // together and the servers are handed to the seam a few lines below.
     let mut stun = stun;
     let mut local = primary_local_addresses();
-    if flag_set("--no-ipv6") {
+    let v4_only = flag_set("--no-ipv6");
+    if v4_only {
         drop_ipv6(&mut local, &mut stun);
-        lowlat_common::log_info!("lowlatd: --no-ipv6, offering and asking on v4 only");
+        lowlat_common::log_info!(
+            "lowlatd: --no-ipv6, offering and asking on v4 only, and refusing the peer's v6"
+        );
     }
 
     let bitrate_mbps: f64 = flag("--bitrate")
@@ -513,6 +527,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     &name,
                     max_guests,
                     &local,
+                    v4_only,
                     reject_all,
                     &settings,
                 )
@@ -567,6 +582,7 @@ async fn session_loop(
     name: &str,
     capacity: u32,
     local: &[IpAddr],
+    v4_only: bool,
     reject_all: bool,
     settings: &app::Settings,
 ) -> Result<bool, Box<dyn std::error::Error>> {
@@ -664,7 +680,12 @@ async fn session_loop(
                     }
                     "candex_relay" => {
                         let relay: CandexRelay = serde_json::from_value(message.payload)?;
-                        match relayed(relay.data.sync, &relay.data.ip, relay.data.port) {
+                        match relayed(
+                            relay.data.sync,
+                            &relay.data.ip,
+                            relay.data.port,
+                            v4_only,
+                        ) {
                             Relayed::Ready => {
                                 seam.add_candidate(
                                     &relay.attempt_id,
@@ -683,6 +704,10 @@ async fn session_loop(
                             // candidate lost.
                             Relayed::Unreadable => lowlat_common::log_info!(
                                 "lowlatd: candidate not an address, ignored: {}",
+                                relay.data.ip
+                            ),
+                            Relayed::Declined => lowlat_common::log_info!(
+                                "lowlatd: candidate refused, v4 only: {}",
                                 relay.data.ip
                             ),
                         }
@@ -873,14 +898,22 @@ mod tests {
     #[test]
     fn a_readiness_barrier_does_not_depend_on_its_address() {
         assert_eq!(
-            relayed(true, "1c4d9ae8-f7a8-4513-affb-dcbb40048922.local", 58667),
+            relayed(
+                true,
+                "1c4d9ae8-f7a8-4513-affb-dcbb40048922.local",
+                58667,
+                false
+            ),
             Relayed::Ready,
             "a marker with an unreadable address lost the barrier"
         );
         // The two spellings a real peer has actually sent, both markers.
-        assert_eq!(relayed(true, READY_PLACEHOLDER, READY_PORT), Relayed::Ready);
         assert_eq!(
-            relayed(true, "::ffff:171.246.76.160", 56730),
+            relayed(true, READY_PLACEHOLDER, READY_PORT, false),
+            Relayed::Ready
+        );
+        assert_eq!(
+            relayed(true, "::ffff:171.246.76.160", 56730, false),
             Relayed::Ready
         );
     }
@@ -890,7 +923,12 @@ mod tests {
     #[test]
     fn an_ordinary_candidate_is_probed_or_declined() {
         assert_eq!(
-            relayed(false, "2405:4802:d0f5:6ec0:c048:4183:5759:8357", 31064),
+            relayed(
+                false,
+                "2405:4802:d0f5:6ec0:c048:4183:5759:8357",
+                31064,
+                false
+            ),
             Relayed::Probe(SocketAddr::new(
                 "2405:4802:d0f5:6ec0:c048:4183:5759:8357"
                     .parse::<IpAddr>()
@@ -899,9 +937,53 @@ mod tests {
             ))
         );
         assert_eq!(
-            relayed(false, "1c4d9ae8-f7a8-4513-affb-dcbb40048922.local", 58667),
+            relayed(
+                false,
+                "1c4d9ae8-f7a8-4513-affb-dcbb40048922.local",
+                58667,
+                false
+            ),
             Relayed::Unreadable
         );
+    }
+
+    /// **Refusing v6 has to reach the peer's candidates too.**
+    ///
+    /// Not offering our own leaves the family fully available: the media socket
+    /// is dual stack, so a v6 address the peer offers is probed like any other
+    /// and can carry the whole session. A switch that silenced only our half
+    /// would let a run meant to prove the v4 path go over v6 and report that it
+    /// had tested v4 -- which is the one outcome worse than not having it.
+    ///
+    /// The barrier is not an address and is honoured either way.
+    #[test]
+    fn refusing_ipv6_refuses_the_peers_v6_candidates() {
+        let peer_v6 = "2402:800:63b5:d08b:6045:adf4:f8d7:172b";
+
+        assert_eq!(
+            relayed(false, peer_v6, 31336, true),
+            Relayed::Declined,
+            "the peer's v6 candidate was probed on a v4-only run"
+        );
+        assert_eq!(
+            relayed(false, "171.247.203.94", 31336, true),
+            Relayed::Probe(SocketAddr::new(
+                "171.247.203.94".parse::<IpAddr>().expect("reference"),
+                31336
+            )),
+            "a v4 candidate must still be probed"
+        );
+        assert_eq!(
+            relayed(true, peer_v6, 31336, true),
+            Relayed::Ready,
+            "the readiness barrier is not an address and does not have a family"
+        );
+        // Unset, the same candidate is probed: the refusal is the switch, not a
+        // standing rule.
+        assert!(matches!(
+            relayed(false, peer_v6, 31336, false),
+            Relayed::Probe(_)
+        ));
     }
 
     /// **Refusing v6 has to reach the reflexive servers too.**
