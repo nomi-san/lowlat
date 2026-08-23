@@ -1769,6 +1769,33 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - The connect and teardown churn soak, counting descriptors, threads and
   resident memory across ten thousand cycles.
 
+**Changed**
+
+- **The wait reports which descriptor it heard from, and the pass leaves the
+  other one alone.** Poll fills in the events per descriptor and the loop was
+  discarding them, so every pass spent an eventfd read and a receive call to be
+  told what poll had already said. An idle pass is now one syscall where it was
+  three, and a pass carrying a stream is 1.94 where it was 3.
+
+  Measured with a counting interposer on the two harnesses that already exist.
+  The idle loop test is exact, because it runs ten passes on an injected clock
+  with no traffic at all: eventfd reads 10 to 0, receive calls 10 to 0, polls
+  unchanged at 11. The sustained loopback soak runs about 1700 passes against
+  real traffic, and there the receive call falls to the 94 percent of passes
+  that had something queued while the eventfd read disappears outright, since
+  that harness drives the loop directly and never notifies.
+
+  **The test is anything the wait reported, not readability alone.** An error or
+  hangup bit is a condition to go and collect and is cleared by the call that
+  collects it, so a pass that saw one and skipped the call would wake again
+  immediately on the same unconsumed bit, for ever. That is a spin in place of a
+  saved syscall, and gating on readability alone is how it would arrive.
+
+  **The application ring is pulled on every pass regardless**, which is the one
+  thing the gating must not reach. A producer can fill a ring and have its
+  notify land after the wait returned, and a pull gated on the wake would hold
+  that work until the next deadline.
+
 **Notes**
 
 - **A bind failure is not a startup failure.** The walk takes 50 ports from the

@@ -87,8 +87,8 @@ Linux, `WaitOnAddress` and `WakeByAddress` on Windows, `__ulock` on macOS.
 ```
 loop:
     timeout = clamp(endpoint.next_timer_ms(now), 1, 50)
-    wait:    poll(fd, timeout)                    // or the platform equivalent
-    receive: batch drain -> endpoint.process_input(bytes, from, now, scratch)
+    wait:    poll(fd, timeout) -> which descriptors spoke
+    receive: if the socket spoke: batch drain -> endpoint.process_input(...)
     deliver: drain complete messages -> pipeline rings (+ notify)
     if app_send_seq changed:
         pull input and data rings -> send_message(...)        // input FIRST
@@ -114,6 +114,15 @@ loop:
   TTL, and the socket must be restored immediately afterwards or the media path silently caps
   at a few hops ([03 §4](03-connectivity.md)). The obligation is in the type rather than in a
   comment, and the shell honours it per datagram.
+- **A descriptor the wait said nothing about is not touched.** The wait already
+  reports per descriptor, and a pass that asks both regardless spends an
+  application-wake read and a receive call to be told what it has just been
+  told. **The test is anything reported, not readability alone**: an error or
+  hangup condition is cleared by the call that collects it, so a pass that saw
+  one and skipped that call would wake again immediately on the same
+  uncollected condition, which is a spin in place of a saved syscall. **The
+  application ring is pulled either way**, because a producer can fill a ring
+  and have its wake land after the wait returned.
 - **Application sends wake the loop.** Enqueuing to an application-facing ring bumps a
   sequence and posts a dedicated wake: an `eventfd` on Linux, a completion post on Windows, a
   user event on macOS. Enqueue to wire is then microseconds rather than "next poll". Without
