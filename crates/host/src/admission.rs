@@ -324,6 +324,12 @@ pub struct Config {
     pub max_guests: usize,
     /// Reflexive servers, consulted for our own mapped address.
     pub servers: Vec<SocketAddr>,
+    /// Whether shared address space counts as a host candidate.
+    ///
+    /// **Off unless asked for.** It is reachable when both ends are behind the
+    /// same carrier translation or on the same overlay network, and a wasted
+    /// check for every peer that is not ([`lowlat_net::host_addresses`]).
+    pub shared_address_space: bool,
     /// The media stream every guest is served from, or `None` for a host that
     /// admits guests and sends them nothing. Absent is what the seam's own
     /// tests use, so they need neither a thread nor a device.
@@ -817,12 +823,28 @@ impl Admission {
         attempt.ask = Some(ask);
         attempt.number = Some(guest_number);
 
-        // Emitted with the answer rather than in response to anything, so a
-        // peer that withholds its candidates until it sees one is unblocked as
-        // early as possible.
+        // Emitted with the answer rather than in response to anything, and
+        // **before the candidates it unblocks**: a peer is entitled to
+        // withhold every real candidate of its own until it has seen one,
+        // so anything queued ahead of it delays the exchange in both
+        // directions ([04 §3](../../../docs/04-signaling.md)).
         self.emit.send(Event::Ready {
             attempt: id.to_string(),
         });
+
+        // **Gathered here rather than by the application.** Which local
+        // addresses are worth offering is a connectivity decision with a rule
+        // behind it, and an application that had to re-derive that rule would
+        // get a different answer per integration. The port is the one that was
+        // actually bound, which is not the one that was asked for as soon as a
+        // second guest walks.
+        for ip in lowlat_net::host_addresses(self.config.shared_address_space) {
+            self.emit.send(Event::Candidate {
+                attempt: id.to_string(),
+                addr: SocketAddr::new(ip, port),
+                from_stun: false,
+            });
+        }
 
         Ok(HostCredentials {
             ufrag: local.ufrag,
@@ -2294,6 +2316,7 @@ mod tests {
             cg_level: 1,
             // Ephemeral, so the tests do not fight the machine for a fixed port.
             base_port: 0,
+            shared_address_space: false,
             max_guests,
             servers: Vec::new(),
             stream: None,
@@ -2308,6 +2331,7 @@ mod tests {
             exclusive_hold_ms: crate::floor::HOLD_MS,
             cg_level: 1,
             base_port: 0,
+            shared_address_space: false,
             max_guests: 1,
             servers: Vec::new(),
             stream: None,
@@ -2429,6 +2453,7 @@ mod tests {
             exclusive_hold_ms: crate::floor::HOLD_MS,
             cg_level: 1,
             base_port: base,
+            shared_address_space: false,
             max_guests: 4,
             servers: Vec::new(),
             stream: None,
@@ -3173,6 +3198,7 @@ mod geometry {
             exclusive_hold_ms: crate::floor::HOLD_MS,
             cg_level: 1,
             base_port: 0,
+            shared_address_space: false,
             max_guests: 1,
             servers: Vec::new(),
             stream: None,
@@ -3399,6 +3425,7 @@ mod reclamation {
             exclusive_hold_ms: crate::floor::HOLD_MS,
             cg_level: 1,
             base_port: base,
+            shared_address_space: false,
             max_guests: 4,
             servers: Vec::new(),
             stream: None,

@@ -701,6 +701,7 @@ mod tests {
             exclusive_hold_ms: lowlat::floor::HOLD_MS,
             cg_level: 1,
             base_port: 0,
+            shared_address_space: false,
             max_guests: 1,
             servers: Vec::new(),
             stream: None,

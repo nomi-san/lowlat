@@ -962,6 +962,9 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
 
     Some(crate::admission::Config {
         base_port: cfg.base_port,
+        // Not on the boundary yet: no application has asked to offer shared
+        // address space, and a field nobody sets is a field nobody tests.
+        shared_address_space: false,
         max_guests: cfg.max_guests as usize,
         servers,
         exclusive_pointer: cfg.exclusive_pointer,

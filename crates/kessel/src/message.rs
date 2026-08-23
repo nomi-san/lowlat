@@ -238,6 +238,49 @@ pub struct PeerCredentials {
     pub aes256: Option<String>,
 }
 
+/// What a relayed candidate exchange asks a host to do.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Relayed {
+    /// A readiness barrier. **Its address is ignored and is not parsed**, which
+    /// is the whole reason this is decided before the address is looked at.
+    Ready,
+    /// An address to probe.
+    Probe(core::net::SocketAddr),
+    /// Not an address a host can probe.
+    Unreadable,
+}
+
+impl RelayedCandidate {
+    /// Read one relayed candidate exchange.
+    ///
+    /// **The barrier is decided first.** A peer sends one candidate marked
+    /// ready and the receiver ignores the address on it, so peers put different
+    /// things there: captures carry both the well-known placeholder and a
+    /// sender's own reflexive address. Parsing before checking the flag makes
+    /// the barrier depend on a field nothing reads, and a barrier that is
+    /// dropped leaves a peer that withholds its real candidates waiting for
+    /// something that already arrived -- silent at both ends
+    /// ([04 §3](../../../docs/04-signaling.md)).
+    ///
+    /// **The address is parsed, never edited as text.** A v4-mapped address is
+    /// IPv4 and has two textual forms: the trailing bytes may be written
+    /// dotted, as `::ffff:192.0.2.7`, or in hex, as `::ffff:c000:207`. Stripping
+    /// the prefix as text handles the first and turns the second into a
+    /// fragment that parses as nothing, so that candidate is dropped without a
+    /// word and the peer is never probed there. The parser knows both forms,
+    /// and collapsing the result to the IPv4 it is belongs to the connectivity
+    /// engine, which does it to every address it is handed.
+    pub fn read(&self) -> Relayed {
+        if self.sync {
+            return Relayed::Ready;
+        }
+        match self.ip.trim().parse::<core::net::IpAddr>() {
+            Ok(ip) => Relayed::Probe(core::net::SocketAddr::new(ip, self.port)),
+            Err(_) => Relayed::Unreadable,
+        }
+    }
+}
+
 /// A candidate forwarded from the peer.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CandexRelay {
@@ -284,6 +327,81 @@ pub fn envelope<T: Serialize>(action: &str, payload: &T) -> serde_json::Result<S
 
 #[cfg(test)]
 mod tests {
+    /// **A readiness barrier is not a candidate and must not need to parse.**
+    ///
+    /// The receiver ignores the address on one and peers put different things
+    /// there -- a capture carries both the well-known placeholder and a peer's
+    /// own reflexive address, and a peer that anonymises its host candidates
+    /// behind a `.local` name could put one of those there too. Deciding the
+    /// barrier after parsing drops it, and a peer that withholds its real
+    /// candidates until the barrier arrives then waits for what already came.
+    #[test]
+    fn a_readiness_barrier_does_not_depend_on_its_address() {
+        let marker = |ip: &str| RelayedCandidate {
+            ip: ip.to_string(),
+            port: 1234,
+            sync: true,
+        };
+        assert_eq!(
+            marker("1c4d9ae8-f7a8-4513-affb-dcbb40048922.local").read(),
+            Relayed::Ready,
+            "a marker with an unreadable address lost the barrier"
+        );
+        assert_eq!(marker("1.2.3.4").read(), Relayed::Ready);
+        assert_eq!(marker("::ffff:171.246.76.160").read(), Relayed::Ready);
+    }
+
+    /// **A v4-mapped address has two textual forms and both are IPv4.**
+    ///
+    /// The hex form is the one a textual strip loses: taking `::ffff:` off the
+    /// front of it leaves `c000:207`, which is not an address, so the candidate
+    /// goes in the bin without a log line and the peer is never probed there.
+    #[test]
+    fn a_v4_mapped_candidate_reads_in_either_textual_form() {
+        let candidate = |ip: &str| RelayedCandidate {
+            ip: ip.to_string(),
+            port: 41000,
+            sync: false,
+        };
+        let dotted = candidate("::ffff:192.0.2.7").read();
+        let hex = candidate("::ffff:c000:207").read();
+
+        assert_eq!(dotted, hex, "the two spellings named different addresses");
+        assert!(matches!(dotted, Relayed::Probe(_)));
+    }
+
+    /// An ordinary candidate is an address to probe; anything else is declined
+    /// rather than mistaken for one.
+    #[test]
+    fn an_ordinary_candidate_is_read_or_declined() {
+        let candidate = |ip: &str| RelayedCandidate {
+            ip: ip.to_string(),
+            port: 31064,
+            sync: false,
+        };
+        assert_eq!(
+            candidate("2405:4802:d0f5:6ec0:c048:4183:5759:8357").read(),
+            Relayed::Probe(core::net::SocketAddr::new(
+                "2405:4802:d0f5:6ec0:c048:4183:5759:8357"
+                    .parse()
+                    .expect("reference"),
+                31064
+            ))
+        );
+        assert_eq!(
+            candidate(" 203.0.113.9 ").read(),
+            Relayed::Probe(core::net::SocketAddr::new(
+                "203.0.113.9".parse().expect("reference"),
+                31064
+            ))
+        );
+        assert_eq!(
+            candidate("1c4d9ae8-f7a8-4513-affb-dcbb40048922.local").read(),
+            Relayed::Unreadable
+        );
+        assert_eq!(candidate("").read(), Relayed::Unreadable);
+    }
+
     use super::*;
 
     fn advertisement() -> ConnUpdate {
