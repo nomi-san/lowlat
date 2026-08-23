@@ -17,10 +17,12 @@
 
 pub mod capture;
 pub mod encode;
+pub mod microphone;
 mod pulse;
 
 pub use capture::{Capture, Config, Live, Output, Wanted, outputs};
 pub use encode::Encoder;
+pub use microphone::Decoder;
 
 /// Samples a second, per channel. **The only rate the protocol carries**, so
 /// it comes from there rather than being declared again here.

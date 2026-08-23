@@ -12,6 +12,9 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 lowlat-core = { path = "../crates/core" }
+# The microphone target reaches past the wire parse into the codec, because
+# that is where the bytes a guest chose actually get interpreted.
+lowlat-audio = { path = "../crates/audio" }
 
 [[bin]]
 name = "envelope"
@@ -51,6 +54,13 @@ bench = false
 [[bin]]
 name = "reassembly"
 path = "fuzz_targets/reassembly.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "microphone"
+path = "fuzz_targets/microphone.rs"
 test = false
 doc = false
 bench = false

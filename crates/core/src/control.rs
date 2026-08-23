@@ -40,6 +40,11 @@ pub mod op {
     pub const RELEASE: u8 = 24;
     pub const MOUSE_MOTION_STREAM: u8 = 26;
     pub const PEN_TOUCH: u8 = 30;
+    /// One opcode for several virtual devices, told apart by the header's
+    /// arguments rather than by the opcode. A guest's microphone is one of
+    /// them ([`crate::microphone`]); the rest are devices this host does not
+    /// offer, and arriving is not an error.
+    pub const VIRTUAL_DEVICE: u8 = 32;
     /// Turns per-frame timing on. A peer sends it with every bit clear in an
     /// ordinary session, which is a request to send nothing extra.
     pub const DIAGNOSTICS: u8 = 35;
@@ -88,6 +93,7 @@ pub mod op {
             HOST_MODE => "host-mode",
             ENCODER_GENERATION => "encoder-generation",
             PEN_TOUCH => "pen-touch",
+            VIRTUAL_DEVICE => "virtual-device",
             DIAGNOSTICS => "diagnostics",
             FRAME_TIMING => "frame-timing",
             _ => "unknown",

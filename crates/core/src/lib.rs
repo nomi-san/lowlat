@@ -51,6 +51,7 @@ pub mod envelope;
 pub mod error;
 pub mod init;
 pub mod message;
+pub mod microphone;
 pub mod packet;
 pub mod pmtu;
 pub mod png;
