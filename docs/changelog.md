@@ -2022,9 +2022,14 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   punch has no family preference and the first candidate to answer wins, so a
   host offering both families runs a race rather than a test -- observed twice
   with one peer, which took v4 on one attempt and v6 on the next. The switch
-  drops the v6 host candidates **and** the v6 reflexive servers, because
-  dropping only the first leaves a server that answers with a v6 candidate in
-  their place and the run reports the opposite of what happened.
+  drops the v6 host candidates, the v6 reflexive servers, **and the peer's own
+  v6 candidates**. All three, because any one left standing carries the family
+  on its own: a v6 server answers with a v6 candidate in place of the ones that
+  were dropped, and the media socket is dual stack, so a v6 address the peer
+  offers is probed like any other and can carry the entire session. A switch
+  that silenced one half would let a run meant to prove the v4 path go over v6
+  and report that it had tested v4, which is worse than not having it. The
+  readiness barrier is not an address and is honoured either way.
 
 - **A candidate that is not an address is declined out loud.** Peers anonymise
   host candidates behind a `.local` name that only multicast resolution
