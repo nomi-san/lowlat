@@ -334,6 +334,12 @@ pub struct Config {
     /// admits guests and sends them nothing. Absent is what the seam's own
     /// tests use, so they need neither a thread nor a device.
     pub stream: Option<crate::stream::Config>,
+    /// Where a guest's microphone goes.
+    ///
+    /// **Absent for a host that has nobody to hand it to.** The setting that
+    /// says a microphone is accepted lives with the rest of sound; this is the
+    /// other half of it, the place the samples are put once decoded.
+    pub microphone: Option<crate::microphone::Sender>,
     /// Whether one guest at a time may drive the pointer
     /// ([`crate::floor`]). Off by default: one person driving is a
     /// configuration, not a law.
@@ -787,12 +793,14 @@ impl Admission {
         let permissions = attempt.peer.permissions;
         let owner = attempt.peer.owner;
         let rumble_probe = self.config.rumble_probe;
+        let microphone = self.config.microphone.clone();
 
         let guest = Guest::spawn(wake, move |wake, running| {
             run_guest(
                 Attached {
                     attempt_id,
                     emit,
+                    microphone,
                     socket,
                     servers,
                     arrivals,
@@ -1079,9 +1087,9 @@ impl Admission {
     }
 
     /// Change what sound is set to, while a host runs.
-    pub fn set_audio(&self, on: bool, allow_raw: bool, kbps: u32, live: &lowlat_audio::Live) {
+    pub fn set_audio(&self, settings: &crate::stream::SoundSettings) {
         if let Some(stream) = self.stream.as_ref() {
-            stream.set_audio(on, allow_raw, kbps, live);
+            stream.set_audio(settings);
         }
     }
 
@@ -1089,7 +1097,7 @@ impl Admission {
     ///
     /// **Asked of the stream rather than remembered here**, which is what makes
     /// a read-back the host's answer rather than a copy of the last call.
-    pub fn audio(&self) -> (bool, bool, u32, lowlat_audio::Live) {
+    pub fn audio(&self) -> crate::stream::SoundSettings {
         self.stream
             .as_ref()
             .map_or_else(Default::default, crate::stream::Stream::audio)
@@ -1131,6 +1139,8 @@ struct Attached {
     asked: mpsc::Receiver<Ask>,
     /// Where this guest publishes what it is doing.
     telemetry: Arc<Telemetry>,
+    /// Where a guest's microphone goes, when this host takes one.
+    microphone: Option<crate::microphone::Sender>,
     ours: (String, String),
     theirs: (String, String),
     /// The 256-bit key and the four-byte nonce prefix that follows it.
@@ -1235,15 +1245,30 @@ const fn moves_the_pointer(opcode: u8) -> bool {
     )
 }
 
+/// Where a taken message goes, beyond the parts that steer input.
+///
+/// **Bundled because they arrive together and mean nothing apart**: what was
+/// counted, what the application is told, and what a guest's microphone is
+/// decoded into.
+struct Consumers<'a> {
+    count: &'a mut u64,
+    said: &'a mut dyn FnMut((u32, Vec<u8>)),
+    ear: Option<&'a mut crate::microphone::Ear>,
+}
+
 fn drain_control<S: lowlat_inject::event::Sink>(
     session: &mut Session<'_>,
     negotiation: &mut Negotiation,
     mut input: Option<&mut Input<S>>,
     pointer: Pointer<'_>,
     inbound: &mut [u8],
-    count: &mut u64,
-    said: &mut impl FnMut((u32, Vec<u8>)),
+    consumers: Consumers<'_>,
 ) -> Result<(), Outcome> {
+    let Consumers {
+        count,
+        said,
+        mut ear,
+    } = consumers;
     loop {
         let Some(taken) = session.take_message(CONTROL_CHANNEL, inbound) else {
             return Ok(());
@@ -1273,6 +1298,12 @@ fn drain_control<S: lowlat_inject::event::Sink>(
         // to the application and to nothing else here.
         if let Some((id, text)) = control::user_data(&message) {
             said((id, text.to_vec()));
+        }
+        // **A guest's microphone, when this host said it would take one.**
+        // Absent when it did not, so nothing is decoded for a stream nobody
+        // asked for.
+        if let Some(ear) = ear.as_deref_mut() {
+            ear.hear(&message);
         }
         // **Two consumers, one channel, and no opcode belongs to both.** Each
         // ignores what the other handles, which is why both are offered every
@@ -1749,6 +1780,12 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     let mut kicked: Option<(i32, f64)> = None;
     let mut inbound_messages: u64 = 0;
     let mut sent: u64 = 0;
+    // A guest's microphone, built when this host says it will take one and
+    // dropped when it stops. **Nothing is decoded while it is absent.**
+    let mut ear: Option<crate::microphone::Ear> = None;
+    // What the peer has been told about it, so it is told once and again only
+    // when the answer changes.
+    let mut announced: Option<bool> = None;
     // What sound has cost this guest, and what its channel is carrying.
     let mut sound = AudioSent::default();
     let mut sound_rate = Throughput::default();
@@ -1915,13 +1952,16 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                     now_ms: now,
                 },
                 &mut inbound,
-                &mut inbound_messages,
-                &mut |(id, text)| {
-                    args.emit.send(Event::UserData {
-                        guest: args.guest,
-                        id,
-                        text,
-                    });
+                Consumers {
+                    count: &mut inbound_messages,
+                    said: &mut |(id, text)| {
+                        args.emit.send(Event::UserData {
+                            guest: args.guest,
+                            id,
+                            text,
+                        });
+                    },
+                    ear: ear.as_mut(),
                 },
             )
         {
@@ -2145,6 +2185,42 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 .send_message(CONTROL_CHANNEL, message, &[]);
         }
 
+        // **A peer sends no microphone audio until it is told it may.** Told
+        // once when a seat exists, and again whenever the answer changes: a
+        // host that stops taking one and says nothing leaves a peer sending
+        // into a channel nobody reads.
+        if seat.is_some() {
+            let accepting = seat
+                .as_ref()
+                .is_some_and(crate::stream::SeatHold::accept_microphone);
+            if announced != Some(accepting) {
+                let (id, body) = crate::microphone::announcement(accepting);
+                send_said(
+                    shell.endpoint().session(),
+                    &Said {
+                        opcode: control::op::USER_DATA,
+                        a1: id,
+                        body,
+                    },
+                );
+                announced = Some(accepting);
+                lowlat_common::log_info!(
+                    "guest: attempt={} microphone accepted={accepting}",
+                    args.attempt_id
+                );
+            }
+            // Built on the first pass that wants it, and given back when it is
+            // no longer wanted, which also frees the codec's state.
+            if accepting && ear.is_none() {
+                ear = args
+                    .microphone
+                    .clone()
+                    .and_then(|out| crate::microphone::Ear::new(args.guest, out));
+            } else if !accepting && ear.is_some() {
+                ear = None;
+            }
+        }
+
         // **Whatever the application asked to be sent, before anything else
         // this pass.** It is rare and small; draining it here keeps it off the
         // frame path and out of the shell's own closure.
@@ -2254,10 +2330,18 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                     .session()
                     .send_pressure(AUDIO_CHANNEL)
                     .map_or(0.0, |(_, _, bytes)| sound_rate.sample(bytes, now));
+                // **What a guest's microphone delivered, and what it cost.** A
+                // packet the codec refused and one that made it panic are
+                // counted apart: the second is the number that says whether
+                // the containment is doing real work on this peer's traffic.
+                let mic = ear.as_ref().map_or((0, 0, 0), |ear| {
+                    let (refused, panicked) = ear.refused();
+                    (ear.taken(), refused, panicked)
+                });
                 args.telemetry
                     .progressed(now, u32::try_from(sent).unwrap_or(u32::MAX));
                 lowlat_common::log_info!(
-                    "guest: attempt={} frames={sent} window={window} stale={stale} mbps={measured:.2} encode_ms={:.2} rx_frag={rx} rx_msg={inbound_messages} dg_in={} dg_out={} rej={} srtt={:.1} keys={} btn={} wheel={} motion={} pad={} snd={} snd_drop={} snd_mbps={sound_mbps:.3}",
+                    "guest: attempt={} frames={sent} window={window} stale={stale} mbps={measured:.2} encode_ms={:.2} rx_frag={rx} rx_msg={inbound_messages} dg_in={} dg_out={} rej={} srtt={:.1} keys={} btn={} wheel={} motion={} pad={} snd={} snd_drop={} snd_mbps={sound_mbps:.3} mic={} mic_refused={} mic_panicked={}",
                     args.attempt_id,
                     seat.encode_latency_ms(),
                     datagrams.datagrams_in,
@@ -2270,7 +2354,10 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                     input_tally.motions,
                     input_tally.pads,
                     sound.packets,
-                    sound.dropped
+                    sound.dropped,
+                    mic.0,
+                    mic.1,
+                    mic.2
                 );
             }
         }
@@ -2367,6 +2454,7 @@ mod tests {
 
     fn admission(max_guests: usize) -> Admission {
         Admission::new(Config {
+            microphone: None,
             exclusive_pointer: false,
             rumble_probe: false,
             exclusive_hold_ms: crate::floor::HOLD_MS,
@@ -2383,6 +2471,7 @@ mod tests {
     #[test]
     fn an_unknown_attempt_is_a_no_op_rather_than_a_fault() {
         let mut seam = Admission::new(Config {
+            microphone: None,
             exclusive_pointer: false,
             rumble_probe: false,
             exclusive_hold_ms: crate::floor::HOLD_MS,
@@ -2505,6 +2594,7 @@ mod tests {
         drop(probe);
 
         let mut seam = Admission::new(Config {
+            microphone: None,
             exclusive_pointer: false,
             rumble_probe: false,
             exclusive_hold_ms: crate::floor::HOLD_MS,
@@ -2939,8 +3029,11 @@ mod geometry {
             input,
             no_pointer(),
             &mut inbound,
-            &mut 0,
-            &mut |_| {},
+            Consumers {
+                count: &mut 0,
+                said: &mut |_| {},
+                ear: None,
+            },
         )
         .expect("drained");
         negotiation
@@ -3034,8 +3127,11 @@ mod geometry {
             Some(input),
             pointer,
             &mut inbound,
-            &mut 0,
-            &mut |_| {},
+            Consumers {
+                count: &mut 0,
+                said: &mut |_| {},
+                ear: None,
+            },
         )
         .expect("drained");
     }
@@ -3250,6 +3346,7 @@ mod geometry {
     #[test]
     fn an_application_message_to_nobody_reaches_nobody() {
         let mut seam = Admission::new(Config {
+            microphone: None,
             exclusive_pointer: false,
             rumble_probe: false,
             exclusive_hold_ms: crate::floor::HOLD_MS,
@@ -3315,8 +3412,11 @@ mod geometry {
             NO_INPUT,
             no_pointer(),
             &mut inbound,
-            &mut 0,
-            &mut |_| {},
+            Consumers {
+                count: &mut 0,
+                said: &mut |_| {},
+                ear: None,
+            },
         )
         .expect("drained");
 
@@ -3449,8 +3549,11 @@ mod geometry {
                 NO_INPUT,
                 no_pointer(),
                 &mut inbound,
-                &mut 0,
-                &mut |_| {}
+                Consumers {
+                    count: &mut 0,
+                    said: &mut |_| {},
+                    ear: None,
+                }
             ),
             Err(Outcome::ControlStalled),
             "a message that cannot be taken was not reported"
@@ -3477,6 +3580,7 @@ mod reclamation {
         drop(probe);
 
         let mut seam = Admission::new(Config {
+            microphone: None,
             exclusive_pointer: false,
             rumble_probe: false,
             exclusive_hold_ms: crate::floor::HOLD_MS,

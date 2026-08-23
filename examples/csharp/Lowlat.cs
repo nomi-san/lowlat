@@ -144,7 +144,7 @@ internal struct HostAudioConfig
     public byte EnabledByte;
     public byte AllowUncompressedByte;
     public byte MuteLocalByte;
-    private byte reserved0;
+    public byte AcceptMicrophoneByte;
 
     public bool Enabled
     {
@@ -155,6 +155,14 @@ internal struct HostAudioConfig
     {
         get => AllowUncompressedByte != 0;
         set => AllowUncompressedByte = value ? (byte)1 : (byte)0;
+    }
+    /// Whether a guest's microphone is taken. **Off by default, and it is the
+    /// switch a guest waits on**: a peer sends nothing until this host says it
+    /// will take one.
+    public bool AcceptMicrophone
+    {
+        get => AcceptMicrophoneByte != 0;
+        set => AcceptMicrophoneByte = value ? (byte)1 : (byte)0;
     }
     public bool MuteLocal
     {

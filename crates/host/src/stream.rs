@@ -133,6 +133,8 @@ struct SoundCells {
     allow_raw: AtomicU32,
     /// What the compressed form is encoded at.
     kbps: AtomicU32,
+    /// Whether a guest's microphone is taken.
+    accept_mic: AtomicU32,
 }
 
 impl SoundCells {
@@ -143,8 +145,23 @@ impl SoundCells {
             on: AtomicU32::new(u32::from(config.audio_on && config.audio.is_some())),
             allow_raw: AtomicU32::new(u32::from(config.allow_raw_audio)),
             kbps: AtomicU32::new(config.audio_kbps),
+            accept_mic: AtomicU32::new(u32::from(config.accept_microphone)),
         }
     }
+}
+
+/// What sound is set to, in both directions.
+///
+/// **One structure rather than a handful of arguments**, because every one of
+/// these is live and they are read and written together; a call that took them
+/// positionally would be four booleans at the call site inside a month.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SoundSettings {
+    pub on: bool,
+    pub allow_raw: bool,
+    pub kbps: u32,
+    pub accept_microphone: bool,
+    pub live: lowlat_audio::Live,
 }
 
 /// One guest's place on the stream.
@@ -579,6 +596,11 @@ impl Shared {
         self.sound.kbps.load(Ordering::Relaxed)
     }
 
+    /// Whether a guest's microphone is taken.
+    pub(crate) fn accept_microphone(&self) -> bool {
+        self.sound.accept_mic.load(Ordering::Relaxed) != 0
+    }
+
     /// Change what sound is set to, while it runs.
     pub(crate) fn set_sound(&self, on: bool, allow_raw: bool, kbps: u32) {
         self.sound.on.store(u32::from(on), Ordering::Relaxed);
@@ -586,6 +608,13 @@ impl Shared {
             .allow_raw
             .store(u32::from(allow_raw), Ordering::Relaxed);
         self.sound.kbps.store(kbps.max(1), Ordering::Relaxed);
+    }
+
+    /// The same for the uplink, which is a separate decision.
+    pub(crate) fn set_accept_microphone(&self, accept: bool) {
+        self.sound
+            .accept_mic
+            .store(u32::from(accept), Ordering::Relaxed);
     }
 
     /// What the room's sound costs, across every guest listening to it.
@@ -819,6 +848,12 @@ pub struct Config {
     /// A failure to open it is not a failure to host: sound goes off, the
     /// reason is logged once, and the session runs.
     pub audio: Option<lowlat_audio::Config>,
+    /// Whether a guest's microphone is taken.
+    ///
+    /// **Off by default and its own decision.** Taking one means accepting a
+    /// packet every ten milliseconds on the channel the control messages share
+    /// -- and telling the peer we will, without which it sends nothing at all.
+    pub accept_microphone: bool,
     /// Whether sound is switched on.
     ///
     /// **Separate from having a source, because this one is live.** Switching
@@ -1009,19 +1044,23 @@ impl Stream {
     /// **Every one of these is live.** Turning sound off gives the device back
     /// and restores the speakers, exactly as the last guest leaving does; the
     /// rest are read on the frame that uses them.
-    pub fn set_audio(&self, on: bool, allow_raw: bool, kbps: u32, live: &lowlat_audio::Live) {
-        self.shared.set_sound(on, allow_raw, kbps);
-        self.shared.sound_wanted().set(live);
+    pub fn set_audio(&self, settings: &SoundSettings) {
+        self.shared
+            .set_sound(settings.on, settings.allow_raw, settings.kbps);
+        self.shared
+            .set_accept_microphone(settings.accept_microphone);
+        self.shared.sound_wanted().set(&settings.live);
     }
 
     /// What sound is set to now.
-    pub fn audio(&self) -> (bool, bool, u32, lowlat_audio::Live) {
-        (
-            self.shared.sound_on(),
-            self.shared.sound_allow_raw(),
-            self.shared.sound_kbps(),
-            self.shared.sound_wanted().read(),
-        )
+    pub fn audio(&self) -> SoundSettings {
+        SoundSettings {
+            on: self.shared.sound_on(),
+            allow_raw: self.shared.sound_allow_raw(),
+            kbps: self.shared.sound_kbps(),
+            accept_microphone: self.shared.accept_microphone(),
+            live: self.shared.sound_wanted().read(),
+        }
     }
 
     /// What sound is **doing** now: whether a device is being read, and which.
@@ -1245,6 +1284,15 @@ impl SeatHold {
     /// reads this rather than remembering what the peer asked for.
     pub fn audio_raw(&self) -> bool {
         self.shared.seat_raw(self.index).unwrap_or(false)
+    }
+
+    /// Whether this host is taking a guest's microphone.
+    ///
+    /// **Read every pass rather than latched**, because it is live: a host
+    /// that stops taking one has to tell the peer, and a peer that was never
+    /// told keeps its microphone muted.
+    pub fn accept_microphone(&self) -> bool {
+        self.shared.accept_microphone()
     }
 
     /// Say which encoding this guest asked for.
@@ -3273,6 +3321,7 @@ mod tests {
         let stream = Stream::start(Config {
             audio: None,
             audio_on: false,
+            accept_microphone: false,
             audio_kbps: 128,
             allow_raw_audio: false,
             output: None,
@@ -3408,6 +3457,7 @@ mod tests {
             let config = Config {
                 audio: None,
                 audio_on: false,
+                accept_microphone: false,
                 audio_kbps: 128,
                 allow_raw_audio: false,
                 output: None,
@@ -3529,6 +3579,7 @@ mod tests {
         Config {
             audio: None,
             audio_on: false,
+            accept_microphone: false,
             audio_kbps: 128,
             allow_raw_audio: false,
             output: None,
@@ -4941,6 +4992,7 @@ mod tests {
         let stream = Stream::start(Config {
             audio: None,
             audio_on: false,
+            accept_microphone: false,
             audio_kbps: 128,
             allow_raw_audio: false,
             output: None,
@@ -5012,6 +5064,7 @@ mod tests {
         let stream = Stream::start(Config {
             audio: None,
             audio_on: false,
+            accept_microphone: false,
             audio_kbps: 128,
             allow_raw_audio: false,
             output: None,
@@ -5073,6 +5126,7 @@ mod tests {
         let stream = Stream::start(Config {
             audio: None,
             audio_on: false,
+            accept_microphone: false,
             audio_kbps: 128,
             allow_raw_audio: false,
             output: None,

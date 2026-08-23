@@ -14,6 +14,7 @@ pub mod events;
 pub mod floor;
 pub mod frames;
 pub mod gate;
+pub mod microphone;
 pub mod rate;
 pub mod session;
 pub mod stock;

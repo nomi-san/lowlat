@@ -101,6 +101,43 @@ fn flag_set(name: &str) -> bool {
 /// the environment answers -- which is right when the daemon runs inside the
 /// session and wrong nowhere else, since a machine with no sound server simply
 /// reports that it has none.
+/// Say what a guest's microphone delivered, once a second while it does.
+///
+/// **A count and a rate rather than every packet.** A hundred lines a second
+/// says nothing that one line a second does not, and it buries the rest of the
+/// log while it does it.
+fn report_microphone(heard: &lowlat::microphone::Receiver) {
+    let mut samples = [0i16; 960];
+    let mut packets = 0u64;
+    let mut lost = 0u64;
+    let mut loudest = 0i16;
+    let mut said = lowlat_common::clock::Time::now();
+    loop {
+        match heard.recv_timeout_into(std::time::Duration::from_millis(500), &mut samples) {
+            lowlat::microphone::Taken::Empty => {}
+            lowlat::microphone::Taken::Took {
+                guest,
+                samples: count,
+                dropped,
+            } => {
+                packets += 1;
+                lost += u64::from(dropped);
+                loudest = samples
+                    .iter()
+                    .take(count)
+                    .fold(loudest, |peak, sample| peak.max(sample.saturating_abs()));
+                if lowlat_common::clock::elapsed_ms(said) >= 1000.0 {
+                    said = lowlat_common::clock::Time::now();
+                    lowlat_common::log_info!(
+                        "lowlatd: microphone from guest {guest}, packets={packets} dropped={lost} samples={count} peak={loudest}"
+                    );
+                    loudest = 0;
+                }
+            }
+        }
+    }
+}
+
 fn audio_config() -> Option<lowlat_audio::Config> {
     if flag_set("--no-audio") {
         return None;
@@ -329,7 +366,18 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .and_then(|text| text.parse().ok())
         .filter(|level| *level < 3)
         .unwrap_or(1);
+    // **Drained by a thread of its own, which is what an application does with
+    // it.** The daemon has nothing to play a guest's microphone into, so it
+    // reports what arrived: that is the whole of what a live run needs to see.
+    let (hear, heard) = lowlat::microphone::queue();
+    if flag_set("--accept-microphone") {
+        std::thread::Builder::new()
+            .name("lowlat-mic".to_owned())
+            .spawn(move || report_microphone(&heard))
+            .ok();
+    }
     let mut seam = Admission::new(Config {
+        microphone: Some(hear),
         exclusive_pointer,
         // The figure the pointer arbitration was tuned to. A flag exists so a
         // two-guest run can try another without a rebuild.
@@ -351,6 +399,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             // while it runs: no source means no sound, and there is nothing
             // here that could turn it back on.
             audio_on: !flag_set("--no-audio"),
+            // **Off unless asked for**, like the boundary's own default: it
+            // costs a packet every ten milliseconds on the control channel and
+            // a peer is told to send one only because this said so.
+            accept_microphone: flag_set("--accept-microphone"),
             audio: audio_config(),
             codec,
             backend,

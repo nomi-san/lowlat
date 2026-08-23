@@ -489,6 +489,16 @@ pub struct lowlat_host_audio_config {
     /// device can change under a running host, but the mute is not performed
     /// while the device is of that kind.
     pub mute_local: bool,
+    /// Whether a guest's microphone is taken.
+    ///
+    /// **Off by default, and it is the switch a guest waits on**: a peer sends
+    /// no microphone audio until this host says it will take it, so nothing
+    /// arrives while this is clear however the guest has configured itself.
+    ///
+    /// It costs a packet every ten milliseconds on the channel that carries
+    /// control messages, which is why it is a decision rather than something
+    /// switched on by polling for it.
+    pub accept_microphone: bool,
     pub reserved: [u8; 1],
     /// Which device to capture, by an identity from the enumeration. **Empty
     /// means the default output's monitor**, followed as the default changes.
@@ -830,6 +840,13 @@ pub struct lowlat {
     events: crate::events::Receiver,
     /// The other end, handed to each host as it starts.
     raise: crate::events::Sender,
+    /// **A queue of its own, for the reason the events one is separate from
+    /// everything else**: a hundred packets a second of sound sharing a bounded
+    /// queue with control events would evict the events
+    /// ([06 §13](../../../docs/06-api.md)).
+    heard: crate::microphone::Receiver,
+    /// The other end, handed to each host as it starts.
+    hear: crate::microphone::Sender,
 }
 
 impl lowlat {
@@ -865,11 +882,14 @@ pub unsafe extern "C" fn lowlat_create(
             return LOWLAT_ERR_INVALID_ARGUMENT;
         }
         let (raise, events) = crate::events::queue();
+        let (hear, heard) = crate::microphone::queue();
         let handle = Box::new(lowlat {
             poisoned: AtomicBool::new(false),
             held: std::sync::Mutex::new(Held { seam: None }),
             events,
             raise,
+            heard,
+            hear,
         });
         unsafe { out.write(Box::into_raw(handle)) };
         LOWLAT_OK
@@ -913,6 +933,8 @@ fn taken(from: &[c_char]) -> Option<&str> {
 /// and a value nothing defined is refused here instead of becoming a variant
 /// that does not exist.
 fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
+    // The microphone queue is the handle's, so the caller fills it in: this
+    // builds what the configuration alone can say.
     let codec = match cfg.codec {
         code if code == lowlat_codec::LOWLAT_CODEC_H264 as u32 => crate::stream::Codec::H264,
         code if code == lowlat_codec::LOWLAT_CODEC_HEVC as u32 => crate::stream::Codec::H265,
@@ -975,6 +997,7 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
     let (sound_on, allow_raw, audio_kbps, audio_live) = audio_configured(&cfg.audio)?;
 
     Some(crate::admission::Config {
+        microphone: None,
         base_port: cfg.base_port,
         // Not on the boundary yet: no application has asked to offer shared
         // address space, and a field nobody sets is a field nobody tests.
@@ -995,6 +1018,7 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
             // from the starting value would make `enabled` the one field of
             // this structure that is not live.
             audio_on: sound_on,
+            accept_microphone: cfg.audio.accept_microphone,
             audio: Some(lowlat_audio::Config {
                 server: None,
                 wanted: std::sync::Arc::new(lowlat_audio::Wanted::new(audio_live)),
@@ -1052,6 +1076,8 @@ fn video_configured(cfg: &lowlat_host_video_config) -> Option<crate::stream::Liv
 fn audio_configured(
     cfg: &lowlat_host_audio_config,
 ) -> Option<(bool, bool, u32, lowlat_audio::Live)> {
+    // The microphone is read by the caller straight off the structure: it is
+    // the one field here that does not describe what this host sends.
     if (cfg.size as usize) < core::mem::size_of::<lowlat_host_audio_config>() {
         return None;
     }
@@ -1103,9 +1129,10 @@ pub unsafe extern "C" fn lowlat_host_start(
             if held.seam.is_some() {
                 return LOWLAT_ERR_ALREADY_STARTED;
             }
-            let Some(config) = configured(cfg) else {
+            let Some(mut config) = configured(cfg) else {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             };
+            config.microphone = Some(handle.hear.clone());
             // **Raising into the handle's queue rather than its own**, so a
             // host starting and stopping does not take the queue with it.
             held.seam = Some(crate::admission::Admission::raising(
@@ -2006,7 +2033,13 @@ pub unsafe extern "C" fn lowlat_host_set_audio_config(
             let Some(seam) = held.seam.as_ref() else {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             };
-            seam.set_audio(on, allow_raw, kbps, &live);
+            seam.set_audio(&crate::stream::SoundSettings {
+                on,
+                allow_raw,
+                kbps,
+                accept_microphone: cfg.accept_microphone,
+                live,
+            });
             LOWLAT_OK
         })
     }
@@ -2045,13 +2078,17 @@ pub unsafe extern "C" fn lowlat_host_get_audio_config(
             let Some(seam) = held.seam.as_ref() else {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             };
-            let (on, allow_raw, kbps, live) = seam.audio();
-            slot.enabled = on;
-            slot.allow_uncompressed = allow_raw;
-            slot.bitrate_kbps = kbps;
-            slot.mute_local = live.mute_local;
+            let settings = seam.audio();
+            slot.enabled = settings.on;
+            slot.allow_uncompressed = settings.allow_raw;
+            slot.bitrate_kbps = settings.kbps;
+            slot.mute_local = settings.live.mute_local;
+            slot.accept_microphone = settings.accept_microphone;
             slot.reserved = [0; 1];
-            put(&mut slot.device, live.device.as_deref().unwrap_or_default());
+            put(
+                &mut slot.device,
+                settings.live.device.as_deref().unwrap_or_default(),
+            );
             LOWLAT_OK
         })
     }
@@ -2127,6 +2164,104 @@ pub unsafe extern "C" fn lowlat_host_stop(ll: *mut lowlat) -> lowlat_status {
             // down is still worth polling.
             handle.held().seam = None;
             LOWLAT_OK
+        })
+    }
+}
+
+/// Samples one microphone packet can carry.
+///
+/// **What a buffer must hold**, not what a packet usually is: a peer sends ten
+/// milliseconds and this is twice that, because the length is the peer's to
+/// write and a receiver sizes its own work.
+pub const LOWLAT_MICROPHONE_SAMPLES_MAX: u32 = 960;
+
+/// Samples a second a microphone packet carries, and its channel count.
+pub const LOWLAT_MICROPHONE_SAMPLE_RATE: u32 = 48_000;
+pub const LOWLAT_MICROPHONE_CHANNELS: u32 = 1;
+
+/// Take one packet of a guest's microphone, waiting up to `timeout_ms`.
+///
+/// **Its own poll, not the event queue.** A hundred packets a second sharing
+/// that queue would evict the events it is there to deliver, so sound has a
+/// queue of its own and an application that wants both polls both.
+///
+/// **Always samples, never a codec.** A guest chooses how it encodes and this
+/// library decodes whichever it chose: sixteen-bit, mono, at
+/// [`LOWLAT_MICROPHONE_SAMPLE_RATE`]. `samples` must hold
+/// [`LOWLAT_MICROPHONE_SAMPLES_MAX`] of them; a packet cannot be larger, so
+/// there is no partial delivery and nothing to call back for.
+///
+/// Answers [`LOWLAT_TIMEOUT`] when nothing arrived, which is not an error, and
+/// [`LOWLAT_ERR_NOT_STARTED`] when this host is not taking microphones: it
+/// does nothing in that case rather than waiting out a timeout for sound that
+/// by construction cannot come. Set `accept_microphone` in
+/// [`lowlat_host_audio_config`] to take one; it is off by default, and until
+/// it is on a peer keeps its microphone muted and sends nothing.
+///
+/// `count` carries the buffer's capacity in samples in, and how many were
+/// written out. `guest` receives which guest sent it, and `dropped` how many
+/// packets were lost to a queue nobody was draining -- reported with the next
+/// delivery, which is the only place it can be.
+///
+/// # Safety
+///
+/// `samples` points to at least `*count` samples, and `count`, `guest` and
+/// `dropped` are readable and writable. `guest` and `dropped` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_poll_microphone(
+    ll: *mut lowlat,
+    timeout_ms: u32,
+    samples: *mut i16,
+    count: *mut u32,
+    guest: *mut u32,
+    dropped: *mut u32,
+) -> lowlat_status {
+    unsafe {
+        entered(ll, |handle| {
+            if samples.is_null() || count.is_null() {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let capacity = count.read() as usize;
+            if capacity < LOWLAT_MICROPHONE_SAMPLES_MAX as usize {
+                count.write(LOWLAT_MICROPHONE_SAMPLES_MAX);
+                return LOWLAT_ERR_TOO_SMALL;
+            }
+            // **Refused rather than waited out.** A host that is not taking
+            // microphones will never have one, and blocking a caller's timeout
+            // to tell it nothing would read as sound that is merely late.
+            let taking = handle
+                .held()
+                .seam
+                .as_ref()
+                .is_some_and(|seam| seam.audio().accept_microphone);
+            if !taking {
+                count.write(0);
+                return LOWLAT_ERR_NOT_STARTED;
+            }
+            let buffer = core::slice::from_raw_parts_mut(samples, capacity);
+            match handle
+                .heard
+                .recv_timeout_into(Duration::from_millis(u64::from(timeout_ms)), buffer)
+            {
+                crate::microphone::Taken::Empty => {
+                    count.write(0);
+                    LOWLAT_TIMEOUT
+                }
+                crate::microphone::Taken::Took {
+                    guest: from,
+                    samples: written,
+                    dropped: lost,
+                } => {
+                    count.write(u32::try_from(written).unwrap_or(0));
+                    if !guest.is_null() {
+                        guest.write(from);
+                    }
+                    if !dropped.is_null() {
+                        dropped.write(lost);
+                    }
+                    LOWLAT_OK
+                }
+            }
         })
     }
 }
@@ -2595,6 +2730,7 @@ mod start_tests {
 
     pub(super) fn audio() -> lowlat_host_audio_config {
         lowlat_host_audio_config {
+            accept_microphone: false,
             size: u32::try_from(core::mem::size_of::<lowlat_host_audio_config>())
                 .unwrap_or(u32::MAX),
             bitrate_kbps: 128,

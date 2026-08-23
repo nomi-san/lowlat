@@ -75,6 +75,18 @@
 // something else. Well above any rate stereo desktop sound is worth.
 #define LOWLAT_AUDIO_KBPS_MAX 512
 
+// Samples one microphone packet can carry.
+//
+// **What a buffer must hold**, not what a packet usually is: a peer sends ten
+// milliseconds and this is twice that, because the length is the peer's to
+// write and a receiver sizes its own work.
+#define LOWLAT_MICROPHONE_SAMPLES_MAX 960
+
+// Samples a second a microphone packet carries, and its channel count.
+#define LOWLAT_MICROPHONE_SAMPLE_RATE 48000
+
+#define LOWLAT_MICROPHONE_CHANNELS 1
+
 // A status code.
 //
 // **An enumeration for the names and a plain integer wherever one is
@@ -421,6 +433,16 @@ typedef struct lowlat_host_audio_config {
     // device can change under a running host, but the mute is not performed
     // while the device is of that kind.
     bool mute_local;
+    // Whether a guest's microphone is taken.
+    //
+    // **Off by default, and it is the switch a guest waits on**: a peer sends
+    // no microphone audio until this host says it will take it, so nothing
+    // arrives while this is clear however the guest has configured itself.
+    //
+    // It costs a packet every ten milliseconds on the channel that carries
+    // control messages, which is why it is a decision rather than something
+    // switched on by polling for it.
+    bool accept_microphone;
     uint8_t reserved[1];
     // Which device to capture, by an identity from the enumeration. **Empty
     // means the default output's monitor**, followed as the default changes.
@@ -1150,6 +1172,41 @@ lowlat_status lowlat_host_get_video_config(struct lowlat *ll,
 //
 // `ll` came from [`lowlat_create`].
 lowlat_status lowlat_host_stop(struct lowlat *ll);
+
+// Take one packet of a guest's microphone, waiting up to `timeout_ms`.
+//
+// **Its own poll, not the event queue.** A hundred packets a second sharing
+// that queue would evict the events it is there to deliver, so sound has a
+// queue of its own and an application that wants both polls both.
+//
+// **Always samples, never a codec.** A guest chooses how it encodes and this
+// library decodes whichever it chose: sixteen-bit, mono, at
+// [`LOWLAT_MICROPHONE_SAMPLE_RATE`]. `samples` must hold
+// [`LOWLAT_MICROPHONE_SAMPLES_MAX`] of them; a packet cannot be larger, so
+// there is no partial delivery and nothing to call back for.
+//
+// Answers [`LOWLAT_TIMEOUT`] when nothing arrived, which is not an error, and
+// [`LOWLAT_ERR_NOT_STARTED`] when this host is not taking microphones: it
+// does nothing in that case rather than waiting out a timeout for sound that
+// by construction cannot come. Set `accept_microphone` in
+// [`lowlat_host_audio_config`] to take one; it is off by default, and until
+// it is on a peer keeps its microphone muted and sends nothing.
+//
+// `count` carries the buffer's capacity in samples in, and how many were
+// written out. `guest` receives which guest sent it, and `dropped` how many
+// packets were lost to a queue nobody was draining -- reported with the next
+// delivery, which is the only place it can be.
+//
+// # Safety
+//
+// `samples` points to at least `*count` samples, and `count`, `guest` and
+// `dropped` are readable and writable. `guest` and `dropped` may be null.
+lowlat_status lowlat_host_poll_microphone(struct lowlat *ll,
+                                          uint32_t timeout_ms,
+                                          int16_t *samples,
+                                          uint32_t *count,
+                                          uint32_t *guest,
+                                          uint32_t *dropped);
 
 // Take one event, waiting up to `timeout_ms` for one to arrive.
 //

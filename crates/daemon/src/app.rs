@@ -696,6 +696,7 @@ mod tests {
     #[test]
     fn an_unknown_sub_identifier_is_not_claimed() {
         let mut seam = super::Admission::new(lowlat::admission::Config {
+            microphone: None,
             exclusive_pointer: false,
             rumble_probe: false,
             exclusive_hold_ms: lowlat::floor::HOLD_MS,
