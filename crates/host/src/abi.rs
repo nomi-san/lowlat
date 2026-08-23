@@ -1948,6 +1948,20 @@ pub unsafe extern "C" fn lowlat_host_set_audio_config(
             let Some((on, allow_raw, kbps, live)) = audio_configured(cfg) else {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             };
+            // **A named device is checked here rather than where it is
+            // opened.** A sound server substitutes something plausible for a
+            // name it does not know, so a caller told yes would be capturing
+            // something it did not ask for; and the loop that opens it cannot
+            // refuse a call that has already returned. Checked before the
+            // handle is locked, because it asks the server over a connection
+            // of its own.
+            if let Some(device) = live.device.as_deref()
+                && !lowlat_audio::outputs(None)
+                    .is_ok_and(|listed| listed.iter().any(|output| output.id == device))
+            {
+                lowlat_common::log_warn!("abi: no such sound device, sound is unchanged");
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
             let held = handle.held();
             let Some(seam) = held.seam.as_ref() else {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
