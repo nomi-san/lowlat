@@ -2018,6 +2018,14 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   rungs above the minimum were reportable on a path that could only carry them
   in pieces.
 
+- **`--no-ipv6`, so the v4 path stays testable on a machine that has v6.** The
+  punch has no family preference and the first candidate to answer wins, so a
+  host offering both families runs a race rather than a test -- observed twice
+  with one peer, which took v4 on one attempt and v6 on the next. The switch
+  drops the v6 host candidates **and** the v6 reflexive servers, because
+  dropping only the first leaves a server that answers with a v6 candidate in
+  their place and the run reports the opposite of what happened.
+
 - **A candidate that is not an address is declined out loud.** Peers anonymise
   host candidates behind a `.local` name that only multicast resolution
   answers. None is resolved, which is correct, but a candidate silently dropped
