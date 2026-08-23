@@ -40,6 +40,20 @@ pub enum Woke {
     Send,
 }
 
+/// Which descriptors the wait reported on.
+///
+/// **Not `POLLIN` alone.** An error or hangup bit is also a condition to go and
+/// collect, and it is cleared by the syscall that collects it. A pass that saw
+/// one and skipped the syscall would poll again immediately on the same
+/// unconsumed bit, and again, which is a spin rather than the saved call it was
+/// meant to be. Anything poll says about a descriptor sends the pass to it;
+/// only silence is skipped.
+#[derive(Debug, Default, Clone, Copy)]
+struct Ready {
+    socket: bool,
+    wake: bool,
+}
+
 /// What one pass did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Turn {
@@ -122,10 +136,10 @@ impl<'a> Shell<'a> {
 
     /// One pass of the loop.
     ///
-    /// `app` is called once the wake has been taken, to pull whatever the
-    /// application has enqueued. Input is pulled there before receive
-    /// processing produces any output, because input latency is the one budget
-    /// with a human in it.
+    /// `app` is called on every pass, after the wake has been taken if there
+    /// was one, to pull whatever the application has enqueued. Input is pulled
+    /// there before receive processing produces any output, because input
+    /// latency is the one budget with a human in it.
     pub fn turn(
         &mut self,
         now_ms: f64,
@@ -140,10 +154,22 @@ impl<'a> Shell<'a> {
         // Taken before the application is pulled, never after. Anything
         // enqueued from here on leaves the descriptor armed, so the next wait
         // returns at once rather than sitting out the timeout.
-        let woken_by_send = self.wake.take()?;
+        //
+        // Asked only when poll reported it. An eventfd with nothing pending
+        // answers EAGAIN and a socket with nothing queued answers the same, so
+        // a pass that asks both regardless spends two syscalls on every quiet
+        // wake to be told what poll already said. **The application is pulled
+        // either way**: a ring can be filled by a producer whose notify has
+        // not landed yet, and gating that on the wake would hold the work
+        // until the next one.
+        let woken_by_send = if ready.wake { self.wake.take()? } else { false };
         app(&mut self.endpoint);
 
-        let received = self.receive(now_ms)?;
+        let received = if ready.socket {
+            self.receive(now_ms)?
+        } else {
+            0
+        };
         self.endpoint.poll(now_ms);
         let sent = self.drain(now_ms)?;
 
@@ -157,7 +183,6 @@ impl<'a> Shell<'a> {
             self.stats.timeout_wakes += 1;
             Woke::Timeout
         };
-        let _ = ready;
 
         self.stats.datagrams_in += received as u64;
         self.stats.datagrams_out += sent as u64;
@@ -169,7 +194,10 @@ impl<'a> Shell<'a> {
     }
 
     /// Wait for either descriptor, or the deadline.
-    fn wait(&self, timeout_ms: f64) -> io::Result<bool> {
+    ///
+    /// Reports which descriptors poll spoke about rather than a bare "something
+    /// happened", so the pass can leave the quiet ones alone.
+    fn wait(&self, timeout_ms: f64) -> io::Result<Ready> {
         #[allow(
             clippy::cast_possible_truncation,
             reason = "clamped to the wait bounds by the caller"
@@ -190,14 +218,24 @@ impl<'a> Shell<'a> {
         // SAFETY: two fully initialised descriptors are passed with a matching
         // count.
         let rc = unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout) };
-        if rc < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                return Ok(false);
+        if rc <= 0 {
+            if rc < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() != io::ErrorKind::Interrupted {
+                    return Err(error);
+                }
             }
-            return Err(error);
+            // Quiet, and on the interrupted path the reported events are not
+            // meaningful either. An interrupt is not a failure and nothing is
+            // lost by treating it as quiet: whatever was pending is still
+            // pending, and the descriptor is still armed for the next pass.
+            return Ok(Ready::default());
         }
-        Ok(rc > 0)
+        let [socket, wake] = fds;
+        Ok(Ready {
+            socket: socket.revents != 0,
+            wake: wake.revents != 0,
+        })
     }
 
     /// Pull every queued datagram and hand each to the endpoint.
@@ -435,6 +473,51 @@ mod tests {
             "the loop waited out its deadline instead of waking"
         );
         assert_eq!(shell.stats().send_wakes, 1);
+    }
+
+    /// The pull is not gated on the wake, and a quiet pass must still make it.
+    ///
+    /// A producer can fill a ring and have its notify land after the wait
+    /// returned, so a pass that asked the application only when the wake fired
+    /// would hold that work until the next deadline. This is the one thing the
+    /// readiness gating must not reach.
+    #[test]
+    fn a_quiet_pass_still_pulls_the_application() {
+        let mut arena = Arena::new();
+        let mut shell = shell(&mut arena, LEFT, RIGHT, 0xA1);
+
+        let mut pulled = 0;
+        let turn = shell.turn(0.0, |_| pulled += 1).expect("turn");
+
+        assert_eq!(turn.woke, Woke::Timeout, "the pass was not a quiet one");
+        assert_eq!(pulled, 1, "a quiet pass did not pull the application");
+    }
+
+    /// A datagram already queued when the wait returned is collected on that
+    /// same pass.
+    ///
+    /// The bytes are rubbish on purpose: the count is of datagrams taken off
+    /// the socket, before anything parses them, so this reports whether the
+    /// pass went to the socket at all. It is what a receive gated on the wrong
+    /// descriptor's readiness fails.
+    #[test]
+    fn a_queued_datagram_is_received_on_the_pass_it_woke() {
+        let mut arena = Arena::new();
+        let mut shell = shell(&mut arena, LEFT, RIGHT, 0xA1);
+        let to = loopback_of(&shell);
+
+        let sender = Socket::open(0).expect("sender");
+        sender
+            .send_to(b"neither a check nor a record", to)
+            .expect("send");
+
+        let turn = shell.turn(0.0, |_| {}).expect("turn");
+
+        assert_eq!(
+            turn.received, 1,
+            "the pass woke for a datagram and never asked the socket"
+        );
+        assert_eq!(turn.woke, Woke::Datagram);
     }
 
     /// A loop armed from the core's deadline must not wake more often than the
