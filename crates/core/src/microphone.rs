@@ -13,12 +13,20 @@
 
 use crate::error::{Error, Result};
 
-/// Selects the microphone among the virtual devices, in the header's second
+/// Selects the microphone among the virtual devices, in the header's **third**
 /// argument.
+///
+/// **The third, and the count starts at the length.** A control header carries
+/// three arguments before its opcode and the first of them is the body's
+/// declared length, exactly as an application message's is; the two that
+/// select a device follow it. Reading them one position earlier finds the
+/// length where the selector should be and passes over every packet in
+/// silence, which is a peer that looks like it is sending nothing.
 pub const MICROPHONE_SELECTOR: u32 = 0xF055_F055;
 
-/// The header's first argument for a microphone. **Another device uses zero
-/// here**, so it is part of the selection rather than a constant to ignore.
+/// The header's **second** argument for a microphone. **Another device uses
+/// zero here**, so it is part of the selection rather than a constant to
+/// ignore.
 pub const MICROPHONE_ARGUMENT: u32 = 1;
 
 /// The device kind at the head of the body.
@@ -92,19 +100,25 @@ pub struct Packet<'a> {
 
 /// Read a virtual-device message, or `None` when it is a device this is not.
 ///
-/// **The two header arguments select together.** The kind inside the body has
-/// to agree with them, and a body that says one thing while the header says
-/// another is refused rather than believed: they are written by one sender in
-/// one call, so disagreement means the message is not what it claims.
-pub fn parse<'a>(a0: u32, a1: u32, body: &'a [u8]) -> Result<Option<Packet<'a>>> {
-    if a1 != MICROPHONE_SELECTOR {
+/// **The selection is the second and third arguments, not the first two.** The
+/// first is the declared length; `a1` says which device family and `a2` which
+/// device. The kind inside the body has to agree with them, and a body that
+/// says one thing while the header says another is refused rather than
+/// believed: they are written by one sender in one call, so disagreement means
+/// the message is not what it claims.
+pub fn parse<'a>(a0: u32, a1: u32, a2: u32, body: &'a [u8]) -> Result<Option<Packet<'a>>> {
+    if a2 != MICROPHONE_SELECTOR {
         // Another virtual device. Not an error: this multiplexes several and
         // a host answers the ones it implements.
         return Ok(None);
     }
-    if a0 != MICROPHONE_ARGUMENT {
+    if a1 != MICROPHONE_ARGUMENT {
         return Err(Error::Malformed);
     }
+    // **The declared length is the whole body, not the payload.** It bounds
+    // what follows and cannot extend it, the same rule an application message
+    // follows; a sender that declares less than it sent is taken at its word.
+    let body = body.get(..(a0 as usize).min(body.len())).unwrap_or(body);
     let body = body.get(..BODY_LEN).ok_or(Error::ShortPacket)?;
     if le32(body, KIND_AT)? != MICROPHONE_KIND {
         return Err(Error::Malformed);
@@ -169,6 +183,11 @@ fn write32(out: &mut [u8], at: usize, value: u32) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// What a sender declares in the first argument: the whole body.
+    fn declared() -> u32 {
+        u32::try_from(BODY_LEN).expect("a body length")
+    }
+
     fn body_of(packet: &Packet<'_>) -> [u8; BODY_LEN] {
         let mut body = [0u8; BODY_LEN];
         encode(&mut body, packet).expect("a body");
@@ -185,7 +204,7 @@ mod tests {
                 encoding,
             };
             let body = body_of(&packet);
-            let read = parse(MICROPHONE_ARGUMENT, MICROPHONE_SELECTOR, &body)
+            let read = parse(declared(), MICROPHONE_ARGUMENT, MICROPHONE_SELECTOR, &body)
                 .expect("a parse")
                 .expect("a microphone");
             assert_eq!(read, packet);
@@ -220,12 +239,36 @@ mod tests {
         assert_eq!(crate::audio::Codec::from_bits(2), crate::audio::Codec::Pcm);
     }
 
+    /// **The selector is the third argument and the family the second**, and
+    /// reading them one position earlier is silent rather than loud: the
+    /// length lands where the selector was looked for, nothing matches, and
+    /// every packet is passed over as somebody else's device. That is what a
+    /// peer sending its microphone into a host that hears nothing looks like.
+    #[test]
+    fn the_selection_is_the_second_and_third_arguments() {
+        let body = body_of(&Packet {
+            payload: &[1, 2],
+            encoding: Encoding::Raw,
+        });
+        // As a peer really sends it: length, family, selector.
+        assert!(
+            parse(declared(), MICROPHONE_ARGUMENT, MICROPHONE_SELECTOR, &body)
+                .expect("a parse")
+                .is_some()
+        );
+        // Shifted one position earlier, which is the mistake this pins.
+        assert_eq!(
+            parse(MICROPHONE_ARGUMENT, MICROPHONE_SELECTOR, 0, &body),
+            Ok(None)
+        );
+    }
+
     /// Another virtual device is not an error. The opcode carries several and a
     /// host answers what it implements.
     #[test]
     fn another_device_is_passed_over_rather_than_refused() {
         let body = [0u8; BODY_LEN];
-        assert_eq!(parse(0, 0x056A_0357, &body), Ok(None));
+        assert_eq!(parse(declared(), 0, 0x056A_0357, &body), Ok(None));
     }
 
     /// **A length past the body is refused**, which is the field a peer would
@@ -238,7 +281,7 @@ mod tests {
         });
         body[LENGTH_AT..LENGTH_AT + 4].copy_from_slice(&u32::MAX.to_le_bytes());
         assert_eq!(
-            parse(MICROPHONE_ARGUMENT, MICROPHONE_SELECTOR, &body),
+            parse(declared(), MICROPHONE_ARGUMENT, MICROPHONE_SELECTOR, &body),
             Err(Error::Malformed)
         );
         // And one that fits the field but not the payload.
@@ -248,7 +291,7 @@ mod tests {
                 .to_le_bytes(),
         );
         assert_eq!(
-            parse(MICROPHONE_ARGUMENT, MICROPHONE_SELECTOR, &body),
+            parse(declared(), MICROPHONE_ARGUMENT, MICROPHONE_SELECTOR, &body),
             Err(Error::Malformed)
         );
     }
@@ -259,7 +302,7 @@ mod tests {
     fn a_short_body_is_refused() {
         let body = [0u8; BODY_LEN - 1];
         assert_eq!(
-            parse(MICROPHONE_ARGUMENT, MICROPHONE_SELECTOR, &body),
+            parse(declared(), MICROPHONE_ARGUMENT, MICROPHONE_SELECTOR, &body),
             Err(Error::ShortPacket)
         );
     }
@@ -273,7 +316,7 @@ mod tests {
         });
         body[KIND_AT..KIND_AT + 4].copy_from_slice(&14u32.to_le_bytes());
         assert_eq!(
-            parse(MICROPHONE_ARGUMENT, MICROPHONE_SELECTOR, &body),
+            parse(declared(), MICROPHONE_ARGUMENT, MICROPHONE_SELECTOR, &body),
             Err(Error::Malformed)
         );
     }
@@ -287,7 +330,7 @@ mod tests {
         });
         body[LENGTH_AT..LENGTH_AT + 4].copy_from_slice(&3u32.to_le_bytes());
         assert_eq!(
-            parse(MICROPHONE_ARGUMENT, MICROPHONE_SELECTOR, &body),
+            parse(declared(), MICROPHONE_ARGUMENT, MICROPHONE_SELECTOR, &body),
             Err(Error::Malformed)
         );
     }

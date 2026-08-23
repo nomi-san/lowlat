@@ -1254,6 +1254,14 @@ struct Consumers<'a> {
     count: &'a mut u64,
     said: &'a mut dyn FnMut((u32, Vec<u8>)),
     ear: Option<&'a mut crate::microphone::Ear>,
+    /// Which opcodes this peer has been seen to send.
+    ///
+    /// **So that what a peer sends can be read rather than guessed at.** An
+    /// opcode nothing here handles is passed over in silence, which is right --
+    /// the protocol is additive -- but it leaves no way to tell "the peer sent
+    /// nothing" from "the peer sent something we ignored", and those two have
+    /// completely different causes.
+    census: &'a mut [bool; 256],
 }
 
 fn drain_control<S: lowlat_inject::event::Sink>(
@@ -1268,6 +1276,7 @@ fn drain_control<S: lowlat_inject::event::Sink>(
         count,
         said,
         mut ear,
+        census,
     } = consumers;
     loop {
         let Some(taken) = session.take_message(CONTROL_CHANNEL, inbound) else {
@@ -1298,6 +1307,22 @@ fn drain_control<S: lowlat_inject::event::Sink>(
         // to the application and to nothing else here.
         if let Some((id, text)) = control::user_data(&message) {
             said((id, text.to_vec()));
+        }
+        // **Said once per opcode, not once per message.** A peer sends tens of
+        // thousands of these; what is worth a line is the first of each kind.
+        if let Some(first) = census.get_mut(usize::from(message.opcode))
+            && !*first
+        {
+            *first = true;
+            lowlat_common::log_info!(
+                "guest: peer sends {}({}) a0={} a1={} a2={} body={}",
+                control::op::name(message.opcode),
+                message.opcode,
+                message.a0,
+                message.a1,
+                message.a2,
+                message.body.len()
+            );
         }
         // **A guest's microphone, when this host said it would take one.**
         // Absent when it did not, so nothing is decoded for a stream nobody
@@ -1786,6 +1811,8 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     // What the peer has been told about it, so it is told once and again only
     // when the answer changes.
     let mut announced: Option<bool> = None;
+    // What this peer has been seen to send, so the first of each kind says so.
+    let mut census = [false; 256];
     // What sound has cost this guest, and what its channel is carrying.
     let mut sound = AudioSent::default();
     let mut sound_rate = Throughput::default();
@@ -1962,6 +1989,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                         });
                     },
                     ear: ear.as_mut(),
+                    census: &mut census,
                 },
             )
         {
@@ -3033,6 +3061,7 @@ mod geometry {
                 count: &mut 0,
                 said: &mut |_| {},
                 ear: None,
+                census: &mut [false; 256],
             },
         )
         .expect("drained");
@@ -3131,6 +3160,7 @@ mod geometry {
                 count: &mut 0,
                 said: &mut |_| {},
                 ear: None,
+                census: &mut [false; 256],
             },
         )
         .expect("drained");
@@ -3416,6 +3446,7 @@ mod geometry {
                 count: &mut 0,
                 said: &mut |_| {},
                 ear: None,
+                census: &mut [false; 256],
             },
         )
         .expect("drained");
@@ -3553,6 +3584,7 @@ mod geometry {
                     count: &mut 0,
                     said: &mut |_| {},
                     ear: None,
+                    census: &mut [false; 256],
                 }
             ),
             Err(Outcome::ControlStalled),

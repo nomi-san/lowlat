@@ -230,7 +230,7 @@ impl Ear {
         if message.opcode != control::op::VIRTUAL_DEVICE {
             return;
         }
-        let packet = match microphone::parse(message.a0, message.a1, message.body) {
+        let packet = match microphone::parse(message.a0, message.a1, message.a2, message.body) {
             Ok(Some(packet)) => packet,
             Ok(None) => return,
             Err(_) => {
@@ -297,9 +297,9 @@ mod tests {
         let mut ear = Ear::new(7, into).expect("an ear");
         let body = packet(&samples_of(&[1, -2, 3]));
         ear.hear(&Control {
-            a0: microphone::MICROPHONE_ARGUMENT,
-            a1: microphone::MICROPHONE_SELECTOR,
-            a2: 0,
+            a0: u32::try_from(microphone::BODY_LEN).unwrap_or(0),
+            a1: microphone::MICROPHONE_ARGUMENT,
+            a2: microphone::MICROPHONE_SELECTOR,
             opcode: control::op::VIRTUAL_DEVICE,
             body: &body,
         });
@@ -325,9 +325,9 @@ mod tests {
         let mut ear = Ear::new(1, into).expect("an ear");
         let body = vec![0u8; microphone::BODY_LEN];
         ear.hear(&Control {
-            a0: 0,
-            a1: 0x056A_0357,
-            a2: 0,
+            a0: u32::try_from(microphone::BODY_LEN).unwrap_or(0),
+            a1: 0,
+            a2: 0x056A_0357,
             opcode: control::op::VIRTUAL_DEVICE,
             body: &body,
         });
@@ -348,9 +348,9 @@ mod tests {
         for value in 0..(MAX_PACKETS + 3) {
             let body = packet(&samples_of(&[i16::try_from(value).unwrap_or(0)]));
             ear.hear(&Control {
-                a0: microphone::MICROPHONE_ARGUMENT,
-                a1: microphone::MICROPHONE_SELECTOR,
-                a2: 0,
+                a0: u32::try_from(microphone::BODY_LEN).unwrap_or(0),
+                a1: microphone::MICROPHONE_ARGUMENT,
+                a2: microphone::MICROPHONE_SELECTOR,
                 opcode: control::op::VIRTUAL_DEVICE,
                 body: &body,
             });

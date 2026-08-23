@@ -666,13 +666,20 @@ the opcode.
 | Field | Value |
 |---|---|
 | opcode | 32 |
-| argument 0 | `1` |
-| argument 1 | `0xF055F055` |
+| argument 0 | the declared length, `1932` |
+| argument 1 | `1` |
+| argument 2 | `0xF055F055` |
 | body | a fixed 1932 bytes |
 
-**Both arguments select together.** Another device on the same opcode uses `0` in the first, so
-neither alone identifies a microphone, and a body whose own kind disagrees with the header is
-refused rather than believed: one sender writes both in one call.
+**The first argument is the declared length, and the selection is the two after it.** That is the
+same convention an application message follows (§11.2a), and reading the selectors one position
+early finds the length where a selector should be: nothing matches, every packet is passed over
+as another device's, and a peer that is sending a hundred packets a second looks like one sending
+nothing.
+
+**Both selectors select together.** Another device on the same opcode uses `0` where the
+microphone uses `1`, so neither alone identifies it, and a body whose own kind disagrees with the
+header is refused rather than believed: one sender writes both in one call.
 
 The body is little endian and is **the same 1932 bytes whatever it carries**, with the payload's
 real length inside it:

@@ -20,6 +20,7 @@ use lowlat_core::microphone::{self, Encoding, Packet, SAMPLES_MAX};
 fuzz_target!(|data: &[u8]| {
     // The wire half: a body straight off the control channel.
     if let Ok(Some(packet)) = microphone::parse(
+        data.len() as u32,
         microphone::MICROPHONE_ARGUMENT,
         microphone::MICROPHONE_SELECTOR,
         data,
