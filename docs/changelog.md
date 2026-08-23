@@ -1973,6 +1973,38 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   and the original cause is recorded as absent by construction rather than as
   covered. A gate that passes without testing anything is worse than no gate.
 
+## 1: protocol core (2026-08-16)
+
+**Fixed**
+
+- **A group acknowledgement is not a fixed length, and requiring one dropped
+  every acknowledgement a whole peer generation sends.** The count of
+  cumulative entries is the number of channels the *sender* carries: this
+  implementation writes nineteen, and a generation in current use writes four,
+  making its acknowledgement 23 bytes rather than 83. The parser refused
+  anything shorter and the shell discards a parse failure, so those
+  acknowledgements vanished without a log line.
+
+  **It presents as a peer that has stopped receiving**, which is the reading
+  that costs the session: the send window only grows, every fragment goes
+  stale, the scan retransmits the lot -- measured at nine times the payload --
+  and the delivery deadline ends the guest as undeliverable while that peer is
+  decoding perfectly well and saying so in its own latency reports. The same
+  host served a different peer generation on the same build throughout, which
+  is what made it read as a network fault rather than a wire one.
+
+  The count now comes from the packet length, and a channel the sender did not
+  report is treated as unreported rather than as an acknowledgement of nothing:
+  reading an absent entry as a zero does nothing most of the time and, near a
+  sequence wrap, looks like an acknowledgement that never happened.
+
+- **The progress line carries datagrams and the smoothed round trip.**
+  `rx_frag` counts what reached a channel, which an acknowledgement never does,
+  so the line could not tell a peer that had stopped reading from one whose
+  acknowledgements were arriving and being discarded. Both look like a window
+  that only grows. The raw datagram counts separate them, and a round trip that
+  never leaves zero says no acknowledgement was ever applied.
+
 ## 2: connectivity (2026-08-16)
 
 **Fixed**

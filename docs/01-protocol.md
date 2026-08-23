@@ -14,7 +14,7 @@ UDP datagram
   +- record envelope 29 bytes, authenticated encryption (§3, §4)
        +- cleartext packet
             +- data packet    7-byte header + payload  (§5.1)
-            +- group ack      83 bytes fixed           (§5.2)
+            +- group ack      7 + 4n bytes             (§5.2)
                  +- channel stream, reassembled per §7
                       +- control message  13-byte header + body (§11)
 ```
@@ -125,8 +125,18 @@ protocol error.
 
 ### §5.2 Group acknowledgement
 
-Fixed 83 bytes. One packet acknowledges every channel at once, which is why there is no
-per-channel ack traffic.
+83 bytes as this implementation writes one. One packet acknowledges every channel at once,
+which is why there is no per-channel ack traffic.
+
+**The length is not fixed across peers, and a receiver must not require it to be.** The count
+of cumulative entries is the number of channels the *sender* carries, and peer generations
+differ: one in current use sends **four** entries, so its acknowledgement is 23 bytes. A
+receiver that refuses anything shorter than its own length drops every acknowledgement that
+peer sends, and the result is indistinguishable from a peer that has stopped receiving -- a
+send window that only grows, every fragment stale, retransmission of the whole window, and the
+session ended for undeliverability while the peer is decoding perfectly well. Read what is
+present, derive the count from the packet length, and treat a channel the sender did not report
+as unreported rather than as an acknowledgement of nothing.
 
 | Offset | Size | Field |
 |---|---|---|
@@ -134,7 +144,7 @@ per-channel ack traffic.
 | 1 | 1 | flags, `0x02` optionally with `0x10` or `0x08` |
 | 2 | 1 | triggering channel |
 | 3 | 4 | triggering sequence, big endian |
-| 7 | 76 | 19 cumulative acknowledgements, big endian, one per channel |
+| 7 | 4n | n cumulative acknowledgements, big endian, one per channel the sender carries |
 
 Each entry is the next sequence number the sender expects on that channel, so it acknowledges
 everything below it. Acknowledgements are **fire and forget**. They are never placed in a
