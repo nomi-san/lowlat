@@ -28,7 +28,15 @@
 #define LOWLAT_ADDRESS_MAX 46
 
 // The longest output identity carried across this boundary.
-#define LOWLAT_OUTPUT_MAX 64
+//
+// **Sized for the longest kind of identity, which is a device path.** These
+// are not display connector names, which are short: the same bound carries
+// the sound server's own name for a device, where a USB output's serial and
+// profile land it past a hundred characters, and a display identity on
+// Windows is an operating-system device path, which is bounded at 260. A name
+// that does not fit is truncated silently and then resolves to nothing, so
+// the bound is set by the worst case rather than by the observed one.
+#define LOWLAT_OUTPUT_MAX 260
 
 // How many reflexive servers a host may be given, and how long each may be.
 //

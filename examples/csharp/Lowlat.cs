@@ -73,7 +73,7 @@ internal static class Sizes
 {
     public const int Attempt = 128;
     public const int Address = 46;
-    public const int Output = 64;
+    public const int Output = 260;
     public const int Ice = 256;
     public const int Fingerprint = 112;
     public const int Servers = 4;
