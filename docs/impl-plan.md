@@ -1150,7 +1150,15 @@ problem and no code at all.
   **all of them live**, so unlike video there is no settled half and one structure serves as both
   what a host starts with and what the setter takes. Enumeration behind
   `lowlat_get_audio_outputs`, whose identity is the **monitor** of an output rather than the
-  output, because that is the device a host reads.
+  output, because that is the device a host reads. *Live includes a host that started with sound
+  off: having a source and being switched on are two things, or `enabled` is the one field of
+  that structure which is not live.*
+- [x] **And the state beside the settings**, in the host status: whether a device is being read
+  right now and which one it landed on. *The settings are the request. An empty device asks for
+  the default output, and `enabled` goes on saying yes after a capture has died, so neither can
+  answer what sound is doing -- and the settings are not rewritten to the resolved name, or an
+  application that reads them and writes them back would pin a host that was following the
+  default.*
 
 **Gate:**
 

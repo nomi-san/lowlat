@@ -45,6 +45,27 @@ owes is its long-run half.
   only**, never the start -- a host whose sound server is not up yet
   must still be able to stream pictures.
 
+- **Sound could not be switched on by a host that started with it off.**
+  Whether a host had a sound source at all was decided once, from the
+  value `enabled` held at the start, and the switch was the presence of
+  that source -- so `enabled` was the one field of a structure
+  documented as having no settled half that was not live. Having a
+  source and being switched on are two things now: one is decided when
+  the stream is built and cannot change, the other is a setting and can.
+
+- **The boundary reported what was asked for and called it what was
+  happening.** The settings are the request -- `device` is empty for a
+  host following the default output, and `enabled` goes on saying yes
+  after a capture has died -- so the status carries the other half:
+  whether a device is being read right now, and which one it landed on.
+
+  **The settings are not rewritten to the resolved name**, so an
+  application that reads them, changes one field and writes them back
+  does not pin a host that was following the default. And the state is
+  read with a try rather than a wait: the loop holds it while it opens a
+  device, which can take seconds against a server that is not answering,
+  and a caller asking what is happening must not be parked behind that.
+
 - **A sound device held after everybody had gone.** It was taken by the
   loop that waits for a guest and given back by that same loop -- which
   is never reached again, because the encode loop sleeps through an
@@ -185,6 +206,19 @@ owes is its long-run half.
   saying nothing.
 
 ## 8: public C ABI (in progress)
+
+**Fixed**
+
+- **An output identity was bounded by the shortest thing it carries.**
+  Sixty-four bytes is the shape of a display connector name; the same
+  array holds the sound server's own name for a device, which on the
+  development machine is fifty of those sixty-four before any USB serial
+  or profile suffix, and a display identity on Windows is an operating
+  system device path bounded at 260. The failure is silent -- a name
+  that does not fit is truncated, and a truncated name resolves to
+  nothing, so enumeration would hand back an identity that could never
+  be selected. The bound is 260, set by the worst case rather than by
+  the observed one.
 
 **Added**
 

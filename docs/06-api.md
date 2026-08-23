@@ -142,6 +142,17 @@ display decides its own size and the room decides its own occupancy. It answers 
 is not hosting too, with `running` clear -- an application asking what state something is in
 should not have to know the answer to ask.
 
+**Sound is there for the same reason, and it is the half the settings cannot express.**
+`audio_active` is whether a device is being read right now, which is clear in an empty room
+however sound is configured, and clear when the device could not be opened or has gone away --
+the case an application could otherwise not learn at all, because the settings go on saying
+enabled. `audio_device` is what the capture landed on: an empty `device` in the configuration
+asks for the default output's monitor and the sound server may move a stream while it runs, so
+this is the only place the request and the answer can be compared. **The configuration keeps the
+request** rather than being rewritten to the resolved name, so an application that reads the
+settings, changes one field and writes them back does not pin a host that was following the
+default.
+
 **`lowlat_host_stop` takes no reason, and that is a gap rather than a design.**
 Stopping ends every guest loop and joins every thread, and the far side learns from its own
 liveness deadline rather than from a message -- so a peer pays the wait instead of being told.
@@ -188,7 +199,7 @@ with and what `lowlat_host_set_audio_config` takes:
 
 | Field | Why it can change | |
 |---|---|---|
-| `enabled` | Switching it off gives the sound device back and restores the speakers, exactly as the last guest leaving does. Switching it on takes the device again. |
+| `enabled` | Switching it off gives the sound device back and restores the speakers, exactly as the last guest leaving does. Switching it on takes the device again -- **including on a host that started with it off**, which is what makes this field live rather than a settled one wearing a setter. |
 | `bitrate_kbps` | Read on the frame that uses it, so a change costs no rebuild and no discontinuity a listener would hear. **A rate of zero or one past the ceiling is refused** rather than clamped in silence, because the codec would clamp its own and the application would be told yes and given something else. |
 | `allow_uncompressed` | **A permission, not a request, and off by default.** A guest asks for the uncompressed form in its own initialization; this is whether a host will serve it. It costs an order of magnitude more of the uplink than the compressed form, and that comes out of what is left for the picture ([05 §9](05-host.md)). A guest denied it is sent the compressed form, priced as the compressed form, and told it is the compressed form. |
 | `mute_local` | Silences the speakers at the desk while a guest is connected, off by default. The tap is ahead of the device's own mute, so a guest still hears everything. **It restores rather than unmutes**: a device somebody had already muted stays muted, and one they unmuted mid-session is not muted again. |
@@ -344,6 +355,13 @@ the whole difficulty. Enumerating a connector and finding its framebuffer both s
 the capability; getting the handles back out does not. Measured on a real display: the same
 binary answers `LOWLAT_ERR_DISPLAY_UNREACHABLE` as an unprivileged user in the `video` group and
 `LOWLAT_OK` as root. A weaker probe reports a machine ready to host that cannot.
+
+**An identity is sized for a device path, not for a connector name.** The same bound carries a
+display's identity and a sound device's, and the longest of them is a path: a USB output's name
+from the sound server passes a hundred characters once its serial and profile are in it, and a
+display identity on one platform is an operating-system device path bounded at 260. A name that
+does not fit is truncated silently and then resolves to nothing, so the bound is set by the worst
+case rather than by what a machine happens to report today.
 
 `lowlat_get_audio_outputs` lists what sound could be captured from. **The identity it returns is
 the monitor of an output, not the output**, because that is the device a host reads: it carries
