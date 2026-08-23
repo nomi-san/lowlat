@@ -211,12 +211,16 @@ fn advertisement(name: &str, capacity: u32, players: u32) -> ConnUpdate {
 /// nothing, so the candidate is dropped without a word and that address is
 /// never probed. The parser knows both forms.
 ///
-/// Collapsing a mapped address to the IPv4 it really is belongs to the
-/// connectivity engine, which does it to every address it is handed. A second
-/// copy here would be a second place for that rule to drift.
+/// **Collapsed to the IPv4 it really is, using the engine's own routine.** The
+/// engine does this to every address it is handed, so doing it here changes
+/// nothing about what gets probed -- but the family is decided here, before the
+/// engine sees the address, and a mapped address left uncollapsed reads as v6.
+/// A v4-only run then refuses the peer's IPv4 candidates for having been
+/// spelled the other way, which is the textual-classification trap wearing a
+/// different hat.
 fn peer_candidate(ip: &str, port: u16) -> Option<SocketAddr> {
     let ip: IpAddr = ip.trim().parse().ok()?;
-    Some(SocketAddr::new(ip, port))
+    Some(lowlat_core::stun::canonical(SocketAddr::new(ip, port)))
 }
 
 /// What an inbound candidate exchange asks this host to do.
@@ -866,9 +870,10 @@ mod tests {
         assert_eq!(dotted, hex, "the two spellings named different addresses");
         assert_eq!(
             dotted.ip(),
-            "::ffff:192.0.2.7".parse::<IpAddr>().expect("reference"),
-            "a v4-mapped candidate did not survive the parse"
+            "192.0.2.7".parse::<IpAddr>().expect("reference"),
+            "a v4-mapped candidate is IPv4 and must come out as one"
         );
+        assert!(dotted.is_ipv4(), "a v4-mapped candidate reported as v6");
     }
 
     /// **A readiness marker is not a candidate and must not need to parse.**
@@ -977,6 +982,19 @@ mod tests {
             relayed(true, peer_v6, 31336, true),
             Relayed::Ready,
             "the readiness barrier is not an address and does not have a family"
+        );
+
+        // **The spelling is not the family.** A live v4-only run refused this
+        // exact candidate, which is the peer's IPv4 address written the way a
+        // dual-stack socket hands it back. Refusing it throws away the only
+        // family the run is allowed to use.
+        assert_eq!(
+            relayed(false, "::ffff:171.247.203.94", 31336, true),
+            Relayed::Probe(SocketAddr::new(
+                "171.247.203.94".parse::<IpAddr>().expect("reference"),
+                31336
+            )),
+            "a v4-mapped candidate was refused as v6 on a v4-only run"
         );
         // Unset, the same candidate is probed: the refusal is the switch, not a
         // standing rule.
