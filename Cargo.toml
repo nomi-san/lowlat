@@ -21,7 +21,7 @@ exclude = ["fuzz"]
 edition = "2024"
 rust-version = "1.85"
 license = "MIT"
-repository = "https://github.com/wuuyi123/lowlat"
+repository = "https://github.com/nomi-san/lowlat"
 authors = ["Nguyen Duy <wuuyi123@gmail.com>"]
 
 [workspace.dependencies]
