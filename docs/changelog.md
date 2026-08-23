@@ -2031,6 +2031,14 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   and report that it had tested v4, which is worse than not having it. The
   readiness barrier is not an address and is honoured either way.
 
+  **The family is decided on the collapsed address, not the spelling.** A live
+  v4-only run refused the peer's own IPv4 candidate because it arrived as
+  `::ffff:171.247.203.94` -- a v4-mapped address, which is IPv4, but which reads
+  as v6 until it is collapsed. It is collapsed with the engine's own routine
+  now, so the family decided here is the family that will be probed. The run
+  connected anyway, over the address learned from the peer's own checks, which
+  is what kept the fault invisible.
+
 - **A candidate that is not an address is declined out loud.** Peers anonymise
   host candidates behind a `.local` name that only multicast resolution
   answers. None is resolved, which is correct, but a candidate silently dropped
