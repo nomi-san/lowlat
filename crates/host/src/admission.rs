@@ -2221,11 +2221,12 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 args.telemetry
                     .progressed(now, u32::try_from(sent).unwrap_or(u32::MAX));
                 lowlat_common::log_info!(
-                    "guest: attempt={} frames={sent} window={window} stale={stale} mbps={measured:.2} encode_ms={:.2} rx_frag={rx} rx_msg={inbound_messages} dg_in={} dg_out={} srtt={:.1} keys={} btn={} wheel={} motion={} pad={}",
+                    "guest: attempt={} frames={sent} window={window} stale={stale} mbps={measured:.2} encode_ms={:.2} rx_frag={rx} rx_msg={inbound_messages} dg_in={} dg_out={} rej={} srtt={:.1} keys={} btn={} wheel={} motion={} pad={}",
                     args.attempt_id,
                     seat.encode_latency_ms(),
                     datagrams.datagrams_in,
                     datagrams.datagrams_out,
+                    datagrams.rejected,
                     srtt,
                     input_tally.keys,
                     input_tally.buttons,

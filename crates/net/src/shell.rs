@@ -74,6 +74,16 @@ pub struct Stats {
     pub send_wakes: u64,
     pub datagrams_in: u64,
     pub datagrams_out: u64,
+    /// Datagrams the endpoint refused: unparseable, unauthenticated, or a
+    /// shape it does not accept.
+    ///
+    /// **Hostile and corrupt input is ordinary on a network, but a rejection
+    /// that leaves no trace makes a wire mismatch and a silent path the same
+    /// picture.** One peer generation's acknowledgements were refused on their
+    /// length and dropped here without a word, which read as a peer that had
+    /// stopped receiving and cost a session every time. Counting them does not
+    /// make the drop an error; it makes it visible.
+    pub rejected: u64,
 }
 
 impl Stats {
@@ -247,14 +257,22 @@ impl<'a> Shell<'a> {
                 return Ok(total);
             }
             total += got;
+            let mut refused = 0u64;
             for (from, datagram) in self.inbound.iter() {
                 // A datagram that fails to parse or authenticate is dropped and
                 // the loop continues. Hostile and corrupt input is the normal
-                // case on a network, not an error path.
-                let _ = self
+                // case on a network, not an error path -- but it is counted,
+                // because a drop nobody counts is indistinguishable from a path
+                // that carried nothing.
+                if self
                     .endpoint
-                    .process_input(datagram, from, now_ms, &mut self.scratch);
+                    .process_input(datagram, from, now_ms, &mut self.scratch)
+                    .is_err()
+                {
+                    refused += 1;
+                }
             }
+            self.stats.rejected += refused;
             if !self.inbound.saturated() {
                 return Ok(total);
             }
@@ -518,6 +536,15 @@ mod tests {
             "the pass woke for a datagram and never asked the socket"
         );
         assert_eq!(turn.woke, Woke::Datagram);
+        // **And the refusal is counted.** The endpoint cannot make anything of
+        // these bytes, which is ordinary, but a drop that leaves no trace makes
+        // a wire the far side is speaking wrongly look exactly like a wire
+        // carrying nothing -- and that reading has already cost sessions.
+        assert_eq!(
+            shell.stats().rejected,
+            1,
+            "a datagram the endpoint refused was dropped without a trace"
+        );
     }
 
     /// A loop armed from the core's deadline must not wake more often than the
