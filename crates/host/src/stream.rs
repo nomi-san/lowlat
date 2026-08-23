@@ -258,6 +258,21 @@ pub(crate) struct Shared {
     /// own cadence. One slot per encoding a room actually wants, never one per
     /// guest.
     audio: Pool,
+    /// The sound device, held exactly while somebody is listening.
+    ///
+    /// **Here rather than on the loop's stack**, because the loop that knows
+    /// the room is empty is not the one that built it: `run` waits for a guest
+    /// and `encode_loop` runs while there are none, so a device owned by the
+    /// outer one is never given back. That is not hypothetical -- it held a
+    /// capture and somebody's muted speakers across three sessions.
+    held_sound: std::sync::Mutex<Option<crate::audio::Sound>>,
+    /// Whether the room wants sound now, and a counter of how often that
+    /// answer has changed.
+    ///
+    /// **The decision is recorded even when no device is configured**, which is
+    /// what makes it testable without one.
+    sound_demand: AtomicU32,
+    sound_epoch: AtomicU32,
     /// The half of sound's settings the capture thread reads for itself.
     ///
     /// **Held here rather than by the capture**, so what an application asked
@@ -935,6 +950,9 @@ impl Stream {
             seats: core::array::from_fn(|_| Seat::new()),
             pool: Pool::new(POOL_SLOTS, max_frame_bytes()),
             audio: crate::audio::pool(),
+            held_sound: std::sync::Mutex::new(None),
+            sound_demand: AtomicU32::new(0),
+            sound_epoch: AtomicU32::new(0),
             sound_live: config.audio.as_ref().map_or_else(
                 || Arc::new(lowlat_audio::Wanted::default()),
                 |audio| Arc::clone(&audio.wanted),
@@ -1442,14 +1460,6 @@ fn run(
     // another. The guests outlive that; see [`Roster`].
     let mut roster = Roster::default();
     let mut previous: Option<Codec> = None;
-    // **Sound is held while somebody is listening and not otherwise.** Holding
-    // a capture nobody receives keeps the sound device awake for no reason, and
-    // it is also what the local mute rides: the speakers are silenced when the
-    // first guest arrives and restored when the last one leaves.
-    //
-    // It outlives an encoder rebuild, which a guest does not notice and which
-    // would otherwise cost a gap in the sound for a change to the picture.
-    let mut sound: Option<crate::audio::Sound> = None;
     loop {
         // Waiting rather than holding hardware. A host advertises itself long
         // before anyone connects, and an encoder open across that whole time
@@ -1470,26 +1480,16 @@ fn run(
             if occupied(shared) {
                 break;
             }
-            // The room is empty: give the sound device back, and with it the
-            // speakers.
-            sound = None;
+            reconcile_sound(shared, 0, &config);
             if shared.stopping.load(Ordering::Acquire) != 0 {
                 return;
             }
             std::thread::sleep(IDLE_WAIT);
         }
 
-        // **Started before the encoder**, so the first guest is hearing the
-        // desktop while the picture is still being built. Switched off while a
-        // host runs, the device goes back the same way it does when the last
-        // guest leaves.
-        if !shared.sound_on() {
-            sound = None;
-        } else if sound.is_none()
-            && let Some(audio) = config.audio.clone()
-        {
-            sound = Some(crate::audio::Sound::start(shared, audio));
-        }
+        // **Taken before the encoder**, so the first guest hears the desktop
+        // while the picture is still being built.
+        reconcile_sound(shared, 1, &config);
 
         // Drained here, where the configuration is owned.
         if let Some(id) = requested(asked) {
@@ -1695,6 +1695,38 @@ fn rebind(
     }
 }
 
+/// Hold the sound device exactly while somebody is listening.
+///
+/// **Called from the loop that knows the room's size**, every pass, because a
+/// room empties without anything else happening: no rebuild, no arrival, no
+/// error. The loop that waits for a guest is not the loop that runs while
+/// there are none, so a device owned by the first is never given back by the
+/// second -- which is not hypothetical: it held a capture, and somebody's muted
+/// speakers, across three sessions.
+///
+/// Cheap when nothing changed -- one atomic -- and the lock is taken only on
+/// the transition. **The decision is recorded even when no device is
+/// configured**, which is what makes it testable without one.
+fn reconcile_sound(shared: &Arc<Shared>, listeners: usize, config: &Config) {
+    let want = u32::from(listeners > 0 && shared.sound_on());
+    if shared.sound_demand.swap(want, Ordering::AcqRel) == want {
+        return;
+    }
+    shared.sound_epoch.fetch_add(1, Ordering::Release);
+    let Ok(mut held) = shared.held_sound.lock() else {
+        return;
+    };
+    if want != 0 {
+        if let Some(audio) = config.audio.clone() {
+            *held = Some(crate::audio::Sound::start(shared, audio));
+        }
+    } else if held.take().is_some() {
+        // Dropping it stops the capture, joins its thread, and puts the
+        // speakers at the desk back.
+        lowlat_common::log_info!("audio: nobody is listening, the sound device is back");
+    }
+}
+
 /// The gate's view of a guest's ceiling.
 #[allow(
     clippy::cast_possible_truncation,
@@ -1726,7 +1758,7 @@ fn occupied_seats(shared: &Shared) -> usize {
 const NOT_EMITTED: u32 = lowlat_core::init::FLAG_COLOR444 | lowlat_core::init::FLAG_10BIT;
 
 fn run_open(
-    shared: &Shared,
+    shared: &Arc<Shared>,
     arrivals: &mpsc::Receiver<Join>,
     config: Config,
     roster: &mut Roster,
@@ -1839,7 +1871,7 @@ fn run_open(
 }
 
 fn run_vendor(
-    shared: &Shared,
+    shared: &Arc<Shared>,
     arrivals: &mpsc::Receiver<Join>,
     config: Config,
     roster: &mut Roster,
@@ -2332,7 +2364,7 @@ impl FromDevice for lowlat_encode::vaapi::Encoder<'_> {
 /// acquire and the submit behind it, and a picture leaves within a poll of
 /// being ready rather than at the next frame boundary.
 fn encode_loop<E: Encoder + FromDevice>(
-    shared: &Shared,
+    shared: &Arc<Shared>,
     arrivals: &mpsc::Receiver<Join>,
     config: Config,
     roster: &mut Roster,
@@ -2460,6 +2492,9 @@ fn encode_loop<E: Encoder + FromDevice>(
                 budget.ceiling()
             );
         }
+        // **Every pass, because the room's size changes here and nowhere
+        // else.** Switching sound off while a host runs arrives the same way.
+        reconcile_sound(shared, active.len(), &config);
         if active.is_empty() {
             std::thread::sleep(IDLE_WAIT);
             next_frame_ms = lowlat_common::clock::elapsed_ms(started);
@@ -3336,6 +3371,9 @@ mod tests {
             };
             let shared = Arc::new(Shared {
                 audio: crate::audio::pool(),
+                held_sound: std::sync::Mutex::new(None),
+                sound_demand: AtomicU32::new(0),
+                sound_epoch: AtomicU32::new(0),
                 sound: SoundCells::new(&test_config(Codec::H264)),
                 sound_live: Arc::new(lowlat_audio::Wanted::default()),
                 seats: core::array::from_fn(|_| Seat::new()),
@@ -3401,6 +3439,9 @@ mod tests {
         let shared = Arc::new(Shared {
             audio: crate::audio::pool(),
             sound: SoundCells::new(&test_config(Codec::H264)),
+            held_sound: std::sync::Mutex::new(None),
+            sound_demand: AtomicU32::new(0),
+            sound_epoch: AtomicU32::new(0),
             sound_live: Arc::new(lowlat_audio::Wanted::default()),
             seats: core::array::from_fn(|_| Seat::new()),
             pool: Pool::new(POOL_SLOTS, max_frame_bytes()),
@@ -3605,6 +3646,9 @@ mod tests {
         let shared = Arc::new(Shared {
             audio: crate::audio::pool(),
             sound: SoundCells::new(&test_config(Codec::H264)),
+            held_sound: std::sync::Mutex::new(None),
+            sound_demand: AtomicU32::new(0),
+            sound_epoch: AtomicU32::new(0),
             sound_live: Arc::new(lowlat_audio::Wanted::default()),
             seats: core::array::from_fn(|_| Seat::new()),
             pool: Pool::new(2, 64),
@@ -4004,6 +4048,71 @@ mod tests {
         assert_eq!(shared.audio_wanted(), (true, false));
         hold.declare_audio(true);
         assert_eq!(shared.audio_wanted(), (false, true));
+    }
+
+    /// **A room that empties gives the sound device back.**
+    ///
+    /// This is the one the live run caught: the device was taken by the loop
+    /// that waits for a guest and given back by the same loop, which is never
+    /// reached again while the encode loop is running -- so a host held a
+    /// capture, and somebody's muted speakers, across three whole sessions.
+    /// The decision now lives where the room's size is known, and it is
+    /// recorded whether or not a device is configured, which is what lets this
+    /// run without one.
+    #[test]
+    fn the_sound_device_is_given_back_when_the_room_empties() {
+        let (shared, stream, arrivals) = parked();
+        let hold = stream
+            .seats()
+            .take(wake_handle(), wake_handle())
+            .expect("a seat");
+        hold.declare(lowlat_core::init::FLAG_BASE);
+        shared.set_sound(true, false, 128);
+
+        let mut roster = Roster::default();
+        let config = test_config(Codec::H264);
+        // One pass to seat the guest, stopped as soon as it is streaming.
+        let ticker = watcher(&shared, |shared| {
+            shared.sound_demand.load(Ordering::Acquire) != 0
+        });
+        encode_loop(
+            &shared,
+            &arrivals,
+            config.clone(),
+            &mut roster,
+            &mut fake_encoder(),
+            None,
+        );
+        assert!(
+            ticker.join().expect("ticker"),
+            "the room never wanted sound"
+        );
+        assert_eq!(shared.sound_demand.load(Ordering::Acquire), 1);
+        let asked = shared.sound_epoch.load(Ordering::Acquire);
+        shared.stopping.store(0, Ordering::Release);
+
+        // The guest leaves. **Nothing else happens**: no rebuild, no arrival,
+        // no error -- which is exactly the case that was missed.
+        drop(hold);
+        let ticker = watcher(&shared, |shared| {
+            shared.sound_demand.load(Ordering::Acquire) == 0
+        });
+        encode_loop(
+            &shared,
+            &arrivals,
+            config,
+            &mut roster,
+            &mut fake_encoder(),
+            None,
+        );
+        assert!(
+            ticker.join().expect("ticker"),
+            "the device was still held with nobody listening"
+        );
+        assert!(
+            shared.sound_epoch.load(Ordering::Acquire) > asked,
+            "the decision never changed"
+        );
     }
 
     /// **A guest behind on sound loses packets and the room does not.** The

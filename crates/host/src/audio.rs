@@ -29,6 +29,39 @@ use crate::stream::Shared;
 /// than the one behind it.
 const POOL_SLOTS: usize = 8;
 
+/// How long the uncompressed path keeps sending after sound stops.
+///
+/// **Two seconds, and the reason is the peer's own buffer.** A peer plays only
+/// once it has queued its minimum -- measured at 75 to 150 ms on a desktop and
+/// 150 to 300 on a phone -- and reaching zero makes it wait out that minimum
+/// again. So a pause between words that emptied its queue would clip the start
+/// of the next one. Two seconds is past any pause inside speech and still stops
+/// a quiet desktop from spending 1.5 Mbit/s saying nothing.
+const SILENCE_HOLD: u32 = 100;
+
+/// Whether silence has gone on long enough to stop sending it.
+///
+/// **Only the uncompressed path asks.** The compressed one collapses silence to
+/// about a hundredth of its rate on its own, so it keeps sending and the peer's
+/// queue never drains.
+#[derive(Debug, Default)]
+struct Silence {
+    frames: u32,
+}
+
+impl Silence {
+    /// Take one frame, and say whether an uncompressed guest should be sent it.
+    fn observe(&mut self, silent: bool) -> bool {
+        if silent {
+            self.frames = self.frames.saturating_add(1);
+            self.frames <= SILENCE_HOLD
+        } else {
+            self.frames = 0;
+            true
+        }
+    }
+}
+
 /// What a room's sound costs, and who it goes to.
 pub(crate) struct Sound {
     capture: Option<Capture>,
@@ -58,6 +91,7 @@ impl Sound {
         };
         let owned = Arc::clone(shared);
         let mut kbps = shared.sound_kbps();
+        let mut silence = Silence::default();
         encoder.set_bitrate(kbps);
         match Capture::open(config, move |frame: &[u8]| {
             // **Read every frame and applied when it moves.** A rate that
@@ -69,7 +103,7 @@ impl Sound {
                 encoder.set_bitrate(kbps);
                 lowlat_common::log_info!("audio: encoding at {kbps} kbit/s");
             }
-            publish(&owned, &mut encoder, frame);
+            publish(&owned, &mut encoder, &mut silence, frame);
         }) {
             Ok(capture) => {
                 lowlat_common::log_info!("audio: sound is on, device={}", capture.device());
@@ -86,8 +120,9 @@ impl Sound {
 }
 
 /// One captured frame, to every seat that wants it.
-fn publish(shared: &Shared, encoder: &mut Encoder, frame: &[u8]) {
+fn publish(shared: &Shared, encoder: &mut Encoder, silence: &mut Silence, frame: &[u8]) {
     let (compressed, uncompressed) = shared.audio_wanted();
+    let wanted = silence.observe(encode::is_silent(frame));
 
     if compressed {
         // **Silence is sent compressed.** The codec collapses it to about a
@@ -98,9 +133,10 @@ fn publish(shared: &Shared, encoder: &mut Encoder, frame: &[u8]) {
             Err(error) => lowlat_common::log_warn!("audio: frame not encoded, error={error}"),
         }
     }
-    // **Silence is not sent uncompressed.** It would cost the whole rate to
-    // carry nothing, which is the entire reason this test exists.
-    if uncompressed && !encode::is_silent(frame) {
+    // **Silence is not sent uncompressed, but not the moment it starts.** It
+    // costs the whole rate to carry nothing, and stopping the instant a talker
+    // pauses empties the peer's queue and clips the next word.
+    if uncompressed && wanted {
         shared.publish_audio(true, frame);
     }
 }
@@ -152,6 +188,37 @@ pub(crate) fn pool() -> crate::frames::Pool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// **A pause is not silence.** Stopping the moment sound does empties the
+    /// peer's queue, and it then waits out its own minimum -- up to 300 ms on a
+    /// phone -- before the next word is heard.
+    #[test]
+    fn a_short_pause_keeps_the_uncompressed_stream_alive() {
+        let mut silence = Silence::default();
+        assert!(silence.observe(false), "sound was not sent");
+        // A pause inside speech: half a second.
+        for frame in 0..25 {
+            assert!(silence.observe(true), "stopped after {frame} silent frames");
+        }
+        // And it resumes with no penalty.
+        assert!(silence.observe(false));
+        assert_eq!(silence.frames, 0, "the count did not reset on sound");
+    }
+
+    /// **A desktop that is genuinely quiet stops costing anything.** Without
+    /// this the hold above would be a decision never to skip at all.
+    #[test]
+    fn sustained_silence_is_eventually_dropped() {
+        let mut silence = Silence::default();
+        for _ in 0..SILENCE_HOLD {
+            assert!(silence.observe(true));
+        }
+        assert!(!silence.observe(true), "silence was still being sent");
+        assert!(!silence.observe(true));
+        // One sound frame and the hold begins again.
+        assert!(silence.observe(false));
+        assert!(silence.observe(true));
+    }
 
     /// **What a guest's sound costs, in the unit the controllers are tuned
     /// in.** The uncompressed form is the number the whole decision rests on:
