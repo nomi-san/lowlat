@@ -933,25 +933,15 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
         // resolve is refused while the caller is still holding the call that
         // set it.
         let text = taken(server)?;
-        let resolved: Vec<std::net::SocketAddr> = std::net::ToSocketAddrs::to_socket_addrs(text)
-            .ok()?
-            .collect();
-
-        // **One of each family, not whichever the resolver put first.** A
-        // dual-stack name answers with both, ordered by what this machine's own
-        // addressing prefers, so taking the head alone gives a host with global
-        // v6 a v6 reflexive address and no v4 one. A v4-only peer then has
-        // nothing from us but a host candidate it cannot reach.
-        let families = [
-            resolved.iter().find(|addr| addr.is_ipv4()),
-            resolved.iter().find(|addr| addr.is_ipv6()),
-        ];
-        if families.iter().all(Option::is_none) {
+        let found = crate::admission::resolve_server(text);
+        // A name that resolves to nothing is refused here, while the caller is
+        // still holding the call that set it.
+        if found.is_empty() {
             return None;
         }
-        for addr in families.into_iter().flatten() {
+        for addr in found {
             if servers.len() < LOWLAT_SERVERS_MAX {
-                servers.push(*addr);
+                servers.push(addr);
             } else {
                 dropped += 1;
             }

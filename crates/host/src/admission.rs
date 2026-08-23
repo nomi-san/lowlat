@@ -288,6 +288,33 @@ impl core::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+/// One reflexive server name, resolved to one address per address family.
+///
+/// **One of each, not whichever the resolver put first.** A dual-stack name
+/// answers with both, ordered by what this machine's own addressing prefers, so
+/// taking the head alone gives a host with global IPv6 a v6 reflexive address
+/// and no v4 one -- and a v4-only peer is then offered nothing from us that it
+/// can reach.
+///
+/// Empty when the name does not resolve at all. What to do about that is the
+/// caller's: a configuration call refuses while the caller can still fix it, a
+/// service carries on, because an attempt with no reflexive server still
+/// punches on whatever it gathered locally.
+pub fn resolve_server(name: &str) -> Vec<SocketAddr> {
+    let Ok(resolved) = std::net::ToSocketAddrs::to_socket_addrs(name) else {
+        return Vec::new();
+    };
+    let resolved: Vec<SocketAddr> = resolved.collect();
+    [
+        resolved.iter().find(|addr| addr.is_ipv4()),
+        resolved.iter().find(|addr| addr.is_ipv6()),
+    ]
+    .into_iter()
+    .flatten()
+    .copied()
+    .collect()
+}
+
 /// How the host is configured.
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -2305,6 +2332,47 @@ mod tests {
 
     /// Candidates trickle, and the peer starts sending them before the answer
     /// has reached it. One that arrives before approval must be kept, not
+    /// **Both families of a dual-stack name are asked, not whichever the
+    /// resolver put first.**
+    ///
+    /// The order follows this machine's own addressing, so keeping the head
+    /// alone gives a host with global v6 a v6 reflexive address and no v4 one,
+    /// and a v4-only peer is then offered nothing from us it can reach.
+    #[test]
+    fn a_dual_stack_server_name_resolves_to_one_of_each_family() {
+        // Stated rather than assumed: where localhost answers on one family
+        // only this cannot tell the two behaviours apart, and saying so beats
+        // passing without having checked.
+        let families: std::collections::BTreeSet<bool> =
+            std::net::ToSocketAddrs::to_socket_addrs("localhost:3478")
+                .expect("localhost must resolve")
+                .map(|addr| addr.is_ipv6())
+                .collect();
+        assert_eq!(
+            families.len(),
+            2,
+            "this check needs a localhost that answers on both families"
+        );
+
+        let found = resolve_server("localhost:3478");
+        assert_eq!(
+            found.iter().filter(|a| a.is_ipv4()).count(),
+            1,
+            "no v4 reflexive server from a dual-stack name: {found:?}"
+        );
+        assert_eq!(
+            found.iter().filter(|a| a.is_ipv6()).count(),
+            1,
+            "no v6 reflexive server from a dual-stack name: {found:?}"
+        );
+    }
+
+    /// A name that resolves to nothing is empty, not a panic and not a guess.
+    #[test]
+    fn a_name_that_does_not_resolve_is_empty() {
+        assert!(resolve_server("no-such-host.invalid:3478").is_empty());
+    }
+
     /// dropped: on a wide-area path it may be the only one that works.
     #[test]
     fn candidates_arriving_before_approval_are_kept() {

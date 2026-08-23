@@ -17,9 +17,6 @@ path = "src/main.rs"
 # timestamp and the same stream as the library's rather than being a second
 # account of one run on a different file descriptor.
 lowlat-common.workspace = true
-# For stun::canonical: the family a candidate belongs to is decided here before
-# the engine sees it, and it must be decided the same way the engine would.
-lowlat-core.workspace = true
 lowlat-host.workspace = true
 # The sound configuration its flags fill in.
 lowlat-audio.workspace = true

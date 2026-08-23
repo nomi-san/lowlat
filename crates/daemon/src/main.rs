@@ -32,8 +32,13 @@ const MAX_GUESTS: u32 = 4;
 /// Base port every guest's bind walks from.
 const DEFAULT_PORT: u16 = 9000;
 
-/// Reflexive server, for discovering our own mapped address.
-const DEFAULT_STUN: &str = "74.125.250.129:19302";
+/// Reflexive servers, for discovering our own mapped address.
+///
+/// **A name, so both address families are reachable.** One dual-stack name
+/// answers with an A and an AAAA record, and both are asked; a literal can only
+/// ever be one family, and a v4 literal is why this host had no v6 reflexive
+/// candidate to offer.
+const DEFAULT_STUN: &str = "stun.l.google.com:19302";
 
 /// What the stream produces by default. The guest declares what it can decode
 /// and the host is authoritative over all of it, so a declaration is a request.
@@ -156,21 +161,6 @@ fn primary_local_addresses() -> Vec<IpAddr> {
         .collect()
 }
 
-/// Everything we would offer or ask over IPv6, removed.
-///
-/// **Both lists, or the flag does not do what it says.** Dropping the host
-/// candidates while leaving a v6 reflexive server configured just produces a v6
-/// server-reflexive candidate in their place, and a run meant to prove the v4
-/// path still stands goes over v6 without saying so.
-///
-/// This exists to make the v4 path testable on a machine that has working v6.
-/// The punch has no family preference and the first candidate to answer wins,
-/// so a host that offers both is running a race rather than a test.
-fn drop_ipv6(local: &mut Vec<IpAddr>, servers: &mut Vec<SocketAddr>) {
-    local.retain(IpAddr::is_ipv4);
-    servers.retain(SocketAddr::is_ipv4);
-}
-
 /// Guests currently admitted, in the width the wire uses.
 ///
 /// Bounded by the configured limit, which is a small number, so the conversion
@@ -211,16 +201,13 @@ fn advertisement(name: &str, capacity: u32, players: u32) -> ConnUpdate {
 /// nothing, so the candidate is dropped without a word and that address is
 /// never probed. The parser knows both forms.
 ///
-/// **Collapsed to the IPv4 it really is, using the engine's own routine.** The
-/// engine does this to every address it is handed, so doing it here changes
-/// nothing about what gets probed -- but the family is decided here, before the
-/// engine sees the address, and a mapped address left uncollapsed reads as v6.
-/// A v4-only run then refuses the peer's IPv4 candidates for having been
-/// spelled the other way, which is the textual-classification trap wearing a
-/// different hat.
+/// Collapsing a mapped address to the IPv4 it really is belongs to the
+/// connectivity engine, which does it to every address it is handed. Nothing
+/// here reads the family, so a second copy would be a second place for that
+/// rule to drift.
 fn peer_candidate(ip: &str, port: u16) -> Option<SocketAddr> {
     let ip: IpAddr = ip.trim().parse().ok()?;
-    Some(lowlat_core::stun::canonical(SocketAddr::new(ip, port)))
+    Some(SocketAddr::new(ip, port))
 }
 
 /// What an inbound candidate exchange asks this host to do.
@@ -233,8 +220,6 @@ enum Relayed {
     Probe(SocketAddr),
     /// Not an address this host can probe.
     Unreadable,
-    /// An address on a family this host has been told not to use.
-    Declined,
 }
 
 /// Read one relayed candidate exchange.
@@ -246,20 +231,11 @@ enum Relayed {
 /// on a field nothing reads, and a barrier that is dropped leaves a peer that
 /// withholds its real candidates waiting for something that already arrived --
 /// silent at both ends.
-/// **`v4_only` refuses the peer's v6 candidates too, and it has to.** Not
-/// offering our own leaves the family fully available: the media socket is dual
-/// stack, so a v6 address the peer offers is probed like any other and can
-/// carry the session. A switch that silenced only our half would let a run meant
-/// to prove the v4 path go over v6 and report that it had tested v4.
-///
-/// The barrier is family-independent and is still honoured, because it is not
-/// an address at all.
-fn relayed(sync: bool, ip: &str, port: u16, v4_only: bool) -> Relayed {
+fn relayed(sync: bool, ip: &str, port: u16) -> Relayed {
     if sync {
         return Relayed::Ready;
     }
     match peer_candidate(ip, port) {
-        Some(addr) if v4_only && addr.is_ipv6() => Relayed::Declined,
         Some(addr) => Relayed::Probe(addr),
         None => Relayed::Unreadable,
     }
@@ -336,28 +312,42 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // sees; two answering differently is how an endpoint-independent
     // translator is told from a symmetric one, and both answers travel to the
     // peer as candidates. The engine holds four.
-    let stun: Vec<SocketAddr> = std::env::var("LOWLAT_STUN")
-        .unwrap_or_else(|_| DEFAULT_STUN.to_string())
+    // Names or literals, each resolved to one address per family. **A name that
+    // does not resolve is reported and skipped rather than fatal**: an attempt
+    // with no reflexive server still punches on what it gathered locally, and a
+    // service that refuses to start because a resolver was briefly unavailable
+    // is worse than one that offers fewer candidates.
+    let configured_stun = std::env::var("LOWLAT_STUN").unwrap_or_else(|_| DEFAULT_STUN.to_string());
+    let mut stun: Vec<SocketAddr> = Vec::new();
+    for name in configured_stun
         .split(',')
         .map(str::trim)
-        .filter(|text| !text.is_empty())
-        .map(|text| {
-            text.parse::<SocketAddr>()
-                .map_err(|_| "LOWLAT_STUN is not a comma-separated list of addresses")
-        })
-        .collect::<Result<_, _>>()?;
+        .filter(|t| !t.is_empty())
+    {
+        let found = lowlat::admission::resolve_server(name);
+        if found.is_empty() {
+            lowlat_common::log_warn!("lowlatd: reflexive server did not resolve, skipped: {name}");
+            continue;
+        }
+        for addr in found {
+            if stun.len() < lowlat::abi::LOWLAT_SERVERS_MAX {
+                stun.push(addr);
+            } else {
+                lowlat_common::log_warn!("lowlatd: reflexive servers full, dropped {addr}");
+            }
+        }
+    }
+    lowlat_common::log_info!(
+        "lowlatd: reflexive servers: {}",
+        stun.iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
 
     // Gathered here, beside the reflexive servers, because the two are filtered
     // together and the servers are handed to the seam a few lines below.
-    let mut stun = stun;
-    let mut local = primary_local_addresses();
-    let v4_only = flag_set("--no-ipv6");
-    if v4_only {
-        drop_ipv6(&mut local, &mut stun);
-        lowlat_common::log_info!(
-            "lowlatd: --no-ipv6, offering and asking on v4 only, and refusing the peer's v6"
-        );
-    }
+    let local = primary_local_addresses();
 
     let bitrate_mbps: f64 = flag("--bitrate")
         .and_then(|v| v.parse().ok())
@@ -531,7 +521,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     &name,
                     max_guests,
                     &local,
-                    v4_only,
                     reject_all,
                     &settings,
                 )
@@ -586,7 +575,6 @@ async fn session_loop(
     name: &str,
     capacity: u32,
     local: &[IpAddr],
-    v4_only: bool,
     reject_all: bool,
     settings: &app::Settings,
 ) -> Result<bool, Box<dyn std::error::Error>> {
@@ -684,12 +672,7 @@ async fn session_loop(
                     }
                     "candex_relay" => {
                         let relay: CandexRelay = serde_json::from_value(message.payload)?;
-                        match relayed(
-                            relay.data.sync,
-                            &relay.data.ip,
-                            relay.data.port,
-                            v4_only,
-                        ) {
+                        match relayed(relay.data.sync, &relay.data.ip, relay.data.port) {
                             Relayed::Ready => {
                                 seam.add_candidate(
                                     &relay.attempt_id,
@@ -708,10 +691,6 @@ async fn session_loop(
                             // candidate lost.
                             Relayed::Unreadable => lowlat_common::log_info!(
                                 "lowlatd: candidate not an address, ignored: {}",
-                                relay.data.ip
-                            ),
-                            Relayed::Declined => lowlat_common::log_info!(
-                                "lowlatd: candidate refused, v4 only: {}",
                                 relay.data.ip
                             ),
                         }
@@ -870,10 +849,9 @@ mod tests {
         assert_eq!(dotted, hex, "the two spellings named different addresses");
         assert_eq!(
             dotted.ip(),
-            "192.0.2.7".parse::<IpAddr>().expect("reference"),
-            "a v4-mapped candidate is IPv4 and must come out as one"
+            "::ffff:192.0.2.7".parse::<IpAddr>().expect("reference"),
+            "a v4-mapped candidate did not survive the parse"
         );
-        assert!(dotted.is_ipv4(), "a v4-mapped candidate reported as v6");
     }
 
     /// **A readiness marker is not a candidate and must not need to parse.**
@@ -903,22 +881,14 @@ mod tests {
     #[test]
     fn a_readiness_barrier_does_not_depend_on_its_address() {
         assert_eq!(
-            relayed(
-                true,
-                "1c4d9ae8-f7a8-4513-affb-dcbb40048922.local",
-                58667,
-                false
-            ),
+            relayed(true, "1c4d9ae8-f7a8-4513-affb-dcbb40048922.local", 58667),
             Relayed::Ready,
             "a marker with an unreadable address lost the barrier"
         );
         // The two spellings a real peer has actually sent, both markers.
+        assert_eq!(relayed(true, READY_PLACEHOLDER, READY_PORT), Relayed::Ready);
         assert_eq!(
-            relayed(true, READY_PLACEHOLDER, READY_PORT, false),
-            Relayed::Ready
-        );
-        assert_eq!(
-            relayed(true, "::ffff:171.246.76.160", 56730, false),
+            relayed(true, "::ffff:171.246.76.160", 56730),
             Relayed::Ready
         );
     }
@@ -928,12 +898,7 @@ mod tests {
     #[test]
     fn an_ordinary_candidate_is_probed_or_declined() {
         assert_eq!(
-            relayed(
-                false,
-                "2405:4802:d0f5:6ec0:c048:4183:5759:8357",
-                31064,
-                false
-            ),
+            relayed(false, "2405:4802:d0f5:6ec0:c048:4183:5759:8357", 31064),
             Relayed::Probe(SocketAddr::new(
                 "2405:4802:d0f5:6ec0:c048:4183:5759:8357"
                     .parse::<IpAddr>()
@@ -942,99 +907,9 @@ mod tests {
             ))
         );
         assert_eq!(
-            relayed(
-                false,
-                "1c4d9ae8-f7a8-4513-affb-dcbb40048922.local",
-                58667,
-                false
-            ),
+            relayed(false, "1c4d9ae8-f7a8-4513-affb-dcbb40048922.local", 58667),
             Relayed::Unreadable
         );
-    }
-
-    /// **Refusing v6 has to reach the peer's candidates too.**
-    ///
-    /// Not offering our own leaves the family fully available: the media socket
-    /// is dual stack, so a v6 address the peer offers is probed like any other
-    /// and can carry the whole session. A switch that silenced only our half
-    /// would let a run meant to prove the v4 path go over v6 and report that it
-    /// had tested v4 -- which is the one outcome worse than not having it.
-    ///
-    /// The barrier is not an address and is honoured either way.
-    #[test]
-    fn refusing_ipv6_refuses_the_peers_v6_candidates() {
-        let peer_v6 = "2402:800:63b5:d08b:6045:adf4:f8d7:172b";
-
-        assert_eq!(
-            relayed(false, peer_v6, 31336, true),
-            Relayed::Declined,
-            "the peer's v6 candidate was probed on a v4-only run"
-        );
-        assert_eq!(
-            relayed(false, "171.247.203.94", 31336, true),
-            Relayed::Probe(SocketAddr::new(
-                "171.247.203.94".parse::<IpAddr>().expect("reference"),
-                31336
-            )),
-            "a v4 candidate must still be probed"
-        );
-        assert_eq!(
-            relayed(true, peer_v6, 31336, true),
-            Relayed::Ready,
-            "the readiness barrier is not an address and does not have a family"
-        );
-
-        // **The spelling is not the family.** A live v4-only run refused this
-        // exact candidate, which is the peer's IPv4 address written the way a
-        // dual-stack socket hands it back. Refusing it throws away the only
-        // family the run is allowed to use.
-        assert_eq!(
-            relayed(false, "::ffff:171.247.203.94", 31336, true),
-            Relayed::Probe(SocketAddr::new(
-                "171.247.203.94".parse::<IpAddr>().expect("reference"),
-                31336
-            )),
-            "a v4-mapped candidate was refused as v6 on a v4-only run"
-        );
-        // Unset, the same candidate is probed: the refusal is the switch, not a
-        // standing rule.
-        assert!(matches!(
-            relayed(false, peer_v6, 31336, false),
-            Relayed::Probe(_)
-        ));
-    }
-
-    /// **Refusing v6 has to reach the reflexive servers too.**
-    ///
-    /// Dropping the host candidates alone leaves a v6 server to ask, which
-    /// answers with a v6 reflexive candidate that goes out in their place. The
-    /// run then goes over v6 while claiming to test v4, which is worse than not
-    /// having the switch: it reports the opposite of what happened.
-    #[test]
-    fn refusing_ipv6_empties_both_lists() {
-        let mut local = vec![
-            "192.168.1.192".parse::<IpAddr>().expect("v4"),
-            "2405:4802:a695:2130:5f5c:a7bb:b4c7:4722"
-                .parse::<IpAddr>()
-                .expect("v6"),
-        ];
-        let mut servers = vec![
-            "74.125.250.129:19302".parse::<SocketAddr>().expect("v4"),
-            "[2001:4860:4864:5:8000::1]:19302"
-                .parse::<SocketAddr>()
-                .expect("v6"),
-        ];
-
-        drop_ipv6(&mut local, &mut servers);
-
-        assert_eq!(local.len(), 1, "a v6 host candidate survived: {local:?}");
-        assert!(local[0].is_ipv4());
-        assert_eq!(
-            servers.len(),
-            1,
-            "a v6 reflexive server survived, and it answers with a v6 candidate: {servers:?}"
-        );
-        assert!(servers[0].is_ipv4());
     }
 
     /// **Host candidates are one per family and only ones a peer could reach.**
