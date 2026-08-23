@@ -5,6 +5,53 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 ## 10: audio (in progress)
 
+**The guest microphone**, off by default, written and not yet heard from
+a real peer.
+
+- **Accepting it and announcing it are one switch.** A peer sends no
+  microphone audio until it is told the host will take it: told nothing
+  it keeps its own microphone muted, however it is configured itself. So
+  a host that merely listened would receive silence and look broken from
+  both ends, and the setting that decodes is the same setting that says
+  so on the wire -- set it and every connected peer is told, clear it and
+  they are told to stop.
+
+- **It arrives on the control channel, not the audio one.** Sound to a
+  guest and sound from one share nothing but a rate: this is a virtual
+  device, one opcode carrying several kinds, told apart by both header
+  arguments together and refused when the body's own kind disagrees with
+  them. **Its encoding byte spells uncompressed the opposite way** the
+  audio channel's codec tag does, which is close enough to swap without
+  noticing until a listener hears static.
+
+  It costs a packet every ten milliseconds -- around 193 kB/s in two
+  fragments, roughly 200 fragments a second, reliable and ordered and
+  head-of-line with the guest list and the cursor. **That cost is why
+  taking one is a decision** rather than something switched on by
+  polling for it.
+
+- **The application receives samples, never a codec**, on a poll of its
+  own: a hundred packets a second sharing the event queue would evict
+  the events. It refuses at once when the microphone is not accepted,
+  rather than spending the caller's timeout on sound that by
+  construction cannot come. What a host does with the samples is its
+  business -- creating a capture device in somebody's session is not a
+  shared library's decision.
+
+- **The decoder is the first thing here to read bytes a peer chose, and
+  it is treated that way.** What it may produce is bounded from a
+  constant rather than from the packet's own length, and a panic is
+  caught, counted, and the state it unwound through thrown away rather
+  than decoded against again.
+
+  **Not precautionary: seventeen of forty thousand random payloads
+  panicked** rather than erroring. And the failure is **a property of
+  the decoder's accumulated state rather than of any one packet** -- the
+  same bytes decode cleanly on a fresh decoder -- so the regression test
+  replays a sequence, the fuzz target feeds sequences, and the count of
+  contained panics is its own number in the guest line beside the
+  ordinary refusals.
+
 **Live against a stock client, 2026-08-23**: both codecs heard on a real
 peer that chose each in its own settings, the speakers at the desk
 silenced while it was connected and restored when it left, and the
