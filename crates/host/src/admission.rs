@@ -1453,16 +1453,31 @@ fn send_frames(
 /// window with no room for the whole message means this packet is discarded and
 /// the next one takes its place. Nothing is latched and no refresh is owed,
 /// because no packet depends on the one before it.
-fn send_audio(session: &mut Session<'_>, seat: &SeatHold, raw: bool) {
+///
+/// Reports what it sent and what it had to drop, because **the two together
+/// are the only place sound appears in a live run**: the picture's numbers say
+/// nothing about it, and a refusal here is invisible on the wire by design.
+fn send_audio(session: &mut Session<'_>, seat: &SeatHold, raw: bool, sound: &mut AudioSent) {
     let header = crate::audio::header(raw);
     while let Some(packet) = seat.next_audio() {
         if session
             .send_message(AUDIO_CHANNEL, &header, packet.bytes())
             .is_err()
         {
+            // Popped and refused is a packet gone: nothing puts it back, and
+            // the next one takes its place.
+            sound.dropped = sound.dropped.saturating_add(1);
             return;
         }
+        sound.packets = sound.packets.saturating_add(1);
     }
+}
+
+/// What this guest's sound has cost so far.
+#[derive(Debug, Default)]
+struct AudioSent {
+    packets: u64,
+    dropped: u64,
 }
 
 /// Queue one control message.
@@ -1727,6 +1742,9 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     let mut kicked: Option<(i32, f64)> = None;
     let mut inbound_messages: u64 = 0;
     let mut sent: u64 = 0;
+    // What sound has cost this guest, and what its channel is carrying.
+    let mut sound = AudioSent::default();
+    let mut sound_rate = Throughput::default();
     let mut reported_ms = 0.0f64;
     // The live-run probe: when it fires and whether the chord has been let go
     // of since, so holding the two buttons does not rumble continuously.
@@ -1798,6 +1816,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         let mut framing = packetiser.as_mut();
         let mut declaring = negotiation.as_mut();
         let outbound = &mut sent;
+        let sounded = &mut sound;
         // **A loop that stops has to say so.** Leaving here without an
         // outcome strands the attempt: its port, its seat and its share of
         // the advertised capacity are all released by the reaping the event
@@ -1820,7 +1839,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 // **What the seat says, not what the peer asked for.** A host
                 // that does not permit the uncompressed form sends the
                 // compressed one, and the header has to agree with the bytes.
-                send_audio(endpoint.session(), seat, seat.audio_raw());
+                send_audio(endpoint.session(), seat, seat.audio_raw(), sounded);
             }
         }) {
             lowlat_common::log_warn!("guest: the transport stopped, err={error}");
@@ -2218,10 +2237,20 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 // sending them at all, and the two are otherwise identical
                 // from here.
                 let srtt = shell.endpoint().session().srtt_ms();
+                // **What sound is costing on the wire**, which is the only
+                // place it can be seen: a silent desktop keeps sending
+                // compressed packets, so the count climbing says nothing about
+                // whether silence is being paid for and the rate says all of
+                // it.
+                let sound_mbps = shell
+                    .endpoint()
+                    .session()
+                    .send_pressure(AUDIO_CHANNEL)
+                    .map_or(0.0, |(_, _, bytes)| sound_rate.sample(bytes, now));
                 args.telemetry
                     .progressed(now, u32::try_from(sent).unwrap_or(u32::MAX));
                 lowlat_common::log_info!(
-                    "guest: attempt={} frames={sent} window={window} stale={stale} mbps={measured:.2} encode_ms={:.2} rx_frag={rx} rx_msg={inbound_messages} dg_in={} dg_out={} rej={} srtt={:.1} keys={} btn={} wheel={} motion={} pad={}",
+                    "guest: attempt={} frames={sent} window={window} stale={stale} mbps={measured:.2} encode_ms={:.2} rx_frag={rx} rx_msg={inbound_messages} dg_in={} dg_out={} rej={} srtt={:.1} keys={} btn={} wheel={} motion={} pad={} snd={} snd_drop={} snd_mbps={sound_mbps:.3}",
                     args.attempt_id,
                     seat.encode_latency_ms(),
                     datagrams.datagrams_in,
@@ -2232,7 +2261,9 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                     input_tally.buttons,
                     input_tally.wheels,
                     input_tally.motions,
-                    input_tally.pads
+                    input_tally.pads,
+                    sound.packets,
+                    sound.dropped
                 );
             }
         }
