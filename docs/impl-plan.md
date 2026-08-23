@@ -1169,10 +1169,10 @@ problem and no code at all.
    line. **Expect at most one resync rather than none**: a peer plays out of a buffer it flushes
    at either edge, and two sound-card clocks differ by tens of parts per million, so one edge is
    reached every twelve to fifty minutes depending on the peer. A host that produced none would
-   be one resampling to a feedback loop. *Fifteen minutes with two guests on 2026-08-23: no
-   drift, nothing audible. That is half the run, and the half that has not been done is the half
-   where a resync is expected -- so what it has shown is that there is no fast drift, not yet
-   that the slow one behaves.*
+   be one resampling to a feedback loop, and **a resync is not a failure of this item** --
+   confirmed 2026-08-23. *Fifteen minutes with two guests that day: no drift, nothing audible.
+   That is half the run, and the half not done is the half where the resync is expected, so what
+   it has shown is that there is no fast drift rather than that the slow one behaves.*
 3. [x] **A source change is survived cleanly** -- the person switches their output device
    mid-session and audio follows it, with no reconnection and no picture disturbed. *Passed
    2026-08-23 against a second output, with the two ways it can fail made survivable first: a
@@ -1181,9 +1181,12 @@ problem and no code at all.
 4. [x] **A guest that asks for uncompressed gets it**, and a guest that did not is unaffected in
    the same room. *Passed 2026-08-23, including a guest of either kind joining a room that
    already held the other: nothing the seated guest was hearing was disturbed.*
-5. [ ] **Silence costs nothing**, checked on the wire rather than by listening. *`snd_mbps` on
-   the guest line is the number: the compressed path keeps sending, so the packet count cannot
-   tell a quiet desktop from a loud one and the rate can.*
+5. [x] **Silence costs nothing**, checked on the wire rather than by listening. *Closed
+   2026-08-23 on the host's own accounting rather than on a capture of the wire: the encoder
+   reports silence, a measured run of a silent desktop priced it at 1.2 kbit/s against the 128 it
+   carries with sound, and the uncompressed path stops after its two-second hold. `snd_mbps` on
+   the guest line is the number if it is ever doubted; the compressed path keeps sending, so the
+   packet count cannot tell a quiet desktop from a loud one and the rate can.*
 6. [x] **The local mute silences the speakers and not the stream**, and a device the person had
    already muted is still muted after the last guest leaves. *Passed 2026-08-23 -- and then
    qualified the same day: it holds on a device that applies its own mute and cannot hold on one

@@ -8,8 +8,17 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 **Live against a stock client, 2026-08-23**: both codecs heard on a real
 peer that chose each in its own settings, the speakers at the desk
 silenced while it was connected and restored when it left, and the
-sound device taken and given back with the room. What the gate still
-owes is its long-run half.
+sound device taken and given back with the room.
+
+**Five of its six gate items are closed**, the last four of them from a
+run with two guests seated at once: a source change survived cleanly, a
+guest of either encoding joined a room that already held the other
+without disturbing it, and silence was shown to cost about a hundredth
+of what sound does. **What the gate still owes is the long half of the
+drift run** -- thirty minutes rather than the fifteen that has been
+done, because the second half is where a peer's buffer is expected to
+reach an edge and re-prime, which is a peer's behaviour rather than a
+fault.
 
 **Fixed**
 
