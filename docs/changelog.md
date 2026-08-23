@@ -2213,6 +2213,38 @@ fault.
   that only grows. The raw datagram counts separate them, and a round trip that
   never leaves zero says no acknowledgement was ever applied.
 
+## 8: public C ABI (in progress)
+
+**Changed**
+
+- **`lowlat_host_begin_p2p` takes the port to start the bind at.** It walks from
+  there exactly as the configured base does, and the port it reached still comes
+  back in the credentials, so the two are an in and an out pair rather than one
+  value asked and assumed. Zero asks for the configured base, which is what an
+  application with no port of its own to manage passes; one that has a mapping
+  on the gateway, a rule on the firewall or a pool to allocate from has it for a
+  reason, and none of those survive this library choosing for it.
+
+  **Credentials stay an output.** The reference generates them inside the SDK on
+  every path -- the client's attempt, the host's approval, and the certificate
+  the browser path needs -- and hands them out. An application-supplied key
+  would make an integrator's random number generator the session's, and both
+  directions key from that one value.
+
+- **An exhausted port walk takes any port rather than refusing the guest.** A
+  host whose range is occupied can still serve: nothing advertises the port that
+  was asked for, because every candidate is built from the address the socket
+  reports. Refusing turned a busy range into a guest who could not connect at
+  all, which is the harsher failure and is not what a peer does.
+
+**Fixed**
+
+- **The readiness marker is raised after the candidates, not before.** A
+  captured exchange puts every real candidate on the wire first and the marker
+  last, a second after the answer: it reads as "that is all of mine, now yours"
+  rather than "I am ready, begin". It had been moved ahead of them on reasoning
+  about unblocking the peer sooner, which the capture does not support.
+
 ## 2: connectivity (2026-08-16)
 
 **Fixed**

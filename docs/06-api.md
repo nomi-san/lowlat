@@ -243,7 +243,7 @@ lowlat_status lowlat_host_new_attempt(lowlat *ll, const lowlat_attempt_info *inf
 void          lowlat_host_add_candidate(lowlat *ll, const char *attempt_id,
                                         const lowlat_candidate *cand);
 lowlat_status lowlat_host_begin_p2p(lowlat *ll, const char *attempt_id,
-                                    lowlat_credentials *out);
+                                    uint16_t port, lowlat_credentials *out);
 void          lowlat_host_end_connection(lowlat *ll, const char *attempt_id);
 ```
 
@@ -259,11 +259,26 @@ quiet -- nothing in the protocol reports a host that never replied, so a peer gi
 connecting until its own deadline expires.
 
 `lowlat_host_begin_p2p` writes host credentials into `out` for the application to send as its
-answer. It does not send anything, because the SDK has no transport. **The port it reports is
-the one that was bound**, which is not necessarily the configured one: the bind walks when a
-port is taken, and advertising the configured port produces a peer that answers checks and
-never establishes. It takes no port argument for that reason -- the port is an answer, not a
-request.
+answer. It does not send anything, because the SDK has no transport.
+
+**The port is an in and an out pair, and they are different questions.** `port` is where the
+bind *starts*; `out->port` is where it *landed*. The bind walks when a port is taken and takes
+any port once the walk is exhausted, so the two differ whenever the range is busy -- and
+advertising the one that was asked for produces a peer that answers checks and never
+establishes. Everything advertised is built from the address the socket reports, which is why
+landing somewhere unexpected costs a mapping rather than a session.
+
+**Zero asks for the configured base**, which is what an application with no port of its own to
+manage passes. An application that does have one has it for a reason -- a mapping it made on
+the gateway, a rule it opened on the firewall, a pool it allocates from -- and none of those
+survive the SDK choosing for it. `out->port` is also the only way to learn the number
+*synchronously*: candidates carry it too, in the addresses they name, but those arrive as
+events afterwards.
+
+**Credentials stay an output.** The application never supplies them: the key material is
+generated here, from the one audited source of entropy, and both directions of the session key
+from it. An application-supplied key would make an integrator's random number generator the
+session's.
 
 `lowlat_host_add_candidate` and `lowlat_host_end_connection` accept unknown attempt
 identifiers silently. Those are races with teardown, not errors, and returning a status the

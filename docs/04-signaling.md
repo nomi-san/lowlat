@@ -103,6 +103,11 @@ the address on it is ignored by the receiver -- one implementation sends the lit
 - **Always send one.** A peer is entitled to withhold every real candidate until it has both
   the answer and a `sync` marker, and at least one does. Against that peer, an endpoint that
   never sends one negotiates successfully and then has nothing to check.
+- **Send it last, after every real candidate.** A captured exchange puts the four host
+  candidates on the wire first, the reflexive one a STUN round trip later, and the marker last,
+  a second after the answer. So it reads as "that is all of mine, now yours" rather than "I am
+  ready, begin", and a peer entitled to withhold its own candidates until it sees one is
+  entitled to expect ours to have arrived by then.
 - **Read the flag before the address.** Since the address is ignored, peers put different
   things in it: observed markers carry both the literal placeholder above and the sender's own
   reflexive address, and nothing stops one carrying a name this endpoint cannot parse. An
