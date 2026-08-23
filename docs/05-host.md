@@ -762,7 +762,20 @@ is the few tens of milliseconds the move itself takes.
 
 **A device that is not there is substituted, not refused.** A sound server hands out something
 plausible rather than failing, so a requested device is checked against the enumeration before it
-is opened -- the same rule a requested output follows in §7.
+is opened -- the same rule a requested output follows in §7. **A switch that will not open keeps
+the device that is working**: the name may have gone away between the enumeration and the
+request, and taking the sound from every guest to honour a change that failed is the worse of the
+two answers.
+
+**A source can also go away entirely, and nothing announces that either.** A sound server that
+restarts takes every capture with it, and a capture ends on its own thread: whether it is still
+delivering is therefore asked on the same pass that decides whether the room wants sound at all,
+rather than assumed from having opened it once. A device that was held and stopped is taken
+again a couple of seconds later, and the session is silent for exactly that long.
+
+**A device that never opened is not asked for again.** That is a machine with no sound server,
+which is answered once when the first guest arrives; retrying it costs a connection attempt that
+blocks the loop trying to encode, on a question whose answer does not change.
 
 ### §9.4 Silencing the speakers at the desk
 

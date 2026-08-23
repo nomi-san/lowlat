@@ -1126,6 +1126,15 @@ problem and no code at all.
   *Silent on the wire: a receiver rebuilds only for a codec, channel-count or mask change, and a
   device switch is none of them.*
 - [x] **Publish the source the host is on**, not the one it asked for.
+- [x] **A capture that stops is taken again.** *A sound server that restarts takes every capture
+  with it, and a capture ends on its own thread without telling anybody, so a host that opened
+  one once held a thread that had already returned. Asked on the pass that already decides
+  whether the room wants sound, which is the same rule one level down. Only a device that was
+  once held is retried, because a machine with no sound server answers the same way every time
+  and the attempt blocks the loop that encodes.*
+- [x] **What sound costs a guest is reported**, in the line a live run is read from: packets sent,
+  packets dropped, and the rate the channel is carrying. *Sound appeared nowhere in it, and the
+  gate below cannot be measured without it.*
 - [x] **The uncompressed bitrate comes out of the video ceiling** for that guest, not out of
   nothing. *The video rate controller cannot see it, and 1.54 Mbit/s is five percent of a thirty
   megabit session.*
@@ -1147,16 +1156,21 @@ problem and no code at all.
 
 1. [x] Audio reaches a stock client and plays, from the real desktop. *Passed 2026-08-23, both
    codecs, on a peer that chose each in its own settings.*
-2. [ ] **Thirty minutes with no drift**, measured as the packets a host sent against the samples a
-   client played, not as an impression. **Expect at most one resync rather than none**: a peer
-   plays out of a buffer it flushes at either edge, and two sound-card clocks differ by tens of
-   parts per million, so one edge is reached every twelve to fifty minutes depending on the peer.
-   A host that produced none would be one resampling to a feedback loop.
+2. [ ] **Thirty minutes with no drift**, measured as the packets a host sent against the samples
+   a client played, not as an impression; the host half of that is the `snd` count on the guest
+   line. **Expect at most one resync rather than none**: a peer plays out of a buffer it flushes
+   at either edge, and two sound-card clocks differ by tens of parts per million, so one edge is
+   reached every twelve to fifty minutes depending on the peer. A host that produced none would
+   be one resampling to a feedback loop.
 3. [ ] **A source change is survived cleanly** -- the person switches their output device
-   mid-session and audio follows it, with no reconnection and no picture disturbed.
+   mid-session and audio follows it, with no reconnection and no picture disturbed. *And the two
+   ways it can fail are now survivable rather than fatal: a switch that will not open keeps the
+   device in use, and a device that stops delivering is taken again.*
 4. [ ] **A guest that asks for uncompressed gets it**, and a guest that did not is unaffected in
    the same room. *Each half is proven alone; the mixed room is not.*
-5. [ ] **Silence costs nothing**, checked on the wire rather than by listening.
+5. [ ] **Silence costs nothing**, checked on the wire rather than by listening. *`snd_mbps` on
+   the guest line is the number: the compressed path keeps sending, so the packet count cannot
+   tell a quiet desktop from a loud one and the rate can.*
 6. [x] **The local mute silences the speakers and not the stream**, and a device the person had
    already muted is still muted after the last guest leaves. *Passed 2026-08-23.*
 

@@ -13,6 +13,38 @@ owes is its long-run half.
 
 **Fixed**
 
+- **A capture that stopped stayed stopped.** A capture ends on its own
+  thread when the sound server goes away, and it tells nobody: the host
+  held a thread that had already returned, with the room still saying
+  somebody was listening, and nothing read the device again for the rest
+  of the session. It is the same shape as the entry below it, one level
+  down -- a decision taken on a change rather than on every pass -- and
+  it is why the pass that knows the room's size now asks whether the
+  device is still delivering rather than assuming it from having opened
+  it once.
+
+  **Only a device that was once held is taken again**, and not more
+  often than every two seconds. A capture that never opened is a machine
+  with no sound server: asking it again costs a connection attempt that
+  blocks the loop trying to encode, and the answer does not change.
+
+  **A failed reopen keeps the stream that is working.** A device switch
+  that will not open, or a new default output that is not ready yet, no
+  longer ends the capture over it -- and a device that has genuinely
+  gone stops delivering on its own, which is the path above.
+
+  Its regression test cuts a proxy in front of the sound server, which
+  produces a server going away without disturbing the one the machine is
+  using. Off by default, and watched to fail without the fix.
+
+- **A sound device that does not resolve was accepted and then took the
+  sound away.** The boundary answered yes, the loop found no such device
+  and the capture ended there. The name is now checked against the
+  enumeration at the call, which is the only place that can refuse: the
+  loop that opens it runs long after the call returned. **The setter
+  only**, never the start -- a host whose sound server is not up yet
+  must still be able to stream pictures.
+
 - **A sound device held after everybody had gone.** It was taken by the
   loop that waits for a guest and given back by that same loop -- which
   is never reached again, because the encode loop sleeps through an
@@ -34,6 +66,17 @@ owes is its long-run half.
   stops spending 1.54 Mbit/s on nothing.
 
 **Added**
+
+- **What sound costs a guest, in the line a live run is read from.**
+  Sound appeared nowhere in it: the picture's numbers say nothing about
+  it, and a packet refused for a full window is invisible on the wire by
+  design. The packets sent, the ones dropped and the rate the channel is
+  carrying now travel with the rest.
+
+  **The rate is the one that answers the question.** The compressed path
+  keeps sending through silence, so a count that goes on climbing cannot
+  tell a quiet desktop from a loud one, and only the rate falling to a
+  hundredth of itself says silence is costing nothing.
 
 - **The framing, in the protocol core.** Fifteen bytes ahead of the
   payload on the audio channel: a channel mask, the sample count per
