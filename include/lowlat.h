@@ -550,9 +550,15 @@ typedef struct lowlat_credentials {
     // Set by the caller to `sizeof(lowlat_credentials)`.
     uint32_t size;
     // **The port this guest was actually bound to**, which is not necessarily
-    // the configured one: the bind walks when a port is taken. Advertising the
-    // configured port instead produces a peer that answers checks and never
-    // establishes.
+    // the one that was asked for: the bind walks when a port is taken, and
+    // takes any port once the walk is exhausted.
+    //
+    // **This is the answer to the port that went in, and it arrives
+    // synchronously.** Candidates carry it too, in the addresses they name,
+    // so nothing has to compose an address from it; what it is for is the
+    // caller that needs the number *now* -- to map it on the gateway, open it
+    // on the firewall, or return it to a pool -- rather than when the first
+    // candidate event arrives.
     uint16_t port;
     uint16_t reserved;
     char ufrag[LOWLAT_ICE_MAX];
@@ -897,6 +903,14 @@ void lowlat_host_add_candidate(struct lowlat *ll,
 // nothing: the answer travels over the application's signaling, because this
 // library has no transport for it.
 //
+// `port` is where the bind **starts**, not where it must land. It walks when
+// the port is taken and the port it reached comes back in `out`, so the two
+// are an in and an out pair rather than one value asked and assumed. **Zero
+// asks for the configured base port**, which is what a caller with no opinion
+// passes; a caller with an opinion has one for a reason -- a mapping on the
+// gateway, a rule on the firewall, a pool it allocates from -- and none of
+// those survive this library choosing for it.
+//
 // # Safety
 //
 // `ll` came from [`lowlat_create`], `attempt_id` is a NUL-terminated string,
@@ -904,6 +918,7 @@ void lowlat_host_add_candidate(struct lowlat *ll,
 // it is set.
 lowlat_status lowlat_host_begin_p2p(struct lowlat *ll,
                                     const char *attempt_id,
+                                    uint16_t port,
                                     struct lowlat_credentials *out);
 
 // End an attempt, whether or not it was ever approved.

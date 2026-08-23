@@ -392,7 +392,7 @@ internal static partial class Native
 
     [LibraryImport(Library)]
     internal static unsafe partial Status lowlat_host_begin_p2p(
-        IntPtr handle, byte* attemptId, Credentials* ours);
+        IntPtr handle, byte* attemptId, ushort port, Credentials* ours);
 
     [LibraryImport(Library)]
     internal static unsafe partial void lowlat_host_end_connection(IntPtr handle, byte* attemptId);

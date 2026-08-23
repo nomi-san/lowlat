@@ -651,9 +651,15 @@ pub struct lowlat_credentials {
     /// Set by the caller to `sizeof(lowlat_credentials)`.
     pub size: u32,
     /// **The port this guest was actually bound to**, which is not necessarily
-    /// the configured one: the bind walks when a port is taken. Advertising the
-    /// configured port instead produces a peer that answers checks and never
-    /// establishes.
+    /// the one that was asked for: the bind walks when a port is taken, and
+    /// takes any port once the walk is exhausted.
+    ///
+    /// **This is the answer to the port that went in, and it arrives
+    /// synchronously.** Candidates carry it too, in the addresses they name,
+    /// so nothing has to compose an address from it; what it is for is the
+    /// caller that needs the number *now* -- to map it on the gateway, open it
+    /// on the firewall, or return it to a pool -- rather than when the first
+    /// candidate event arrives.
     pub port: u16,
     pub reserved: u16,
     pub ufrag: [c_char; LOWLAT_ICE_MAX],
@@ -1277,6 +1283,14 @@ pub unsafe extern "C" fn lowlat_host_add_candidate(
 /// nothing: the answer travels over the application's signaling, because this
 /// library has no transport for it.
 ///
+/// `port` is where the bind **starts**, not where it must land. It walks when
+/// the port is taken and the port it reached comes back in `out`, so the two
+/// are an in and an out pair rather than one value asked and assumed. **Zero
+/// asks for the configured base port**, which is what a caller with no opinion
+/// passes; a caller with an opinion has one for a reason -- a mapping on the
+/// gateway, a rule on the firewall, a pool it allocates from -- and none of
+/// those survive this library choosing for it.
+///
 /// # Safety
 ///
 /// `ll` came from [`lowlat_create`], `attempt_id` is a NUL-terminated string,
@@ -1286,6 +1300,7 @@ pub unsafe extern "C" fn lowlat_host_add_candidate(
 pub unsafe extern "C" fn lowlat_host_begin_p2p(
     ll: *mut lowlat,
     attempt_id: *const c_char,
+    port: u16,
     out: *mut lowlat_credentials,
 ) -> lowlat_status {
     unsafe {
@@ -1300,7 +1315,7 @@ pub unsafe extern "C" fn lowlat_host_begin_p2p(
             let Some(seam) = held.seam.as_mut() else {
                 return LOWLAT_ERR_NOT_STARTED;
             };
-            let ours = match seam.begin_p2p(attempt) {
+            let ours = match seam.begin_p2p(attempt, port) {
                 Ok(ours) => ours,
                 Err(error) => return refused(error),
             };
@@ -2996,7 +3011,7 @@ mod seam_tests {
         let mut ours = credentials();
         let id = std::ffi::CString::new(id).expect("no interior nul");
         assert_eq!(
-            unsafe { lowlat_host_begin_p2p(handle, id.as_ptr(), &raw mut ours) },
+            unsafe { lowlat_host_begin_p2p(handle, id.as_ptr(), 0, &raw mut ours) },
             LOWLAT_OK
         );
     }
@@ -3035,7 +3050,7 @@ mod seam_tests {
 
         let mut ours = credentials();
         assert_eq!(
-            unsafe { lowlat_host_begin_p2p(handle, c"a".as_ptr(), &raw mut ours) },
+            unsafe { lowlat_host_begin_p2p(handle, c"a".as_ptr(), 0, &raw mut ours) },
             LOWLAT_OK
         );
         // **The port that was bound, not the one that was configured.** The
@@ -3068,7 +3083,7 @@ mod seam_tests {
         // Approving something never registered.
         let mut ours = credentials();
         assert_eq!(
-            unsafe { lowlat_host_begin_p2p(handle, c"nothing".as_ptr(), &raw mut ours) },
+            unsafe { lowlat_host_begin_p2p(handle, c"nothing".as_ptr(), 0, &raw mut ours) },
             LOWLAT_ERR_UNKNOWN_ATTEMPT
         );
 
@@ -3087,11 +3102,11 @@ mod seam_tests {
             LOWLAT_OK
         );
         assert_eq!(
-            unsafe { lowlat_host_begin_p2p(handle, c"a".as_ptr(), &raw mut ours) },
+            unsafe { lowlat_host_begin_p2p(handle, c"a".as_ptr(), 0, &raw mut ours) },
             LOWLAT_OK
         );
         assert_eq!(
-            unsafe { lowlat_host_begin_p2p(handle, c"a".as_ptr(), &raw mut ours) },
+            unsafe { lowlat_host_begin_p2p(handle, c"a".as_ptr(), 0, &raw mut ours) },
             LOWLAT_ERR_ALREADY_BEGUN
         );
 
@@ -3116,7 +3131,7 @@ mod seam_tests {
             assert_eq!(status, LOWLAT_OK);
             let id_c = std::ffi::CString::new(id.as_str()).expect("no interior nul");
             assert_eq!(
-                unsafe { lowlat_host_begin_p2p(handle, id_c.as_ptr(), &raw mut ours) },
+                unsafe { lowlat_host_begin_p2p(handle, id_c.as_ptr(), 0, &raw mut ours) },
                 LOWLAT_OK
             );
             ids.push(id);

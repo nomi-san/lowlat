@@ -605,7 +605,11 @@ async fn session_loop(
                             peers.remove(&offer.attempt_id);
                             continue;
                         }
-                        let host = seam.begin_p2p(&offer.attempt_id)?;
+                        // **Zero: no opinion.** This service manages no
+                        // gateway mapping and no port pool, so the configured
+                        // base is the right start and the seam reports where it
+                        // landed.
+                        let host = seam.begin_p2p(&offer.attempt_id, 0)?;
 
                         let creds = Credentials {
                             aes256: Some(host.aes256),

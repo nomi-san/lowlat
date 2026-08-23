@@ -75,7 +75,7 @@ int main(int argc, char **argv)
     lowlat_status (*get_audio_outputs)(lowlat_audio_output *, uint32_t *);
     lowlat_status (*new_attempt)(lowlat *, const lowlat_attempt_info *);
     void (*add_candidate)(lowlat *, const char *, const lowlat_candidate *);
-    lowlat_status (*begin_p2p)(lowlat *, const char *, lowlat_credentials *);
+    lowlat_status (*begin_p2p)(lowlat *, const char *, uint16_t, lowlat_credentials *);
     void (*end_connection)(lowlat *, const char *);
     lowlat_status (*get_guests)(lowlat *, lowlat_guest *, uint32_t *);
     lowlat_status (*send_user_data)(lowlat *, uint32_t, uint32_t, const void *, uint32_t);
@@ -354,7 +354,7 @@ int main(int argc, char **argv)
     lowlat_credentials ours;
     memset(&ours, 0, sizeof ours);
     ours.size = (uint32_t) sizeof ours;
-    if (begin_p2p(ll, offer.attempt_id, &ours) != LOWLAT_OK) {
+    if (begin_p2p(ll, offer.attempt_id, 0, &ours) != LOWLAT_OK) {
         fprintf(stderr, "harness: an attempt could not be approved\n");
         return 1;
     }
@@ -370,7 +370,7 @@ int main(int argc, char **argv)
                 strlen(ours.aes256));
         return 1;
     }
-    if (begin_p2p(ll, offer.attempt_id, &ours) != LOWLAT_ERR_ALREADY_BEGUN) {
+    if (begin_p2p(ll, offer.attempt_id, 0, &ours) != LOWLAT_ERR_ALREADY_BEGUN) {
         fprintf(stderr, "harness: approving twice was not refused\n");
         return 1;
     }

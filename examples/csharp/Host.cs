@@ -283,7 +283,12 @@ internal sealed class Host
     }
 
     /// Approve, and take back the credentials to answer with.
-    public Credentials BeginP2P(string attemptId, out Status status)
+    ///
+    /// `port` is where the bind starts, not where it lands: it walks when the
+    /// port is taken, and the port it reached comes back in the credentials.
+    /// Zero asks for the configured base, which is what an application with no
+    /// port of its own to manage passes.
+    public Credentials BeginP2P(string attemptId, out Status status, ushort port = 0)
     {
         unsafe
         {
@@ -291,7 +296,7 @@ internal sealed class Host
             var id = System.Text.Encoding.UTF8.GetBytes(attemptId + "\0");
             fixed (byte* name = id)
             {
-                status = Native.lowlat_host_begin_p2p(handle, name, &ours);
+                status = Native.lowlat_host_begin_p2p(handle, name, port, &ours);
             }
             return ours;
         }

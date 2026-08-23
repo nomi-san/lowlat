@@ -734,7 +734,16 @@ impl Admission {
 
     /// The application approves. Bind, start connectivity, and hand back the
     /// credentials the answer carries.
-    pub fn begin_p2p(&mut self, id: &str) -> Result<HostCredentials, Error> {
+    /// `port` is where the bind **starts**, not where it must land: it walks
+    /// when the port is taken, exactly as the configured base does, and the
+    /// port it reached comes back in [`HostCredentials::port`]. Zero asks for
+    /// the configured base instead, which is what an application with no
+    /// opinion passes.
+    ///
+    /// **An application with an opinion has one for a reason** -- a mapping it
+    /// made on the gateway, a rule it opened on the firewall, a pool it is
+    /// allocating from -- and none of those survive the SDK choosing for it.
+    pub fn begin_p2p(&mut self, id: &str, port: u16) -> Result<HostCredentials, Error> {
         if self.occupancy() >= self.config.max_guests {
             return Err(Error::AtCapacity);
         }
@@ -762,10 +771,21 @@ impl Admission {
             .ok_or(Error::Crypto)?
             .copy_from_slice(&prefix);
 
-        // Walks from the base, so a second concurrent guest lands on the next
-        // free port rather than failing to bind at all.
-        let socket = Socket::open(self.config.base_port).map_err(|_| Error::Io)?;
-        let port = socket.local_addr().map_err(|_| Error::Io)?.port();
+        // Walks from where it was asked to start, so a second concurrent guest
+        // lands on the next free port rather than failing to bind at all, and
+        // **takes any port rather than refusing the guest** once the walk is
+        // exhausted. Nothing advertises the port that was asked for: every
+        // candidate is built from the address the socket reports, so landing
+        // somewhere unexpected costs a mapping, not a session.
+        let start = if port == 0 {
+            self.config.base_port
+        } else {
+            port
+        };
+        let socket = Socket::open_or_any_port(start).map_err(|_| Error::Io)?;
+        // **Where it landed, which is not necessarily where it was asked to
+        // start.** Everything advertised is built from this.
+        let bound = socket.local_addr().map_err(|_| Error::Io)?.port();
         let wake = Wake::new().map_err(|_| Error::Io)?;
 
         let (inject, arrivals) = mpsc::channel::<SocketAddr>();
@@ -831,15 +851,6 @@ impl Admission {
         attempt.ask = Some(ask);
         attempt.number = Some(guest_number);
 
-        // Emitted with the answer rather than in response to anything, and
-        // **before the candidates it unblocks**: a peer is entitled to
-        // withhold every real candidate of its own until it has seen one,
-        // so anything queued ahead of it delays the exchange in both
-        // directions ([04 §3](../../../docs/04-signaling.md)).
-        self.emit.send(Event::Ready {
-            attempt: id.to_string(),
-        });
-
         // **Gathered here rather than by the application.** Which local
         // addresses are worth offering is a connectivity decision with a rule
         // behind it, and an application that had to re-derive that rule would
@@ -849,17 +860,27 @@ impl Admission {
         for ip in lowlat_net::host_addresses(self.config.shared_address_space) {
             self.emit.send(Event::Candidate {
                 attempt: id.to_string(),
-                addr: SocketAddr::new(ip, port),
+                addr: SocketAddr::new(ip, bound),
                 from_stun: false,
             });
         }
+
+        // **After the candidates it unblocks, which is the order a peer sends
+        // in.** A captured exchange puts every real candidate on the wire first
+        // and the marker a second later, last: it reads as "that is all of
+        // mine, now yours" rather than "I am ready, begin". A peer entitled to
+        // withhold its own candidates until it sees one is therefore entitled
+        // to expect ours to have arrived by then ([04 §3](../../../docs/04-signaling.md)).
+        self.emit.send(Event::Ready {
+            attempt: id.to_string(),
+        });
 
         Ok(HostCredentials {
             ufrag: local.ufrag,
             pwd: local.pwd,
             fingerprint: local.fingerprint,
             aes256: local.aes256,
-            port,
+            port: bound,
         })
     }
 
@@ -2496,6 +2517,23 @@ mod tests {
         })
     }
 
+    /// As [`admission`], but on a fixed base rather than an ephemeral one, for
+    /// the tests that are about which port was chosen.
+    fn admission_on(base: u16) -> Admission {
+        Admission::new(Config {
+            microphone: None,
+            exclusive_pointer: false,
+            rumble_probe: false,
+            exclusive_hold_ms: crate::floor::HOLD_MS,
+            cg_level: 1,
+            base_port: base,
+            shared_address_space: false,
+            max_guests: 4,
+            servers: Vec::new(),
+            stream: None,
+        })
+    }
+
     #[test]
     fn an_unknown_attempt_is_a_no_op_rather_than_a_fault() {
         let mut seam = Admission::new(Config {
@@ -2513,7 +2551,10 @@ mod tests {
         // A candidate for an identifier that never existed, or has just been
         // torn down, is a race with the peer and not an error.
         seam.add_candidate("nope", "127.0.0.1:9000".parse().unwrap(), false);
-        assert_eq!(seam.begin_p2p("nope").unwrap_err(), Error::UnknownAttempt);
+        assert_eq!(
+            seam.begin_p2p("nope", 0).unwrap_err(),
+            Error::UnknownAttempt
+        );
     }
 
     #[test]
@@ -2521,9 +2562,9 @@ mod tests {
         let mut seam = admission(1);
         seam.new_attempt("one", peer()).expect("register");
         seam.new_attempt("two", peer()).expect("register");
-        seam.begin_p2p("one").expect("first guest");
+        seam.begin_p2p("one", 0).expect("first guest");
         // Registering was fine; admitting past the limit is not.
-        assert_eq!(seam.begin_p2p("two").unwrap_err(), Error::AtCapacity);
+        assert_eq!(seam.begin_p2p("two", 0).unwrap_err(), Error::AtCapacity);
         assert_eq!(seam.occupancy(), 1);
         seam.end_connection("one");
     }
@@ -2582,7 +2623,7 @@ mod tests {
         let buffered = seam.attempts.get("a").map(|a| a.pending.len());
         assert_eq!(buffered, Some(2), "a candidate before approval was dropped");
 
-        seam.begin_p2p("a").expect("approve");
+        seam.begin_p2p("a", 0).expect("approve");
         let drained = seam.attempts.get("a").map(|a| a.pending.len());
         assert_eq!(drained, Some(0), "buffered candidates were not handed over");
         seam.end_connection("a");
@@ -2596,8 +2637,8 @@ mod tests {
         let mut seam = admission(4);
         seam.new_attempt("a", peer()).expect("register");
         seam.new_attempt("b", peer()).expect("register");
-        let first = seam.begin_p2p("a").expect("approve a");
-        let second = seam.begin_p2p("b").expect("approve b");
+        let first = seam.begin_p2p("a", 0).expect("approve a");
+        let second = seam.begin_p2p("b", 0).expect("approve b");
 
         assert_eq!(first.ufrag.len(), 8);
         assert_eq!(first.pwd.len(), 32);
@@ -2613,6 +2654,85 @@ mod tests {
     /// One socket per guest, so a second concurrent guest cannot have the base
     /// port and walks to the next. A host that cannot walk cannot admit a
     /// second guest at all on a configured port. *Named regression test.*
+    /// **An exhausted walk takes any port rather than refusing the guest.**
+    ///
+    /// A host whose range is occupied can still serve: nothing advertises the
+    /// port that was asked for, because every candidate is built from the
+    /// address the socket reports. Refusing instead turns a busy range into a
+    /// guest who cannot connect at all, which is the harsher failure and not
+    /// what a peer does.
+    #[test]
+    fn an_exhausted_walk_still_admits_the_guest() {
+        let probe = Socket::open(0).expect("probe");
+        let base = probe.local_addr().expect("addr").port();
+        drop(probe);
+
+        // Occupy the whole walk, so nothing in the range can be bound.
+        let mut held = Vec::new();
+        // Written out rather than taken from the walk's own constant, so a
+        // fixture cannot scale with the thing it is meant to pin.
+        for step in 0..50u16 {
+            let Some(port) = base.checked_add(step) else {
+                break;
+            };
+            if let Ok(socket) = Socket::open(port)
+                && socket.local_addr().ok().map(|a| a.port()) == Some(port)
+            {
+                held.push(socket);
+            }
+        }
+        assert!(!held.is_empty(), "the range could not be occupied");
+
+        let mut seam = admission_on(base);
+        seam.new_attempt("a", peer()).expect("register");
+        let ours = seam
+            .begin_p2p("a", 0)
+            .expect("an occupied range must not refuse the guest");
+        assert_ne!(ours.port, 0, "no port was reported");
+        seam.end_connection("a");
+        drop(held);
+    }
+
+    /// **A port the caller supplies is where the bind starts**, and zero means
+    /// the configured base instead.
+    ///
+    /// An application that manages its own gateway mapping, firewall rule or
+    /// port pool has an opinion for a reason, and none of those survive this
+    /// library choosing for it. The base is set to something the supplied port
+    /// is not, so a bind that ignored the argument lands somewhere this can
+    /// see.
+    #[test]
+    fn a_supplied_port_is_where_the_bind_starts() {
+        let probe = Socket::open(0).expect("probe");
+        let asked = probe.local_addr().expect("addr").port();
+        drop(probe);
+        let other = Socket::open(0).expect("probe");
+        let base = other.local_addr().expect("addr").port();
+        drop(other);
+        assert_ne!(
+            asked, base,
+            "the two probes must differ for this to prove anything"
+        );
+
+        let mut seam = admission_on(base);
+        seam.new_attempt("a", peer()).expect("register");
+        let ours = seam.begin_p2p("a", asked).expect("approve");
+        assert_eq!(
+            ours.port, asked,
+            "the supplied port was ignored and the configured base used instead"
+        );
+        seam.end_connection("a");
+
+        // And zero asks for the base.
+        seam.new_attempt("b", peer()).expect("register");
+        let theirs = seam.begin_p2p("b", 0).expect("approve");
+        assert_eq!(
+            theirs.port, base,
+            "zero did not fall back to the configured base"
+        );
+        seam.end_connection("b");
+    }
+
     #[test]
     fn concurrent_guests_land_on_consecutive_ports() {
         // A base the first guest can actually take. Ephemeral would give each
@@ -2637,9 +2757,9 @@ mod tests {
         seam.new_attempt("b", peer()).expect("register b");
         seam.new_attempt("c", peer()).expect("register c");
 
-        let a = seam.begin_p2p("a").expect("approve a").port;
-        let b = seam.begin_p2p("b").expect("approve b").port;
-        let c = seam.begin_p2p("c").expect("approve c").port;
+        let a = seam.begin_p2p("a", 0).expect("approve a").port;
+        let b = seam.begin_p2p("b", 0).expect("approve b").port;
+        let c = seam.begin_p2p("c", 0).expect("approve c").port;
 
         assert_eq!(a, base, "the first guest did not take the configured port");
         assert_eq!(b, base + 1, "the second guest did not walk");
@@ -2676,7 +2796,7 @@ mod tests {
     fn approval_asks_for_a_readiness_marker_to_be_sent() {
         let mut seam = admission(4);
         seam.new_attempt("a", peer()).expect("register");
-        seam.begin_p2p("a").expect("approve");
+        seam.begin_p2p("a", 0).expect("approve");
 
         let mut saw_ready = false;
         while let Some(received) = seam.poll_event() {
@@ -2772,19 +2892,40 @@ mod tests {
         );
 
         seam.new_attempt("a", peer()).expect("register");
-        seam.begin_p2p("a").expect("approve");
+        seam.begin_p2p("a", 0).expect("approve");
 
         // It reaches the holder rather than the seam, which now reports
         // nothing at all.
         assert!(seam.poll_event().is_none(), "the seam still answers polls");
-        let taken = events
-            .recv_timeout(core::time::Duration::from_secs(5))
-            .expect("approval raises the readiness marker");
+
+        // **The marker comes last, after the candidates it unblocks.** That is
+        // the order a peer sends in, and a peer entitled to withhold its own
+        // candidates until it sees one is entitled to expect ours by then.
+        let mut seen = Vec::new();
+        while let Some(taken) = events.recv_timeout(core::time::Duration::from_secs(5)) {
+            let ready = matches!(taken.event, Event::Ready { .. });
+            seen.push(taken.event);
+            if ready {
+                break;
+            }
+        }
+        let (last, candidates) = seen.split_last().expect("approval raises events");
         assert_eq!(
-            taken.event,
+            *last,
             Event::Ready {
                 attempt: "a".to_string()
-            }
+            },
+            "the readiness marker was not the last thing raised"
+        );
+        assert!(
+            !candidates.is_empty(),
+            "no candidate was raised before the marker"
+        );
+        assert!(
+            candidates
+                .iter()
+                .all(|event| matches!(event, Event::Candidate { .. })),
+            "something other than a candidate came before the marker: {candidates:?}"
         );
         seam.end_connection("a");
     }
@@ -2793,7 +2934,7 @@ mod tests {
     fn ending_an_attempt_frees_the_slot_without_reporting_it() {
         let mut seam = admission(1);
         seam.new_attempt("a", peer()).expect("register");
-        seam.begin_p2p("a").expect("approve");
+        seam.begin_p2p("a", 0).expect("approve");
         seam.end_connection("a");
 
         assert_eq!(seam.occupancy(), 0);
@@ -3628,7 +3769,7 @@ mod reclamation {
         for round in 0..4 {
             let id = format!("guest-{round}");
             seam.new_attempt(&id, peer()).expect("register");
-            ports.push(seam.begin_p2p(&id).expect("approve").port);
+            ports.push(seam.begin_p2p(&id, 0).expect("approve").port);
             seam.end_connection(&id);
         }
 
