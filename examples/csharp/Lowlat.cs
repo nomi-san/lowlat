@@ -208,9 +208,20 @@ internal struct HostStatus
     public uint Width;
     public uint Height;
     public byte RunningByte;
-    private byte reserved0, reserved1, reserved2;
+    public byte AudioActiveByte;
+    private byte reserved0, reserved1;
+    [InlineArray(Sizes.Output)] public struct DeviceName { private byte first; }
+    /// The sound device being read, which is not the one that was asked for:
+    /// an empty request means the default output and the server may move a
+    /// stream while it runs.
+    public DeviceName AudioDevice;
 
     public bool Running => RunningByte != 0;
+
+    /// Whether a sound device is being read right now, which is not what sound
+    /// is set to: nothing is read in an empty room, and a device that could
+    /// not be opened is not read either.
+    public bool AudioActive => AudioActiveByte != 0;
 }
 
 [StructLayout(LayoutKind.Sequential)]

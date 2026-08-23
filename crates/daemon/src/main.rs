@@ -347,6 +347,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(lowlat_audio::encode::DEFAULT_BITRATE_KBPS),
             allow_raw_audio: flag_set("--allow-raw-audio"),
+            // The daemon's switch is its command line, which does not change
+            // while it runs: no source means no sound, and there is nothing
+            // here that could turn it back on.
+            audio_on: !flag_set("--no-audio"),
             audio: audio_config(),
             codec,
             backend,

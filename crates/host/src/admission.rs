@@ -1095,6 +1095,13 @@ impl Admission {
             .map_or_else(Default::default, crate::stream::Stream::audio)
     }
 
+    /// What sound is doing now, which is not what it is set to.
+    pub fn audio_state(&self) -> (bool, Option<String>) {
+        self.stream
+            .as_ref()
+            .map_or((false, None), crate::stream::Stream::sound_state)
+    }
+
     /// What the stream is running at now.
     pub fn video(&self) -> Option<crate::stream::LiveVideo> {
         self.stream.as_ref().map(crate::stream::Stream::video)

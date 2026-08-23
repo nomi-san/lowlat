@@ -138,7 +138,9 @@ struct SoundCells {
 impl SoundCells {
     fn new(config: &Config) -> Self {
         Self {
-            on: AtomicU32::new(u32::from(config.audio.is_some())),
+            // **Both, and not either.** A host with no source cannot be
+            // switched on, and one that has a source can arrive switched off.
+            on: AtomicU32::new(u32::from(config.audio_on && config.audio.is_some())),
             allow_raw: AtomicU32::new(u32::from(config.allow_raw_audio)),
             kbps: AtomicU32::new(config.audio_kbps),
         }
@@ -810,12 +812,21 @@ pub enum Backend {
 /// name is as long as the system chose to make it.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Where sound is read from, or **nothing for a host that streams pictures
-    /// only**.
+    /// Where sound is read from, or **nothing for a host with no sound source
+    /// at all**, which is a decision taken when the stream is built and never
+    /// after.
     ///
     /// A failure to open it is not a failure to host: sound goes off, the
     /// reason is logged once, and the session runs.
     pub audio: Option<lowlat_audio::Config>,
+    /// Whether sound is switched on.
+    ///
+    /// **Separate from having a source, because this one is live.** Switching
+    /// sound off gives the device back and switching it on takes it again, and
+    /// a host that arrived here switched off must still be able to do the
+    /// second -- so what a caller can change and what it cannot are two fields
+    /// rather than the presence of one.
+    pub audio_on: bool,
     /// What the compressed form is encoded at.
     pub audio_kbps: u32,
     /// **A permission, not a request.** A guest asks for the uncompressed form
@@ -1011,6 +1022,31 @@ impl Stream {
             self.shared.sound_kbps(),
             self.shared.sound_wanted().read(),
         )
+    }
+
+    /// What sound is **doing** now: whether a device is being read, and which.
+    ///
+    /// Different from the settings above in the way the picture's size is
+    /// different from the configured one. Sound is off in an empty room
+    /// however it is configured, a capture that could not be opened is not
+    /// reading anything, and an empty device asks for the default rather than
+    /// naming what that turned out to be.
+    ///
+    /// **Tried rather than waited for.** The loop holds this while it opens a
+    /// device, which can take seconds against a sound server that is not
+    /// answering, and a caller asking what is happening must not be parked
+    /// behind that. Busy means the loop is opening or closing it, which is not
+    /// reading either.
+    pub fn sound_state(&self) -> (bool, Option<String>) {
+        self.shared
+            .held_sound
+            .try_lock()
+            .map_or((false, None), |held| {
+                (
+                    held.as_ref().is_some_and(crate::audio::Sound::alive),
+                    held.as_ref().and_then(crate::audio::Sound::device),
+                )
+            })
     }
 
     /// Capture a different output, without ending anybody's session.
@@ -3236,6 +3272,7 @@ mod tests {
     fn a_live_video_change_is_taken_once_and_then_not_again() {
         let stream = Stream::start(Config {
             audio: None,
+            audio_on: false,
             audio_kbps: 128,
             allow_raw_audio: false,
             output: None,
@@ -3370,6 +3407,7 @@ mod tests {
         fn with_pool(slots: usize) -> Self {
             let config = Config {
                 audio: None,
+                audio_on: false,
                 audio_kbps: 128,
                 allow_raw_audio: false,
                 output: None,
@@ -3490,6 +3528,7 @@ mod tests {
     fn test_config(codec: Codec) -> Config {
         Config {
             audio: None,
+            audio_on: false,
             audio_kbps: 128,
             allow_raw_audio: false,
             output: None,
@@ -4178,6 +4217,66 @@ mod tests {
         let _ = std::fs::remove_file(&socket);
     }
 
+    /// **Having a sound source and being switched on are two things.** They
+    /// were one, and the one they were was the source: a host that arrived
+    /// with sound off had no source built, so the setter could turn the
+    /// setting on and nothing would ever take a device -- the single field of
+    /// that configuration that was not live, in the one structure documented
+    /// as having no settled half.
+    #[test]
+    fn a_source_is_not_the_same_as_being_switched_on() {
+        let mut config = test_config(Codec::H264);
+        config.audio = Some(lowlat_audio::Config::default());
+
+        config.audio_on = false;
+        assert_eq!(
+            SoundCells::new(&config).on.load(Ordering::Relaxed),
+            0,
+            "a host that arrived switched off started reading"
+        );
+        config.audio_on = true;
+        assert_eq!(SoundCells::new(&config).on.load(Ordering::Relaxed), 1);
+
+        // And a host with no source at all cannot be switched on, which is
+        // what the daemon's own flag asks for.
+        config.audio = None;
+        assert_eq!(
+            SoundCells::new(&config).on.load(Ordering::Relaxed),
+            0,
+            "sound was on with nothing to read"
+        );
+    }
+
+    /// The same rule end to end: **switched on after starting off really takes
+    /// the device**, and switched off gives it back.
+    #[test]
+    #[ignore = "needs a sound server"]
+    fn sound_switched_on_after_starting_off_takes_the_device() {
+        let (shared, _stream, _arrivals) = parked();
+        let mut config = test_config(Codec::H264);
+        config.audio = Some(lowlat_audio::Config::default());
+        config.audio_on = false;
+        // What the boundary sets when a host starts.
+        shared.set_sound(config.audio_on, false, 128);
+
+        reconcile_sound(&shared, 1, &config);
+        assert!(
+            !reading(&shared),
+            "sound was taken while it was switched off"
+        );
+
+        shared.set_sound(true, false, 128);
+        reconcile_sound(&shared, 1, &config);
+        assert!(
+            reading(&shared),
+            "sound was never taken after being switched on"
+        );
+
+        shared.set_sound(false, false, 128);
+        reconcile_sound(&shared, 1, &config);
+        assert!(!reading(&shared), "the device was not given back");
+    }
+
     /// A proxy that is cut however the test leaves.
     ///
     /// **Including through a failed assertion**, which otherwise leaves a
@@ -4841,6 +4940,7 @@ mod tests {
     fn the_real_encoder_serves_a_seated_guest() {
         let stream = Stream::start(Config {
             audio: None,
+            audio_on: false,
             audio_kbps: 128,
             allow_raw_audio: false,
             output: None,
@@ -4911,6 +5011,7 @@ mod tests {
             .unwrap_or(0);
         let stream = Stream::start(Config {
             audio: None,
+            audio_on: false,
             audio_kbps: 128,
             allow_raw_audio: false,
             output: None,
@@ -4971,6 +5072,7 @@ mod tests {
     fn measure(fps: u32, frames: usize) -> Report {
         let stream = Stream::start(Config {
             audio: None,
+            audio_on: false,
             audio_kbps: 128,
             allow_raw_audio: false,
             output: None,

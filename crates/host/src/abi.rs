@@ -975,10 +975,13 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
         stream: Some(crate::stream::Config {
             audio_kbps,
             allow_raw_audio: allow_raw,
-            // **Absent means a host that streams pictures only**, which is what
-            // switching sound off asks for; the cells behind it still carry
-            // what was set, so switching it back on needs no second call.
-            audio: sound_on.then(|| lowlat_audio::Config {
+            // **The source is always described and the switch is separate.**
+            // Sound has no settled half at this boundary, so a host started
+            // with it off must be able to turn it on: a source decided once
+            // from the starting value would make `enabled` the one field of
+            // this structure that is not live.
+            audio_on: sound_on,
+            audio: Some(lowlat_audio::Config {
                 server: None,
                 wanted: std::sync::Arc::new(lowlat_audio::Wanted::new(audio_live)),
             }),
@@ -1688,7 +1691,22 @@ pub struct lowlat_host_status {
     pub height: u32,
     /// Whether this handle is hosting.
     pub running: bool,
-    pub reserved: [u8; 3],
+    /// Whether a sound device is being read right now.
+    ///
+    /// **Not what sound is set to.** Nothing is read while nobody is
+    /// listening, so this is clear in an empty room however sound is
+    /// configured; and it is also clear when the device could not be opened or
+    /// has gone away, which is the case an application cannot learn any other
+    /// way -- the settings still say enabled, because they are what was asked
+    /// for.
+    pub audio_active: bool,
+    pub reserved: [u8; 2],
+    /// The sound device being read, empty when none is.
+    ///
+    /// **What it landed on, not what was asked for.** An empty request means
+    /// the default output's monitor, and the sound server can move a stream
+    /// while it runs, so this is the only place the two can be compared.
+    pub audio_device: [c_char; LOWLAT_OUTPUT_MAX],
 }
 
 /// Read what the host is doing.
@@ -1720,15 +1738,23 @@ pub unsafe extern "C" fn lowlat_host_get_status(
                 slot.width = 0;
                 slot.height = 0;
                 slot.running = false;
-                slot.reserved = [0; 3];
+                slot.audio_active = false;
+                slot.reserved = [0; 2];
+                put(&mut slot.audio_device, "");
                 return LOWLAT_OK;
             };
             let (width, height) = seam.picture().unwrap_or((0, 0));
+            let (reading, device) = seam.audio_state();
             slot.guests = u32::try_from(seam.guests().len()).unwrap_or(u32::MAX);
             slot.width = width;
             slot.height = height;
             slot.running = true;
-            slot.reserved = [0; 3];
+            slot.audio_active = reading;
+            slot.reserved = [0; 2];
+            put(
+                &mut slot.audio_device,
+                device.as_deref().unwrap_or_default(),
+            );
             LOWLAT_OK
         })
     }
@@ -1975,7 +2001,14 @@ pub unsafe extern "C" fn lowlat_host_set_audio_config(
 /// What sound is set to now.
 ///
 /// **Read back rather than remembered**, for the reason the video one is: what
-/// a host is doing is the host's answer.
+/// a host is set to is the host's answer and another caller may have changed
+/// it.
+///
+/// **These are the settings and not the state.** `device` is the request, so
+/// an application that reads this, changes one field and writes it back does
+/// not accidentally pin a host that was following the default output. What is
+/// actually being read, and whether anything is, is in
+/// [`lowlat_host_status`].
 ///
 /// # Safety
 ///
@@ -3352,7 +3385,9 @@ mod status_tests {
             width: 0,
             height: 0,
             running: false,
-            reserved: [0; 3],
+            audio_active: false,
+            reserved: [0; 2],
+            audio_device: [0; LOWLAT_OUTPUT_MAX],
         }
     }
 
@@ -3387,6 +3422,12 @@ mod status_tests {
         // answer rather than the size that was configured -- there is no such
         // size, and reporting one would describe a stream nobody is making.
         assert_eq!((status.width, status.height), (0, 0));
+
+        // And sound the same way: nothing is being read here, whatever it is
+        // configured to do, so the device it is on is nothing rather than the
+        // name that was asked for.
+        assert!(!status.audio_active);
+        assert_eq!(taken(&status.audio_device), Some(""));
 
         unsafe { lowlat_destroy(handle) };
     }

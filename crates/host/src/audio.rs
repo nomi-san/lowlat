@@ -111,6 +111,13 @@ impl Sound {
         self.capture.as_ref().is_some_and(Capture::alive)
     }
 
+    /// The device being read, which is **not always the one that was asked
+    /// for**: an empty request means whichever output is the default, and the
+    /// sound server may move a stream while it runs.
+    pub(crate) fn device(&self) -> Option<String> {
+        self.capture.as_ref().map(Capture::device)
+    }
+
     /// Take the device again after it stopped delivering.
     ///
     /// **Whoever notices is not whoever built it**, which is why this is here

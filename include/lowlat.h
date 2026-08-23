@@ -600,7 +600,22 @@ typedef struct lowlat_host_status {
     uint32_t height;
     // Whether this handle is hosting.
     bool running;
-    uint8_t reserved[3];
+    // Whether a sound device is being read right now.
+    //
+    // **Not what sound is set to.** Nothing is read while nobody is
+    // listening, so this is clear in an empty room however sound is
+    // configured; and it is also clear when the device could not be opened or
+    // has gone away, which is the case an application cannot learn any other
+    // way -- the settings still say enabled, because they are what was asked
+    // for.
+    bool audio_active;
+    uint8_t reserved[2];
+    // The sound device being read, empty when none is.
+    //
+    // **What it landed on, not what was asked for.** An empty request means
+    // the default output's monitor, and the sound server can move a stream
+    // while it runs, so this is the only place the two can be compared.
+    char audio_device[LOWLAT_OUTPUT_MAX];
 } lowlat_host_status;
 
 // What one guest is doing.
@@ -1077,7 +1092,14 @@ lowlat_status lowlat_host_set_audio_config(struct lowlat *ll,
 // What sound is set to now.
 //
 // **Read back rather than remembered**, for the reason the video one is: what
-// a host is doing is the host's answer.
+// a host is set to is the host's answer and another caller may have changed
+// it.
+//
+// **These are the settings and not the state.** `device` is the request, so
+// an application that reads this, changes one field and writes it back does
+// not accidentally pin a host that was following the default output. What is
+// actually being read, and whether anything is, is in
+// [`lowlat_host_status`].
 //
 // # Safety
 //
