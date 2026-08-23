@@ -248,6 +248,15 @@ in the daemon's startup diagnostics, which check for it and warn rather than fai
 Per [AGENTS.md](../AGENTS.md) §14, what in this document is confirmed against a real peer
 versus carried from earlier work and pending re-verification.
 
+**Confirmed, and load bearing for what we offer:** a peer gathers host candidates on **IPv4
+only**, and only from private address space -- `10/8`, `172.16/12`, `192.168/16`, and shared
+address space behind a setting. A public address is never offered as a host candidate, and an
+IPv6 one never is at all. A peer's only route to a v6 address of its own is a reflexive probe
+against a v6-capable server, so a v6 address from one should arrive as server reflexive rather
+than as a host candidate. **The IPv6 host candidate this implementation offers is therefore an
+extension, not parity**; peers accept and probe it, and a live session has been carried over
+one.
+
 **Confirmed:** the shared socket and its demultiplexing rule; binding requests and responses
 carrying message integrity; the fixed controlling role; TTL-scoped probes with restoration;
 gateway mapping present and opportunistic. From a multi-peer capture: peers offer a host

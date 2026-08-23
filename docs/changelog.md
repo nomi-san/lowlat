@@ -2018,26 +2018,20 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   rungs above the minimum were reportable on a path that could only carry them
   in pieces.
 
-- **`--no-ipv6`, so the v4 path stays testable on a machine that has v6.** The
-  punch has no family preference and the first candidate to answer wins, so a
-  host offering both families runs a race rather than a test -- observed twice
-  with one peer, which took v4 on one attempt and v6 on the next. The switch
-  drops the v6 host candidates, the v6 reflexive servers, **and the peer's own
-  v6 candidates**. All three, because any one left standing carries the family
-  on its own: a v6 server answers with a v6 candidate in place of the ones that
-  were dropped, and the media socket is dual stack, so a v6 address the peer
-  offers is probed like any other and can carry the entire session. A switch
-  that silenced one half would let a run meant to prove the v4 path go over v6
-  and report that it had tested v4, which is worse than not having it. The
-  readiness barrier is not an address and is honoured either way.
+- **Reflexive servers are named, and both families of a name are asked.** A
+  literal can only ever be one family, and a v4 literal is why this host had no
+  v6 reflexive candidate to offer: a dual-stack name answers with an A and an
+  AAAA record and both are now taken, one per family, with what will not fit
+  reported rather than dropped in silence. A name that does not resolve is
+  reported and skipped by the service, because an attempt with no reflexive
+  server still punches on what it gathered locally; the configuration call
+  refuses instead, while the caller can still fix it. The rule lives in one
+  place and both front doors call it.
 
-  **The family is decided on the collapsed address, not the spelling.** A live
-  v4-only run refused the peer's own IPv4 candidate because it arrived as
-  `::ffff:171.247.203.94` -- a v4-mapped address, which is IPv4, but which reads
-  as v6 until it is collapsed. It is collapsed with the engine's own routine
-  now, so the family decided here is the family that will be probed. The run
-  connected anyway, over the address learned from the peer's own checks, which
-  is what kept the fault invisible.
+  **A host-side switch for refusing IPv6 was built and then removed.** Which
+  families a session uses is the connecting side's to decide, and a stock peer
+  with IPv6 turned off already stops offering v6 addresses on its own -- so the
+  switch duplicated a decision that was already being made, in the wrong place.
 
 - **A candidate that is not an address is declined out loud.** Peers anonymise
   host candidates behind a `.local` name that only multicast resolution
