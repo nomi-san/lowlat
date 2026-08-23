@@ -236,6 +236,18 @@ impl Capture {
             .lock()
             .map_or_else(|held| held.into_inner().clone(), |held| held.clone())
     }
+
+    /// Whether the loop is still reading.
+    ///
+    /// **A capture stops without its owner asking it to.** A sound server that
+    /// goes away leaves a stream that will never deliver again, and the loop
+    /// ends there; nothing else says so, and an owner that assumes otherwise
+    /// holds a device that is handing it nothing.
+    pub fn alive(&self) -> bool {
+        self.thread
+            .as_ref()
+            .is_some_and(|thread| !thread.is_finished())
+    }
 }
 
 impl Drop for Capture {
@@ -427,9 +439,22 @@ where
                 .is_some_and(|name| name != before);
             if moving {
                 restore_local(session, muted);
-                *stream = Stream::open::<S>(session, config, opaque, stop)?;
-                publish(stream, device);
-                lowlat_common::log_info!("audio: now capturing {}", stream.name());
+                // **A device that will not open keeps the one that is
+                // working.** The name may have gone away between the
+                // enumeration and the request, and ending the capture over it
+                // would take the sound from every guest to honour a change
+                // that failed.
+                match Stream::open::<S>(session, config, opaque, stop) {
+                    Ok(fresh) => {
+                        *stream = fresh;
+                        publish(stream, device);
+                        lowlat_common::log_info!("audio: now capturing {}", stream.name());
+                    }
+                    Err(error) => lowlat_common::log_warn!(
+                        "audio: the device asked for would not open, keeping {}, error={error}",
+                        stream.name()
+                    ),
+                }
                 *muted = LocalMute::default();
             }
             match (live.mute_local, muted.applied) {
@@ -461,8 +486,18 @@ where
             // default output and left the old sink muted would silence a
             // machine nobody is streaming from.
             restore_local(session, muted);
-            let fresh = Stream::open::<S>(session, config, opaque, stop)?;
-            *stream = fresh;
+            // **The new default may not be ready yet**, and a stream that is
+            // still delivering is worth more than the one that was asked for:
+            // a failure here leaves the old device in place, and a device that
+            // has genuinely gone stops delivering on its own, which is the
+            // path that ends this loop and has the capture taken again.
+            match Stream::open::<S>(session, config, opaque, stop) {
+                Ok(fresh) => *stream = fresh,
+                Err(error) => lowlat_common::log_warn!(
+                    "audio: the new default output would not open, keeping {}, error={error}",
+                    stream.name()
+                ),
+            }
             let after = stream.name();
             if before != after {
                 lowlat_common::log_info!("audio: the default output is now {after}");

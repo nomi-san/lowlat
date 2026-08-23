@@ -1704,26 +1704,43 @@ fn rebind(
 /// second -- which is not hypothetical: it held a capture, and somebody's muted
 /// speakers, across three sessions.
 ///
-/// Cheap when nothing changed -- one atomic -- and the lock is taken only on
-/// the transition. **The decision is recorded even when no device is
-/// configured**, which is what makes it testable without one.
+/// **The same is true of the device itself, one level down.** A capture ends
+/// on its own thread -- a sound server that restarts takes it with it -- and
+/// nothing announces that either, so whether it is still delivering is asked
+/// here rather than assumed from having opened it once.
+///
+/// Cheap when nothing changed: one atomic, one uncontended lock and one load,
+/// with nothing cloned or allocated on the pass that finds everything in
+/// order. **The decision is recorded even when no device is configured**,
+/// which is what makes it testable without one.
 fn reconcile_sound(shared: &Arc<Shared>, listeners: usize, config: &Config) {
     let want = u32::from(listeners > 0 && shared.sound_on());
-    if shared.sound_demand.swap(want, Ordering::AcqRel) == want {
-        return;
+    if shared.sound_demand.swap(want, Ordering::AcqRel) != want {
+        shared.sound_epoch.fetch_add(1, Ordering::Release);
     }
-    shared.sound_epoch.fetch_add(1, Ordering::Release);
     let Ok(mut held) = shared.held_sound.lock() else {
         return;
     };
-    if want != 0 {
-        if let Some(audio) = config.audio.clone() {
-            *held = Some(crate::audio::Sound::start(shared, audio));
+    if want == 0 {
+        if held.take().is_some() {
+            // Dropping it stops the capture, joins its thread, and puts the
+            // speakers at the desk back.
+            lowlat_common::log_info!("audio: nobody is listening, the sound device is back");
         }
-    } else if held.take().is_some() {
-        // Dropping it stops the capture, joins its thread, and puts the
-        // speakers at the desk back.
-        lowlat_common::log_info!("audio: nobody is listening, the sound device is back");
+        return;
+    }
+    let Some(audio) = config.audio.as_ref() else {
+        return;
+    };
+    match held.as_mut() {
+        // Held and delivering, which is every pass but two in a session. One
+        // atomic load, and nothing is cloned.
+        Some(sound) if sound.alive() => {}
+        // **A capture ends on its own thread and says nothing to anybody.** A
+        // sound server that restarts under a running session takes it with it,
+        // and this pass is the only thing that can notice.
+        Some(sound) => sound.regain(shared, audio),
+        None => *held = Some(crate::audio::Sound::start(shared, audio)),
     }
 }
 
@@ -4113,6 +4130,129 @@ mod tests {
             shared.sound_epoch.load(Ordering::Acquire) > asked,
             "the decision never changed"
         );
+    }
+
+    /// **A capture that stops is taken again.** The test above is that the
+    /// pass which knows the room's size is the only thing that can give a
+    /// device back; this is its other half, one level down. A capture ends on
+    /// its own thread when the sound server goes away and tells nobody, so a
+    /// host that had opened one once held a thread that had already returned,
+    /// with the room still saying somebody was listening.
+    ///
+    /// Off by default: it needs a sound server, and it reaches that server
+    /// through a proxy it can cut, which is how a server going away is
+    /// produced without disturbing the one the machine is using.
+    #[test]
+    #[ignore = "needs a sound server and socat"]
+    fn a_capture_that_stops_is_taken_again() {
+        let socket = std::env::temp_dir().join(format!("lowlat-sound-{}", std::process::id()));
+        let mut proxy = spawn_proxy(&socket).expect("a proxy to the sound server");
+        let (shared, _stream, _arrivals) = parked();
+        shared.set_sound(true, false, 128);
+        let mut config = test_config(Codec::H264);
+        config.audio = Some(lowlat_audio::Config {
+            server: Some(format!("unix:{}", socket.display())),
+            wanted: Arc::new(lowlat_audio::Wanted::default()),
+        });
+
+        reconcile_sound(&shared, 1, &config);
+        assert!(reading(&shared), "the device was never taken");
+
+        // The server goes away under a running capture.
+        proxy.cut();
+        assert!(
+            settles(&shared, false, 5_000.0),
+            "the capture never noticed that it had ended"
+        );
+
+        // **And a later pass takes it again, with nothing else happening**: no
+        // arrival, no departure, no rebuild, and nobody asking.
+        proxy = spawn_proxy(&socket).expect("a proxy to the sound server");
+        assert!(
+            retaken(&shared, &config, 15_000.0),
+            "the device was never taken again"
+        );
+
+        reconcile_sound(&shared, 0, &config);
+        drop(proxy);
+        let _ = std::fs::remove_file(&socket);
+    }
+
+    /// A proxy that is cut however the test leaves.
+    ///
+    /// **Including through a failed assertion**, which otherwise leaves a
+    /// listener behind holding the harness's own output open: the test reports
+    /// nothing until somebody kills it by hand.
+    struct Proxy(std::process::Child);
+
+    impl Proxy {
+        fn cut(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    impl Drop for Proxy {
+        fn drop(&mut self) {
+            self.cut();
+        }
+    }
+
+    /// Whether the host is reading the sound device right now.
+    fn reading(shared: &Shared) -> bool {
+        shared
+            .held_sound
+            .lock()
+            .is_ok_and(|held| held.as_ref().is_some_and(crate::audio::Sound::alive))
+    }
+
+    /// Wait for the device to be held, or not held, without a pass of the loop.
+    fn settles(shared: &Shared, want: bool, within_ms: f64) -> bool {
+        let began = lowlat_common::clock::Time::now();
+        while lowlat_common::clock::elapsed_ms(began) < within_ms {
+            if reading(shared) == want {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        false
+    }
+
+    /// The same, running the pass that is allowed to take it again.
+    fn retaken(shared: &Arc<Shared>, config: &Config, within_ms: f64) -> bool {
+        let began = lowlat_common::clock::Time::now();
+        while lowlat_common::clock::elapsed_ms(began) < within_ms {
+            reconcile_sound(shared, 1, config);
+            if reading(shared) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        false
+    }
+
+    /// A path to the session's sound server that this test may cut.
+    fn spawn_proxy(socket: &std::path::Path) -> Option<Proxy> {
+        let runtime = std::env::var("XDG_RUNTIME_DIR").ok()?;
+        let native = std::path::Path::new(&runtime).join("pulse").join("native");
+        let _ = std::fs::remove_file(socket);
+        // **One connection, served in this process.** A forking proxy leaves
+        // the child holding the live connection when the listener is killed,
+        // so the server would still be there after this test thought it had
+        // taken it away.
+        let child = std::process::Command::new("socat")
+            .arg(format!("UNIX-LISTEN:{}", socket.display()))
+            .arg(format!("UNIX-CONNECT:{}", native.display()))
+            .spawn()
+            .ok()?;
+        // **The path exists before it is connectable and not before it is
+        // bound**, so a connect that arrives first is refused rather than
+        // queued.
+        let began = lowlat_common::clock::Time::now();
+        while !socket.exists() && lowlat_common::clock::elapsed_ms(began) < 2_000.0 {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        Some(Proxy(child))
     }
 
     /// **A guest behind on sound loses packets and the room does not.** The

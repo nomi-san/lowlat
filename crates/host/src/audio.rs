@@ -62,15 +62,30 @@ impl Silence {
     }
 }
 
+/// How long to wait before taking the sound device again after losing it.
+///
+/// **It is also how long a session stays silent when a sound server
+/// restarts**, so it is short; and it is what stops a server that has gone for
+/// good from being asked once per frame.
+const RETRY_MS: f64 = 2000.0;
+
 /// What a room's sound costs, and who it goes to.
 pub(crate) struct Sound {
     capture: Option<Capture>,
+    /// When the device was last asked for, so a loss is not retried per frame.
+    tried: lowlat_common::clock::Time,
+    /// Whether it was ever held.
+    opened: bool,
+    /// Whether the loss has been reported. A server that stays away must not
+    /// fill the log with the same line every two seconds.
+    reported: bool,
 }
 
 impl core::fmt::Debug for Sound {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Sound")
             .field("capturing", &self.capture.is_some())
+            .field("alive", &self.alive())
             .finish()
     }
 }
@@ -81,40 +96,85 @@ impl Sound {
     /// **A failure here is not a failure of the session.** A host with no sound
     /// server, or one it may not reach, streams pictures and says so once;
     /// refusing to host over something no guest has asked for would be worse.
-    pub(crate) fn start(shared: &Arc<Shared>, config: lowlat_audio::Config) -> Self {
-        let mut encoder = match Encoder::new(DEFAULT_BITRATE_KBPS) {
-            Ok(encoder) => encoder,
-            Err(error) => {
+    pub(crate) fn start(shared: &Arc<Shared>, config: &lowlat_audio::Config) -> Self {
+        let capture = open(shared, config, true);
+        Self {
+            opened: capture.is_some(),
+            reported: capture.is_none(),
+            capture,
+            tried: lowlat_common::clock::Time::now(),
+        }
+    }
+
+    /// Whether the device is still being read.
+    pub(crate) fn alive(&self) -> bool {
+        self.capture.as_ref().is_some_and(Capture::alive)
+    }
+
+    /// Take the device again after it stopped delivering.
+    ///
+    /// **Whoever notices is not whoever built it**, which is why this is here
+    /// rather than at the call site: a capture ends on its own thread and the
+    /// only thing that can act on it is the pass that finds it gone.
+    pub(crate) fn regain(&mut self, shared: &Arc<Shared>, config: &lowlat_audio::Config) {
+        if !due(self.opened, lowlat_common::clock::elapsed_ms(self.tried)) {
+            return;
+        }
+        self.tried = lowlat_common::clock::Time::now();
+        self.capture = open(shared, config, !self.reported);
+        self.reported = self.capture.is_none();
+    }
+}
+
+/// Whether a device that is not being read is asked for again on this pass.
+///
+/// **Only one that was once held is retried.** A capture that never opened is
+/// a machine with no sound server, which is answered once when the first guest
+/// arrives; asking it again costs a connection attempt that blocks the loop
+/// trying to encode, and the answer does not change.
+fn due(opened: bool, since_ms: f64) -> bool {
+    opened && since_ms >= RETRY_MS
+}
+
+/// Take the sound device and publish what it delivers.
+///
+/// **Whether a failure is said out loud is the caller's**: the first is worth
+/// a line and the twentieth after it is noise.
+fn open(shared: &Arc<Shared>, config: &lowlat_audio::Config, say: bool) -> Option<Capture> {
+    let mut encoder = match Encoder::new(DEFAULT_BITRATE_KBPS) {
+        Ok(encoder) => encoder,
+        Err(error) => {
+            if say {
                 lowlat_common::log_warn!("audio: no encoder, sound is off, error={error}");
-                return Self { capture: None };
             }
-        };
-        let owned = Arc::clone(shared);
-        let mut kbps = shared.sound_kbps();
-        let mut silence = Silence::default();
-        encoder.set_bitrate(kbps);
-        match Capture::open(config, move |frame: &[u8]| {
-            // **Read every frame and applied when it moves.** A rate that
-            // needed a new encoder would cost a discontinuity a listener hears,
-            // and one latched at start would be a setting that does nothing.
-            let wanted = owned.sound_kbps();
-            if wanted != kbps {
-                kbps = wanted;
-                encoder.set_bitrate(kbps);
-                lowlat_common::log_info!("audio: encoding at {kbps} kbit/s");
-            }
-            publish(&owned, &mut encoder, &mut silence, frame);
-        }) {
-            Ok(capture) => {
-                lowlat_common::log_info!("audio: sound is on, device={}", capture.device());
-                Self {
-                    capture: Some(capture),
-                }
-            }
-            Err(error) => {
+            return None;
+        }
+    };
+    let owned = Arc::clone(shared);
+    let mut kbps = shared.sound_kbps();
+    let mut silence = Silence::default();
+    encoder.set_bitrate(kbps);
+    match Capture::open(config.clone(), move |frame: &[u8]| {
+        // **Read every frame and applied when it moves.** A rate that
+        // needed a new encoder would cost a discontinuity a listener hears,
+        // and one latched at start would be a setting that does nothing.
+        let wanted = owned.sound_kbps();
+        if wanted != kbps {
+            kbps = wanted;
+            encoder.set_bitrate(kbps);
+            lowlat_common::log_info!("audio: encoding at {kbps} kbit/s");
+        }
+        publish(&owned, &mut encoder, &mut silence, frame);
+    }) {
+        Ok(capture) => {
+            lowlat_common::log_info!("audio: sound is on, device={}", capture.device());
+            Some(capture)
+        }
+        Err(error) => {
+            if say {
                 lowlat_common::log_warn!("audio: sound is off, error={error}");
-                Self { capture: None }
             }
+            None
         }
     }
 }
@@ -255,5 +315,24 @@ mod tests {
     #[test]
     fn uncompressed_costs_an_order_of_magnitude_more() {
         assert!(guest_mbps(true, 128) > guest_mbps(false, 128) * 10.0);
+    }
+
+    /// **A device that was held and stopped is taken again; one that never
+    /// opened is not.** The second half is what keeps a machine with no sound
+    /// server from spending a connection attempt per frame on an answer that
+    /// does not change -- and that attempt blocks the loop that encodes.
+    #[test]
+    fn only_a_device_that_was_held_is_taken_again() {
+        assert!(!due(false, 60_000.0), "a device never held was retried");
+        assert!(due(true, RETRY_MS), "a lost device was not taken again");
+    }
+
+    /// **And not on the pass that noticed.** Retrying every frame is a
+    /// blocking connect sixty times a second at the one moment the server is
+    /// least able to answer.
+    #[test]
+    fn a_loss_is_not_retried_on_every_pass() {
+        assert!(!due(true, 0.0));
+        assert!(!due(true, RETRY_MS - 1.0));
     }
 }
