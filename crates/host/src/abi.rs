@@ -927,13 +927,44 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
         return None;
     }
     let mut servers = Vec::new();
+    let mut dropped = 0usize;
     for server in cfg.servers.iter().take(cfg.server_count as usize) {
         // Resolved here rather than at the first check, so a name that does not
         // resolve is refused while the caller is still holding the call that
         // set it.
         let text = taken(server)?;
-        let mut found = std::net::ToSocketAddrs::to_socket_addrs(text).ok()?;
-        servers.push(found.next()?);
+        let resolved: Vec<std::net::SocketAddr> = std::net::ToSocketAddrs::to_socket_addrs(text)
+            .ok()?
+            .collect();
+
+        // **One of each family, not whichever the resolver put first.** A
+        // dual-stack name answers with both, ordered by what this machine's own
+        // addressing prefers, so taking the head alone gives a host with global
+        // v6 a v6 reflexive address and no v4 one. A v4-only peer then has
+        // nothing from us but a host candidate it cannot reach.
+        let families = [
+            resolved.iter().find(|addr| addr.is_ipv4()),
+            resolved.iter().find(|addr| addr.is_ipv6()),
+        ];
+        if families.iter().all(Option::is_none) {
+            return None;
+        }
+        for addr in families.into_iter().flatten() {
+            if servers.len() < LOWLAT_SERVERS_MAX {
+                servers.push(*addr);
+            } else {
+                dropped += 1;
+            }
+        }
+    }
+    // **Said out loud.** Two families per name can exceed what the engine
+    // holds, and a cap nobody reports reads as though every server configured
+    // is being asked.
+    if dropped > 0 {
+        lowlat_common::log_warn!(
+            "host: reflexive servers capped, kept={} dropped={dropped}",
+            servers.len()
+        );
     }
     let video = video_configured(&cfg.video)?;
     let output = taken(&cfg.video.output)?;
@@ -2623,6 +2654,48 @@ mod start_tests {
             LOWLAT_OK
         );
         unsafe { lowlat_destroy(handle) };
+    }
+
+    /// **Both families of a dual-stack reflexive server are asked.**
+    ///
+    /// A name that answers with A and AAAA is ordered by this machine's own
+    /// addressing, so keeping the head alone gives a host with global v6 a v6
+    /// reflexive address and no v4 one, and a v4-only peer is then offered
+    /// nothing from us it can reach. Asserted per family rather than on order,
+    /// which belongs to the resolver.
+    #[test]
+    fn a_dual_stack_reflexive_server_contributes_both_families() {
+        // Stated rather than assumed: on a machine whose localhost answers on
+        // one family only, this test cannot tell the two behaviours apart, and
+        // saying so is better than passing without having checked.
+        let families: std::collections::BTreeSet<bool> =
+            std::net::ToSocketAddrs::to_socket_addrs("localhost:3478")
+                .expect("localhost must resolve")
+                .map(|addr| addr.is_ipv6())
+                .collect();
+        assert_eq!(
+            families.len(),
+            2,
+            "this check needs a localhost that answers on both families"
+        );
+
+        let mut cfg = config();
+        cfg.server_count = 1;
+        put(&mut cfg.servers[0], "localhost:3478");
+
+        let translated = configured(&cfg).expect("a resolvable server is configuration");
+        assert_eq!(
+            translated.servers.iter().filter(|a| a.is_ipv4()).count(),
+            1,
+            "no v4 reflexive server came out of a dual-stack name: {:?}",
+            translated.servers
+        );
+        assert_eq!(
+            translated.servers.iter().filter(|a| a.is_ipv6()).count(),
+            1,
+            "no v6 reflexive server came out of a dual-stack name: {:?}",
+            translated.servers
+        );
     }
 
     /// A reflexive server is resolved while the caller is still holding the

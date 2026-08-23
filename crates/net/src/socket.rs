@@ -223,10 +223,22 @@ impl Socket {
 
         // Do not fragment, so an oversized probe fails fast rather than being
         // split and arriving anyway, which would make the probe meaningless.
+        //
+        // **Both families, because neither setting carries to the other.** A
+        // v6 socket left at its default fragments locally rather than refusing,
+        // and the path probe reads that as the size having worked. IPv6's
+        // minimum is 1280 and the ladder climbs past it, so the rungs above
+        // that would each be reported reachable on a path that can only carry
+        // them in pieces.
         self.set_int(
             libc::IPPROTO_IP,
             libc::IP_MTU_DISCOVER,
             libc::IP_PMTUDISC_DO,
+        )?;
+        self.set_int(
+            libc::IPPROTO_IPV6,
+            libc::IPV6_MTU_DISCOVER,
+            libc::IPV6_PMTUDISC_DO,
         )?;
 
         self.set_ttl(DEFAULT_TTL)?;
@@ -499,6 +511,33 @@ mod tests {
 
         let local = socket.local_addr().expect("local addr");
         assert_ne!(local.port(), 0, "the kernel must have chosen a port");
+    }
+
+    /// **Neither family fragments, and neither setting carries to the other.**
+    ///
+    /// A socket left at the v6 default fragments an oversized datagram locally
+    /// instead of refusing it, and the path probe reads an arrival as the size
+    /// having worked. Both halves are asserted here so that setting one and
+    /// calling the option done fails on this test rather than on a path whose
+    /// minimum is 1280 and whose ladder climbs past it.
+    #[test]
+    fn neither_family_fragments_an_oversized_datagram() {
+        let socket = Socket::open(0).expect("open");
+
+        assert_eq!(
+            socket
+                .get_int(libc::IPPROTO_IP, libc::IP_MTU_DISCOVER)
+                .expect("v4 discovery"),
+            libc::IP_PMTUDISC_DO,
+            "the v4 path would fragment rather than refuse"
+        );
+        assert_eq!(
+            socket
+                .get_int(libc::IPPROTO_IPV6, libc::IPV6_MTU_DISCOVER)
+                .expect("v6 discovery"),
+            libc::IPV6_PMTUDISC_DO,
+            "the v6 path would fragment rather than refuse"
+        );
     }
 
     /// A host whose configured port is occupied has to start anyway, so the

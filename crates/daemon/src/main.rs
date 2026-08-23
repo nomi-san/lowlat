@@ -60,6 +60,14 @@ const IDLE_MS: u64 = 50;
 const READY_PLACEHOLDER: &str = "1.2.3.4";
 const READY_PORT: u16 = 1234;
 
+/// Stands in for the address on an inbound readiness marker.
+///
+/// The marker's address is ignored and must never reach the candidate table,
+/// so nothing is lost by not carrying it -- and passing a real-looking one
+/// would invite somebody to start probing it.
+const UNREAD_MARKER_ADDRESS: SocketAddr =
+    SocketAddr::new(IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED), 0);
+
 #[tokio::main]
 async fn main() {
     if let Err(error) = run().await {
@@ -111,16 +119,41 @@ fn read(path: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The address a peer on our own network would reach us at.
+/// The addresses a peer would reach us at directly, one per family.
 ///
 /// Learned by asking the routing table which source it would use, which needs
 /// no packet and no interface enumeration. Without it a host on the same
 /// network as its guest offers only a reflexive candidate and has to hairpin
 /// to reach a peer two metres away.
-fn primary_local_address() -> Option<IpAddr> {
-    let probe = UdpSocket::bind("0.0.0.0:0").ok()?;
-    probe.connect("1.1.1.1:80").ok()?;
-    probe.local_addr().ok().map(|addr| addr.ip())
+///
+/// **Both families, because the two are not substitutes.** A peer may have only
+/// one of them, so a machine with global v6 that offers its v4 address alone
+/// hands a v6-only peer nothing to probe. A family this machine does not have
+/// fails to connect here and contributes nothing, which is the ordinary outcome
+/// for v6 and is not an error.
+///
+/// These are host candidates whichever family they are in, global or not: the
+/// flag beside them distinguishes a host candidate from a reflexive one and
+/// says nothing about scope.
+fn primary_local_addresses() -> Vec<IpAddr> {
+    // A connected datagram socket sends nothing. It only asks the routing table
+    // which source address it would pick for that destination, so the choice of
+    // destination is arbitrary among the routable ones.
+    const ROUTES: [(&str, &str); 2] = [
+        ("0.0.0.0:0", "1.1.1.1:80"),
+        ("[::]:0", "[2606:4700:4700::1111]:80"),
+    ];
+    ROUTES
+        .iter()
+        .filter_map(|(from, toward)| {
+            let probe = UdpSocket::bind(from).ok()?;
+            probe.connect(toward).ok()?;
+            let ip = probe.local_addr().ok()?.ip();
+            // A source a peer cannot reach is worse than no candidate: it
+            // spends probe budget and answers nothing.
+            (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+        })
+        .collect()
 }
 
 /// Guests currently admitted, in the width the wire uses.
@@ -151,6 +184,54 @@ fn advertisement(name: &str, capacity: u32, players: u32) -> ConnUpdate {
         players,
         is_public: false,
         guests: Vec::new(),
+    }
+}
+
+/// A peer's candidate, as an address to probe.
+///
+/// **Parsed, never edited as text.** A v4-mapped address is IPv4 and has two
+/// textual forms: a peer may write the trailing bytes dotted, as
+/// `::ffff:192.0.2.7`, or in hex, as `::ffff:c000:207`. Stripping the prefix as
+/// text handles the first and turns the second into a fragment that parses as
+/// nothing, so the candidate is dropped without a word and that address is
+/// never probed. The parser knows both forms.
+///
+/// Collapsing a mapped address to the IPv4 it really is belongs to the
+/// connectivity engine, which does it to every address it is handed. A second
+/// copy here would be a second place for that rule to drift.
+fn peer_candidate(ip: &str, port: u16) -> Option<SocketAddr> {
+    let ip: IpAddr = ip.trim().parse().ok()?;
+    Some(SocketAddr::new(ip, port))
+}
+
+/// What an inbound candidate exchange asks this host to do.
+#[derive(Debug, PartialEq, Eq)]
+enum Relayed {
+    /// A readiness barrier. **Its address is ignored and is not parsed**, which
+    /// is the whole reason this is decided before the address is looked at.
+    Ready,
+    /// An address to probe.
+    Probe(SocketAddr),
+    /// Not an address this host can probe.
+    Unreadable,
+}
+
+/// Read one relayed candidate exchange.
+///
+/// **The barrier is decided first.** A peer sends one candidate marked ready
+/// and the receiver ignores the address on it, so peers put different things
+/// there: a capture carries both the well-known placeholder and a peer's own
+/// reflexive address. Parsing before checking the flag makes the barrier depend
+/// on a field nothing reads, and a barrier that is dropped leaves a peer that
+/// withholds its real candidates waiting for something that already arrived --
+/// silent at both ends.
+fn relayed(sync: bool, ip: &str, port: u16) -> Relayed {
+    if sync {
+        return Relayed::Ready;
+    }
+    match peer_candidate(ip, port) {
+        Some(addr) => Relayed::Probe(addr),
+        None => Relayed::Unreadable,
     }
 }
 
@@ -381,7 +462,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let mut peers: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut established: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let local = primary_local_address();
+    let local = primary_local_addresses();
+    lowlat_common::log_info!(
+        "lowlatd: host candidates: {}",
+        local
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(" ")
+    );
     let mut backoff = Backoff::new();
 
     loop {
@@ -400,7 +489,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                     &mut established,
                     &name,
                     max_guests,
-                    local,
+                    &local,
                     reject_all,
                     &settings,
                 )
@@ -454,7 +543,7 @@ async fn session_loop(
     established: &mut std::collections::HashSet<String>,
     name: &str,
     capacity: u32,
-    local: Option<IpAddr>,
+    local: &[IpAddr],
     reject_all: bool,
     settings: &app::Settings,
 ) -> Result<bool, Box<dyn std::error::Error>> {
@@ -541,8 +630,10 @@ async fn session_loop(
                         lowlat_common::log_info!("lowlatd: answered, guest bound to port {}", host.port);
 
                         // The port that was bound, not the one that was asked
-                        // for: they differ as soon as a second guest walks.
-                        if let Some(ip) = local {
+                        // for: they differ as soon as a second guest walks. One
+                        // per family, since the socket is dual stack and the
+                        // same port answers on both.
+                        for ip in local {
                             client.send("candex", &candex(
                                 &offer.attempt_id, &offer.from, ip.to_string(), host.port, true, false,
                             ))?;
@@ -550,15 +641,28 @@ async fn session_loop(
                     }
                     "candex_relay" => {
                         let relay: CandexRelay = serde_json::from_value(message.payload)?;
-                        // A v4-mapped address arrives in its textual form and
-                        // is IPv4; parsing it structurally is what keeps it one.
-                        let text = relay.data.ip.trim_start_matches("::ffff:");
-                        let Ok(ip) = text.parse::<IpAddr>() else { continue };
-                        seam.add_candidate(
-                            &relay.attempt_id,
-                            SocketAddr::new(ip, relay.data.port),
-                            relay.data.sync,
-                        );
+                        match relayed(relay.data.sync, &relay.data.ip, relay.data.port) {
+                            Relayed::Ready => {
+                                seam.add_candidate(
+                                    &relay.attempt_id,
+                                    UNREAD_MARKER_ADDRESS,
+                                    true,
+                                );
+                            }
+                            Relayed::Probe(addr) => {
+                                seam.add_candidate(&relay.attempt_id, addr, false);
+                            }
+                            // Not every candidate is an address: a peer may
+                            // anonymise a host candidate behind a `.local` name
+                            // that only multicast resolution answers. Nothing
+                            // here can probe one, and saying so is the
+                            // difference between a candidate declined and a
+                            // candidate lost.
+                            Relayed::Unreadable => lowlat_common::log_info!(
+                                "lowlatd: candidate not an address, ignored: {}",
+                                relay.data.ip
+                            ),
+                        }
                     }
                     "offer_cancel_relay" => {
                         let cancel: CancelRelay = serde_json::from_value(message.payload)?;
@@ -692,5 +796,136 @@ async fn session_loop(
                 other => lowlat_common::log_info!("lowlatd: unhandled seam event {other:?}"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **A v4-mapped address has two textual forms and both are IPv4.**
+    ///
+    /// The hex form is the one a textual strip loses: taking `::ffff:` off the
+    /// front of it leaves `c000:207`, which is not an address, so the candidate
+    /// went into the bin without a log line and the peer was never probed
+    /// there. Both forms are asserted to reach the same address, which is what
+    /// a strip cannot do.
+    #[test]
+    fn a_v4_mapped_candidate_parses_in_either_textual_form() {
+        let dotted = peer_candidate("::ffff:192.0.2.7", 41000).expect("dotted form");
+        let hex = peer_candidate("::ffff:c000:207", 41000).expect("hex form");
+
+        assert_eq!(dotted, hex, "the two spellings named different addresses");
+        assert_eq!(
+            dotted.ip(),
+            "::ffff:192.0.2.7".parse::<IpAddr>().expect("reference"),
+            "a v4-mapped candidate did not survive the parse"
+        );
+    }
+
+    /// **A readiness marker is not a candidate and must not need to parse.**
+    ///
+    /// The receiver ignores the address on one, and peers put different things
+    /// there -- a capture has both the well-known placeholder and a peer's own
+    /// reflexive address. The barrier must survive one this cannot read, so the
+    /// address the seam is handed for a marker is deliberately nowhere.
+    #[test]
+    fn the_marker_address_is_never_somewhere_to_probe() {
+        assert!(
+            UNREAD_MARKER_ADDRESS.ip().is_unspecified(),
+            "the marker stands in for an address that must never be probed"
+        );
+        assert_eq!(UNREAD_MARKER_ADDRESS.port(), 0);
+    }
+
+    /// **The barrier survives an address this host cannot read.**
+    ///
+    /// The receiver ignores the address on a readiness marker, so peers put
+    /// different things there -- a capture carries both the well-known
+    /// placeholder and a peer's own reflexive address, and a peer that
+    /// anonymises its host candidates behind a `.local` name could put one of
+    /// those there too. Deciding the barrier after parsing drops it, and a
+    /// peer that withholds its real candidates until the barrier arrives then
+    /// waits for something that already came. Nothing logs either half.
+    #[test]
+    fn a_readiness_barrier_does_not_depend_on_its_address() {
+        assert_eq!(
+            relayed(true, "1c4d9ae8-f7a8-4513-affb-dcbb40048922.local", 58667),
+            Relayed::Ready,
+            "a marker with an unreadable address lost the barrier"
+        );
+        // The two spellings a real peer has actually sent, both markers.
+        assert_eq!(relayed(true, READY_PLACEHOLDER, READY_PORT), Relayed::Ready);
+        assert_eq!(
+            relayed(true, "::ffff:171.246.76.160", 56730),
+            Relayed::Ready
+        );
+    }
+
+    /// An ordinary candidate is an address to probe, and an unreadable one is
+    /// declined rather than mistaken for a barrier.
+    #[test]
+    fn an_ordinary_candidate_is_probed_or_declined() {
+        assert_eq!(
+            relayed(false, "2405:4802:d0f5:6ec0:c048:4183:5759:8357", 31064),
+            Relayed::Probe(SocketAddr::new(
+                "2405:4802:d0f5:6ec0:c048:4183:5759:8357"
+                    .parse::<IpAddr>()
+                    .expect("reference"),
+                31064
+            ))
+        );
+        assert_eq!(
+            relayed(false, "1c4d9ae8-f7a8-4513-affb-dcbb40048922.local", 58667),
+            Relayed::Unreadable
+        );
+    }
+
+    /// **Host candidates are one per family and only ones a peer could reach.**
+    ///
+    /// The routing table is asked rather than the interface list, so what comes
+    /// back is what this machine would really send from. A loopback or
+    /// unspecified source is not reachable from outside and spends a peer's
+    /// probe budget answering nothing, and two of one family is one address
+    /// offered twice.
+    #[test]
+    fn host_candidates_are_routable_and_one_per_family() {
+        let found = primary_local_addresses();
+
+        for ip in &found {
+            assert!(!ip.is_loopback(), "offered a loopback host candidate: {ip}");
+            assert!(
+                !ip.is_unspecified(),
+                "offered an unspecified host candidate: {ip}"
+            );
+        }
+        assert!(
+            found.iter().filter(|ip| ip.is_ipv4()).count() <= 1,
+            "more than one v4 host candidate: {found:?}"
+        );
+        assert!(
+            found.iter().filter(|ip| ip.is_ipv6()).count() <= 1,
+            "more than one v6 host candidate: {found:?}"
+        );
+    }
+
+    /// The ordinary forms still work, and rubbish is refused rather than
+    /// turning into an address that gets probed.
+    #[test]
+    fn a_candidate_is_parsed_or_refused() {
+        assert_eq!(
+            peer_candidate("203.0.113.9", 41001),
+            Some(SocketAddr::new(
+                IpAddr::V4(std::net::Ipv4Addr::new(203, 0, 113, 9)),
+                41001
+            ))
+        );
+        assert_eq!(
+            peer_candidate(" 2001:db8::1 ", 41002).map(|a| a.ip()),
+            Some("2001:db8::1".parse::<IpAddr>().expect("reference")),
+            "a v6 candidate must survive, whitespace and all"
+        );
+        assert_eq!(peer_candidate("not-an-address", 41003), None);
+        assert_eq!(peer_candidate("", 41004), None);
     }
 }
