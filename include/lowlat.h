@@ -410,10 +410,16 @@ typedef struct lowlat_host_audio_config {
     bool allow_uncompressed;
     // Silence the speakers at the desk while a guest is connected.
     //
-    // **The tap is ahead of the device's own mute**, so a guest still hears
-    // everything; it is the person at the machine who stops hearing what they
-    // are sending. Restored when the last guest leaves, and only if this host
-    // is what silenced them.
+    // **On a device that applies its own mute**, the tap is ahead of it: a
+    // guest still hears everything and it is the person at the machine who
+    // stops hearing what they are sending. Restored when the last guest
+    // leaves, and only if this host is what silenced them.
+    //
+    // **On a device whose mute the server applies, this does nothing and says
+    // so.** The mix the mute is applied to is the one the capture reads, so
+    // obeying would silence every guest; asking is not refused, because the
+    // device can change under a running host, but the mute is not performed
+    // while the device is of that kind.
     bool mute_local;
     uint8_t reserved[1];
     // Which device to capture, by an identity from the enumeration. **Empty

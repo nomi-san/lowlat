@@ -66,9 +66,12 @@ pub struct Config {
     /// The half that can change while a capture runs: which device, and
     /// whether the speakers at the desk are silenced.
     ///
-    /// **The tap is ahead of the device's own mute**, so what a guest hears is
-    /// unaffected; it is the person in front of the machine who stops hearing
-    /// what they are sending ([05 §9.4](../../../docs/05-host.md)).
+    /// **The tap is ahead of the mute on a device that applies its own**, so
+    /// what a guest hears is unaffected and it is the person in front of the
+    /// machine who stops hearing what they are sending. On a device whose mute
+    /// the server applies instead, the same mix feeds the monitor and the
+    /// request is refused rather than obeyed
+    /// ([05 §9.4](../../../docs/05-host.md)).
     pub wanted: Arc<Wanted>,
 }
 
@@ -535,6 +538,20 @@ fn mute_local(session: &Session, monitor: &str, stop: &AtomicBool) -> LocalMute 
     let Some(described) = session.describe(true, &sink, stop, READY_MS) else {
         return state;
     };
+    if !described.mutes_itself {
+        // **A device whose mute reaches the capture is left alone.** Where the
+        // device mutes itself the tap is ahead of it, which is what this
+        // feature rests on; where the server mutes the mix instead, the same
+        // mix feeds the monitor, and silencing the speakers would silence
+        // every guest. That is the opposite of what was asked for, so it is
+        // refused rather than done.
+        lowlat_common::log_warn!(
+            "audio: the speakers cannot be silenced without silencing the guests, sink={}, left alone",
+            sink.to_string_lossy()
+        );
+        state.sink = Some(sink);
+        return state;
+    }
     if described.mute {
         // **Already muted, by somebody who is not us.** Leave it, and leave the
         // record empty so that nothing is undone later.
@@ -611,6 +628,9 @@ impl<T> Ask<T> {
 /// The device description a query answered with, reduced to what is read.
 struct Described {
     mute: bool,
+    /// Whether this device applies its own mute, which is what decides
+    /// whether muting it reaches a capture of its monitor.
+    mutes_itself: bool,
     paired: Option<CString>,
     /// Whether the name at offset zero was the one asked for, which is the
     /// check that the transcribed layout is being read correctly.
@@ -652,6 +672,7 @@ unsafe extern "C" fn on_device(
     };
     ask.answer = Some(Described {
         mute: info.mute != 0,
+        mutes_itself: info.flags & pulse::DEVICE_MUTES_ITSELF != 0,
         paired,
         matched: name == ask.asked,
     });

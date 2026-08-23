@@ -112,11 +112,26 @@ pub(crate) struct DeviceInfo {
     pub paired: u32,
     /// The name of that pair, or null.
     pub paired_name: *const c_char,
+    pub latency_us: u64,
+    pub driver: *const c_char,
+    /// What the device does for itself, of which one bit is load bearing here.
+    pub flags: u32,
 }
 
 const _: () = assert!(core::mem::offset_of!(DeviceInfo, mute) == 304);
 const _: () = assert!(core::mem::offset_of!(DeviceInfo, paired) == 308);
 const _: () = assert!(core::mem::offset_of!(DeviceInfo, paired_name) == 312);
+const _: () = assert!(core::mem::offset_of!(DeviceInfo, flags) == 336);
+
+/// The device applies its own mute, rather than the server applying it for the
+/// device.
+///
+/// **Which decides whether a monitor hears the mute.** Where the device does
+/// it, the mix that reaches the monitor is untouched and silencing the
+/// speakers leaves a capture at full scale; where the server does it, the mute
+/// is applied to the same mix the monitor is fed from, so silencing the
+/// speakers silences every listener too. Measured both ways.
+pub(crate) const DEVICE_MUTES_ITSELF: u32 = 0x0010;
 
 pub(crate) type NotifyStream = unsafe extern "C" fn(*mut Stream, *mut c_void);
 pub(crate) type RequestStream = unsafe extern "C" fn(*mut Stream, usize, *mut c_void);
