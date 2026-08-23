@@ -21,6 +21,8 @@ lowlat-host.workspace = true
 # The sound configuration its flags fill in.
 lowlat-audio.workspace = true
 lowlat-kessel.workspace = true
+# getifaddrs, to enumerate the private addresses a reflexive probe cannot see.
+libc.workspace = true
 # The translation between signaling and the seam is JSON on one side and an
 # async client on the other; both stop at this boundary.
 tokio.workspace = true

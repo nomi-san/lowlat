@@ -124,41 +124,143 @@ fn read(path: &str) -> String {
         .unwrap_or_default()
 }
 
-/// The addresses a peer would reach us at directly, one per family.
+/// Private address space: the ranges a reflexive probe can never discover.
 ///
-/// Learned by asking the routing table which source it would use, which needs
-/// no packet and no interface enumeration. Without it a host on the same
-/// network as its guest offers only a reflexive candidate and has to hairpin
-/// to reach a peer two metres away.
+/// A host candidate exists to advertise what a reflexive server cannot see. A
+/// publicly routable address is already discoverable that way, so offering it
+/// here as well is a duplicate that costs the peer part of a bounded check
+/// budget; a private one is invisible to any server and is the only way to
+/// reach us across a shared segment.
+const PRIVATE_V4: [(u32, u32); 3] = [
+    (0x0A00_0000, 8),  // 10.0.0.0/8
+    (0xAC10_0000, 12), // 172.16.0.0/12
+    (0xC0A8_0000, 16), // 192.168.0.0/16
+];
+
+/// Shared address space, offered only when asked for.
 ///
-/// **Both families, because the two are not substitutes.** A peer may have only
-/// one of them, so a machine with global v6 that offers its v4 address alone
-/// hands a v6-only peer nothing to probe. A family this machine does not have
-/// fails to connect here and contributes nothing, which is the ordinary outcome
-/// for v6 and is not an error.
+/// Reachable when both ends sit behind the same carrier translation or the same
+/// overlay network, and unreachable otherwise, so it is opted into rather than
+/// assumed. Offered blindly it is a candidate the far side spends checks on and
+/// never answers.
+const SHARED_V4: (u32, u32) = (0x6440_0000, 10); // 100.64.0.0/10
+
+/// Host candidates offered at most, per family.
 ///
-/// These are host candidates whichever family they are in, global or not: the
-/// flag beside them distinguishes a host candidate from a reflexive one and
-/// says nothing about scope.
-fn primary_local_addresses() -> Vec<IpAddr> {
-    // A connected datagram socket sends nothing. It only asks the routing table
-    // which source address it would pick for that destination, so the choice of
-    // destination is arbitrary among the routable ones.
-    const ROUTES: [(&str, &str); 2] = [
-        ("0.0.0.0:0", "1.1.1.1:80"),
-        ("[::]:0", "[2606:4700:4700::1111]:80"),
-    ];
-    ROUTES
+/// A machine with several bridges can present a long list, and every entry
+/// costs the peer part of a check budget bounded in both attempts and time.
+const MAX_HOST_CANDIDATES: usize = 8;
+
+/// Whether an address falls inside `base/bits`.
+fn in_network(addr: core::net::Ipv4Addr, base: u32, bits: u32) -> bool {
+    let mask = u32::MAX.checked_shl(32 - bits).unwrap_or(0);
+    (u32::from(addr) & mask) == base
+}
+
+/// Whether an address is one this host should offer as a host candidate.
+///
+/// Separate from the enumeration so the decision can be checked without a
+/// machine that happens to carry the right interfaces.
+fn wanted_host_address(addr: core::net::Ipv4Addr, shared: bool) -> bool {
+    if PRIVATE_V4
         .iter()
-        .filter_map(|(from, toward)| {
-            let probe = UdpSocket::bind(from).ok()?;
-            probe.connect(toward).ok()?;
-            let ip = probe.local_addr().ok()?.ip();
-            // A source a peer cannot reach is worse than no candidate: it
-            // spends probe budget and answers nothing.
-            (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
-        })
-        .collect()
+        .any(|(base, bits)| in_network(addr, *base, *bits))
+    {
+        return true;
+    }
+    shared && in_network(addr, SHARED_V4.0, SHARED_V4.1)
+}
+
+/// Every private IPv4 address on an interface that is up.
+///
+/// **Enumerated rather than probed, because one route answers one question.**
+/// Asking the routing table which source it would use for a public destination
+/// names a single address, and a machine on one segment through two interfaces
+/// -- a wired and a wireless leg of the same network, say -- then advertises one
+/// of them and hides the other. A peer that could only reach the hidden one
+/// sees a host offering nothing it can use.
+fn private_v4_addresses(shared: bool) -> Vec<IpAddr> {
+    let mut list: *mut libc::ifaddrs = core::ptr::null_mut();
+    // SAFETY: getifaddrs writes one pointer to a list it allocates and owns.
+    // Failure leaves nothing to release.
+    if unsafe { libc::getifaddrs(&raw mut list) } != 0 {
+        return Vec::new();
+    }
+
+    let mut found: Vec<IpAddr> = Vec::new();
+    let mut node = list;
+    while !node.is_null() {
+        // SAFETY: the walk stops at null, so this node is one getifaddrs built
+        // and it stays alive until freeifaddrs below.
+        let entry = unsafe { &*node };
+        node = entry.ifa_next;
+
+        if entry.ifa_addr.is_null() || entry.ifa_flags & (libc::IFF_UP as u32) == 0 {
+            continue;
+        }
+        // SAFETY: a non-null ifa_addr points at a sockaddr, whose family field
+        // is present for every family.
+        if i32::from(unsafe { (*entry.ifa_addr).sa_family }) != libc::AF_INET {
+            continue;
+        }
+        // SAFETY: the family says AF_INET, so the address is a sockaddr_in.
+        let sin = unsafe { &*entry.ifa_addr.cast::<libc::sockaddr_in>() };
+        let addr = core::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+
+        if !wanted_host_address(addr, shared) {
+            continue;
+        }
+        let addr = IpAddr::V4(addr);
+        // One address can appear on more than one entry.
+        if !found.contains(&addr) {
+            found.push(addr);
+        }
+    }
+
+    // SAFETY: `list` came from the successful getifaddrs above and has not been
+    // released; the walk copied out of it and kept no pointers into it.
+    unsafe { libc::freeifaddrs(list) };
+    found
+}
+
+/// The IPv6 address a peer would reach us at directly.
+///
+/// **Probed rather than enumerated, which is the opposite of the v4 side and
+/// for the same reason.** There is no translation on this family, so the
+/// address a peer sees is the one we would send from -- and an interface
+/// commonly carries three global addresses at once, a stable one, a temporary
+/// one and a link route, of which only the source the kernel would actually
+/// pick is worth advertising. Enumerating offers all three and makes the peer
+/// spend checks discovering which.
+fn primary_v6_address() -> Option<IpAddr> {
+    // A connected datagram socket sends nothing. It only asks the routing table
+    // which source address it would pick, so the destination is arbitrary among
+    // the routable ones.
+    let probe = UdpSocket::bind("[::]:0").ok()?;
+    probe.connect("[2606:4700:4700::1111]:80").ok()?;
+    let ip = probe.local_addr().ok()?.ip();
+    // A source a peer cannot reach is worse than no candidate: it spends probe
+    // budget and answers nothing.
+    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+}
+
+/// The addresses a peer would reach us at directly.
+///
+/// A family the machine does not have contributes nothing, which is the
+/// ordinary outcome for IPv6 and is not an error. These are host candidates
+/// whichever family they are in: the flag beside them separates a host
+/// candidate from a reflexive one and says nothing about scope.
+fn primary_local_addresses(shared: bool) -> Vec<IpAddr> {
+    let mut found = private_v4_addresses(shared);
+    if found.len() > MAX_HOST_CANDIDATES {
+        lowlat_common::log_warn!(
+            "lowlatd: {} host candidates found, offering {MAX_HOST_CANDIDATES}",
+            found.len()
+        );
+        found.truncate(MAX_HOST_CANDIDATES);
+    }
+    found.extend(primary_v6_address());
+    found
 }
 
 /// Guests currently admitted, in the width the wire uses.
@@ -347,7 +449,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Gathered here, beside the reflexive servers, because the two are filtered
     // together and the servers are handed to the seam a few lines below.
-    let local = primary_local_addresses();
+    // **Off unless asked for.** A shared-address-space candidate is reachable
+    // only when both ends sit behind the same carrier translation or on the
+    // same overlay network, and it is a wasted check for every peer that does
+    // not.
+    let local = primary_local_addresses(flag_set("--shared-address-space"));
 
     let bitrate_mbps: f64 = flag("--bitrate")
         .and_then(|v| v.parse().ok())
@@ -912,31 +1018,106 @@ mod tests {
         );
     }
 
-    /// **Host candidates are one per family and only ones a peer could reach.**
+    /// **Only the ranges a reflexive probe cannot discover.**
     ///
-    /// The routing table is asked rather than the interface list, so what comes
-    /// back is what this machine would really send from. A loopback or
-    /// unspecified source is not reachable from outside and spends a peer's
-    /// probe budget answering nothing, and two of one family is one address
-    /// offered twice.
+    /// Written out rather than derived from the constants they pin, so a
+    /// mistyped base or prefix fails here instead of agreeing with itself.
     #[test]
-    fn host_candidates_are_routable_and_one_per_family() {
-        let found = primary_local_addresses();
+    fn only_private_space_counts_as_a_host_candidate() {
+        let private = |text: &str| {
+            let addr: core::net::Ipv4Addr = text.parse().expect("address");
+            PRIVATE_V4
+                .iter()
+                .any(|(base, bits)| in_network(addr, *base, *bits))
+        };
 
-        for ip in &found {
-            assert!(!ip.is_loopback(), "offered a loopback host candidate: {ip}");
+        for inside in [
+            "10.0.0.1",
+            "10.255.255.254",
+            "172.16.0.1",
+            "172.31.255.254",
+            "192.168.0.1",
+            "192.168.1.192",
+            "192.168.72.1",
+        ] {
+            assert!(private(inside), "{inside} should be private space");
+        }
+        for outside in [
+            "9.255.255.255",
+            "11.0.0.1",
+            "172.15.255.255",
+            "172.32.0.1",
+            "192.167.255.255",
+            "192.169.0.0",
+            "42.119.87.246",
+            "127.0.0.1",
+            "169.254.1.1",
+            "100.102.226.42",
+        ] {
+            assert!(!private(outside), "{outside} should not be private space");
+        }
+    }
+
+    /// Shared address space is its own range and its own decision.
+    #[test]
+    fn shared_address_space_is_separate_and_opt_in() {
+        let shared = |text: &str| {
+            let addr: core::net::Ipv4Addr = text.parse().expect("address");
+            in_network(addr, SHARED_V4.0, SHARED_V4.1)
+        };
+
+        assert!(shared("100.64.0.1"), "the bottom of the range");
+        assert!(
+            shared("100.102.226.42"),
+            "an overlay address on this machine"
+        );
+        assert!(shared("100.127.255.254"), "the top of the range");
+        assert!(!shared("100.63.255.255"), "just below the range");
+        assert!(!shared("100.128.0.0"), "just above the range");
+
+        // **And the gate is what decides it.** Checking the two ranges apart
+        // from each other passes just as well when the gate is ignored and
+        // shared space is offered to everyone, which is the failure this is
+        // here to catch.
+        for text in ["100.64.0.1", "100.102.226.42", "100.127.255.254"] {
+            let addr: core::net::Ipv4Addr = text.parse().expect("address");
             assert!(
-                !ip.is_unspecified(),
-                "offered an unspecified host candidate: {ip}"
+                !wanted_host_address(addr, false),
+                "{text} was offered without being asked for"
+            );
+            assert!(
+                wanted_host_address(addr, true),
+                "{text} was withheld after being asked for"
             );
         }
+
+        // Private space does not depend on the gate either way.
+        for text in ["10.0.0.1", "192.168.1.192"] {
+            let addr: core::net::Ipv4Addr = text.parse().expect("address");
+            assert!(wanted_host_address(addr, false));
+            assert!(wanted_host_address(addr, true));
+        }
+    }
+
+    /// Nothing unreachable is ever offered, whichever way it was gathered.
+    #[test]
+    fn host_candidates_are_reachable_addresses() {
+        for shared in [false, true] {
+            for ip in primary_local_addresses(shared) {
+                assert!(!ip.is_loopback(), "offered a loopback host candidate: {ip}");
+                assert!(
+                    !ip.is_unspecified(),
+                    "offered an unspecified host candidate: {ip}"
+                );
+            }
+        }
         assert!(
-            found.iter().filter(|ip| ip.is_ipv4()).count() <= 1,
-            "more than one v4 host candidate: {found:?}"
-        );
-        assert!(
-            found.iter().filter(|ip| ip.is_ipv6()).count() <= 1,
-            "more than one v6 host candidate: {found:?}"
+            primary_local_addresses(false)
+                .iter()
+                .filter(|ip| ip.is_ipv6())
+                .count()
+                <= 1,
+            "the v6 side is probed, so it names one address"
         );
     }
 
