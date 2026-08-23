@@ -53,7 +53,7 @@ Four kinds, in the order they become available:
 
 | Kind | Source |
 |---|---|
-| host | local interface enumeration |
+| host | the source address the routing table would choose, per family |
 | server reflexive | binding response from a public server |
 | peer reflexive | the source address of an authenticated check we received |
 | mapped | a port mapping created on the gateway (§6) |
@@ -72,8 +72,21 @@ would let anyone able to reach the socket point us anywhere.
 
 Gathering rules:
 
-- Enumerate every usable interface. Exclude loopback, link-local, and interfaces that are
-  down.
+- **Both address families are gathered, and both are offered.** They are not substitutes: a
+  peer may have only one of them, so a machine with global IPv6 that offers its v4 address
+  alone hands a v6-only peer nothing to probe. A family the machine does not have contributes
+  nothing, which is the ordinary outcome for v6 and is not an error. A globally routable v6
+  address gathered this way is a **host** candidate, not a reflexive one
+  ([04 §3](04-signaling.md)).
+- **The source is the routing table, not the interface list.** Asking which source address
+  would be chosen for a routable destination needs no packet and no enumeration, and it
+  answers the question that actually matters: what a peer would see us arrive from. An earlier
+  description here called for enumerating every usable interface and excluding loopback,
+  link-local and down interfaces. That is what peers do -- observed ones offer a host candidate
+  per interface, four in one capture -- and it remains the more thorough option; what is built
+  offers one per family instead, which is fewer candidates for a peer to try. The exclusions
+  fall out of the routing table rather than being applied by hand, except that a source which
+  is loopback or unspecified is still dropped, because neither is somewhere a peer can reach.
 - **Address family is determined structurally, never by scanning the text form for a colon.**
   A v4-mapped address contains colons and is IPv4. Classifying it as IPv6 removes every v4
   candidate and kills connectivity on v4-only paths. *Named regression test,
@@ -82,6 +95,8 @@ Gathering rules:
   The peer can begin probing the first candidate while later ones are still being gathered.
 - A candidate arriving for an unknown attempt is discarded silently. It is not an error; it is
   a race with teardown.
+- **A candidate a peer sends is not guaranteed to be an address**, and one that is not is
+  declined out loud rather than dropped in silence ([04 §3](04-signaling.md)).
 
 ## §4 Binding checks
 
@@ -235,7 +250,17 @@ versus carried from earlier work and pending re-verification.
 
 **Confirmed:** the shared socket and its demultiplexing rule; binding requests and responses
 carrying message integrity; the fixed controlling role; TTL-scoped probes with restoration;
-gateway mapping present and opportunistic.
+gateway mapping present and opportunistic. From a multi-peer capture: peers offer a host
+candidate per interface; a globally routable IPv6 host candidate carries the host flag; a
+v4-mapped address arrives in its textual form on both host and reflexive candidates; a
+readiness marker carries an arbitrary address, the sender's own reflexive one in at least one
+case; and a peer may offer a host candidate as a `.local` name rather than an address.
+
+**Untested, and known to be:** every IPv6 path in the simulator and the namespace fixtures.
+The topology matrix in [08-testing.md](08-testing.md) is v4 only, so the punch state machine
+has never been exercised on a v6 topology even though the socket carries both families and the
+unit tests run over v6 loopback. A v6 host candidate is now offered, which makes this the
+widest untested surface in this document rather than a theoretical one.
 
 **Carried, pending re-verification before Phase 2 closes:** probe scheduling and backoff
 constants; the exact attempt timeout; candidate emission ordering; the mapping lease duration;

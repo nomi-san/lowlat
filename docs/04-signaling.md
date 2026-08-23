@@ -103,9 +103,23 @@ the address on it is ignored by the receiver -- one implementation sends the lit
 - **Always send one.** A peer is entitled to withhold every real candidate until it has both
   the answer and a `sync` marker, and at least one does. Against that peer, an endpoint that
   never sends one negotiates successfully and then has nothing to check.
+- **Read the flag before the address.** Since the address is ignored, peers put different
+  things in it: observed markers carry both the literal placeholder above and the sender's own
+  reflexive address, and nothing stops one carrying a name this endpoint cannot parse. An
+  endpoint that parses first and checks the flag afterwards makes the barrier depend on a
+  field nothing reads, and drops it whenever the parse fails. That is the second rule failing
+  by a different route, with the same silence at both ends.
 
 The two remaining flags describe where a candidate came from and map onto the standard
 candidate types: `from_stun` is a server-reflexive candidate, `lan` is a host candidate.
+**Neither says anything about scope or family.** A globally routable IPv6 address gathered
+locally is a host candidate and carries `lan`, which is what observed peers send; reading the
+flag as "on my local network" gets both the emission and the interpretation wrong.
+
+**A candidate is not guaranteed to be an address.** Peers anonymise host candidates behind a
+`.local` name that only multicast resolution answers. An endpoint that resolves none of them
+is complete, but the decision is logged rather than silent: a candidate declined and a
+candidate lost are indistinguishable after the fact.
 
 The relayed forms carry what the direct forms cannot: the sender's identity, ownership,
 whether approval may be skipped, and the requested permissions. The host reads permissions

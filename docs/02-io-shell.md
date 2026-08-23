@@ -142,7 +142,7 @@ setup path that shrank a 64 MB receive buffer to 5 MB left it that way for the e
 | `IPV6_V6ONLY` | 0, dual stack on one socket | one socket serves both families |
 | `IP_PKTINFO`, `IPV6_PKTINFO` | on | source address selection parity |
 | `IP_TOS`, `IPV6_TCLASS` | EF (`0xB8`) | |
-| `IP_MTU_DISCOVER` | `IP_PMTUDISC_DO` | set the do-not-fragment bit so an oversized probe fails fast instead of fragmenting ([01 §8](01-protocol.md)) |
+| `IP_MTU_DISCOVER`, `IPV6_MTU_DISCOVER` | `IP_PMTUDISC_DO`, `IPV6_PMTUDISC_DO` | refuse to fragment, so an oversized probe fails fast instead of being split and arriving anyway ([01 §8](01-protocol.md)). **Both families: neither setting carries to the other**, and a socket left at the v6 default fragments locally, which a probe reads as the size having worked -- on a path whose minimum is 1280 and a ladder that climbs past it |
 | non-blocking | on | all paths |
 | `SIO_UDP_CONNRESET` | off, Windows only | otherwise an ICMP unreachable wedges every subsequent receive |
 

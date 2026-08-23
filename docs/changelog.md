@@ -1975,6 +1975,56 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 ## 2: connectivity (2026-08-16)
 
+**Fixed**
+
+- **Both address families reach the wire.** Four faults, found by reading the
+  candidate exchange end to end against a multi-peer capture.
+
+  **A peer's candidate was edited as text before it was parsed.** The v4-mapped
+  prefix was stripped from the front of the string, which handles the dotted
+  spelling a peer usually sends and turns the equally valid hex spelling into a
+  fragment that parses as nothing -- so that candidate was dropped without a
+  word and the peer was never probed there. It is parsed first now, and the
+  collapse to IPv4 is left to the connectivity engine, which already does it to
+  every address it is handed; a second copy here would be a second place for
+  that rule to drift.
+
+  **No IPv6 host candidate was offered at all.** The routing-table probe asked
+  the v4 family only, so a machine with global v6 advertised its v4 address and
+  nothing else, and a v6-only peer had nothing from us to probe. Both families
+  are asked now, and a family the machine does not have contributes nothing
+  rather than failing. Verified live: the service that offered one address now
+  offers two.
+
+  **A reflexive server name contributed one family, whichever the resolver put
+  first.** A dual-stack name answers with both and the order follows the host's
+  own addressing, so a machine with global v6 learned its v6 reflexive address
+  and no v4 one. One of each family is taken, and because two per name can
+  exceed what the engine holds, what is dropped is now logged rather than
+  silently discarded.
+
+  **A readiness marker was parsed before its flag was read.** The receiver
+  ignores the address on one, so peers put different things there -- the capture
+  carries both the well-known placeholder and a sender's own reflexive address
+  -- and an unparseable one took the barrier with it. A peer that withholds its
+  real candidates until the barrier arrives then waits for something that had
+  already come, with nothing logged at either end. The flag is read first.
+
+- **The v6 path refuses to fragment.** `IP_MTU_DISCOVER` was set and
+  `IPV6_MTU_DISCOVER` was not, and neither setting carries to the other:
+  measured, a dual-stack socket sat at the v6 default, which fragments locally
+  rather than refusing. The path probe reads an arrival as the size having
+  worked, and since IPv6's minimum is 1280 while the ladder climbs to 1400, the
+  rungs above the minimum were reportable on a path that could only carry them
+  in pieces.
+
+- **A candidate that is not an address is declined out loud.** Peers anonymise
+  host candidates behind a `.local` name that only multicast resolution
+  answers. None is resolved, which is correct, but a candidate silently dropped
+  and one deliberately declined are indistinguishable afterwards.
+
+
+
 The punch, sans-IO like the rest of the core. Candidates in, checks out, a path
 or a typed failure.
 
