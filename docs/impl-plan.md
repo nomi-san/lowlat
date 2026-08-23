@@ -1224,9 +1224,11 @@ decides what to do with them.
   decoder, so the regression test replays a sequence and the fuzz target feeds sequences. A
   contained panic throws the state away and counts itself; the count travels in the guest line
   beside the ordinary refusals.*
-- [ ] **Live against a real peer**, which is what is left: a guest with a microphone in use, the
-  setting on, and the samples arriving. The daemon reports what it received under
-  `--accept-microphone`, so this needs a person and a client rather than more code.
+- [x] **Live against a real peer.** *Passed 2026-08-23: 11,266 packets from a stock client with
+  nothing dropped, nothing refused and no contained panic. It took one fix -- the selectors are
+  the header's second and third arguments, not its first two, the first being the declared length
+  -- and the mistake was invisible until a census of what a peer really sends was added, because
+  passing over another device's message is correct behaviour for this opcode.*
 - [ ] The example grows a capture device, or the uplink cannot be shown to work at all.
 
 ---

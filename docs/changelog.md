@@ -38,6 +38,24 @@ a real peer.
   business -- creating a capture device in somebody's session is not a
   shared library's decision.
 
+- **Heard from a real client**, 11,266 packets with nothing dropped,
+  nothing refused and nothing panicked. Getting there took one fix that
+  is worth writing down: **the selectors are the header's second and
+  third arguments, not its first two.** The first is the declared body
+  length, as it is for an application message, and reading the selectors
+  a position early found the length where a selector should be. The host
+  matched nothing and passed over every packet as another device's --
+  **in silence**, because passing over another device is what this
+  opcode asks of a host that does not implement it. A client sending a
+  hundred packets a second and a client sending nothing looked exactly
+  the same from here.
+
+  What separated them was a **census on the receive path**: the first
+  sighting of each opcode a peer sends, with its arguments, once per
+  kind. One line printed the true header and the mistake was obvious.
+  It stays, because any path that ignores unknown input in silence needs
+  one.
+
 - **The decoder is the first thing here to read bytes a peer chose, and
   it is treated that way.** What it may produce is bounded from a
   constant rather than from the packet's own length, and a panic is
