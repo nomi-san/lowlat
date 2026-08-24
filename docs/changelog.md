@@ -3,6 +3,41 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 9: capture (the second interface reaches the encoder)
+
+**A session can now be streamed on either conversion interface, chosen by
+name.** Both produce the same encoded stream from the same desktop, byte for
+byte: 120 pictures, 95588 bytes, identical files.
+
+- **Who allocates had to be inverted.** The first interface allocates the frame
+  and lends each plane a view of it, which is what puts the colour plane exactly
+  one luma plane in; the second can allocate nothing it is able to hand out. So
+  the display device allocates one untiled region, the conversion imports it
+  back as two planes at the offsets an encoder assumes, and the encoder imports
+  that same descriptor. Three parties have to agree on where the colour plane
+  starts, so the arithmetic is written once and all three read it. The device's
+  own row length is not the width -- 2048 for a 1920-wide frame here -- so
+  computing it from the width instead would have put the colour plane a tenth of
+  a frame early.
+
+- **The seam is an enum over the two halves, not a trait.** They are not
+  interchangeable: only the first reaches both encoders, and hiding that behind
+  one interface would hide the thing that decides which encoders a machine can
+  use. Asking for the pairing that cannot work is refused at startup and says
+  so, rather than being quietly served by the other interface.
+
+- **Registration takes a descriptor and a layout** rather than a device and a
+  frame, which is what lets both paths share it. A conversion target is generic
+  now, because the second instantiation exists.
+
+Selection is `--convert`, or the environment when the flag is absent. **Absent
+means the first interface**, never whichever a machine happens to support.
+
+The startup refusal also stopped attaching the device hint to every cause. It
+had been asserting that a display and its encoder must share a device even when
+the real reason was something else, which is a wrong cause stated with
+confidence.
+
 ## 9: capture (a second conversion interface)
 
 **The import and conversion now exist over the display stack's other
