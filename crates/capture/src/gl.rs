@@ -182,6 +182,7 @@ struct Gl {
     GetError: unsafe extern "system" fn() -> u32,
     GetIntegerv: unsafe extern "system" fn(u32, *mut i32),
     GetStringi: unsafe extern "system" fn(u32, u32) -> *const u8,
+    GetString: unsafe extern "system" fn(u32) -> *const u8,
     CreateShader: unsafe extern "system" fn(u32) -> u32,
     ShaderSource: unsafe extern "system" fn(u32, i32, *const *const u8, *const i32),
     CompileShader: unsafe extern "system" fn(u32),
@@ -260,6 +261,7 @@ impl Gl {
             GetError: plain!("GetError"),
             GetIntegerv: plain!("GetIntegerv"),
             GetStringi: plain!("GetStringi"),
+            GetString: plain!("GetString"),
             CreateShader: plain!("CreateShader"),
             ShaderSource: plain!("ShaderSource"),
             CompileShader: plain!("CompileShader"),
@@ -533,10 +535,22 @@ impl Device {
             }
         }
 
-        let name = egl
-            .query_string(Some(display), egl::VENDOR)
-            .map(|vendor| vendor.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| "an unnamed driver".to_string());
+        // **What is drawing, not who wrote the driver.** The vendor string is
+        // the same for a card and for the software renderer that stands in when
+        // no card was matched, which is a difference of about three times in
+        // what a conversion costs and is invisible in a log line that names the
+        // vendor.
+        // SAFETY: a context is current; the interface returns a NUL-terminated
+        // static string or null.
+        let renderer = unsafe { (gl.GetString)(0x1F01) };
+        let name = if renderer.is_null() {
+            "an unnamed driver".to_string()
+        } else {
+            // SAFETY: non-null and NUL-terminated, as the interface specifies.
+            unsafe { CStr::from_ptr(renderer.cast()) }
+                .to_string_lossy()
+                .into_owned()
+        };
 
         Ok(Opened {
             display,
