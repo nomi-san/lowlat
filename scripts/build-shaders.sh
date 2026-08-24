@@ -10,7 +10,7 @@ set -eu
 cd "$(dirname "$0")/.."
 for source in crates/*/shaders/*.comp; do
     out="${source%.comp}.spv"
-    glslangValidator -V --target-env vulkan1.1 -o "$out" "$source" > /dev/null
+    glslangValidator -V --target-env vulkan1.1 -DTARGET_VULKAN -o "$out" "$source" > /dev/null
     spirv-val "$out"
     echo "built $out from $source"
 done

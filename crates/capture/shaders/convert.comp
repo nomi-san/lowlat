@@ -1,4 +1,4 @@
-#version 450
+#version 430
 
 // Colour conversion: whatever the display scans out, into the planar 4:2:0 an
 // encoder takes.
@@ -15,23 +15,52 @@
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
+// **The bindings differ between the two interfaces and nothing below them
+// does.** The colour rules, the subsampling and the summary are the part that
+// must not drift, so they are written once and the declarations either side of
+// this are what each interface needs; TARGET_VULKAN is defined when the
+// compiled form is built and absent when this text is handed to a driver.
+#ifdef TARGET_VULKAN
 layout(set = 0, binding = 0) uniform sampler2D source;
 layout(set = 0, binding = 1, r8) uniform writeonly image2D luma;
 layout(set = 0, binding = 2, rg8) uniform writeonly image2D chroma;
+#else
+layout(binding = 0) uniform sampler2D source;
+layout(binding = 1, r8) uniform writeonly image2D luma;
+layout(binding = 2, rg8) uniform writeonly image2D chroma;
+#endif
 
 // **What the picture came to, in eight bytes.** The loop needs to know whether
 // this frame differs from the last one, and the only honest answer is what was
 // drawn: the buffer it was drawn into can be reused without being replaced, so
 // its identity says nothing. This pass already reads every pixel, so the
 // summary is free here and would cost a second read anywhere else.
+#ifdef TARGET_VULKAN
 layout(set = 0, binding = 3) buffer Digest {
     uint accumulated[2];
 } digest;
+#else
+layout(binding = 3) buffer Digest {
+    uint accumulated[2];
+} digest;
+#endif
 
+// The source size in pixels, and a nonzero flag to spread the quantisation
+// error. One interface carries them beside the dispatch and the other as plain
+// uniforms; the names below are what the body uses either way.
+#ifdef TARGET_VULKAN
 layout(push_constant) uniform Params {
-    ivec2 extent;  // source size in pixels
-    uint dither;   // nonzero to spread the quantisation error
+    ivec2 extent;
+    uint dither;
 } params;
+#define EXTENT params.extent
+#define DITHER params.dither
+#else
+layout(location = 0) uniform ivec2 given_extent;
+layout(location = 1) uniform uint given_dither;
+#define EXTENT given_extent
+#define DITHER given_dither
+#endif
 
 // BT.709, and not selectable. A receiver applies the inverse unconditionally
 // with nothing on the wire saying which matrix was used, so emitting anything
@@ -87,7 +116,7 @@ uint quantise(float v) {
 }
 
 float spread(ivec2 at) {
-    if (params.dither == 0u) {
+    if (DITHER == 0u) {
         return 0.0;
     }
     // Centred on zero and scaled to one eight-bit step, so it perturbs the
@@ -99,7 +128,7 @@ vec3 fetch(ivec2 at) {
     // Clamped rather than wrapped. An odd width or height leaves one column or
     // row whose partner is off the edge, and repeating the last pixel is the
     // only choice that does not invent colour at the border.
-    return texelFetch(source, min(at, params.extent - 1), 0).rgb;
+    return texelFetch(source, min(at, EXTENT - 1), 0).rgb;
 }
 
 float luma_of(vec3 colour) {
@@ -128,7 +157,7 @@ void main() {
     // the edge has invocations outside the picture, and a barrier that only
     // some of them arrive at is undefined; so this contributes nothing rather
     // than returning.
-    bool inside = base.x < params.extent.x && base.y < params.extent.y;
+    bool inside = base.x < EXTENT.x && base.y < EXTENT.y;
     if (inside) {
 
     vec3 c00 = fetch(base + ivec2(0, 0));
@@ -160,14 +189,14 @@ void main() {
     // Without it a picture and the same picture with two blocks exchanged
     // reduce to the same value under a sum and an exclusive-or, both of
     // which ignore order.
-    uint packed = quantise(luma_of(c00) * Y_SCALE + Y_OFFSET)
+    uint luma_bits = quantise(luma_of(c00) * Y_SCALE + Y_OFFSET)
         | (quantise(luma_of(c10) * Y_SCALE + Y_OFFSET) << 8)
         | (quantise(luma_of(c01) * Y_SCALE + Y_OFFSET) << 16)
         | (quantise(luma_of(c11) * Y_SCALE + Y_OFFSET) << 24);
     uint colour = quantise(cb) | (quantise(cr) << 8);
-    uint where = mix32(uint(block.y) * 65536u + uint(block.x));
-    atomicAdd(block_sum, mix32(packed ^ where));
-    atomicXor(block_xor, mix32(colour + where));
+    uint position = mix32(uint(block.y) * 65536u + uint(block.x));
+    atomicAdd(block_sum, mix32(luma_bits ^ position));
+    atomicXor(block_xor, mix32(colour + position));
     }
 
     // Every invocation reaches this, inside the picture or not.

@@ -48,6 +48,13 @@ drm = "0.15"
 # Loaded at runtime rather than linked, so a machine without it fails at our
 # call site instead of refusing to start.
 ash = "0.38"
+# The conversion fallback, chosen explicitly and never automatically. Same
+# loading discipline as ash: resolved at runtime, so a machine without a driver
+# has a backend that refuses rather than a process that will not start.
+# libloading comes with it and is already in the graph behind ash, so it adds a
+# name here and nothing to the build.
+khronos-egl = { version = "6", features = ["dynamic"] }
+libloading = "0.8"
 
 # Signaling only. lowlat-kessel is the one crate permitted an async runtime, a
 # TLS stack and a JSON parser; nothing inside the FFI boundary links it.

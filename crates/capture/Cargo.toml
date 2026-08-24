@@ -16,6 +16,8 @@ libc.workspace = true
 # The pointer is encoded in the form the wire carries it.
 lowlat-core.workspace = true
 ash.workspace = true
+khronos-egl.workspace = true
+libloading.workspace = true
 
 [lints]
 workspace = true

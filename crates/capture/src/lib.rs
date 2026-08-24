@@ -19,11 +19,75 @@
 pub mod convert;
 pub mod cursor;
 pub mod desktop;
+pub mod gl;
 pub mod scanout;
 pub mod synthetic;
 pub mod vulkan;
 
 use lowlat_common::clock::Time;
+
+/// Which display interface the import and conversion run on.
+///
+/// **Named by whoever builds the pipeline, never inferred and never fallen back
+/// to.** The two are not equivalent: only [`Self::Vulkan`] can hand its result
+/// to an encoder today, and a machine that refuses it says which part it is
+/// missing ([`vulkan::Error::Unsupported`]). Choosing the other automatically
+/// would replace that answer with a working pipeline of unknown provenance,
+/// which is the opposite of what the refusal is for.
+///
+/// Selecting between them on a machine's behalf is a later decision and needs
+/// the refusals from real hardware first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Backend {
+    /// The interface that takes a buffer's tiling explicitly and exports its
+    /// result to either encoder.
+    #[default]
+    Vulkan,
+    /// The older interface, for measuring what a device that refuses the first
+    /// one can still do.
+    Gl,
+}
+
+impl Backend {
+    /// One of the two by name, or nothing if the name is neither.
+    ///
+    /// **Nothing rather than the default**, so a caller can tell "not asked
+    /// for" from "asked for by a name that is not one of these" and refuse the
+    /// second. Silently running the default because a flag was misspelled is
+    /// how a measurement gets attributed to the wrong interface.
+    pub fn parse(name: &str) -> Option<Self> {
+        match name {
+            "vulkan" | "vk" => Some(Self::Vulkan),
+            "gl" | "opengl" | "egl" => Some(Self::Gl),
+            _ => None,
+        }
+    }
+
+    /// What the environment asks for, and the default when it asks for nothing.
+    ///
+    /// Reads `LOWLAT_CONVERT`. A name that is not one of the two is refused
+    /// loudly and the default stands, because the alternative is a run that
+    /// silently measured the interface nobody asked about.
+    pub fn requested() -> Self {
+        let Ok(named) = std::env::var("LOWLAT_CONVERT") else {
+            return Self::default();
+        };
+        // Set and empty is how a shell spells "not set", and refusing it would
+        // put an error in the log of every run that unset it that way.
+        if named.is_empty() {
+            return Self::default();
+        }
+        match Self::parse(&named) {
+            Some(backend) => backend,
+            None => {
+                lowlat_common::log_error!(
+                    "capture: LOWLAT_CONVERT={named} names no interface, using the default"
+                );
+                Self::default()
+            }
+        }
+    }
+}
 
 /// One plane of a frame.
 ///
