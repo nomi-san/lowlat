@@ -3,6 +3,46 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 9: capture (duplicate suppression)
+
+**A still desktop is sent once a second instead of sixty times.** The frame
+rate on the wire was the display's own whatever was on it; it is now what
+changed. Measured across one session as activity varied: 25.8 frames a second
+on a quiet desktop, 58.6 on a busy one, **1.00 on a still one**, with the
+stream thread down from 6.67 percent of a core to 1.78 and the wire from 0.16
+Mbit/s to 0.03.
+
+- **What was drawn decides, not which buffer it was drawn into.** The obvious
+  key is the scanned-out buffer's identity, and it is wrong here: this
+  compositor redraws in place rather than flipping on most frames, so keying on
+  it would have discarded real frames on half to seven in ten of them. Measured
+  three times against a display in use, every frame whose identity held steady
+  had changed anyway.
+
+- **The summary comes out of the conversion**, which already reads every pixel,
+  so detecting a duplicate costs one small read rather than a second pass over
+  the frame. Sixty-four invocations fold in shared memory and one atomic per
+  group reaches device memory: about eight thousand a frame instead of half a
+  million. Position is mixed in, because a sum and an exclusive-or are both
+  blind to order and a picture that merely moved would otherwise match.
+
+- **Every reason a duplicate is still owed is in one function**, because the
+  failure it guards against is a screen that stops updating, and that is
+  invisible to any test not looking for it: a refresh owed to a guest that
+  joined or fell behind, a seat arriving or leaving, and a heartbeat. The
+  heartbeat is not a cadence -- it is a bound on how long a mistake in that
+  list can freeze a screen, and it is why the list being hand-written is
+  survivable.
+
+Confirmed on a live session: 590 of 600 frames suppressed, the ten that went
+are exactly the heartbeat, no refreshes spent buying it, and the picture
+updating the instant anything moved.
+
+**What still runs every frame** is the display read and the conversion. Nothing
+in the display interface announces a change, and the summary that detects one
+is what the conversion produces, so the ioctl rate is unchanged at about four
+hundred a second.
+
 ## 9: capture (idle cost)
 
 **A host with a guest seated on an untouched desktop cost 6.67 percent of a
