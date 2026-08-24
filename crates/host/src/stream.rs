@@ -2955,14 +2955,21 @@ fn encode_loop<E: Encoder + FromDevice>(
         // Without that this waits a millisecond at a time whatever is
         // happening, which on an untouched desktop is roughly seven hundred
         // wakeups a second to discover that nothing has changed.
+        // **Asked again here, not reused from the top of the pass.** A picture
+        // was very likely submitted since then, and it is the pass that submits
+        // one which most needs to poll: taking the answer from before the
+        // submit sleeps until the next frame instead, so every picture waits a
+        // whole frame interval to be collected and the latency reported to a
+        // peer grows by one.
+        let waiting = !in_flight.is_empty();
         let now_ms = lowlat_common::clock::elapsed_ms(started);
         let mut until = next_frame_ms - now_ms;
-        if !pending {
+        if !waiting {
             // The connector check is the only other thing owed on a pass, and
             // on a slow frame rate it can fall due first.
             until = until.min(attached_ms + ATTACHED_MS - now_ms);
         }
-        if pending && until > POLL_MS * 2.0 {
+        if waiting && until > POLL_MS * 2.0 {
             std::thread::sleep(COLLECT_WAIT);
         } else if until > 0.0 {
             lowlat_common::clock::precise_sleep(std::time::Duration::from_secs_f64(until / 1000.0));
@@ -5063,6 +5070,55 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
+    }
+
+    /// **A finished picture is collected within a poll, not within a frame.**
+    ///
+    /// The loop only polls the encoder while it holds something, and the flag
+    /// that says so has to be read after the submit rather than before it.
+    /// Read before, the pass that submits a picture concludes there is nothing
+    /// to collect and sleeps to the next frame tick, so every picture sits
+    /// finished for a whole interval and the latency reported to a peer grows
+    /// by one frame.
+    ///
+    /// **Pacing does not show this and neither does the frame rate.** Both stay
+    /// exactly right while every picture is a frame late, which is how it
+    /// reached a live session: the stage to watch is `encode`, not `interval`.
+    /// The fake encoder answers immediately, so anything approaching an
+    /// interval here is waiting rather than encoding.
+    #[test]
+    fn a_finished_picture_does_not_wait_for_the_next_frame() {
+        let harness = Harness::start();
+        let seat = harness.seat();
+
+        // The report is published on a frame count, so the run has to reach it.
+        let mut received = 0usize;
+        until_within(30_000.0, "the timing report", || {
+            while seat.next_frame().is_some() {
+                received += 1;
+            }
+            received > REPORT_FRAMES as usize && harness.stream.timings().encode.p50 > 0.0
+        });
+
+        let report = harness.stream.timings();
+        let interval = 1000.0 / 240.0;
+        println!(
+            "encode p50 {:.3} ms p99 {:.3} ms against a {interval:.3} ms interval",
+            report.encode.p50, report.encode.p99
+        );
+        // **The tail is where this lives, not the median.** Only the pass that
+        // submits is affected, so half the picture is collected normally and
+        // the median barely moves: measured, the median was 1.08 ms either way
+        // while the tail went from 1.07 to 16.6. Watching the median is how it
+        // shipped.
+        assert!(
+            report.encode.p99 < interval,
+            "a picture that was ready immediately took {:.3} ms at the tail, which is a whole \
+             {interval:.3} ms frame interval -- it waited for the frame clock rather than the \
+             poll (median {:.3} ms, which is why the median is not what is asserted)",
+            report.encode.p99,
+            report.encode.p50
+        );
     }
 
     /// The whole handoff, end to end: a guest takes a seat, the loop admits it

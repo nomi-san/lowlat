@@ -19,6 +19,15 @@ layout(set = 0, binding = 0) uniform sampler2D source;
 layout(set = 0, binding = 1, r8) uniform writeonly image2D luma;
 layout(set = 0, binding = 2, rg8) uniform writeonly image2D chroma;
 
+// **What the picture came to, in eight bytes.** The loop needs to know whether
+// this frame differs from the last one, and the only honest answer is what was
+// drawn: the buffer it was drawn into can be reused without being replaced, so
+// its identity says nothing. This pass already reads every pixel, so the
+// summary is free here and would cost a second read anywhere else.
+layout(set = 0, binding = 3) buffer Digest {
+    uint accumulated[2];
+} digest;
+
 layout(push_constant) uniform Params {
     ivec2 extent;  // source size in pixels
     uint dither;   // nonzero to spread the quantisation error
@@ -51,6 +60,32 @@ const float BAYER[16] = float[16](
     15.0, 7.0, 13.0,  5.0
 );
 
+// One workgroup's contribution, combined here before it reaches memory
+// everyone shares. **Sixty-four invocations contending for one address in
+// shared memory is cheap; half a million contending for one in device memory
+// is not**, so the fold happens twice and only the second half is global.
+shared uint block_sum;
+shared uint block_xor;
+
+// The finaliser from a well-known 32-bit hash. Any change to any input bit
+// changes about half the output bits, which is what makes a sum and an
+// exclusive-or over the results sensitive to a single pixel.
+uint mix32(uint x) {
+    x ^= x >> 16;
+    x *= 0x85ebca6bu;
+    x ^= x >> 13;
+    x *= 0xc2b2ae35u;
+    x ^= x >> 16;
+    return x;
+}
+
+// **Quantised, not the float.** The encoder reads the eight-bit value that
+// lands in the image, so two pictures that round to the same bytes are the
+// same picture and comparing the floats would call them different.
+uint quantise(float v) {
+    return uint(clamp(v * 255.0 + 0.5, 0.0, 255.0));
+}
+
 float spread(ivec2 at) {
     if (params.dither == 0u) {
         return 0.0;
@@ -77,13 +112,24 @@ void store_luma(ivec2 at, vec3 colour) {
 }
 
 void main() {
+    // **Zeroed by the group before anything adds to it**, and the barrier is
+    // what makes that ordering real rather than likely.
+    if (gl_LocalInvocationIndex == 0u) {
+        block_sum = 0u;
+        block_xor = 0u;
+    }
+    barrier();
+
     // One invocation owns a 2x2 block: four luma samples and the single chroma
     // sample they share.
     ivec2 block = ivec2(gl_GlobalInvocationID.xy);
     ivec2 base = block * 2;
-    if (base.x >= params.extent.x || base.y >= params.extent.y) {
-        return;
-    }
+    // **The early exit still has to reach the barriers below.** A workgroup on
+    // the edge has invocations outside the picture, and a barrier that only
+    // some of them arrive at is undefined; so this contributes nothing rather
+    // than returning.
+    bool inside = base.x < params.extent.x && base.y < params.extent.y;
+    if (inside) {
 
     vec3 c00 = fetch(base + ivec2(0, 0));
     vec3 c10 = fetch(base + ivec2(1, 0));
@@ -106,10 +152,28 @@ void main() {
     float v = (mean.r - y) / (2.0 - 2.0 * KR);
 
     // Blue difference first, which is the order the two-plane format names.
-    imageStore(chroma, block, vec4(
-        u * C_SCALE + C_OFFSET + spread(block),
-        v * C_SCALE + C_OFFSET + spread(block + ivec2(2, 0)),
-        0.0,
-        0.0
-    ));
+    float cb = u * C_SCALE + C_OFFSET + spread(block);
+    float cr = v * C_SCALE + C_OFFSET + spread(block + ivec2(2, 0));
+    imageStore(chroma, block, vec4(cb, cr, 0.0, 0.0));
+
+    // **Position goes into the summary, so moving a pixel is a change.**
+    // Without it a picture and the same picture with two blocks exchanged
+    // reduce to the same value under a sum and an exclusive-or, both of
+    // which ignore order.
+    uint packed = quantise(luma_of(c00) * Y_SCALE + Y_OFFSET)
+        | (quantise(luma_of(c10) * Y_SCALE + Y_OFFSET) << 8)
+        | (quantise(luma_of(c01) * Y_SCALE + Y_OFFSET) << 16)
+        | (quantise(luma_of(c11) * Y_SCALE + Y_OFFSET) << 24);
+    uint colour = quantise(cb) | (quantise(cr) << 8);
+    uint where = mix32(uint(block.y) * 65536u + uint(block.x));
+    atomicAdd(block_sum, mix32(packed ^ where));
+    atomicXor(block_xor, mix32(colour + where));
+    }
+
+    // Every invocation reaches this, inside the picture or not.
+    barrier();
+    if (gl_LocalInvocationIndex == 0u) {
+        atomicAdd(digest.accumulated[0], block_sum);
+        atomicXor(digest.accumulated[1], block_xor);
+    }
 }
