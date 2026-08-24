@@ -778,14 +778,14 @@ impl Shared {
 
 /// A stage report, in microseconds, published as plain atomics.
 ///
-/// Twelve independent stores rather than one snapshot, which means a reader
+/// Fifteen independent stores rather than one snapshot, which means a reader
 /// can catch a report half written. That is deliberate: the alternative is a
 /// lock on the path that produces frames, and the cost of a torn report is a
 /// percentile from two adjacent reports rather than one, in a figure that is
 /// already a rolling estimate.
 #[derive(Debug, Default)]
 struct TimingCells {
-    cells: [AtomicU32; 12],
+    cells: [AtomicU32; 15],
 }
 
 /// The last refresh window, for a reader outside the loop.
@@ -821,6 +821,9 @@ impl TimingCells {
             report.acquire.p50,
             report.acquire.p95,
             report.acquire.p99,
+            report.pointer.p50,
+            report.pointer.p95,
+            report.pointer.p99,
             report.encode.p50,
             report.encode.p95,
             report.encode.p99,
@@ -845,7 +848,7 @@ impl TimingCells {
     }
 
     fn read(&self) -> Report {
-        let mut ms = [0.0f64; 12];
+        let mut ms = [0.0f64; 15];
         for (at, cell) in self.cells.iter().enumerate() {
             if let Some(slot) = ms.get_mut(at) {
                 *slot = f64::from(cell.load(Ordering::Relaxed)) / 1000.0;
@@ -859,9 +862,10 @@ impl TimingCells {
         };
         Report {
             acquire: stage(0),
-            encode: stage(3),
-            publish: stage(6),
-            interval: stage(9),
+            pointer: stage(3),
+            encode: stage(6),
+            publish: stage(9),
+            interval: stage(12),
         }
     }
 }
@@ -2859,6 +2863,9 @@ fn encode_loop<E: Encoder + FromDevice>(
                 }
                 None => None,
             };
+            // **Where the picture stops and the pointer starts.** The two
+            // were one figure and the pointer is not the small half of it.
+            let picture_at = lowlat_common::clock::Time::now();
             // **The pointer, on its own cadence and after the picture.** It
             // is read from the same device and the same thread as the frame,
             // which is what the state it reports is a property of; a thread
@@ -2908,6 +2915,11 @@ fn encode_loop<E: Encoder + FromDevice>(
                 );
             }
 
+            stages.pointer.record(lowlat_common::clock::diff_ms(
+                picture_at,
+                lowlat_common::clock::Time::now(),
+            ));
+
             let synthetic = if display.is_none() {
                 Some(source.acquire())
             } else {
@@ -2927,10 +2939,9 @@ fn encode_loop<E: Encoder + FromDevice>(
             // that stamp compares a clock reading with itself and reports
             // zero, which is what it did, hiding the capture and the colour
             // conversion inside a figure nobody could break down.
-            stages.acquire.record(lowlat_common::clock::diff_ms(
-                began,
-                lowlat_common::clock::Time::now(),
-            ));
+            stages
+                .acquire
+                .record(lowlat_common::clock::diff_ms(began, picture_at));
 
             // **The tick is the frame.** The controller counts its periods in
             // ticks, so this belongs here and not on the poll pass.
@@ -3030,10 +3041,12 @@ fn encode_loop<E: Encoder + FromDevice>(
                     // slower device, a larger picture, and a stage that
                     // blocks all read the same from outside.
                     lowlat_common::log_info!(
-                        "stream: stages ms p50/p99 acquire={:.3}/{:.3} encode={:.3}/{:.3} \
-                         publish={:.3}/{:.3} interval={:.3}/{:.3}",
+                        "stream: stages ms p50/p99 acquire={:.3}/{:.3} pointer={:.3}/{:.3} \
+                         encode={:.3}/{:.3} publish={:.3}/{:.3} interval={:.3}/{:.3}",
                         report.acquire.p50,
                         report.acquire.p99,
+                        report.pointer.p50,
+                        report.pointer.p99,
                         report.encode.p50,
                         report.encode.p99,
                         report.publish.p50,
@@ -5700,6 +5713,7 @@ mod tests {
         println!("  fps target {fps}, {received} frames");
         for (name, stage) in [
             ("acquire ", report.acquire),
+            ("pointer ", report.pointer),
             ("encode  ", report.encode),
             ("publish ", report.publish),
             ("interval", report.interval),

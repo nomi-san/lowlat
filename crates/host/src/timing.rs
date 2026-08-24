@@ -120,6 +120,14 @@ fn at_rank(sorted: &[f32], fraction: f64) -> f64 {
 pub struct Stages {
     /// A frame becoming available.
     pub acquire: Stage,
+    /// Reading the pointer and publishing what it is.
+    ///
+    /// **Its own stage because it is not small.** It ran inside the acquire
+    /// figure, where it was invisible: the plane's pixels are mapped uncached
+    /// and copied on the processor, on a cadence rather than on a change,
+    /// because nothing about the buffer says the shape moved. A capture stage
+    /// that quietly includes that cannot be reasoned about.
+    pub pointer: Stage,
     /// Submit to bitstream collected.
     pub encode: Stage,
     /// Bitstream to published and every guest woken.
@@ -132,6 +140,7 @@ pub struct Stages {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Report {
     pub acquire: Percentiles,
+    pub pointer: Percentiles,
     pub encode: Percentiles,
     pub publish: Percentiles,
     pub interval: Percentiles,
@@ -143,12 +152,12 @@ impl Report {
     /// **The floor Gate A item 7 states**: a pipeline that cannot clear a
     /// frame within a frame interval cannot hold the frame rate.
     pub fn host_p50(&self) -> f64 {
-        self.acquire.p50 + self.encode.p50 + self.publish.p50
+        self.acquire.p50 + self.pointer.p50 + self.encode.p50 + self.publish.p50
     }
 
     /// The same at the tail, which is where a stutter lives.
     pub fn host_p99(&self) -> f64 {
-        self.acquire.p99 + self.encode.p99 + self.publish.p99
+        self.acquire.p99 + self.pointer.p99 + self.encode.p99 + self.publish.p99
     }
 }
 
@@ -156,6 +165,7 @@ impl Stages {
     pub fn report(&self) -> Report {
         Report {
             acquire: self.acquire.percentiles(),
+            pointer: self.pointer.percentiles(),
             encode: self.encode.percentiles(),
             publish: self.publish.percentiles(),
             interval: self.interval.percentiles(),
