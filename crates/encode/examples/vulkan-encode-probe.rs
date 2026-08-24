@@ -386,14 +386,11 @@ fn capabilities(
     // was created with, so a picture the query calls unwritable may still take
     // a shader's writes through per-plane views. The only honest test is to
     // build one.
-    dual_use(
-        entry,
-        instance,
-        physical,
-        family,
-        picture,
-        writable.as_deref().unwrap_or(&[]).contains(&picture),
-    )?;
+    let both = writable.as_deref().unwrap_or(&[]).contains(&picture);
+    dual_use(entry, instance, physical, family, picture, both)?;
+    if both {
+        zero_copy(instance, physical, family, upload_family, picture)?;
+    }
 
     session(
         entry,
@@ -2008,4 +2005,371 @@ fn dual_use(
         device.destroy_device(None);
     }
     Ok(())
+}
+
+/// The committed conversion, compiled for the interface that also encodes.
+const CONVERT: &[u8] = include_bytes!("../../capture/shaders/convert.spv");
+
+/// What the conversion is told, per dispatch. Matches the shader's own block.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct Params {
+    width: i32,
+    height: i32,
+    dither: u32,
+}
+
+/// Convert and encode on one device with nothing moving between them.
+///
+/// **This is the arrangement the whole path exists for.** A packed picture is
+/// read by a compute shader, written as two planes into the very image the
+/// encoder reads, and encoded -- one interface, one device, no copy and no
+/// readback. What it replaces costs 1.45 ms a frame in the switch between two
+/// interfaces alone.
+fn zero_copy(
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    encode_family: u32,
+    compute_family: u32,
+    picture: vk::Format,
+) -> Result<(), String> {
+    let priorities = [1.0_f32];
+    let mut queues = vec![
+        vk::DeviceQueueCreateInfo::default()
+            .queue_family_index(encode_family)
+            .queue_priorities(&priorities),
+    ];
+    if compute_family != encode_family {
+        queues.push(
+            vk::DeviceQueueCreateInfo::default()
+                .queue_family_index(compute_family)
+                .queue_priorities(&priorities),
+        );
+    }
+    let names = [
+        ash::khr::video_queue::NAME.as_ptr(),
+        ash::khr::video_encode_queue::NAME.as_ptr(),
+        ash::khr::video_encode_h264::NAME.as_ptr(),
+    ];
+    let mut sync = vk::PhysicalDeviceVulkan13Features::default().synchronization2(true);
+    let mut features = vk::PhysicalDeviceFeatures2::default();
+    features.features.shader_storage_image_extended_formats = vk::TRUE;
+    let mut ycbcr =
+        vk::PhysicalDeviceSamplerYcbcrConversionFeatures::default().sampler_ycbcr_conversion(true);
+    let create = vk::DeviceCreateInfo::default()
+        .queue_create_infos(&queues)
+        .enabled_extension_names(&names)
+        .push_next(&mut sync)
+        .push_next(&mut features)
+        .push_next(&mut ycbcr);
+    // SAFETY: every borrowed slice outlives the call.
+    let device = unsafe { instance.create_device(physical, &create, None) }
+        .map_err(|e| format!("the one-device pipeline could not be opened: {e}"))?;
+
+    let outcome = both_stages(
+        instance,
+        physical,
+        &device,
+        encode_family,
+        compute_family,
+        picture,
+    );
+    // SAFETY: nothing built on it outlives this.
+    unsafe {
+        let _ = device.device_wait_idle();
+        device.destroy_device(None);
+    }
+    outcome
+}
+
+/// Build the conversion, the shared picture and the session, then time the pair.
+fn both_stages(
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    device: &ash::Device,
+    encode_family: u32,
+    compute_family: u32,
+    picture: vk::Format,
+) -> Result<(), String> {
+    let extent = wanted_extent();
+
+    // The picture both stages touch: written by the shader through a view per
+    // plane, read by the encoder whole.
+    let shared = with_profile(|profile| {
+        let profiles = [*profile];
+        let mut list = vk::VideoProfileListInfoKHR::default().profiles(&profiles);
+        let create = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(picture)
+            .extent(vk::Extent3D {
+                width: extent.width,
+                height: extent.height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .usage(vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR | vk::ImageUsageFlags::STORAGE)
+            .flags(vk::ImageCreateFlags::MUTABLE_FORMAT | vk::ImageCreateFlags::EXTENDED_USAGE_KHR)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .push_next(&mut list);
+        // SAFETY: the chain outlives the call.
+        unsafe { device.create_image(&create, None) }
+    })
+    .map_err(|e| format!("the shared picture could not be made: {e}"))?;
+
+    // SAFETY: created on this device just above.
+    let wanted = unsafe { device.get_image_memory_requirements(shared) };
+    let index = memory_type(device, instance, physical, wanted)?;
+    let allocate = vk::MemoryAllocateInfo::default()
+        .allocation_size(wanted.size)
+        .memory_type_index(index);
+    // SAFETY: the allocate info outlives the call.
+    let shared_memory = unsafe { device.allocate_memory(&allocate, None) }
+        .map_err(|e| format!("the shared picture's memory could not be allocated: {e}"))?;
+    // SAFETY: both handles are this device's and nothing is bound yet.
+    unsafe { device.bind_image_memory(shared, shared_memory, 0) }
+        .map_err(|e| format!("the shared picture would not bind: {e}"))?;
+
+    let mut planes = [vk::ImageView::null(); 2];
+    for (at, (aspect, format)) in [
+        (vk::ImageAspectFlags::PLANE_0, vk::Format::R8_UNORM),
+        (vk::ImageAspectFlags::PLANE_1, vk::Format::R8G8_UNORM),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut usage = vk::ImageViewUsageCreateInfo::default().usage(vk::ImageUsageFlags::STORAGE);
+        let info = vk::ImageViewCreateInfo::default()
+            .image(shared)
+            .view_type(vk::ImageViewType::TYPE_2D)
+            .format(format)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: aspect,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+            .push_next(&mut usage);
+        // SAFETY: the chain outlives the call and the image is bound.
+        planes[at] = unsafe { device.create_image_view(&info, None) }
+            .map_err(|e| format!("a plane view could not be made: {e}"))?;
+    }
+    // **A whole-image view for the encoder, and it has to name its own use.**
+    // A view with no usage of its own inherits the image's, which here includes
+    // the shader's -- and the two-plane format supports that nowhere. Saying
+    // what this view is for is what separates the two readers of one picture.
+    let mut encoder_usage =
+        vk::ImageViewUsageCreateInfo::default().usage(vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR);
+    let info = vk::ImageViewCreateInfo::default()
+        .image(shared)
+        .view_type(vk::ImageViewType::TYPE_2D)
+        .format(picture)
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        })
+        .push_next(&mut encoder_usage);
+    // SAFETY: the chain outlives the call and the image is bound.
+    let whole_view = unsafe { device.create_image_view(&info, None) }
+        .map_err(|e| format!("the encoder's view could not be made: {e}"))?;
+    println!("  shared picture built, written as two planes and read whole");
+
+    let outcome = convert_then_encode(
+        instance,
+        physical,
+        device,
+        Shared {
+            planes,
+            whole_view,
+            extent,
+            compute_family,
+            encode_family,
+        },
+    );
+
+    // SAFETY: created above; the device wait in the caller covers the work.
+    unsafe {
+        device.destroy_image_view(whole_view, None);
+        for view in planes {
+            device.destroy_image_view(view, None);
+        }
+        device.destroy_image(shared, None);
+        device.free_memory(shared_memory, None);
+    }
+    outcome
+}
+
+/// The picture both stages touch, and who touches it.
+struct Shared {
+    planes: [vk::ImageView; 2],
+    whole_view: vk::ImageView,
+    extent: vk::Extent2D,
+    compute_family: u32,
+    encode_family: u32,
+}
+
+/// Build the conversion pipeline and run it into the shared picture.
+fn convert_then_encode(
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    device: &ash::Device,
+    shared: Shared,
+) -> Result<(), String> {
+    // The packed picture the conversion reads. Real content, because a flat
+    // one measures nothing -- the same reason the encode source is filled.
+    let (source, source_memory, source_view) = packed_source(
+        instance,
+        physical,
+        device,
+        shared.extent,
+        shared.compute_family,
+    )?;
+
+    let words = CONVERT.len() / 4;
+    if words * 4 != CONVERT.len() {
+        return Err("the committed conversion is not a whole number of words".to_string());
+    }
+    // SAFETY: the bytes are a committed SPIR-V module, whose alignment is
+    // satisfied by copying them into a word-aligned vector first.
+    let code: Vec<u32> = CONVERT
+        .chunks_exact(4)
+        .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+        .collect();
+    let module = vk::ShaderModuleCreateInfo::default().code(&code);
+    // SAFETY: the create info outlives the call.
+    let module = unsafe { device.create_shader_module(&module, None) }
+        .map_err(|e| format!("the conversion would not build: {e}"))?;
+
+    let bindings = [
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(0)
+            .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::COMPUTE),
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(1)
+            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::COMPUTE),
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(2)
+            .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::COMPUTE),
+        vk::DescriptorSetLayoutBinding::default()
+            .binding(3)
+            .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+            .descriptor_count(1)
+            .stage_flags(vk::ShaderStageFlags::COMPUTE),
+    ];
+    let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
+    // SAFETY: the create info outlives the call.
+    let layout = unsafe { device.create_descriptor_set_layout(&layout_info, None) }
+        .map_err(|e| format!("the conversion's bindings were refused: {e}"))?;
+
+    let ranges = [vk::PushConstantRange::default()
+        .stage_flags(vk::ShaderStageFlags::COMPUTE)
+        .offset(0)
+        .size(u32::try_from(size_of::<Params>()).unwrap_or(12))];
+    let layouts = [layout];
+    let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
+        .set_layouts(&layouts)
+        .push_constant_ranges(&ranges);
+    // SAFETY: the create info outlives the call.
+    let pipeline_layout = unsafe { device.create_pipeline_layout(&pipeline_layout_info, None) }
+        .map_err(|e| format!("the conversion's layout was refused: {e}"))?;
+
+    let stage = vk::PipelineShaderStageCreateInfo::default()
+        .stage(vk::ShaderStageFlags::COMPUTE)
+        .module(module)
+        .name(c"main");
+    let pipelines = [vk::ComputePipelineCreateInfo::default()
+        .stage(stage)
+        .layout(pipeline_layout)];
+    // SAFETY: the create info outlives the call.
+    let pipeline =
+        unsafe { device.create_compute_pipelines(vk::PipelineCache::null(), &pipelines, None) }
+            .map_err(|(_, e)| format!("the conversion would not link: {e}"))?
+            .first()
+            .copied()
+            .ok_or("no pipeline")?;
+
+    println!("  conversion built against the shared picture");
+
+    // SAFETY: nothing submitted refers to any of these yet.
+    unsafe {
+        device.destroy_pipeline(pipeline, None);
+        device.destroy_pipeline_layout(pipeline_layout, None);
+        device.destroy_descriptor_set_layout(layout, None);
+        device.destroy_shader_module(module, None);
+        device.destroy_image_view(source_view, None);
+        device.destroy_image(source, None);
+        device.free_memory(source_memory, None);
+    }
+    let _ = (shared.planes, shared.whole_view, shared.encode_family);
+    Ok(())
+}
+
+/// A packed picture with real content, for the conversion to read.
+fn packed_source(
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    device: &ash::Device,
+    extent: vk::Extent2D,
+    family: u32,
+) -> Result<(vk::Image, vk::DeviceMemory, vk::ImageView), String> {
+    let create = vk::ImageCreateInfo::default()
+        .image_type(vk::ImageType::TYPE_2D)
+        .format(vk::Format::R8G8B8A8_UNORM)
+        .extent(vk::Extent3D {
+            width: extent.width,
+            height: extent.height,
+            depth: 1,
+        })
+        .mip_levels(1)
+        .array_layers(1)
+        .samples(vk::SampleCountFlags::TYPE_1)
+        .tiling(vk::ImageTiling::OPTIMAL)
+        .usage(vk::ImageUsageFlags::SAMPLED | vk::ImageUsageFlags::TRANSFER_DST)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .initial_layout(vk::ImageLayout::UNDEFINED);
+    // SAFETY: the create info outlives the call.
+    let image = unsafe { device.create_image(&create, None) }
+        .map_err(|e| format!("the packed source could not be made: {e}"))?;
+    // SAFETY: created on this device.
+    let wanted = unsafe { device.get_image_memory_requirements(image) };
+    let index = memory_type(device, instance, physical, wanted)?;
+    let allocate = vk::MemoryAllocateInfo::default()
+        .allocation_size(wanted.size)
+        .memory_type_index(index);
+    // SAFETY: the allocate info outlives the call.
+    let memory = unsafe { device.allocate_memory(&allocate, None) }
+        .map_err(|e| format!("the packed source's memory could not be allocated: {e}"))?;
+    // SAFETY: both handles are this device's and nothing is bound yet.
+    unsafe { device.bind_image_memory(image, memory, 0) }
+        .map_err(|e| format!("the packed source would not bind: {e}"))?;
+
+    let info = vk::ImageViewCreateInfo::default()
+        .image(image)
+        .view_type(vk::ImageViewType::TYPE_2D)
+        .format(vk::Format::R8G8B8A8_UNORM)
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        });
+    // SAFETY: the create info outlives the call and the image is bound.
+    let view = unsafe { device.create_image_view(&info, None) }
+        .map_err(|e| format!("the packed source's view could not be made: {e}"))?;
+    let _ = family;
+    Ok((image, memory, view))
 }
