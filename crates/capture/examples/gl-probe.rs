@@ -237,10 +237,87 @@ fn from_display(device: &Device, converter: &Converter, node: &Path, out: &Path)
         Err(error) => eprintln!("read back failed: {error}"),
     }
 
+    // **Both target kinds, timed against each other.** The conversion writes
+    // into a region the display device allocated, which is the only kind an
+    // encoder can be handed; whether that costs more than one the driver
+    // allocated for itself is the difference between a layout requirement and
+    // a performance one, and only this says which.
+    let repeats: usize = std::env::var("LOWLAT_CONVERT_REPEATS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    if repeats > 0 {
+        report(
+            "imported region",
+            time(converter, device, &imported, &target, repeats),
+        );
+        let owned = device
+            .allocate_nv12(fb.width, fb.height)
+            .expect("a driver-allocated target");
+        report(
+            "driver's own",
+            time(converter, device, &imported, &owned, repeats),
+        );
+
+        // **The same shader over the same pixels, from a source this interface
+        // allocated rather than one it imported.** If the cost is the
+        // conversion it does not move; if it is reading a foreign buffer it
+        // does, and that is a different problem with a different fix.
+        let pixels = vec![0x40_u8; (fb.width as usize) * (fb.height as usize) * 4];
+        let plain = device
+            .upload_rgba(fb.width, fb.height, &pixels)
+            .expect("an uploaded source");
+        report(
+            "uploaded source",
+            time(converter, device, &plain, &owned, repeats),
+        );
+        device.release(plain);
+        device.release_nv12(owned);
+    }
+
     device.release(imported);
     device.release_nv12(target);
     drop(target_fd);
     card.release_linear(linear);
+}
+
+/// Convert the same frame repeatedly and return how long each pass took.
+fn time(
+    converter: &Converter,
+    device: &Device,
+    source: &lowlat_capture::gl::Imported,
+    target: &Nv12,
+    repeats: usize,
+) -> Vec<f64> {
+    let mut taken = Vec::with_capacity(repeats);
+    for _ in 0..repeats {
+        let began = std::time::Instant::now();
+        converter
+            .run(device, source, target, false)
+            .expect("convert");
+        taken.push(began.elapsed().as_secs_f64() * 1000.0);
+    }
+    taken.sort_by(f64::total_cmp);
+    taken
+}
+
+/// The middle and the tail, which is what a per-frame cost is judged by.
+fn report(what: &str, taken: Vec<f64>) {
+    // Integer arithmetic on the count rather than a scaled float, which is the
+    // cast the data path forbids and which this has no need of.
+    let at = |numerator: usize, denominator: usize| {
+        let index = taken.len().saturating_mul(numerator) / denominator.max(1);
+        taken
+            .get(index.min(taken.len().saturating_sub(1)))
+            .copied()
+            .unwrap_or(0.0)
+    };
+    println!(
+        "  {what:<16} p50 {:.3} ms  p99 {:.3} ms  over {} passes",
+        at(1, 2),
+        at(99, 100),
+        taken.len()
+    );
 }
 
 /// Write the converted frame as eight-bit colour, undoing the transform.
