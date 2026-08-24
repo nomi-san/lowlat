@@ -13,6 +13,9 @@ lowlat-common.workspace = true
 # Opening the render node. No wrapper crate: one open and one close.
 libc.workspace = true
 lowlat-capture.workspace = true
+# The third encoder path, under probe. One interface for import, conversion and
+# encode on one device, which is what the other two cannot be.
+ash.workspace = true
 
 [lints]
 workspace = true
