@@ -102,6 +102,15 @@ impl core::fmt::Debug for Nv12 {
 }
 
 /// Everything the conversion needs that outlives a single frame.
+/// What a converted picture came to, as one value.
+///
+/// **Compared against the previous frame's and nothing else.** It says whether
+/// the picture changed, never what it contains, and two pictures that agree
+/// here are treated as the same picture -- so the loop that trusts it needs a
+/// periodic forced pass for the case where they agree and should not have.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Digest(pub u64);
+
 pub struct Converter {
     sampler: vk::Sampler,
     layout: vk::DescriptorSetLayout,
@@ -122,7 +131,24 @@ pub struct Converter {
     /// fence is free by the time anything could ask for it again; a second
     /// conversion in flight would need a second fence.
     fence: vk::Fence,
+    /// Where the shader accumulates its summary, on the device.
+    summary: vk::Buffer,
+    summary_memory: vk::DeviceMemory,
+    /// The same eight bytes somewhere the processor can read them.
+    ///
+    /// **A copy rather than a shared allocation.** Eight thousand atomics a
+    /// frame into memory the host can see would cross the bus for each one on
+    /// a card that has its own; they land in device memory and come back once.
+    readback: vk::Buffer,
+    readback_memory: vk::DeviceMemory,
+    /// Mapped once and left mapped. Coherent, so nothing has to invalidate it.
+    mapped: *mut u8,
 }
+
+// SAFETY: the mapped pointer is owned by this converter and is only read
+// inside `dispatch`, which the single-conversion rule above already
+// serialises. Nothing else may reach it.
+unsafe impl Send for Converter {}
 
 impl core::fmt::Debug for Converter {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -130,7 +156,73 @@ impl core::fmt::Debug for Converter {
     }
 }
 
+/// Two thirty-two bit accumulators, which is what the shader writes.
+///
+/// **Sixty-four bits, and the question is collisions between one frame and the
+/// next rather than across a session.** Two consecutive pictures that differ
+/// have to differ here; a picture that recurs later is not a hazard, because
+/// nothing is being looked up. At sixty comparisons a second that is one
+/// chance in about ten to the fourteenth over an hour, and the forced pass
+/// covers the rest.
+const DIGEST_BYTES: u64 = 8;
+
+/// The same figure where a length is wanted rather than a device size.
+const DIGEST: usize = 8;
+
 impl Converter {
+    /// One small buffer and the memory under it.
+    fn buffer(
+        device: &Device,
+        usage: vk::BufferUsageFlags,
+        host: bool,
+    ) -> Result<(vk::Buffer, vk::DeviceMemory), Error> {
+        let vk_device = &device.device;
+        let info = vk::BufferCreateInfo::default()
+            .size(DIGEST_BYTES)
+            .usage(usage)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        // SAFETY: the create info outlives the call.
+        let buffer = unsafe { vk_device.create_buffer(&info, None) }.map_err(driver)?;
+
+        // SAFETY: created on this device just above.
+        let requirements = unsafe { vk_device.get_buffer_memory_requirements(buffer) };
+        let index = if host {
+            device.host_visible_memory(requirements.memory_type_bits)
+        } else {
+            device.device_local_memory(requirements.memory_type_bits)
+        };
+        let index = match index {
+            Ok(index) => index,
+            Err(error) => {
+                // SAFETY: nothing is bound to it.
+                unsafe { vk_device.destroy_buffer(buffer, None) };
+                return Err(error);
+            }
+        };
+        let allocate = vk::MemoryAllocateInfo::default()
+            .allocation_size(requirements.size)
+            .memory_type_index(index);
+        // SAFETY: the allocate info outlives the call.
+        let memory = match unsafe { vk_device.allocate_memory(&allocate, None) } {
+            Ok(memory) => memory,
+            Err(error) => {
+                // SAFETY: nothing is bound to it.
+                unsafe { vk_device.destroy_buffer(buffer, None) };
+                return Err(driver(error));
+            }
+        };
+        // SAFETY: neither handle is bound yet.
+        if let Err(error) = unsafe { vk_device.bind_buffer_memory(buffer, memory, 0) } {
+            // SAFETY: allocated above and nothing refers to either.
+            unsafe {
+                vk_device.free_memory(memory, None);
+                vk_device.destroy_buffer(buffer, None);
+            }
+            return Err(driver(error));
+        }
+        Ok((buffer, memory))
+    }
+
     /// Build the pipeline. Once per session, never per frame.
     pub fn new(device: &Device) -> Result<Self, Error> {
         let vk_device = &device.device;
@@ -162,6 +254,11 @@ impl Converter {
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(3)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
         let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
         // SAFETY: the bindings outlive the call.
@@ -190,6 +287,9 @@ impl Converter {
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_IMAGE)
                 .descriptor_count(2),
+            vk::DescriptorPoolSize::default()
+                .ty(vk::DescriptorType::STORAGE_BUFFER)
+                .descriptor_count(1),
         ];
         let pool_info = vk::DescriptorPoolCreateInfo::default()
             .max_sets(1)
@@ -204,6 +304,29 @@ impl Converter {
         let commands =
             unsafe { vk_device.create_command_pool(&commands_info, None) }.map_err(driver)?;
 
+        let (summary, summary_memory) = Self::buffer(
+            device,
+            vk::BufferUsageFlags::STORAGE_BUFFER
+                | vk::BufferUsageFlags::TRANSFER_SRC
+                | vk::BufferUsageFlags::TRANSFER_DST,
+            false,
+        )?;
+        let (readback, readback_memory) =
+            Self::buffer(device, vk::BufferUsageFlags::TRANSFER_DST, true)?;
+        // SAFETY: host visible and coherent, and nothing else maps it. It stays
+        // mapped for the life of the converter, which is what makes reading it
+        // per frame free.
+        let mapped = unsafe {
+            vk_device.map_memory(
+                readback_memory,
+                0,
+                DIGEST_BYTES,
+                vk::MemoryMapFlags::empty(),
+            )
+        }
+        .map_err(driver)?
+        .cast::<u8>();
+
         // Last, so nothing after it can fail and leak it.
         // SAFETY: the create info outlives the call.
         let fence = unsafe { vk_device.create_fence(&vk::FenceCreateInfo::default(), None) }
@@ -217,6 +340,11 @@ impl Converter {
             pool,
             commands,
             fence,
+            summary,
+            summary_memory,
+            readback,
+            readback_memory,
+            mapped,
         })
     }
 
@@ -268,6 +396,11 @@ impl Converter {
         // submitted work still refers to any of them.
         unsafe {
             let _ = vk_device.device_wait_idle();
+            vk_device.unmap_memory(self.readback_memory);
+            vk_device.destroy_buffer(self.readback, None);
+            vk_device.free_memory(self.readback_memory, None);
+            vk_device.destroy_buffer(self.summary, None);
+            vk_device.free_memory(self.summary_memory, None);
             vk_device.destroy_fence(self.fence, None);
             vk_device.destroy_command_pool(self.commands, None);
             vk_device.destroy_descriptor_pool(self.pool, None);
@@ -570,7 +703,7 @@ impl Converter {
         source: &Imported,
         target: &Nv12,
         dither: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<Digest, Error> {
         let vk_device = &device.device;
 
         let view_info = vk::ImageViewCreateInfo::default()
@@ -601,7 +734,7 @@ impl Converter {
         target: &Nv12,
         view: vk::ImageView,
         dither: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<Digest, Error> {
         let vk_device = &device.device;
 
         let layouts = [self.layout];
@@ -622,6 +755,10 @@ impl Converter {
         let chroma = [vk::DescriptorImageInfo::default()
             .image_view(*target.planes.get(1).ok_or(Error::BadShader)?)
             .image_layout(vk::ImageLayout::GENERAL)];
+        let summary = [vk::DescriptorBufferInfo::default()
+            .buffer(self.summary)
+            .offset(0)
+            .range(DIGEST_BYTES)];
         let writes = [
             vk::WriteDescriptorSet::default()
                 .dst_set(set)
@@ -638,6 +775,11 @@ impl Converter {
                 .dst_binding(2)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .image_info(&chroma),
+            vk::WriteDescriptorSet::default()
+                .dst_set(set)
+                .dst_binding(3)
+                .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
+                .buffer_info(&summary),
         ];
         // SAFETY: every borrowed structure outlives the call.
         unsafe { vk_device.update_descriptor_sets(&writes, &[]) };
@@ -656,7 +798,7 @@ impl Converter {
         target: &Nv12,
         set: vk::DescriptorSet,
         dither: bool,
-    ) -> Result<(), Error> {
+    ) -> Result<Digest, Error> {
         let vk_device = &device.device;
         let allocate = vk::CommandBufferAllocateInfo::default()
             .command_pool(self.commands)
@@ -728,6 +870,32 @@ impl Converter {
         let groups_x = source.width.div_ceil(2).div_ceil(GROUP);
         let groups_y = source.height.div_ceil(2).div_ceil(GROUP);
 
+        // **Zeroed here rather than on the processor**, so nothing has to wait
+        // between clearing it and filling it: both are in this recording and
+        // the barrier orders them.
+        // SAFETY: recording, and the buffer is this device's.
+        unsafe { vk_device.cmd_fill_buffer(commands, self.summary, 0, DIGEST_BYTES, 0) };
+        let cleared = vk::BufferMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+            .dst_access_mask(vk::AccessFlags::SHADER_READ | vk::AccessFlags::SHADER_WRITE)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .buffer(self.summary)
+            .offset(0)
+            .size(DIGEST_BYTES);
+        // SAFETY: recording, and the barrier outlives the call.
+        unsafe {
+            vk_device.cmd_pipeline_barrier(
+                commands,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[cleared],
+                &[],
+            );
+        }
+
         // SAFETY: recording into a command buffer that has begun; every
         // borrowed structure outlives the call, and the handles are all this
         // device's.
@@ -758,6 +926,33 @@ impl Converter {
                 bytes,
             );
             vk_device.cmd_dispatch(commands, groups_x, groups_y, 1);
+        }
+
+        // **Out of device memory once, rather than accumulated where the host
+        // can see it.** The shader touches the summary thousands of times a
+        // frame; this copy touches it once.
+        let written = vk::BufferMemoryBarrier::default()
+            .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+            .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .buffer(self.summary)
+            .offset(0)
+            .size(DIGEST_BYTES);
+        let region = vk::BufferCopy::default().size(DIGEST_BYTES);
+        // SAFETY: recording; every handle is this device's and the borrowed
+        // structures outlive the calls.
+        unsafe {
+            vk_device.cmd_pipeline_barrier(
+                commands,
+                vk::PipelineStageFlags::COMPUTE_SHADER,
+                vk::PipelineStageFlags::TRANSFER,
+                vk::DependencyFlags::empty(),
+                &[],
+                &[written],
+                &[],
+            );
+            vk_device.cmd_copy_buffer(commands, self.summary, self.readback, &[region]);
             vk_device.end_command_buffer(commands).map_err(driver)?;
         }
 
@@ -792,7 +987,17 @@ impl Converter {
         unsafe {
             vk_device.free_command_buffers(self.commands, &buffers);
         }
-        waited
+        waited?;
+
+        // **Read after the wait and not before.** The copy is the last thing
+        // in the recording, so the fence being signalled is exactly what says
+        // these eight bytes are this frame's rather than the previous one's.
+        // SAFETY: mapped for the life of the converter, coherent, and eight
+        // bytes long; the wait above ordered the write that filled it.
+        let bytes = unsafe { core::slice::from_raw_parts(self.mapped, DIGEST) };
+        let mut value = [0u8; DIGEST];
+        value.copy_from_slice(bytes);
+        Ok(Digest(u64::from_le_bytes(value)))
     }
 }
 
@@ -1057,6 +1262,77 @@ mod tests {
     /// regression has no other check that can catch it -- the comparison
     /// against a real desktop is nearly blind to the matrix, which is what
     /// prompted this.
+    /// **The summary answers the only question asked of it**: is this picture
+    /// the one before it.
+    ///
+    /// Three things have to hold together, and each fails differently. The
+    /// same picture twice must agree, or the loop suppresses nothing. Two
+    /// different pictures must disagree, or it suppresses a real frame. And
+    /// **the same pixels in a different place must disagree** -- a sum and an
+    /// exclusive-or are both blind to order, so without position folded in, a
+    /// picture and its mirror reduce to the same value.
+    #[test]
+    fn the_summary_tells_one_picture_from_another() {
+        let width = 64u32;
+        let height = 64u32;
+        let device = Device::any().expect("a device that can convert");
+        let converter = Converter::new(&device).expect("a pipeline");
+        let target = device.allocate_nv12(width, height).expect("a target");
+
+        let digest_of = |pixels: &[u8]| {
+            let source = device.upload_rgba(width, height, pixels).expect("upload");
+            let got = converter
+                .run(&device, &source, &target, false)
+                .expect("convert");
+            device.release(source);
+            got
+        };
+
+        let flat = vec![40u8; (width as usize) * (height as usize) * 4];
+        let first = digest_of(&flat);
+        let again = digest_of(&flat);
+        assert_eq!(
+            first, again,
+            "the same picture twice gave two answers, so nothing could ever be suppressed"
+        );
+
+        // One pixel, one level. The smallest change the eight-bit output can
+        // carry, and the one a weak summary misses.
+        let mut nudged = flat.clone();
+        nudged[0] = 41;
+        nudged[1] = 41;
+        nudged[2] = 41;
+        let moved_one = digest_of(&nudged);
+        assert_ne!(
+            first, moved_one,
+            "a picture with one pixel changed matched the one without it"
+        );
+
+        // **One pixel bright, moved to the same corner of the next block.**
+        // Two pixels apart, so both are the first sample of their own 2x2
+        // block: the four luma values pack identically and the chroma is the
+        // same, and the only thing separating the two pictures is which block
+        // it happened in. Moving the pixel anywhere else is a weaker test,
+        // because its position inside the block changes the packing and would
+        // pass even with the block's own position left out.
+        let bright = |at: usize| {
+            let mut pixels = flat.clone();
+            pixels[at * 4] = 200;
+            pixels[at * 4 + 1] = 200;
+            pixels[at * 4 + 2] = 200;
+            pixels
+        };
+        assert_ne!(
+            digest_of(&bright(0)),
+            digest_of(&bright(2)),
+            "the same pixel in a different block gave the same answer, so the block's position \
+             is not reaching the summary and a picture could move without being noticed"
+        );
+
+        device.release_nv12(target);
+        converter.destroy(&device);
+    }
+
     /// **One converter, used more than once**, which is the shape the loop
     /// runs in and which nothing covered while the fence was created per run.
     /// The second conversion is the one that matters: it is the first that can

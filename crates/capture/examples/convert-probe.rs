@@ -191,6 +191,65 @@ fn main() {
         Some(_) => {}
     }
 
+    // **Ground truth, where the buffer is laid out plainly enough to have
+    // one.** A linear source can be mapped and read directly, which is the
+    // only thing here that does not go through the interface being tested. The
+    // luma the conversion produced is checked against the luma computed from
+    // those bytes, so a channel order that is wrong anywhere in the capture
+    // path shows up as a large difference rather than as a plausible picture.
+    if fb.modifier.map_or(0, u64::from) == 0 && fb.format == drm::buffer::DrmFourcc::Argb8888 {
+        match card.export(first) {
+            Err(error) => println!("cannot re-export for the direct read: {error}"),
+            Ok(fd) => {
+                let pitch = first.pitch as usize;
+                let bytes = pitch * (fb.height as usize);
+                // SAFETY: a read-only shared map of a descriptor the kernel
+                // gave us, of the size the pitch and height describe.
+                let base = unsafe {
+                    libc::mmap(
+                        core::ptr::null_mut(),
+                        bytes,
+                        libc::PROT_READ,
+                        libc::MAP_SHARED,
+                        std::os::fd::AsRawFd::as_raw_fd(&fd),
+                        0,
+                    )
+                };
+                if base == libc::MAP_FAILED {
+                    println!("the linear source would not map, skipping the direct read");
+                } else {
+                    // SAFETY: mapped just above for `bytes`, read only.
+                    let raw = unsafe { core::slice::from_raw_parts(base.cast::<u8>(), bytes) };
+                    let (nv12_luma, _) = device.read_nv12(&target).unwrap_or_else(|error| {
+                        fail(&format!("read planes for the direct check: {error}"))
+                    });
+                    let mut worst = 0.0f64;
+                    let mut sampled = 0usize;
+                    for y in (0..fb.height as usize).step_by(37) {
+                        for x in (0..fb.width as usize).step_by(41) {
+                            let at = y * pitch + x * 4;
+                            // ARGB8888 is packed little-endian, so blue first.
+                            let b = f64::from(raw[at]);
+                            let g = f64::from(raw[at + 1]);
+                            let r = f64::from(raw[at + 2]);
+                            let y709 = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+                            let want = y709 * (219.0 / 255.0) + 16.0;
+                            let got = f64::from(nv12_luma[y * (target.width as usize) + x]);
+                            worst = worst.max((want - got).abs());
+                            sampled += 1;
+                        }
+                    }
+                    println!(
+                        "direct read of the linear source: worst luma difference {worst:.2} \
+                         over {sampled} samples"
+                    );
+                    // SAFETY: mapped above and not referenced after this.
+                    unsafe { libc::munmap(base, bytes) };
+                }
+            }
+        }
+    }
+
     let (luma, chroma) = device
         .read_nv12(&target)
         .unwrap_or_else(|error| fail(&format!("read planes: {error}")));
