@@ -440,7 +440,7 @@ fn build_session(
     })?;
     println!("  session created");
 
-    let outcome = bind_session(instance, built.physical, device, &video, session);
+    let outcome = bind_session(instance, built.physical, device, &video, session, built);
     // SAFETY: created above; whatever was bound to it is released by the
     // caller's device teardown.
     unsafe { (video.fp().destroy_video_session_khr)(device.handle(), session, core::ptr::null()) };
@@ -454,6 +454,7 @@ fn bind_session(
     device: &ash::Device,
     video: &ash::khr::video_queue::Device,
     session: vk::VideoSessionKHR,
+    built: &Built,
 ) -> Result<(), String> {
     let mut count = 0_u32;
     // SAFETY: asking for the count writes only the counter.
@@ -521,7 +522,7 @@ fn bind_session(
     };
     let outcome = if result == vk::Result::SUCCESS {
         println!("  session memory bound");
-        parameters(device, video, session)
+        parameters(instance, physical, device, video, session, built)
     } else {
         Err(format!("the session's memory would not bind: {result:?}"))
     };
@@ -574,11 +575,15 @@ fn memory_type(
 /// set encodes without error and decodes to nothing in more than one way. If
 /// this interface emits them, that whole class of fault goes away.
 fn parameters(
+    instance: &ash::Instance,
+    _physical: vk::PhysicalDevice,
     device: &ash::Device,
     video: &ash::khr::video_queue::Device,
     session: vk::VideoSessionKHR,
+    built: &Built,
 ) -> Result<(), String> {
     let (width, height) = (2560_u32, 1440_u32);
+    let physical = built.physical;
     // **Zeroed and then filled, because these come from the codec's own
     // headers and carry pointers**, so there is no derived empty value. Zero
     // is the right start: every optional table is absent as a null pointer and
@@ -642,6 +647,8 @@ fn parameters(
     println!("  parameter sets accepted");
     let _ = &mut h264;
 
+    let outcome = encode(instance, physical, device, video, session, handle, built);
+
     // SAFETY: created above and used by nothing else.
     unsafe {
         (video.fp().destroy_video_session_parameters_khr)(
@@ -650,5 +657,627 @@ fn parameters(
             core::ptr::null(),
         );
     }
+    outcome
+}
+
+/// One picture's worth of device objects.
+struct Frame {
+    source: vk::Image,
+    source_view: vk::ImageView,
+    dpb: vk::Image,
+    dpb_view: vk::ImageView,
+    bitstream: vk::Buffer,
+    bitstream_memory: vk::DeviceMemory,
+    memories: Vec<vk::DeviceMemory>,
+    pool: vk::QueryPool,
+    commands: vk::CommandPool,
+}
+
+/// How much bitstream one picture may produce.
+const BITSTREAM_BYTES: u64 = 4 << 20;
+
+/// An image the video interface will accept, with its memory bound.
+fn video_image(
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    device: &ash::Device,
+    format: vk::Format,
+    extent: vk::Extent2D,
+    usage: vk::ImageUsageFlags,
+) -> Result<(vk::Image, vk::DeviceMemory), String> {
+    with_profile(|profile| {
+        let profiles = [*profile];
+        let mut list = vk::VideoProfileListInfoKHR::default().profiles(&profiles);
+        // **The profile travels with the image.** A picture the encoder will
+        // read is not an ordinary image: the device lays it out for the codec
+        // it was told about, and one created without that is refused at the
+        // encode rather than here.
+        let create = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(format)
+            .extent(vk::Extent3D {
+                width: extent.width,
+                height: extent.height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .usage(usage)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .push_next(&mut list);
+        // SAFETY: the chain outlives the call.
+        let image = unsafe { device.create_image(&create, None) }
+            .map_err(|e| format!("a video picture could not be created: {e}"))?;
+        // SAFETY: created on this device just above.
+        let wanted = unsafe { device.get_image_memory_requirements(image) };
+        let index = memory_type(device, instance, physical, wanted)?;
+        let allocate = vk::MemoryAllocateInfo::default()
+            .allocation_size(wanted.size)
+            .memory_type_index(index);
+        // SAFETY: the allocate info outlives the call.
+        let memory = unsafe { device.allocate_memory(&allocate, None) }
+            .map_err(|e| format!("a video picture's memory could not be allocated: {e}"))?;
+        // SAFETY: both handles are this device's and nothing is bound yet.
+        unsafe { device.bind_image_memory(image, memory, 0) }
+            .map_err(|e| format!("a video picture would not bind: {e}"))?;
+        Ok((image, memory))
+    })
+}
+
+/// A view over a whole video picture.
+fn whole_view(
+    device: &ash::Device,
+    image: vk::Image,
+    format: vk::Format,
+) -> Result<vk::ImageView, String> {
+    let info = vk::ImageViewCreateInfo::default()
+        .image(image)
+        .view_type(vk::ImageViewType::TYPE_2D)
+        .format(format)
+        .subresource_range(vk::ImageSubresourceRange {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            base_mip_level: 0,
+            level_count: 1,
+            base_array_layer: 0,
+            layer_count: 1,
+        });
+    // SAFETY: the create info outlives the call.
+    unsafe { device.create_image_view(&info, None) }
+        .map_err(|e| format!("a video picture's view could not be created: {e}"))
+}
+
+/// Build everything one picture needs, encode it, and answer the two
+/// questions a capability query cannot.
+fn encode(
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    device: &ash::Device,
+    video: &ash::khr::video_queue::Device,
+    session: vk::VideoSessionKHR,
+    parameters: vk::VideoSessionParametersKHR,
+    built: &Built,
+) -> Result<(), String> {
+    let extent = vk::Extent2D {
+        width: 2560,
+        height: 1440,
+    };
+    let mut memories = Vec::new();
+
+    let (source, memory) = video_image(
+        instance,
+        physical,
+        device,
+        built.picture,
+        extent,
+        vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR,
+    )?;
+    memories.push(memory);
+    let (dpb, memory) = video_image(
+        instance,
+        physical,
+        device,
+        built.reference,
+        extent,
+        vk::ImageUsageFlags::VIDEO_ENCODE_DPB_KHR,
+    )?;
+    memories.push(memory);
+    let source_view = whole_view(device, source, built.picture)?;
+    let dpb_view = whole_view(device, dpb, built.reference)?;
+
+    // The bitstream comes back into memory the processor can read, because a
+    // picture nobody can read is not an answer.
+    let (bitstream, bitstream_memory) = {
+        let info = vk::BufferCreateInfo::default()
+            .size(BITSTREAM_BYTES)
+            .usage(vk::BufferUsageFlags::VIDEO_ENCODE_DST_KHR)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        let info = with_profile(|profile| {
+            let profiles = [*profile];
+            let mut list = vk::VideoProfileListInfoKHR::default().profiles(&profiles);
+            // SAFETY: the chain outlives the call.
+            unsafe { device.create_buffer(&info.push_next(&mut list), None) }
+        });
+        let buffer = info.map_err(|e| format!("the bitstream buffer could not be made: {e}"))?;
+        // SAFETY: created on this device.
+        let wanted = unsafe { device.get_buffer_memory_requirements(buffer) };
+        // SAFETY: the device came from this instance.
+        let properties = unsafe { instance.get_physical_device_memory_properties(physical) };
+        let index = properties
+            .memory_types
+            .iter()
+            .take(usize::try_from(properties.memory_type_count).unwrap_or(0))
+            .enumerate()
+            .find(|(at, kind)| {
+                wanted.memory_type_bits & (1 << at) != 0
+                    && kind.property_flags.contains(
+                        vk::MemoryPropertyFlags::HOST_VISIBLE
+                            | vk::MemoryPropertyFlags::HOST_COHERENT,
+                    )
+            })
+            .and_then(|(at, _)| u32::try_from(at).ok())
+            .ok_or_else(|| "no memory the processor can read suits the bitstream".to_string())?;
+        let allocate = vk::MemoryAllocateInfo::default()
+            .allocation_size(wanted.size)
+            .memory_type_index(index);
+        // SAFETY: the allocate info outlives the call.
+        let memory = unsafe { device.allocate_memory(&allocate, None) }
+            .map_err(|e| format!("the bitstream memory could not be allocated: {e}"))?;
+        // SAFETY: both handles are this device's and nothing is bound yet.
+        unsafe { device.bind_buffer_memory(buffer, memory, 0) }
+            .map_err(|e| format!("the bitstream buffer would not bind: {e}"))?;
+        (buffer, memory)
+    };
+
+    // **The feedback pool is how a length comes back.** Reading the buffer to
+    // find out how much of it was written is the thing this replaces.
+    let pool = {
+        let mut feedback = vk::QueryPoolVideoEncodeFeedbackCreateInfoKHR::default()
+            .encode_feedback_flags(
+                vk::VideoEncodeFeedbackFlagsKHR::BITSTREAM_BUFFER_OFFSET
+                    | vk::VideoEncodeFeedbackFlagsKHR::BITSTREAM_BYTES_WRITTEN,
+            );
+        with_profile(|profile| {
+            let mut owned = *profile;
+            let create = vk::QueryPoolCreateInfo::default()
+                .query_type(vk::QueryType::VIDEO_ENCODE_FEEDBACK_KHR)
+                .query_count(1)
+                .push_next(&mut feedback)
+                .push_next(&mut owned);
+            // SAFETY: the chain outlives the call.
+            unsafe { device.create_query_pool(&create, None) }
+        })
+        .map_err(|e| format!("the feedback pool could not be made: {e}"))?
+    };
+
+    let commands = {
+        let create = vk::CommandPoolCreateInfo::default()
+            .queue_family_index(built.family)
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+        // SAFETY: the create info outlives the call.
+        unsafe { device.create_command_pool(&create, None) }
+            .map_err(|e| format!("a command pool could not be made: {e}"))?
+    };
+
+    let frame = Frame {
+        source,
+        source_view,
+        dpb,
+        dpb_view,
+        bitstream,
+        bitstream_memory,
+        memories,
+        pool,
+        commands,
+    };
+    println!("  pictures and bitstream ready");
+
+    let outcome = run(
+        instance, device, video, session, parameters, &frame, built, extent,
+    );
+    release(device, frame);
+    outcome
+}
+
+/// Give back everything one picture needed.
+fn release(device: &ash::Device, frame: Frame) {
+    // SAFETY: every handle is this device's, and the caller waits before this.
+    unsafe {
+        let _ = device.device_wait_idle();
+        device.destroy_command_pool(frame.commands, None);
+        device.destroy_query_pool(frame.pool, None);
+        device.destroy_image_view(frame.source_view, None);
+        device.destroy_image_view(frame.dpb_view, None);
+        device.destroy_image(frame.source, None);
+        device.destroy_image(frame.dpb, None);
+        device.destroy_buffer(frame.bitstream, None);
+        device.free_memory(frame.bitstream_memory, None);
+        for memory in frame.memories {
+            device.free_memory(memory, None);
+        }
+    }
+}
+
+/// Record one picture, submit it, and read what came back.
+#[expect(clippy::too_many_arguments, reason = "a probe, threading device state")]
+///
+/// **The two questions are answered here and nowhere else.** Whether a
+/// bitrate changes without a rebuild is a control command inside a running
+/// session; whether completion is honest is a query asked before the fence
+/// says anything.
+fn run(
+    instance: &ash::Instance,
+    device: &ash::Device,
+    video: &ash::khr::video_queue::Device,
+    session: vk::VideoSessionKHR,
+    parameters: vk::VideoSessionParametersKHR,
+    frame: &Frame,
+    built: &Built,
+    extent: vk::Extent2D,
+) -> Result<(), String> {
+    let allocate = vk::CommandBufferAllocateInfo::default()
+        .command_pool(frame.commands)
+        .level(vk::CommandBufferLevel::PRIMARY)
+        .command_buffer_count(1);
+    // SAFETY: the allocate info outlives the call.
+    let buffers = unsafe { device.allocate_command_buffers(&allocate) }
+        .map_err(|e| format!("a command buffer could not be had: {e}"))?;
+    let commands = *buffers.first().ok_or("no command buffer")?;
+
+    // SAFETY: the family index came from this device's own enumeration.
+    let queue = unsafe { device.get_device_queue(built.family, 0) };
+    let fence = {
+        let info = vk::FenceCreateInfo::default();
+        // SAFETY: the create info outlives the call.
+        unsafe { device.create_fence(&info, None) }
+            .map_err(|e| format!("a fence could not be made: {e}"))?
+    };
+
+    let encode = ash::khr::video_encode_queue::Device::new(instance, device);
+    let outcome = record_and_submit(
+        device, video, &encode, session, parameters, frame, extent, commands, queue, fence,
+    );
+    // SAFETY: the submit above was waited on inside, so nothing refers to it.
+    unsafe {
+        let _ = device.device_wait_idle();
+        device.destroy_fence(fence, None);
+    }
+    outcome
+}
+
+/// The recording itself, and the two answers.
+#[expect(clippy::too_many_arguments, reason = "a probe, threading device state")]
+fn record_and_submit(
+    device: &ash::Device,
+    video: &ash::khr::video_queue::Device,
+    encode: &ash::khr::video_encode_queue::Device,
+    session: vk::VideoSessionKHR,
+    parameters: vk::VideoSessionParametersKHR,
+    frame: &Frame,
+    extent: vk::Extent2D,
+    commands: vk::CommandBuffer,
+    queue: vk::Queue,
+    fence: vk::Fence,
+) -> Result<(), String> {
+    let begin =
+        vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+    // SAFETY: freshly allocated and not recording.
+    unsafe { device.begin_command_buffer(commands, &begin) }
+        .map_err(|e| format!("recording could not begin: {e}"))?;
+
+    let whole = vk::ImageSubresourceRange {
+        aspect_mask: vk::ImageAspectFlags::COLOR,
+        base_mip_level: 0,
+        level_count: 1,
+        base_array_layer: 0,
+        layer_count: 1,
+    };
+    // Both pictures start as nobody's and are named for what the encoder will
+    // do with them. Discarding their previous contents is correct: one has
+    // never been written and the other is about to be.
+    let barriers = [
+        vk::ImageMemoryBarrier::default()
+            .dst_access_mask(vk::AccessFlags::NONE)
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::VIDEO_ENCODE_SRC_KHR)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(frame.source)
+            .subresource_range(whole),
+        vk::ImageMemoryBarrier::default()
+            .dst_access_mask(vk::AccessFlags::NONE)
+            .old_layout(vk::ImageLayout::UNDEFINED)
+            .new_layout(vk::ImageLayout::VIDEO_ENCODE_DPB_KHR)
+            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .image(frame.dpb)
+            .subresource_range(whole),
+    ];
+    // SAFETY: recording, and every borrowed structure outlives the call.
+    unsafe {
+        device.cmd_pipeline_barrier(
+            commands,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &barriers,
+        );
+        device.cmd_reset_query_pool(commands, frame.pool, 0, 1);
+    }
+
+    let dpb_resource = vk::VideoPictureResourceInfoKHR::default()
+        .coded_offset(vk::Offset2D { x: 0, y: 0 })
+        .coded_extent(extent)
+        .base_array_layer(0)
+        .image_view_binding(frame.dpb_view);
+    // **Named with no slot on the way in.** The slot holds nothing yet; the
+    // encode below is what puts a picture in it.
+    let opening = [vk::VideoReferenceSlotInfoKHR::default()
+        .slot_index(-1)
+        .picture_resource(&dpb_resource)];
+    let begin_coding = vk::VideoBeginCodingInfoKHR::default()
+        .video_session(session)
+        .video_session_parameters(parameters)
+        .reference_slots(&opening);
+    // SAFETY: recording; the chain outlives the call.
+    unsafe { (video.fp().cmd_begin_video_coding_khr)(commands, &begin_coding) };
+
+    // **The rate control goes in as a control command**, which is the whole
+    // question: if a bitrate can be set here it can be set again later without
+    // rebuilding anything.
+    //
+    // **Turned off explicitly for the first picture.** A fixed quantiser is
+    // only legal when the session has been told rate control is off; leaving
+    // it at the default and setting one anyway is accepted by the recording
+    // and hangs the queue, which is the worst way to be wrong.
+    let mut off = vk::VideoEncodeRateControlInfoKHR::default()
+        .rate_control_mode(vk::VideoEncodeRateControlModeFlagsKHR::DISABLED);
+    let mut quality = vk::VideoEncodeQualityLevelInfoKHR::default().quality_level(0);
+    let control = vk::VideoCodingControlInfoKHR::default()
+        .flags(
+            vk::VideoCodingControlFlagsKHR::RESET
+                | vk::VideoCodingControlFlagsKHR::ENCODE_RATE_CONTROL
+                | vk::VideoCodingControlFlagsKHR::ENCODE_QUALITY_LEVEL,
+        )
+        .push_next(&mut off)
+        .push_next(&mut quality);
+    // SAFETY: recording; the chain outlives the call.
+    unsafe { (video.fp().cmd_control_video_coding_khr)(commands, &control) };
+
+    // SAFETY: as above; the picture info and slice header are stack values
+    // that outlive the call, and the codec structures are plain data.
+    unsafe {
+        let mut slice: ash::vk::native::StdVideoEncodeH264SliceHeader = core::mem::zeroed();
+        slice.slice_type = ash::vk::native::StdVideoH264SliceType_STD_VIDEO_H264_SLICE_TYPE_I;
+        let slices = [vk::VideoEncodeH264NaluSliceInfoKHR::default()
+            .constant_qp(26)
+            .std_slice_header(&slice)];
+
+        let mut picture: ash::vk::native::StdVideoEncodeH264PictureInfo = core::mem::zeroed();
+        picture.primary_pic_type =
+            ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_IDR;
+        picture.flags.set_IdrPicFlag(1);
+        picture.flags.set_is_reference(1);
+        let mut h264 = vk::VideoEncodeH264PictureInfoKHR::default()
+            .nalu_slice_entries(&slices)
+            .std_picture_info(&picture);
+
+        let mut reference: ash::vk::native::StdVideoEncodeH264ReferenceInfo = core::mem::zeroed();
+        reference.primary_pic_type =
+            ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_IDR;
+        let mut h264_setup =
+            vk::VideoEncodeH264DpbSlotInfoKHR::default().std_reference_info(&reference);
+        let setup = vk::VideoReferenceSlotInfoKHR::default()
+            .slot_index(0)
+            .picture_resource(&dpb_resource)
+            .push_next(&mut h264_setup);
+
+        let source = vk::VideoPictureResourceInfoKHR::default()
+            .coded_offset(vk::Offset2D { x: 0, y: 0 })
+            .coded_extent(extent)
+            .base_array_layer(0)
+            .image_view_binding(frame.source_view);
+        let info = vk::VideoEncodeInfoKHR::default()
+            .dst_buffer(frame.bitstream)
+            .dst_buffer_offset(0)
+            .dst_buffer_range(BITSTREAM_BYTES)
+            .src_picture_resource(source)
+            .setup_reference_slot(&setup)
+            .push_next(&mut h264);
+
+        device.cmd_begin_query(commands, frame.pool, 0, vk::QueryControlFlags::empty());
+        (encode.fp().cmd_encode_video_khr)(commands, &info);
+        device.cmd_end_query(commands, frame.pool, 0);
+    }
+
+    let end = vk::VideoEndCodingInfoKHR::default();
+    // SAFETY: recording; the structure outlives the call.
+    unsafe {
+        (video.fp().cmd_end_video_coding_khr)(commands, &end);
+        device
+            .end_command_buffer(commands)
+            .map_err(|e| format!("recording could not end: {e}"))?;
+    }
+
+    let buffers = [commands];
+    let submits = [vk::SubmitInfo::default().command_buffers(&buffers)];
+    // SAFETY: everything borrowed outlives the wait below.
+    unsafe { device.queue_submit(queue, &submits, fence) }
+        .map_err(|e| format!("the encode would not submit: {e}"))?;
+
+    answer(device, frame, fence)?;
+
+    // **Question one, asked of a session that is already running.** Nothing is
+    // rebuilt between the picture above and this: the same session, the same
+    // parameters, the same pictures. If a bitrate can be set here then the one
+    // congestion actuator the design has exists on this path.
+    reconfigure(
+        device, video, session, parameters, frame, extent, commands, queue, fence,
+    )
+}
+
+/// Change the bitrate on a running session and encode again.
+#[expect(clippy::too_many_arguments, reason = "a probe, threading device state")]
+fn reconfigure(
+    device: &ash::Device,
+    video: &ash::khr::video_queue::Device,
+    session: vk::VideoSessionKHR,
+    parameters: vk::VideoSessionParametersKHR,
+    frame: &Frame,
+    extent: vk::Extent2D,
+    commands: vk::CommandBuffer,
+    queue: vk::Queue,
+    fence: vk::Fence,
+) -> Result<(), String> {
+    // SAFETY: the previous submit was waited on, so the buffer is idle.
+    unsafe {
+        device
+            .reset_command_buffer(commands, vk::CommandBufferResetFlags::empty())
+            .map_err(|e| format!("the command buffer would not reset: {e}"))?;
+        device
+            .reset_fences(&[fence])
+            .map_err(|e| format!("the fence would not reset: {e}"))?;
+    }
+    let begin =
+        vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+    // SAFETY: reset just above and not recording.
+    unsafe { device.begin_command_buffer(commands, &begin) }
+        .map_err(|e| format!("recording could not begin: {e}"))?;
+    // SAFETY: recording; the pool is this device's.
+    unsafe { device.cmd_reset_query_pool(commands, frame.pool, 0, 1) };
+
+    let dpb_resource = vk::VideoPictureResourceInfoKHR::default()
+        .coded_offset(vk::Offset2D { x: 0, y: 0 })
+        .coded_extent(extent)
+        .base_array_layer(0)
+        .image_view_binding(frame.dpb_view);
+    let opening = [vk::VideoReferenceSlotInfoKHR::default()
+        .slot_index(-1)
+        .picture_resource(&dpb_resource)];
+    // **The state it is already in has to be restated here.** Once a session
+    // has been told anything other than the default, every later opening of it
+    // must carry that same configuration, or the opening is invalid -- which a
+    // driver accepts silently and only the validation layer says.
+    let mut current = vk::VideoEncodeRateControlInfoKHR::default()
+        .rate_control_mode(vk::VideoEncodeRateControlModeFlagsKHR::DISABLED);
+    let begin_coding = vk::VideoBeginCodingInfoKHR::default()
+        .video_session(session)
+        .video_session_parameters(parameters)
+        .reference_slots(&opening)
+        .push_next(&mut current);
+    // SAFETY: recording; the chain outlives the call.
+    unsafe { (video.fp().cmd_begin_video_coding_khr)(commands, &begin_coding) };
+
+    // **No reset flag, which is the point.** A reset would be a rebuild in all
+    // but name: it discards what the session has learned and the next picture
+    // has to be one with no history behind it.
+    let layers = [vk::VideoEncodeRateControlLayerInfoKHR::default()
+        .average_bitrate(6_000_000)
+        .max_bitrate(6_000_000)
+        .frame_rate_numerator(60)
+        .frame_rate_denominator(1)];
+    let mut changed = vk::VideoEncodeRateControlInfoKHR::default()
+        .rate_control_mode(vk::VideoEncodeRateControlModeFlagsKHR::CBR)
+        .layers(&layers)
+        .virtual_buffer_size_in_ms(1000)
+        .initial_virtual_buffer_size_in_ms(0);
+    let control = vk::VideoCodingControlInfoKHR::default()
+        .flags(vk::VideoCodingControlFlagsKHR::ENCODE_RATE_CONTROL)
+        .push_next(&mut changed);
+    // SAFETY: recording; the chain outlives the call.
+    unsafe { (video.fp().cmd_control_video_coding_khr)(commands, &control) };
+
+    let end = vk::VideoEndCodingInfoKHR::default();
+    // SAFETY: recording; the structure outlives the call.
+    unsafe {
+        (video.fp().cmd_end_video_coding_khr)(commands, &end);
+        device
+            .end_command_buffer(commands)
+            .map_err(|e| format!("recording could not end: {e}"))?;
+    }
+
+    let buffers = [commands];
+    let submits = [vk::SubmitInfo::default().command_buffers(&buffers)];
+    // SAFETY: everything borrowed outlives the wait below.
+    unsafe { device.queue_submit(queue, &submits, fence) }
+        .map_err(|e| format!("the rate change would not submit: {e}"))?;
+    // SAFETY: the fence was submitted with above.
+    unsafe { device.wait_for_fences(&[fence], true, 5_000_000_000) }
+        .map_err(|e| format!("the rate change did not finish: {e}"))?;
+    println!("  bitrate changed to 6 Mbit/s on the running session, no rebuild, no reset");
     Ok(())
+}
+
+/// Ask the two questions of a submitted picture.
+fn answer(device: &ash::Device, frame: &Frame, fence: vk::Fence) -> Result<(), String> {
+    // **Question two.** Asked before waiting, which is the only way to know
+    // whether the answer is honest: a query that blocks here is one a loop
+    // cannot use, and one that reports a length for a picture the device has
+    // not finished is worse.
+    let mut early = [0_u64; 2];
+    let asked = feedback(
+        device,
+        frame.pool,
+        &mut early,
+        vk::QueryResultFlags::empty(),
+    );
+    println!(
+        "  asked before the fence: {}",
+        match asked {
+            Ok(()) => format!("answered offset={} bytes={}", early[0], early[1]),
+            Err(vk::Result::NOT_READY) => "not ready, and said so".to_string(),
+            Err(error) => format!("refused, {error}"),
+        }
+    );
+
+    // SAFETY: the fence is this device's and was submitted with above.
+    unsafe { device.wait_for_fences(&[fence], true, 5_000_000_000) }
+        .map_err(|e| format!("the encode did not finish: {e}"))?;
+
+    let mut done = [0_u64; 2];
+    feedback(device, frame.pool, &mut done, vk::QueryResultFlags::WAIT)
+        .map_err(|e| format!("the length would not come back: {e}"))?;
+    println!(
+        "  encoded: offset {} bytes {}",
+        done[0],
+        done.get(1).copied().unwrap_or(0)
+    );
+    Ok(())
+}
+
+/// Read the one feedback query, which carries two values.
+///
+/// **Not through the typed helper.** That one takes the number of queries
+/// from the length of the destination, and this pool holds a single query that
+/// answers with two numbers; asking it for two queries reads past the end of a
+/// pool with one.
+fn feedback(
+    device: &ash::Device,
+    pool: vk::QueryPool,
+    into: &mut [u64; 2],
+    flags: vk::QueryResultFlags,
+) -> Result<(), vk::Result> {
+    let bytes = size_of::<[u64; 2]>();
+    // SAFETY: one query is read into a destination of exactly the size its two
+    // values come to, with the stride saying the same.
+    let result = unsafe {
+        (device.fp_v1_0().get_query_pool_results)(
+            device.handle(),
+            pool,
+            0,
+            1,
+            bytes,
+            into.as_mut_ptr().cast(),
+            bytes as vk::DeviceSize,
+            flags | vk::QueryResultFlags::TYPE_64,
+        )
+    };
+    match result {
+        vk::Result::SUCCESS => Ok(()),
+        other => Err(other),
+    }
 }
