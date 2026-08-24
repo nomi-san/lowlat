@@ -3,6 +3,46 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 9: capture (idle cost)
+
+**A host with a guest seated on an untouched desktop cost 6.67 percent of a
+core and now costs 2.32.** Three changes, each measured before and after on
+the same machine with the same guest.
+
+- **One conversion fence, reset and reused.** It was created and destroyed per
+  frame, which on one driver is two synchronous round trips to the card's own
+  processor with a busy-poll attached to each. That was **0.45 ms of every
+  conversion, 85 percent of the whole thing**, and three quarters of the
+  acquire stage: p50 0.858 ms to 0.222. The other driver is unchanged, which is
+  the point -- the two now cost the same shape.
+
+  **The obvious test does not catch a missing reset.** A readback submitted
+  after the conversion is ordered behind it on the same queue, so it hides the
+  fault; the exposure is an encoder reading the image from elsewhere. The
+  invariant is asserted at the submit instead, and the reuse path has a test of
+  its own, which it did not have while every test converted exactly once.
+
+- **The spin at the end of a sleep is 100 us, not 200.** At sixty landings a
+  second the larger margin cost 0.92 percent of a core against 0.33, for
+  landings that are the same to within a fraction of a microsecond at p50 and
+  p95. What it looked like it was buying -- a controlled tail -- belongs to the
+  scheduler: preemption puts p99 and the maximum in the same place at either
+  margin, and at no margin at all. It cannot go much below 100, because the
+  sleep overshoots by 45 to 55 us and a margin under that never runs.
+
+- **The encoder is polled only while it holds something.** A pass with nothing
+  in flight has nothing to collect, and asking anyway is a driver round trip
+  for an answer that cannot have changed: **748 wakeups a second became 121**.
+  A stopped encoder is still caught, because one that stops answering is one
+  whose submissions never come back.
+
+Pacing is untouched where it matters: the interval holds at 16.666 ms and an
+uncapped stream still free-runs.
+
+**What remains is the duplicate itself.** The frame rate is still exactly the
+display's on a desktop nobody is touching, and the display re-read stays at
+frame cadence because nothing yet knows the picture did not change.
+
 ## 9: capture (reopened for measurement)
 
 **The stream now says how often it asks for a refresh, and why.** A refresh
