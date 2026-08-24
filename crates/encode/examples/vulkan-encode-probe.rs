@@ -254,6 +254,11 @@ fn capabilities(
     // borrows each structure it was given until its own last use, so the
     // outer one is emptied first and the extensions read after it.
     let (min, max) = (caps.min_coded_extent, caps.max_coded_extent);
+    let granularity = caps.picture_access_granularity;
+    let (offset_align, size_align) = (
+        caps.min_bitstream_buffer_offset_alignment,
+        caps.min_bitstream_buffer_size_alignment,
+    );
     let (slots, active) = (caps.max_dpb_slots, caps.max_active_reference_pictures);
     let separate = caps
         .flags
@@ -266,6 +271,10 @@ fn capabilities(
     println!(
         "  picture {}x{} to {}x{}, {slots} reference slot(s), {active} active",
         min.width, min.height, max.width, max.height
+    );
+    println!(
+        "  granularity {}x{}, bitstream offset/size alignment {offset_align}/{size_align}",
+        granularity.width, granularity.height
     );
     println!(
         "  reference pictures: {}",
@@ -1048,51 +1057,7 @@ fn record_and_submit(
     // SAFETY: recording; the chain outlives the call.
     unsafe { (video.fp().cmd_control_video_coding_khr)(commands, &control) };
 
-    // SAFETY: as above; the picture info and slice header are stack values
-    // that outlive the call, and the codec structures are plain data.
-    unsafe {
-        let mut slice: ash::vk::native::StdVideoEncodeH264SliceHeader = core::mem::zeroed();
-        slice.slice_type = ash::vk::native::StdVideoH264SliceType_STD_VIDEO_H264_SLICE_TYPE_I;
-        let slices = [vk::VideoEncodeH264NaluSliceInfoKHR::default()
-            .constant_qp(26)
-            .std_slice_header(&slice)];
-
-        let mut picture: ash::vk::native::StdVideoEncodeH264PictureInfo = core::mem::zeroed();
-        picture.primary_pic_type =
-            ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_IDR;
-        picture.flags.set_IdrPicFlag(1);
-        picture.flags.set_is_reference(1);
-        let mut h264 = vk::VideoEncodeH264PictureInfoKHR::default()
-            .nalu_slice_entries(&slices)
-            .std_picture_info(&picture);
-
-        let mut reference: ash::vk::native::StdVideoEncodeH264ReferenceInfo = core::mem::zeroed();
-        reference.primary_pic_type =
-            ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_IDR;
-        let mut h264_setup =
-            vk::VideoEncodeH264DpbSlotInfoKHR::default().std_reference_info(&reference);
-        let setup = vk::VideoReferenceSlotInfoKHR::default()
-            .slot_index(0)
-            .picture_resource(&dpb_resource)
-            .push_next(&mut h264_setup);
-
-        let source = vk::VideoPictureResourceInfoKHR::default()
-            .coded_offset(vk::Offset2D { x: 0, y: 0 })
-            .coded_extent(extent)
-            .base_array_layer(0)
-            .image_view_binding(frame.source_view);
-        let info = vk::VideoEncodeInfoKHR::default()
-            .dst_buffer(frame.bitstream)
-            .dst_buffer_offset(0)
-            .dst_buffer_range(BITSTREAM_BYTES)
-            .src_picture_resource(source)
-            .setup_reference_slot(&setup)
-            .push_next(&mut h264);
-
-        device.cmd_begin_query(commands, frame.pool, 0, vk::QueryControlFlags::empty());
-        (encode.fp().cmd_encode_video_khr)(commands, &info);
-        device.cmd_end_query(commands, frame.pool, 0);
-    }
+    record_encode(device, encode, frame, extent, commands, &dpb_resource, 26);
 
     let end = vk::VideoEndCodingInfoKHR::default();
     // SAFETY: recording; the structure outlives the call.
@@ -1116,7 +1081,7 @@ fn record_and_submit(
     // parameters, the same pictures. If a bitrate can be set here then the one
     // congestion actuator the design has exists on this path.
     reconfigure(
-        device, video, session, parameters, frame, extent, commands, queue, fence,
+        device, video, encode, session, parameters, frame, extent, commands, queue, fence,
     )
 }
 
@@ -1125,6 +1090,7 @@ fn record_and_submit(
 fn reconfigure(
     device: &ash::Device,
     video: &ash::khr::video_queue::Device,
+    encode: &ash::khr::video_encode_queue::Device,
     session: vk::VideoSessionKHR,
     parameters: vk::VideoSessionParametersKHR,
     frame: &Frame,
@@ -1175,21 +1141,41 @@ fn reconfigure(
     // **No reset flag, which is the point.** A reset would be a rebuild in all
     // but name: it discards what the session has learned and the next picture
     // has to be one with no history behind it.
+    // **The codec's own half of the rate control, which is not optional.**
+    // A bitrate is meaningless to an H.264 encoder without the shape of the
+    // group it applies over, and one device here accepts the recording without
+    // it while the other refuses the whole buffer at the end of recording.
+    let mut layer_h264 = vk::VideoEncodeH264RateControlLayerInfoKHR::default();
     let layers = [vk::VideoEncodeRateControlLayerInfoKHR::default()
         .average_bitrate(6_000_000)
         .max_bitrate(6_000_000)
         .frame_rate_numerator(60)
-        .frame_rate_denominator(1)];
+        .frame_rate_denominator(1)
+        .push_next(&mut layer_h264)];
+    let mut h264_rate = vk::VideoEncodeH264RateControlInfoKHR::default()
+        .gop_frame_count(60)
+        .idr_period(60)
+        .consecutive_b_frame_count(0)
+        .temporal_layer_count(1);
     let mut changed = vk::VideoEncodeRateControlInfoKHR::default()
         .rate_control_mode(vk::VideoEncodeRateControlModeFlagsKHR::CBR)
         .layers(&layers)
         .virtual_buffer_size_in_ms(1000)
         .initial_virtual_buffer_size_in_ms(0);
+    // The codec's half hangs off the control command beside the general one,
+    // not off the general one itself.
     let control = vk::VideoCodingControlInfoKHR::default()
         .flags(vk::VideoCodingControlFlagsKHR::ENCODE_RATE_CONTROL)
-        .push_next(&mut changed);
+        .push_next(&mut changed)
+        .push_next(&mut h264_rate);
     // SAFETY: recording; the chain outlives the call.
     unsafe { (video.fp().cmd_control_video_coding_khr)(commands, &control) };
+
+    // **A picture goes with it.** The change is what is being tested, but a
+    // coding scope carrying only a control command is refused on one of the
+    // two devices here, and a rate change in the real loop rides with a frame
+    // anyway.
+    record_encode(device, encode, frame, extent, commands, &dpb_resource, 0);
 
     let end = vk::VideoEndCodingInfoKHR::default();
     // SAFETY: recording; the structure outlives the call.
@@ -1218,7 +1204,7 @@ fn answer(device: &ash::Device, frame: &Frame, fence: vk::Fence) -> Result<(), S
     // whether the answer is honest: a query that blocks here is one a loop
     // cannot use, and one that reports a length for a picture the device has
     // not finished is worse.
-    let mut early = [0_u64; 2];
+    let mut early = [0_u32; 3];
     let asked = feedback(
         device,
         frame.pool,
@@ -1228,7 +1214,10 @@ fn answer(device: &ash::Device, frame: &Frame, fence: vk::Fence) -> Result<(), S
     println!(
         "  asked before the fence: {}",
         match asked {
-            Ok(()) => format!("answered offset={} bytes={}", early[0], early[1]),
+            Ok(()) => format!(
+                "answered offset={} bytes={} status={}",
+                early[0], early[1], early[2]
+            ),
             Err(vk::Result::NOT_READY) => "not ready, and said so".to_string(),
             Err(error) => format!("refused, {error}"),
         }
@@ -1238,18 +1227,63 @@ fn answer(device: &ash::Device, frame: &Frame, fence: vk::Fence) -> Result<(), S
     unsafe { device.wait_for_fences(&[fence], true, 5_000_000_000) }
         .map_err(|e| format!("the encode did not finish: {e}"))?;
 
-    let mut done = [0_u64; 2];
+    let mut done = [0_u32; 3];
     feedback(device, frame.pool, &mut done, vk::QueryResultFlags::WAIT)
         .map_err(|e| format!("the length would not come back: {e}"))?;
+
     println!(
-        "  encoded: offset {} bytes {}",
+        "  encoded: offset {} bytes {} status {}",
         done[0],
-        done.get(1).copied().unwrap_or(0)
+        done.get(1).copied().unwrap_or(0),
+        done.get(2).copied().unwrap_or(0)
     );
+
+    // **What is actually in the buffer, whatever the query said.** A length of
+    // zero and a picture in memory are different faults with different fixes,
+    // and only looking says which.
+    // SAFETY: the memory is host visible and coherent, and the map covers the
+    // whole allocation the buffer was bound to.
+    let mapped = unsafe {
+        device.map_memory(
+            frame.bitstream_memory,
+            0,
+            BITSTREAM_BYTES,
+            vk::MemoryMapFlags::empty(),
+        )
+    }
+    .map_err(|e| format!("the bitstream would not map: {e}"))?;
+    // SAFETY: mapped just above for this many bytes.
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            mapped.cast::<u8>(),
+            usize::try_from(BITSTREAM_BYTES).unwrap_or(0),
+        )
+    };
+    // A picture begins with a start code, so the first one says whether
+    // anything was written at all.
+    let start = bytes
+        .windows(4)
+        .take(4096)
+        .position(|window| window == [0, 0, 0, 1]);
+    let written = bytes.iter().take(4096).filter(|byte| **byte != 0).count();
+    println!(
+        "  buffer: first start code at {start:?}, {written} non-zero byte(s) in the first 4096"
+    );
+    if let Some(at) = start {
+        let head: Vec<String> = bytes
+            .iter()
+            .skip(at)
+            .take(12)
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        println!("  begins {}", head.join(" "));
+    }
+    // SAFETY: mapped above and nothing holds the slice past this point.
+    unsafe { device.unmap_memory(frame.bitstream_memory) };
     Ok(())
 }
 
-/// Read the one feedback query, which carries two values.
+/// Read the one feedback query, which carries two values and a status.
 ///
 /// **Not through the typed helper.** That one takes the number of queries
 /// from the length of the destination, and this pool holds a single query that
@@ -1258,10 +1292,10 @@ fn answer(device: &ash::Device, frame: &Frame, fence: vk::Fence) -> Result<(), S
 fn feedback(
     device: &ash::Device,
     pool: vk::QueryPool,
-    into: &mut [u64; 2],
+    into: &mut [u32; 3],
     flags: vk::QueryResultFlags,
 ) -> Result<(), vk::Result> {
-    let bytes = size_of::<[u64; 2]>();
+    let bytes = size_of::<[u32; 3]>();
     // SAFETY: one query is read into a destination of exactly the size its two
     // values come to, with the stride saying the same.
     let result = unsafe {
@@ -1273,11 +1307,86 @@ fn feedback(
             bytes,
             into.as_mut_ptr().cast(),
             bytes as vk::DeviceSize,
-            flags | vk::QueryResultFlags::TYPE_64,
+            // **Thirty-two bit, and not by preference.** Asking for
+            // sixty-four bit results is honoured by one driver here and
+            // ignored by the other, which writes thirty-two bit values into a
+            // sixty-four bit destination: the length lands in the high half of
+            // the offset and the length itself reads as zero. Both write these
+            // correctly, so the narrower form is the portable one.
+            //
+            // The status is asked for as well, because a video query carries
+            // one and a stale value otherwise reads as a length.
+            flags | vk::QueryResultFlags::WITH_STATUS_KHR,
         )
     };
     match result {
         vk::Result::SUCCESS => Ok(()),
         other => Err(other),
+    }
+}
+
+/// Record one picture into an already-open coding scope.
+///
+/// **Shared by both passes, because a rate change has to ride with a picture.**
+/// One driver here refuses a coding scope that carries a control command and
+/// no encode, and the refusal arrives at the end of the recording rather than
+/// at the command that caused it.
+fn record_encode(
+    device: &ash::Device,
+    encode: &ash::khr::video_encode_queue::Device,
+    frame: &Frame,
+    extent: vk::Extent2D,
+    commands: vk::CommandBuffer,
+    dpb_resource: &vk::VideoPictureResourceInfoKHR<'_>,
+    // **Zero unless rate control is off.** A fixed quantiser and a bitrate are
+    // two ways of saying the same thing and a device takes only one; naming
+    // both is refused, and on one of them the refusal arrives as the whole
+    // recording failing to end rather than at the command that caused it.
+    constant_qp: i32,
+) {
+    // SAFETY: as above; the picture info and slice header are stack values
+    // that outlive the call, and the codec structures are plain data.
+    unsafe {
+        let mut slice: ash::vk::native::StdVideoEncodeH264SliceHeader = core::mem::zeroed();
+        slice.slice_type = ash::vk::native::StdVideoH264SliceType_STD_VIDEO_H264_SLICE_TYPE_I;
+        let slices = [vk::VideoEncodeH264NaluSliceInfoKHR::default()
+            .constant_qp(constant_qp)
+            .std_slice_header(&slice)];
+
+        let mut picture: ash::vk::native::StdVideoEncodeH264PictureInfo = core::mem::zeroed();
+        picture.primary_pic_type =
+            ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_IDR;
+        picture.flags.set_IdrPicFlag(1);
+        picture.flags.set_is_reference(1);
+        let mut h264 = vk::VideoEncodeH264PictureInfoKHR::default()
+            .nalu_slice_entries(&slices)
+            .std_picture_info(&picture);
+
+        let mut reference: ash::vk::native::StdVideoEncodeH264ReferenceInfo = core::mem::zeroed();
+        reference.primary_pic_type =
+            ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_IDR;
+        let mut h264_setup =
+            vk::VideoEncodeH264DpbSlotInfoKHR::default().std_reference_info(&reference);
+        let setup = vk::VideoReferenceSlotInfoKHR::default()
+            .slot_index(0)
+            .picture_resource(dpb_resource)
+            .push_next(&mut h264_setup);
+
+        let source = vk::VideoPictureResourceInfoKHR::default()
+            .coded_offset(vk::Offset2D { x: 0, y: 0 })
+            .coded_extent(extent)
+            .base_array_layer(0)
+            .image_view_binding(frame.source_view);
+        let info = vk::VideoEncodeInfoKHR::default()
+            .dst_buffer(frame.bitstream)
+            .dst_buffer_offset(0)
+            .dst_buffer_range(BITSTREAM_BYTES)
+            .src_picture_resource(source)
+            .setup_reference_slot(&setup)
+            .push_next(&mut h264);
+
+        device.cmd_begin_query(commands, frame.pool, 0, vk::QueryControlFlags::empty());
+        (encode.fp().cmd_encode_video_khr)(commands, &info);
+        device.cmd_end_query(commands, frame.pool, 0);
     }
 }
