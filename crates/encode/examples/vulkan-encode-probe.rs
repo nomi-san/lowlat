@@ -367,11 +367,34 @@ fn capabilities(
     )?;
     let dpb = formats(&video, physical, vk::ImageUsageFlags::VIDEO_ENCODE_DPB_KHR)?;
     println!("  source layout(s): {source:?}");
+    // **Can the conversion write straight into the encoder's picture?** That is
+    // the whole of the zero-copy question: if a picture can be both written by
+    // a shader and read by the encoder, nothing moves between them.
+    let writable = formats(
+        &video,
+        physical,
+        vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR | vk::ImageUsageFlags::STORAGE,
+    );
+    println!("  source layout(s) a shader may write: {writable:?}");
     println!("  reference layout(s): {dpb:?}");
 
     let (Some(picture), Some(reference)) = (source.first().copied(), dpb.first().copied()) else {
         return Err("this device names no layout for a picture it would encode".to_string());
     };
+    // **Asked of the device rather than of the query.** Extended usage is
+    // checked against the format a view is made with, not the one the image
+    // was created with, so a picture the query calls unwritable may still take
+    // a shader's writes through per-plane views. The only honest test is to
+    // build one.
+    dual_use(
+        entry,
+        instance,
+        physical,
+        family,
+        picture,
+        writable.as_deref().unwrap_or(&[]).contains(&picture),
+    )?;
+
     session(
         entry,
         instance,
@@ -1816,5 +1839,173 @@ fn copy_in(
     unsafe { device.destroy_command_pool(pool, None) };
     result.map_err(|e| format!("the picture could not be filled: {e}"))?;
     println!("  source filled from the generator");
+    Ok(())
+}
+
+/// Whether one picture can be both written by a shader and read by the encoder.
+///
+/// **This is the zero-copy question in one call.** The conversion writes a
+/// two-plane picture through a view per plane, and the encoder reads whole
+/// images rather than addresses -- so if a device will make one image serve
+/// both, nothing moves between conversion and encode at all. The arrangement
+/// `convert.rs` uses today, two images bound into one allocation, exists only
+/// because the other two encoders are handed an address and a row length.
+fn dual_use(
+    entry: &ash::Entry,
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    family: u32,
+    format: vk::Format,
+    permitted: bool,
+) -> Result<(), String> {
+    // **The query is the answer, not the driver.** Both drivers here hand back
+    // an image and usable views whether or not the pairing is allowed; only one
+    // of them is allowed to, and building on the other is building on something
+    // that is permitted to stop working.
+    if !permitted {
+        println!(
+            "  one picture for both: NO -- this device names no layout that a shader may write \
+             and the encoder may read, so a copy stands between them"
+        );
+        return Ok(());
+    }
+    let priorities = [1.0_f32];
+    let queues = [vk::DeviceQueueCreateInfo::default()
+        .queue_family_index(family)
+        .queue_priorities(&priorities)];
+    let names = [
+        ash::khr::video_queue::NAME.as_ptr(),
+        ash::khr::video_encode_queue::NAME.as_ptr(),
+        ash::khr::video_encode_h264::NAME.as_ptr(),
+    ];
+    let mut sync = vk::PhysicalDeviceVulkan13Features::default().synchronization2(true);
+    // The single-byte and two-byte storage formats the conversion writes are
+    // not in the set every device must support unasked.
+    let mut features = vk::PhysicalDeviceFeatures2::default();
+    features.features.shader_storage_image_extended_formats = vk::TRUE;
+    let mut ycbcr =
+        vk::PhysicalDeviceSamplerYcbcrConversionFeatures::default().sampler_ycbcr_conversion(true);
+    let create = vk::DeviceCreateInfo::default()
+        .queue_create_infos(&queues)
+        .enabled_extension_names(&names)
+        .push_next(&mut sync)
+        .push_next(&mut features)
+        .push_next(&mut ycbcr);
+    // SAFETY: every borrowed slice outlives the call.
+    let device = unsafe { instance.create_device(physical, &create, None) }
+        .map_err(|e| format!("a device for the dual-use test could not be opened: {e}"))?;
+    let _ = entry;
+
+    let extent = wanted_extent();
+    let outcome = with_profile(|profile| {
+        let profiles = [*profile];
+        let mut list = vk::VideoProfileListInfoKHR::default().profiles(&profiles);
+        let create = vk::ImageCreateInfo::default()
+            .image_type(vk::ImageType::TYPE_2D)
+            .format(format)
+            .extent(vk::Extent3D {
+                width: extent.width,
+                height: extent.height,
+                depth: 1,
+            })
+            .mip_levels(1)
+            .array_layers(1)
+            .samples(vk::SampleCountFlags::TYPE_1)
+            .tiling(vk::ImageTiling::OPTIMAL)
+            .usage(vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR | vk::ImageUsageFlags::STORAGE)
+            // **Both flags, and both are the point.** Mutable format is what
+            // lets a plane be seen as a single-component picture; extended
+            // usage is what makes the storage usage apply to that view rather
+            // than to the two-plane format, which supports it nowhere.
+            .flags(vk::ImageCreateFlags::MUTABLE_FORMAT | vk::ImageCreateFlags::EXTENDED_USAGE_KHR)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .push_next(&mut list);
+        // SAFETY: the chain outlives the call.
+        unsafe { device.create_image(&create, None) }
+    });
+
+    let verdict = match outcome {
+        Err(error) => format!("refused the picture itself, {error}"),
+        Ok(image) => {
+            // **Bound before any view is made.** A view describes memory, so an
+            // image without any is not something a view can be taken of -- and
+            // both drivers here hand one back anyway.
+            // SAFETY: created on this device just above.
+            let wanted = unsafe { device.get_image_memory_requirements(image) };
+            let bound = memory_type(&device, instance, physical, wanted).and_then(|index| {
+                let allocate = vk::MemoryAllocateInfo::default()
+                    .allocation_size(wanted.size)
+                    .memory_type_index(index);
+                // SAFETY: the allocate info outlives the call.
+                let memory = unsafe { device.allocate_memory(&allocate, None) }
+                    .map_err(|e| format!("the picture's memory could not be allocated: {e}"))?;
+                // SAFETY: both handles are this device's and nothing is bound.
+                unsafe { device.bind_image_memory(image, memory, 0) }
+                    .map_err(|e| format!("the picture would not bind: {e}"))?;
+                Ok(memory)
+            });
+            let memory = match bound {
+                Ok(memory) => memory,
+                Err(error) => {
+                    // SAFETY: created above and nothing refers to it.
+                    unsafe { device.destroy_image(image, None) };
+                    println!("  one picture for both: {error}");
+                    // SAFETY: nothing built on it outlives this.
+                    unsafe {
+                        let _ = device.device_wait_idle();
+                        device.destroy_device(None);
+                    }
+                    return Ok(());
+                }
+            };
+            let planes = [
+                (vk::ImageAspectFlags::PLANE_0, vk::Format::R8_UNORM),
+                (vk::ImageAspectFlags::PLANE_1, vk::Format::R8G8_UNORM),
+            ];
+            let mut said = "yes, both planes take a shader's writes".to_string();
+            for (aspect, view_format) in planes {
+                let mut usage =
+                    vk::ImageViewUsageCreateInfo::default().usage(vk::ImageUsageFlags::STORAGE);
+                let info = vk::ImageViewCreateInfo::default()
+                    .image(image)
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(view_format)
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: aspect,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    })
+                    .push_next(&mut usage);
+                // SAFETY: the chain outlives the call and the image is this
+                // device's. Nothing is bound to it, which a view does not need.
+                match unsafe { device.create_image_view(&info, None) } {
+                    Ok(view) => {
+                        // SAFETY: created just above on this device.
+                        unsafe { device.destroy_image_view(view, None) };
+                    }
+                    Err(error) => {
+                        said = format!("the picture exists but {aspect:?} refuses a view, {error}");
+                        break;
+                    }
+                }
+            }
+            // SAFETY: created above and nothing refers to either.
+            unsafe {
+                device.destroy_image(image, None);
+                device.free_memory(memory, None);
+            }
+            said
+        }
+    };
+    println!("  one picture for both: {verdict}");
+
+    // SAFETY: nothing built on it outlives this.
+    unsafe {
+        let _ = device.device_wait_idle();
+        device.destroy_device(None);
+    }
     Ok(())
 }
