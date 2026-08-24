@@ -314,6 +314,8 @@ pub(crate) struct Shared {
     /// The last published stage report, so a caller can read the numbers
     /// without reaching into the thread that produces them.
     timing: TimingCells,
+    /// The last refresh window, published beside the timings.
+    refreshes: RefreshCells,
     /// What is being captured, as a checksum of its name. Zero until a display
     /// has been opened.
     ///
@@ -760,6 +762,33 @@ struct TimingCells {
     cells: [AtomicU32; 12],
 }
 
+/// The last refresh window, for a reader outside the loop.
+///
+/// **The same arrangement as [`TimingCells`], for the same reason.** The loop
+/// owns the counts and publishes a snapshot once a window; a reader never
+/// touches the frame path.
+#[derive(Debug, Default)]
+struct RefreshCells {
+    cells: [AtomicU32; 7],
+}
+
+impl RefreshCells {
+    fn publish(&self, of: &Refreshes) {
+        for (cell, value) in self.cells.iter().zip(of.counts()) {
+            cell.store(value, Ordering::Relaxed);
+        }
+    }
+
+    #[cfg(all(test, not(loom)))]
+    fn read(&self) -> Refreshes {
+        let mut counts = [0u32; 7];
+        for (slot, cell) in counts.iter_mut().zip(&self.cells) {
+            *slot = cell.load(Ordering::Relaxed);
+        }
+        Refreshes::from_counts(counts)
+    }
+}
+
 impl TimingCells {
     fn publish(&self, report: &Report) {
         let values = [
@@ -1006,6 +1035,7 @@ impl Stream {
             sound: SoundCells::new(&config),
             encode_us: AtomicU32::new(0),
             timing: TimingCells::default(),
+            refreshes: RefreshCells::default(),
             picture: AtomicU32::new(0),
             place_rect: AtomicU64::new(0),
             place_desktop: AtomicU32::new(0),
@@ -2552,6 +2582,7 @@ fn encode_loop<E: Encoder + FromDevice>(
     let mut next_frame_ms = 0.0f64;
     let mut previous_submit: Option<lowlat_common::clock::Time> = None;
     let mut force_keyframe = false;
+    let mut refreshes = Refreshes::default();
     let mut since_report = 0u32;
     let mut failures = 0u32;
     // Whether the last pass found the display dark.
@@ -2649,6 +2680,7 @@ fn encode_loop<E: Encoder + FromDevice>(
             // request is owed is what a reinitialization would have given it:
             // a picture with no history behind it.
             force_keyframe = true;
+            refreshes.reinit = refreshes.reinit.saturating_add(1);
         }
 
         // Anything the hardware finished while this loop was elsewhere. Never
@@ -2663,6 +2695,7 @@ fn encode_loop<E: Encoder + FromDevice>(
             &mut in_flight,
             &mut stages,
             started,
+            &mut refreshes,
         );
         force_keyframe |= collected.keyframe;
         // **A stopped encoder used to be a log line per pass, forever.** The
@@ -2817,10 +2850,15 @@ fn encode_loop<E: Encoder + FromDevice>(
             // frame cannot ask for one per frame.
             if refresh_asked(shared, active) {
                 let asked_at = lowlat_common::clock::elapsed_ms(started);
-                force_keyframe |= gate.request_keyframe(asked_at) == Keyframe::Request;
+                if gate.request_keyframe(asked_at) == Keyframe::Request {
+                    force_keyframe = true;
+                    refreshes.asked = refreshes.asked.saturating_add(1);
+                }
             }
 
             let submitted_at = lowlat_common::clock::Time::now();
+            // Read before the submit, because a picture that goes in clears it.
+            let refreshing = force_keyframe;
             let queued = match (&synthetic, display.as_deref_mut()) {
                 (Some(frame), _) => encoder.submit(frame, force_keyframe).is_ok(),
                 (None, Some(desktop)) => match desktop.presented() {
@@ -2830,6 +2868,9 @@ fn encode_loop<E: Encoder + FromDevice>(
                 (None, None) => false,
             };
             if queued {
+                if refreshing {
+                    refreshes.sent = refreshes.sent.saturating_add(1);
+                }
                 force_keyframe = false;
                 if let Some(previous) = previous_submit {
                     stages
@@ -2862,6 +2903,24 @@ fn encode_loop<E: Encoder + FromDevice>(
                         report.interval.p50,
                         report.interval.p99,
                     );
+                    // **Separate from the stages line because it is a count
+                    // over the window, not a distribution.** The stages are a
+                    // rolling percentile and this resets, so a rate can be
+                    // read off it directly.
+                    lowlat_common::log_info!(
+                        "stream: refresh over {} frames sent={} no_slot={} too_large={} \
+                         no_room={} asked={} reinit={} starved={}",
+                        REPORT_FRAMES,
+                        refreshes.sent,
+                        refreshes.no_slot,
+                        refreshes.too_large,
+                        refreshes.no_room,
+                        refreshes.asked,
+                        refreshes.reinit,
+                        refreshes.starved,
+                    );
+                    shared.refreshes.publish(&refreshes);
+                    refreshes = Refreshes::default();
                 }
             }
             // A refusal is the encoder holding as many pictures as it will:
@@ -3100,6 +3159,70 @@ fn release(seat: &Seat, shared: &Shared) {
     }
 }
 
+/// Refreshes over one report window, by what asked for them.
+///
+/// **A refresh costs a picture with no history behind it**, so a stream that
+/// sends them often spends most of its rate on recovery rather than on
+/// content, and nothing about the frame rate or the encode time says so. The
+/// causes are separated because they call for different answers: a starved
+/// pool is back pressure, a refused room test is a peer that cannot keep up,
+/// and a reinitialization is neither.
+///
+/// **`sent` is not the sum of the rest.** Several causes landing in one frame
+/// interval produce one refresh, and the throttle in [`gate`] refuses most of
+/// what is asked for, so `sent` is what reached the wire and the others are
+/// what wanted to.
+#[derive(Debug, Clone, Copy, Default)]
+struct Refreshes {
+    /// Pictures submitted asking the encoder for one.
+    sent: u32,
+    /// Granted because every pool slot was still held.
+    no_slot: u32,
+    /// Granted because a coded frame did not fit the slot it was given.
+    too_large: u32,
+    /// Granted because the gate refused a guest room for the frame.
+    no_room: u32,
+    /// Granted because a peer could not decode what it was sent.
+    asked: u32,
+    /// Forced by a stream reinitialization. **Not throttled**, unlike every
+    /// other row here, so it is the one that can run away.
+    reinit: u32,
+    /// Passes that found no pool slot, whether or not one was granted. The
+    /// pressure behind `no_slot`, which the throttle otherwise hides.
+    starved: u32,
+}
+
+impl Refreshes {
+    /// **Order is the wire between [`RefreshCells`] and this**, so the two
+    /// conversions are written together and a field added to one without the
+    /// other does not compile.
+    fn counts(&self) -> [u32; 7] {
+        [
+            self.sent,
+            self.no_slot,
+            self.too_large,
+            self.no_room,
+            self.asked,
+            self.reinit,
+            self.starved,
+        ]
+    }
+
+    #[cfg(all(test, not(loom)))]
+    fn from_counts(counts: [u32; 7]) -> Self {
+        let [sent, no_slot, too_large, no_room, asked, reinit, starved] = counts;
+        Self {
+            sent,
+            no_slot,
+            too_large,
+            no_room,
+            asked,
+            reinit,
+            starved,
+        }
+    }
+}
+
 /// What one pass of collecting found.
 #[derive(Debug, Clone, Copy)]
 struct Collected {
@@ -3134,6 +3257,7 @@ fn collect<E: Encoder>(
     )>,
     stages: &mut Stages,
     started: lowlat_common::clock::Time,
+    refreshes: &mut Refreshes,
 ) -> Collected {
     let mut wanted = false;
     loop {
@@ -3192,7 +3316,11 @@ fn collect<E: Encoder>(
                     for guest in guests.iter_mut() {
                         guest.mark_skipping();
                     }
-                    wanted |= gate.request_keyframe(now_ms) == Keyframe::Request;
+                    refreshes.starved = refreshes.starved.saturating_add(1);
+                    if gate.request_keyframe(now_ms) == Keyframe::Request {
+                        wanted = true;
+                        refreshes.no_slot = refreshes.no_slot.saturating_add(1);
+                    }
                     return Collected {
                         keyframe: wanted,
                         failed: false,
@@ -3208,7 +3336,10 @@ fn collect<E: Encoder>(
                     for guest in guests.iter_mut() {
                         guest.mark_skipping();
                     }
-                    wanted |= gate.request_keyframe(now_ms) == Keyframe::Request;
+                    if gate.request_keyframe(now_ms) == Keyframe::Request {
+                        wanted = true;
+                        refreshes.too_large = refreshes.too_large.saturating_add(1);
+                    }
                     return Collected {
                         keyframe: wanted,
                         failed: false,
@@ -3223,7 +3354,10 @@ fn collect<E: Encoder>(
                         count += 1;
                     }
                 });
-                wanted |= request == Keyframe::Request;
+                if request == Keyframe::Request {
+                    wanted = true;
+                    refreshes.no_room = refreshes.no_room.saturating_add(1);
+                }
                 deliver(shared, active, &picked, count, guests, writer, keyframe);
                 stages.publish.record(lowlat_common::clock::diff_ms(
                     collected_at,
@@ -3485,6 +3619,7 @@ mod tests {
                 pool: Pool::new(slots, max_frame_bytes()),
                 encode_us: AtomicU32::new(0),
                 timing: TimingCells::default(),
+                refreshes: RefreshCells::default(),
                 picture: AtomicU32::new(0),
                 place_rect: AtomicU64::new(0),
                 place_desktop: AtomicU32::new(0),
@@ -3552,6 +3687,7 @@ mod tests {
             pool: Pool::new(POOL_SLOTS, max_frame_bytes()),
             encode_us: AtomicU32::new(0),
             timing: TimingCells::default(),
+            refreshes: RefreshCells::default(),
             picture: AtomicU32::new(0),
             place_rect: AtomicU64::new(0),
             place_desktop: AtomicU32::new(0),
@@ -3761,6 +3897,7 @@ mod tests {
             pool: Pool::new(2, 64),
             encode_us: AtomicU32::new(0),
             timing: TimingCells::default(),
+            refreshes: RefreshCells::default(),
             picture: AtomicU32::new(0),
             place_rect: AtomicU64::new(0),
             place_desktop: AtomicU32::new(0),
@@ -5118,6 +5255,131 @@ mod tests {
         for (at, (len, key)) in sizes.iter().take(6).enumerate() {
             println!("  unit {at}: {len} bytes, keyframe {key}");
         }
+    }
+
+    /// **A refresh is counted where it was asked for, and only there.**
+    ///
+    /// The counter exists to say whether a stream is spending its rate on
+    /// recovery, so the thing that has to be shown is that it moves under back
+    /// pressure and stays still without it. A seat nobody drains fills its
+    /// publish ring, the ring refuses, every guest behind it latches, and the
+    /// gate grants a refresh: that path must land on `no_room` or `no_slot`.
+    /// A seat drained promptly must not.
+    #[test]
+    fn a_refresh_is_counted_where_it_was_asked_for() {
+        // The control first. Frames are taken as fast as they are made, so
+        // nothing is ever behind and nothing asks for a recovery.
+        let calm = {
+            let stream = report_stream();
+            let wake = lowlat_net::Wake::new().expect("wake");
+            let seat = stream
+                .seats()
+                .take(
+                    wake.handle().expect("handle"),
+                    wake.handle().expect("a second handle"),
+                )
+                .expect("a free seat");
+            let mut received = 0usize;
+            let mut keyframes = 0usize;
+            until_within(30_000.0, "the calm window to report", || {
+                while let Some(frame) = seat.next_frame() {
+                    received += 1;
+                    if frame.keyframe() {
+                        keyframes += 1;
+                    }
+                }
+                received >= REPORT_FRAMES as usize + 60
+            });
+            let counted = stream.shared.refreshes.read();
+            println!("calm: {received} frames, {keyframes} keyframes on the wire, {counted:?}");
+            // **The wire is the independent witness.** The count is taken
+            // inside the loop and the keyframes are what left it, so a counter
+            // wired to the wrong thing disagrees with them.
+            assert!(
+                u64::from(counted.sent) <= keyframes as u64,
+                "more refreshes counted than keyframes reached the wire: {counted:?} against \
+                 {keyframes}"
+            );
+            counted
+        };
+        assert_eq!(
+            calm.reinit, 0,
+            "a run that reconfigured nothing counted a reinitialization refresh"
+        );
+        assert_eq!(
+            calm.too_large, 0,
+            "a frame that fitted its slot counted as one that did not"
+        );
+
+        // Now the pressure. The seat is taken and never read, so the publish
+        // ring fills, refuses, and every frame after that is one its guest
+        // missed.
+        let squeezed = {
+            let stream = report_stream();
+            let wake = lowlat_net::Wake::new().expect("wake");
+            let _seat = stream
+                .seats()
+                .take(
+                    wake.handle().expect("handle"),
+                    wake.handle().expect("a second handle"),
+                )
+                .expect("a free seat");
+            until_within(30_000.0, "the squeezed window to report", || {
+                stream
+                    .shared
+                    .refreshes
+                    .read()
+                    .counts()
+                    .iter()
+                    .any(|n| *n > 0)
+            });
+            let counted = stream.shared.refreshes.read();
+            println!("squeezed: {counted:?}");
+            counted
+        };
+
+        assert!(
+            squeezed.no_room > 0 || squeezed.no_slot > 0,
+            "a guest that never took a frame produced no refresh: {squeezed:?}"
+        );
+        assert!(
+            squeezed.sent > 0,
+            "refreshes were granted and none reached the encoder: {squeezed:?}"
+        );
+        assert_eq!(
+            squeezed.reinit, 0,
+            "back pressure was attributed to a reinitialization: {squeezed:?}"
+        );
+        assert!(
+            squeezed.sent > calm.sent,
+            "back pressure asked for no more refreshes than an idle stream: {squeezed:?} against \
+             {calm:?}"
+        );
+    }
+
+    /// A stream shaped for the refresh test: real pipeline, no display, and a
+    /// rate low enough that a guest which never drains runs out of room.
+    fn report_stream() -> Stream {
+        Stream::start(Config {
+            audio: None,
+            audio_on: false,
+            accept_microphone: false,
+            audio_kbps: 128,
+            allow_raw_audio: false,
+            output: None,
+            display: false,
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            codec: Codec::H264,
+            backend: Some(Backend::Open),
+            configured_mbps: 10.0,
+            min_mbps: 1.0,
+            rotation: lowlat_core::video::Rotation::None,
+            detail_rows: 0,
+            full_fps: false,
+            cg_level: 1,
+        })
     }
 
     /// Run the real pipeline at `fps` until it has reported, and print the

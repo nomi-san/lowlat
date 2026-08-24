@@ -96,6 +96,101 @@ fn main() {
     converter
         .run(&device, &imported, &target, dither)
         .unwrap_or_else(|error| fail(&format!("convert: {error}")));
+
+    // **What one conversion costs, repeated.** The stage this sits in is the
+    // largest single item in a frame on one of the two drivers, and the figure
+    // a stream reports covers the display reads and the export as well, so it
+    // cannot say how much of that is the conversion itself. The first run is
+    // excluded: it carries the pipeline's own warm-up.
+    let repeats: usize = std::env::var("LOWLAT_CONVERT_REPEATS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(200);
+    if repeats > 0 {
+        let mut each: Vec<f64> = Vec::with_capacity(repeats);
+        for _ in 0..repeats {
+            let began = std::time::Instant::now();
+            converter
+                .run(&device, &imported, &target, dither)
+                .unwrap_or_else(|error| fail(&format!("convert: {error}")));
+            each.push(began.elapsed().as_secs_f64() * 1000.0);
+        }
+        each.sort_by(f64::total_cmp);
+        // Rank by integer arithmetic, so no percentile is a float cast.
+        let at = |num: usize, den: usize| each[(each.len() - 1) * num / den];
+        println!(
+            "convert only, {repeats} runs: p50 {:.3} ms  p95 {:.3} ms  p99 {:.3} ms  max {:.3} ms",
+            at(50, 100),
+            at(95, 100),
+            at(99, 100),
+            at(1, 1)
+        );
+    }
+
+    // **The other half of a frame's capture.** What the loop does before it
+    // converts: re-read the plane's framebuffer, export its first buffer, and
+    // take the identity off the descriptor. Timed here because the stream's
+    // acquire figure covers both halves and cannot be split from outside.
+    if repeats > 0 {
+        let mut each: Vec<f64> = Vec::with_capacity(repeats);
+        for _ in 0..repeats {
+            let began = std::time::Instant::now();
+            let again = card
+                .framebuffer_on(layout.primary_plane)
+                .unwrap_or_else(|error| fail(&format!("re-read: {error}")));
+            let buffer = again.planes().next().unwrap_or_else(|| fail("no buffers"));
+            let handle = card
+                .export(buffer)
+                .unwrap_or_else(|error| fail(&format!("export: {error}")));
+            let _ = lowlat_capture::scanout::identity(&handle);
+            drop(handle);
+            each.push(began.elapsed().as_secs_f64() * 1000.0);
+        }
+        each.sort_by(f64::total_cmp);
+        let at = |num: usize, den: usize| each[(each.len() - 1) * num / den];
+        println!(
+            "display read only, {repeats} runs: p50 {:.3} ms  p95 {:.3} ms  p99 {:.3} ms  \
+             max {:.3} ms",
+            at(50, 100),
+            at(95, 100),
+            at(99, 100),
+            at(1, 1)
+        );
+    }
+
+    // **The pointer, which the loop reads inside the same stage.** Its plane
+    // is mapped uncached and copied on the processor, and it runs on an 18 ms
+    // cadence against a 16.7 ms frame, so nearly every frame pays it. Timed
+    // here because the stream's acquire figure includes it without saying so.
+    match layout.cursor_plane.as_ref() {
+        None => println!("no pointer plane on this device, nothing to time"),
+        Some(cursor_plane) if repeats > 0 => {
+            let mut each: Vec<f64> = Vec::with_capacity(repeats);
+            let mut drawn = 0usize;
+            for _ in 0..repeats {
+                let began = std::time::Instant::now();
+                let seen = card
+                    .cursor_on(cursor_plane)
+                    .unwrap_or_else(|error| fail(&format!("pointer: {error}")));
+                each.push(began.elapsed().as_secs_f64() * 1000.0);
+                if seen.is_some() {
+                    drawn += 1;
+                }
+            }
+            each.sort_by(f64::total_cmp);
+            let at = |num: usize, den: usize| each[(each.len() - 1) * num / den];
+            println!(
+                "pointer read only, {repeats} runs ({drawn} drawn): p50 {:.3} ms  p95 {:.3} ms  \
+                 p99 {:.3} ms  max {:.3} ms",
+                at(50, 100),
+                at(95, 100),
+                at(99, 100),
+                at(1, 1)
+            );
+        }
+        Some(_) => {}
+    }
+
     let (luma, chroma) = device
         .read_nv12(&target)
         .unwrap_or_else(|error| fail(&format!("read planes: {error}")));
