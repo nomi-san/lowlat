@@ -95,6 +95,26 @@ const COLLECT_WAIT: std::time::Duration = std::time::Duration::from_millis(1);
 /// The same figure as a number, for comparing against a remaining interval.
 const POLL_MS: f64 = 1.0;
 
+/// Whether this picture has to be sent even if it is the previous one.
+///
+/// **Every reason is enumerated here and nowhere else**, because the failure
+/// this guards against is a screen that stops updating, and that is invisible
+/// in every test that does not look for it. `since_forced_ms` is the time since
+/// a picture was last actually submitted, which is what the heartbeat bounds.
+fn must_send(changed: bool, refresh: bool, seats_moved: bool, since_forced_ms: f64) -> bool {
+    changed || refresh || seats_moved || since_forced_ms >= HEARTBEAT_MS
+}
+
+/// How long a picture may be suppressed before one is sent anyway.
+///
+/// **Not a cadence, a bound on being wrong.** The summary that decides a
+/// picture is unchanged is sixty-four bits, so two different pictures can in
+/// principle agree; more to the point, every other reason a frame might be
+/// owed is enumerated by hand, and this is what limits the damage when that
+/// enumeration turns out to be incomplete. A frozen screen for a second is
+/// recoverable and a frozen screen forever is not.
+const HEARTBEAT_MS: f64 = 1000.0;
+
 /// How often the device is asked whether anything is still plugged into it.
 ///
 /// **Slow on purpose.** It walks every connector on the card, and the state it
@@ -316,6 +336,12 @@ pub(crate) struct Shared {
     timing: TimingCells,
     /// The last refresh window, published beside the timings.
     refreshes: RefreshCells,
+    /// Pictures the loop decided nobody needed, since the stream started.
+    ///
+    /// **Cumulative rather than per window**, because what it answers is
+    /// whether suppression is working at all, and a reader that samples it
+    /// twice gets the rate for free.
+    suppressed: AtomicU32,
     /// What is being captured, as a checksum of its name. Zero until a display
     /// has been opened.
     ///
@@ -1036,6 +1062,7 @@ impl Stream {
             encode_us: AtomicU32::new(0),
             timing: TimingCells::default(),
             refreshes: RefreshCells::default(),
+            suppressed: AtomicU32::new(0),
             picture: AtomicU32::new(0),
             place_rect: AtomicU64::new(0),
             place_desktop: AtomicU32::new(0),
@@ -2582,6 +2609,10 @@ fn encode_loop<E: Encoder + FromDevice>(
     let mut next_frame_ms = 0.0f64;
     let mut previous_submit: Option<lowlat_common::clock::Time> = None;
     let mut force_keyframe = false;
+    // When a picture was last actually submitted, which is what the heartbeat
+    // measures from. Starts long ago, so the first frame is never suppressed.
+    let mut forced_ms = f64::MIN;
+    let mut suppressed = 0u32;
     let mut refreshes = Refreshes::default();
     let mut since_report = 0u32;
     let mut failures = 0u32;
@@ -2775,7 +2806,14 @@ fn encode_loop<E: Encoder + FromDevice>(
                             Ok(_) => lowlat_common::log_info!("stream: the display came back"),
                         }
                     }
-                    Some(read.unwrap_or(began))
+                    Some(read.unwrap_or(crate::display::Acquired {
+                        at: began,
+                        // **A display that could not be read holds its last
+                        // picture, and holding it is not a change.** Calling a
+                        // failed read new would send the same frame at the full
+                        // rate for as long as the display is dark.
+                        changed: false,
+                    }))
                 }
                 None => None,
             };
@@ -2834,8 +2872,12 @@ fn encode_loop<E: Encoder + FromDevice>(
                 None
             };
             let captured_at = ready
+                .map(|got| got.at)
                 .or_else(|| synthetic.as_ref().map(|frame| frame.captured_at))
                 .unwrap_or(began);
+            // **The generator has no summary and its frames all differ**, so a
+            // stream without a display is untouched by any of this.
+            let changed = ready.is_none_or(|got| got.changed);
             // **What the acquire cost, not when the picture is stamped.** A
             // display reports the moment it began, because that is when the
             // picture on screen was the one being taken and it is what the
@@ -2873,16 +2915,43 @@ fn encode_loop<E: Encoder + FromDevice>(
                 }
             }
 
+            // **A picture nobody needs is not submitted.** Everything below
+            // this -- the encoder, the packetisation, the encryption, the wire
+            // -- exists to carry a difference, and there is none.
+            //
+            // Three things override that, each a case where an identical
+            // picture is still owed to somebody:
+            //
+            // - **a refresh is owed.** A guest that has fallen out of the
+            //   reference chain, or one that just joined, needs a picture with
+            //   no history behind it, and a screen that is not moving is
+            //   exactly the case where it would otherwise wait forever.
+            // - **the seats changed.** Someone arriving or leaving alters who
+            //   the next frame is for, and an arrival has received nothing.
+            // - **the heartbeat is due.** See `HEARTBEAT_MS`: it bounds how
+            //   long any mistake in this reasoning can leave a screen frozen.
+            let send = must_send(changed, force_keyframe, moved, now_ms - forced_ms);
+            if send {
+                forced_ms = now_ms;
+            } else {
+                suppressed = suppressed.saturating_add(1);
+                shared.suppressed.fetch_add(1, Ordering::Relaxed);
+            }
+
             let submitted_at = lowlat_common::clock::Time::now();
             // Read before the submit, because a picture that goes in clears it.
             let refreshing = force_keyframe;
-            let queued = match (&synthetic, display.as_deref_mut()) {
-                (Some(frame), _) => encoder.submit(frame, force_keyframe).is_ok(),
-                (None, Some(desktop)) => match desktop.presented() {
+            // **Not an early return.** The wait at the foot of the loop is what
+            // keeps this thread off the processor, and skipping it to skip a
+            // frame would turn a suppressed stream into a spinning one.
+            let queued = match (send, &synthetic, display.as_deref_mut()) {
+                (false, _, _) => false,
+                (true, Some(frame), _) => encoder.submit(frame, force_keyframe).is_ok(),
+                (true, None, Some(desktop)) => match desktop.presented() {
                     Some(input) => encoder.submit_from_device(input, force_keyframe),
                     None => false,
                 },
-                (None, None) => false,
+                (true, None, None) => false,
             };
             if queued {
                 if refreshing {
@@ -2896,8 +2965,18 @@ fn encode_loop<E: Encoder + FromDevice>(
                 }
                 previous_submit = Some(submitted_at);
                 in_flight.push_back((captured_at, submitted_at));
+            }
+            // A refusal is the encoder holding as many pictures as it will:
+            // back pressure rather than a fault, and the next frame goes in
+            // once a collect has made room.
 
-                since_report += 1;
+            // **Counted per frame considered, not per frame sent.** A
+            // suppressed stream submits once a second, and a report that waited
+            // for six hundred of those would arrive every ten minutes -- so the
+            // one number that says whether suppression is working would be the
+            // hardest to see.
+            since_report += 1;
+            {
                 if since_report >= REPORT_FRAMES {
                     since_report = 0;
                     let report = stages.report();
@@ -2936,13 +3015,19 @@ fn encode_loop<E: Encoder + FromDevice>(
                         refreshes.reinit,
                         refreshes.starved,
                     );
+                    // **The number that says whether any of this is working.**
+                    // A static desktop should suppress nearly every frame and a
+                    // moving one nearly none, so a figure that never moves in
+                    // either direction is the interesting failure.
+                    lowlat_common::log_info!(
+                        "stream: suppressed {suppressed} of {} frames since the last report",
+                        REPORT_FRAMES
+                    );
+                    suppressed = 0;
                     shared.refreshes.publish(&refreshes);
                     refreshes = Refreshes::default();
                 }
             }
-            // A refusal is the encoder holding as many pictures as it will:
-            // back pressure rather than a fault, and the next frame goes in
-            // once a collect has made room.
         }
 
         // Wait for the sooner of the next thing this loop owes anybody. **A
@@ -3653,6 +3738,7 @@ mod tests {
                 encode_us: AtomicU32::new(0),
                 timing: TimingCells::default(),
                 refreshes: RefreshCells::default(),
+                suppressed: AtomicU32::new(0),
                 picture: AtomicU32::new(0),
                 place_rect: AtomicU64::new(0),
                 place_desktop: AtomicU32::new(0),
@@ -3721,6 +3807,7 @@ mod tests {
             encode_us: AtomicU32::new(0),
             timing: TimingCells::default(),
             refreshes: RefreshCells::default(),
+            suppressed: AtomicU32::new(0),
             picture: AtomicU32::new(0),
             place_rect: AtomicU64::new(0),
             place_desktop: AtomicU32::new(0),
@@ -3931,6 +4018,7 @@ mod tests {
             encode_us: AtomicU32::new(0),
             timing: TimingCells::default(),
             refreshes: RefreshCells::default(),
+            suppressed: AtomicU32::new(0),
             picture: AtomicU32::new(0),
             place_rect: AtomicU64::new(0),
             place_desktop: AtomicU32::new(0),
@@ -5070,6 +5158,56 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
+    }
+
+    /// **Every reason a duplicate is still owed to somebody.**
+    ///
+    /// The failure this guards is a screen that stops updating, which no other
+    /// test looks for and which a person notices before any measurement does.
+    /// Each arm is here because dropping it breaks something specific, and the
+    /// heartbeat is here because this list is written by hand and may be
+    /// incomplete.
+    #[test]
+    fn a_duplicate_is_still_sent_when_somebody_needs_it() {
+        // The whole point: an unchanged picture nobody is waiting for.
+        assert!(
+            !must_send(false, false, false, 0.0),
+            "an unchanged picture was sent with nothing owed, so nothing is ever suppressed"
+        );
+
+        // A changed picture always goes, whatever else is true.
+        assert!(
+            must_send(true, false, false, 0.0),
+            "a changed picture was held"
+        );
+
+        // A refresh is owed: a guest has fallen out of the reference chain or
+        // has just joined, and a still screen is exactly when it would wait
+        // forever.
+        assert!(
+            must_send(false, true, false, 0.0),
+            "a guest waiting for a keyframe was made to wait for the screen to move"
+        );
+
+        // The seats moved: an arrival has received nothing at all.
+        assert!(
+            must_send(false, false, true, 0.0),
+            "a guest that just took a seat was sent nothing because the screen was still"
+        );
+
+        // The heartbeat bounds how long any mistake above can freeze a screen.
+        assert!(
+            !must_send(false, false, false, HEARTBEAT_MS - 1.0),
+            "the heartbeat fired early, which costs a picture a second for nothing"
+        );
+        assert!(
+            must_send(false, false, false, HEARTBEAT_MS),
+            "the heartbeat did not fire on its own boundary"
+        );
+        assert!(
+            must_send(false, false, false, HEARTBEAT_MS * 10.0),
+            "a screen suppressed for ten heartbeats stayed suppressed"
+        );
     }
 
     /// **A finished picture is collected within a poll, not within a frame.**

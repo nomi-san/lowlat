@@ -176,6 +176,18 @@ impl core::fmt::Debug for Registration {
     }
 }
 
+/// What one [`Display::acquire`] produced.
+#[derive(Debug, Clone, Copy)]
+pub struct Acquired {
+    /// When the picture was taken, which is what every latency figure is
+    /// measured from.
+    pub at: Time,
+    /// **False means this picture is the previous one, byte for byte.** A
+    /// caller may skip everything downstream of it; nothing is skipped here,
+    /// because the conversion is what produced the answer.
+    pub changed: bool,
+}
+
 /// One conversion target, registered with the encoder once.
 struct Target {
     frame: Nv12,
@@ -221,6 +233,13 @@ pub struct Display {
     imports: HashMap<u64, vulkan::Imported>,
     targets: Vec<Target>,
     next: usize,
+    /// What the last conversion came to, or nothing before the first one.
+    ///
+    /// **The whole of the duplicate check.** Held here rather than in the loop
+    /// because it belongs to the source: a display that is rebuilt starts
+    /// again, which is right, and a loop that restarts around the same display
+    /// does not have to.
+    digest: Option<lowlat_capture::convert::Digest>,
     /// The pointer plane, when the pipeline has one. **Found once**: a machine
     /// that draws its pointer in the picture rather than on a plane has none,
     /// and looking for it every frame would be a walk of the whole pipeline
@@ -314,6 +333,7 @@ impl Display {
             next: 0,
             cursor_plane: layout.cursor_plane,
             cursor: Watcher::new(),
+            digest: None,
             resized: false,
             place: layout
                 .connector
@@ -577,9 +597,9 @@ impl Display {
 
     /// Convert what the display is showing now into the next free target.
     ///
-    /// Returns when the picture was taken; the registration to submit is then
-    /// [`Display::presented`].
-    pub fn acquire(&mut self) -> Result<Time, Error> {
+    /// Returns when the picture was taken and whether it differs from the one
+    /// before it; the registration to submit is then [`Display::presented`].
+    pub fn acquire(&mut self) -> Result<Acquired, Error> {
         let began = Time::now();
         let fb = self.card.framebuffer_on(self.plane)?;
 
@@ -618,9 +638,22 @@ impl Display {
 
         let source = self.imports.get(&key).ok_or(Error::Register)?;
         let target = self.targets.get(slot).ok_or(Error::Register)?;
-        self.converter
+        let digest = self
+            .converter
             .run(&self.device, source, &target.frame, false)?;
-        Ok(began)
+
+        // **What was drawn, not which buffer it was drawn into.** The exported
+        // identity says only that the buffer was not swapped, and this
+        // compositor redraws in place on most frames, so keying on it would
+        // call a changed picture unchanged. The conversion reads every pixel
+        // anyway and hands back a summary of what it wrote.
+        //
+        // **The targets rotate and that does not matter**: the summary is of
+        // the content, so the same picture converted into a different slot
+        // gives the same answer.
+        let changed = self.digest != Some(digest);
+        self.digest = Some(digest);
+        Ok(Acquired { at: began, changed })
     }
 
     /// Make sure this buffer is imported, and say which import it is.
