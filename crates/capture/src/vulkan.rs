@@ -95,6 +95,20 @@ const REQUIRED: [&CStr; 4] = [
     ash::ext::queue_family_foreign::NAME,
 ];
 
+/// What lets a device say which display node it drives.
+///
+/// **Apart from the list above, because it is read rather than enabled.** It
+/// supplies a property and no device-level behaviour, so it is checked where
+/// the property is read and never named at device creation.
+const REPORTS_NODE: &CStr = ash::ext::physical_device_drm::NAME;
+
+/// Whether a device offers an extension by name.
+fn advertises(available: &[vk::ExtensionProperties], wanted: &CStr) -> bool {
+    available
+        .iter()
+        .any(|extension| extension.extension_name_as_c_str() == Ok(wanted))
+}
+
 /// The device the display is on, ready to import from it.
 pub struct Device {
     /// Dropped last. Every handle below is scoped to it.
@@ -220,7 +234,21 @@ impl Device {
     fn find(instance: &ash::Instance, major: u32, minor: u32) -> Result<vk::PhysicalDevice, Error> {
         // SAFETY: enumerating from a live instance.
         let candidates = unsafe { instance.enumerate_physical_devices() }.map_err(driver)?;
+        // **A device that cannot say which node it drives is indistinguishable
+        // here from one that drives a different node**: the property comes back
+        // zeroed either way. Left alone, a driver too old to answer the
+        // question reads as a machine with nothing on its display, which sends
+        // the next person to look at the display. Counting the ones that
+        // answered is what separates the two.
+        let mut answered = false;
         for physical in candidates {
+            // SAFETY: the device came from this instance.
+            let available = unsafe { instance.enumerate_device_extension_properties(physical) }
+                .map_err(driver)?;
+            if !advertises(&available, REPORTS_NODE) {
+                continue;
+            }
+            answered = true;
             let mut drm = vk::PhysicalDeviceDrmPropertiesEXT::default();
             let mut properties = vk::PhysicalDeviceProperties2::default().push_next(&mut drm);
             // SAFETY: the chain is built from stack values that outlive the
@@ -233,7 +261,13 @@ impl Device {
                 return Ok(physical);
             }
         }
-        Err(Error::NoDeviceForNode)
+        if answered {
+            Err(Error::NoDeviceForNode)
+        } else {
+            Err(Error::Unsupported(
+                REPORTS_NODE.to_str().unwrap_or("a required interface"),
+            ))
+        }
     }
 
     /// Check what the chosen device can do, then open it.
@@ -245,14 +279,28 @@ impl Device {
         let available =
             unsafe { instance.enumerate_device_extension_properties(physical) }.map_err(driver)?;
         for wanted in REQUIRED {
-            let present = available
-                .iter()
-                .any(|extension| extension.extension_name_as_c_str() == Ok(wanted));
-            if !present {
+            if !advertises(&available, wanted) {
                 return Err(Error::Unsupported(
                     wanted.to_str().unwrap_or("a required interface"),
                 ));
             }
+        }
+
+        // **Asked for before they are requested.** Naming an unsupported
+        // feature at device creation is refused with one result code covering
+        // every feature in the chain, so the two below are checked here where
+        // the answer can say which one; the reasons they are needed are at the
+        // request itself.
+        let mut supported_ycbcr = vk::PhysicalDeviceSamplerYcbcrConversionFeatures::default();
+        let mut supported = vk::PhysicalDeviceFeatures2::default().push_next(&mut supported_ycbcr);
+        // SAFETY: the chain is built from stack values that outlive the call,
+        // and the device came from this instance.
+        unsafe { instance.get_physical_device_features2(physical, &mut supported) };
+        if supported.features.shader_storage_image_extended_formats != vk::TRUE {
+            return Err(Error::Unsupported("extended storage image formats"));
+        }
+        if supported_ycbcr.sampler_ycbcr_conversion != vk::TRUE {
+            return Err(Error::Unsupported("two-plane image layouts"));
         }
 
         // Compute alone. The conversion is a shader and a copy; nothing here
