@@ -127,13 +127,8 @@ fn report(
         let flags = family.queue_flags;
         if flags.contains(vk::QueueFlags::VIDEO_ENCODE_KHR) {
             println!(
-                "  encode queue family {at}, {} queue(s){}",
-                family.queue_count,
-                if flags.contains(vk::QueueFlags::COMPUTE) {
-                    ", also compute"
-                } else {
-                    ", encode only"
-                }
+                "  encode queue family {at}, {} queue(s), flags {flags:?}",
+                family.queue_count
             );
             encode_family = encode_family.or_else(|| u32::try_from(at).ok());
         }
@@ -141,8 +136,23 @@ fn report(
     let Some(encode_family) = encode_family else {
         return Err("this device exposes no encode queue".to_string());
     };
+    // **A second family, because one device is not one queue.** The encode
+    // family on one of the cards here cannot copy at all, so the picture has to
+    // be filled from another family and handed over. That is the same shape the
+    // real pipeline needs, where the conversion runs on compute and the encode
+    // on its own queue.
+    let upload_family = families
+        .iter()
+        .position(|family| {
+            family
+                .queue_flags
+                .intersects(vk::QueueFlags::COMPUTE | vk::QueueFlags::GRAPHICS)
+        })
+        .and_then(|at| u32::try_from(at).ok())
+        .ok_or_else(|| "this device exposes no queue that can fill a picture".to_string())?;
+    println!("  filling from queue family {upload_family}");
 
-    capabilities(entry, instance, physical, encode_family)
+    capabilities(entry, instance, physical, encode_family, upload_family)
 }
 
 /// What the device says it can do, before anything is built on it.
@@ -237,6 +247,7 @@ fn capabilities(
     instance: &ash::Instance,
     physical: vk::PhysicalDevice,
     family: u32,
+    upload_family: u32,
 ) -> Result<(), String> {
     let video = ash::khr::video_queue::Instance::new(entry, instance);
 
@@ -346,7 +357,14 @@ fn capabilities(
     // **What the pictures have to be laid out as.** A session is built for one
     // layout for the source and one for the references, and the two are asked
     // for separately because a device is free to want different ones.
-    let source = formats(&video, physical, vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR)?;
+    // **Asked for with the copy included.** A picture that is filled and then
+    // encoded is used two ways, and a device is free to name different layouts
+    // for the pair than for either alone.
+    let source = formats(
+        &video,
+        physical,
+        vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR | vk::ImageUsageFlags::TRANSFER_DST,
+    )?;
     let dpb = formats(&video, physical, vk::ImageUsageFlags::VIDEO_ENCODE_DPB_KHR)?;
     println!("  source layout(s): {source:?}");
     println!("  reference layout(s): {dpb:?}");
@@ -361,6 +379,7 @@ fn capabilities(
         Built {
             physical,
             family,
+            upload_family,
             picture,
             reference,
             slots,
@@ -376,6 +395,7 @@ fn capabilities(
 struct Built {
     physical: vk::PhysicalDevice,
     family: u32,
+    upload_family: u32,
     picture: vk::Format,
     reference: vk::Format,
     slots: u32,
@@ -395,9 +415,18 @@ fn session(
     built: Built,
 ) -> Result<(), String> {
     let priorities = [1.0_f32];
-    let queues = [vk::DeviceQueueCreateInfo::default()
-        .queue_family_index(built.family)
-        .queue_priorities(&priorities)];
+    let mut queues = vec![
+        vk::DeviceQueueCreateInfo::default()
+            .queue_family_index(built.family)
+            .queue_priorities(&priorities),
+    ];
+    if built.upload_family != built.family {
+        queues.push(
+            vk::DeviceQueueCreateInfo::default()
+                .queue_family_index(built.upload_family)
+                .queue_priorities(&priorities),
+        );
+    }
     let names = [
         ash::khr::video_queue::NAME.as_ptr(),
         ash::khr::video_encode_queue::NAME.as_ptr(),
@@ -796,7 +825,7 @@ fn encode(
         device,
         built.picture,
         extent,
-        vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR,
+        vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR | vk::ImageUsageFlags::TRANSFER_DST,
     )?;
     memories.push(memory);
     let (dpb, memory) = video_image(
@@ -885,6 +914,8 @@ fn encode(
             .map_err(|e| format!("a command pool could not be made: {e}"))?
     };
 
+    fill(instance, physical, device, source, extent, built)?;
+
     let frame = Frame {
         source,
         source_view,
@@ -961,7 +992,18 @@ fn run(
 
     let encode = ash::khr::video_encode_queue::Device::new(instance, device);
     let outcome = record_and_submit(
-        device, video, &encode, session, parameters, frame, extent, commands, queue, fence,
+        device,
+        video,
+        &encode,
+        session,
+        parameters,
+        frame,
+        extent,
+        commands,
+        queue,
+        fence,
+        built.upload_family,
+        built.family,
     );
     // SAFETY: the submit above was waited on inside, so nothing refers to it.
     unsafe {
@@ -984,6 +1026,8 @@ fn record_and_submit(
     commands: vk::CommandBuffer,
     queue: vk::Queue,
     fence: vk::Fence,
+    upload_family: u32,
+    encode_family: u32,
 ) -> Result<(), String> {
     let begin =
         vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
@@ -1002,12 +1046,15 @@ fn record_and_submit(
     // do with them. Discarding their previous contents is correct: one has
     // never been written and the other is about to be.
     let barriers = [
+        // **Acquired, not discarded.** The picture was filled by another
+        // family and released to this one; naming its previous contents as
+        // nobody's would throw away exactly what is to be encoded.
         vk::ImageMemoryBarrier::default()
             .dst_access_mask(vk::AccessFlags::NONE)
-            .old_layout(vk::ImageLayout::UNDEFINED)
+            .old_layout(vk::ImageLayout::VIDEO_ENCODE_SRC_KHR)
             .new_layout(vk::ImageLayout::VIDEO_ENCODE_SRC_KHR)
-            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+            .src_queue_family_index(upload_family)
+            .dst_queue_family_index(encode_family)
             .image(frame.source)
             .subresource_range(whole),
         vk::ImageMemoryBarrier::default()
@@ -1526,4 +1573,248 @@ fn record_encode(
         (encode.fp().cmd_encode_video_khr)(commands, &info);
         device.cmd_end_query(commands, frame.pool, 0);
     }
+}
+
+/// Put a real picture into the source, from the generator.
+///
+/// **A measurement of an encode needs something to encode.** An empty picture
+/// costs about half what a real one does, and a figure taken from one says
+/// nothing about a desktop. The generator already produces the layout the
+/// encoder wants -- full resolution single bytes then half resolution pairs --
+/// so it goes in as two plane copies and no conversion.
+///
+/// **Filled from another queue, then handed over.** One of the two encode
+/// queues here cannot copy at all, so the fill happens on a family that can and
+/// the picture is released to the encode family at the end of it.
+fn fill(
+    instance: &ash::Instance,
+    physical: vk::PhysicalDevice,
+    device: &ash::Device,
+    image: vk::Image,
+    extent: vk::Extent2D,
+    built: &Built,
+) -> Result<(), String> {
+    // **Detail rows, because a flat picture is not a measurement.** The
+    // generator's plain output compresses to about what an empty one does --
+    // 416 bytes against 432 -- so a figure taken from it says nothing about a
+    // desktop. The detail band is unpredictable content, which is what makes
+    // the encoder do work.
+    let detail: u32 = std::env::var("LOWLAT_ENCODE_DETAIL")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(extent.height);
+    let mut source =
+        lowlat_capture::synthetic::Synthetic::with_detail(extent.width, extent.height, detail);
+    let picture = source.acquire();
+    let luma = picture.luma.bytes.len();
+    let chroma = picture.chroma.bytes.len();
+    let total = u64::try_from(luma + chroma).unwrap_or(0);
+
+    let info = vk::BufferCreateInfo::default()
+        .size(total)
+        .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+        .sharing_mode(vk::SharingMode::EXCLUSIVE);
+    // SAFETY: the create info outlives the call.
+    let staging = unsafe { device.create_buffer(&info, None) }
+        .map_err(|e| format!("a staging buffer could not be made: {e}"))?;
+    // SAFETY: created on this device.
+    let wanted = unsafe { device.get_buffer_memory_requirements(staging) };
+    // SAFETY: the device came from this instance.
+    let properties = unsafe { instance.get_physical_device_memory_properties(physical) };
+    let index = properties
+        .memory_types
+        .iter()
+        .take(usize::try_from(properties.memory_type_count).unwrap_or(0))
+        .enumerate()
+        .find(|(at, kind)| {
+            wanted.memory_type_bits & (1 << at) != 0
+                && kind.property_flags.contains(
+                    vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
+                )
+        })
+        .and_then(|(at, _)| u32::try_from(at).ok())
+        .ok_or_else(|| "no memory the processor can write suits the staging".to_string())?;
+    let allocate = vk::MemoryAllocateInfo::default()
+        .allocation_size(wanted.size)
+        .memory_type_index(index);
+    // SAFETY: the allocate info outlives the call.
+    let memory = unsafe { device.allocate_memory(&allocate, None) }
+        .map_err(|e| format!("the staging memory could not be allocated: {e}"))?;
+    // SAFETY: both handles are this device's and nothing is bound yet.
+    unsafe { device.bind_buffer_memory(staging, memory, 0) }
+        .map_err(|e| format!("the staging buffer would not bind: {e}"))?;
+
+    // SAFETY: host visible and coherent, and the map covers what was allocated.
+    let mapped = unsafe { device.map_memory(memory, 0, total, vk::MemoryMapFlags::empty()) }
+        .map_err(|e| format!("the staging would not map: {e}"))?;
+    // SAFETY: mapped just above for `total` bytes, which is the two planes.
+    unsafe {
+        core::ptr::copy_nonoverlapping(picture.luma.bytes.as_ptr(), mapped.cast::<u8>(), luma);
+        core::ptr::copy_nonoverlapping(
+            picture.chroma.bytes.as_ptr(),
+            mapped.cast::<u8>().add(luma),
+            chroma,
+        );
+        device.unmap_memory(memory);
+    }
+
+    let outcome = copy_in(device, image, extent, built, staging, luma);
+    // SAFETY: the copy above waited, so nothing refers to either.
+    unsafe {
+        device.destroy_buffer(staging, None);
+        device.free_memory(memory, None);
+    }
+    outcome
+}
+
+/// Record and run the two plane copies, then release the picture to the encoder.
+fn copy_in(
+    device: &ash::Device,
+    image: vk::Image,
+    extent: vk::Extent2D,
+    built: &Built,
+    staging: vk::Buffer,
+    luma: usize,
+) -> Result<(), String> {
+    let create = vk::CommandPoolCreateInfo::default().queue_family_index(built.upload_family);
+    // SAFETY: the create info outlives the call.
+    let pool = unsafe { device.create_command_pool(&create, None) }
+        .map_err(|e| format!("a fill pool could not be made: {e}"))?;
+    let allocate = vk::CommandBufferAllocateInfo::default()
+        .command_pool(pool)
+        .level(vk::CommandBufferLevel::PRIMARY)
+        .command_buffer_count(1);
+    // SAFETY: the allocate info outlives the call.
+    let buffers = unsafe { device.allocate_command_buffers(&allocate) }
+        .map_err(|e| format!("a fill buffer could not be had: {e}"))?;
+    let commands = *buffers.first().ok_or("no fill buffer")?;
+
+    let begin =
+        vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+    // SAFETY: freshly allocated and not recording.
+    unsafe { device.begin_command_buffer(commands, &begin) }
+        .map_err(|e| format!("fill recording could not begin: {e}"))?;
+
+    // Both planes of a two-plane picture are addressed by their own aspect;
+    // there is no single copy that fills the pair.
+    let planes = [
+        (
+            vk::ImageAspectFlags::PLANE_0,
+            0_u64,
+            extent,
+            vk::Extent2D {
+                width: extent.width,
+                height: extent.height,
+            },
+        ),
+        (
+            vk::ImageAspectFlags::PLANE_1,
+            u64::try_from(luma).unwrap_or(0),
+            vk::Extent2D {
+                width: extent.width / 2,
+                height: extent.height / 2,
+            },
+            vk::Extent2D {
+                width: extent.width / 2,
+                height: extent.height / 2,
+            },
+        ),
+    ];
+    let whole = vk::ImageSubresourceRange {
+        aspect_mask: vk::ImageAspectFlags::COLOR,
+        base_mip_level: 0,
+        level_count: 1,
+        base_array_layer: 0,
+        layer_count: 1,
+    };
+    let to_write = vk::ImageMemoryBarrier::default()
+        .dst_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+        .old_layout(vk::ImageLayout::UNDEFINED)
+        .new_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+        .image(image)
+        .subresource_range(whole);
+    // SAFETY: recording; the barrier outlives the call.
+    unsafe {
+        device.cmd_pipeline_barrier(
+            commands,
+            vk::PipelineStageFlags::TOP_OF_PIPE,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[to_write],
+        );
+    }
+    for (aspect, offset, size, _) in planes {
+        let region = vk::BufferImageCopy::default()
+            .buffer_offset(offset)
+            .buffer_row_length(0)
+            .buffer_image_height(0)
+            .image_subresource(vk::ImageSubresourceLayers {
+                aspect_mask: aspect,
+                mip_level: 0,
+                base_array_layer: 0,
+                layer_count: 1,
+            })
+            .image_offset(vk::Offset3D { x: 0, y: 0, z: 0 })
+            .image_extent(vk::Extent3D {
+                width: size.width,
+                height: size.height,
+                depth: 1,
+            });
+        // SAFETY: recording; the region outlives the call and names bytes the
+        // staging buffer holds.
+        unsafe {
+            device.cmd_copy_buffer_to_image(
+                commands,
+                staging,
+                image,
+                vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+                &[region],
+            );
+        }
+    }
+    // **Released to the encode family here.** The picture was filled by one
+    // family and is read by another, and an image handed over without saying so
+    // is one the second family may find in a layout it was never put in.
+    let handover = vk::ImageMemoryBarrier::default()
+        .src_access_mask(vk::AccessFlags::TRANSFER_WRITE)
+        .old_layout(vk::ImageLayout::TRANSFER_DST_OPTIMAL)
+        .new_layout(vk::ImageLayout::VIDEO_ENCODE_SRC_KHR)
+        .src_queue_family_index(built.upload_family)
+        .dst_queue_family_index(built.family)
+        .image(image)
+        .subresource_range(whole);
+    // SAFETY: recording; the barrier outlives the call.
+    unsafe {
+        device.cmd_pipeline_barrier(
+            commands,
+            vk::PipelineStageFlags::TRANSFER,
+            vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+            vk::DependencyFlags::empty(),
+            &[],
+            &[],
+            &[handover],
+        );
+        device
+            .end_command_buffer(commands)
+            .map_err(|e| format!("fill recording could not end: {e}"))?;
+    }
+
+    // SAFETY: the family was requested at device creation.
+    let queue = unsafe { device.get_device_queue(built.upload_family, 0) };
+    let submits = [vk::SubmitInfo::default().command_buffers(&buffers)];
+    // SAFETY: everything borrowed outlives the wait below.
+    let result = unsafe {
+        device
+            .queue_submit(queue, &submits, vk::Fence::null())
+            .and_then(|()| device.queue_wait_idle(queue))
+    };
+    // SAFETY: the wait above returned, so nothing refers to the pool.
+    unsafe { device.destroy_command_pool(pool, None) };
+    result.map_err(|e| format!("the picture could not be filled: {e}"))?;
+    println!("  source filled from the generator");
+    Ok(())
 }
