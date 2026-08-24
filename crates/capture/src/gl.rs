@@ -546,6 +546,66 @@ impl Device {
         })
     }
 
+    /// Which pixel layouts this device will take in by descriptor.
+    ///
+    /// **A diagnostic, and the one that explains a refusal.** Importing a
+    /// layout the driver does not accept fails with a code that names no
+    /// format, so a refusal here is indistinguishable from a wrong offset or a
+    /// wrong modifier until this list is read. The set is not the same on both
+    /// drivers seen here and it does not include everything either of them can
+    /// render to.
+    pub fn dmabuf_formats(&self) -> Vec<u32> {
+        type QueryFormats = unsafe extern "system" fn(
+            egl::EGLDisplay,
+            egl::Int,
+            *mut egl::Int,
+            *mut egl::Int,
+        ) -> egl::Boolean;
+        let Ok(query): Result<QueryFormats, Error> = entry(
+            &self.egl,
+            "eglQueryDmaBufFormatsEXT",
+            "eglQueryDmaBufFormatsEXT",
+        ) else {
+            return Vec::new();
+        };
+        let mut count = 0_i32;
+        // SAFETY: asking for the count writes only the counter, as specified
+        // when the destination is null.
+        if unsafe {
+            query(
+                self.display.as_ptr(),
+                0,
+                core::ptr::null_mut(),
+                &raw mut count,
+            )
+        } == egl::FALSE
+        {
+            return Vec::new();
+        }
+        let mut formats = vec![0_i32; usize::try_from(count.max(0)).unwrap_or(0)];
+        // SAFETY: the destination holds `count` entries, which is what the
+        // count query reported and what is passed as the capacity.
+        if unsafe {
+            query(
+                self.display.as_ptr(),
+                count,
+                formats.as_mut_ptr(),
+                &raw mut count,
+            )
+        } == egl::FALSE
+        {
+            return Vec::new();
+        }
+        formats.truncate(usize::try_from(count.max(0)).unwrap_or(0));
+        // Reinterpreted rather than converted: a layout code fills the whole
+        // word and the interface hands it back in a signed one, so the top bit
+        // is a bit of the code and not a sign.
+        formats
+            .into_iter()
+            .map(|code| u32::from_ne_bytes(code.to_ne_bytes()))
+            .collect()
+    }
+
     /// What the driver calls itself, for a startup log line.
     pub fn name(&self) -> &str {
         &self.name

@@ -85,6 +85,28 @@ fn main() {
         }
     };
     println!("{}: {}", node.display(), device.name());
+
+    // **What it will take in by descriptor.** A layout the driver does not
+    // accept is refused with a code that names no format, so without this a
+    // refusal reads like a wrong offset or a wrong modifier.
+    let formats = device.dmabuf_formats();
+    let names: Vec<String> = formats.iter().map(|code| fourcc(*code)).collect();
+    println!(
+        "takes {} layout(s) by descriptor: {}",
+        names.len(),
+        names.join(" ")
+    );
+    for (code, what) in [(0x2020_3852, "R8"), (0x3838_5247, "GR88")] {
+        println!(
+            "  {what:<5} the conversion target's planes: {}",
+            if formats.contains(&code) {
+                "accepted"
+            } else {
+                "REFUSED"
+            }
+        );
+    }
+
     let converter = Converter::new(&device).expect("a pipeline");
 
     if capture {
@@ -303,4 +325,14 @@ fn from_a_known_picture(device: &Device, converter: &Converter) {
 
     device.release(source);
     device.release_nv12(target);
+}
+
+/// A layout code as the four characters it is made of.
+fn fourcc(code: u32) -> String {
+    code.to_le_bytes()
+        .iter()
+        .map(|byte| char::from(*byte))
+        .collect::<String>()
+        .trim_end()
+        .to_string()
 }

@@ -1608,6 +1608,15 @@ fn run(
     // another. The guests outlive that; see [`Roster`].
     let mut roster = Roster::default();
     let mut previous: Option<Codec> = None;
+    // **What the capture was on before a guest asked to move it.**
+    //
+    // Held for the same reason the codec above is: a request that turns out to
+    // be unservable has to leave the session where it was, not where it was
+    // asked to go. Without it a switch to an output this machine cannot
+    // capture wedges the session permanently -- the request is remembered,
+    // every rebuild tries it again and fails, and each new guest is ended on
+    // arrival, so reconnecting cannot recover it either.
+    let mut previous_output: Option<Option<String>> = None;
     loop {
         // Waiting rather than holding hardware. A host advertises itself long
         // before anyone connects, and an encoder open across that whole time
@@ -1641,6 +1650,7 @@ fn run(
 
         // Drained here, where the configuration is owned.
         if let Some(id) = requested(asked) {
+            previous_output = Some(config.output.take());
             config.output = id;
             lowlat_common::log_info!(
                 "stream: capturing {}",
@@ -1680,6 +1690,23 @@ fn run(
             // picture; the guest that asked has already rebuilt its decoder for
             // a stream it is never going to receive, and is told so.
             Exit::Failed(reason) => {
+                // **The output is put back first, because it is the more
+                // recent cause.** A request to capture a different screen is
+                // the last thing that changed, and unlike a codec it is not
+                // something the device can be asked about beforehand: whether
+                // it works is only known by trying, and the attempt is what
+                // just failed.
+                if let Some(back) = previous_output.take() {
+                    lowlat_common::log_warn!(
+                        "stream: {} could not be captured (reason={}), staying on {}",
+                        config.output.as_deref().unwrap_or("that output"),
+                        reason,
+                        back.as_deref().unwrap_or("the first output that is lit")
+                    );
+                    config.output = back;
+                    kick_asked(shared, &roster.active, reason);
+                    continue;
+                }
                 let Some(back) = previous.take() else {
                     lowlat_common::log_error!(
                         "stream: no encoder for codec={:?}, ending {} guest(s), reason={}",
@@ -1716,6 +1743,12 @@ fn run(
                 config.codec = back;
             }
             Exit::Rediscover(_) | Exit::Reconfigure(_) => {
+                // **Disarmed, because the output it was holding worked.** A
+                // run that got this far captured the screen it was asked for,
+                // so a failure later belongs to whatever changed after it and
+                // reverting the output then would move a guest off a screen
+                // that was serving it perfectly well.
+                previous_output = None;
                 if let Exit::Reconfigure(codec) = exit {
                     lowlat_common::log_info!(
                         "stream: reconfiguring codec={:?} -> {:?}",
