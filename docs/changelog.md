@@ -3,6 +3,32 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 9: capture (why a device is refused)
+
+**A machine the capture path cannot run on now says which part it is missing.**
+Three of the requirements were enforced by the driver rather than by us, so a
+device that failed them reported a bare result code or, worse, the wrong cause
+entirely.
+
+- **A device that cannot say which display node it drives read as a display
+  with nothing on it.** The node is matched against a property, and a driver
+  that does not carry that property returns the same zeroes as a device driving
+  a different node. Every device failing that way came out as "no device reports
+  driving that display node", which sends the next person to look at the
+  display. The two are now separated by counting the devices that answered at
+  all, and only the second keeps that message.
+
+- **Two device capabilities were requested without being asked for.** Naming an
+  unsupported one at device creation is refused with a single result code
+  covering the whole chain, so neither the extended storage formats the
+  conversion writes through nor the two-plane image layout its target is built
+  as could say it was the one missing. Both are queried first and refused by
+  name.
+
+Each of the three was made to fail before it was trusted: the first against a
+driver on this machine that genuinely lacks the property, the other two by
+inverting the test and watching the right name come back.
+
 ## 9: capture (duplicate suppression)
 
 **A still desktop is sent once a second instead of sixty times.** The frame
