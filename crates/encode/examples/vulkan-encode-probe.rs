@@ -168,6 +168,26 @@ fn with_profile<R>(f: impl FnOnce(&vk::VideoProfileInfoKHR<'_>) -> R) -> R {
     f(&profile)
 }
 
+/// The picture size to build for, which decides what a measurement compares to.
+///
+/// **Read once and used everywhere.** The parameter sets, the session's ceiling
+/// and the encode all have to agree, and a figure measured at one size against
+/// a figure measured at another says nothing.
+fn wanted_extent() -> vk::Extent2D {
+    let named = std::env::var("LOWLAT_ENCODE_SIZE").unwrap_or_default();
+    let mut parts = named.split(['x', 'X']);
+    match (
+        parts.next().and_then(|v| v.parse().ok()),
+        parts.next().and_then(|v| v.parse().ok()),
+    ) {
+        (Some(width), Some(height)) => vk::Extent2D { width, height },
+        _ => vk::Extent2D {
+            width: 2560,
+            height: 1440,
+        },
+    }
+}
+
 /// Which layouts the device will take for one use of a video picture.
 fn formats(
     video: &ash::khr::video_queue::Instance,
@@ -422,10 +442,7 @@ fn build_session(
             // The size a session is built for is a ceiling, not the picture:
             // one built small refuses a larger frame later, and the display
             // this would capture changes size while it runs.
-            .max_coded_extent(vk::Extent2D {
-                width: 2560,
-                height: 1440,
-            })
+            .max_coded_extent(wanted_extent())
             .reference_picture_format(built.reference)
             .max_dpb_slots(built.slots.min(2))
             .max_active_reference_pictures(built.active.min(1))
@@ -591,7 +608,8 @@ fn parameters(
     session: vk::VideoSessionKHR,
     built: &Built,
 ) -> Result<(), String> {
-    let (width, height) = (2560_u32, 1440_u32);
+    let extent = wanted_extent();
+    let (width, height) = (extent.width, extent.height);
     let physical = built.physical;
     // **Zeroed and then filled, because these come from the codec's own
     // headers and carry pointers**, so there is no derived empty value. Zero
@@ -769,10 +787,7 @@ fn encode(
     parameters: vk::VideoSessionParametersKHR,
     built: &Built,
 ) -> Result<(), String> {
-    let extent = vk::Extent2D {
-        width: 2560,
-        height: 1440,
-    };
+    let extent = wanted_extent();
     let mut memories = Vec::new();
 
     let (source, memory) = video_image(
@@ -1195,6 +1210,128 @@ fn reconfigure(
     unsafe { device.wait_for_fences(&[fence], true, 5_000_000_000) }
         .map_err(|e| format!("the rate change did not finish: {e}"))?;
     println!("  bitrate changed to 6 Mbit/s on the running session, no rebuild, no reset");
+
+    // **What it costs, now that it works.** The figure to set this against is
+    // a capture stage of 1.86 ms and an encode of 3.23 on the same hardware
+    // through two interfaces, of which about 1.45 is the switch between them.
+    // Nothing here converts, so this is the encode alone.
+    let repeats: usize = std::env::var("LOWLAT_ENCODE_REPEATS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(0);
+    if repeats == 0 {
+        return Ok(());
+    }
+    let mut each = Vec::with_capacity(repeats);
+    for _ in 0..repeats {
+        let began = std::time::Instant::now();
+        one_more(
+            device, video, encode, session, parameters, frame, extent, commands, queue, fence,
+        )?;
+        each.push(began.elapsed().as_secs_f64() * 1000.0);
+    }
+    each.sort_by(f64::total_cmp);
+    let rank = |num: usize, den: usize| {
+        each.get((each.len().saturating_sub(1)) * num / den)
+            .copied()
+            .unwrap_or(0.0)
+    };
+    println!(
+        "  encode p50 {:.3} ms  p95 {:.3} ms  p99 {:.3} ms  over {repeats} pictures",
+        rank(50, 100),
+        rank(95, 100),
+        rank(99, 100)
+    );
+    Ok(())
+}
+
+/// One more picture on the running session, submitted and waited for.
+///
+/// **The same shape every time.** A rate-controlled session is already
+/// configured, so this restates it at the opening and does nothing else but
+/// encode, which is what a frame costs once a stream is running.
+#[expect(clippy::too_many_arguments, reason = "a probe, threading device state")]
+fn one_more(
+    device: &ash::Device,
+    video: &ash::khr::video_queue::Device,
+    encode: &ash::khr::video_encode_queue::Device,
+    session: vk::VideoSessionKHR,
+    parameters: vk::VideoSessionParametersKHR,
+    frame: &Frame,
+    extent: vk::Extent2D,
+    commands: vk::CommandBuffer,
+    queue: vk::Queue,
+    fence: vk::Fence,
+) -> Result<(), String> {
+    // SAFETY: the previous submit was waited on, so both are idle.
+    unsafe {
+        device
+            .reset_command_buffer(commands, vk::CommandBufferResetFlags::empty())
+            .map_err(|e| format!("the command buffer would not reset: {e}"))?;
+        device
+            .reset_fences(&[fence])
+            .map_err(|e| format!("the fence would not reset: {e}"))?;
+    }
+    let begin =
+        vk::CommandBufferBeginInfo::default().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+    // SAFETY: reset just above and not recording.
+    unsafe { device.begin_command_buffer(commands, &begin) }
+        .map_err(|e| format!("recording could not begin: {e}"))?;
+    // SAFETY: recording; the pool is this device's.
+    unsafe { device.cmd_reset_query_pool(commands, frame.pool, 0, 1) };
+
+    let dpb_resource = vk::VideoPictureResourceInfoKHR::default()
+        .coded_offset(vk::Offset2D { x: 0, y: 0 })
+        .coded_extent(extent)
+        .base_array_layer(0)
+        .image_view_binding(frame.dpb_view);
+    let opening = [vk::VideoReferenceSlotInfoKHR::default()
+        .slot_index(-1)
+        .picture_resource(&dpb_resource)];
+    // The configuration the session is already in, restated because every
+    // opening of a non-default session has to carry it.
+    let layers = [vk::VideoEncodeRateControlLayerInfoKHR::default()
+        .average_bitrate(6_000_000)
+        .max_bitrate(6_000_000)
+        .frame_rate_numerator(60)
+        .frame_rate_denominator(1)];
+    let mut current = vk::VideoEncodeRateControlInfoKHR::default()
+        .rate_control_mode(vk::VideoEncodeRateControlModeFlagsKHR::CBR)
+        .layers(&layers)
+        .virtual_buffer_size_in_ms(1000)
+        .initial_virtual_buffer_size_in_ms(0);
+    let mut h264_rate = vk::VideoEncodeH264RateControlInfoKHR::default()
+        .gop_frame_count(60)
+        .idr_period(60)
+        .consecutive_b_frame_count(0)
+        .temporal_layer_count(1);
+    let begin_coding = vk::VideoBeginCodingInfoKHR::default()
+        .video_session(session)
+        .video_session_parameters(parameters)
+        .reference_slots(&opening)
+        .push_next(&mut current)
+        .push_next(&mut h264_rate);
+    // SAFETY: recording; the chain outlives the call.
+    unsafe { (video.fp().cmd_begin_video_coding_khr)(commands, &begin_coding) };
+
+    record_encode(device, encode, frame, extent, commands, &dpb_resource, 0);
+
+    let end = vk::VideoEndCodingInfoKHR::default();
+    // SAFETY: recording; the structure outlives the call.
+    unsafe {
+        (video.fp().cmd_end_video_coding_khr)(commands, &end);
+        device
+            .end_command_buffer(commands)
+            .map_err(|e| format!("recording could not end: {e}"))?;
+    }
+    let buffers = [commands];
+    let submits = [vk::SubmitInfo::default().command_buffers(&buffers)];
+    // SAFETY: everything borrowed outlives the wait below.
+    unsafe { device.queue_submit(queue, &submits, fence) }
+        .map_err(|e| format!("the encode would not submit: {e}"))?;
+    // SAFETY: the fence was submitted with above.
+    unsafe { device.wait_for_fences(&[fence], true, 5_000_000_000) }
+        .map_err(|e| format!("the encode did not finish: {e}"))?;
     Ok(())
 }
 
