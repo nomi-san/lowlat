@@ -109,6 +109,19 @@ pub struct Converter {
     pipeline: vk::Pipeline,
     pool: vk::DescriptorPool,
     commands: vk::CommandPool,
+    /// Reset and reused, never recreated.
+    ///
+    /// **A fence is a driver object and creating one is not free.** On one
+    /// driver each create and each destroy is a synchronous round trip to the
+    /// card's own processor, which busy-polls the clock while it waits, so a
+    /// fence per conversion is two of those per frame and shows up as burned
+    /// processor time rather than as waiting. One fence, reset before each
+    /// submit, is what a fence is for.
+    ///
+    /// **One conversion at a time.** The run waits before it returns, so the
+    /// fence is free by the time anything could ask for it again; a second
+    /// conversion in flight would need a second fence.
+    fence: vk::Fence,
 }
 
 impl core::fmt::Debug for Converter {
@@ -191,6 +204,11 @@ impl Converter {
         let commands =
             unsafe { vk_device.create_command_pool(&commands_info, None) }.map_err(driver)?;
 
+        // Last, so nothing after it can fail and leak it.
+        // SAFETY: the create info outlives the call.
+        let fence = unsafe { vk_device.create_fence(&vk::FenceCreateInfo::default(), None) }
+            .map_err(driver)?;
+
         Ok(Self {
             sampler,
             layout,
@@ -198,6 +216,7 @@ impl Converter {
             pipeline,
             pool,
             commands,
+            fence,
         })
     }
 
@@ -249,6 +268,7 @@ impl Converter {
         // submitted work still refers to any of them.
         unsafe {
             let _ = vk_device.device_wait_idle();
+            vk_device.destroy_fence(self.fence, None);
             vk_device.destroy_command_pool(self.commands, None);
             vk_device.destroy_descriptor_pool(self.pool, None);
             vk_device.destroy_pipeline(self.pipeline, None);
@@ -741,25 +761,35 @@ impl Converter {
             vk_device.end_command_buffer(commands).map_err(driver)?;
         }
 
-        // SAFETY: the create info outlives the call.
-        let fence = unsafe { vk_device.create_fence(&vk::FenceCreateInfo::default(), None) }
-            .map_err(driver)?;
+        // **Reset rather than created.** The previous run left it signalled,
+        // and a submit will not signal a fence that already is.
+        // SAFETY: the previous run waited on it, so nothing is using it.
+        unsafe { vk_device.reset_fences(&[self.fence]) }.map_err(driver)?;
+        // **A signalled fence here makes the wait below a no-op**, and the
+        // caller would hand a half-written picture to an encoder reading it
+        // from another queue. Nothing on this queue would notice, because a
+        // read submitted after the conversion is ordered behind it anyway;
+        // only the handover out of this interface is exposed to it.
+        // SAFETY: the fence is this device's and was just reset.
+        debug_assert!(
+            matches!(unsafe { vk_device.get_fence_status(self.fence) }, Ok(false)),
+            "the conversion fence was signalled at submit"
+        );
         let submits = [vk::SubmitInfo::default().command_buffers(&buffers)];
         // SAFETY: everything borrowed outlives the wait, which is what makes
-        // freeing it afterwards safe.
+        // freeing the command buffers afterwards safe.
         let waited = unsafe {
             vk_device
-                .queue_submit(device.queue, &submits, fence)
+                .queue_submit(device.queue, &submits, self.fence)
                 .map_err(driver)
                 .and_then(|()| {
                     vk_device
-                        .wait_for_fences(&[fence], true, u64::MAX)
+                        .wait_for_fences(&[self.fence], true, u64::MAX)
                         .map_err(driver)
                 })
         };
-        // SAFETY: signalled or never submitted; nothing waits on it.
+        // SAFETY: the wait above returned, so nothing still refers to them.
         unsafe {
-            vk_device.destroy_fence(fence, None);
             vk_device.free_command_buffers(self.commands, &buffers);
         }
         waited
@@ -1027,6 +1057,48 @@ mod tests {
     /// regression has no other check that can catch it -- the comparison
     /// against a real desktop is nearly blind to the matrix, which is what
     /// prompted this.
+    /// **One converter, used more than once**, which is the shape the loop
+    /// runs in and which nothing covered while the fence was created per run.
+    /// The second conversion is the one that matters: it is the first that can
+    /// meet a fence the previous run left signalled.
+    #[test]
+    fn a_converter_is_correct_the_second_time_it_is_used() {
+        let width = u32::try_from(PATTERN.len()).unwrap() * 2;
+        let height = 2;
+        let device = Device::any().expect("a device that can convert");
+        let converter = Converter::new(&device).expect("a pipeline");
+
+        // Two different pictures, so a target left holding the first is not
+        // mistaken for a correct second conversion.
+        for (round, fill) in [0u8, 255u8].into_iter().enumerate() {
+            let pixels = vec![fill; (width as usize) * (height as usize) * 4];
+            let source = device
+                .upload_rgba(width, height, &pixels)
+                .expect("upload the pattern");
+            let target = device.allocate_nv12(width, height).expect("a target");
+            converter
+                .run(&device, &source, &target, false)
+                .expect("convert");
+            let (luma, _) = device.read_nv12(&target).expect("read the planes");
+
+            // Limited range: black is 16 and white is 235.
+            let wanted = if fill == 0 { 16u8 } else { 235u8 };
+            let worst = luma
+                .iter()
+                .map(|got| got.abs_diff(wanted))
+                .max()
+                .unwrap_or(0);
+            assert!(
+                worst <= 2,
+                "round {round}: luma is {worst} off {wanted}, so the picture handed back was \
+                 not the one just converted"
+            );
+            device.release_nv12(target);
+            device.release(source);
+        }
+        converter.destroy(&device);
+    }
+
     #[test]
     fn conversion_matches_the_reference() {
         let width = u32::try_from(PATTERN.len()).unwrap() * 2;

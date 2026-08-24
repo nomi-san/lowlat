@@ -39,7 +39,19 @@ pub fn elapsed_ms(begin: Time) -> f64 {
 
 /// The tail of a sleep that is spun rather than slept. Requesting a sleep this
 /// short from the scheduler is a busy wait with extra steps.
-const SPIN_MARGIN: Duration = Duration::from_micros(200);
+///
+/// **One hundred microseconds, and the figure is measured rather than
+/// chosen.** At sixty landings a second a 200 us margin costs 0.92 percent of
+/// a core and 100 us costs 0.33, for landings that are indistinguishable: p50
+/// 0.2 us and p95 0.5 us either way. What the larger margin buys is nothing,
+/// because the tail belongs to the scheduler -- preemption puts the p99 and the
+/// maximum in the same place at 200 us, at 100, and at no margin at all.
+///
+/// **It cannot usefully go much lower.** The sleep overshoots its deadline by
+/// 45 to 55 us here, so a margin has to exceed that before it corrects
+/// anything; measured at 64 us the spin never runs and the landing error is
+/// the raw overshoot.
+const SPIN_MARGIN: Duration = Duration::from_micros(100);
 
 /// Sleep until `duration` has elapsed, accurately.
 ///

@@ -2683,20 +2683,37 @@ fn encode_loop<E: Encoder + FromDevice>(
             refreshes.reinit = refreshes.reinit.saturating_add(1);
         }
 
+        // **Only while the encoder holds something.** A pass with nothing in
+        // flight has nothing to collect, and asking anyway is a driver round
+        // trip for an answer that cannot have changed. `in_flight` is exactly
+        // the set of submitted pictures: pushed on submit, popped as each one
+        // comes back.
+        //
+        // **A stopped encoder is still caught**, because one that has stopped
+        // answering is one whose submissions never come back, which leaves
+        // this non-empty and keeps the poll running.
+        let pending = !in_flight.is_empty();
         // Anything the hardware finished while this loop was elsewhere. Never
         // waits: a picture that is not ready costs a driver round trip and the
         // loop goes on to the frame clock.
-        let collected = collect(
-            shared,
-            encoder,
-            gate,
-            active,
-            guests,
-            &mut in_flight,
-            &mut stages,
-            started,
-            &mut refreshes,
-        );
+        let collected = if pending {
+            collect(
+                shared,
+                encoder,
+                gate,
+                active,
+                guests,
+                &mut in_flight,
+                &mut stages,
+                started,
+                &mut refreshes,
+            )
+        } else {
+            Collected {
+                keyframe: false,
+                failed: false,
+            }
+        };
         force_keyframe |= collected.keyframe;
         // **A stopped encoder used to be a log line per pass, forever.** The
         // guests went on holding seats and receiving nothing, and the only
@@ -2928,18 +2945,27 @@ fn encode_loop<E: Encoder + FromDevice>(
             // once a collect has made room.
         }
 
-        // Wait for the sooner of the next frame and the next poll. **A
+        // Wait for the sooner of the next thing this loop owes anybody. **A
         // millisecond is the floor**, because anything shorter asked of the
         // scheduler is a busy wait with extra steps; the final approach to a
         // frame deadline is the one place an accurate landing is worth its
         // spin, and it happens once per frame rather than once per poll.
-        let remaining = next_frame_ms - lowlat_common::clock::elapsed_ms(started);
-        if remaining > POLL_MS * 2.0 {
+        //
+        // **The poll cadence applies only while something is in flight.**
+        // Without that this waits a millisecond at a time whatever is
+        // happening, which on an untouched desktop is roughly seven hundred
+        // wakeups a second to discover that nothing has changed.
+        let now_ms = lowlat_common::clock::elapsed_ms(started);
+        let mut until = next_frame_ms - now_ms;
+        if !pending {
+            // The connector check is the only other thing owed on a pass, and
+            // on a slow frame rate it can fall due first.
+            until = until.min(attached_ms + ATTACHED_MS - now_ms);
+        }
+        if pending && until > POLL_MS * 2.0 {
             std::thread::sleep(COLLECT_WAIT);
-        } else if remaining > 0.0 {
-            lowlat_common::clock::precise_sleep(std::time::Duration::from_secs_f64(
-                remaining / 1000.0,
-            ));
+        } else if until > 0.0 {
+            lowlat_common::clock::precise_sleep(std::time::Duration::from_secs_f64(until / 1000.0));
         }
     }
 }
