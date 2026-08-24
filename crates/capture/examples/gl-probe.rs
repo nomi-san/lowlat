@@ -172,7 +172,32 @@ fn from_display(device: &Device, converter: &Converter, node: &Path, out: &Path)
     drop(fd);
     println!("imported {imported:?}");
 
-    let target = device.allocate_nv12(fb.width, fb.height).expect("a target");
+    // **The target is allocated outside and imported**, which is the path the
+    // product takes: a target the driver allocated cannot be handed to an
+    // encoder. Allocated as a single untiled region tall enough for both
+    // planes, so the colour plane begins exactly one luma plane in.
+    let height = fb.height.next_multiple_of(2);
+    let (linear, target_fd) =
+        match card.allocate_linear(fb.width.next_multiple_of(2), height / 2 * 3) {
+            Ok(allocated) => allocated,
+            Err(error) => {
+                eprintln!("cannot allocate a target: {error}");
+                std::process::exit(1);
+            }
+        };
+    println!("target pitch {}", linear.pitch);
+    let target = match device.import_nv12(
+        std::os::fd::AsRawFd::as_raw_fd(&target_fd),
+        fb.width,
+        fb.height,
+        linear.pitch,
+    ) {
+        Ok(target) => target,
+        Err(error) => {
+            eprintln!("cannot import the target: {error}");
+            std::process::exit(1);
+        }
+    };
     let digest = match converter.run(device, &imported, &target, false) {
         Ok(digest) => digest,
         Err(error) => {
@@ -192,6 +217,8 @@ fn from_display(device: &Device, converter: &Converter, node: &Path, out: &Path)
 
     device.release(imported);
     device.release_nv12(target);
+    drop(target_fd);
+    card.release_linear(linear);
 }
 
 /// Write the converted frame as eight-bit colour, undoing the transform.

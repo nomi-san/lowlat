@@ -23,6 +23,7 @@ use lowlat_capture::desktop::Placement;
 use lowlat_capture::scanout::{self, Card, CursorPlane};
 use lowlat_capture::vulkan::{self, Imports, PlaneLayout};
 use lowlat_common::clock::Time;
+use std::os::fd::OwnedFd;
 
 /// One output a host can be asked to capture.
 #[derive(Debug, Clone)]
@@ -120,8 +121,16 @@ pub enum Error {
     Capture(scanout::Error),
     /// The device that converts could not do so.
     Convert(vulkan::Error),
+    /// The same, on the other interface.
+    Gl(lowlat_capture::gl::Error),
     /// The encoder would not take a frame that is already on the device.
     Register,
+    /// The interface asked for cannot hand a frame to the encoder asked for.
+    ///
+    /// **Refused rather than quietly served by the other interface.** A caller
+    /// naming one and getting the other has measured the wrong thing and has
+    /// nothing telling it so.
+    NotTogether,
 }
 
 impl core::fmt::Display for Error {
@@ -129,7 +138,9 @@ impl core::fmt::Display for Error {
         match self {
             Self::Capture(error) => write!(f, "display: {error}"),
             Self::Convert(error) => write!(f, "conversion: {error}"),
+            Self::Gl(error) => write!(f, "conversion: {error}"),
             Self::Register => f.write_str("the encoder refused a frame already on the device"),
+            Self::NotTogether => f.write_str("that conversion interface cannot feed that encoder"),
         }
     }
 }
@@ -189,9 +200,204 @@ pub struct Acquired {
 }
 
 /// One conversion target, registered with the encoder once.
-struct Target {
-    frame: Nv12,
+///
+/// **Generic because the second instantiation exists**: the two interfaces call
+/// a converted frame different things, and everything around it here -- the
+/// rotation, the registration, the slot -- is the same either way.
+struct Target<F> {
+    frame: F,
     registration: Registration,
+}
+
+/// Which encoder a conversion target is being registered with.
+///
+/// **Named rather than passed as a closure**, because the four pairings of
+/// interface and encoder are not all buildable and the refusal belongs here.
+/// A closure would put each caller in the position of knowing which pairs
+/// work, which is exactly the knowledge that has to live in one place.
+pub enum Register<'a> {
+    /// The vendor runtime, which takes an address it was told about.
+    Vendor(&'a lowlat_encode::nvenc::Encoder<'a>),
+    /// The display stack's encoder, which takes a descriptor.
+    Open(&'a lowlat_encode::vaapi::Display<'a>),
+}
+
+impl core::fmt::Debug for Register<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Vendor(_) => f.write_str("Vendor"),
+            Self::Open(_) => f.write_str("Open"),
+        }
+    }
+}
+
+/// The interface the import and conversion run on.
+///
+/// **An enum rather than a trait, and the members are not interchangeable.**
+/// Only the first can hand its result to either encoder; the second allocates
+/// nothing it can export, so its targets are views of a region the display
+/// device allocated. Collapsing them behind one trait would hide that, and it
+/// is the difference that decides which encoders a machine can use.
+enum Pipeline {
+    Vulkan(Box<Vulkan>),
+    Gl(Box<Gl>),
+}
+
+/// The primary interface's half.
+struct Vulkan {
+    device: vulkan::Device,
+    converter: Converter,
+    imports: HashMap<u64, vulkan::Imported>,
+    targets: Vec<Target<Nv12>>,
+}
+
+/// The other interface's half.
+struct Gl {
+    device: lowlat_capture::gl::Device,
+    converter: lowlat_capture::gl::Converter,
+    imports: HashMap<u64, lowlat_capture::gl::Imported>,
+    targets: Vec<Target<lowlat_capture::gl::Nv12>>,
+    /// The regions the targets are views of.
+    ///
+    /// **Held here because they outlive nothing else.** This interface cannot
+    /// allocate a frame it can export, so the allocation came from the display
+    /// device and has to be given back to it; nothing in the target says where
+    /// it came from.
+    regions: Vec<scanout::Linear>,
+}
+
+impl Pipeline {
+    /// How many targets there are, which is the rotation's length.
+    fn depth(&self) -> usize {
+        match self {
+            Self::Vulkan(vk) => vk.targets.len(),
+            Self::Gl(gl) => gl.targets.len(),
+        }
+    }
+
+    /// Whether this buffer is already imported.
+    fn holds(&self, key: u64) -> bool {
+        match self {
+            Self::Vulkan(vk) => vk.imports.contains_key(&key),
+            Self::Gl(gl) => gl.imports.contains_key(&key),
+        }
+    }
+
+    /// How many imports are cached.
+    fn cached(&self) -> usize {
+        match self {
+            Self::Vulkan(vk) => vk.imports.len(),
+            Self::Gl(gl) => gl.imports.len(),
+        }
+    }
+
+    /// Import a captured buffer under a key.
+    ///
+    /// **The two interfaces disagree about the descriptor and it is not
+    /// cosmetic.** The first takes ownership on success; the second duplicates
+    /// what it needs and leaves it here. Getting it the wrong way round leaks
+    /// one a frame or closes one the driver still holds.
+    fn take(&mut self, key: u64, fd: OwnedFd, source: Imports<'_>) -> Result<(), Error> {
+        match self {
+            Self::Vulkan(vk) => {
+                let source = Imports {
+                    fd: <OwnedFd as std::os::fd::IntoRawFd>::into_raw_fd(fd),
+                    ..source
+                };
+                let imported = vk.device.import(&source)?;
+                vk.imports.insert(key, imported);
+            }
+            Self::Gl(gl) => {
+                let source = Imports {
+                    fd: std::os::fd::AsRawFd::as_raw_fd(&fd),
+                    ..source
+                };
+                let imported = gl.device.import(&source).map_err(Error::Gl)?;
+                drop(fd);
+                gl.imports.insert(key, imported);
+            }
+        }
+        Ok(())
+    }
+
+    /// Drop every import, which is what a changed picture requires.
+    fn forget(&mut self) {
+        match self {
+            Self::Vulkan(vk) => {
+                for (_, imported) in vk.imports.drain() {
+                    vk.device.release(imported);
+                }
+            }
+            Self::Gl(gl) => {
+                for (_, imported) in gl.imports.drain() {
+                    gl.device.release(imported);
+                }
+            }
+        }
+    }
+
+    /// Convert one imported buffer into one target slot.
+    fn convert(&self, key: u64, slot: usize) -> Result<lowlat_capture::convert::Digest, Error> {
+        match self {
+            Self::Vulkan(vk) => {
+                let source = vk.imports.get(&key).ok_or(Error::Register)?;
+                let target = vk.targets.get(slot).ok_or(Error::Register)?;
+                Ok(vk.converter.run(&vk.device, source, &target.frame, false)?)
+            }
+            Self::Gl(gl) => {
+                let source = gl.imports.get(&key).ok_or(Error::Register)?;
+                let target = gl.targets.get(slot).ok_or(Error::Register)?;
+                gl.converter
+                    .run(&gl.device, source, &target.frame, false)
+                    .map_err(Error::Gl)
+            }
+        }
+    }
+
+    /// The registration for one target slot.
+    fn registration(&self, slot: usize) -> Option<&Registration> {
+        match self {
+            Self::Vulkan(vk) => vk.targets.get(slot).map(|target| &target.registration),
+            Self::Gl(gl) => gl.targets.get(slot).map(|target| &target.registration),
+        }
+    }
+
+    /// What the device calls itself, for a startup log line.
+    fn name(&self) -> String {
+        match self {
+            Self::Vulkan(vk) => vk.device.name(),
+            Self::Gl(gl) => gl.device.name().to_string(),
+        }
+    }
+
+    /// Give everything back, which needs the card the regions came from.
+    ///
+    /// **The converters and devices are not torn down here**, as before: each
+    /// device's own release waits for the queue and frees everything built on
+    /// it, so naming the pieces again would be a second free.
+    fn release(&mut self, card: &Card) {
+        match self {
+            Self::Vulkan(vk) => {
+                for (_, imported) in vk.imports.drain() {
+                    vk.device.release(imported);
+                }
+                for target in vk.targets.drain(..) {
+                    vk.device.release_nv12(target.frame);
+                }
+            }
+            Self::Gl(gl) => {
+                for (_, imported) in gl.imports.drain() {
+                    gl.device.release(imported);
+                }
+                for target in gl.targets.drain(..) {
+                    gl.device.release_nv12(target.frame);
+                }
+                for region in gl.regions.drain(..) {
+                    card.release_linear(region);
+                }
+            }
+        }
+    }
 }
 
 /// What the display is showing, described once and compared against.
@@ -217,8 +423,8 @@ impl Shape {
 /// The desktop, ready to hand pictures to an encoder.
 pub struct Display {
     card: Card,
-    device: vulkan::Device,
-    converter: Converter,
+    /// The import and conversion, on whichever interface was asked for.
+    pipeline: Pipeline,
     plane: drm::control::plane::Handle,
     /// What the display was doing when the imports below were built.
     shape: Shape,
@@ -230,8 +436,6 @@ pub struct Display {
     /// came back naming different memory. An import cached against one then
     /// feeds the encoder the picture from before the display went dark,
     /// alternating with live frames until the cache turns over.
-    imports: HashMap<u64, vulkan::Imported>,
-    targets: Vec<Target>,
     next: usize,
     /// What the last conversion came to, or nothing before the first one.
     ///
@@ -262,8 +466,8 @@ impl core::fmt::Debug for Display {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Display")
             .field("shape", &self.shape)
-            .field("imports", &self.imports.len())
-            .field("targets", &self.targets.len())
+            .field("imports", &self.pipeline.cached())
+            .field("targets", &self.pipeline.depth())
             .finish_non_exhaustive()
     }
 }
@@ -284,52 +488,49 @@ impl Display {
     pub fn open(
         depth: usize,
         wanted: Option<&str>,
-        register: impl Fn(&vulkan::Device, &Nv12) -> Result<Registration, Error>,
+        backend: lowlat_capture::Backend,
+        register: Register<'_>,
     ) -> Result<Self, Error> {
         let (node, card, layout) = Self::find(wanted)?;
-        let device = vulkan::Device::for_display(&node)?;
-        let converter = Converter::new(&device)?;
         let shape = Shape::of(&layout.primary);
+        let on = layout.connector.as_deref().unwrap_or("this output");
 
-        let mut targets = Vec::with_capacity(depth);
-        for _ in 0..depth {
-            let frame = device.allocate_nv12(shape.width, shape.height)?;
-            // **A refusal here almost always means the wrong device.** The
-            // frame is allocated on whichever device the display is on, and an
-            // encoder built against another one cannot take it -- so a display
-            // that moved between cards, or a backend chosen by hand for the
-            // card that is now dark, both arrive as one unexplained refusal.
-            // The device is named because it is the missing half of that.
-            let registration = register(&device, &frame).inspect_err(|_| {
+        let pipeline = match backend {
+            lowlat_capture::Backend::Vulkan => Self::build_vulkan(&node, depth, shape, &register),
+            lowlat_capture::Backend::Gl => Self::build_gl(&node, &card, depth, shape, &register),
+        };
+        let pipeline = pipeline.inspect_err(|error| {
+            lowlat_common::log_error!(
+                "display: the conversion for {on} could not be built, {error}"
+            );
+            // **Only where it is the likely cause.** A frame is allocated on
+            // whichever device the display is on, and an encoder built against
+            // another one cannot take it -- so a display that moved between
+            // cards, or a backend chosen by hand for the card that is now dark,
+            // both arrive here as one unexplained refusal. Every other reason
+            // says what it is, and attaching this to those would name a cause
+            // that is not the one.
+            if matches!(error, Error::Register) {
                 lowlat_common::log_error!(
-                    "display: the encoder cannot take frames from {}, which is the device {} is \
-                     on; a display and its encoder have to be on one device",
-                    device.name(),
-                    layout.connector.as_deref().unwrap_or("this output")
+                    "display: a display and its encoder have to be on one device; check which \
+                     card {on} is on"
                 );
-            })?;
-            targets.push(Target {
-                frame,
-                registration,
-            });
-        }
+            }
+        })?;
 
         lowlat_common::log_info!(
             "display: {}x{} on {}, {} target(s)",
             shape.width,
             shape.height,
-            device.name(),
-            targets.len()
+            pipeline.name(),
+            pipeline.depth()
         );
 
         Ok(Self {
             card,
-            device,
-            converter,
+            pipeline,
             plane: layout.primary_plane,
             shape,
-            imports: HashMap::new(),
-            targets,
             next: 0,
             cursor_plane: layout.cursor_plane,
             cursor: Watcher::new(),
@@ -344,6 +545,101 @@ impl Display {
                 .as_deref()
                 .map(|connector| identity(&node, connector)),
         })
+    }
+
+    /// The primary interface, which allocates its own targets and exports them.
+    fn build_vulkan(
+        node: &std::path::Path,
+        depth: usize,
+        shape: Shape,
+        register: &Register<'_>,
+    ) -> Result<Pipeline, Error> {
+        let device = vulkan::Device::for_display(node)?;
+        let converter = Converter::new(&device)?;
+        let mut targets = Vec::with_capacity(depth);
+        for _ in 0..depth {
+            let frame = device.allocate_nv12(shape.width, shape.height)?;
+            let registration = match register {
+                // Each encoder is handed the descriptor kind it has a name for;
+                // the allocation is built able to produce either.
+                Register::Vendor(encoder) => {
+                    let (fd, exported) = device.export_nv12(&frame, false)?;
+                    Self::register_vendor(encoder, fd, &exported)
+                }
+                Register::Open(display) => {
+                    let (fd, exported) = device.export_nv12(&frame, true)?;
+                    Self::register_open(display, std::os::fd::AsFd::as_fd(&fd), &exported)
+                }
+            }?;
+            targets.push(Target {
+                frame,
+                registration,
+            });
+        }
+        Ok(Pipeline::Vulkan(Box::new(Vulkan {
+            device,
+            converter,
+            imports: HashMap::new(),
+            targets,
+        })))
+    }
+
+    /// The other interface, whose targets are views of regions the display
+    /// device allocated.
+    ///
+    /// **It reaches one encoder, and the other is refused here.** The vendor
+    /// runtime takes an address it was told about, which means importing this
+    /// allocation through that vendor's own compute interface; that interface
+    /// has no name for a descriptor this one can produce.
+    fn build_gl(
+        node: &std::path::Path,
+        card: &Card,
+        depth: usize,
+        shape: Shape,
+        register: &Register<'_>,
+    ) -> Result<Pipeline, Error> {
+        let Register::Open(display) = register else {
+            return Err(Error::NotTogether);
+        };
+        let device = lowlat_capture::gl::Device::for_display(node).map_err(Error::Gl)?;
+        let converter = lowlat_capture::gl::Converter::new(&device).map_err(Error::Gl)?;
+
+        // Rounded here rather than inside, because the region has to be tall
+        // enough for both planes at the rounded height and the caller of
+        // `allocate_linear` is what knows that.
+        let width = shape.width.next_multiple_of(2);
+        let height = shape.height.next_multiple_of(2);
+
+        let mut targets = Vec::with_capacity(depth);
+        let mut regions = Vec::with_capacity(depth);
+        for _ in 0..depth {
+            let (region, fd) = card.allocate_linear(width, height / 2 * 3)?;
+            let frame = device
+                .import_nv12(
+                    std::os::fd::AsRawFd::as_raw_fd(&fd),
+                    width,
+                    height,
+                    region.pitch,
+                )
+                .map_err(Error::Gl)?;
+            // **The same layout the other interface reports**, computed in one
+            // place so the two cannot come to describe the region differently.
+            let exported = lowlat_capture::convert::Exported::packed(width, height, region.pitch);
+            let registration =
+                Self::register_open(display, std::os::fd::AsFd::as_fd(&fd), &exported)?;
+            regions.push(region);
+            targets.push(Target {
+                frame,
+                registration,
+            });
+        }
+        Ok(Pipeline::Gl(Box::new(Gl {
+            device,
+            converter,
+            imports: HashMap::new(),
+            targets,
+            regions,
+        })))
     }
 
     /// Where the captured output sits in the desktop, when that is knowable.
@@ -546,11 +842,10 @@ impl Display {
     /// none for a display-interface descriptor, and the allocation can produce
     /// either.
     pub fn register_vendor(
-        device: &vulkan::Device,
         encoder: &lowlat_encode::nvenc::Encoder<'_>,
-        frame: &Nv12,
+        fd: std::os::fd::OwnedFd,
+        exported: &lowlat_capture::convert::Exported,
     ) -> Result<Registration, Error> {
-        let (fd, exported) = device.export_nv12(frame, false)?;
         let bytes = u64::from(exported.pitch) * u64::from(exported.height) * 3 / 2;
         let cuda = lowlat_encode::cuda::Cuda::load().map_err(|_| Error::Register)?;
         // SAFETY: the encoder's context is current on this thread, the
@@ -575,14 +870,11 @@ impl Display {
     /// reads the bytes the conversion wrote, which is the whole reason this
     /// backend has a display source at all.
     pub fn register_open(
-        device: &vulkan::Device,
         display: &lowlat_encode::vaapi::Display<'_>,
-        frame: &Nv12,
+        fd: std::os::fd::BorrowedFd<'_>,
+        exported: &lowlat_capture::convert::Exported,
     ) -> Result<Registration, Error> {
-        let (fd, exported) = device.export_nv12(frame, true)?;
-        let surface = display
-            .import(std::os::fd::AsFd::as_fd(&fd), &exported)
-            .map_err(|_| Error::Register)?;
+        let surface = display.import(fd, exported).map_err(|_| Error::Register)?;
         Ok(Registration::Open { surface })
     }
 
@@ -591,8 +883,8 @@ impl Display {
     /// Separate from the acquire so a caller can hold it across other work
     /// without holding the whole source borrowed.
     pub fn presented(&self) -> Option<&Registration> {
-        let slot = self.next.checked_sub(1)? % self.targets.len().max(1);
-        self.targets.get(slot).map(|target| &target.registration)
+        let slot = self.next.checked_sub(1)? % self.pipeline.depth().max(1);
+        self.pipeline.registration(slot)
     }
 
     /// Convert what the display is showing now into the next free target.
@@ -633,14 +925,10 @@ impl Display {
         // The slot is chosen and the cursor advanced before anything is
         // borrowed out of the targets, because the registration handed back
         // borrows them until the caller is done with it.
-        let slot = self.next % self.targets.len().max(1);
+        let slot = self.next % self.pipeline.depth().max(1);
         self.next = self.next.wrapping_add(1);
 
-        let source = self.imports.get(&key).ok_or(Error::Register)?;
-        let target = self.targets.get(slot).ok_or(Error::Register)?;
-        let digest = self
-            .converter
-            .run(&self.device, source, &target.frame, false)?;
+        let digest = self.pipeline.convert(key, slot)?;
 
         // **What was drawn, not which buffer it was drawn into.** The exported
         // identity says only that the buffer was not swapped, and this
@@ -666,13 +954,13 @@ impl Display {
         let first = fb.planes().next().ok_or(scanout::Error::NoScanout)?;
         let fd = self.card.export(first)?;
         let key = scanout::identity(&fd).ok_or(Error::Register)?;
-        if self.imports.contains_key(&key) {
+        if self.pipeline.holds(key) {
             return Ok(key);
         }
         // Bounded rather than unbounded. A compositor that cycles more widely
         // than expected costs a rebuild per turn, which is a cost; an
         // unbounded map would be a leak.
-        if self.imports.len() >= IMPORTS {
+        if self.pipeline.cached() >= IMPORTS {
             self.forget_imports();
         }
         let planes: Vec<PlaneLayout> = fb
@@ -682,23 +970,26 @@ impl Display {
                 pitch: buffer.pitch,
             })
             .collect();
-        let imported = self.device.import(&Imports {
-            width: fb.width,
-            height: fb.height,
-            format: fb.format,
-            modifier: fb.modifier.map_or(0, u64::from),
-            fd: <std::os::fd::OwnedFd as std::os::fd::IntoRawFd>::into_raw_fd(fd),
-            planes: &planes,
-        })?;
-        self.imports.insert(key, imported);
+        self.pipeline.take(
+            key,
+            fd,
+            Imports {
+                width: fb.width,
+                height: fb.height,
+                format: fb.format,
+                modifier: fb.modifier.map_or(0, u64::from),
+                // Replaced inside, because the two interfaces differ over who
+                // owns it.
+                fd: -1,
+                planes: &planes,
+            },
+        )?;
         Ok(key)
     }
 
     /// Drop every import, which is what a changed picture requires.
     fn forget_imports(&mut self) {
-        for (_, imported) in self.imports.drain() {
-            self.device.release(imported);
-        }
+        self.pipeline.forget();
     }
 
     /// Read the pointer the display is drawing, if it is drawing one.
@@ -755,10 +1046,7 @@ impl Display {
 
 impl Drop for Display {
     fn drop(&mut self) {
-        self.forget_imports();
-        for target in self.targets.drain(..) {
-            self.device.release_nv12(target.frame);
-        }
+        self.pipeline.release(&self.card);
     }
 }
 

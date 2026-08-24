@@ -24,8 +24,10 @@
 //! deliberately neither `Send` nor `Sync`.
 
 use core::ffi::{CStr, c_void};
+use std::os::fd::RawFd;
 use std::path::Path;
 
+use drm::buffer::DrmFourcc;
 use khronos_egl as egl;
 
 use crate::vulkan::Imports;
@@ -105,6 +107,17 @@ const PLANE_ATTRIBUTES: [[egl::Attrib; 5]; 4] = [
     [0x3278, 0x3279, 0x327A, 0x3447, 0x3448],
     [0x3440, 0x3441, 0x3442, 0x3449, 0x344A],
 ];
+
+/// The full-resolution plane: one byte a sample.
+const PLANE_LUMA: u32 = DrmFourcc::R8 as u32;
+
+/// The half-resolution plane: two bytes a sample, blue difference first.
+///
+/// **Named by byte order, not by the letters.** This spelling puts the first
+/// component in the low byte, which is where the conversion writes the blue
+/// difference and where an encoder reads it; the other spelling exchanges them
+/// and produces a picture with the colour axes swapped.
+const PLANE_CHROMA: u32 = DrmFourcc::Gr88 as u32;
 
 /// What the display interface must offer beyond its own core.
 const REQUIRED_DISPLAY: [&str; 2] = [
@@ -655,8 +668,13 @@ impl core::fmt::Debug for Imported {
 pub struct Nv12 {
     luma: u32,
     chroma: u32,
+    /// The images behind the planes, when the allocation came from outside.
+    /// Absent for one the driver allocated, which cannot leave.
+    images: Option<[egl::Image; 2]>,
     pub width: u32,
     pub height: u32,
+    /// Bytes per row, the same for both planes. An encoder is told this once.
+    pub pitch: u32,
 }
 
 impl core::fmt::Debug for Nv12 {
@@ -826,8 +844,10 @@ impl Device {
             Ok(chroma) => Ok(Nv12 {
                 luma,
                 chroma,
+                images: None,
                 width,
                 height,
+                pitch: width,
             }),
             Err(error) => {
                 // SAFETY: created just above and bound to nothing else.
@@ -867,6 +887,119 @@ impl Device {
         let names = [nv12.luma, nv12.chroma];
         // SAFETY: both are this device's and nothing else refers to them.
         unsafe { (self.gl.DeleteTextures)(2, names.as_ptr()) };
+        for image in nv12.images.into_iter().flatten() {
+            let _ = self.egl.destroy_image(self.display, image);
+        }
+    }
+
+    /// Take a conversion target from an allocation made outside.
+    ///
+    /// **This is the target the product uses, and the other one is for tests.**
+    /// A target the driver allocated cannot leave this interface: there is no
+    /// way to ask for the memory behind a texture as a descriptor, let alone
+    /// with the layout an encoder assumes. So the allocation is made by
+    /// whoever can guarantee that layout and imported back here, which is the
+    /// same path a capture takes and the same one the encoder will take.
+    ///
+    /// The two planes are the one region seen twice: full resolution single
+    /// bytes at the start, then half resolution pairs beginning exactly one
+    /// first plane in. **The descriptor stays the caller's**, as with every
+    /// import here.
+    pub fn import_nv12(
+        &self,
+        fd: RawFd,
+        width: u32,
+        height: u32,
+        pitch: u32,
+    ) -> Result<Nv12, Error> {
+        // Both dimensions round up to even. A plane at half resolution has no
+        // meaning for an odd one, and the shader's last block would write
+        // outside the colour plane.
+        let width = width.next_multiple_of(2);
+        let height = height.next_multiple_of(2);
+        // Half the width at two bytes a sample is the same figure as the full
+        // width at one, which is why one pitch serves both planes.
+        let colour_at = pitch
+            .checked_mul(height)
+            .ok_or(Error::Unsupported("a frame larger than this can describe"))?;
+
+        let luma = self.plane_image(fd, PLANE_LUMA, width, height, 0, pitch)?;
+        let chroma =
+            match self.plane_image(fd, PLANE_CHROMA, width / 2, height / 2, colour_at, pitch) {
+                Ok(image) => image,
+                Err(error) => {
+                    let _ = self.egl.destroy_image(self.display, luma);
+                    return Err(error);
+                }
+            };
+
+        let mut textures = [0_u32; 2];
+        for (at, image) in [luma, chroma].into_iter().enumerate() {
+            match self.texture_from(image) {
+                Ok(texture) => textures[at] = texture,
+                Err(error) => {
+                    // SAFETY: whatever was built before this point is this
+                    // device's; a zero name is ignored by the interface.
+                    unsafe { (self.gl.DeleteTextures)(2, textures.as_ptr()) };
+                    let _ = self.egl.destroy_image(self.display, luma);
+                    let _ = self.egl.destroy_image(self.display, chroma);
+                    return Err(error);
+                }
+            }
+        }
+        Ok(Nv12 {
+            luma: textures[0],
+            chroma: textures[1],
+            images: Some([luma, chroma]),
+            width,
+            height,
+            pitch,
+        })
+    }
+
+    /// One plane of an allocation made outside, as an image.
+    fn plane_image(
+        &self,
+        fd: RawFd,
+        format: u32,
+        width: u32,
+        height: u32,
+        offset: u32,
+        pitch: u32,
+    ) -> Result<egl::Image, Error> {
+        let names = PLANE_ATTRIBUTES[0];
+        let attributes = [
+            WIDTH,
+            attrib(width),
+            HEIGHT,
+            attrib(height),
+            LINUX_DRM_FOURCC,
+            attrib(format),
+            names[0],
+            attrib(fd.unsigned_abs()),
+            names[1],
+            attrib(offset),
+            names[2],
+            attrib(pitch),
+            // Untiled, and said rather than left out: a driver asked to guess
+            // does not always guess this.
+            names[3],
+            0,
+            names[4],
+            0,
+            egl::ATTRIB_NONE,
+        ];
+        // SAFETY: no context and no client buffer, which is what this target
+        // takes; everything describing the region is in the attributes.
+        self.egl
+            .create_image(
+                self.display,
+                unsafe { egl::Context::from_ptr(egl::NO_CONTEXT) },
+                LINUX_DMA_BUF,
+                unsafe { egl::ClientBuffer::from_ptr(core::ptr::null_mut()) },
+                &attributes,
+            )
+            .map_err(egl_error)
     }
 }
 

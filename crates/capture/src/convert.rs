@@ -67,6 +67,31 @@ pub struct Exported {
     pub planes: [PlaneLayout; 2],
 }
 
+impl Exported {
+    /// The layout one untiled region has when it carries both planes and the
+    /// colour plane begins exactly one luma plane in.
+    ///
+    /// **Written once because an encoder is told it once.** It is given one
+    /// address and one row length and derives the rest, so any interface that
+    /// hands a frame on has to produce this same arrangement; two of them
+    /// computing it separately is how they come to disagree.
+    pub fn packed(width: u32, height: u32, pitch: u32) -> Self {
+        Self {
+            width,
+            height,
+            modifier: LINEAR,
+            pitch,
+            planes: [
+                PlaneLayout { offset: 0, pitch },
+                PlaneLayout {
+                    offset: pitch * height,
+                    pitch,
+                },
+            ],
+        }
+    }
+}
+
 /// A converted frame: two planes in one allocation, laid out the way an
 /// encoder expects to find them.
 ///
@@ -654,25 +679,7 @@ impl Device {
 
         // **Not queried back.** The layout is the one this allocation was built
         // to, so reporting anything else would mean the two had drifted.
-        Ok((
-            fd,
-            Exported {
-                width: nv12.width,
-                height: nv12.height,
-                modifier: LINEAR,
-                pitch: nv12.pitch,
-                planes: [
-                    PlaneLayout {
-                        offset: 0,
-                        pitch: nv12.pitch,
-                    },
-                    PlaneLayout {
-                        offset: nv12.pitch * nv12.height,
-                        pitch: nv12.pitch,
-                    },
-                ],
-            },
-        ))
+        Ok((fd, Exported::packed(nv12.width, nv12.height, nv12.pitch)))
     }
 
     /// Release a conversion target.

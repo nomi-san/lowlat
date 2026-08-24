@@ -343,6 +343,19 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some("open" | "vaapi") => Some(lowlat::stream::Backend::Open),
         _ => None,
     };
+    // **Named, never inferred.** The two interfaces are not equivalent -- only
+    // the first reaches both encoders -- so absent means the first rather than
+    // whichever a machine happens to support. A name that is neither is
+    // refused loudly by the parser and the default stands.
+    let convert =
+        flag("--convert")
+            .as_deref()
+            .map_or_else(lowlat::capture::Backend::requested, |named| {
+                lowlat::capture::Backend::parse(named).unwrap_or_else(|| {
+                    eprintln!("--convert {named} names no interface; using the default");
+                    lowlat::capture::Backend::default()
+                })
+            });
     let rotation = match flag("--rotate").as_deref() {
         Some("90") => lowlat::video::Rotation::Deg90,
         Some("180") => lowlat::video::Rotation::Deg180,
@@ -391,6 +404,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         servers: stun,
         shared_address_space: flag_set("--shared-address-space"),
         stream: Some(lowlat::stream::Config {
+            convert,
             audio_kbps: flag("--audio-kbps")
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(lowlat_audio::encode::DEFAULT_BITRATE_KBPS),

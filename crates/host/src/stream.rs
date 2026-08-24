@@ -961,6 +961,13 @@ pub struct Config {
     /// and given another looks like it worked, and the person who asked is
     /// looking at the wrong desk.
     pub output: Option<String>,
+    /// Which display interface the import and conversion run on.
+    ///
+    /// **A measurement knob, not a preference**, which is why it is here and
+    /// not at the boundary: the two are not equivalent, only one reaches both
+    /// encoders, and choosing between them on a machine's behalf needs
+    /// evidence this does not have yet.
+    pub convert: lowlat_capture::Backend,
     /// Capture the real display rather than generating pictures.
     ///
     /// **Not a preference between two sources of equal standing.** The
@@ -2007,7 +2014,8 @@ fn run_open(
         match crate::display::Display::open(
             ENCODE_DEPTH,
             config.output.as_deref(),
-            |device, frame| crate::display::Display::register_open(device, &display, frame),
+            config.convert,
+            crate::display::Register::Open(&display),
         ) {
             Ok(desktop) => Some(desktop),
             Err(error) => {
@@ -2128,7 +2136,8 @@ fn run_vendor(
         match crate::display::Display::open(
             lowlat_encode::nvenc::IN_FLIGHT,
             config.output.as_deref(),
-            |device, frame| crate::display::Display::register_vendor(device, &encoder, frame),
+            config.convert,
+            crate::display::Register::Vendor(&encoder),
         ) {
             Ok(desktop) => Some(desktop),
             Err(error) => {
@@ -3572,6 +3581,7 @@ mod tests {
     fn a_live_video_change_is_taken_once_and_then_not_again() {
         let stream = Stream::start(Config {
             audio: None,
+            convert: lowlat_capture::Backend::default(),
             audio_on: false,
             accept_microphone: false,
             audio_kbps: 128,
@@ -3708,6 +3718,7 @@ mod tests {
         fn with_pool(slots: usize) -> Self {
             let config = Config {
                 audio: None,
+                convert: lowlat_capture::Backend::default(),
                 audio_on: false,
                 accept_microphone: false,
                 audio_kbps: 128,
@@ -3834,6 +3845,7 @@ mod tests {
     fn test_config(codec: Codec) -> Config {
         Config {
             audio: None,
+            convert: lowlat_capture::Backend::default(),
             audio_on: false,
             accept_microphone: false,
             audio_kbps: 128,
@@ -5348,6 +5360,7 @@ mod tests {
     fn the_real_encoder_serves_a_seated_guest() {
         let stream = Stream::start(Config {
             audio: None,
+            convert: lowlat_capture::Backend::default(),
             audio_on: false,
             accept_microphone: false,
             audio_kbps: 128,
@@ -5420,6 +5433,7 @@ mod tests {
             .unwrap_or(0);
         let stream = Stream::start(Config {
             audio: None,
+            convert: lowlat_capture::Backend::default(),
             audio_on: false,
             accept_microphone: false,
             audio_kbps: 128,
@@ -5582,6 +5596,7 @@ mod tests {
     fn report_stream() -> Stream {
         Stream::start(Config {
             audio: None,
+            convert: lowlat_capture::Backend::default(),
             audio_on: false,
             accept_microphone: false,
             audio_kbps: 128,
@@ -5607,6 +5622,7 @@ mod tests {
     fn measure(fps: u32, frames: usize) -> Report {
         let stream = Stream::start(Config {
             audio: None,
+            convert: lowlat_capture::Backend::default(),
             audio_on: false,
             accept_microphone: false,
             audio_kbps: 128,

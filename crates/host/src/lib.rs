@@ -26,6 +26,12 @@ pub use admission::{Admission, Config, Event, HostCredentials, Outcome, Peer};
 
 /// What a guest may drive, re-exported so an application setting it does not
 /// have to name the injection crate.
+/// The capture crate's own surface, for a caller that has to name a choice
+/// this one does not settle.
+pub mod capture {
+    pub use lowlat_capture::Backend;
+}
+
 pub mod inject {
     pub use lowlat_inject::event::Permissions;
 }

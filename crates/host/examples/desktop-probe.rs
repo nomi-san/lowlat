@@ -69,9 +69,12 @@ fn main() {
         .unwrap_or_else(|e| fail(&format!("configure: {e}")));
 
     let wanted = std::env::args().nth(1);
-    let mut desktop = Display::open(nvenc::IN_FLIGHT, wanted.as_deref(), |device, frame| {
-        Display::register_vendor(device, &encoder, frame)
-    })
+    let mut desktop = Display::open(
+        nvenc::IN_FLIGHT,
+        wanted.as_deref(),
+        lowlat::capture::Backend::requested(),
+        lowlat::display::Register::Vendor(&encoder),
+    )
     .unwrap_or_else(|e| fail(&format!("display: {e}")));
     println!("{desktop:?}, encoding {frames} pictures");
 

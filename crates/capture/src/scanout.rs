@@ -204,6 +204,14 @@ pub struct Layout {
 /// for why write access is absent.
 const EXPORT_FLAGS: u32 = drm::CLOEXEC;
 
+/// How a buffer this process allocated is exported.
+///
+/// **Write access, which is the opposite of the rule above.** A scanout buffer
+/// belongs to the compositor and asking to write it is refused outright; this
+/// one is ours and the conversion writes it, so read-only would produce a frame
+/// that imports, converts without complaint, and stays black.
+const OWN_EXPORT_FLAGS: u32 = drm::CLOEXEC | drm::RDWR;
+
 /// Plane classes, as the kernel numbers them.
 const PLANE_TYPE_OVERLAY: u64 = 0;
 const PLANE_TYPE_PRIMARY: u64 = 1;
@@ -602,6 +610,58 @@ impl Card {
     pub fn export(&self, buffer: &Buffer) -> Result<OwnedFd, Error> {
         self.buffer_to_prime_fd(buffer.handle, EXPORT_FLAGS)
             .map_err(|error| device_error(&error))
+    }
+
+    /// Allocate an untiled buffer of our own and hand out a descriptor to it.
+    ///
+    /// **The allocation has to come from here, not from whoever writes it.**
+    /// A conversion target is read by an encoder, which is told one address and
+    /// one row length and takes the second plane to begin exactly one first
+    /// plane later. An interface that allocates on its own behalf puts the
+    /// planes where it likes -- measured elsewhere at 49152 bytes past that --
+    /// so the only way to guarantee the layout is to allocate the whole thing
+    /// as one untiled region and say where each plane sits inside it.
+    ///
+    /// Asked for as single bytes, so `height` is the total including whatever
+    /// rows the caller intends for a second plane. The pitch that comes back is
+    /// the device's own and is not the width.
+    pub fn allocate_linear(&self, width: u32, height: u32) -> Result<(Linear, OwnedFd), Error> {
+        let dumb = self
+            .create_dumb_buffer((width, height), DrmFourcc::R8, 8)
+            .map_err(|error| device_error(&error))?;
+        let pitch = drm::buffer::Buffer::pitch(&dumb);
+        let handle = drm::buffer::Buffer::handle(&dumb);
+        match self.buffer_to_prime_fd(handle, OWN_EXPORT_FLAGS) {
+            Ok(fd) => Ok((Linear { dumb, pitch }, fd)),
+            Err(error) => {
+                let _ = self.destroy_dumb_buffer(dumb);
+                Err(device_error(&error))
+            }
+        }
+    }
+
+    /// Release a buffer this process allocated.
+    ///
+    /// Not a `Drop` on [`Linear`] itself, for the same reason the imports are
+    /// released by hand: freeing needs the device, and a buffer that outlived
+    /// its device would be worse than an explicit call.
+    pub fn release_linear(&self, linear: Linear) {
+        let _ = self.destroy_dumb_buffer(linear.dumb);
+    }
+}
+
+/// A buffer this process allocated, untiled, for something to be written into.
+pub struct Linear {
+    dumb: drm::control::dumbbuffer::DumbBuffer,
+    /// Bytes per row, the device's own figure rather than the width.
+    pub pitch: u32,
+}
+
+impl core::fmt::Debug for Linear {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Linear")
+            .field("pitch", &self.pitch)
+            .finish_non_exhaustive()
     }
 }
 
