@@ -3,6 +3,43 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 9: capture (a second conversion interface)
+
+**The import and conversion now exist over the display stack's other
+interface, chosen by name and never as a rescue.** It comes up on both drivers
+on this machine, converts a picture byte for byte the same as the first one,
+and computes the same summary.
+
+- **It exists to be measured, not to rescue anything.** The requirements the
+  first interface puts on a driver are newer than the ones here. A machine that
+  refuses the first one says which part it is missing, and choosing the second
+  automatically would replace that answer with a working pipeline of unknown
+  provenance. Selection is by environment variable or by a name a caller
+  parses, and a name that is neither is refused rather than quietly taken as
+  the default.
+
+- **One shader serves both.** The colour rules, the subsampling and the summary
+  are what must not drift between them, so they are written once; what differs
+  is nine lines of binding declarations behind a conditional. The compiled form
+  is built with that conditional set and the text is handed to a driver with it
+  unset, so neither can be changed without the other. Two locals had to be
+  renamed: one driver's shading language reserves both names and the other
+  compiler accepts them silently.
+
+- **The check is that the two agree**, not that each looks right. The same
+  picture goes through both and their summaries are compared, which is a
+  comparison over every pixel either wrote. It was made to fail before it was
+  trusted. Each interface is also checked against the transform computed from
+  the definitions, on saturated colours rather than greys, since every luma
+  matrix agrees on grey.
+
+**Nothing is wired to an encoder yet, and that is where the two stop being
+alike.** The first interface allocates the result itself and lends each plane a
+view of it, so one descriptor leaves for either encoder. The second has the
+driver allocate and does not say where, so handing those bytes on needs the
+allocation to come from outside -- and the two encoders want different things
+from it. That is the next piece.
+
 ## 9: capture (why a device is refused)
 
 **A machine the capture path cannot run on now says which part it is missing.**
