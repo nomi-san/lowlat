@@ -3,6 +3,37 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 9: capture (reopened for measurement)
+
+**The stream now says how often it asks for a refresh, and why.** A refresh
+costs a picture with no history behind it, so a stream sending them often
+spends its rate on recovery rather than on content -- and nothing in the frame
+rate or the encode time says so. The report carries a line per window:
+
+```
+stream: refresh over 600 frames sent=0 no_slot=0 too_large=0 no_room=0 \
+        asked=0 reinit=0 starved=0
+```
+
+- **The causes are separated because they call for different answers.** A
+  starved frame pool is back pressure, a refused room test is a peer that
+  cannot keep up, and a reinitialization is neither. `starved` counts pool
+  exhaustion whether or not a refresh was granted, because the throttle
+  otherwise hides the pressure behind it.
+
+- **`sent` is not the sum of the rest, deliberately.** Several causes landing
+  in one frame interval produce one refresh, and the throttle refuses most of
+  what is asked for, so `sent` is what reached the encoder and the others are
+  what wanted to. **`reinit` is the one cause the throttle never sees**, which
+  makes it the only one that can run away, and the only reason it has a column
+  of its own.
+
+The first thing it measured: seventeen consecutive windows across two encoder
+backends and two displays, with a guest seated throughout, reported no refresh
+at all. A frame rate pinned at exactly the display's own, on a desktop nobody
+was touching, is not recovery traffic -- it is the loop having no way to know
+the picture did not change.
+
 ## 10: audio (in progress)
 
 **The guest microphone**, off by default, written and not yet heard from
