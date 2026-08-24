@@ -12,6 +12,7 @@ pub mod h264;
 pub mod h265;
 pub mod nvenc;
 pub mod vaapi;
+pub mod vulkan;
 
 /// What a collect found.
 ///
