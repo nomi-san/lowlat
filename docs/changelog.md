@@ -33,6 +33,24 @@ and computes the same summary.
   the definitions, on saturated colours rather than greys, since every luma
   matrix agrees on grey.
 
+**The real framebuffer imports on both cards here**, which is the question the
+backend exists to answer and the one an uploaded picture cannot reach. Between
+them the two cards cover the cases that matter: one scans out ten bit under a
+vendor tiling modifier at a pitch four times its width, the other eight bit and
+untiled. The same shader converts both, and each result is a sharp desktop
+rather than the diagonal smears a wrongly described tiling produces -- which is
+the check, because an import described wrongly succeeds at every call and
+returns a buffer of the right size.
+
+**One difference between the interfaces is a trap rather than a detail.** The
+first takes ownership of the descriptor it is handed; this one duplicates what
+it needs and leaves it the caller's. Assuming either way round leaks a
+descriptor a frame or closes one the driver still holds.
+
+**Not yet seen: a capture that arrives as several buffers with differing
+pitches.** One vendor's compression scheme does that, and neither card here is
+in that state, so the multi-buffer half of the import is written and unexercised.
+
 **Nothing is wired to an encoder yet, and that is where the two stop being
 alike.** The first interface allocates the result itself and lends each plane a
 view of it, so one descriptor leaves for either encoder. The second has the
