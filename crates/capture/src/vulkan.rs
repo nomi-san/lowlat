@@ -80,7 +80,7 @@ pub(crate) fn driver(result: vk::Result) -> Error {
 /// Each is checked by name at startup so a machine that cannot do this says
 /// which part is missing, rather than failing at the first import with a
 /// result code that names no cause.
-const REQUIRED: [&CStr; 4] = [
+const REQUIRED: [&CStr; 5] = [
     // Take a buffer in by file descriptor.
     ash::khr::external_memory_fd::NAME,
     // ...and specifically one shared the way a display buffer is shared.
@@ -93,6 +93,28 @@ const REQUIRED: [&CStr; 4] = [
     // Take ownership of an image that was last written by something outside
     // this interface entirely, which is what the display is.
     ash::ext::queue_family_foreign::NAME,
+    // **Required by the tiling one and not implied by it.** It is part of the
+    // core from a later version than this asks for, so here it is an extension
+    // like any other. Leaving it out builds a device every driver accepts and
+    // the specification does not, which is invisible without a validation
+    // layer and is exactly the kind of thing that stops working on an upgrade.
+    ash::khr::image_format_list::NAME,
+];
+
+/// What an encoder on this same device needs, on top of [`REQUIRED`].
+///
+/// **Asked for only when a caller says it wants one.** Every one of these is
+/// newer than the list above and narrows the machines that open at all, so a
+/// device built for capture alone must not carry them.
+const REQUIRED_ENCODE: [&CStr; 4] = [
+    ash::khr::video_queue::NAME,
+    ash::khr::video_encode_queue::NAME,
+    ash::khr::video_encode_h264::NAME,
+    // **The video interface is specified against this and does not imply it.**
+    // It is part of the core from a later version than this asks for, so on
+    // this instance it is an extension like any other; leaving it out builds a
+    // device the driver accepts and the specification does not.
+    ash::khr::synchronization2::NAME,
 ];
 
 /// What lets a device say which display node it drives.
@@ -118,6 +140,13 @@ pub struct Device {
     pub(crate) device: ash::Device,
     pub(crate) queue: vk::Queue,
     pub(crate) queue_family: u32,
+    /// The queue an encoder on this same device would submit to, when one was
+    /// asked for.
+    ///
+    /// **Absent is the normal case.** A device is opened for capture and
+    /// conversion; only a caller that intends to encode here as well asks for
+    /// this, and asking narrows which machines open at all.
+    encode: Option<(vk::Queue, u32)>,
 }
 
 impl core::fmt::Debug for Device {
@@ -143,6 +172,42 @@ fn node_numbers(path: &Path) -> Option<(u32, u32)> {
 impl Device {
     /// Open the device that drives a given display node.
     pub fn for_display(node: &Path) -> Result<Self, Error> {
+        Self::opened(node, false)
+    }
+
+    /// The same device, also able to encode.
+    ///
+    /// **This is what makes a frame never leave the device.** A conversion and
+    /// an encode on one device through one interface hand a picture over as a
+    /// picture; on two interfaces the handover costs more per frame than the
+    /// conversion itself. It refuses on a machine whose display device cannot
+    /// encode, which is a different and smaller set than the one that can
+    /// convert.
+    pub fn for_display_and_encode(node: &Path) -> Result<Self, Error> {
+        Self::opened(node, true)
+    }
+
+    /// The queue and family an encoder on this device submits to.
+    pub fn encode_queue(&self) -> Option<(vk::Queue, u32)> {
+        self.encode
+    }
+
+    /// The handles an encoder built on this device needs.
+    ///
+    /// **Borrowed, never owned.** Whatever builds on these must not outlive the
+    /// device, and must not release it: the frame that never leaves the device
+    /// is the whole point, and two owners of one device is how that becomes a
+    /// double free instead.
+    pub fn shared(&self) -> Shared<'_> {
+        Shared {
+            entry: &self._entry,
+            instance: &self.instance,
+            device: &self.device,
+            physical: self.physical,
+        }
+    }
+
+    fn opened(node: &Path, encode: bool) -> Result<Self, Error> {
         let (major, minor) = node_numbers(node).ok_or(Error::NoDeviceForNode)?;
 
         // SAFETY: loads the system driver loader. Nothing is passed in and the
@@ -159,18 +224,19 @@ impl Device {
         // to be released exactly once on that path. Resolving it all into one
         // result keeps that to a single place.
         let opened = Self::find(&instance, major, minor).and_then(|physical| {
-            Self::open(&instance, physical)
-                .map(|(device, queue, family)| (physical, device, queue, family))
+            Self::open(&instance, physical, encode)
+                .map(|(device, queue, family, encode)| (physical, device, queue, family, encode))
         });
 
         match opened {
-            Ok((physical, device, queue, queue_family)) => Ok(Self {
+            Ok((physical, device, queue, queue_family, encode)) => Ok(Self {
                 _entry: entry,
                 instance,
                 physical,
                 device,
                 queue,
                 queue_family,
+                encode,
             }),
             Err(error) => {
                 // SAFETY: nothing created from this instance outlives the
@@ -203,9 +269,9 @@ impl Device {
         let opened = candidates
             .into_iter()
             .find_map(|physical| {
-                Self::open(&instance, physical)
+                Self::open(&instance, physical, false)
                     .ok()
-                    .map(|(device, queue, family)| (physical, device, queue, family))
+                    .map(|(device, queue, family, _)| (physical, device, queue, family))
             })
             .ok_or(Error::NoDeviceForNode);
 
@@ -217,6 +283,7 @@ impl Device {
                 device,
                 queue,
                 queue_family,
+                encode: None,
             }),
             Err(error) => {
                 // SAFETY: nothing created from it outlives the failed call.
@@ -271,10 +338,15 @@ impl Device {
     }
 
     /// Check what the chosen device can do, then open it.
+    #[expect(
+        clippy::type_complexity,
+        reason = "the pieces a device is made of, resolved once"
+    )]
     fn open(
         instance: &ash::Instance,
         physical: vk::PhysicalDevice,
-    ) -> Result<(ash::Device, vk::Queue, u32), Error> {
+        encode: bool,
+    ) -> Result<(ash::Device, vk::Queue, u32, Option<(vk::Queue, u32)>), Error> {
         // SAFETY: the device came from this instance.
         let available =
             unsafe { instance.enumerate_device_extension_properties(physical) }.map_err(driver)?;
@@ -283,6 +355,15 @@ impl Device {
                 return Err(Error::Unsupported(
                     wanted.to_str().unwrap_or("a required interface"),
                 ));
+            }
+        }
+        if encode {
+            for wanted in REQUIRED_ENCODE {
+                if !advertises(&available, wanted) {
+                    return Err(Error::Unsupported(
+                        wanted.to_str().unwrap_or("a required interface"),
+                    ));
+                }
             }
         }
 
@@ -314,12 +395,41 @@ impl Device {
             .and_then(|at| u32::try_from(at).ok())
             .ok_or(Error::NoQueue)?;
 
+        // The family that encodes, which is not required to be the one that
+        // converts and on one vendor here cannot even copy.
+        let encode_family = if encode {
+            let found = families
+                .iter()
+                .position(|family| {
+                    family
+                        .queue_flags
+                        .contains(vk::QueueFlags::VIDEO_ENCODE_KHR)
+                })
+                .and_then(|at| u32::try_from(at).ok())
+                .ok_or(Error::NoQueue)?;
+            Some(found)
+        } else {
+            None
+        };
+
         let priorities = [1.0_f32];
-        let queues = [vk::DeviceQueueCreateInfo::default()
-            .queue_family_index(queue_family)
-            .queue_priorities(&priorities)];
-        let names: Vec<*const core::ffi::c_char> =
+        let mut queues = vec![
+            vk::DeviceQueueCreateInfo::default()
+                .queue_family_index(queue_family)
+                .queue_priorities(&priorities),
+        ];
+        if let Some(family) = encode_family.filter(|family| *family != queue_family) {
+            queues.push(
+                vk::DeviceQueueCreateInfo::default()
+                    .queue_family_index(family)
+                    .queue_priorities(&priorities),
+            );
+        }
+        let mut names: Vec<*const core::ffi::c_char> =
             REQUIRED.iter().map(|name| name.as_ptr()).collect();
+        if encode {
+            names.extend(REQUIRED_ENCODE.iter().map(|name| name.as_ptr()));
+        }
         // The single-byte and two-byte storage formats the conversion writes
         // are not in the set every device must support unasked.
         let mut features = vk::PhysicalDeviceFeatures2::default();
@@ -330,18 +440,28 @@ impl Device {
         // any device seen here while each of its planes can.
         let mut ycbcr = vk::PhysicalDeviceSamplerYcbcrConversionFeatures::default()
             .sampler_ycbcr_conversion(true);
-        let create = vk::DeviceCreateInfo::default()
+        // Turned on with the video interface and never otherwise.
+        let mut sync = vk::PhysicalDeviceSynchronization2Features::default().synchronization2(true);
+        let mut create = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queues)
             .enabled_extension_names(&names)
             .push_next(&mut features)
             .push_next(&mut ycbcr);
+        if encode {
+            create = create.push_next(&mut sync);
+        }
         // SAFETY: every borrowed slice outlives the call, and the extension
         // names are static.
         let device = unsafe { instance.create_device(physical, &create, None) }.map_err(driver)?;
         // SAFETY: the family index came from this device's own enumeration and
         // one queue was requested from it.
         let queue = unsafe { device.get_device_queue(queue_family, 0) };
-        Ok((device, queue, queue_family))
+        let encode = encode_family.map(|family| {
+            // SAFETY: the family was requested at device creation just above.
+            let queue = unsafe { device.get_device_queue(family, 0) };
+            (queue, family)
+        });
+        Ok((device, queue, queue_family, encode))
     }
 
     /// What the driver calls itself, for a startup log line.
@@ -1083,5 +1203,24 @@ mod tests {
                 (u32::try_from(major).unwrap(), u32::try_from(minor).unwrap())
             );
         }
+    }
+}
+
+/// One device's handles, lent to something built on the same device.
+///
+/// **A lend, not a handover.** The lifetime is what says the borrower cannot
+/// outlive the device, and nothing here releases anything.
+#[derive(Clone, Copy)]
+pub struct Shared<'a> {
+    /// The loader, which the extension loaders above the device need.
+    pub entry: &'a ash::Entry,
+    pub instance: &'a ash::Instance,
+    pub device: &'a ash::Device,
+    pub physical: vk::PhysicalDevice,
+}
+
+impl core::fmt::Debug for Shared<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Shared(one device)")
     }
 }

@@ -146,9 +146,6 @@ fn with_profile<R>(f: impl FnOnce(&vk::VideoProfileInfoKHR<'_>) -> R) -> R {
 pub struct Vulkan {
     _entry: ash::Entry,
     instance: ash::Instance,
-    /// The physical-device queries, which live on the instance rather than on
-    /// the device: they are asked before any device exists.
-    video: ash::khr::video_queue::Instance,
 }
 
 impl core::fmt::Debug for Vulkan {
@@ -167,11 +164,9 @@ impl Vulkan {
         let create = vk::InstanceCreateInfo::default().application_info(&application);
         // SAFETY: the create info outlives the call and names no extensions.
         let instance = unsafe { entry.create_instance(&create, None) }.map_err(driver)?;
-        let video = ash::khr::video_queue::Instance::new(&entry, &instance);
         Ok(Self {
             _entry: entry,
             instance,
-            video,
         })
     }
 
@@ -221,7 +216,7 @@ impl Vulkan {
                     ));
                 }
             }
-            return Device::open(&self.instance, &self.video, physical);
+            return Device::open(&self.instance, &self._entry, physical);
         }
         if answered {
             Err(Error::NoDeviceForNode)
@@ -239,12 +234,35 @@ impl Drop for Vulkan {
 }
 
 /// One device, opened on its encode queue.
+/// A device this owns, or one lent by whoever opened it.
+///
+/// **Which it is decides only who releases it.** Everything else reads through
+/// it identically, which is what lets an encoder be built on a device the
+/// capture already opened.
+enum Held<'a> {
+    /// Boxed only so the two arms are the same size; the table a device is
+    /// made of is large and a borrow is a pointer.
+    Owned(Box<ash::Device>),
+    Lent(&'a ash::Device),
+}
+
+impl core::ops::Deref for Held<'_> {
+    type Target = ash::Device;
+
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Owned(device) => device,
+            Self::Lent(device) => device,
+        }
+    }
+}
+
 pub struct Device<'a> {
     instance: &'a ash::Instance,
-    /// The physical-device queries, borrowed from what loaded the interface.
-    queries: &'a ash::khr::video_queue::Instance,
+    /// The physical-device queries, which live above any device.
+    queries: ash::khr::video_queue::Instance,
     physical: vk::PhysicalDevice,
-    device: ash::Device,
+    device: Held<'a>,
     video: ash::khr::video_queue::Device,
     encode: ash::khr::video_encode_queue::Device,
     queue: vk::Queue,
@@ -265,9 +283,51 @@ impl core::fmt::Debug for Device<'_> {
 }
 
 impl<'a> Device<'a> {
+    /// Build on a device somebody else opened.
+    ///
+    /// **This is the arrangement the path exists for.** The capture, the
+    /// conversion and the encode are then one device and one interface, and a
+    /// picture is handed between them as a picture rather than as a descriptor
+    /// somebody has to re-import.
+    ///
+    /// The caller is the owner: nothing here releases the device, and the
+    /// borrow is what stops this outliving it.
+    pub fn shared(
+        shared: lowlat_capture::vulkan::Shared<'a>,
+        queue: vk::Queue,
+        family: u32,
+    ) -> Result<Self> {
+        let video = ash::khr::video_queue::Device::new(shared.instance, shared.device);
+        let encode = ash::khr::video_encode_queue::Device::new(shared.instance, shared.device);
+        let mut properties = vk::PhysicalDeviceProperties2::default();
+        // SAFETY: the device came from this instance.
+        unsafe {
+            shared
+                .instance
+                .get_physical_device_properties2(shared.physical, &mut properties);
+        }
+        let name = properties
+            .properties
+            .device_name_as_c_str()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| "an unnamed device".to_string());
+        Ok(Self {
+            instance: shared.instance,
+            queries: ash::khr::video_queue::Instance::new(shared.entry, shared.instance),
+            physical: shared.physical,
+            device: Held::Lent(shared.device),
+            video,
+            encode,
+            queue,
+            family,
+            writer_family: family,
+            name,
+        })
+    }
+
     fn open(
         instance: &'a ash::Instance,
-        queries: &'a ash::khr::video_queue::Instance,
+        entry: &ash::Entry,
         physical: vk::PhysicalDevice,
     ) -> Result<Self> {
         // SAFETY: the device came from this instance.
@@ -343,9 +403,9 @@ impl<'a> Device<'a> {
 
         Ok(Self {
             instance,
-            queries,
+            queries: ash::khr::video_queue::Instance::new(entry, instance),
             physical,
-            device,
+            device: Held::Owned(Box::new(device)),
             video,
             encode,
             queue,
@@ -497,11 +557,16 @@ impl<'a> Device<'a> {
 
 impl Drop for Device<'_> {
     fn drop(&mut self) {
+        // **Only what this opened is released.** A lent device belongs to
+        // whoever opened it, and destroying it here would be the second free.
+        let Held::Owned(device) = &self.device else {
+            return;
+        };
         // SAFETY: everything built on it is released before this, and the wait
         // is what makes that true for work still running.
         unsafe {
-            let _ = self.device.device_wait_idle();
-            self.device.destroy_device(None);
+            let _ = device.device_wait_idle();
+            device.destroy_device(None);
         }
     }
 }
