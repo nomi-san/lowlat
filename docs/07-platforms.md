@@ -421,6 +421,35 @@ Four things need session state, and none of them can be answered below it:
 | the display layout | a question, asked when needed | the backend's own reading is used instead |
 | display mode and rotation | a request, rarely | a guest's request is refused with a reason |
 
+#### Who may connect, and where
+
+**Any local user may connect.** The check is that the peer is local, and there is no second
+one. On the machine this is for, the person at the keyboard is the person the session belongs
+to, and inventing an authorisation scheme for a case that does not arise buys nothing and adds
+a thing to get wrong. The consequence is worth naming rather than discovering: on a machine
+with several people logged in at once, any of them can read the guest list, kick a guest and
+change the stream's settings.
+
+**This is not the guest permission model and must not grow into one.** What a *guest* may
+drive, whether it owns the machine, and whether it needed approval at all are decided by
+signaling and arrive relayed -- never from the peer itself, which is the whole reason they are
+relayed ([04 §3](04-signaling.md)). A local client on this channel is a different question with
+a different answer, and the two must not be made to look alike.
+
+**The socket is at a known path**, and the reason is a consequence rather than a preference.
+The service starts both session-side programs itself and could hand each a private path, but a
+tray started by hand -- which is how a person gets one back after closing it -- is not started
+by the service and has nothing to be handed. A path it cannot find is a tray that cannot
+connect, and asking the service to start another one needs the channel it is missing. So the
+path is known, a tray started by hand simply connects and is the tray, and no protocol for
+asking to be restarted has to exist at all. A private path would buy secrecy that the rule
+above already gives away.
+
+**A session-side program exiting means nothing to the stream.** The service starts them and
+does not depend on them: a tray that is closed is not a tray that is missed, and a session
+that ends takes both with it while the stream carries on. Nothing is restarted into a session
+that is no longer there.
+
 #### The rules that matter more than the encoding
 
 1. **The stream never depends on the helper.** No frame waits on it, no encode consults it,
