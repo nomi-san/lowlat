@@ -211,7 +211,7 @@ pub(crate) fn on_message(
                 settings,
                 seam.video(),
             );
-            apply(seam, body, &described, settings);
+            apply(seam, body, &described);
             // **Not answered.** The client asks again with 9 the moment it has
             // sent one of these, so an answer here would arrive beside the one
             // it is about to ask for.
@@ -421,7 +421,7 @@ fn outputs(fake: bool) -> String {
 }
 
 /// Take what a client asked for, and act on the part of it that is ours.
-fn apply(seam: &mut Admission, body: &[u8], video: &Video, ceiling: &Settings) {
+fn apply(seam: &mut Admission, body: &[u8], video: &Video) {
     let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(body) else {
         lowlat_common::log_info!("lowlatd: a configuration arrived that is not JSON, ignoring it");
         return;
@@ -496,38 +496,33 @@ fn apply(seam: &mut Admission, body: &[u8], video: &Video, ceiling: &Settings) {
         return;
     };
     let mut wanted = running;
-    // **Bounded by what this host was started with, not by what fits in the
-    // field.** The operator's figures are the machine's limits -- a guest may
-    // ask for less and be given it, and asking for more is capped rather than
-    // refused, because a capped stream is one a guest can still watch.
+    // **Not bounded by what this host was started with.** The figure the
+    // daemon was launched with is where the stream begins, not a limit on it:
+    // the boundary itself takes any positive rate from an application, and a
+    // guest's panel is the same request arriving by another road. Clamping to
+    // the startup value silently defeats the one thing a guest most wants to
+    // do with it, and does so invisibly -- asking for more than it started
+    // with produced no change and no message.
     if let Some(asked) = first
         .get("encoderMaxBitrate")
         .and_then(serde_json::Value::as_u64)
         && asked != 0
     {
-        let capped = asked.min(u64::from(ceiling.bitrate_mbps)).max(1);
         #[allow(
             clippy::cast_precision_loss,
             reason = "a bitrate in megabits, exact far past any real one"
         )]
-        let capped_mbps = capped as f64;
-        if asked != capped {
-            lowlat_common::log_info!(
-                "lowlatd: guest asked for {asked} Mbps, capped to this host's {capped}"
-            );
-        }
-        wanted.bitrate_mbps = capped_mbps;
+        let asked_mbps = asked as f64;
+        wanted.bitrate_mbps = asked_mbps;
     }
+    // **A ceiling rather than a target, and the display bounds it anyway**:
+    // the loop paces on the display's own present, so asking for more than
+    // the captured output refreshes at produces what it refreshes at.
     if let Some(asked) = first.get("encoderFPS").and_then(serde_json::Value::as_u64)
         && asked != 0
+        && let Ok(asked) = u32::try_from(asked)
     {
-        let capped = u32::try_from(asked.min(u64::from(ceiling.fps)).max(1)).unwrap_or(ceiling.fps);
-        if u64::from(capped) != asked {
-            lowlat_common::log_info!(
-                "lowlatd: guest asked for {asked} fps, capped to this host's {capped}"
-            );
-        }
-        wanted.fps = capped;
+        wanted.fps = asked;
     }
     if let Some(asked) = first.get("fullFPS").and_then(serde_json::Value::as_bool) {
         wanted.full_fps = asked;
