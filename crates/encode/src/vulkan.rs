@@ -45,6 +45,9 @@ pub enum Error {
     NoMemoryType,
     /// The device refused the parameter sets it was given.
     BadParameters,
+    /// A source slot that was never allocated. The count is fixed when the
+    /// encoder is built.
+    BadSlot,
 }
 
 impl core::fmt::Display for Error {
@@ -57,6 +60,7 @@ impl core::fmt::Display for Error {
             Self::NoQueue => f.write_str("the device exposes no queue that can encode"),
             Self::NoMemoryType => f.write_str("no memory type suits what this needs"),
             Self::BadParameters => f.write_str("the device refused the parameter sets"),
+            Self::BadSlot => f.write_str("no such source slot"),
         }
     }
 }
@@ -596,7 +600,12 @@ pub struct Encoder<'a> {
     session: vk::VideoSessionKHR,
     session_memory: Vec<vk::DeviceMemory>,
     parameters: vk::VideoSessionParametersKHR,
-    source: Picture,
+    /// The pictures a caller writes and a submit encodes, one per slot.
+    ///
+    /// **A ring, so a conversion can fill the next picture while the encode
+    /// reads the previous one.** One source would serialise the two: the
+    /// writer cannot touch the picture an encode in flight is reading.
+    sources: Vec<Picture>,
     /// The reconstructed pictures, one layer per slot of one image, written
     /// and read in alternation: the picture being encoded writes one layer
     /// while its reference is read from the other. One layer cannot be both
@@ -681,6 +690,7 @@ impl<'a> Device<'a> {
         width: u32,
         height: u32,
         bitrate_bps: u32,
+        sources: usize,
     ) -> Result<Encoder<'a>> {
         let extent = vk::Extent2D {
             width: width.next_multiple_of(2),
@@ -688,7 +698,7 @@ impl<'a> Device<'a> {
         };
         let session = self.session(caps, extent)?;
         let built = self
-            .finish_encoder(caps, extent, bitrate_bps, session)
+            .finish_encoder(caps, extent, bitrate_bps, session, sources.clamp(1, 4))
             .inspect_err(|_| {
                 // SAFETY: created above and nothing was bound to it yet.
                 unsafe {
@@ -799,6 +809,7 @@ impl<'a> Device<'a> {
         extent: vk::Extent2D,
         bitrate_bps: u32,
         session: vk::VideoSessionKHR,
+        sources: usize,
     ) -> Result<Encoder<'a>> {
         let session_memory = self.bind_session(session)?;
         let parameters = self.parameters(session, extent)?;
@@ -807,17 +818,20 @@ impl<'a> Device<'a> {
         // **The picture the encoder reads, and where it comes from.** Where a
         // shader may write it, the conversion writes here and nothing moves;
         // where it may not, a caller copies into it.
-        let source = self.picture(
-            caps.picture,
-            extent,
-            if caps.shared_picture {
-                vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR | vk::ImageUsageFlags::STORAGE
-            } else {
-                vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR | vk::ImageUsageFlags::TRANSFER_DST
-            },
-            caps.shared_picture,
-            1,
-        )?;
+        let mut source_ring = Vec::with_capacity(sources);
+        for _ in 0..sources {
+            source_ring.push(self.picture(
+                caps.picture,
+                extent,
+                if caps.shared_picture {
+                    vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR | vk::ImageUsageFlags::STORAGE
+                } else {
+                    vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR | vk::ImageUsageFlags::TRANSFER_DST
+                },
+                caps.shared_picture,
+                1,
+            )?);
+        }
         let dpb = self.picture(
             caps.reference,
             extent,
@@ -849,7 +863,7 @@ impl<'a> Device<'a> {
             session,
             session_memory,
             parameters,
-            source,
+            sources: source_ring,
             dpb,
             bitstream,
             bitstream_memory,
@@ -1148,11 +1162,6 @@ impl<'a> Device<'a> {
 }
 
 impl Encoder<'_> {
-    /// The planes a conversion writes, when this device lets it write them.
-    ///
-    /// **`None` means a copy stands between conversion and encode here.** It is
-    /// a property of the device, not of the configuration, and a caller that
-    /// treats absence as an error refuses a machine that works.
     /// The encoded sequence and picture sets a stream opens with.
     ///
     /// The bitstream a collect hands out carries slices only; a decoder that
@@ -1161,13 +1170,21 @@ impl Encoder<'_> {
         &self.sets
     }
 
-    pub fn planes(&self) -> Option<[vk::ImageView; 2]> {
-        self.source.planes
+    /// The planes a conversion writes into one slot, when this device lets it
+    /// write them.
+    ///
+    /// **`None` for a slot that exists means a copy stands between conversion
+    /// and encode here.** Writability is a property of the device, not of the
+    /// configuration, and a caller that treats absence as an error refuses a
+    /// machine that works.
+    pub fn planes(&self, slot: usize) -> Option<[vk::ImageView; 2]> {
+        self.sources.get(slot)?.planes
     }
 
-    /// The picture the encoder reads, for a caller that fills it by copying.
-    pub fn source(&self) -> vk::Image {
-        self.source.image
+    /// The picture a submit of this slot encodes, for a caller that fills it
+    /// by copying.
+    pub fn source(&self, slot: usize) -> Option<vk::Image> {
+        Some(self.sources.get(slot)?.image)
     }
 
     /// The size a picture must be.
@@ -1195,7 +1212,8 @@ impl Encoder<'_> {
     /// been told anything other than the default, an opening that does not
     /// carry that same configuration is invalid, and a driver accepts it
     /// silently.
-    pub fn submit(&mut self, force_keyframe: bool) -> Result<()> {
+    pub fn submit(&mut self, slot: usize, force_keyframe: bool) -> Result<()> {
+        let source_view = self.sources.get(slot).ok_or(Error::BadSlot)?.view;
         let device = &self.device.device;
         // SAFETY: the previous submit was waited on, so both are idle.
         unsafe {
@@ -1221,14 +1239,20 @@ impl Encoder<'_> {
         // The first pass names the pictures for what the encoder will do with
         // them; later passes leave them where they were.
         if !self.started {
-            let barriers = [
-                vk::ImageMemoryBarrier::default()
-                    .old_layout(vk::ImageLayout::UNDEFINED)
-                    .new_layout(vk::ImageLayout::VIDEO_ENCODE_SRC_KHR)
-                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .image(self.source.image)
-                    .subresource_range(whole),
+            let mut barriers: Vec<vk::ImageMemoryBarrier<'_>> = self
+                .sources
+                .iter()
+                .map(|picture| {
+                    vk::ImageMemoryBarrier::default()
+                        .old_layout(vk::ImageLayout::UNDEFINED)
+                        .new_layout(vk::ImageLayout::VIDEO_ENCODE_SRC_KHR)
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .image(picture.image)
+                        .subresource_range(whole)
+                })
+                .collect();
+            barriers.push(
                 vk::ImageMemoryBarrier::default()
                     .old_layout(vk::ImageLayout::UNDEFINED)
                     .new_layout(vk::ImageLayout::VIDEO_ENCODE_DPB_KHR)
@@ -1242,7 +1266,7 @@ impl Encoder<'_> {
                         base_array_layer: 0,
                         layer_count: DPB_SLOTS,
                     }),
-            ];
+            );
             // SAFETY: recording; the barriers outlive the call.
             unsafe {
                 device.cmd_pipeline_barrier(
@@ -1515,7 +1539,7 @@ impl Encoder<'_> {
                 .coded_offset(vk::Offset2D { x: 0, y: 0 })
                 .coded_extent(self.extent)
                 .base_array_layer(0)
-                .image_view_binding(self.source.view);
+                .image_view_binding(source_view);
             let mut info = vk::VideoEncodeInfoKHR::default()
                 .dst_buffer(self.bitstream)
                 .dst_buffer_offset(0)
@@ -1676,7 +1700,7 @@ impl Drop for Encoder<'_> {
             device.destroy_query_pool(self.pool, None);
             device.destroy_buffer(self.bitstream, None);
             device.free_memory(self.bitstream_memory, None);
-            for picture in [&self.source, &self.dpb] {
+            for picture in self.sources.iter().chain([&self.dpb]) {
                 if let Some(planes) = picture.planes {
                     for view in planes {
                         device.destroy_image_view(view, None);

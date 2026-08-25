@@ -52,20 +52,20 @@ fn main() {
         caps.shared_picture
     );
 
-    let mut encoder = match encoder_device.encoder(&caps, 1920, 1080, 10_000_000) {
+    let mut encoder = match encoder_device.encoder(&caps, 1920, 1080, 10_000_000, 1) {
         Ok(encoder) => encoder,
         Err(error) => {
             eprintln!("encoder: {error}");
             std::process::exit(2);
         }
     };
-    match encoder.planes() {
+    match encoder.planes(0) {
         Some(_) => println!("  the encoder lends its picture's planes to a shader"),
         None => println!("  this device keeps a copy between the two"),
     }
 
     // One picture through, to prove the pair is live on one device.
-    if let Err(error) = encoder.submit(true).and_then(|()| encoder.wait()) {
+    if let Err(error) = encoder.submit(0, true).and_then(|()| encoder.wait()) {
         eprintln!("submit: {error}");
         std::process::exit(1);
     }

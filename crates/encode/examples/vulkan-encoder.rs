@@ -35,13 +35,13 @@ fn main() {
     );
 
     let mut encoder = device
-        .encoder(&caps, 1920, 1080, 10_000_000)
+        .encoder(&caps, 1920, 1080, 10_000_000, 2)
         .unwrap_or_else(|e| fail(&format!("encoder: {e}")));
     println!(
         "  encoder built at {}x{}, planes for a shader: {}",
         encoder.extent().width,
         encoder.extent().height,
-        encoder.planes().is_some()
+        encoder.planes(0).is_some()
     );
 
     let mut each = Vec::with_capacity(frames);
@@ -60,8 +60,10 @@ fn main() {
             encoder.set_bitrate(4_000_000);
         }
         let began = std::time::Instant::now();
+        // The slot alternates, which is what a stream does: the next picture
+        // is written while the previous one encodes.
         encoder
-            .submit(at == 0 || at == forced)
+            .submit(at % 2, at == 0 || at == forced)
             .unwrap_or_else(|e| fail(&format!("submit {at}: {e}")));
         encoder
             .wait()
