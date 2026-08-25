@@ -591,12 +591,6 @@ mod tests {
         }
     }
 
-    /// **A stream is described by what it produces, not by what was asked
-    /// for.** A display decides its own size and a host follows it, so a
-    /// description built from configuration reports a stream nobody is making
-    /// -- which once told a peer its pointer was in a 1920x1080 space while the
-    /// picture was 2560x1440, and every position landed short by the ratio.
-    #[test]
     /// **A panel told the startup value shows a change that never happened.**
     /// The rate, the frame rate and the repeated-picture permission are live,
     /// so a guest may have moved one a moment ago; describing from the
@@ -630,6 +624,11 @@ mod tests {
         assert_eq!(early.bitrate_mbps, started.bitrate_mbps);
     }
 
+    /// **A stream is described by what it produces, not by what was asked
+    /// for.** A display decides its own size and a host follows it, so a
+    /// description built from configuration reports a stream nobody is making
+    /// -- which once told a peer its pointer was in a 1920x1080 space while the
+    /// picture was 2560x1440, and every position landed short by the ratio.
     #[test]
     fn a_stream_is_described_by_the_picture_and_never_by_the_request() {
         // The picture wins whenever there is one, even against the display it
