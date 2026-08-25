@@ -1276,6 +1276,16 @@ decides what to do with them.
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
 
+- 2026-08-25: **The third encoder carries both codecs, and what it owed is paid.** It was
+  offered as an explicit choice that owed HEVC, predicted pictures and a live session; all
+  three are done, and a stock client has streamed HEVC on it. The rule that made it correct
+  is worth keeping: **a sequence set declares whole units of what the device says it
+  accesses, not of the codec's smallest coding block.** The block is all the codec asks for,
+  and declaring it produced a stream that decoded without one error, reported the size that
+  was asked for, and had every row right except the last partial row of blocks. What remains
+  for this backend is the coverage question -- which hardware it strands -- rather than a
+  missing piece, and that is a product decision rather than a technical one.
+
 - 2026-08-25: **The encoder set is settled: two defaults, one opt-in, and a fallback
   conversion tier.** The vendor and open backends stay the shipped pair, chosen by following
   the display. The Vulkan Video backend becomes a third, explicitly selected encoder and is

@@ -3,6 +3,63 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 11.9: the third encoder carries the other codec
+
+**The encoder that shares the capture's device codes HEVC now**, where it
+coded H.264 only. A stream asking for the other codec followed the display
+instead -- and that is the codec a stock client negotiates, so the
+preference knob did nothing for the client most likely to set it. The
+profile, the capabilities, the three parameter sets, the picture and slice
+descriptions, and the reference set a predicted picture carries inline are
+all the codec's own. Verified on both devices under the validation layer,
+300 pictures each, decoded in full outside the project; and through the
+conversion writing the encoder's own ring, with the decoded pixels compared
+against the source picture. 1080p costs 2.99 ms a picture on the integrated
+device, which is what the other codec costs there.
+
+**A live client stream ran on it the same day.** A stock client negotiated
+the codec mid-session and the ring was rebuilt for it: about ninety frames
+over six seconds at 1080p on the integrated head, nothing lost, nothing
+stale, nothing refused, the guest reporting 4.1 to 4.4 ms an encode. The
+client then moved the capture to the other card, where a copy would have to
+stand between the conversion and the encode; the path refused it in one
+logged line and let the display's own encoder take the stream, which is the
+refusal behaviour exercised live rather than asserted. **No stage report
+landed inside the window the third encoder held**, so it has no p50 from a
+live session yet -- the module's own figure at that size is 2.99 ms.
+
+- **The log now names the encoder that took the stream.** The line naming a
+  backend is printed before the third encoder is tried, so it names the one
+  the display would have chosen; a refusal logged its reason and a success
+  logged nothing, which left the shape of the display's registration as the
+  only way to read which encoder served a live stream.
+
+- **A set declares whole units of what the device says it accesses, not of
+  the codec's smallest coding block.** The block is all the codec asks for,
+  and a set declaring it decoded without a single error, reported the size
+  it was asked for, and carried a picture whose every row was right except
+  the last partial row of blocks. The device reads and writes whole units
+  whatever the set says: one here accesses this codec 64x16 at a time where
+  it accesses the other 16x16, which is why the other path's rounding to its
+  own block size was enough and this one's was not. The conformance window
+  carries the difference, as it already did there. Named regression test,
+  watched to fail.
+- **What found it was a pixel comparison, not a decode.** The stream decoded
+  cleanly at every stage of being wrong. What said otherwise was the mean
+  error against the source picture: twenty-five with a worst case of two
+  hundred and thirty-nine while the bottom rows were wrong, against eleven
+  once they were right -- which is what the other codec reads on the same
+  path.
+- **The codec's interface is enabled where a device advertises it and never
+  required**, so a device that carries one codec keeps the encoder for it
+  rather than losing the path entirely.
+- **Both codecs' structures stand side by side in one recording** and the
+  codec chooses which is chained. One recording per codec is two control
+  flows to keep identical, and they would not stay identical.
+- The device's own limits are read rather than assumed: the coding tree and
+  transform sizes a set may declare, and the level it may name, come from
+  what the device reports and are capped by it.
+
 ## 11.8: the third encoder streams to a live client
 
 **A stock client and the predecessor's client both stream the third encoder

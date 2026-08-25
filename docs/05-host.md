@@ -179,15 +179,19 @@ Backends:
 |---|---|---|
 | hardware, NVIDIA | shipped | H.264 and HEVC; low-latency preset, variable rate with a one-frame buffer, non-reference frames enabled |
 | hardware, open stack | shipped | AMD and Intel parts, reached through the display interface |
-| hardware, Vulkan Video | written, unwired | conversion and encode on one interface; an explicit choice, never a default |
+| hardware, Vulkan Video | explicit choice | H.264 and HEVC; conversion and encode on one interface, where the conversion may write the encoder's picture |
 | software | later | dynamically loaded, resolved by codec name; the path for machines without hardware encode, and the path continuous integration runs |
 
 **Selection policy, settled 2026-08-25.** The default follows the display: the encoder for
 the device the captured output is on, which is the NVIDIA backend on that vendor's cards and
 the open stack elsewhere. That pair is the coverage floor -- roughly a decade of hardware --
 and it stays the default. The Vulkan Video backend is offered as an explicit third choice
-and is never inferred: it is newer, covers less hardware, and before it can be offered at
-all it owes HEVC, predicted pictures, and a live session on its own path. The conversion
+and is never inferred: it is newer and covers less hardware. It carries both codecs,
+predicted pictures and a live session now, so what remains is the coverage question rather
+than a missing piece. A device that cannot serve it -- no encode interface, or a device
+where a copy would have to stand between the conversion and the encode -- says so once and
+the stream follows the display exactly as before; a device that can serve it and then fails
+while building keeps its refusal rather than being quietly given something else. The conversion
 runs on the compute interface by default and falls back to the GL interface on devices
 without it, which keeps old parts capturable; the GL interface cannot feed the NVIDIA
 encoder, and machines old enough to need it are served by the open stack anyway.
