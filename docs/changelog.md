@@ -3,7 +3,35 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 11.7: the third encoder reaches the stream, preferred by a knob
+
+**`LOWLAT_VULKAN_ENCODE=1`, or the daemon's `--vulkan-encode`, prefers the
+encoder that shares the capture's device.** Nothing reaches the boundary: the
+boundary names meanings and this names a mechanism, the same rule that keeps
+the conversion interface off it; the software encoder, when it lands, gets a
+boundary field precisely because software-versus-hardware is a meaning. A
+device that cannot serve the path -- an H.265 stream, no encode interface, a
+copy standing between conversion and encode -- says why once and the stream
+follows the display exactly as before; a device that can, and then fails
+building, keeps its refusal. Verified through the real stream loop against
+the live display: capture, conversion into the encoder's own ring, encode,
+frames at a seat, with the idle path suppressing duplicates as on every
+other backend.
+
+- **The display pipeline gains the ring**: conversion targets that belong to
+  the encoder, a registration that is the slot number, and an open that
+  re-checks the node and size the ring was built against, because a display
+  can move between the two calls.
+- **The encoder carries the loop's trait**: predicted pictures through the
+  written-slot path, a second in-flight picture refused as back pressure,
+  the bytes path honestly unsupported.
+- **The shared device is counted, not borrowed** (11.6): the display
+  pipeline and the encoder each hold a clone of one underlying device, the
+  last clone dropped releases it, and drop order between them stops
+  mattering.
+
 ## 11.5: the conversion writes the encoder's ring
+
 
 **The whole shared-device arrangement runs end to end**: an uploaded picture
 is converted by the compute shader directly into the third encoder's own
