@@ -3,6 +3,21 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 9: capture (the conversion tier follows the device)
+
+**Absent a name, the conversion interface follows the device**: the compute
+interface where it exists, the GL fallback where it does not. The fallback
+costs about a millisecond more per frame and reaches only the open encoder,
+so it is a floor for old devices rather than a substitute: only the two
+errors that mean "this device has no such interface" fall through, and any
+other refusal keeps its reason instead of being masked by a slower tier.
+Naming an interface (`--convert`, `LOWLAT_CONVERT`) pins it for measurement
+exactly as before; the boundary still does not expose the knob, and a stream
+started there follows the device. The tier chosen shows in the stream's own
+log line either way. **The fallback arm is unexercised on this machine** --
+both devices here carry the compute interface -- so its first honest test is
+a device without one.
+
 ## 9: capture (the wakeup is paid by a poke)
 
 **The open stack's conversion ran cold, and now it runs warm.** Measured with
