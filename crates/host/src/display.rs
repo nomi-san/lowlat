@@ -353,7 +353,7 @@ impl Pipeline {
                 let source = vk.imports.get(&key).ok_or(Error::Register)?;
                 let target = vk.targets.get(slot).ok_or(Error::Register)?;
                 vk.converter
-                    .submit(&vk.device, source, &target.frame, false)
+                    .submit(&vk.device, source, &target.frame.target(), false)
                     .map_err(Error::Convert)
             }
             Self::Gl(gl) => {
@@ -404,7 +404,7 @@ impl Pipeline {
                 let target = vk.targets.get(slot).ok_or(Error::Register)?;
                 let groups = lowlat_capture::convert::poke_groups(source.width, source.height);
                 vk.converter
-                    .poke(&vk.device, source, &target.frame, groups)
+                    .poke(&vk.device, source, &target.frame.target(), groups)
                     .map_err(Error::Convert)?;
                 // The wait is the point: the submission above woke the block,
                 // and the digest it produces is nobody's.

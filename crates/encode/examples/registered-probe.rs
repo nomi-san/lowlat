@@ -117,7 +117,7 @@ fn main() {
         .collect();
     for target in &targets {
         converter
-            .run(&device, &source, target, false)
+            .run(&device, &source, &target.target(), false)
             .unwrap_or_else(|error| fail(&format!("convert: {error}")));
     }
     println!(

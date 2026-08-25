@@ -210,6 +210,7 @@ impl Device {
             instance: &self.instance,
             device: &self.device,
             physical: self.physical,
+            queue_family: self.queue_family,
         }
     }
 
@@ -1223,6 +1224,9 @@ pub struct Shared<'a> {
     pub instance: &'a ash::Instance,
     pub device: &'a ash::Device,
     pub physical: vk::PhysicalDevice,
+    /// The family the conversion submits on, which is the family that writes
+    /// an encoder's picture when the two share the device.
+    pub queue_family: u32,
 }
 
 impl core::fmt::Debug for Shared<'_> {

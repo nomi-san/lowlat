@@ -324,7 +324,10 @@ impl<'a> Device<'a> {
             encode,
             queue,
             family,
-            writer_family: family,
+            // The conversion's own family: it is what writes the pictures
+            // this device encodes, and the pictures are created shared
+            // between the two.
+            writer_family: shared.queue_family,
             name,
         })
     }
@@ -820,6 +823,7 @@ impl<'a> Device<'a> {
         // where it may not, a caller copies into it.
         let mut source_ring = Vec::with_capacity(sources);
         for _ in 0..sources {
+            let shared_families = [self.writer_family, self.family];
             source_ring.push(self.picture(
                 caps.picture,
                 extent,
@@ -830,6 +834,11 @@ impl<'a> Device<'a> {
                 },
                 caps.shared_picture,
                 1,
+                if caps.shared_picture && self.writer_family != self.family {
+                    &shared_families
+                } else {
+                    &[]
+                },
             )?);
         }
         let dpb = self.picture(
@@ -838,6 +847,7 @@ impl<'a> Device<'a> {
             vk::ImageUsageFlags::VIDEO_ENCODE_DPB_KHR,
             false,
             DPB_SLOTS,
+            &[],
         )?;
 
         let (bitstream, bitstream_memory) = self.bitstream()?;
@@ -1003,6 +1013,7 @@ impl<'a> Device<'a> {
         usage: vk::ImageUsageFlags,
         planes: bool,
         layers: u32,
+        families: &[u32],
     ) -> Result<Picture> {
         let image = with_profile(|profile| {
             let profiles = [*profile];
@@ -1020,9 +1031,20 @@ impl<'a> Device<'a> {
                 .samples(vk::SampleCountFlags::TYPE_1)
                 .tiling(vk::ImageTiling::OPTIMAL)
                 .usage(usage)
-                .sharing_mode(vk::SharingMode::EXCLUSIVE)
                 .initial_layout(vk::ImageLayout::UNDEFINED)
                 .push_next(&mut list);
+            // **Shared between the family that writes and the family that
+            // encodes**, where they differ: exclusive ownership would make
+            // the contents undefined across the handoff without a transfer
+            // barrier on each side, and the transfer is the one piece of
+            // per-frame ceremony this path can do without.
+            create = if families.len() >= 2 {
+                create
+                    .sharing_mode(vk::SharingMode::CONCURRENT)
+                    .queue_family_indices(families)
+            } else {
+                create.sharing_mode(vk::SharingMode::EXCLUSIVE)
+            };
             if planes {
                 // Mutable format is what lets a plane be seen as a
                 // single-component picture; extended usage is what makes the
@@ -1213,6 +1235,22 @@ impl Encoder<'_> {
     /// carry that same configuration is invalid, and a driver accepts it
     /// silently.
     pub fn submit(&mut self, slot: usize, force_keyframe: bool) -> Result<()> {
+        self.encode_slot(slot, force_keyframe, false)
+    }
+
+    /// Encode a slot whose picture a writer filled and handed over.
+    ///
+    /// **The writer owns the picture's layout on this path.** A conversion
+    /// ends its recording by moving the picture into the layout the encoder
+    /// reads, so nothing here may touch it: the discard [`Self::submit`]
+    /// performs on its first pass would throw away the very picture it was
+    /// handed. A session drives its sources through one of the two entry
+    /// points, never both.
+    pub fn submit_written(&mut self, slot: usize, force_keyframe: bool) -> Result<()> {
+        self.encode_slot(slot, force_keyframe, true)
+    }
+
+    fn encode_slot(&mut self, slot: usize, force_keyframe: bool, writer_owned: bool) -> Result<()> {
         let source_view = self.sources.get(slot).ok_or(Error::BadSlot)?.view;
         let device = &self.device.device;
         // SAFETY: the previous submit was waited on, so both are idle.
@@ -1239,19 +1277,25 @@ impl Encoder<'_> {
         // The first pass names the pictures for what the encoder will do with
         // them; later passes leave them where they were.
         if !self.started {
-            let mut barriers: Vec<vk::ImageMemoryBarrier<'_>> = self
-                .sources
-                .iter()
-                .map(|picture| {
-                    vk::ImageMemoryBarrier::default()
-                        .old_layout(vk::ImageLayout::UNDEFINED)
-                        .new_layout(vk::ImageLayout::VIDEO_ENCODE_SRC_KHR)
-                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                        .image(picture.image)
-                        .subresource_range(whole)
-                })
-                .collect();
+            // The sources are named only where this encoder owns their
+            // layout; a writer-owned picture arrives already in the layout
+            // the encode reads, and a discard here would empty it.
+            let mut barriers: Vec<vk::ImageMemoryBarrier<'_>> = if writer_owned {
+                Vec::with_capacity(1)
+            } else {
+                self.sources
+                    .iter()
+                    .map(|picture| {
+                        vk::ImageMemoryBarrier::default()
+                            .old_layout(vk::ImageLayout::UNDEFINED)
+                            .new_layout(vk::ImageLayout::VIDEO_ENCODE_SRC_KHR)
+                            .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                            .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                            .image(picture.image)
+                            .subresource_range(whole)
+                    })
+                    .collect()
+            };
             barriers.push(
                 vk::ImageMemoryBarrier::default()
                     .old_layout(vk::ImageLayout::UNDEFINED)

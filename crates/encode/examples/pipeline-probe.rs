@@ -145,7 +145,7 @@ fn main() {
         // Each picture is converted from the display as it is now, so the
         // stream is a real recording rather than one frame repeated.
         converter
-            .run(&device, &imported, &target, false)
+            .run(&device, &imported, &target.target(), false)
             .unwrap_or_else(|e| fail(&format!("convert: {e}")));
         if let Err(error) = encoder.submit_registered(&input, at == 0) {
             println!("submit refused at {at}: {error}");

@@ -157,6 +157,38 @@ pub struct Nv12 {
     pub pitch: u32,
 }
 
+/// What a conversion writes into, named by handles rather than ownership.
+///
+/// **The seam that lets a conversion fill somebody else's picture.** An owned
+/// [`Nv12`] borrows itself here; an encoder that lends its own picture's
+/// planes builds one from those handles. The final layout is the reader's:
+/// an owned target stays writable, a lent picture is handed over in the
+/// layout its encoder reads, so the writer's recording is what pays the
+/// transition.
+#[derive(Debug, Clone, Copy)]
+pub struct TargetRef {
+    /// The image behind each plane; one two-plane image repeats itself.
+    pub luma_image: vk::Image,
+    pub chroma_image: vk::Image,
+    /// One view per plane, what the shader writes through.
+    pub planes: [vk::ImageView; 2],
+    /// The layout the pictures are left in. [`vk::ImageLayout::GENERAL`] for
+    /// an owned target; a lent picture names what its reader expects.
+    pub final_layout: vk::ImageLayout,
+}
+
+impl Nv12 {
+    /// This target, by its handles.
+    pub fn target(&self) -> TargetRef {
+        TargetRef {
+            luma_image: self.luma_image,
+            chroma_image: self.chroma_image,
+            planes: self.planes,
+            final_layout: vk::ImageLayout::GENERAL,
+        }
+    }
+}
+
 impl core::fmt::Debug for Nv12 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Nv12")
@@ -394,8 +426,13 @@ impl Converter {
         // SAFETY: the sizes outlive the call.
         let pool = unsafe { vk_device.create_descriptor_pool(&pool_info, None) }.map_err(driver)?;
 
-        let commands_info =
-            vk::CommandPoolCreateInfo::default().queue_family_index(device.queue_family);
+        // **The reset flag, because the one command buffer is reset per
+        // submission.** Resetting a buffer from a pool without it is a
+        // violation both drivers here happen to tolerate; the validation
+        // layer is what names it.
+        let commands_info = vk::CommandPoolCreateInfo::default()
+            .queue_family_index(device.queue_family)
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
         // SAFETY: the create info outlives the call.
         let commands =
             unsafe { vk_device.create_command_pool(&commands_info, None) }.map_err(driver)?;
@@ -830,7 +867,7 @@ impl Converter {
         &mut self,
         device: &Device,
         source: &Imported,
-        target: &Nv12,
+        target: &TargetRef,
         dither: bool,
     ) -> Result<Digest, Error> {
         self.submit(device, source, target, dither)?;
@@ -851,7 +888,7 @@ impl Converter {
         &mut self,
         device: &Device,
         source: &Imported,
-        target: &Nv12,
+        target: &TargetRef,
         dither: bool,
     ) -> Result<(), Error> {
         if self.flight.is_some() {
@@ -905,7 +942,7 @@ impl Converter {
         &mut self,
         device: &Device,
         source: &Imported,
-        target: &Nv12,
+        target: &TargetRef,
         groups: (u32, u32),
     ) -> Result<(), Error> {
         if self.flight.is_some() {
@@ -1031,7 +1068,7 @@ impl Converter {
         &self,
         device: &Device,
         source_view: vk::ImageView,
-        target: &Nv12,
+        target: &TargetRef,
     ) -> Result<(), Error> {
         let sampled = [vk::DescriptorImageInfo::default()
             .sampler(self.sampler)
@@ -1079,7 +1116,7 @@ impl Converter {
         &mut self,
         device: &Device,
         source: &Imported,
-        target: &Nv12,
+        target: &TargetRef,
         view: vk::ImageView,
         dither: bool,
         groups: Option<(u32, u32)>,
@@ -1092,7 +1129,7 @@ impl Converter {
         &self,
         device: &Device,
         source: &Imported,
-        target: &Nv12,
+        target: &TargetRef,
         dither: bool,
         groups: Option<(u32, u32)>,
     ) -> Result<(), Error> {
@@ -1136,18 +1173,30 @@ impl Converter {
             })
             .image(source.image)
             .subresource_range(whole);
-        // The target has never been written, so its previous contents are
-        // nobody's and discarding them is correct.
-        let prepare = [target.luma_image, target.chroma_image].map(|image| {
-            vk::ImageMemoryBarrier::default()
-                .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
-                .old_layout(vk::ImageLayout::UNDEFINED)
-                .new_layout(vk::ImageLayout::GENERAL)
-                .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                .image(image)
-                .subresource_range(whole)
-        });
+        // The target's previous contents are nobody's -- this conversion
+        // overwrites the whole picture -- so discarding them is correct. One
+        // two-plane image transitions once, not once per plane view.
+        let mut prepare_images = [Some(target.luma_image), Some(target.chroma_image)];
+        if target.luma_image == target.chroma_image {
+            prepare_images[1] = None;
+        }
+        let prepare: Vec<vk::ImageMemoryBarrier<'_>> = prepare_images
+            .into_iter()
+            .flatten()
+            .map(|image| {
+                vk::ImageMemoryBarrier::default()
+                    .dst_access_mask(vk::AccessFlags::SHADER_WRITE)
+                    .old_layout(vk::ImageLayout::UNDEFINED)
+                    .new_layout(vk::ImageLayout::GENERAL)
+                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                    .image(image)
+                    .subresource_range(whole)
+            })
+            .collect();
+        let mut opening_barriers = Vec::with_capacity(3);
+        opening_barriers.push(acquire);
+        opening_barriers.extend(prepare);
 
         let params = Params {
             width: i32::try_from(source.width).unwrap_or(i32::MAX),
@@ -1210,7 +1259,7 @@ impl Converter {
                 vk::DependencyFlags::empty(),
                 &[],
                 &[],
-                &[acquire, prepare[0], prepare[1]],
+                &opening_barriers,
             );
             vk_device.cmd_bind_pipeline(commands, vk::PipelineBindPoint::COMPUTE, self.pipeline);
             vk_device.cmd_bind_descriptor_sets(
@@ -1229,6 +1278,44 @@ impl Converter {
                 bytes,
             );
             vk_device.cmd_dispatch(commands, groups_x, groups_y, 1);
+        }
+
+        // **The picture is handed over in the layout its reader expects.**
+        // An owned target stays writable and nothing is recorded; a lent
+        // picture names its encoder's layout, and the transition rides in the
+        // writer's own recording so the reader never touches a picture it
+        // does not own.
+        if target.final_layout != vk::ImageLayout::GENERAL {
+            let mut handover_images = [Some(target.luma_image), Some(target.chroma_image)];
+            if target.luma_image == target.chroma_image {
+                handover_images[1] = None;
+            }
+            let handover: Vec<vk::ImageMemoryBarrier<'_>> = handover_images
+                .into_iter()
+                .flatten()
+                .map(|image| {
+                    vk::ImageMemoryBarrier::default()
+                        .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                        .old_layout(vk::ImageLayout::GENERAL)
+                        .new_layout(target.final_layout)
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .image(image)
+                        .subresource_range(whole)
+                })
+                .collect();
+            // SAFETY: recording; the barriers outlive the call.
+            unsafe {
+                vk_device.cmd_pipeline_barrier(
+                    commands,
+                    vk::PipelineStageFlags::COMPUTE_SHADER,
+                    vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+                    vk::DependencyFlags::empty(),
+                    &[],
+                    &[],
+                    &handover,
+                );
+            }
         }
 
         // **Out of device memory once, rather than accumulated where the host
@@ -1568,7 +1655,7 @@ mod tests {
         let mut digest_of = |pixels: &[u8]| {
             let source = device.upload_rgba(width, height, pixels).expect("upload");
             let got = converter
-                .run(&device, &source, &target, false)
+                .run(&device, &source, &target.target(), false)
                 .expect("convert");
             device.release(source);
             got
@@ -1639,7 +1726,7 @@ mod tests {
                 .expect("upload the pattern");
             let target = device.allocate_nv12(width, height).expect("a target");
             converter
-                .run(&device, &source, &target, false)
+                .run(&device, &source, &target.target(), false)
                 .expect("convert");
             let (luma, _) = device.read_nv12(&target).expect("read the planes");
 
@@ -1687,7 +1774,7 @@ mod tests {
         let target = device.allocate_nv12(width, height).expect("a target");
         let mut converter = Converter::new(&device).expect("a pipeline");
         converter
-            .run(&device, &source, &target, false)
+            .run(&device, &source, &target.target(), false)
             .expect("convert");
         let (luma, chroma) = device.read_nv12(&target).expect("read the planes");
 

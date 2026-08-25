@@ -94,7 +94,7 @@ fn main() {
         .allocate_nv12(fb.width, fb.height)
         .unwrap_or_else(|error| fail(&format!("allocate: {error}")));
     converter
-        .run(&device, &imported, &target, dither)
+        .run(&device, &imported, &target.target(), dither)
         .unwrap_or_else(|error| fail(&format!("convert: {error}")));
 
     // **What one conversion costs, repeated.** The stage this sits in is the
@@ -111,7 +111,7 @@ fn main() {
         for _ in 0..repeats {
             let began = std::time::Instant::now();
             converter
-                .run(&device, &imported, &target, dither)
+                .run(&device, &imported, &target.target(), dither)
                 .unwrap_or_else(|error| fail(&format!("convert: {error}")));
             each.push(began.elapsed().as_secs_f64() * 1000.0);
         }

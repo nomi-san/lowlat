@@ -1420,7 +1420,7 @@ mod tests {
             .expect("upload");
         let vk_target = vk_device.allocate_nv12(width, height).expect("a target");
         let ours = vk_converter
-            .run(&vk_device, &vk_source, &vk_target, false)
+            .run(&vk_device, &vk_source, &vk_target.target(), false)
             .expect("convert");
 
         assert_eq!(

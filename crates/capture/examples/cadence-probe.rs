@@ -73,7 +73,7 @@ fn main() {
                 .poke(
                     &device,
                     imports.get(&pinned).unwrap_or_else(|| fail("no source")),
-                    target,
+                    &target.target(),
                     groups,
                 )
                 .unwrap_or_else(|e| fail(&format!("poke: {e}")));
@@ -121,7 +121,7 @@ fn main() {
             .get(at % 4)
             .unwrap_or_else(|| fail("missing target"));
         converter
-            .submit(&device, source, target, false)
+            .submit(&device, source, &target.target(), false)
             .unwrap_or_else(|e| fail(&format!("submit: {e}")));
         let began = std::time::Instant::now();
         converter
@@ -133,7 +133,7 @@ fn main() {
                 .get((at + 1) % 4)
                 .unwrap_or_else(|| fail("missing target"));
             converter
-                .submit(&device, source, target, false)
+                .submit(&device, source, &target.target(), false)
                 .unwrap_or_else(|e| fail(&format!("submit: {e}")));
             let began = std::time::Instant::now();
             converter

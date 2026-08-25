@@ -233,7 +233,7 @@ fn convert_and_read(
     target: &Nv12,
 ) -> Vec<u8> {
     converter
-        .run(device, source, target, false)
+        .run(device, source, &target.target(), false)
         .unwrap_or_else(|error| fail(&format!("convert: {error}")));
     let (mut luma, chroma) = device
         .read_nv12(target)
