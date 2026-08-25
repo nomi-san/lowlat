@@ -46,6 +46,14 @@ fn main() {
 
     let mut each = Vec::with_capacity(frames);
     let mut bytes = 0usize;
+    // The stream opens with the parameter sets: the encode itself produces
+    // slices only, and a decoder that has not seen the sets decodes nothing.
+    let mut stream = encoder.parameter_sets().to_vec();
+    println!("  {} bytes of parameter sets", stream.len());
+    let mut keyframes = 0usize;
+    // The refresh a caller forces mid-run, which is what the recovery path
+    // sends: a predicted picture after it must still decode.
+    let forced = frames / 3;
     for at in 0..frames {
         // Half way through, ask for a different rate on the running session.
         if at == frames / 2 {
@@ -53,18 +61,49 @@ fn main() {
         }
         let began = std::time::Instant::now();
         encoder
-            .submit(at == 0)
+            .submit(at == 0 || at == forced)
             .unwrap_or_else(|e| fail(&format!("submit {at}: {e}")));
         encoder
             .wait()
             .unwrap_or_else(|e| fail(&format!("wait {at}: {e}")));
         each.push(began.elapsed().as_secs_f64() * 1000.0);
         match encoder.poll() {
-            Ok(Poll::Ready { bitstream, .. }) => bytes += bitstream.len(),
+            Ok(Poll::Ready {
+                bitstream,
+                keyframe,
+            }) => {
+                bytes += bitstream.len();
+                stream.extend_from_slice(bitstream);
+                if keyframe {
+                    keyframes += 1;
+                }
+                if keyframe != (at == 0 || at == forced) {
+                    fail(&format!("picture {at} reported keyframe={keyframe}"));
+                }
+            }
             Ok(Poll::Pending) => fail(&format!("picture {at} finished and reported nothing")),
             Err(error) => fail(&format!("poll {at}: {error}")),
         }
     }
+    // Escaping makes a three-byte start code impossible inside a payload, so
+    // counting slice types over the whole stream is exact.
+    let units_of = |kind: u8| {
+        stream
+            .windows(4)
+            .filter(|window| window[..3] == [0, 0, 1] && window[3] & 0x1F == kind)
+            .count()
+    };
+    let (coded_refreshes, predicted) = (units_of(5), units_of(1));
+    println!(
+        "  {coded_refreshes} coded refreshes ({keyframes} reported), {predicted} predicted \
+         pictures"
+    );
+    if coded_refreshes != 2 || predicted != frames - 2 {
+        fail("the stream does not carry the picture kinds that were asked for");
+    }
+    let out = std::env::temp_dir().join("lowlat-vulkan.h264");
+    std::fs::write(&out, &stream).unwrap_or_else(|e| fail(&format!("write: {e}")));
+    println!("  wrote {}", out.display());
     each.sort_by(f64::total_cmp);
     let rank = |num: usize, den: usize| {
         each.get((each.len().saturating_sub(1)) * num / den)

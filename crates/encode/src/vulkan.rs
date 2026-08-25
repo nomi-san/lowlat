@@ -597,6 +597,13 @@ pub struct Encoder<'a> {
     session_memory: Vec<vk::DeviceMemory>,
     parameters: vk::VideoSessionParametersKHR,
     source: Picture,
+    /// The reconstructed pictures, one layer per slot of one image, written
+    /// and read in alternation: the picture being encoded writes one layer
+    /// while its reference is read from the other. One layer cannot be both
+    /// -- the driver would read what it is overwriting, the same rule the
+    /// open backend's surfaces have -- and the slots are layers rather than
+    /// separate images because the separate form is a capability only one
+    /// vendor here reports, while the layered form works everywhere.
     dpb: Picture,
     bitstream: vk::Buffer,
     bitstream_memory: vk::DeviceMemory,
@@ -622,6 +629,39 @@ pub struct Encoder<'a> {
     /// Where a finished picture is copied to, so the slice a caller reads is
     /// not the driver's own mapping.
     collected: Vec<u8>,
+    /// Pictures coded since the last coded refresh, which is what the frame
+    /// number and picture order derive from. Continuous rather than wrapped:
+    /// the wire field wraps at the size the sequence set names, and the order
+    /// count is defined over the unwrapped value.
+    frames_since_idr: u32,
+    /// Which refresh this is. A decoder uses it to tell two adjacent
+    /// refreshes apart, so it moves on every one.
+    idr_id: u16,
+    /// The reconstruction slot the next picture writes.
+    recon: usize,
+    /// The picture the next predicted picture references, or nothing when the
+    /// next picture must refresh.
+    previous: Option<Reference>,
+    /// Whether the picture in flight is a refresh, reported by the poll.
+    submitted_keyframe: bool,
+    /// The encoded sequence and picture sets, fetched from the driver once.
+    ///
+    /// **The bitstream carries slices only**: nothing on this path emits the
+    /// sets into the stream, so a caller opens its stream with these -- and
+    /// they come from the driver rather than being written by hand, because
+    /// the driver is the authority on what it encodes against.
+    sets: Vec<u8>,
+}
+
+/// One reconstructed picture a later picture may predict from.
+#[derive(Debug, Clone, Copy)]
+struct Reference {
+    slot: usize,
+    frame_num: u32,
+    poc: i32,
+    /// Whether the picture standing in the slot is a refresh, because its
+    /// description travels with every scope that binds it.
+    idr: bool,
 }
 
 impl core::fmt::Debug for Encoder<'_> {
@@ -762,6 +802,7 @@ impl<'a> Device<'a> {
     ) -> Result<Encoder<'a>> {
         let session_memory = self.bind_session(session)?;
         let parameters = self.parameters(session, extent)?;
+        let sets = self.encoded_parameters(parameters)?;
 
         // **The picture the encoder reads, and where it comes from.** Where a
         // shader may write it, the conversion writes here and nothing moves;
@@ -775,12 +816,14 @@ impl<'a> Device<'a> {
                 vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR | vk::ImageUsageFlags::TRANSFER_DST
             },
             caps.shared_picture,
+            1,
         )?;
         let dpb = self.picture(
             caps.reference,
             extent,
             vk::ImageUsageFlags::VIDEO_ENCODE_DPB_KHR,
             false,
+            DPB_SLOTS,
         )?;
 
         let (bitstream, bitstream_memory) = self.bitstream()?;
@@ -820,7 +863,53 @@ impl<'a> Device<'a> {
             started: false,
             mode: vk::VideoEncodeRateControlModeFlagsKHR::DEFAULT,
             collected: Vec::with_capacity(1 << 16),
+            frames_since_idr: 0,
+            idr_id: 0,
+            recon: 0,
+            previous: None,
+            submitted_keyframe: false,
+            sets,
         })
+    }
+
+    /// The encoded sequence and picture sets, from the driver.
+    ///
+    /// Two calls: the first asks how many bytes, the second fills them. The
+    /// driver encodes the sets it will actually code against, which is the
+    /// property a hand-written copy cannot promise.
+    fn encoded_parameters(&self, parameters: vk::VideoSessionParametersKHR) -> Result<Vec<u8>> {
+        let mut h264 = vk::VideoEncodeH264SessionParametersGetInfoKHR::default()
+            .write_std_sps(true)
+            .write_std_pps(true)
+            .std_sps_id(0)
+            .std_pps_id(0);
+        let info = vk::VideoEncodeSessionParametersGetInfoKHR::default()
+            .video_session_parameters(parameters)
+            .push_next(&mut h264);
+        let mut size = 0usize;
+        // SAFETY: asking for the size writes only the counter.
+        checked(unsafe {
+            (self.encode.fp().get_encoded_video_session_parameters_khr)(
+                self.device.handle(),
+                &info,
+                core::ptr::null_mut(),
+                &raw mut size,
+                core::ptr::null_mut(),
+            )
+        })?;
+        let mut data = vec![0u8; size];
+        // SAFETY: the destination is exactly as large as the driver asked.
+        checked(unsafe {
+            (self.encode.fp().get_encoded_video_session_parameters_khr)(
+                self.device.handle(),
+                &info,
+                core::ptr::null_mut(),
+                &raw mut size,
+                data.as_mut_ptr().cast(),
+            )
+        })?;
+        data.truncate(size);
+        Ok(data)
     }
 
     /// The parameter sets, written here because no driver emits them.
@@ -889,12 +978,17 @@ impl<'a> Device<'a> {
     }
 
     /// One video picture with its memory and views.
+    ///
+    /// `layers` is the reconstruction arrangement: the slots live as layers
+    /// of one image, because the separate-images form is a capability only
+    /// one vendor here reports and the layered form works everywhere.
     fn picture(
         &self,
         format: vk::Format,
         extent: vk::Extent2D,
         usage: vk::ImageUsageFlags,
         planes: bool,
+        layers: u32,
     ) -> Result<Picture> {
         let image = with_profile(|profile| {
             let profiles = [*profile];
@@ -908,7 +1002,7 @@ impl<'a> Device<'a> {
                     depth: 1,
                 })
                 .mip_levels(1)
-                .array_layers(1)
+                .array_layers(layers)
                 .samples(vk::SampleCountFlags::TYPE_1)
                 .tiling(vk::ImageTiling::OPTIMAL)
                 .usage(usage)
@@ -948,14 +1042,18 @@ impl<'a> Device<'a> {
             vk::ImageViewUsageCreateInfo::default().usage(usage & !vk::ImageUsageFlags::STORAGE);
         let info = vk::ImageViewCreateInfo::default()
             .image(image)
-            .view_type(vk::ImageViewType::TYPE_2D)
+            .view_type(if layers > 1 {
+                vk::ImageViewType::TYPE_2D_ARRAY
+            } else {
+                vk::ImageViewType::TYPE_2D
+            })
             .format(format)
             .subresource_range(vk::ImageSubresourceRange {
                 aspect_mask: vk::ImageAspectFlags::COLOR,
                 base_mip_level: 0,
                 level_count: 1,
                 base_array_layer: 0,
-                layer_count: 1,
+                layer_count: layers,
             })
             .push_next(&mut whole_usage);
         // SAFETY: the chain outlives the call and the image is bound.
@@ -1055,6 +1153,14 @@ impl Encoder<'_> {
     /// **`None` means a copy stands between conversion and encode here.** It is
     /// a property of the device, not of the configuration, and a caller that
     /// treats absence as an error refuses a machine that works.
+    /// The encoded sequence and picture sets a stream opens with.
+    ///
+    /// The bitstream a collect hands out carries slices only; a decoder that
+    /// has not seen these decodes nothing.
+    pub fn parameter_sets(&self) -> &[u8] {
+        &self.sets
+    }
+
     pub fn planes(&self) -> Option<[vk::ImageView; 2]> {
         self.source.planes
     }
@@ -1129,7 +1235,13 @@ impl Encoder<'_> {
                     .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
                     .image(self.dpb.image)
-                    .subresource_range(whole),
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: DPB_SLOTS,
+                    }),
             ];
             // SAFETY: recording; the barriers outlive the call.
             unsafe {
@@ -1145,14 +1257,98 @@ impl Encoder<'_> {
             }
         }
 
-        let dpb_resource = vk::VideoPictureResourceInfoKHR::default()
+        // **The picture decides its own kind.** A refresh when asked for and
+        // whenever there is nothing to predict from, which covers the first
+        // picture; predicted otherwise. Nothing here emits an unrequested
+        // refresh: the frame gate's recovery depends on a keyframe meaning
+        // somebody asked for one.
+        let idr = force_keyframe || self.previous.is_none();
+        if idr {
+            self.frames_since_idr = 0;
+        }
+        // The wire field wraps at the size the sequence set names; the order
+        // count is type 2, derived from the unwrapped counter, so keeping the
+        // counter continuous is exactly the codec's own derivation.
+        let frame_num = self.frames_since_idr % (1 << 8);
+        #[allow(
+            clippy::cast_possible_wrap,
+            reason = "wraps after two to the thirty-one pictures, which the codec's own \
+                      arithmetic tolerates"
+        )]
+        let poc = self.frames_since_idr.wrapping_mul(2) as i32;
+        let previous = if idr { None } else { self.previous };
+
+        let recon_resource = vk::VideoPictureResourceInfoKHR::default()
             .coded_offset(vk::Offset2D { x: 0, y: 0 })
             .coded_extent(self.extent)
-            .base_array_layer(0)
+            .base_array_layer(u32::try_from(self.recon).unwrap_or(0))
             .image_view_binding(self.dpb.view);
-        let opening = [vk::VideoReferenceSlotInfoKHR::default()
-            .slot_index(-1)
-            .picture_resource(&dpb_resource)];
+        let previous_resource = previous.map(|reference| {
+            vk::VideoPictureResourceInfoKHR::default()
+                .coded_offset(vk::Offset2D { x: 0, y: 0 })
+                .coded_extent(self.extent)
+                .base_array_layer(u32::try_from(reference.slot).unwrap_or(0))
+                .image_view_binding(self.dpb.view)
+        });
+        // The scope names every slot it touches: the one being written, not
+        // yet active so index -1, and for a predicted picture the one being
+        // read.
+        let mut opening_std: ash::vk::native::StdVideoEncodeH264ReferenceInfo =
+            // SAFETY: plain data from the codec headers; all-zero is valid and
+            // the fields that matter are written below.
+            unsafe { core::mem::zeroed() };
+        let mut opening_h264 = vk::VideoEncodeH264DpbSlotInfoKHR::default();
+        // The slot being activated carries the codec's description of what
+        // will stand in it, exactly as a bound reference's does: the scope
+        // marks it inactive with index -1 and chains the description all the
+        // same.
+        let mut setup_open_std: ash::vk::native::StdVideoEncodeH264ReferenceInfo =
+            // SAFETY: plain data from the codec headers; all-zero is valid and
+            // the fields that matter are written below.
+            unsafe { core::mem::zeroed() };
+        setup_open_std.primary_pic_type = if idr {
+            ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_IDR
+        } else {
+            ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_P
+        };
+        setup_open_std.FrameNum = frame_num;
+        setup_open_std.PicOrderCnt = poc;
+        let mut setup_open_h264 =
+            vk::VideoEncodeH264DpbSlotInfoKHR::default().std_reference_info(&setup_open_std);
+        let opening_refresh;
+        let opening_predicted;
+        let opening: &[vk::VideoReferenceSlotInfoKHR] = match (previous, &previous_resource) {
+            (Some(reference), Some(resource)) => {
+                // The bound slot carries the codec's description of what
+                // stands in it, exactly as the encode command's does.
+                opening_std.primary_pic_type = if reference.idr {
+                    ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_IDR
+                } else {
+                    ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_P
+                };
+                opening_std.FrameNum = reference.frame_num;
+                opening_std.PicOrderCnt = reference.poc;
+                opening_h264 = opening_h264.std_reference_info(&opening_std);
+                opening_predicted = [
+                    vk::VideoReferenceSlotInfoKHR::default()
+                        .slot_index(-1)
+                        .picture_resource(&recon_resource)
+                        .push_next(&mut setup_open_h264),
+                    vk::VideoReferenceSlotInfoKHR::default()
+                        .slot_index(i32::try_from(reference.slot).unwrap_or(0))
+                        .picture_resource(resource)
+                        .push_next(&mut opening_h264),
+                ];
+                &opening_predicted
+            }
+            _ => {
+                opening_refresh = [vk::VideoReferenceSlotInfoKHR::default()
+                    .slot_index(-1)
+                    .picture_resource(&recon_resource)
+                    .push_next(&mut setup_open_h264)];
+                &opening_refresh
+            }
+        };
         // **The codec's half of the layer, which is not optional.** One vendor
         // accepts a layer without it and the other refuses the whole recording,
         // at the end of the buffer rather than at the command.
@@ -1218,7 +1414,7 @@ impl Encoder<'_> {
         let mut begin_coding = vk::VideoBeginCodingInfoKHR::default()
             .video_session(self.session)
             .video_session_parameters(self.parameters)
-            .reference_slots(&opening);
+            .reference_slots(opening);
         // **Only once the session has been told something.** An opening must
         // carry the configuration the session is actually in, and before the
         // first control command that is the default -- so naming a rate here
@@ -1257,7 +1453,11 @@ impl Encoder<'_> {
         // the call, and the codec structures are plain data.
         unsafe {
             let mut slice: ash::vk::native::StdVideoEncodeH264SliceHeader = core::mem::zeroed();
-            slice.slice_type = ash::vk::native::StdVideoH264SliceType_STD_VIDEO_H264_SLICE_TYPE_I;
+            slice.slice_type = if idr {
+                ash::vk::native::StdVideoH264SliceType_STD_VIDEO_H264_SLICE_TYPE_I
+            } else {
+                ash::vk::native::StdVideoH264SliceType_STD_VIDEO_H264_SLICE_TYPE_P
+            };
             // **Zero, because the rate is set.** A fixed quantiser and a
             // bitrate are two ways of saying the same thing and a device takes
             // only one; naming both is refused, and on one vendor the refusal
@@ -1268,41 +1468,88 @@ impl Encoder<'_> {
                 // takes only one.
                 .constant_qp(if rated { 0 } else { 26 })
                 .std_slice_header(&slice)];
+
+            // A predicted picture names its one reference in list zero;
+            // every other entry is the no-reference sentinel.
+            let mut lists: ash::vk::native::StdVideoEncodeH264ReferenceListsInfo =
+                core::mem::zeroed();
+            lists.RefPicList0 = [0xff; 32];
+            lists.RefPicList1 = [0xff; 32];
+            if let Some(reference) = previous {
+                lists.RefPicList0[0] = u8::try_from(reference.slot).unwrap_or(0);
+            }
+
             let mut picture: ash::vk::native::StdVideoEncodeH264PictureInfo = core::mem::zeroed();
-            picture.primary_pic_type =
-                ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_IDR;
-            picture.flags.set_IdrPicFlag(1);
+            picture.primary_pic_type = if idr {
+                ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_IDR
+            } else {
+                ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_P
+            };
+            picture.flags.set_IdrPicFlag(u32::from(idr));
             picture.flags.set_is_reference(1);
+            picture.frame_num = frame_num;
+            picture.PicOrderCnt = poc;
+            picture.idr_pic_id = self.idr_id;
+            if previous.is_some() {
+                picture.pRefLists = &raw const lists;
+            }
             let mut h264 = vk::VideoEncodeH264PictureInfoKHR::default()
                 .nalu_slice_entries(&slices)
                 .std_picture_info(&picture);
-            let mut reference: ash::vk::native::StdVideoEncodeH264ReferenceInfo =
+
+            // The slot being written carries the description a later picture
+            // will predict from: this picture's own numbers.
+            let mut setup_std: ash::vk::native::StdVideoEncodeH264ReferenceInfo =
                 core::mem::zeroed();
-            reference.primary_pic_type =
-                ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_IDR;
-            let mut slot_h264 =
-                vk::VideoEncodeH264DpbSlotInfoKHR::default().std_reference_info(&reference);
+            setup_std.primary_pic_type = picture.primary_pic_type;
+            setup_std.FrameNum = frame_num;
+            setup_std.PicOrderCnt = poc;
+            let mut setup_h264 =
+                vk::VideoEncodeH264DpbSlotInfoKHR::default().std_reference_info(&setup_std);
             let setup = vk::VideoReferenceSlotInfoKHR::default()
-                .slot_index(0)
-                .picture_resource(&dpb_resource)
-                .push_next(&mut slot_h264);
-            let source = vk::VideoPictureResourceInfoKHR::default()
+                .slot_index(i32::try_from(self.recon).unwrap_or(0))
+                .picture_resource(&recon_resource)
+                .push_next(&mut setup_h264);
+
+            let source_resource = vk::VideoPictureResourceInfoKHR::default()
                 .coded_offset(vk::Offset2D { x: 0, y: 0 })
                 .coded_extent(self.extent)
                 .base_array_layer(0)
                 .image_view_binding(self.source.view);
-            let info = vk::VideoEncodeInfoKHR::default()
+            let mut info = vk::VideoEncodeInfoKHR::default()
                 .dst_buffer(self.bitstream)
                 .dst_buffer_offset(0)
                 .dst_buffer_range(BITSTREAM_BYTES)
-                .src_picture_resource(source)
+                .src_picture_resource(source_resource)
                 .setup_reference_slot(&setup)
                 .push_next(&mut h264);
+
+            // The reference being read, described to the encode itself. The
+            // scope named the slot; this is what tells the codec which
+            // numbers stand in it.
+            let mut previous_std: ash::vk::native::StdVideoEncodeH264ReferenceInfo =
+                core::mem::zeroed();
+            let mut previous_h264 = vk::VideoEncodeH264DpbSlotInfoKHR::default();
+            let active;
+            if let (Some(reference), Some(resource)) = (previous, &previous_resource) {
+                previous_std.primary_pic_type = if reference.idr {
+                    ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_IDR
+                } else {
+                    ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_P
+                };
+                previous_std.FrameNum = reference.frame_num;
+                previous_std.PicOrderCnt = reference.poc;
+                previous_h264 = previous_h264.std_reference_info(&previous_std);
+                active = [vk::VideoReferenceSlotInfoKHR::default()
+                    .slot_index(i32::try_from(reference.slot).unwrap_or(0))
+                    .picture_resource(resource)
+                    .push_next(&mut previous_h264)];
+                info = info.reference_slots(&active);
+            }
             device.cmd_begin_query(self.buffer, self.pool, 0, vk::QueryControlFlags::empty());
             (self.device.encode.fp().cmd_encode_video_khr)(self.buffer, &info);
             device.cmd_end_query(self.buffer, self.pool, 0);
         }
-        let _ = force_keyframe;
 
         let end = vk::VideoEndCodingInfoKHR::default();
         // SAFETY: recording; the structure outlives the call.
@@ -1324,6 +1571,20 @@ impl Encoder<'_> {
         self.mode = wanted;
         self.started = true;
         self.applied_bps = self.bitrate_bps;
+        // The picture just submitted becomes the reference, the other slot
+        // becomes the next reconstruction, and the counters move.
+        self.previous = Some(Reference {
+            slot: self.recon,
+            frame_num,
+            poc,
+            idr,
+        });
+        self.recon ^= 1;
+        self.frames_since_idr = self.frames_since_idr.wrapping_add(1);
+        if idr {
+            self.idr_id = self.idr_id.wrapping_add(1);
+        }
+        self.submitted_keyframe = idr;
         Ok(())
     }
 
@@ -1387,7 +1648,7 @@ impl Encoder<'_> {
         }
         Ok(Poll::Ready {
             bitstream: &self.collected,
-            keyframe: true,
+            keyframe: self.submitted_keyframe,
         })
     }
 
