@@ -86,10 +86,19 @@ fn main() {
             .converted()
             .unwrap_or_else(|e| fail(&format!("converted {at}: {e}")));
         converts.push(convert_began.elapsed().as_secs_f64() * 1000.0);
-        // **`LOWLAT_NO_ENCODE` acquires and does not encode**, which is the
-        // measurement that separates the conversion's own cost from what it
-        // pays for sharing a device with the encoder.
+        // **`LOWLAT_NO_ENCODE` acquires and does not encode.** The cadence
+        // knob separates two causes for a slow conversion on an integrated
+        // device: `LOWLAT_CADENCE_MS` paces the conversions like a stream
+        // does but without the encoder, so a figure that grows with the gap
+        // is the device clocking down between frames rather than the encoder
+        // contending with the conversion.
         if std::env::var("LOWLAT_NO_ENCODE").is_ok() {
+            if let Some(ms) = std::env::var("LOWLAT_CADENCE_MS")
+                .ok()
+                .and_then(|value| value.parse::<u64>().ok())
+            {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            }
             continue;
         }
         let Some(Registration::Open { surface }) = desktop.presented() else {

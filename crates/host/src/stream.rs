@@ -113,6 +113,16 @@ const VBLANK_CAP_MS: f64 = 50.0;
 /// case where paying it once is the only way to learn it.
 const VBLANK_PROBE_MS: f64 = 150.0;
 
+/// How far ahead of the expected present the device poke lands.
+///
+/// **The integrated device's wakeup, paid early.** Its compute block powers
+/// down after a few milliseconds of idle -- measured: a conversion after 2 ms
+/// of idle costs 0.4 ms, after 4 ms it costs 1.3 ms -- so a trivial
+/// submission is sent this far before the next vblank event, while the loop
+/// is waiting for it anyway, and the conversion that follows the event runs
+/// warm.
+const POKE_LEAD_MS: f64 = 2.0;
+
 /// Wait up to `budget_ms` for one vblank event, saying whether it arrived.
 ///
 /// **For the stream start probe, not the loop.** The loop polls the card
@@ -2732,6 +2742,13 @@ fn encode_loop<E: Encoder + FromDevice>(
     // one is requested per tick and never doubled.
     let mut vblank_seen = true;
     let mut vblank_armed = false;
+    // **When the vblanks arrive, and what they promise.** The arrival time is
+    // how the poke below is scheduled: the next event is one observed period
+    // after the last one, and the poke lands a moment before it. Nothing
+    // until the first event has been seen, which costs the first few ticks a
+    // cold conversion and nothing more.
+    let mut vblank_at_ms: Option<f64> = None;
+    let mut next_poke_ms: f64 = f64::INFINITY;
     // **Whether the display actually delivers vblank events.** Probed once,
     // before the loop: a refused arm answers immediately and a working
     // display answers within a refresh. Without this a display that cannot
@@ -3275,7 +3292,32 @@ fn encode_loop<E: Encoder + FromDevice>(
             && !vblank_seen
             && let Some(desktop) = display.as_deref_mut()
         {
-            let timeout = if waiting { 1 } else { 20 };
+            // **The wakeup is paid here rather than by the conversion.** The
+            // device powers its compute block down after a few milliseconds
+            // of idle, so a trivial submission lands a moment before the
+            // next present is expected; the conversion that follows the
+            // event then runs warm. A poke that arrives too late is a
+            // wasted few microseconds and corrects itself on the next event.
+            let timeout = if next_poke_ms.is_finite() && now_ms >= next_poke_ms {
+                if let Err(error) = desktop.poke() {
+                    lowlat_common::log_warn!("stream: the device poke failed, {error}");
+                }
+                next_poke_ms = f64::INFINITY;
+                1
+            } else if next_poke_ms.is_finite() {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_precision_loss,
+                    reason = "a poll timeout of at most a few milliseconds"
+                )]
+                {
+                    ((next_poke_ms - now_ms).ceil() as i32).clamp(1, 20)
+                }
+            } else if waiting {
+                1
+            } else {
+                20
+            };
             let mut pollfd = libc::pollfd {
                 fd: std::os::fd::AsRawFd::as_raw_fd(&desktop.poll_fd()),
                 events: libc::POLLIN,
@@ -3288,6 +3330,13 @@ fn encode_loop<E: Encoder + FromDevice>(
                 vblank_seen = desktop.drain_events();
                 if vblank_seen {
                     vblank_armed = false;
+                    // The event just fired; the next poke is scheduled one
+                    // observed period on, a moment before the next one.
+                    let at = lowlat_common::clock::elapsed_ms(started);
+                    if let Some(previous) = vblank_at_ms {
+                        next_poke_ms = at + (at - previous) - POKE_LEAD_MS;
+                    }
+                    vblank_at_ms = Some(at);
                 }
             }
             continue;

@@ -40,6 +40,35 @@ const CONVERT: &[u8] = include_bytes!("../shaders/convert.spv");
 /// covers 16 by 16 pixels.
 const GROUP: u32 = 8;
 
+/// How little of the picture a poke needs to cover, per axis.
+///
+/// **Measured, not chosen**: the wakeup the poke buys scales with its work up
+/// to a point, and on the open stack a sixteenth of the picture in each axis
+/// wakes the block fully -- the conversion that follows runs warm, and the
+/// poke itself is a fraction of a percent of a frame. One workgroup wakes
+/// only part of it, and a buffer fill wakes less than that.
+const POKE_DIVISOR: u32 = 16;
+
+/// The workgroups a poke covers, from a picture's size.
+///
+/// **Written once so the caller cannot drift from the measured figure.** A
+/// caller picking its own fraction would be re-deriving what the constant
+/// above already stands for.
+pub fn poke_groups(width: u32, height: u32) -> (u32, u32) {
+    (
+        width
+            .div_ceil(2)
+            .div_ceil(GROUP)
+            .div_ceil(POKE_DIVISOR)
+            .max(1),
+        height
+            .div_ceil(2)
+            .div_ceil(GROUP)
+            .div_ceil(POKE_DIVISOR)
+            .max(1),
+    )
+}
+
 /// How long a collect waits before declaring the conversion stuck, in
 /// nanoseconds.
 ///
@@ -844,7 +873,7 @@ impl Converter {
         // SAFETY: the create info outlives the call.
         let view = unsafe { vk_device.create_image_view(&view_info, None) }.map_err(driver)?;
 
-        match self.dispatch(device, source, target, view, dither) {
+        match self.dispatch(device, source, target, view, dither, None) {
             Ok(()) => {
                 self.flight = Some(Flight::Convert(view));
                 Ok(())
@@ -852,6 +881,59 @@ impl Converter {
             Err(error) => {
                 // SAFETY: created above; nothing submitted refers to it
                 // because submitting is what failed, or nothing was submitted.
+                unsafe { vk_device.destroy_image_view(view, None) };
+                Err(error)
+            }
+        }
+    }
+
+    /// Poke the device with a trivial conversion dispatch.
+    ///
+    /// **For the wakeup cost an integrated device pays.** Measured there, a
+    /// conversion submitted after a few milliseconds of idle costs 1.3 ms
+    /// against 0.4 ms warm, because the compute block powers down between
+    /// frames. A one-workgroup dispatch two milliseconds before the real one
+    /// pays the wakeup while the loop would otherwise be waiting for the
+    /// display, so the conversion itself runs warm. It is the real pipeline
+    /// rather than a buffer fill, because measured again, a fill wakes only
+    /// half of what the block needs.
+    ///
+    /// The target is whichever slot the next real conversion overwrites
+    /// whole, so the one block this writes is of no consequence; the digest
+    /// it produces is the caller's to discard.
+    pub fn poke(
+        &mut self,
+        device: &Device,
+        source: &Imported,
+        target: &Nv12,
+        groups: (u32, u32),
+    ) -> Result<(), Error> {
+        if self.flight.is_some() {
+            return Err(Error::Busy);
+        }
+        let vk_device = &device.device;
+
+        let view_info = vk::ImageViewCreateInfo::default()
+            .image(source.image)
+            .view_type(vk::ImageViewType::TYPE_2D)
+            .format(source.format)
+            .subresource_range(vk::ImageSubresourceRange {
+                aspect_mask: vk::ImageAspectFlags::COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: 0,
+                layer_count: 1,
+            });
+        // SAFETY: the create info outlives the call.
+        let view = unsafe { vk_device.create_image_view(&view_info, None) }.map_err(driver)?;
+
+        match self.dispatch(device, source, target, view, false, Some(groups)) {
+            Ok(()) => {
+                self.flight = Some(Flight::Convert(view));
+                Ok(())
+            }
+            Err(error) => {
+                // SAFETY: created above; nothing submitted refers to it.
                 unsafe { vk_device.destroy_image_view(view, None) };
                 Err(error)
             }
@@ -925,7 +1007,8 @@ impl Converter {
         // **Read after the fence and not before.** The copy is the last thing
         // in a conversion's recording, so the fence being signalled is exactly
         // what says these eight bytes are that submission's rather than the
-        // previous one's.
+        // previous one's. A poke leaves them partial, which is fine: its
+        // caller discards the digest.
         // SAFETY: mapped for the life of the converter, coherent, and eight
         // bytes long; the fence firing ordered the write that filled it.
         let bytes = unsafe { core::slice::from_raw_parts(self.mapped, DIGEST) };
@@ -999,9 +1082,10 @@ impl Converter {
         target: &Nv12,
         view: vk::ImageView,
         dither: bool,
+        groups: Option<(u32, u32)>,
     ) -> Result<(), Error> {
         self.bind_set(device, view, target)?;
-        self.record(device, source, target, dither)
+        self.record(device, source, target, dither, groups)
     }
 
     fn record(
@@ -1010,6 +1094,7 @@ impl Converter {
         source: &Imported,
         target: &Nv12,
         dither: bool,
+        groups: Option<(u32, u32)>,
     ) -> Result<(), Error> {
         let vk_device = &device.device;
         let commands = self.command;
@@ -1079,8 +1164,14 @@ impl Converter {
         };
 
         // One invocation per 2x2 block, rounded up so an odd edge is covered.
-        let groups_x = source.width.div_ceil(2).div_ceil(GROUP);
-        let groups_y = source.height.div_ceil(2).div_ceil(GROUP);
+        // A poke overrides this with a single workgroup: it needs the block
+        // awake, not the picture converted.
+        let (groups_x, groups_y) = groups.unwrap_or_else(|| {
+            (
+                source.width.div_ceil(2).div_ceil(GROUP),
+                source.height.div_ceil(2).div_ceil(GROUP),
+            )
+        });
 
         // **Zeroed here rather than on the processor**, so nothing has to wait
         // between clearing it and filling it: both are in this recording and

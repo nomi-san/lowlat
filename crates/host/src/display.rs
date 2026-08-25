@@ -387,6 +387,34 @@ impl Pipeline {
         }
     }
 
+    /// Poke the device with a trivial conversion, and wait for it.
+    ///
+    /// **For the wakeup cost an integrated device pays**, measured on the open
+    /// stack: a conversion submitted after a few milliseconds of idle costs
+    /// 1.3 ms against 0.4 ms warm, because the compute block powers down
+    /// between frames. The loop calls this a moment before the display's next
+    /// present, while it would otherwise be waiting for it, so the conversion
+    /// that follows runs warm. The one workgroup this writes lands in a slot
+    /// the next conversion overwrites whole, and the digest is discarded. The
+    /// other interface has no such cost, so there is nothing to poke.
+    fn poke(&mut self, key: u64, slot: usize) -> Result<(), Error> {
+        match self {
+            Self::Vulkan(vk) => {
+                let source = vk.imports.get(&key).ok_or(Error::Register)?;
+                let target = vk.targets.get(slot).ok_or(Error::Register)?;
+                let groups = lowlat_capture::convert::poke_groups(source.width, source.height);
+                vk.converter
+                    .poke(&vk.device, source, &target.frame, groups)
+                    .map_err(Error::Convert)?;
+                // The wait is the point: the submission above woke the block,
+                // and the digest it produces is nobody's.
+                let _ = vk.converter.collect(&vk.device).map_err(Error::Convert)?;
+                Ok(())
+            }
+            Self::Gl(_) => Ok(()),
+        }
+    }
+
     /// The registration for one target slot.
     fn registration(&self, slot: usize) -> Option<&Registration> {
         match self {
@@ -489,6 +517,13 @@ pub struct Display {
     /// hands both back as the same `Acquired` value the old synchronous
     /// acquire returned. Nothing when no conversion is in flight.
     flight_at: Option<Time>,
+    /// The import the last [`Display::acquire`] converted from.
+    ///
+    /// **What a poke reads.** A poke is a one-workgroup conversion through
+    /// the same pipeline, and it needs a source that is already imported;
+    /// this is the one the stream is converting anyway. Nothing before the
+    /// first acquire, which skips the poke rather than inventing a source.
+    last_key: Option<u64>,
     /// The pointer plane, when the pipeline has one. **Found once**: a machine
     /// that draws its pointer in the picture rather than on a plane has none,
     /// and looking for it every frame would be a walk of the whole pipeline
@@ -582,6 +617,7 @@ impl Display {
             cursor: Watcher::new(),
             digest: None,
             flight_at: None,
+            last_key: None,
             resized: false,
             place: layout
                 .connector
@@ -986,6 +1022,7 @@ impl Display {
 
         self.pipeline.submit(key, slot)?;
         self.flight_at = Some(began);
+        self.last_key = Some(key);
         Ok(began)
     }
 
@@ -1127,6 +1164,26 @@ impl Display {
     /// one, and an empty queue is `false` rather than a wait.
     pub fn drain_events(&self) -> bool {
         self.card.drain_events().unwrap_or(false)
+    }
+
+    /// Poke the device with a one-workgroup conversion, for the next
+    /// conversion.
+    ///
+    /// **The wakeup is paid here rather than by the conversion.** An
+    /// integrated device powers its compute block down after a few
+    /// milliseconds of idle, and the first real work after the gap pays the
+    /// wakeup; a loop that already knows it will convert on the next present
+    /// calls this a moment before it, so the conversion lands on a warm
+    /// block. The digest it produces is discarded, and the block it writes
+    /// lands in a slot the next conversion overwrites whole.
+    pub fn poke(&mut self) -> Result<(), Error> {
+        let Some(key) = self.last_key else {
+            // Nothing converted yet: there is no source to poke with, and
+            // the first conversion pays the wakeup once.
+            return Ok(());
+        };
+        let slot = self.next % self.pipeline.depth().max(1);
+        self.pipeline.poke(key, slot)
     }
 
     /// Whether the display changed size, clearing the answer.
