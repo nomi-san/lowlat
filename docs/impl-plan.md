@@ -1235,12 +1235,16 @@ decides what to do with them.
 
 ## Phase 11 - Multi-guest, software encode, and VAAPI
 
-- [ ] **A guest whose peer stops answering with a full send window is ended.** It is not today:
-  the window climbs to its cap, every fragment goes stale, and the host retransmits at three
-  times the configured rate indefinitely while the guest is never reaped. **This is a
-  correctness bug rather than a throughput one and does not belong behind the rest of this
-  phase.** A window at its cap with every fragment stale is enough to end a guest on its own,
-  without waiting on a deadline.
+- [ ] **A guest whose peer stops answering with a full send window is ended on the window
+  alone.** *Corrected 2026-08-25: this item used to say such a guest was never reaped, and that
+  has not been true since the delivery deadline landed.* A channel holding unacknowledged data
+  for the whole of that deadline makes the session undeliverable and the guest is ended, so the
+  failure is bounded rather than permanent. **What is still unbuilt is ending it without the
+  wait**: a window at its cap with every fragment stale says the same thing the deadline takes
+  fifteen seconds to conclude, and for those fifteen seconds the host retransmits at three
+  times the configured rate at a peer that is not listening. **A throughput fault with a bound,
+  then, rather than the correctness fault this item was written as** -- which is why it no
+  longer has to come before the rest of this phase.
 - [ ] Per-guest pressure gate and the skip-until-keyframe cascade, expressed so a skip cannot
   be issued without latching the pending-keyframe state.
 - [ ] Consensus actuators and the degraded-guest event.
