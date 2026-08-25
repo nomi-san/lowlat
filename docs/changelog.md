@@ -3,6 +3,37 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## A frame larger than a guest's ceiling stopped deciding forever
+
+**Connected, input working, nothing on screen**, and the only way out was
+to switch displays. The host captured, converted and encoded throughout,
+and every refresh counter read zero -- which is what named it, because a
+guest waiting for a picture with no history behind it should have been
+asking for one continuously.
+
+The delivery mark was the largest frame of the session and **only ever
+grew**. A guest waiting for a keyframe may only ask for one when it has
+room for that mark, so a single frame above its ceiling meant it could
+neither be admitted nor ask to be, for as long as the stream lived. A
+coded refresh on a 2560x1440 output is enough at ten megabits, where the
+ceiling is fifteen hundred fragments -- which is why it appeared on
+switching to a larger screen, why it survived every reconnection, and why
+rebuilding the stream under it cleared it.
+
+**The mark now spans a window rather than a session**: two of two
+seconds, so a size is remembered for between two and four and then stops
+deciding. Measured in time and not in frames, because a still desktop
+sends one picture a second and a window counted in frames would hold a
+spike for ten minutes on exactly the stream a guest is most likely to be
+joining. Named regression test, watched to fail.
+
+- **What the counters could not say is what took longest to find.** There
+  is a count for a keyframe refused for want of room and none for a guest
+  that could not even ask, so the log said nothing at all rather than
+  saying it repeatedly. The absence was the evidence in the end -- a
+  joining guest and `sent=0 no_room=0 asked=0` together are impossible
+  unless the request itself is being withheld.
+
 ## 11.9: the third encoder carries the other codec
 
 **The encoder that shares the capture's device codes HEVC now**, where it
