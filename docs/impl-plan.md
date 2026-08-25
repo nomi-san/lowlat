@@ -1276,6 +1276,21 @@ decides what to do with them.
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
 
+- 2026-08-25: **Copied text is the helper's fifth customer, and its gate has four values.** A
+  clipboard is an ownership rather than a value: setting one announces that you own the
+  selection and the bytes are asked for later, when somebody pastes, so a program that writes
+  it and exits takes it with it. There is no one-shot form, on either display stack, which
+  makes this the customer that most needs something living in the session -- it can appear to
+  work anyway where a desktop's clipboard manager keeps a copy, and that is somebody's
+  configuration rather than a design. **The policy is the service's, not the boundary's**,
+  because copied text travels as an opaque application message the library never sees.
+  `guest_clipboard` takes `off`, `send`, `recv` or `both`, named from the host's point of view,
+  with anything unrecognised meaning `off` so a typo cannot open a clipboard. **Four values
+  rather than a switch, because the directions are not equally dangerous**: sending ships
+  whatever the person copied, including what a password manager put there, while receiving
+  leaves a person to choose whether to paste. A peer that owns the machine is not a guest and
+  is not subject to it. Written up in [07 §5.1](07-platforms.md).
+
 - 2026-08-25: **The session helper is one binary in a second role, and the session connects
   outward.** Everything that needs session state -- relative mode, the idle inhibitor, the
   display layout, and display mode or rotation -- was blocked on a system service being unable

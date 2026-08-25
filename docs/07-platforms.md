@@ -420,6 +420,56 @@ Four things need session state, and none of them can be answered below it:
 | the idle inhibitor | a lease, held while asked | the screen may blank during a session |
 | the display layout | a question, asked when needed | the backend's own reading is used instead |
 | display mode and rotation | a request, rarely | a guest's request is refused with a reason |
+| the clipboard | an ownership, held | a guest's text is dropped and the desktop's never leaves |
+
+#### The clipboard is an ownership, not a value
+
+Copied text looks like the one thing on that list a service could do for itself, and it is the
+one that most needs something living in the session.
+
+**Putting text on a clipboard is announcing that you own the selection.** The bytes are not
+handed over then; they are asked for later, when somebody pastes, in a request back to whoever
+claimed it. That is true of the privileged selection protocol on one display stack and of X
+selections on the other. **A program that sets the clipboard and exits takes the clipboard with
+it**, so there is no one-shot form of this: the thing that wrote it has to still be there when
+the paste happens. Watching for changes is the same shape from the other end, a subscription
+that lasts exactly as long as the thing holding it.
+
+It can appear to work without any of that, because a desktop's own clipboard manager may keep a
+copy of what it saw. That is a property of somebody's configuration and not of the design, and
+building on it means a feature that works on one desk and not the next.
+
+The mechanism differs per desktop as well -- a privileged selection protocol here, an X
+selection there -- which is the same reason the rest of this section exists.
+
+**The policy, though, is not the helper's and not the boundary's.** Copied text travels as an
+opaque application message ([01 §11.1](01-protocol.md)), so the library never sees it and the
+service decides who may have it.
+
+| `guest_clipboard` | the desktop's clipboard reaches a guest | a guest's clipboard reaches the desktop |
+|---|---|---|
+| `off` | no | no |
+| `send` | yes | no |
+| `recv` | no | yes |
+| `both` | yes | yes |
+
+**The names are the host's point of view**, and which way round they read is load bearing:
+`send` is this machine sending its own clipboard out. **Anything else is `off`** -- absent,
+empty, misspelled, or a value from a newer version -- so that a typo cannot open a clipboard
+and a configuration this build does not understand fails closed.
+
+**The two directions are not equally dangerous, which is the whole reason there are four
+values and not two.** `send` ships whatever the person at the machine copied, and that includes
+what a password manager put there. `recv` puts a guest's text on the desktop's clipboard, where
+a person still has to choose to paste it. One switch would mean letting a guest paste a link
+into your machine also hands them everything you copy.
+
+**A peer that owns the machine is not a guest** and is not subject to this: ownership arrives
+relayed from signaling and is never read from the peer ([04 §3](04-signaling.md)). The setting
+is about guests, which is also what the stock arrangement does.
+
+Nothing new bounds the size: copied text is an application message and is already refused above
+the ceiling those carry.
 
 #### Who may connect, and where
 
