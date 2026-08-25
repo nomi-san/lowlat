@@ -3,6 +3,31 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 11.5: the conversion writes the encoder's ring
+
+**The whole shared-device arrangement runs end to end**: an uploaded picture
+is converted by the compute shader directly into the third encoder's own
+slots, predicted pictures are encoded from them, and the decoded stream's
+pixels match the source. Zero copies, zero validation messages.
+
+- **A conversion target is named by its handles, not owned.** An owned
+  allocation borrows itself; an encoder that lends its picture's planes
+  builds the same reference from those handles. One two-plane image
+  transitions once, not once per plane view.
+- **The final layout is the reader's, paid by the writer.** A lent picture
+  is handed over in the layout its encoder reads, in the conversion's own
+  recording, so the encoder never touches a picture it does not own -- the
+  written-picture entry point exists for exactly that, and the discard the
+  ordinary entry performs on its first pass is what it must not do.
+- **The pictures are shared between the writing and encoding families**, so
+  no per-frame ownership transfer stands between the conversion and the
+  encode.
+- **The validation layer found a violation in the shipped conversion on the
+  way**: the converter resets its one command buffer per submission, and its
+  pool never carried the reset flag. Both drivers tolerate the violation
+  silently, which is why it survived a live session; the pool carries the
+  flag now.
+
 ## 11.4: a ring of source pictures on the third encoder
 
 **The third encoder takes a ring of source slots**, fixed at build, where it
