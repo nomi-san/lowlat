@@ -179,7 +179,7 @@ impl Vulkan {
     /// **Matched on the node numbers the driver reports**, which is exact.
     /// Matching on a name or an index breaks the moment a machine has two cards
     /// from one vendor, or reorders them across a reboot.
-    pub fn open(&self, node: &Path) -> Result<Device<'_>> {
+    pub fn open(&self, node: &Path) -> Result<Device> {
         let wanted = node_numbers(node).ok_or(Error::NoDeviceForNode)?;
         // SAFETY: enumerating from a live instance.
         let candidates = unsafe { self.instance.enumerate_physical_devices() }.map_err(driver)?;
@@ -243,30 +243,33 @@ impl Drop for Vulkan {
 /// **Which it is decides only who releases it.** Everything else reads through
 /// it identically, which is what lets an encoder be built on a device the
 /// capture already opened.
-enum Held<'a> {
-    /// Boxed only so the two arms are the same size; the table a device is
-    /// made of is large and a borrow is a pointer.
+enum Held {
+    /// Boxed only so the two arms stay comparable in size; the table a device
+    /// is made of is large.
     Owned(Box<ash::Device>),
-    Lent(&'a ash::Device),
+    /// A clone of the capture's device wrapper, which is what keeps the
+    /// underlying device alive for as long as this encoder needs it -- the
+    /// last clone dropped releases it, so drop order stops mattering.
+    Shared(lowlat_capture::vulkan::Device),
 }
 
-impl core::ops::Deref for Held<'_> {
+impl core::ops::Deref for Held {
     type Target = ash::Device;
 
     fn deref(&self) -> &Self::Target {
         match self {
             Self::Owned(device) => device,
-            Self::Lent(device) => device,
+            Self::Shared(device) => device.ash(),
         }
     }
 }
 
-pub struct Device<'a> {
-    instance: &'a ash::Instance,
+pub struct Device {
+    instance: ash::Instance,
     /// The physical-device queries, which live above any device.
     queries: ash::khr::video_queue::Instance,
     physical: vk::PhysicalDevice,
-    device: Held<'a>,
+    device: Held,
     video: ash::khr::video_queue::Device,
     encode: ash::khr::video_encode_queue::Device,
     queue: vk::Queue,
@@ -277,7 +280,7 @@ pub struct Device<'a> {
     name: String,
 }
 
-impl core::fmt::Debug for Device<'_> {
+impl core::fmt::Debug for Device {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Device")
             .field("name", &self.name)
@@ -286,7 +289,7 @@ impl core::fmt::Debug for Device<'_> {
     }
 }
 
-impl<'a> Device<'a> {
+impl Device {
     /// Build on a device somebody else opened.
     ///
     /// **This is the arrangement the path exists for.** The capture, the
@@ -297,18 +300,19 @@ impl<'a> Device<'a> {
     /// The caller is the owner: nothing here releases the device, and the
     /// borrow is what stops this outliving it.
     pub fn shared(
-        shared: lowlat_capture::vulkan::Shared<'a>,
+        capture: lowlat_capture::vulkan::Device,
         queue: vk::Queue,
         family: u32,
     ) -> Result<Self> {
-        let video = ash::khr::video_queue::Device::new(shared.instance, shared.device);
-        let encode = ash::khr::video_encode_queue::Device::new(shared.instance, shared.device);
+        let video = ash::khr::video_queue::Device::new(capture.ash_instance(), capture.ash());
+        let encode =
+            ash::khr::video_encode_queue::Device::new(capture.ash_instance(), capture.ash());
         let mut properties = vk::PhysicalDeviceProperties2::default();
         // SAFETY: the device came from this instance.
         unsafe {
-            shared
-                .instance
-                .get_physical_device_properties2(shared.physical, &mut properties);
+            capture
+                .ash_instance()
+                .get_physical_device_properties2(capture.physical(), &mut properties);
         }
         let name = properties
             .properties
@@ -316,24 +320,24 @@ impl<'a> Device<'a> {
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_else(|_| "an unnamed device".to_string());
         Ok(Self {
-            instance: shared.instance,
-            queries: ash::khr::video_queue::Instance::new(shared.entry, shared.instance),
-            physical: shared.physical,
-            device: Held::Lent(shared.device),
+            instance: capture.ash_instance().clone(),
+            queries: ash::khr::video_queue::Instance::new(capture.entry(), capture.ash_instance()),
+            physical: capture.physical(),
+            // The conversion's own family writes the pictures this device
+            // encodes, and the clone below is what keeps the shared device
+            // alive for as long as this one is.
+            writer_family: capture.family(),
+            device: Held::Shared(capture),
             video,
             encode,
             queue,
             family,
-            // The conversion's own family: it is what writes the pictures
-            // this device encodes, and the pictures are created shared
-            // between the two.
-            writer_family: shared.queue_family,
             name,
         })
     }
 
     fn open(
-        instance: &'a ash::Instance,
+        instance: &ash::Instance,
         entry: &ash::Entry,
         physical: vk::PhysicalDevice,
     ) -> Result<Self> {
@@ -409,7 +413,7 @@ impl<'a> Device<'a> {
             .unwrap_or_else(|_| "an unnamed device".to_string());
 
         Ok(Self {
-            instance,
+            instance: instance.clone(),
             queries: ash::khr::video_queue::Instance::new(entry, instance),
             physical,
             device: Held::Owned(Box::new(device)),
@@ -562,7 +566,7 @@ impl<'a> Device<'a> {
     }
 }
 
-impl Drop for Device<'_> {
+impl Drop for Device {
     fn drop(&mut self) {
         // **Only what this opened is released.** A lent device belongs to
         // whoever opened it, and destroying it here would be the second free.
@@ -599,7 +603,7 @@ struct Picture {
 /// [`Encoder::planes`] where the device allows that, which is what makes the
 /// path zero copy; where it does not, a caller copies into it instead.
 pub struct Encoder<'a> {
-    device: &'a Device<'a>,
+    device: &'a Device,
     session: vk::VideoSessionKHR,
     session_memory: Vec<vk::DeviceMemory>,
     parameters: vk::VideoSessionParametersKHR,
@@ -685,9 +689,9 @@ impl core::fmt::Debug for Encoder<'_> {
     }
 }
 
-impl<'a> Device<'a> {
+impl Device {
     /// Build a session and everything one picture needs.
-    pub fn encoder(
+    pub fn encoder<'a>(
         &'a self,
         caps: &Caps,
         width: u32,
@@ -804,9 +808,9 @@ impl<'a> Device<'a> {
     }
 }
 
-impl<'a> Device<'a> {
+impl Device {
     /// Everything after the session exists, so a failure has one place to undo.
-    fn finish_encoder(
+    fn finish_encoder<'a>(
         &'a self,
         caps: &Caps,
         extent: vk::Extent2D,

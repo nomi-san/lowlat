@@ -138,7 +138,30 @@ fn advertises(available: &[vk::ExtensionProperties], wanted: &CStr) -> bool {
 }
 
 /// The device the display is on, ready to import from it.
-pub struct Device {
+///
+/// **Cheaply cloneable, one underlying device.** The display pipeline holds a
+/// clone, and an encoder sharing the device holds another; the last clone
+/// dropped releases the device, so drop order between them stops mattering.
+/// Cloning happens at session construction, never on a frame path.
+#[derive(Clone)]
+pub struct Device(std::sync::Arc<DeviceInner>);
+
+impl core::ops::Deref for Device {
+    type Target = DeviceInner;
+
+    fn deref(&self) -> &DeviceInner {
+        &self.0
+    }
+}
+
+impl core::fmt::Debug for Device {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+/// What one device holds. Reached through [`Device`], never owned directly.
+pub struct DeviceInner {
     /// Dropped last. Every handle below is scoped to it.
     _entry: ash::Entry,
     pub(crate) instance: ash::Instance,
@@ -155,7 +178,7 @@ pub struct Device {
     encode: Option<(vk::Queue, u32)>,
 }
 
-impl core::fmt::Debug for Device {
+impl core::fmt::Debug for DeviceInner {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Device")
             .field("queue_family", &self.queue_family)
@@ -198,20 +221,33 @@ impl Device {
         self.encode
     }
 
-    /// The handles an encoder built on this device needs.
+    /// The loader, for an extension table built above this device.
+    pub fn entry(&self) -> &ash::Entry {
+        &self._entry
+    }
+
+    /// The instance, for whatever builds on this device.
+    pub fn ash_instance(&self) -> &ash::Instance {
+        &self.instance
+    }
+
+    /// The device itself, for whatever builds on it.
     ///
-    /// **Borrowed, never owned.** Whatever builds on these must not outlive the
-    /// device, and must not release it: the frame that never leaves the device
-    /// is the whole point, and two owners of one device is how that becomes a
-    /// double free instead.
-    pub fn shared(&self) -> Shared<'_> {
-        Shared {
-            entry: &self._entry,
-            instance: &self.instance,
-            device: &self.device,
-            physical: self.physical,
-            queue_family: self.queue_family,
-        }
+    /// An encoder sharing this device holds a [`Device`] clone, which is what
+    /// keeps these handles alive for as long as it needs them.
+    pub fn ash(&self) -> &ash::Device {
+        &self.device
+    }
+
+    /// The physical device behind it.
+    pub fn physical(&self) -> vk::PhysicalDevice {
+        self.physical
+    }
+
+    /// The family the conversion submits on, which is the family that writes
+    /// an encoder's picture when the two share the device.
+    pub fn family(&self) -> u32 {
+        self.queue_family
     }
 
     fn opened(node: &Path, encode: bool) -> Result<Self, Error> {
@@ -236,15 +272,17 @@ impl Device {
         });
 
         match opened {
-            Ok((physical, device, queue, queue_family, encode)) => Ok(Self {
-                _entry: entry,
-                instance,
-                physical,
-                device,
-                queue,
-                queue_family,
-                encode,
-            }),
+            Ok((physical, device, queue, queue_family, encode)) => {
+                Ok(Self(std::sync::Arc::new(DeviceInner {
+                    _entry: entry,
+                    instance,
+                    physical,
+                    device,
+                    queue,
+                    queue_family,
+                    encode,
+                })))
+            }
             Err(error) => {
                 // SAFETY: nothing created from this instance outlives the
                 // failed call, so it is the only thing left to release.
@@ -283,15 +321,17 @@ impl Device {
             .ok_or(Error::NoDeviceForNode);
 
         match opened {
-            Ok((physical, device, queue, queue_family)) => Ok(Self {
-                _entry: entry,
-                instance,
-                physical,
-                device,
-                queue,
-                queue_family,
-                encode: None,
-            }),
+            Ok((physical, device, queue, queue_family)) => {
+                Ok(Self(std::sync::Arc::new(DeviceInner {
+                    _entry: entry,
+                    instance,
+                    physical,
+                    device,
+                    queue,
+                    queue_family,
+                    encode: None,
+                })))
+            }
             Err(error) => {
                 // SAFETY: nothing created from it outlives the failed call.
                 unsafe { instance.destroy_instance(None) };
@@ -500,8 +540,11 @@ impl Device {
     }
 }
 
-impl Drop for Device {
+impl Drop for DeviceInner {
     fn drop(&mut self) {
+        // **On the inner value, so the last clone is what releases.** A drop
+        // on the wrapper would destroy the device the first time any clone
+        // went away, with the others still holding it.
         // SAFETY: both handles are live until here, and nothing derived from
         // them outlives this type. The wait is what makes that true: work still
         // running would otherwise be holding memory that is about to go.
@@ -1210,27 +1253,5 @@ mod tests {
                 (u32::try_from(major).unwrap(), u32::try_from(minor).unwrap())
             );
         }
-    }
-}
-
-/// One device's handles, lent to something built on the same device.
-///
-/// **A lend, not a handover.** The lifetime is what says the borrower cannot
-/// outlive the device, and nothing here releases anything.
-#[derive(Clone, Copy)]
-pub struct Shared<'a> {
-    /// The loader, which the extension loaders above the device need.
-    pub entry: &'a ash::Entry,
-    pub instance: &'a ash::Instance,
-    pub device: &'a ash::Device,
-    pub physical: vk::PhysicalDevice,
-    /// The family the conversion submits on, which is the family that writes
-    /// an encoder's picture when the two share the device.
-    pub queue_family: u32,
-}
-
-impl core::fmt::Debug for Shared<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.write_str("Shared(one device)")
     }
 }

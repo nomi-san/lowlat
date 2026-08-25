@@ -34,7 +34,7 @@ fn main() {
     };
     println!("  one device, encoding on queue family {family}");
 
-    let encoder_device = match vulkan::Device::shared(capture.shared(), queue, family) {
+    let encoder_device = match vulkan::Device::shared(capture.clone(), queue, family) {
         Ok(device) => device,
         Err(error) => {
             eprintln!("the encoder could not be built on it: {error}");
