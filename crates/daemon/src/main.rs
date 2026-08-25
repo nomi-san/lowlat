@@ -138,21 +138,27 @@ fn report_microphone(heard: &lowlat::microphone::Receiver) {
     }
 }
 
-fn audio_config() -> Option<lowlat_audio::Config> {
-    if flag_set("--no-audio") {
-        return None;
-    }
-    Some(lowlat_audio::Config {
+/// Where sound is read from.
+///
+/// **Always somewhere.** A host that streams a desktop streams its sound; there
+/// is no reason to run one without it and no flag to. A machine with no sound
+/// server says so once and the session runs regardless, which is the same
+/// answer switching it off would have given.
+fn audio_config() -> lowlat_audio::Config {
+    lowlat_audio::Config {
         server: flag("--audio-server"),
         wanted: std::sync::Arc::new(lowlat_audio::capture::Wanted::new(
             lowlat_audio::capture::Live {
                 device: flag("--audio-device"),
-                // **Off unless asked for.** It silences the speakers of whoever
-                // is at the machine, which is opted into rather than defaulted.
-                mute_local: flag_set("--mute-local"),
+                // **On unless asked otherwise.** Somebody hosting their own
+                // machine is in the room with it: hearing the session played
+                // back at them is the surprising default, not the quiet one.
+                // The tap is ahead of the mute where the device allows it, so
+                // a guest hears everything either way.
+                mute_local: !flag_set("--no-host-mute"),
             },
         )),
-    })
+    }
 }
 
 fn read(path: &str) -> String {
@@ -422,15 +428,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(lowlat_audio::encode::DEFAULT_BITRATE_KBPS),
             allow_raw_audio: flag_set("--allow-raw-audio"),
-            // The daemon's switch is its command line, which does not change
-            // while it runs: no source means no sound, and there is nothing
-            // here that could turn it back on.
-            audio_on: !flag_set("--no-audio"),
+            // **On, with nothing to turn it off.** A host that streams a
+            // desktop streams its sound; the boundary keeps the switch because
+            // an application embedding this library may have its own reasons,
+            // and a daemon has none.
+            audio_on: true,
             // **Off unless asked for**, like the boundary's own default: it
             // costs a packet every ten milliseconds on the control channel and
             // a peer is told to send one only because this said so.
             accept_microphone: flag_set("--accept-microphone"),
-            audio: audio_config(),
+            audio: Some(audio_config()),
             codec,
             backend,
             cg_level,
