@@ -75,7 +75,7 @@ fn main() {
         })
         .unwrap_or_else(|e| fail(&format!("import capture: {e}")));
 
-    let converter = Converter::new(&device).unwrap_or_else(|e| fail(&format!("pipeline: {e}")));
+    let mut converter = Converter::new(&device).unwrap_or_else(|e| fail(&format!("pipeline: {e}")));
     let target = device
         .allocate_nv12(fb.width, fb.height)
         .unwrap_or_else(|e| fail(&format!("allocate: {e}")));

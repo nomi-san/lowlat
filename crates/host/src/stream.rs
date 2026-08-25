@@ -785,7 +785,7 @@ impl Shared {
 /// already a rolling estimate.
 #[derive(Debug, Default)]
 struct TimingCells {
-    cells: [AtomicU32; 15],
+    cells: [AtomicU32; 18],
 }
 
 /// The last refresh window, for a reader outside the loop.
@@ -821,6 +821,9 @@ impl TimingCells {
             report.acquire.p50,
             report.acquire.p95,
             report.acquire.p99,
+            report.convert.p50,
+            report.convert.p95,
+            report.convert.p99,
             report.pointer.p50,
             report.pointer.p95,
             report.pointer.p99,
@@ -848,7 +851,7 @@ impl TimingCells {
     }
 
     fn read(&self) -> Report {
-        let mut ms = [0.0f64; 15];
+        let mut ms = [0.0f64; 18];
         for (at, cell) in self.cells.iter().enumerate() {
             if let Some(slot) = ms.get_mut(at) {
                 *slot = f64::from(cell.load(Ordering::Relaxed)) / 1000.0;
@@ -862,10 +865,11 @@ impl TimingCells {
         };
         Report {
             acquire: stage(0),
-            pointer: stage(3),
-            encode: stage(6),
-            publish: stage(9),
-            interval: stage(12),
+            convert: stage(3),
+            pointer: stage(6),
+            encode: stage(9),
+            publish: stage(12),
+            interval: stage(15),
         }
     }
 }
@@ -2760,6 +2764,73 @@ fn encode_loop<E: Encoder + FromDevice>(
             refreshes.reinit = refreshes.reinit.saturating_add(1);
         }
 
+        let now_ms = lowlat_common::clock::elapsed_ms(started);
+
+        // **Is anything still plugged into the device being captured?** A
+        // controller whose connector has gone keeps scanning out the last
+        // picture it held, so nothing above this notices: every read succeeds
+        // and the stream carries a desktop that stopped changing. Asked on its
+        // own slow cadence, because it walks every connector.
+        if now_ms - attached_ms >= ATTACHED_MS {
+            attached_ms = now_ms;
+            if display.as_deref().is_some_and(|d| !d.attached()) {
+                return Exit::Rediscover("nothing is plugged into the device being captured");
+            }
+        }
+        // **The tick splits around the collect.** The conversion is submitted
+        // before the collect below, so the device works on it while the loop
+        // collects the previous picture: the collect's lock is the largest
+        // block of the pass, and overlapped with it the conversion costs the
+        // frame path nothing. The picture itself is collected on the other
+        // side.
+        let due = now_ms >= next_frame_ms;
+        if due {
+            // The deadline advances by the interval rather than from now, so
+            // the frame clock does not drift, and it is pulled forward after a
+            // stall rather than catching up in a burst nobody can use.
+            next_frame_ms = if next_frame_ms + interval_ms < now_ms {
+                now_ms + interval_ms
+            } else {
+                next_frame_ms + interval_ms
+            };
+        }
+        let began = if due {
+            Some(lowlat_common::clock::Time::now())
+        } else {
+            None
+        };
+        // When the submission half of the acquire finished, for the acquire
+        // stage. The synthetic source's acquire is timed where it happens,
+        // below.
+        let mut acquired_at: Option<lowlat_common::clock::Time> = None;
+        if due {
+            // **The desktop when there is one, and the generator otherwise.**
+            // A picture from the display is already on the device and is
+            // handed over by reference; the generator's is bytes and is
+            // uploaded. Nothing else in this loop can tell them apart.
+            // **A display that cannot be read holds its last picture; it never
+            // falls back to the generator.** The two are not interchangeable
+            // sources: one is the machine and the other is a test pattern, and
+            // a guest whose screen turned into moving colour bars would have
+            // no way to tell that from the host having gone wrong.
+            if let Some(desktop) = display.as_deref_mut() {
+                let read = desktop.acquire();
+                let dark = read.is_err();
+                if dark != held {
+                    held = dark;
+                    // Once per transition. Per frame it is sixty lines a
+                    // second saying the same thing.
+                    match &read {
+                        Err(error) => lowlat_common::log_warn!(
+                            "stream: the display stopped, holding the last picture, {error}"
+                        ),
+                        Ok(_) => lowlat_common::log_info!("stream: the display came back"),
+                    }
+                }
+                acquired_at = Some(lowlat_common::clock::Time::now());
+            }
+        }
+
         // **Only while the encoder holds something.** A pass with nothing in
         // flight has nothing to collect, and asking anyway is a driver round
         // trip for an answer that cannot have changed. `in_flight` is exactly
@@ -2804,65 +2875,39 @@ fn encode_loop<E: Encoder + FromDevice>(
             return Exit::Failed(status::ENCODE_FAILED);
         }
 
-        let now_ms = lowlat_common::clock::elapsed_ms(started);
-
-        // **Is anything still plugged into the device being captured?** A
-        // controller whose connector has gone keeps scanning out the last
-        // picture it held, so nothing above this notices: every read succeeds
-        // and the stream carries a desktop that stopped changing. Asked on its
-        // own slow cadence, because it walks every connector.
-        if now_ms - attached_ms >= ATTACHED_MS {
-            attached_ms = now_ms;
-            if display.as_deref().is_some_and(|d| !d.attached()) {
-                return Exit::Rediscover("nothing is plugged into the device being captured");
-            }
-        }
-        if now_ms >= next_frame_ms {
-            // The deadline advances by the interval rather than from now, so
-            // the frame clock does not drift, and it is pulled forward after a
-            // stall rather than catching up in a burst nobody can use.
-            next_frame_ms = if next_frame_ms + interval_ms < now_ms {
-                now_ms + interval_ms
-            } else {
-                next_frame_ms + interval_ms
-            };
-
-            let began = lowlat_common::clock::Time::now();
-            // **The desktop when there is one, and the generator otherwise.**
-            // A picture from the display is already on the device and is
-            // handed over by reference; the generator's is bytes and is
-            // uploaded. Nothing else in this loop can tell them apart.
-            // **A display that cannot be read holds its last picture; it never
-            // falls back to the generator.** The two are not interchangeable
-            // sources: one is the machine and the other is a test pattern, and
-            // a guest whose screen turned into moving colour bars would have
-            // no way to tell that from the host having gone wrong.
+        if let Some(began) = began {
+            // The picture the acquire above submitted, now collected. **The
+            // wait is the whole point of the split**: the device has had the
+            // collect to finish the conversion, so this is normally already
+            // done when it is asked.
+            let convert_began = lowlat_common::clock::Time::now();
             let ready = match display.as_deref_mut() {
-                Some(desktop) => {
-                    let read = desktop.acquire();
-                    let dark = read.is_err();
-                    if dark != held {
-                        held = dark;
-                        // Once per transition. Per frame it is sixty lines a
-                        // second saying the same thing.
-                        match &read {
-                            Err(error) => lowlat_common::log_warn!(
-                                "stream: the display stopped, holding the last picture, {error}"
-                            ),
-                            Ok(_) => lowlat_common::log_info!("stream: the display came back"),
-                        }
-                    }
-                    Some(read.unwrap_or(crate::display::Acquired {
+                Some(desktop) => match desktop.converted() {
+                    Ok(Some(got)) => Some(got),
+                    // **A display that could not be read holds its last
+                    // picture, and holding it is not a change.** Calling a
+                    // failed read new would send the same frame at the full
+                    // rate for as long as the display is dark.
+                    Ok(None) => Some(crate::display::Acquired {
                         at: began,
-                        // **A display that could not be read holds its last
-                        // picture, and holding it is not a change.** Calling a
-                        // failed read new would send the same frame at the full
-                        // rate for as long as the display is dark.
                         changed: false,
-                    }))
-                }
+                    }),
+                    Err(error) => {
+                        lowlat_common::log_warn!(
+                            "stream: the conversion failed, holding the last picture, {error}"
+                        );
+                        Some(crate::display::Acquired {
+                            at: began,
+                            changed: false,
+                        })
+                    }
+                },
                 None => None,
             };
+            stages.convert.record(lowlat_common::clock::diff_ms(
+                convert_began,
+                lowlat_common::clock::Time::now(),
+            ));
             // **Where the picture stops and the pointer starts.** The two
             // were one figure and the pointer is not the small half of it.
             let picture_at = lowlat_common::clock::Time::now();
@@ -2937,11 +2982,14 @@ fn encode_loop<E: Encoder + FromDevice>(
             // picture on screen was the one being taken and it is what the
             // latency a peer is told counts from; measuring the stage against
             // that stamp compares a clock reading with itself and reports
-            // zero, which is what it did, hiding the capture and the colour
-            // conversion inside a figure nobody could break down.
-            stages
-                .acquire
-                .record(lowlat_common::clock::diff_ms(began, picture_at));
+            // zero. The stage is the submission half only: the read, the
+            // import and the conversion submit. The conversion's own wait is
+            // the convert stage, recorded above, which is the figure that
+            // used to hide in here.
+            stages.acquire.record(lowlat_common::clock::diff_ms(
+                began,
+                acquired_at.unwrap_or_else(lowlat_common::clock::Time::now),
+            ));
 
             // **The tick is the frame.** The controller counts its periods in
             // ticks, so this belongs here and not on the poll pass.
@@ -3041,10 +3089,13 @@ fn encode_loop<E: Encoder + FromDevice>(
                     // slower device, a larger picture, and a stage that
                     // blocks all read the same from outside.
                     lowlat_common::log_info!(
-                        "stream: stages ms p50/p99 acquire={:.3}/{:.3} pointer={:.3}/{:.3} \
-                         encode={:.3}/{:.3} publish={:.3}/{:.3} interval={:.3}/{:.3}",
+                        "stream: stages ms p50/p99 acquire={:.3}/{:.3} convert={:.3}/{:.3} \
+                         pointer={:.3}/{:.3} encode={:.3}/{:.3} publish={:.3}/{:.3} \
+                         interval={:.3}/{:.3}",
                         report.acquire.p50,
                         report.acquire.p99,
+                        report.convert.p50,
+                        report.convert.p99,
                         report.pointer.p50,
                         report.pointer.p99,
                         report.encode.p50,

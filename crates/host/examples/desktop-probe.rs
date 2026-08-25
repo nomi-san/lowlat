@@ -84,6 +84,11 @@ fn main() {
         desktop
             .acquire()
             .unwrap_or_else(|e| fail(&format!("acquire: {e}")));
+        // The acquire above submitted the conversion; this collects it, which
+        // is what makes the registration below real.
+        desktop
+            .converted()
+            .unwrap_or_else(|e| fail(&format!("converted: {e}")));
         let Some(Registration::Vendor { input, .. }) = desktop.presented() else {
             fail("nothing was converted")
         };

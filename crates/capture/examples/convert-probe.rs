@@ -88,7 +88,7 @@ fn main() {
         .read_back(&imported)
         .unwrap_or_else(|error| fail(&format!("read back: {error}")));
 
-    let converter =
+    let mut converter =
         Converter::new(&device).unwrap_or_else(|error| fail(&format!("pipeline: {error}")));
     let target = device
         .allocate_nv12(fb.width, fb.height)

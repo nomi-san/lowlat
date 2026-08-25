@@ -40,6 +40,18 @@ const CONVERT: &[u8] = include_bytes!("../shaders/convert.spv");
 /// covers 16 by 16 pixels.
 const GROUP: u32 = 8;
 
+/// How long a collect waits before declaring the conversion stuck, in
+/// nanoseconds.
+///
+/// **A bound, not a pace.** The conversion's fence orders behind the
+/// compositor's own in-flight render into the captured buffer, so it is not
+/// only this process's work: a display stack that stops signalling would turn
+/// an unbounded wait into a caller that can never observe its own stop flag,
+/// and a teardown that never returns. The longest legitimate wait measured is
+/// under three milliseconds; a hundred is far past pathological and still
+/// bounded.
+const COLLECT_BUDGET_NS: u64 = 100_000_000;
+
 /// What the shader is told, per dispatch.
 ///
 /// Laid out to match the shader's own block exactly. Two signed extents then a
@@ -126,7 +138,17 @@ impl core::fmt::Debug for Nv12 {
     }
 }
 
-/// Everything the conversion needs that outlives a single frame.
+/// What one submission is waiting to be collected.
+///
+/// **The flight flag.** Present means something has been submitted and not
+/// collected, which is what lets `poll` answer without asking the fence
+/// and keeps a second submit from racing the first. The view names the
+/// captured buffer a conversion read, which the display swaps, so it is
+/// per-submission.
+enum Flight {
+    Convert(vk::ImageView),
+}
+
 /// What a converted picture came to, as one value.
 ///
 /// **Compared against the previous frame's and nothing else.** It says whether
@@ -152,10 +174,30 @@ pub struct Converter {
     /// processor time rather than as waiting. One fence, reset before each
     /// submit, is what a fence is for.
     ///
-    /// **One conversion at a time.** The run waits before it returns, so the
-    /// fence is free by the time anything could ask for it again; a second
-    /// conversion in flight would need a second fence.
+    /// **One conversion at a time.** A second conversion in flight would need
+    /// a second fence, and the flight below refuses it.
     fence: vk::Fence,
+    /// The single command buffer, reset and re-recorded per submission.
+    ///
+    /// Reused for the same reason the fence is: creating either is a driver
+    /// round trip, and per frame it shows up as burned processor time rather
+    /// than as waiting. The one-in-flight rule is what makes a single buffer
+    /// safe: it is only reset after the previous submission's fence has fired.
+    command: vk::CommandBuffer,
+    /// One descriptor set, rewritten per submission rather than reallocated.
+    ///
+    /// Bound by `command`, so the one-in-flight rule protects it exactly as it
+    /// protects the command buffer: it is only touched again after the fence
+    /// has fired.
+    set: vk::DescriptorSet,
+    /// The submission in flight, if there is one.
+    flight: Option<Flight>,
+    /// Whether the flight has already overrun the collect budget once.
+    ///
+    /// A stuck conversion is polled rather than waited for from then on:
+    /// waiting the budget again on every ask would slow the caller's loop to
+    /// the budget's own cadence for as long as the wedge lasts.
+    stuck: bool,
     /// Where the shader accumulates its summary, on the device.
     summary: vk::Buffer,
     summary_memory: vk::DeviceMemory,
@@ -171,8 +213,8 @@ pub struct Converter {
 }
 
 // SAFETY: the mapped pointer is owned by this converter and is only read
-// inside `dispatch`, which the single-conversion rule above already
-// serialises. Nothing else may reach it.
+// inside `poll`, after the fence has fired, which the one-conversion rule
+// above already serialises. Nothing else may reach it.
 unsafe impl Send for Converter {}
 
 impl core::fmt::Debug for Converter {
@@ -329,6 +371,29 @@ impl Converter {
         let commands =
             unsafe { vk_device.create_command_pool(&commands_info, None) }.map_err(driver)?;
 
+        // One command buffer for the life of the converter, reset per
+        // submission. See the field's note.
+        let command_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(commands)
+            .level(vk::CommandBufferLevel::PRIMARY)
+            .command_buffer_count(1);
+        // SAFETY: the allocate info outlives the call and the pool is this
+        // device's.
+        let buffers =
+            unsafe { vk_device.allocate_command_buffers(&command_info) }.map_err(driver)?;
+        let command = *buffers.first().ok_or(Error::NoQueue)?;
+
+        // One descriptor set, rewritten per submission rather than
+        // reallocated. See the field's note.
+        let layouts = [layout];
+        let set_info = vk::DescriptorSetAllocateInfo::default()
+            .descriptor_pool(pool)
+            .set_layouts(&layouts);
+        // SAFETY: the allocate info outlives the call and the pool is this
+        // device's.
+        let sets = unsafe { vk_device.allocate_descriptor_sets(&set_info) }.map_err(driver)?;
+        let set = *sets.first().ok_or(Error::NoMemoryType)?;
+
         let (summary, summary_memory) = Self::buffer(
             device,
             vk::BufferUsageFlags::STORAGE_BUFFER
@@ -365,6 +430,10 @@ impl Converter {
             pool,
             commands,
             fence,
+            command,
+            set,
+            flight: None,
+            stuck: false,
             summary,
             summary_memory,
             readback,
@@ -415,18 +484,40 @@ impl Converter {
     }
 
     /// Release everything. Explicit for the same reason the import's is.
-    pub fn destroy(self, device: &Device) {
+    ///
+    /// **A conversion that never finished leaks the converter instead of
+    /// hanging the teardown.** Destroying what a queue may still read trades
+    /// a bounded leak for a fault, and the idle wait below has no timeout of
+    /// its own, so the stuck case has to be caught before it.
+    pub fn destroy(mut self, device: &Device) {
         let vk_device = &device.device;
+        if self.flight.is_some() {
+            // SAFETY: the fence is this device's and was submitted when the
+            // flight was created.
+            let waited =
+                unsafe { vk_device.wait_for_fences(&[self.fence], true, COLLECT_BUDGET_NS) };
+            if waited.is_err() {
+                lowlat_common::log_warn!(
+                    "convert: a conversion never finished, leaking its pipeline"
+                );
+                return;
+            }
+        }
         // SAFETY: every handle came from this device and the wait means no
         // submitted work still refers to any of them.
         unsafe {
             let _ = vk_device.device_wait_idle();
+            if let Some(Flight::Convert(view)) = self.flight.take() {
+                // SAFETY: the wait above means nothing submitted refers to it.
+                vk_device.destroy_image_view(view, None);
+            }
             vk_device.unmap_memory(self.readback_memory);
             vk_device.destroy_buffer(self.readback, None);
             vk_device.free_memory(self.readback_memory, None);
             vk_device.destroy_buffer(self.summary, None);
             vk_device.free_memory(self.summary_memory, None);
             vk_device.destroy_fence(self.fence, None);
+            // The command buffer goes with its pool, and the set with its own.
             vk_device.destroy_command_pool(self.commands, None);
             vk_device.destroy_descriptor_pool(self.pool, None);
             vk_device.destroy_pipeline(self.pipeline, None);
@@ -699,18 +790,44 @@ impl Device {
 }
 
 impl Converter {
-    /// Convert one captured frame into the target.
+    /// Convert one captured frame into the target, blocking until the device
+    /// has finished.
     ///
-    /// Blocks until the device has finished. That is right for a diagnostic and
-    /// wrong for the loop, which will submit and poll; the recording below does
-    /// not change when that happens, only the wait at the end.
+    /// **For a diagnostic, not for the loop.** The loop submits and collects
+    /// around its own collect of the previous picture, so the conversion
+    /// overlaps the encode; this is the same pair with the wait put back,
+    /// which is the only difference.
     pub fn run(
-        &self,
+        &mut self,
         device: &Device,
         source: &Imported,
         target: &Nv12,
         dither: bool,
     ) -> Result<Digest, Error> {
+        self.submit(device, source, target, dither)?;
+        self.collect(device)?.ok_or(Error::Busy)
+    }
+
+    /// Submit one conversion. Returns as soon as it is queued, not when it is
+    /// done.
+    ///
+    /// **One at a time.** A conversion already in flight is refused: the
+    /// converter holds one fence and one command buffer, so two in flight is
+    /// not a state it can serve, and one in flight means the caller has not
+    /// collected the previous picture yet.
+    ///
+    /// The digest the conversion produces is handed out by [`Self::poll`],
+    /// never here: it only exists once the device is done.
+    pub fn submit(
+        &mut self,
+        device: &Device,
+        source: &Imported,
+        target: &Nv12,
+        dither: bool,
+    ) -> Result<(), Error> {
+        if self.flight.is_some() {
+            return Err(Error::Busy);
+        }
         let vk_device = &device.device;
 
         let view_info = vk::ImageViewCreateInfo::default()
@@ -727,34 +844,115 @@ impl Converter {
         // SAFETY: the create info outlives the call.
         let view = unsafe { vk_device.create_image_view(&view_info, None) }.map_err(driver)?;
 
-        let outcome = self.dispatch(device, source, target, view, dither);
-
-        // SAFETY: created above; the dispatch waited, so nothing refers to it.
-        unsafe { vk_device.destroy_image_view(view, None) };
-        outcome
+        match self.dispatch(device, source, target, view, dither) {
+            Ok(()) => {
+                self.flight = Some(Flight::Convert(view));
+                Ok(())
+            }
+            Err(error) => {
+                // SAFETY: created above; nothing submitted refers to it
+                // because submitting is what failed, or nothing was submitted.
+                unsafe { vk_device.destroy_image_view(view, None) };
+                Err(error)
+            }
+        }
     }
 
-    fn dispatch(
+    /// Collect the submitted conversion, waiting for the device to finish.
+    ///
+    /// **The blocking half of the pair, and the wait is bounded.** The loop
+    /// calls this on the far side of its own collect of the previous picture,
+    /// so the wait is normally for work that is already done; that is the
+    /// whole reason the submit happened where it did. Past
+    /// [`COLLECT_BUDGET_NS`] the flight is left standing and the answer is
+    /// nothing-yet: the next submit is refused as busy, the caller holds its
+    /// last picture, and its loop stays responsive instead of hanging on a
+    /// display stack that stopped signalling. Nothing when no conversion was
+    /// submitted, which is the ordinary state of a display that could not be
+    /// read.
+    pub fn collect(&mut self, device: &Device) -> Result<Option<Digest>, Error> {
+        if self.flight.is_none() {
+            return Ok(None);
+        }
+        // Already overran the budget once: only poll from here on. See the
+        // field's note.
+        if self.stuck {
+            let collected = self.poll(device)?;
+            if collected.is_some() {
+                self.stuck = false;
+            }
+            return Ok(collected);
+        }
+        // SAFETY: the fence is this device's and was submitted when the
+        // flight was created.
+        match unsafe {
+            device
+                .device
+                .wait_for_fences(&[self.fence], true, COLLECT_BUDGET_NS)
+        } {
+            // The fence fired, so this cannot be None.
+            Ok(()) => self.poll(device),
+            Err(vk::Result::TIMEOUT) => {
+                self.stuck = true;
+                Ok(None)
+            }
+            Err(error) => Err(driver(error)),
+        }
+    }
+
+    /// Whether the submitted conversion has finished, and what it found.
+    ///
+    /// **Never waits.** A not-ready answer costs one fence status ask and
+    /// nothing else; the caller goes round its loop and asks again. When the
+    /// fence has fired, the digest is read and the flight is cleared, which is
+    /// what lets the next submit proceed.
+    ///
+    /// Nothing when no conversion was submitted, which is the state after a
+    /// collect and the ordinary state of a display that could not be read.
+    pub fn poll(&mut self, device: &Device) -> Result<Option<Digest>, Error> {
+        let Some(flight) = self.flight.take() else {
+            return Ok(None);
+        };
+        // SAFETY: the fence is this device's and was submitted when the flight
+        // was created.
+        let ready = unsafe { device.device.get_fence_status(self.fence) }.map_err(driver)?;
+        if !ready {
+            // Not collected yet; the flight goes back.
+            self.flight = Some(flight);
+            return Ok(None);
+        }
+
+        // **Read after the fence and not before.** The copy is the last thing
+        // in a conversion's recording, so the fence being signalled is exactly
+        // what says these eight bytes are that submission's rather than the
+        // previous one's.
+        // SAFETY: mapped for the life of the converter, coherent, and eight
+        // bytes long; the fence firing ordered the write that filled it.
+        let bytes = unsafe { core::slice::from_raw_parts(self.mapped, DIGEST) };
+        let mut value = [0u8; DIGEST];
+        value.copy_from_slice(bytes);
+
+        // SAFETY: the fence fired, so nothing submitted refers to the view.
+        let Flight::Convert(view) = flight;
+        unsafe { device.device.destroy_image_view(view, None) };
+        Ok(Some(Digest(u64::from_le_bytes(value))))
+    }
+
+    /// Point the descriptor set at one source and one target.
+    ///
+    /// The set itself is allocated once and rewritten per submission, which
+    /// removes two driver calls per frame; the one-in-flight rule is what
+    /// makes rewriting safe, because nothing submitted can still be reading
+    /// it.
+    fn bind_set(
         &self,
         device: &Device,
-        source: &Imported,
+        source_view: vk::ImageView,
         target: &Nv12,
-        view: vk::ImageView,
-        dither: bool,
-    ) -> Result<Digest, Error> {
-        let vk_device = &device.device;
-
-        let layouts = [self.layout];
-        let allocate = vk::DescriptorSetAllocateInfo::default()
-            .descriptor_pool(self.pool)
-            .set_layouts(&layouts);
-        // SAFETY: the allocate info outlives the call.
-        let sets = unsafe { vk_device.allocate_descriptor_sets(&allocate) }.map_err(driver)?;
-        let set = *sets.first().ok_or(Error::NoMemoryType)?;
-
+    ) -> Result<(), Error> {
         let sampled = [vk::DescriptorImageInfo::default()
             .sampler(self.sampler)
-            .image_view(view)
+            .image_view(source_view)
             .image_layout(vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL)];
         let luma = [vk::DescriptorImageInfo::default()
             .image_view(*target.planes.first().ok_or(Error::BadShader)?)
@@ -768,34 +966,42 @@ impl Converter {
             .range(DIGEST_BYTES)];
         let writes = [
             vk::WriteDescriptorSet::default()
-                .dst_set(set)
+                .dst_set(self.set)
                 .dst_binding(0)
                 .descriptor_type(vk::DescriptorType::COMBINED_IMAGE_SAMPLER)
                 .image_info(&sampled),
             vk::WriteDescriptorSet::default()
-                .dst_set(set)
+                .dst_set(self.set)
                 .dst_binding(1)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .image_info(&luma),
             vk::WriteDescriptorSet::default()
-                .dst_set(set)
+                .dst_set(self.set)
                 .dst_binding(2)
                 .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
                 .image_info(&chroma),
             vk::WriteDescriptorSet::default()
-                .dst_set(set)
+                .dst_set(self.set)
                 .dst_binding(3)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .buffer_info(&summary),
         ];
-        // SAFETY: every borrowed structure outlives the call.
-        unsafe { vk_device.update_descriptor_sets(&writes, &[]) };
+        // SAFETY: every borrowed structure outlives the call, and the set is
+        // idle because its previous submission's fence has fired.
+        unsafe { device.device.update_descriptor_sets(&writes, &[]) };
+        Ok(())
+    }
 
-        let result = self.record(device, source, target, set, dither);
-
-        // SAFETY: the record waited before returning, so the set is idle.
-        unsafe { vk_device.free_descriptor_sets(self.pool, &sets) }.map_err(driver)?;
-        result
+    fn dispatch(
+        &mut self,
+        device: &Device,
+        source: &Imported,
+        target: &Nv12,
+        view: vk::ImageView,
+        dither: bool,
+    ) -> Result<(), Error> {
+        self.bind_set(device, view, target)?;
+        self.record(device, source, target, dither)
     }
 
     fn record(
@@ -803,21 +1009,20 @@ impl Converter {
         device: &Device,
         source: &Imported,
         target: &Nv12,
-        set: vk::DescriptorSet,
         dither: bool,
-    ) -> Result<Digest, Error> {
+    ) -> Result<(), Error> {
         let vk_device = &device.device;
-        let allocate = vk::CommandBufferAllocateInfo::default()
-            .command_pool(self.commands)
-            .level(vk::CommandBufferLevel::PRIMARY)
-            .command_buffer_count(1);
-        // SAFETY: the allocate info outlives the call.
-        let buffers = unsafe { vk_device.allocate_command_buffers(&allocate) }.map_err(driver)?;
-        let commands = *buffers.first().ok_or(Error::NoQueue)?;
+        let commands = self.command;
 
+        // **Reset rather than recreated.** The buffer is one for the life of
+        // the converter, and the flight rule guarantees its previous
+        // submission has completed and been collected before this runs.
+        // SAFETY: the buffer is this device's and not pending.
+        unsafe { vk_device.reset_command_buffer(commands, vk::CommandBufferResetFlags::empty()) }
+            .map_err(driver)?;
         let begin = vk::CommandBufferBeginInfo::default()
             .flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-        // SAFETY: freshly allocated and not recording.
+        // SAFETY: just reset and not recording.
         unsafe { vk_device.begin_command_buffer(commands, &begin) }.map_err(driver)?;
 
         let whole = vk::ImageSubresourceRange {
@@ -922,7 +1127,7 @@ impl Converter {
                 vk::PipelineBindPoint::COMPUTE,
                 self.pipeline_layout,
                 0,
-                &[set],
+                &[self.set],
                 &[],
             );
             vk_device.cmd_push_constants(
@@ -963,48 +1168,31 @@ impl Converter {
             vk_device.end_command_buffer(commands).map_err(driver)?;
         }
 
-        // **Reset rather than created.** The previous run left it signalled,
-        // and a submit will not signal a fence that already is.
-        // SAFETY: the previous run waited on it, so nothing is using it.
+        // **Reset rather than created.** The previous submission left it
+        // signalled, and a submit will not signal a fence that already is. The
+        // flight rule guarantees the previous submission was collected first.
+        // SAFETY: the previous poll saw the fence fired, so nothing is using
+        // it.
         unsafe { vk_device.reset_fences(&[self.fence]) }.map_err(driver)?;
-        // **A signalled fence here makes the wait below a no-op**, and the
-        // caller would hand a half-written picture to an encoder reading it
-        // from another queue. Nothing on this queue would notice, because a
-        // read submitted after the conversion is ordered behind it anyway;
-        // only the handover out of this interface is exposed to it.
+        // **A signalled fence here makes the poll a no-op**, and the caller
+        // would hand a half-written picture to an encoder reading it from
+        // another queue. Nothing on this queue would notice, because a read
+        // submitted after the conversion is ordered behind it anyway; only the
+        // handover out of this interface is exposed to it.
         // SAFETY: the fence is this device's and was just reset.
         debug_assert!(
             matches!(unsafe { vk_device.get_fence_status(self.fence) }, Ok(false)),
             "the conversion fence was signalled at submit"
         );
-        let submits = [vk::SubmitInfo::default().command_buffers(&buffers)];
-        // SAFETY: everything borrowed outlives the wait, which is what makes
-        // freeing the command buffers afterwards safe.
-        let waited = unsafe {
+        let submitted = [commands];
+        let submits = [vk::SubmitInfo::default().command_buffers(&submitted)];
+        // SAFETY: everything borrowed outlives the submit, and the command
+        // buffer stays live until the fence fires and the poll collects it.
+        unsafe {
             vk_device
                 .queue_submit(device.queue, &submits, self.fence)
                 .map_err(driver)
-                .and_then(|()| {
-                    vk_device
-                        .wait_for_fences(&[self.fence], true, u64::MAX)
-                        .map_err(driver)
-                })
-        };
-        // SAFETY: the wait above returned, so nothing still refers to them.
-        unsafe {
-            vk_device.free_command_buffers(self.commands, &buffers);
         }
-        waited?;
-
-        // **Read after the wait and not before.** The copy is the last thing
-        // in the recording, so the fence being signalled is exactly what says
-        // these eight bytes are this frame's rather than the previous one's.
-        // SAFETY: mapped for the life of the converter, coherent, and eight
-        // bytes long; the wait above ordered the write that filled it.
-        let bytes = unsafe { core::slice::from_raw_parts(self.mapped, DIGEST) };
-        let mut value = [0u8; DIGEST];
-        value.copy_from_slice(bytes);
-        Ok(Digest(u64::from_le_bytes(value)))
     }
 }
 
@@ -1283,10 +1471,10 @@ mod tests {
         let width = 64u32;
         let height = 64u32;
         let device = Device::any().expect("a device that can convert");
-        let converter = Converter::new(&device).expect("a pipeline");
+        let mut converter = Converter::new(&device).expect("a pipeline");
         let target = device.allocate_nv12(width, height).expect("a target");
 
-        let digest_of = |pixels: &[u8]| {
+        let mut digest_of = |pixels: &[u8]| {
             let source = device.upload_rgba(width, height, pixels).expect("upload");
             let got = converter
                 .run(&device, &source, &target, false)
@@ -1349,7 +1537,7 @@ mod tests {
         let width = u32::try_from(PATTERN.len()).unwrap() * 2;
         let height = 2;
         let device = Device::any().expect("a device that can convert");
-        let converter = Converter::new(&device).expect("a pipeline");
+        let mut converter = Converter::new(&device).expect("a pipeline");
 
         // Two different pictures, so a target left holding the first is not
         // mistaken for a correct second conversion.
@@ -1406,7 +1594,7 @@ mod tests {
             .upload_rgba(width, height, &pixels)
             .expect("upload the pattern");
         let target = device.allocate_nv12(width, height).expect("a target");
-        let converter = Converter::new(&device).expect("a pipeline");
+        let mut converter = Converter::new(&device).expect("a pipeline");
         converter
             .run(&device, &source, &target, false)
             .expect("convert");

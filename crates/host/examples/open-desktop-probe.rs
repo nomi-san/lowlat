@@ -67,19 +67,28 @@ fn main() {
 
     let mut file = std::fs::File::create(&out).unwrap_or_else(|e| fail(&format!("create: {e}")));
     let mut sizes: Vec<usize> = Vec::with_capacity(frames);
-    let mut acquires: Vec<f64> = Vec::with_capacity(frames);
+    let mut submits: Vec<f64> = Vec::with_capacity(frames);
+    let mut converts: Vec<f64> = Vec::with_capacity(frames);
     for at in 0..frames {
         let began = std::time::Instant::now();
         desktop
             .acquire()
             .unwrap_or_else(|e| fail(&format!("acquire {at}: {e}")));
-        acquires.push(began.elapsed().as_secs_f64() * 1000.0);
+        submits.push(began.elapsed().as_secs_f64() * 1000.0);
+        // **The split is the point of the probe now.** The submit above costs
+        // the read and the import; the wait below costs the conversion itself
+        // plus whatever sharing a device with the encoder adds. With
+        // `LOWLAT_NO_ENCODE` the encoder is skipped below, so the convert
+        // figure is then the conversion alone and the difference between the
+        // two runs is what the encoder adds to it.
+        let convert_began = std::time::Instant::now();
+        desktop
+            .converted()
+            .unwrap_or_else(|e| fail(&format!("converted {at}: {e}")));
+        converts.push(convert_began.elapsed().as_secs_f64() * 1000.0);
         // **`LOWLAT_NO_ENCODE` acquires and does not encode**, which is the
         // measurement that separates the conversion's own cost from what it
-        // pays for sharing a device with the encoder. On an integrated device
-        // those are not close: the conversion waits, and the wait lands in the
-        // capture stage because the conversion blocks until the device is
-        // done with it.
+        // pays for sharing a device with the encoder.
         if std::env::var("LOWLAT_NO_ENCODE").is_ok() {
             continue;
         }
@@ -115,19 +124,26 @@ fn main() {
     // **The check is that pictures differ, not that the file decodes.** A
     // source that imports once reads one buffer of the display's rotation
     // forever, which decodes perfectly and never changes.
-    acquires.sort_by(f64::total_cmp);
-    let rank = |num: usize, den: usize| {
-        acquires
-            .get((acquires.len().saturating_sub(1)) * num / den)
+    submits.sort_by(f64::total_cmp);
+    converts.sort_by(f64::total_cmp);
+    let rank = |list: &[f64], num: usize, den: usize| {
+        list.get((list.len().saturating_sub(1)) * num / den)
             .copied()
             .unwrap_or(0.0)
     };
     println!(
         "acquire p50 {:.3} ms  p95 {:.3} ms  p99 {:.3} ms  max {:.3} ms",
-        rank(50, 100),
-        rank(95, 100),
-        rank(99, 100),
-        rank(1, 1)
+        rank(&submits, 50, 100),
+        rank(&submits, 95, 100),
+        rank(&submits, 99, 100),
+        rank(&submits, 1, 1)
+    );
+    println!(
+        "convert p50 {:.3} ms  p95 {:.3} ms  p99 {:.3} ms  max {:.3} ms",
+        rank(&converts, 50, 100),
+        rank(&converts, 95, 100),
+        rank(&converts, 99, 100),
+        rank(&converts, 1, 1)
     );
 
     let distinct = sizes.windows(2).filter(|pair| pair[0] != pair[1]).count();

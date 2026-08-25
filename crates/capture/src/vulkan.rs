@@ -49,6 +49,11 @@ pub enum Error {
     /// than worked around, because the layout is what an encoder is told and
     /// there is no way to tell it anything else.
     PlanesDisagree,
+    /// A conversion was submitted while another is still in flight. The
+    /// converter holds one fence and one command buffer, so two in flight is
+    /// not a state it can serve; the caller has not collected the previous
+    /// picture yet.
+    Busy,
 }
 
 impl core::fmt::Display for Error {
@@ -65,6 +70,7 @@ impl core::fmt::Display for Error {
             Self::PlanesDisagree => {
                 f.write_str("the frame's planes cannot be laid out for an encoder")
             }
+            Self::Busy => f.write_str("a conversion is already in flight"),
         }
     }
 }

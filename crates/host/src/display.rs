@@ -187,7 +187,7 @@ impl core::fmt::Debug for Registration {
     }
 }
 
-/// What one [`Display::acquire`] produced.
+/// What one [`Display::acquire`] and [`Display::converted`] pair produced.
 #[derive(Debug, Clone, Copy)]
 pub struct Acquired {
     /// When the picture was taken, which is what every latency figure is
@@ -264,6 +264,10 @@ struct Gl {
     /// device and has to be given back to it; nothing in the target says where
     /// it came from.
     regions: Vec<scanout::Linear>,
+    /// The digest of a conversion that ran synchronously inside `submit`,
+    /// waiting to be handed out by `poll`. This interface has no split, so
+    /// the answer exists the moment the submit returns.
+    ready: Option<lowlat_capture::convert::Digest>,
 }
 
 impl Pipeline {
@@ -336,21 +340,50 @@ impl Pipeline {
         }
     }
 
-    /// Convert one imported buffer into one target slot.
-    fn convert(&self, key: u64, slot: usize) -> Result<lowlat_capture::convert::Digest, Error> {
+    /// Submit the conversion of one imported buffer into one target slot.
+    ///
+    /// **Returns as soon as it is queued, not when it is done.** The fence is
+    /// the converter's own and the digest arrives through [`Self::poll`]; the
+    /// loop pairs the two so the conversion runs on the device while it
+    /// collects the previous picture, instead of the wait landing in the
+    /// acquire stage where it was measured.
+    fn submit(&mut self, key: u64, slot: usize) -> Result<(), Error> {
         match self {
             Self::Vulkan(vk) => {
                 let source = vk.imports.get(&key).ok_or(Error::Register)?;
                 let target = vk.targets.get(slot).ok_or(Error::Register)?;
-                Ok(vk.converter.run(&vk.device, source, &target.frame, false)?)
+                vk.converter
+                    .submit(&vk.device, source, &target.frame, false)
+                    .map_err(Error::Convert)
             }
             Self::Gl(gl) => {
                 let source = gl.imports.get(&key).ok_or(Error::Register)?;
                 let target = gl.targets.get(slot).ok_or(Error::Register)?;
-                gl.converter
+                // The other interface has no split: its conversion blocks, so
+                // the digest is here the moment `submit` returns. Held and
+                // handed out by `poll`, so the caller sees one shape either
+                // way.
+                let digest = gl
+                    .converter
                     .run(&gl.device, source, &target.frame, false)
-                    .map_err(Error::Gl)
+                    .map_err(Error::Gl)?;
+                gl.ready = Some(digest);
+                Ok(())
             }
+        }
+    }
+
+    /// Collect the conversion [`Pipeline::submit`] started.
+    ///
+    /// **Waits rather than asks**, unlike the encoder's poll: the loop needs
+    /// the digest to decide whether the picture is owed before it can submit,
+    /// so a not-ready answer would only send it round again. The wait is
+    /// short because the submit happened before the loop's own collect, which
+    /// is the whole point of the split.
+    fn collect(&mut self) -> Result<Option<lowlat_capture::convert::Digest>, Error> {
+        match self {
+            Self::Vulkan(vk) => vk.converter.collect(&vk.device).map_err(Error::Convert),
+            Self::Gl(gl) => Ok(gl.ready.take()),
         }
     }
 
@@ -444,6 +477,13 @@ pub struct Display {
     /// again, which is right, and a loop that restarts around the same display
     /// does not have to.
     digest: Option<lowlat_capture::convert::Digest>,
+    /// When the conversion in flight captured its picture.
+    ///
+    /// **The other half of the split acquire.** `acquire` submits the
+    /// conversion and stores the timestamp here; `converted` waits for it and
+    /// hands both back as the same `Acquired` value the old synchronous
+    /// acquire returned. Nothing when no conversion is in flight.
+    flight_at: Option<Time>,
     /// The pointer plane, when the pipeline has one. **Found once**: a machine
     /// that draws its pointer in the picture rather than on a plane has none,
     /// and looking for it every frame would be a walk of the whole pipeline
@@ -535,6 +575,7 @@ impl Display {
             cursor_plane: layout.cursor_plane,
             cursor: Watcher::new(),
             digest: None,
+            flight_at: None,
             resized: false,
             place: layout
                 .connector
@@ -639,6 +680,7 @@ impl Display {
             imports: HashMap::new(),
             targets,
             regions,
+            ready: None,
         })))
     }
 
@@ -887,11 +929,19 @@ impl Display {
         self.pipeline.registration(slot)
     }
 
-    /// Convert what the display is showing now into the next free target.
+    /// Submit the conversion of what the display is showing now.
     ///
-    /// Returns when the picture was taken and whether it differs from the one
-    /// before it; the registration to submit is then [`Display::presented`].
-    pub fn acquire(&mut self) -> Result<Acquired, Error> {
+    /// **Returns as soon as the conversion is queued, not when it is done.**
+    /// The registration is then [`Display::presented`] once [`Display::converted`]
+    /// has collected the picture; the pair replaces what a synchronous acquire
+    /// did in one call, so the conversion runs on the device while the loop
+    /// collects the previous picture instead of the wait landing in the
+    /// acquire stage.
+    ///
+    /// The returned time is when the picture was taken, which is what every
+    /// latency figure is measured from; [`Display::converted`] hands it back
+    /// alongside whether the picture changed.
+    pub fn acquire(&mut self) -> Result<Time, Error> {
         let began = Time::now();
         let fb = self.card.framebuffer_on(self.plane)?;
 
@@ -928,7 +978,23 @@ impl Display {
         let slot = self.next % self.pipeline.depth().max(1);
         self.next = self.next.wrapping_add(1);
 
-        let digest = self.pipeline.convert(key, slot)?;
+        self.pipeline.submit(key, slot)?;
+        self.flight_at = Some(began);
+        Ok(began)
+    }
+
+    /// Collect the conversion [`Display::acquire`] submitted, waiting for it.
+    ///
+    /// **The wait is the point of the pair.** The submit happened before the
+    /// loop's collect of the previous picture, so the device has had the whole
+    /// collect to finish; what is waited on here is normally already done.
+    /// Nothing when no conversion was submitted, which is the ordinary state
+    /// of a display that could not be read.
+    pub fn converted(&mut self) -> Result<Option<Acquired>, Error> {
+        let Some(digest) = self.pipeline.collect()? else {
+            return Ok(None);
+        };
+        let at = self.flight_at.take().unwrap_or_else(Time::now);
 
         // **What was drawn, not which buffer it was drawn into.** The exported
         // identity says only that the buffer was not swapped, and this
@@ -941,7 +1007,7 @@ impl Display {
         // gives the same answer.
         let changed = self.digest != Some(digest);
         self.digest = Some(digest);
-        Ok(Acquired { at: began, changed })
+        Ok(Some(Acquired { at, changed }))
     }
 
     /// Make sure this buffer is imported, and say which import it is.

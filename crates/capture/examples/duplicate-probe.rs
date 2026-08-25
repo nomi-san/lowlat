@@ -73,7 +73,7 @@ fn main() {
 
     let device =
         Device::for_display(&node).unwrap_or_else(|error| fail(&format!("device: {error}")));
-    let converter =
+    let mut converter =
         Converter::new(&device).unwrap_or_else(|error| fail(&format!("pipeline: {error}")));
 
     // The same ring the loop keeps, so a target's own history is exercised
@@ -122,8 +122,8 @@ fn main() {
         //    nothing read from the display in between.
         let first = index % targets.len();
         let second = (index + 1) % targets.len();
-        let a = convert_and_read(&converter, &device, source, &targets[first]);
-        let b = convert_and_read(&converter, &device, source, &targets[second]);
+        let a = convert_and_read(&mut converter, &device, source, &targets[first]);
+        let b = convert_and_read(&mut converter, &device, source, &targets[second]);
         if a != b {
             a_differed += 1;
             if worst.is_none() {
@@ -227,7 +227,7 @@ fn import(
 
 /// Convert into this target and read both planes back as one buffer.
 fn convert_and_read(
-    converter: &Converter,
+    converter: &mut Converter,
     device: &Device,
     source: &Imported,
     target: &Nv12,

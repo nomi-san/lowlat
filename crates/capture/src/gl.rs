@@ -1414,7 +1414,7 @@ mod tests {
             .expect("convert");
 
         let vk_device = crate::vulkan::Device::any().expect("a device that can convert");
-        let vk_converter = crate::convert::Converter::new(&vk_device).expect("a pipeline");
+        let mut vk_converter = crate::convert::Converter::new(&vk_device).expect("a pipeline");
         let vk_source = vk_device
             .upload_rgba(width, height, &pixels)
             .expect("upload");

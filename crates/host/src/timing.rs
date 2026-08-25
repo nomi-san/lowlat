@@ -113,13 +113,23 @@ fn at_rank(sorted: &[f32], fraction: f64) -> f64 {
 
 /// Every stage the loop measures.
 ///
-/// Conversion is absent because there is no conversion stage: the source
-/// emits the layout the encoder takes. It returns with real capture, and the
-/// wire stage belongs to the guest's thread rather than this one.
+/// The convert stage exists only with real capture: the synthetic source
+/// emits the layout the encoder takes, so there is no conversion to measure,
+/// and the wire stage belongs to the guest's thread rather than this one.
 #[derive(Debug, Default)]
 pub struct Stages {
     /// A frame becoming available.
+    ///
+    /// **The submission half of the capture.** The display read, the import,
+    /// and the conversion submit; the conversion's wait is the convert stage
+    /// below, so the two can be told apart instead of the wait hiding in here.
     pub acquire: Stage,
+    /// The wait for the conversion the acquire submitted.
+    ///
+    /// **Overlapped with the collect by construction**: the submit happens
+    /// before the collect of the previous picture, so the device has the whole
+    /// collect to finish, and what lands here is normally nothing.
+    pub convert: Stage,
     /// Reading the pointer and publishing what it is.
     ///
     /// **Its own stage because it is not small.** It ran inside the acquire
@@ -140,6 +150,7 @@ pub struct Stages {
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Report {
     pub acquire: Percentiles,
+    pub convert: Percentiles,
     pub pointer: Percentiles,
     pub encode: Percentiles,
     pub publish: Percentiles,
@@ -152,12 +163,12 @@ impl Report {
     /// **The floor Gate A item 7 states**: a pipeline that cannot clear a
     /// frame within a frame interval cannot hold the frame rate.
     pub fn host_p50(&self) -> f64 {
-        self.acquire.p50 + self.pointer.p50 + self.encode.p50 + self.publish.p50
+        self.acquire.p50 + self.convert.p50 + self.pointer.p50 + self.encode.p50 + self.publish.p50
     }
 
     /// The same at the tail, which is where a stutter lives.
     pub fn host_p99(&self) -> f64 {
-        self.acquire.p99 + self.pointer.p99 + self.encode.p99 + self.publish.p99
+        self.acquire.p99 + self.convert.p99 + self.pointer.p99 + self.encode.p99 + self.publish.p99
     }
 }
 
@@ -165,6 +176,7 @@ impl Stages {
     pub fn report(&self) -> Report {
         Report {
             acquire: self.acquire.percentiles(),
+            convert: self.convert.percentiles(),
             pointer: self.pointer.percentiles(),
             encode: self.encode.percentiles(),
             publish: self.publish.percentiles(),

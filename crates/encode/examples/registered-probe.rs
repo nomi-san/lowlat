@@ -77,7 +77,7 @@ fn main() {
 
     let device =
         Device::for_display(&node).unwrap_or_else(|error| fail(&format!("device: {error}")));
-    let converter =
+    let mut converter =
         Converter::new(&device).unwrap_or_else(|error| fail(&format!("pipeline: {error}")));
 
     // One capture, imported once. Nothing reads the display again.
