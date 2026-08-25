@@ -3447,6 +3447,27 @@ fn encode_loop<E: Encoder + FromDevice>(
                         refreshes.reinit,
                         refreshes.starved,
                     );
+                    // **Who the loop believes it is serving, beside what the
+                    // seats say.** A guest that is connected and receiving
+                    // nothing looks identical here to no guest at all: every
+                    // counter above reads zero either way, because they count
+                    // decisions made about guests and there is no line for a
+                    // guest no decision was made about. The two numbers
+                    // disagreeing is the fault itself.
+                    let seated = occupied_seats(shared);
+                    let waiting = guests.iter().filter(|guest| guest.is_skipping()).count();
+                    if seated != active.len() {
+                        lowlat_common::log_warn!(
+                            "stream: {seated} seat(s) occupied but the loop is serving                              {}, so {} guest(s) are connected and being sent nothing",
+                            active.len(),
+                            seated.saturating_sub(active.len())
+                        );
+                    } else {
+                        lowlat_common::log_info!(
+                            "stream: serving {} guest(s), {waiting} waiting for a keyframe",
+                            active.len()
+                        );
+                    }
                     // **The number that says whether any of this is working.**
                     // A static desktop should suppress nearly every frame and a
                     // moving one nearly none, so a figure that never moves in
