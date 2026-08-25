@@ -112,7 +112,7 @@ fn main() {
     };
 
     const FRAMES: usize = 60;
-    let mut stream = encoder.parameter_sets().to_vec();
+    let mut stream = Vec::new();
     for at in 0..FRAMES {
         let slot = at % 2;
         let (Some(planes), Some(image)) = (encoder.planes(slot), encoder.source(slot)) else {

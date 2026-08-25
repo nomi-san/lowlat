@@ -17,9 +17,15 @@ fn main() {
         .and_then(|value| value.parse().ok())
         .unwrap_or(15);
     let output = std::env::var("LOWLAT_OUTPUT").ok();
+    // Nothing follows the display and lets LOWLAT_VULKAN_ENCODE prefer the
+    // third encoder; a name pins the backend exactly as the daemon's flag
+    // does. The old default of always naming one silently blocked the
+    // preference, and every ring "verification" through this probe was
+    // measuring the open backend.
     let backend = match std::env::var("LOWLAT_BACKEND").as_deref() {
-        Ok("vendor") => Backend::Vendor,
-        _ => Backend::Open,
+        Ok("vendor") => Some(Backend::Vendor),
+        Ok("open") => Some(Backend::Open),
+        _ => None,
     };
 
     // **A watchdog, because a wedged display stack can hold a fence wait.**
@@ -45,8 +51,11 @@ fn main() {
         fps: 60,
         cg_level: 1,
         full_fps: false,
-        codec: Codec::H264,
-        backend: Some(backend),
+        codec: match std::env::var("LOWLAT_CODEC").as_deref() {
+            Ok("h265" | "hevc") => Codec::H265,
+            _ => Codec::H264,
+        },
+        backend,
         configured_mbps: 10.0,
         min_mbps: 1.0,
         rotation: lowlat_core::video::Rotation::None,
@@ -64,12 +73,20 @@ fn main() {
 
     let began = std::time::Instant::now();
     let mut received = 0usize;
+    // What the seat hands out is what the wire carries; written out so a
+    // decoder outside the project can say whether a client could start.
+    let mut bitstream = Vec::new();
     while began.elapsed().as_secs() < seconds {
         while let Some(frame) = seat.next_frame() {
-            let _ = frame.bytes().len();
+            bitstream.extend_from_slice(frame.bytes());
             received += 1;
         }
         std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let out = std::env::temp_dir().join("lowlat-stream.h264");
+    match std::fs::write(&out, &bitstream) {
+        Ok(()) => println!("wrote {} ({} bytes)", out.display(), bitstream.len()),
+        Err(error) => println!("write {}: {error}", out.display()),
     }
 
     let report: Report = stream.timings();

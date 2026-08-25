@@ -1679,6 +1679,24 @@ impl Encoder<'_> {
     /// reported as not ready rather than as a length that is not there yet.
     pub fn poll(&mut self) -> Result<Poll<'_>> {
         let device = &self.device.device;
+        // **Nothing in flight is nothing to report**, and the query would say
+        // otherwise: it keeps the previous submission's result until the next
+        // recording's reset executes, so an unguarded read answers with a
+        // picture that was already collected.
+        if !self.in_flight {
+            return Ok(Poll::Pending);
+        }
+        // **The fence gates the query.** The reset that clears the previous
+        // result rides inside the new recording, so a query read before the
+        // fence fires reads the old submission's block -- instantly, with the
+        // old bytes -- which is exactly the dishonest collect the vendor path
+        // is documented for. The fence firing is what says the reset, the
+        // encode and the query write have all executed.
+        // SAFETY: the fence is this device's and was submitted with.
+        let done = unsafe { device.get_fence_status(self.fence) }.map_err(driver)?;
+        if !done {
+            return Ok(Poll::Pending);
+        }
         let mut values = [0_u32; 3];
         let bytes = size_of::<[u32; 3]>();
         // **Thirty-two bit, and not by preference.** Asking for sixty-four bit
@@ -1718,7 +1736,15 @@ impl Encoder<'_> {
         // **Copied out rather than lent.** The mapping is the driver's and is
         // handed back on the next submit, so a caller keeping the slice would
         // read a picture that has since been overwritten.
+        //
+        // **A refresh opens with the parameter sets**, exactly as the other
+        // backends' do: the encode itself produces slices only, and a decoder
+        // that joins at a refresh without them decodes nothing -- it reports
+        // a picture of no size at all.
         self.collected.clear();
+        if self.submitted_keyframe {
+            self.collected.extend_from_slice(&self.sets);
+        }
         // SAFETY: mapped above for the whole buffer, and the query says these
         // bytes are the picture.
         unsafe {

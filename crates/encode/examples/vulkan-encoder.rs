@@ -46,10 +46,9 @@ fn main() {
 
     let mut each = Vec::with_capacity(frames);
     let mut bytes = 0usize;
-    // The stream opens with the parameter sets: the encode itself produces
-    // slices only, and a decoder that has not seen the sets decodes nothing.
-    let mut stream = encoder.parameter_sets().to_vec();
-    println!("  {} bytes of parameter sets", stream.len());
+    // A refresh access unit opens with the parameter sets on its own, as on
+    // every other backend, so the stream needs no manual head.
+    let mut stream = Vec::new();
     let mut keyframes = 0usize;
     // The refresh a caller forces mid-run, which is what the recovery path
     // sends: a predicted picture after it must still decode.
