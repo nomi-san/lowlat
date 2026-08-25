@@ -3,6 +3,36 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 11.8: the third encoder streams to a live client
+
+**A stock client and the predecessor's client both stream the third encoder
+now** -- 60 fps, millisecond decode, zero loss -- after two defects only a
+live decoder could surface. A refresh access unit opens with the parameter
+sets, as on every other backend: the encode produces slices only, and a
+decoder joining at a refresh without them reports a picture of no size at
+all. And the collect is gated on the fence: the feedback query keeps the
+previous submission's result until the next recording's reset executes on
+the device, so an unguarded read collected instantly with stale bytes --
+the dishonest collect one vendor's path is documented for, rebuilt here by
+trusting the query. The impossible figure in the log, an encode time of
+zero, is what named it.
+
+- **The probe that should have caught both was measuring the wrong
+  backend**: it named one unconditionally, which blocks the preference knob,
+  so every "verified" run before the client was the open backend's. It
+  follows the display now, dumps what the seat receives for an outside
+  decoder to judge, and takes the codec from the environment.
+- **A publish storm was seen three times and is not explained**: the loop
+  fed a guest at thousands of frames a second with the window full and
+  stale, one frame per client message. It has not recurred since, under
+  identical and heavier load; the signature and the counters to catch it
+  are recorded locally.
+- **An idle keepalive pays the encode engine's wakeup on the integrated
+  device** -- about 14 ms against 3.3 warm, codec-independent, the same
+  power gating the conversion's poke already pays for one engine over. Not
+  worth a fix: a still desktop has no viewer-visible latency and the first
+  moving frame pays it once.
+
 ## 11.7: the third encoder reaches the stream, preferred by a knob
 
 **`LOWLAT_VULKAN_ENCODE=1`, or the daemon's `--vulkan-encode`, prefers the
