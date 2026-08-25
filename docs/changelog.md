@@ -3,6 +3,34 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 11.3: predicted pictures on the third encoder
+
+**The third encoder codes predicted pictures now**, where every picture had
+been a coded refresh and the keyframe request was discarded. A refresh is
+coded on request and whenever there is nothing to predict from; everything
+else predicts from the previous picture, and the collect reports the kind
+honestly. Verified on both devices under the validation layer: 300 pictures,
+exactly the two requested refreshes, the rest predicted, and the stream
+decodes to the full count outside the project.
+
+- **The reconstruction slots are layers of one image, never separate
+  images.** The separate form is a capability, one implementation here does
+  not report it, and programming it anyway sent the encode engine into
+  unmapped memory and took the desktop down with it. The layered form works
+  everywhere, which is also what the reference implementations fall back to.
+- **Every scope names what stands in its slots.** The slot being written is
+  opened inactive with its description chained all the same; the reference
+  being read carries its own numbers in both the scope and the encode
+  command.
+- **The parameter sets come from the driver.** The bitstream carries slices
+  only, so a stream opens with sets fetched from the session itself -- the
+  driver is the authority on what it encodes against, which a hand-written
+  copy cannot promise; an earlier backend's history says exactly how that
+  goes wrong.
+- The order count stays type 2, derived from the frame number -- the choice
+  for a stream with no bidirectional pictures -- and the frame number wraps
+  at the size the sequence set names while the derivation stays continuous.
+
 ## 9: capture (the conversion tier follows the device)
 
 **Absent a name, the conversion interface follows the device**: the compute
