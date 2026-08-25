@@ -1016,10 +1016,11 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
         // A live-run aid, and nothing an application should be able to ask for.
         rumble_probe: false,
         stream: Some(crate::stream::Config {
-            // **Not exposed at the boundary.** Which interface converts is a
-            // measurement knob, and an application has no way to know which
-            // one a machine should use.
-            convert: lowlat_capture::Backend::default(),
+            // **Not exposed at the boundary.** An application has no way to
+            // know which interface a machine should use, so the stream
+            // follows the device; naming one is the daemon's measurement
+            // knob.
+            convert: None,
             audio_kbps,
             allow_raw_audio: allow_raw,
             // **The source is always described and the switch is separate.**

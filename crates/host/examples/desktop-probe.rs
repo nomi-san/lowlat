@@ -72,7 +72,7 @@ fn main() {
     let mut desktop = Display::open(
         nvenc::IN_FLIGHT,
         wanted.as_deref(),
-        lowlat::capture::Backend::requested(),
+        Some(lowlat::capture::Backend::requested()),
         lowlat::display::Register::Vendor(&encoder),
     )
     .unwrap_or_else(|e| fail(&format!("display: {e}")));

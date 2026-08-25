@@ -28,23 +28,23 @@ use lowlat_common::clock::Time;
 
 /// Which display interface the import and conversion run on.
 ///
-/// **Named by whoever builds the pipeline, never inferred and never fallen back
-/// to.** The two are not equivalent: only [`Self::Vulkan`] can hand its result
-/// to an encoder today, and a machine that refuses it says which part it is
-/// missing ([`vulkan::Error::Unsupported`]). Choosing the other automatically
-/// would replace that answer with a working pipeline of unknown provenance,
-/// which is the opposite of what the refusal is for.
-///
-/// Selecting between them on a machine's behalf is a later decision and needs
-/// the refusals from real hardware first.
+/// **The first where the device has it, the second where it does not, and a
+/// name pins the choice** (docs/05-host.md section 4). The two are not
+/// equivalent: the second costs about a millisecond more per frame and cannot
+/// hand a frame to the vendor encoder, so it is a floor for old devices and a
+/// measurement target, never a substitute where the first exists. A device
+/// that refuses the first for any reason other than not having it keeps its
+/// refusal: swapping in a working pipeline of unknown provenance is the
+/// opposite of what the refusal is for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Backend {
     /// The interface that takes a buffer's tiling explicitly and exports its
     /// result to either encoder.
     #[default]
     Vulkan,
-    /// The older interface, for measuring what a device that refuses the first
-    /// one can still do.
+    /// The fallback for devices without the first interface, and the
+    /// measurement target it started as. Slower by about a millisecond a
+    /// frame, and its result reaches only the open encoder.
     Gl,
 }
 
@@ -61,6 +61,25 @@ impl Backend {
             "gl" | "opengl" | "egl" => Some(Self::Gl),
             _ => None,
         }
+    }
+
+    /// What the environment asks for, or nothing when it asks for nothing.
+    ///
+    /// The stream treats nothing as "follow the device", so unlike
+    /// [`Self::requested`] there is no default to stand in: a name that is
+    /// not one of the two is refused loudly and the answer stays nothing.
+    pub fn asked() -> Option<Self> {
+        let named = std::env::var("LOWLAT_CONVERT").ok()?;
+        if named.is_empty() {
+            return None;
+        }
+        let parsed = Self::parse(&named);
+        if parsed.is_none() {
+            lowlat_common::log_error!(
+                "capture: LOWLAT_CONVERT={named} names no interface, following the device"
+            );
+        }
+        parsed
     }
 
     /// What the environment asks for, and the default when it asks for nothing.

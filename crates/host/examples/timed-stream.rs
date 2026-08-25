@@ -32,7 +32,7 @@ fn main() {
 
     let stream = Stream::start(Config {
         audio: None,
-        convert: lowlat_capture::Backend::default(),
+        convert: None,
         audio_on: false,
         accept_microphone: false,
         audio_kbps: 128,

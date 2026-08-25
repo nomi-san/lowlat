@@ -35,7 +35,7 @@ fn main() {
     let Some((width, height)) = Display::size_of_display(wanted.as_deref()) else {
         fail("no output of that name is lit");
     };
-    let backend = lowlat::capture::Backend::requested();
+    let backend = Some(lowlat::capture::Backend::requested());
     println!("{width}x{height}, converting on {backend:?}");
 
     let api = vaapi::Vaapi::load().unwrap_or_else(|e| fail(&format!("encoder: {e}")));

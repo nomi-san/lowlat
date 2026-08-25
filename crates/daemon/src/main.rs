@@ -343,18 +343,20 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some("open" | "vaapi") => Some(lowlat::stream::Backend::Open),
         _ => None,
     };
-    // **Named, never inferred.** The two interfaces are not equivalent -- only
-    // the first reaches both encoders -- so absent means the first rather than
-    // whichever a machine happens to support. A name that is neither is
-    // refused loudly by the parser and the default stands.
+    // **A name pins the interface; absent follows the device** -- the compute
+    // interface where it exists, the fallback where it does not, which is the
+    // settled tier ladder (05 section 4). A name that is neither is refused
+    // loudly and the stream follows the device instead, because silently
+    // measuring the interface nobody asked about is worse than not pinning.
     let convert =
         flag("--convert")
             .as_deref()
-            .map_or_else(lowlat::capture::Backend::requested, |named| {
-                lowlat::capture::Backend::parse(named).unwrap_or_else(|| {
-                    eprintln!("--convert {named} names no interface; using the default");
-                    lowlat::capture::Backend::default()
-                })
+            .map_or_else(lowlat::capture::Backend::asked, |named| {
+                let parsed = lowlat::capture::Backend::parse(named);
+                if parsed.is_none() {
+                    eprintln!("--convert {named} names no interface; following the device");
+                }
+                parsed
             });
     let rotation = match flag("--rotate").as_deref() {
         Some("90") => lowlat::video::Rotation::Deg90,

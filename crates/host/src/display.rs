@@ -568,7 +568,7 @@ impl Display {
     pub fn open(
         depth: usize,
         wanted: Option<&str>,
-        backend: lowlat_capture::Backend,
+        backend: Option<lowlat_capture::Backend>,
         register: Register<'_>,
     ) -> Result<Self, Error> {
         let (node, card, layout) = Self::find(wanted)?;
@@ -576,8 +576,29 @@ impl Display {
         let on = layout.connector.as_deref().unwrap_or("this output");
 
         let pipeline = match backend {
-            lowlat_capture::Backend::Vulkan => Self::build_vulkan(&node, depth, shape, &register),
-            lowlat_capture::Backend::Gl => Self::build_gl(&node, &card, depth, shape, &register),
+            Some(lowlat_capture::Backend::Vulkan) => {
+                Self::build_vulkan(&node, depth, shape, &register)
+            }
+            Some(lowlat_capture::Backend::Gl) => {
+                Self::build_gl(&node, &card, depth, shape, &register)
+            }
+            // **Nothing follows the device**: the compute interface where it
+            // exists, the fallback where it does not (docs/05-host.md
+            // section 4). Only the two errors that mean "this device has no
+            // such interface" fall through. The fallback costs about a
+            // millisecond more per frame, so any other failure keeps its
+            // refusal rather than being masked by a slower tier -- a machine
+            // quietly converting on the wrong interface is a measurement
+            // nobody can trust and a latency nobody asked for.
+            None => match Self::build_vulkan(&node, depth, shape, &register) {
+                Err(Error::Convert(vulkan::Error::NoLoader | vulkan::Error::NoDeviceForNode)) => {
+                    lowlat_common::log_info!(
+                        "display: {on} has no compute interface, converting on the fallback"
+                    );
+                    Self::build_gl(&node, &card, depth, shape, &register)
+                }
+                outcome => outcome,
+            },
         };
         let pipeline = pipeline.inspect_err(|error| {
             lowlat_common::log_error!(

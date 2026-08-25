@@ -1033,13 +1033,16 @@ pub struct Config {
     /// and given another looks like it worked, and the person who asked is
     /// looking at the wrong desk.
     pub output: Option<String>,
-    /// Which display interface the import and conversion run on.
+    /// Which display interface the import and conversion run on, or nothing
+    /// to follow the device.
     ///
-    /// **A measurement knob, not a preference**, which is why it is here and
-    /// not at the boundary: the two are not equivalent, only one reaches both
-    /// encoders, and choosing between them on a machine's behalf needs
-    /// evidence this does not have yet.
-    pub convert: lowlat_capture::Backend,
+    /// **Following is the default and naming one is the override**, kept off
+    /// the boundary because an application has no way to know which interface
+    /// a machine should use. Following means the compute interface where the
+    /// device has it and the fallback where it does not; the fallback costs
+    /// about a millisecond more per frame, so a name pins the choice for
+    /// measurement and is honoured or refused, never substituted.
+    pub convert: Option<lowlat_capture::Backend>,
     /// Capture the real display rather than generating pictures.
     ///
     /// **Not a preference between two sources of equal standing.** The
@@ -3859,7 +3862,7 @@ mod tests {
     fn a_live_video_change_is_taken_once_and_then_not_again() {
         let stream = Stream::start(Config {
             audio: None,
-            convert: lowlat_capture::Backend::default(),
+            convert: None,
             audio_on: false,
             accept_microphone: false,
             audio_kbps: 128,
@@ -3996,7 +3999,7 @@ mod tests {
         fn with_pool(slots: usize) -> Self {
             let config = Config {
                 audio: None,
-                convert: lowlat_capture::Backend::default(),
+                convert: None,
                 audio_on: false,
                 accept_microphone: false,
                 audio_kbps: 128,
@@ -4123,7 +4126,7 @@ mod tests {
     fn test_config(codec: Codec) -> Config {
         Config {
             audio: None,
-            convert: lowlat_capture::Backend::default(),
+            convert: None,
             audio_on: false,
             accept_microphone: false,
             audio_kbps: 128,
@@ -5638,7 +5641,7 @@ mod tests {
     fn the_real_encoder_serves_a_seated_guest() {
         let stream = Stream::start(Config {
             audio: None,
-            convert: lowlat_capture::Backend::default(),
+            convert: None,
             audio_on: false,
             accept_microphone: false,
             audio_kbps: 128,
@@ -5711,7 +5714,7 @@ mod tests {
             .unwrap_or(0);
         let stream = Stream::start(Config {
             audio: None,
-            convert: lowlat_capture::Backend::default(),
+            convert: None,
             audio_on: false,
             accept_microphone: false,
             audio_kbps: 128,
@@ -5874,7 +5877,7 @@ mod tests {
     fn report_stream() -> Stream {
         Stream::start(Config {
             audio: None,
-            convert: lowlat_capture::Backend::default(),
+            convert: None,
             audio_on: false,
             accept_microphone: false,
             audio_kbps: 128,
@@ -5900,7 +5903,7 @@ mod tests {
     fn measure(fps: u32, frames: usize) -> Report {
         let stream = Stream::start(Config {
             audio: None,
-            convert: lowlat_capture::Backend::default(),
+            convert: None,
             audio_on: false,
             accept_microphone: false,
             audio_kbps: 128,
