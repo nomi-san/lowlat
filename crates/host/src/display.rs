@@ -176,6 +176,8 @@ pub enum Registration {
     },
     /// A surface the display interface imported from the same allocation.
     Open { surface: u32 },
+    /// A slot of the encoder's own ring, which the conversion wrote directly.
+    Vulkan { slot: usize },
 }
 
 impl core::fmt::Debug for Registration {
@@ -183,6 +185,7 @@ impl core::fmt::Debug for Registration {
         match self {
             Self::Vendor { .. } => f.write_str("Vendor"),
             Self::Open { surface } => write!(f, "Open({surface})"),
+            Self::Vulkan { slot } => write!(f, "Vulkan({slot})"),
         }
     }
 }
@@ -220,6 +223,20 @@ pub enum Register<'a> {
     Vendor(&'a lowlat_encode::nvenc::Encoder<'a>),
     /// The display stack's encoder, which takes a descriptor.
     Open(&'a lowlat_encode::vaapi::Display<'a>),
+    /// The encoder that shares the capture's device: the conversion writes
+    /// its ring directly, so what arrives here is the device (a counted
+    /// clone) and the ring's targets, not an encoder to register with.
+    ///
+    /// The node and size are what the ring was built against, and the open
+    /// re-checks both: a display that moved between the two calls would
+    /// otherwise be converted on the wrong device or into the wrong extent.
+    VulkanRing {
+        node: std::path::PathBuf,
+        width: u32,
+        height: u32,
+        device: vulkan::Device,
+        targets: Vec<lowlat_capture::convert::TargetRef>,
+    },
 }
 
 impl core::fmt::Debug for Register<'_> {
@@ -227,6 +244,7 @@ impl core::fmt::Debug for Register<'_> {
         match self {
             Self::Vendor(_) => f.write_str("Vendor"),
             Self::Open(_) => f.write_str("Open"),
+            Self::VulkanRing { targets, .. } => write!(f, "VulkanRing({})", targets.len()),
         }
     }
 }
@@ -240,6 +258,8 @@ impl core::fmt::Debug for Register<'_> {
 /// is the difference that decides which encoders a machine can use.
 enum Pipeline {
     Vulkan(Box<Vulkan>),
+    /// The compute interface converting into an encoder's own ring.
+    VulkanRing(Box<VulkanRing>),
     Gl(Box<Gl>),
 }
 
@@ -270,11 +290,25 @@ struct Gl {
     ready: Option<lowlat_capture::convert::Digest>,
 }
 
+/// The ring path: conversion targets that belong to the encoder.
+///
+/// Nothing is registered with anybody, because there is nothing to hand
+/// across: the conversion writes the encoder's own pictures, and a
+/// registration is just the slot number.
+struct VulkanRing {
+    device: vulkan::Device,
+    converter: Converter,
+    imports: HashMap<u64, vulkan::Imported>,
+    targets: Vec<lowlat_capture::convert::TargetRef>,
+    registrations: Vec<Registration>,
+}
+
 impl Pipeline {
     /// How many targets there are, which is the rotation's length.
     fn depth(&self) -> usize {
         match self {
             Self::Vulkan(vk) => vk.targets.len(),
+            Self::VulkanRing(ring) => ring.targets.len(),
             Self::Gl(gl) => gl.targets.len(),
         }
     }
@@ -283,6 +317,7 @@ impl Pipeline {
     fn holds(&self, key: u64) -> bool {
         match self {
             Self::Vulkan(vk) => vk.imports.contains_key(&key),
+            Self::VulkanRing(ring) => ring.imports.contains_key(&key),
             Self::Gl(gl) => gl.imports.contains_key(&key),
         }
     }
@@ -291,6 +326,7 @@ impl Pipeline {
     fn cached(&self) -> usize {
         match self {
             Self::Vulkan(vk) => vk.imports.len(),
+            Self::VulkanRing(ring) => ring.imports.len(),
             Self::Gl(gl) => gl.imports.len(),
         }
     }
@@ -311,6 +347,14 @@ impl Pipeline {
                 let imported = vk.device.import(&source)?;
                 vk.imports.insert(key, imported);
             }
+            Self::VulkanRing(ring) => {
+                let source = Imports {
+                    fd: <OwnedFd as std::os::fd::IntoRawFd>::into_raw_fd(fd),
+                    ..source
+                };
+                let imported = ring.device.import(&source)?;
+                ring.imports.insert(key, imported);
+            }
             Self::Gl(gl) => {
                 let source = Imports {
                     fd: std::os::fd::AsRawFd::as_raw_fd(&fd),
@@ -330,6 +374,11 @@ impl Pipeline {
             Self::Vulkan(vk) => {
                 for (_, imported) in vk.imports.drain() {
                     vk.device.release(imported);
+                }
+            }
+            Self::VulkanRing(ring) => {
+                for (_, imported) in ring.imports.drain() {
+                    ring.device.release(imported);
                 }
             }
             Self::Gl(gl) => {
@@ -354,6 +403,13 @@ impl Pipeline {
                 let target = vk.targets.get(slot).ok_or(Error::Register)?;
                 vk.converter
                     .submit(&vk.device, source, &target.frame.target(), false)
+                    .map_err(Error::Convert)
+            }
+            Self::VulkanRing(ring) => {
+                let source = ring.imports.get(&key).ok_or(Error::Register)?;
+                let target = ring.targets.get(slot).ok_or(Error::Register)?;
+                ring.converter
+                    .submit(&ring.device, source, target, false)
                     .map_err(Error::Convert)
             }
             Self::Gl(gl) => {
@@ -383,6 +439,7 @@ impl Pipeline {
     fn collect(&mut self) -> Result<Option<lowlat_capture::convert::Digest>, Error> {
         match self {
             Self::Vulkan(vk) => vk.converter.collect(&vk.device).map_err(Error::Convert),
+            Self::VulkanRing(ring) => ring.converter.collect(&ring.device).map_err(Error::Convert),
             Self::Gl(gl) => Ok(gl.ready.take()),
         }
     }
@@ -411,6 +468,19 @@ impl Pipeline {
                 let _ = vk.converter.collect(&vk.device).map_err(Error::Convert)?;
                 Ok(())
             }
+            Self::VulkanRing(ring) => {
+                let source = ring.imports.get(&key).ok_or(Error::Register)?;
+                let target = ring.targets.get(slot).ok_or(Error::Register)?;
+                let groups = lowlat_capture::convert::poke_groups(source.width, source.height);
+                ring.converter
+                    .poke(&ring.device, source, target, groups)
+                    .map_err(Error::Convert)?;
+                let _ = ring
+                    .converter
+                    .collect(&ring.device)
+                    .map_err(Error::Convert)?;
+                Ok(())
+            }
             Self::Gl(_) => Ok(()),
         }
     }
@@ -419,6 +489,7 @@ impl Pipeline {
     fn registration(&self, slot: usize) -> Option<&Registration> {
         match self {
             Self::Vulkan(vk) => vk.targets.get(slot).map(|target| &target.registration),
+            Self::VulkanRing(ring) => ring.registrations.get(slot),
             Self::Gl(gl) => gl.targets.get(slot).map(|target| &target.registration),
         }
     }
@@ -427,6 +498,7 @@ impl Pipeline {
     fn name(&self) -> String {
         match self {
             Self::Vulkan(vk) => vk.device.name(),
+            Self::VulkanRing(ring) => format!("{} (ring)", ring.device.name()),
             Self::Gl(gl) => gl.device.name().to_string(),
         }
     }
@@ -444,6 +516,13 @@ impl Pipeline {
                 }
                 for target in vk.targets.drain(..) {
                     vk.device.release_nv12(target.frame);
+                }
+            }
+            Self::VulkanRing(ring) => {
+                // The targets are the encoder's pictures; releasing them is
+                // its business, not this pipeline's.
+                for (_, imported) in ring.imports.drain() {
+                    ring.device.release(imported);
                 }
             }
             Self::Gl(gl) => {
@@ -565,6 +644,12 @@ impl Display {
     /// **The encoder must already be configured for what the display is
     /// showing.** Its registration fixes the picture size, so a mismatch is a
     /// stream of the wrong shape rather than a refusal.
+    /// The device node the wanted output is scanning out on, for a caller
+    /// that must build something on that device before opening the display.
+    pub fn node_of(wanted: Option<&str>) -> Result<std::path::PathBuf, Error> {
+        Self::find(wanted).map(|(node, _, _)| node)
+    }
+
     pub fn open(
         depth: usize,
         wanted: Option<&str>,
@@ -575,30 +660,68 @@ impl Display {
         let shape = Shape::of(&layout.primary);
         let on = layout.connector.as_deref().unwrap_or("this output");
 
-        let pipeline = match backend {
-            Some(lowlat_capture::Backend::Vulkan) => {
-                Self::build_vulkan(&node, depth, shape, &register)
+        let pipeline = if let Register::VulkanRing {
+            node: ring_node,
+            width,
+            height,
+            device,
+            targets,
+        } = register
+        {
+            // **The ring was built against a node and a size, and both are
+            // re-checked**: the display can move or change between the ring's
+            // construction and this open, and converting on the wrong device
+            // or into the wrong extent would not announce itself.
+            if ring_node != node || (width, height) != (shape.width, shape.height) {
+                Err(Error::Register)
+            } else if matches!(backend, Some(lowlat_capture::Backend::Gl)) {
+                // The ring is written by the compute interface by
+                // construction; a named GL override cannot be honoured.
+                Err(Error::NotTogether)
+            } else {
+                let count = targets.len();
+                Converter::new(&device)
+                    .map_err(Error::Convert)
+                    .map(|converter| {
+                        Pipeline::VulkanRing(Box::new(VulkanRing {
+                            device,
+                            converter,
+                            imports: HashMap::new(),
+                            targets,
+                            registrations: (0..count)
+                                .map(|slot| Registration::Vulkan { slot })
+                                .collect(),
+                        }))
+                    })
             }
-            Some(lowlat_capture::Backend::Gl) => {
-                Self::build_gl(&node, &card, depth, shape, &register)
-            }
-            // **Nothing follows the device**: the compute interface where it
-            // exists, the fallback where it does not (docs/05-host.md
-            // section 4). Only the two errors that mean "this device has no
-            // such interface" fall through. The fallback costs about a
-            // millisecond more per frame, so any other failure keeps its
-            // refusal rather than being masked by a slower tier -- a machine
-            // quietly converting on the wrong interface is a measurement
-            // nobody can trust and a latency nobody asked for.
-            None => match Self::build_vulkan(&node, depth, shape, &register) {
-                Err(Error::Convert(vulkan::Error::NoLoader | vulkan::Error::NoDeviceForNode)) => {
-                    lowlat_common::log_info!(
-                        "display: {on} has no compute interface, converting on the fallback"
-                    );
+        } else {
+            match backend {
+                Some(lowlat_capture::Backend::Vulkan) => {
+                    Self::build_vulkan(&node, depth, shape, &register)
+                }
+                Some(lowlat_capture::Backend::Gl) => {
                     Self::build_gl(&node, &card, depth, shape, &register)
                 }
-                outcome => outcome,
-            },
+                // **Nothing follows the device**: the compute interface where it
+                // exists, the fallback where it does not (docs/05-host.md
+                // section 4). Only the two errors that mean "this device has no
+                // such interface" fall through. The fallback costs about a
+                // millisecond more per frame, so any other failure keeps its
+                // refusal rather than being masked by a slower tier -- a machine
+                // quietly converting on the wrong interface is a measurement
+                // nobody can trust and a latency nobody asked for.
+                None => match Self::build_vulkan(&node, depth, shape, &register) {
+                    Err(Error::Convert(
+                        vulkan::Error::NoLoader | vulkan::Error::NoDeviceForNode,
+                    )) => {
+                        lowlat_common::log_info!(
+                            "display: {on} has no compute interface, converting on the fallback"
+                        );
+                        Self::build_gl(&node, &card, depth, shape, &register)
+                    }
+                    outcome => outcome,
+                },
+            }
         };
         let pipeline = pipeline.inspect_err(|error| {
             lowlat_common::log_error!(
@@ -674,6 +797,9 @@ impl Display {
                     let (fd, exported) = device.export_nv12(&frame, true)?;
                     Self::register_open(display, std::os::fd::AsFd::as_fd(&fd), &exported)
                 }
+                // Routed before the backends are chosen; reaching it here
+                // is a construction error, not a pairing.
+                Register::VulkanRing { .. } => Err(Error::NotTogether),
             }?;
             targets.push(Target {
                 frame,

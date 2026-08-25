@@ -1021,6 +1021,10 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
             // follows the device; naming one is the daemon's measurement
             // knob.
             convert: None,
+            // The knob is the environment's (LOWLAT_VULKAN_ENCODE=1), which
+            // the stream reads itself; the boundary names meanings, not
+            // mechanisms.
+            prefer_vulkan: false,
             audio_kbps,
             allow_raw_audio: allow_raw,
             // **The source is always described and the switch is separate.**

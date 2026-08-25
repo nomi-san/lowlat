@@ -33,6 +33,7 @@ fn main() {
     let stream = Stream::start(Config {
         audio: None,
         convert: None,
+        prefer_vulkan: false,
         audio_on: false,
         accept_microphone: false,
         audio_kbps: 128,

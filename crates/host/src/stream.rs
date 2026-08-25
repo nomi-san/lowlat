@@ -1005,6 +1005,17 @@ pub struct Config {
     /// stays where it was. Configuring one is for forcing a particular
     /// encoder on a machine where either would do.
     pub backend: Option<Backend>,
+    /// Prefer the encoder that shares the capture's device, where the device
+    /// can serve it.
+    ///
+    /// **An operator's knob, never a boundary field**: the boundary names
+    /// meanings and this names a mechanism, the same rule that keeps the
+    /// conversion interface off it. A device that cannot serve it logs the
+    /// reason once and the stream follows the display as it always did; a
+    /// device that can, and then fails building, keeps its refusal. The
+    /// environment (`LOWLAT_VULKAN_ENCODE=1`) is read beside this, so a rig
+    /// reaches it without a flag.
+    pub prefer_vulkan: bool,
     pub width: u32,
     pub height: u32,
     pub fps: u32,
@@ -1753,9 +1764,25 @@ fn run(
             config.codec,
             backend
         );
-        let exit = match backend {
-            Backend::Open => run_open(shared, arrivals, config.clone(), &mut roster),
-            Backend::Vendor => run_vendor(shared, arrivals, config.clone(), &mut roster),
+        // **The third encoder is preferred only when asked, and never wins an
+        // argument with a named backend.** A device that cannot serve it has
+        // already logged why by the time this falls through to the pair that
+        // always could.
+        let prefer_vulkan = (config.prefer_vulkan
+            || std::env::var("LOWLAT_VULKAN_ENCODE").is_ok_and(|value| value == "1"))
+            && config.backend.is_none()
+            && config.display;
+        let vulkan_exit = if prefer_vulkan {
+            run_vulkan(shared, arrivals, config.clone(), &mut roster)
+        } else {
+            None
+        };
+        let exit = match vulkan_exit {
+            Some(exit) => exit,
+            None => match backend {
+                Backend::Open => run_open(shared, arrivals, config.clone(), &mut roster),
+                Backend::Vendor => run_vendor(shared, arrivals, config.clone(), &mut roster),
+            },
         };
         match exit {
             Exit::Stopped => return,
@@ -2029,6 +2056,154 @@ fn occupied_seats(shared: &Shared) -> usize {
 /// every declaration and means nothing; testing it as one reports a refusal on
 /// every ordinary request, which is what it did.
 const NOT_EMITTED: u32 = lowlat_core::init::FLAG_COLOR444 | lowlat_core::init::FLAG_10BIT;
+
+/// How many pictures the third encoder's ring holds.
+///
+/// The same figure as the other backends' target rotation: the conversion
+/// writes the next picture while the previous one encodes, and the loop's
+/// collect discipline never lets a slot be rewritten while an encode holds
+/// it.
+const VULKAN_SLOTS: usize = 4;
+
+/// Run the stream on the encoder that shares the capture's device, or say
+/// why it cannot.
+///
+/// **Nothing is what "follow the display instead" looks like from here.**
+/// Every reason a device cannot serve this path is logged once and answered
+/// with `None`, and the caller falls through to the pair that always could.
+/// A device that can serve it and then fails building keeps its refusal:
+/// masking a real fault with a slower path is how a rig measures the wrong
+/// encoder.
+fn run_vulkan(
+    shared: &Arc<Shared>,
+    arrivals: &mpsc::Receiver<Join>,
+    config: Config,
+    roster: &mut Roster,
+) -> Option<Exit> {
+    let codec = match config.codec {
+        Codec::H264 => lowlat_encode::vulkan::Codec::H264,
+        Codec::H265 => {
+            lowlat_common::log_info!(
+                "stream: the vulkan encoder does not carry H265 yet, following the display"
+            );
+            return None;
+        }
+    };
+    // The display decides the size, exactly as on the other paths.
+    let (width, height) = match await_display(config.output.as_deref()) {
+        Some(size) => size,
+        None => {
+            lowlat_common::log_error!(
+                "stream: nothing has been scanning out for {:.0}s, ending {} guest(s)",
+                DISPLAY_WAIT.as_secs_f64(),
+                roster.active.len()
+            );
+            return Some(Exit::Failed(status::CAPTURE_UNAVAILABLE));
+        }
+    };
+    shared.publish_picture(width, height);
+    let config = Config {
+        width,
+        height,
+        ..config
+    };
+
+    let node = match crate::display::Display::node_of(config.output.as_deref()) {
+        Ok(node) => node,
+        Err(error) => {
+            lowlat_common::log_info!(
+                "stream: no node for the vulkan encoder, following the display, {error}"
+            );
+            return None;
+        }
+    };
+    let capture = match lowlat_capture::vulkan::Device::for_display_and_encode(&node) {
+        Ok(device) => device,
+        Err(error) => {
+            lowlat_common::log_info!(
+                "stream: the device does not open for encode, following the display, {error}"
+            );
+            return None;
+        }
+    };
+    let Some((queue, family)) = capture.encode_queue() else {
+        lowlat_common::log_info!("stream: the device has no encode queue, following the display");
+        return None;
+    };
+    let device = match lowlat_encode::vulkan::Device::shared(capture.clone(), queue, family) {
+        Ok(device) => device,
+        Err(error) => {
+            lowlat_common::log_info!(
+                "stream: the encode interface refused the device, following the display, {error}"
+            );
+            return None;
+        }
+    };
+    let caps = match device.caps(codec) {
+        Ok(caps) => caps,
+        Err(error) => {
+            lowlat_common::log_info!(
+                "stream: the device does not encode over this interface, following the display, \
+                 {error}"
+            );
+            return None;
+        }
+    };
+    if !caps.shared_picture {
+        // A copy stage between conversion and encode is not written, and
+        // silently inserting one is exactly what this backend must not do.
+        lowlat_common::log_info!(
+            "stream: a copy stands between conversion and encode here, following the display"
+        );
+        return None;
+    }
+
+    // From here on the device said it could, so a failure is reported
+    // rather than masked.
+    let mut encoder = match device.encoder(&caps, width, height, start_bps(&config), VULKAN_SLOTS) {
+        Ok(encoder) => encoder,
+        Err(error) => {
+            lowlat_common::log_error!("stream: the vulkan encoder failed to build, {error}");
+            return Some(Exit::Failed(status::ENCODER_UNAVAILABLE));
+        }
+    };
+    let mut targets = Vec::with_capacity(VULKAN_SLOTS);
+    for slot in 0..VULKAN_SLOTS {
+        let (Some(planes), Some(image)) = (encoder.planes(slot), encoder.source(slot)) else {
+            lowlat_common::log_error!("stream: the encoder lends no planes for slot {slot}");
+            return Some(Exit::Failed(status::ENCODER_UNAVAILABLE));
+        };
+        targets.push(lowlat_capture::convert::TargetRef::lent_to_encoder(
+            image, planes,
+        ));
+    }
+    let mut desktop = match crate::display::Display::open(
+        VULKAN_SLOTS,
+        config.output.as_deref(),
+        config.convert,
+        crate::display::Register::VulkanRing {
+            node,
+            width,
+            height,
+            device: capture,
+            targets,
+        },
+    ) {
+        Ok(desktop) => desktop,
+        Err(error) => {
+            lowlat_common::log_error!("stream: the display could not be opened, {error}");
+            return Some(Exit::Failed(status::CAPTURE_UNAVAILABLE));
+        }
+    };
+    Some(encode_loop(
+        shared,
+        arrivals,
+        config,
+        roster,
+        &mut encoder,
+        Some(&mut desktop),
+    ))
+}
 
 fn run_open(
     shared: &Arc<Shared>,
@@ -2625,6 +2800,21 @@ impl FromDevice for lowlat_encode::vaapi::Encoder<'_> {
             return false;
         };
         self.submit_registered(*surface, force_keyframe).is_ok()
+    }
+}
+
+impl FromDevice for lowlat_encode::vulkan::Encoder<'_> {
+    fn submit_from_device(
+        &mut self,
+        registration: &crate::display::Registration,
+        force_keyframe: bool,
+    ) -> bool {
+        let crate::display::Registration::Vulkan { slot } = registration else {
+            return false;
+        };
+        // The conversion wrote the slot and handed it over in the layout
+        // this encoder reads; the written entry point is what honours that.
+        self.submit_written(*slot, force_keyframe).is_ok()
     }
 }
 
@@ -3863,6 +4053,7 @@ mod tests {
         let stream = Stream::start(Config {
             audio: None,
             convert: None,
+            prefer_vulkan: false,
             audio_on: false,
             accept_microphone: false,
             audio_kbps: 128,
@@ -4000,6 +4191,7 @@ mod tests {
             let config = Config {
                 audio: None,
                 convert: None,
+                prefer_vulkan: false,
                 audio_on: false,
                 accept_microphone: false,
                 audio_kbps: 128,
@@ -4127,6 +4319,7 @@ mod tests {
         Config {
             audio: None,
             convert: None,
+            prefer_vulkan: false,
             audio_on: false,
             accept_microphone: false,
             audio_kbps: 128,
@@ -5642,6 +5835,7 @@ mod tests {
         let stream = Stream::start(Config {
             audio: None,
             convert: None,
+            prefer_vulkan: false,
             audio_on: false,
             accept_microphone: false,
             audio_kbps: 128,
@@ -5715,6 +5909,7 @@ mod tests {
         let stream = Stream::start(Config {
             audio: None,
             convert: None,
+            prefer_vulkan: false,
             audio_on: false,
             accept_microphone: false,
             audio_kbps: 128,
@@ -5878,6 +6073,7 @@ mod tests {
         Stream::start(Config {
             audio: None,
             convert: None,
+            prefer_vulkan: false,
             audio_on: false,
             accept_microphone: false,
             audio_kbps: 128,
@@ -5904,6 +6100,7 @@ mod tests {
         let stream = Stream::start(Config {
             audio: None,
             convert: None,
+            prefer_vulkan: false,
             audio_on: false,
             accept_microphone: false,
             audio_kbps: 128,

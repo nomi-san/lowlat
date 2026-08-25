@@ -177,6 +177,21 @@ pub struct TargetRef {
     pub final_layout: vk::ImageLayout,
 }
 
+impl TargetRef {
+    /// A target lent by an encoder on the same device.
+    ///
+    /// One two-plane picture, written through its plane views and handed
+    /// over in the layout the encoder reads.
+    pub fn lent_to_encoder(image: vk::Image, planes: [vk::ImageView; 2]) -> Self {
+        Self {
+            luma_image: image,
+            chroma_image: image,
+            planes,
+            final_layout: vk::ImageLayout::VIDEO_ENCODE_SRC_KHR,
+        }
+    }
+}
+
 impl Nv12 {
     /// This target, by its handles.
     pub fn target(&self) -> TargetRef {

@@ -407,6 +407,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         shared_address_space: flag_set("--shared-address-space"),
         stream: Some(lowlat::stream::Config {
             convert,
+            // Prefer the encoder that shares the capture's device, where the
+            // device can serve it; the environment (LOWLAT_VULKAN_ENCODE=1)
+            // reaches the same knob without a flag.
+            prefer_vulkan: flag_set("--vulkan-encode"),
             audio_kbps: flag("--audio-kbps")
                 .and_then(|value| value.parse().ok())
                 .unwrap_or(lowlat_audio::encode::DEFAULT_BITRATE_KBPS),

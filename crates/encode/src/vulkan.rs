@@ -48,6 +48,9 @@ pub enum Error {
     /// A source slot that was never allocated. The count is fixed when the
     /// encoder is built.
     BadSlot,
+    /// A picture is already in flight. Back pressure, not a fault: collect
+    /// one and try again.
+    Busy,
 }
 
 impl core::fmt::Display for Error {
@@ -61,6 +64,7 @@ impl core::fmt::Display for Error {
             Self::NoMemoryType => f.write_str("no memory type suits what this needs"),
             Self::BadParameters => f.write_str("the device refused the parameter sets"),
             Self::BadSlot => f.write_str("no such source slot"),
+            Self::Busy => f.write_str("a picture is already in flight"),
         }
     }
 }
@@ -660,6 +664,10 @@ pub struct Encoder<'a> {
     previous: Option<Reference>,
     /// Whether the picture in flight is a refresh, reported by the poll.
     submitted_keyframe: bool,
+    /// Whether a picture is in flight at all. One command buffer and one
+    /// fence mean one at a time; a second submit is refused as back pressure
+    /// rather than racing the first.
+    in_flight: bool,
     /// The encoded sequence and picture sets, fetched from the driver once.
     ///
     /// **The bitstream carries slices only**: nothing on this path emits the
@@ -896,6 +904,7 @@ impl Device {
             recon: 0,
             previous: None,
             submitted_keyframe: false,
+            in_flight: false,
             sets,
         })
     }
@@ -1255,6 +1264,9 @@ impl Encoder<'_> {
     }
 
     fn encode_slot(&mut self, slot: usize, force_keyframe: bool, writer_owned: bool) -> Result<()> {
+        if self.in_flight {
+            return Err(Error::Busy);
+        }
         let source_view = self.sources.get(slot).ok_or(Error::BadSlot)?.view;
         let device = &self.device.device;
         // SAFETY: the previous submit was waited on, so both are idle.
@@ -1657,6 +1669,7 @@ impl Encoder<'_> {
             self.idr_id = self.idr_id.wrapping_add(1);
         }
         self.submitted_keyframe = idr;
+        self.in_flight = true;
         Ok(())
     }
 
@@ -1718,6 +1731,7 @@ impl Encoder<'_> {
             }
             device.unmap_memory(self.bitstream_memory);
         }
+        self.in_flight = false;
         Ok(Poll::Ready {
             bitstream: &self.collected,
             keyframe: self.submitted_keyframe,
@@ -1733,6 +1747,33 @@ impl Encoder<'_> {
                 .wait_for_fences(&[self.fence], true, 5_000_000_000)
         }
         .map_err(driver)
+    }
+}
+
+impl crate::Encoder for Encoder<'_> {
+    type Error = Error;
+
+    /// The generator's path, which this backend does not carry: its pictures
+    /// are written on the device by the conversion, and nothing here uploads
+    /// bytes. The stream never pairs this backend with a source that
+    /// delivers them.
+    fn submit(
+        &mut self,
+        _frame: &lowlat_capture::Frame<'_>,
+        _force_keyframe: bool,
+    ) -> Result<()> {
+        Err(Error::Unsupported("a frame delivered as bytes"))
+    }
+
+    fn poll(&mut self) -> Result<Poll<'_>> {
+        Encoder::poll(self)
+    }
+
+    /// The rate is applied by the next picture's control command, which is
+    /// also the only way one vendor here accepts it.
+    fn reconfigure(&mut self, bitrate_bps: u32) -> Result<()> {
+        self.set_bitrate(bitrate_bps);
+        Ok(())
     }
 }
 
