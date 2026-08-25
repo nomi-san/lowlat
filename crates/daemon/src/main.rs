@@ -312,6 +312,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let height: u32 = flag("--height")
         .and_then(|v| v.parse().ok())
         .unwrap_or(HEIGHT);
+    // The rate the stream is paced at, which is a ceiling rather than a
+    // promise: the loop follows the display's own present, so asking for more
+    // than the captured output refreshes at produces what it refreshes at.
+    let fps: u32 = flag("--fps")
+        .and_then(|v| v.parse().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(FPS);
     // Rows of unpredictable detail in the synthetic picture. Zero is the flat
     // picture; a band makes frames large enough to need more than one
     // fragment, which is the only way a peer's reassembly is exercised.
@@ -430,7 +437,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             full_fps: flag_set("--full-fps"),
             width,
             height,
-            fps: FPS,
+            fps,
             configured_mbps: bitrate_mbps,
             min_mbps: MIN_BITRATE_MBPS,
             rotation,
@@ -474,7 +481,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             reason = "a configured bitrate in megabits, rounded and floored at zero"
         )]
         bitrate_mbps: bitrate_mbps.round().max(0.0) as u32,
-        fps: FPS,
+        fps,
         rotated: !matches!(rotation, lowlat::video::Rotation::None),
         host_os: flag("--host-os").and_then(|v| v.parse().ok()).unwrap_or(0),
         fake_output: flag_set("--fake-output"),
