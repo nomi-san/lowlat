@@ -916,6 +916,17 @@ Stages are instrumented from the start, not added when something feels slow. A b
 cannot be attributed to a stage produces guesses, and every optimization in this pipeline that
 was based on a guess was wrong.
 
+**A stage's percentiles are over its last thousand samples, not over the last few seconds,
+and on an idle stream that is minutes of history.** Duplicate suppression means a still
+desktop encodes about one frame a second, so a window sized for sixty covers three orders of
+magnitude more time than it appears to, and a figure can describe a state the machine left
+long ago. Two consequences for anyone reading a report. **The p50 lags and then moves in a
+step**, because it does not shift until the composition of the samples crosses half: a stage
+that has begun costing more shows it in the p99 first, sometimes for minutes, before the p50
+acknowledges it. And **a figure taken shortly after the pipeline was rebuilt describes the
+refill**, since the samples begin again with it. Read the two together, and read which
+pipeline was live at that timestamp before attributing a number to a backend.
+
 Counters the pipeline owns: frames captured, skipped by the gate, skipped per guest, keyframes
 forced and why, reconfigures applied, encoder queue depth, conversion ring occupancy.
 

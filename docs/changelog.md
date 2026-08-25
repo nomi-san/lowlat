@@ -24,9 +24,13 @@ stale, nothing refused, the guest reporting 4.1 to 4.4 ms an encode. The
 client then moved the capture to the other card, where a copy would have to
 stand between the conversion and the encode; the path refused it in one
 logged line and let the display's own encoder take the stream, which is the
-refusal behaviour exercised live rather than asserted. **No stage report
-landed inside the window the third encoder held**, so it has no p50 from a
-live session yet -- the module's own figure at that size is 2.99 ms.
+refusal behaviour exercised live rather than asserted. **A longer session
+pinned to that head measured it**: 1080p, a client with motion, half the
+frames reaching the encoder rather than being suppressed -- acquire 0.02 ms,
+conversion 0.99, **encode 3.25 p50 against 4.36 at the ninety-ninth**, held
+steady across a hundred and twenty seconds of reports. The conversion figure
+is that head's compositor-fence cost and not the encoder's; the same client
+on the other card converts in 0.16.
 
 - **The log now names the encoder that took the stream.** The line naming a
   backend is printed before the third encoder is tried, so it names the one
