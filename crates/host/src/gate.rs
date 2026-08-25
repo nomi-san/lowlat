@@ -23,6 +23,14 @@ pub const MAX_GUESTS: usize = 16;
 /// Roughly twice a second, which is the throttle from section 6.
 const KEYFRAME_INTERVAL_MS: f64 = 500.0;
 
+/// How long a frame's size goes on constraining who may be admitted.
+///
+/// **Two seconds, and the mark spans two of these**, so a spike is remembered
+/// for between two and four. Long enough that a real keyframe is still the
+/// mark when the guest it was sent for is retested; short enough that a size
+/// the stream has stopped producing stops deciding anything.
+const MARK_WINDOW_MS: f64 = 2_000.0;
+
 /// The absolute ceiling on outstanding fragments for a configured rate.
 ///
 /// **A ceiling, not a proportional margin.** A margin such as "free slots must
@@ -113,13 +121,25 @@ pub enum Keyframe {
 /// The delivery decision for a stream.
 #[derive(Debug)]
 pub struct Gate {
-    /// **The session high-water mark, in fragments, not this frame's count.**
-    /// A skipping guest is retested against this. Testing against the frame in
-    /// hand lets a guest out of the cascade on a small predicted frame,
-    /// whereupon the keyframe it actually needs does not fit, the keyframe
-    /// grant is spent, and every guest pays the spike for a recovery that did
-    /// not happen.
+    /// **The high-water mark for the window now running, in fragments, not
+    /// this frame's count.** A skipping guest is retested against this rather
+    /// than against the frame in hand: testing against the frame in hand lets
+    /// a guest out of the cascade on a small predicted frame, whereupon the
+    /// keyframe it actually needs does not fit, the keyframe grant is spent,
+    /// and every guest pays the spike for a recovery that did not happen.
     largest: u32,
+    /// The window before this one, so the mark spans a window and a bit
+    /// rather than dropping to nothing the instant one rolls.
+    ///
+    /// **The mark decays, and that is the whole point of keeping two.** As a
+    /// mark over the whole session it only ever grows, and one frame larger
+    /// than a guest's ceiling then means no guest may be admitted or even ask
+    /// for the keyframe it needs, for as long as the stream lives -- a host
+    /// that encodes perfectly and delivers to nobody, which is what this cost
+    /// before it decayed.
+    previous: u32,
+    /// When the window now running began, or nothing before the first frame.
+    window_began_ms: Option<f64>,
     /// When a keyframe was last asked for, so the throttle can refuse.
     ///
     /// **Milliseconds, passed in.** Time is a parameter here as it is in the
@@ -138,13 +158,33 @@ impl Gate {
     pub fn new() -> Self {
         Self {
             largest: 0,
+            previous: 0,
+            window_began_ms: None,
             last_request_ms: None,
         }
     }
 
-    /// The biggest frame the session has produced, in fragments.
+    /// The biggest frame the recent stream has produced, in fragments.
     pub fn largest(&self) -> u32 {
-        self.largest
+        self.largest.max(self.previous)
+    }
+
+    /// Roll the window if this frame belongs to the next one.
+    ///
+    /// **Measured in time rather than in frames**, because the frame rate is
+    /// not a constant here: a still desktop sends one picture a second, and a
+    /// window counted in frames would hold a spike for ten minutes on exactly
+    /// the stream where a guest is most likely to be joining.
+    fn roll(&mut self, now_ms: f64) {
+        match self.window_began_ms {
+            None => self.window_began_ms = Some(now_ms),
+            Some(began) if now_ms - began >= MARK_WINDOW_MS => {
+                self.previous = self.largest;
+                self.largest = 0;
+                self.window_began_ms = Some(now_ms);
+            }
+            Some(_) => {}
+        }
     }
 
     /// Decide delivery of one encoded frame across every guest.
@@ -167,21 +207,23 @@ impl Gate {
     ) -> Keyframe {
         // This frame counts toward the mark before anything is tested against
         // it, because a guest that cannot hold the frame in hand certainly
-        // cannot hold the biggest one yet seen.
+        // cannot hold the biggest one recently seen.
+        self.roll(now_ms);
         self.largest = self.largest.max(fragments);
+        let mark = self.largest();
 
         let mut wanted = false;
         for (index, guest) in guests.iter_mut().enumerate() {
             if guest.pending_keyframe {
                 if !keyframe {
                     // Retested against the mark, never against this frame.
-                    wanted |= guest.has_room_for(self.largest);
+                    wanted |= guest.has_room_for(mark);
                     continue;
                 }
                 if !guest.has_room_for(fragments) {
                     // The keyframe itself does not fit. Still pending, and
                     // still asking.
-                    wanted |= guest.has_room_for(self.largest);
+                    wanted |= guest.has_room_for(mark);
                     continue;
                 }
                 deliver(index);
@@ -375,6 +417,49 @@ mod tests {
         );
         assert!(guests[0].is_skipping());
         assert!(!guests[1].is_skipping());
+    }
+
+    /// **One frame bigger than a guest's ceiling used to end delivery for the
+    /// life of the stream.**
+    ///
+    /// The mark was the largest frame of the whole session and only ever grew,
+    /// and a pending guest may only *ask* for the keyframe it needs when it
+    /// has room for the mark. So a single spike -- a coded refresh on a larger
+    /// screen is enough -- meant no guest could be admitted and none could ask
+    /// either: the host went on capturing, converting and encoding, every
+    /// refresh counter stayed at zero, and every guest that joined saw a black
+    /// screen until the stream was rebuilt under it.
+    #[test]
+    fn a_spike_stops_deciding_who_may_be_admitted() {
+        let mut gate = Gate::new();
+        // Ten megabits gives a ceiling of 1500 fragments; the spike is over it.
+        let mut guests = [Guest::joining(10.0)];
+        let spike = ceiling(10.0) + 500;
+
+        assert_eq!(
+            gate.admit(spike, true, 0.0, &mut guests, |_| {}),
+            Keyframe::NotNeeded,
+            "a keyframe that does not fit is not a keyframe anybody was given"
+        );
+        assert!(
+            guests[0].pending_keyframe,
+            "the guest still needs one, since it could not take that one"
+        );
+
+        // Inside the window the spike still decides, which is intended: the
+        // guest is retested against a size the stream really just produced.
+        assert_eq!(
+            gate.admit(10, false, 100.0, &mut guests, |_| {}),
+            Keyframe::NotNeeded
+        );
+
+        // Once the stream has stopped producing that size, it stops deciding.
+        let _ = gate.admit(10, false, MARK_WINDOW_MS + 100.0, &mut guests, |_| {});
+        assert_eq!(
+            gate.admit(10, false, MARK_WINDOW_MS * 2.0 + 200.0, &mut guests, |_| {}),
+            Keyframe::Request,
+            "a spike the stream left behind was still refusing every guest a keyframe"
+        );
     }
 
     #[test]
