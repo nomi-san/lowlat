@@ -403,6 +403,13 @@ be talked into the wrong one is a security defect rather than a bug.
 **The tray stays a separate program.** Not for protocol reasons: it will link a user-interface
 toolkit, and that has no business inside a system service's binary.
 
+**It is one channel with two roles, not two channels.** The tray needs the same two directions
+the helper does -- state pushed as it changes, and questions that get one answer -- so it
+speaks the same framing and announces its role in the first frame. What differs between the
+two is authorisation rather than transport, and that difference is the whole of it: a helper
+makes statements about its own session and is trusted with exactly that, while a tray acts on
+the host, and kicking a guest is not something any local user may do.
+
 #### What it is for
 
 Four things need session state, and none of them can be answered below it:
@@ -438,15 +445,32 @@ Four things need session state, and none of them can be answered below it:
 
 #### The channel
 
-Length-prefixed frames on a Unix stream socket: a length, a kind, and a body, fixed-width and
-little-endian, as everywhere else. The first frame each way is a version and what the sender
-can do, and a version that is not understood ends the connection rather than being worked
-around -- both sides ship in one file, so the only way to see a version mismatch is a stale
-process, and continuing with one is how a stale process becomes a wrong answer.
+Length-prefixed frames on a Unix stream socket: a fixed-width little-endian length, then a
+body. The first frame each way is a version, a role and what the sender can do; a version that
+is not understood ends the connection rather than being worked around, because both sides ship
+in one file and the only way to see a mismatch is a stale process -- continuing with one is how
+a stale process becomes a wrong answer.
 
-The channel is local and carries no media, so it has none of the framing or congestion
-apparatus the wire protocol has. Buffer handles are a separate matter and belong to the
-compositor-mediated topology above, not here.
+**The body is JSON, and the reason is not convenience.** The rate is a handful of messages a
+second at its worst, so nothing here is paying for it, and what it buys is that a wrong answer
+can be read out of a log rather than reconstructed from a hex dump, which is the same reason
+the opaque messages this host passes between a guest and an application are logged as the
+exact bytes that were sent ([01 §11.1](01-protocol.md)). It also needs nothing added: the
+serializer is already in this program. The framing is ours, so a denser body is a change of
+one function if a reason for one ever appears. **The fixed-width discipline the wire protocol is written to does not apply here**:
+that rule exists because the wire has to match a format this project does not own, and this
+channel is private and versioned by its own build.
+
+**No remote-procedure-call library.** What one would supply is serialization and request and
+reply plumbing; what it would not supply is any of the work -- the peer's credentials, the
+deadline on every request, one helper to a session, and the file descriptors the
+compositor-mediated topology would pass. It would also arrive with an executor, which this
+project keeps to signaling alone ([00-overview.md](00-overview.md) D3); a socket carrying a
+few messages a second does not need a runtime to read it.
+
+The channel is local and carries no media, so it has none of the congestion apparatus the wire
+protocol has. Buffer handles are a separate matter and belong to the compositor-mediated
+topology above, not here.
 
 ## §6 Privileges
 
