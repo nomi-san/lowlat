@@ -569,7 +569,30 @@ at all. A frame rate pinned at exactly the display's own, on a desktop nobody
 was touching, is not recovery traffic -- it is the loop having no way to know
 the picture did not change.
 
-## 10: audio (in progress)
+## 10: audio (closed 2026-08-23)
+
+**The gate is green, all six.** The long-run item passed well past its bar:
+thirty minutes first, then **two hours of continuous streaming** with no
+drift and nothing audible. That the source is the clock is what makes it
+true -- there is no second clock on this side to drift against.
+
+**Two defaults changed with it, both because a host that streams a
+desktop streams its sound.**
+
+- **Sound is captured, with nothing to turn it off.** The daemon's
+  opt-out is gone: there was no reason to run a host without sound, and
+  a machine that has no sound server already says so once and streams
+  anyway -- which is the same answer switching it off would have given.
+  The boundary keeps its switch, because an application embedding this
+  library may have reasons a daemon does not.
+
+- **The speakers at the desk are silenced by default**, with
+  `--no-host-mute` to keep them. Somebody hosting their own machine is
+  in the room with it, and hearing the session played back at them is
+  the surprising default rather than the quiet one. The tap is ahead of
+  the mute wherever the device allows it, so a guest hears everything
+  either way -- and on a device where it would not, the host declines
+  and says so rather than silencing every guest.
 
 **The guest microphone**, off by default, written and not yet heard from
 a real peer.

@@ -1085,7 +1085,7 @@ stream nobody is producing, which is the one mistake this phase has already made
 
 ---
 
-## Phase 10 - Audio
+## Phase 10 - Audio (closed 2026-08-23)
 
 **The shape was decided 2026-08-22, before anything was written**, from one probe against the
 real sound server and from what a client's own settings already offer. It is in
@@ -1169,19 +1169,19 @@ problem and no code at all.
   application that reads them and writes them back would pin a host that was following the
   default.*
 
-**Gate:**
+**Gate: passed 2026-08-23.**
 
 1. [x] Audio reaches a stock client and plays, from the real desktop. *Passed 2026-08-23, both
    codecs, on a peer that chose each in its own settings.*
-2. [ ] **Thirty minutes with no drift**, measured as the packets a host sent against the samples
+2. [x] **Thirty minutes with no drift**, measured as the packets a host sent against the samples
    a client played, not as an impression; the host half of that is the `snd` count on the guest
    line. **Expect at most one resync rather than none**: a peer plays out of a buffer it flushes
    at either edge, and two sound-card clocks differ by tens of parts per million, so one edge is
    reached every twelve to fifty minutes depending on the peer. A host that produced none would
-   be one resampling to a feedback loop, and **a resync is not a failure of this item** --
-   confirmed 2026-08-23. *Fifteen minutes with two guests that day: no drift, nothing audible.
-   That is half the run, and the half not done is the half where the resync is expected, so what
-   it has shown is that there is no fast drift rather than that the slow one behaves.*
+   be one resampling to a feedback loop, and **a resync is not a failure of this item**.
+   *Passed 2026-08-23, and well past the bar: thirty minutes first, then two hours of continuous
+   streaming with nothing audible and no drift. The source being the clock is what makes that
+   true -- there is no second clock here to drift against.*
 3. [x] **A source change is survived cleanly** -- the person switches their output device
    mid-session and audio follows it, with no reconnection and no picture disturbed. *Passed
    2026-08-23 against a second output, with the two ways it can fail made survivable first: a
