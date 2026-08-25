@@ -3,6 +3,116 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 9: capture (the wakeup is paid by a poke)
+
+**The open stack's conversion ran cold, and now it runs warm.** Measured with
+a stock client before and after: the integrated device's convert stage was
+2.35 ms, and captured-to-bitstream sat at 5.6 ms against 3.5 ms on the vendor
+head. The 2 ms were not the encoder and not the display controller: the same
+conversion costs 0.38 ms in a tight loop and 1.3 ms after a few milliseconds
+of idle, with nothing else running. The integrated device powers its compute
+block down between frames, and the first work after the gap pays the wakeup.
+The stream now sends a partial-conversion poke a moment before the display's
+next present, and the real conversion lands warm: **convert p50 0.41 ms,
+captured-to-bitstream p50 3.7 ms** on the same head, vendor head unchanged.
+
+- **The wakeup scales with the poke's work, up to a point.** One workgroup
+  wakes half of it and a buffer fill wakes less than that; a sixteenth of the
+  picture in each axis wakes it fully, which is a fraction of a percent of a
+  frame. The figure is a named constant, measured rather than chosen, so a
+  caller cannot drift from it.
+- **The poke rides the vblank schedule.** The loop already knows when the
+  next present is expected -- one observed period after the last event -- and
+  sends the poke two milliseconds ahead of it, while it is waiting on the
+  event anyway. A poke that lands late is a wasted few microseconds and
+  corrects itself on the next event; a display without vblank events never
+  gets one, and pays the wakeup once per tick as it always did.
+- **The poke is the real pipeline, on purpose.** It writes a few blocks into
+  a target the next conversion overwrites whole, and its digest is discarded;
+  nothing in the frame path or the duplicate check sees it.
+- **The wake curve is a probe now.** `cadence-probe` converts a pinned or
+  live framebuffer at a chosen cadence with no encoder, which is what
+  separated this cause from the encoder: the figure grew with the gap alone.
+
+## 9: capture (the conversion leaves the acquire)
+
+**The colour conversion no longer blocks the capture.** The acquire now
+submits the conversion and returns; the loop collects the previous picture
+while the device converts, then waits for the conversion on the far side. The
+wait that used to sit inside the acquire stage is a stage of its own, and it
+is normally already over when it is asked.
+
+Measured through the stream loop with a real display, before and after, as
+p50/p99 in milliseconds:
+
+| | acquire before | acquire after | convert after |
+|---|---|---|---|
+| 2560x1440, 10-bit, vendor driver | 0.225 / 0.345 | 0.029 / 0.078 | 0.161 / 0.198 |
+| 1920x1080, open stack | 1.79 / 2.47 | 0.034 / 0.091 | 2.35 / 2.78 |
+
+The vendor head's acquire tail (max 0.74 ms) is gone from the frame path. The
+open stack figure is the same total, now attributed: on the integrated device
+the conversion genuinely waits for the encoder and the display controller it
+shares memory with, and no placement of the submit changes that. The split is
+what makes the two machines legible, and it removes one frame-path wait from
+both.
+
+- **The collect is bounded.** The conversion's fence orders behind the
+  compositor's own in-flight render into the captured buffer, so it is not
+  only this process's work: unbounded, it hands the loop's liveness -- and its
+  teardown's -- to a display stack that may have stopped signalling. Past a
+  hundred milliseconds the flight is left standing and the stream holds its
+  last picture; a conversion that never finishes leaks its converter at
+  teardown rather than hanging it.
+- **Submit and collect, like the encoder.** The converter holds one fence and
+  one command buffer; a submission in flight is refused rather than raced,
+  and the collect waits only for work that was submitted before the loop's
+  own collect, which is the whole point of the placement.
+- **The per-frame driver churn came out with it.** The descriptor set is
+  allocated once and rewritten per submission, the command buffer is reset
+  and re-recorded, and the fence was already shared. What remains per frame
+  is the view over the captured buffer, which names that buffer and so cannot
+  be cached; the vendor head submits the conversion in 29 us.
+- **The digest arrives with the collect.** The duplicate check moves one half
+  a tick later, which is invisible: the decision it feeds is made on the same
+  side of the submit as before. Suppression measured unchanged on a live
+  stream: 590 of 600 frames on a still desktop.
+- **The stage report grows a convert column**, and the stream log prints it
+  beside the acquire it split from.
+
+## 9: capture (the vblank paces the tick)
+
+**The capture tick is phase-locked to the display's own present**, where the
+display delivers vblank events: the frame clock caps the rate and the event
+sets the phase, so the picture read is the one just presented rather than one
+taken at an arbitrary moment inside a refresh, which is up to a frame interval
+of avoidable age.
+
+**It is not universal, and it is probed rather than assumed.** Measured on
+both drivers on this machine: the open stack delivers the events (index zero,
+ten milliseconds after the arm), and the proprietary NVIDIA driver refuses
+the request outright with EOPNOTSUPP. A stream asks once at start - a refused
+arm answers immediately, a working display answers within a refresh - and
+falls back to the timer, which is exactly the pacing it had before. A display
+whose vblanks stop while the picture is static (panel self-refresh) is
+covered by a bound past the deadline, so it cannot hold the stream either.
+
+- **The controller is named by index, not by handle.** The kernel numbers
+  vblanks by the controller's position in the mode configuration, which is
+  unrelated to the object identifier: the lit controller here is index zero
+  while its handle is 79. The wrapper this project uses elsewhere cannot say
+  either, so the arm is built from the raw type word. **The index rides in
+  bits 1 to 5, above the relative flag**, and a named test holds the encoding:
+  an index written into the low bits unshifted is not refused, it names the
+  controller at half the value, which agrees with the right answer only at
+  index zero -- the index this machine happens to scan out on.
+- **The event is armed after the tick and consumed by the next.** One event
+  per arm, so the arm is never doubled; a tick that fired on the bound leaves
+  the arm standing, and the stream recovers the phase when the panel wakes.
+- **The card descriptor is opened non-blocking**, and the loop polls it in
+  its own wait rather than sleeping through the deadline; an empty queue is
+  nothing rather than a wait.
+
 ## 9: capture (the second interface reaches the encoder)
 
 **A session can now be streamed on either conversion interface, chosen by

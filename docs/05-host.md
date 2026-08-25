@@ -49,6 +49,12 @@ Rules:
 - The acquire timeout is one frame interval. A timeout is not an error; it means the screen
   did not change, and the correct response is to skip the iteration rather than to encode a
   duplicate.
+- **The display's own present paces the tick.** Where the device delivers vblank events, the
+  frame clock caps the rate and the event sets the phase, so the picture read is the one just
+  presented rather than one taken at an arbitrary moment inside a refresh. It is not
+  universal, and it is probed rather than assumed: measured 2026-08-25, the open stack
+  delivers the events and the proprietary NVIDIA driver refuses the request outright, so a
+  stream asks once at start and falls back to the timer when the answer is no.
 - **Dirty-rectangle awareness is deferred.** It is a real optimization for desktop work and it
   interacts with the reference chain in ways that need measurement first.
 
@@ -75,6 +81,12 @@ Encoders want a planar format. Captures deliver packed. The conversion is ours.
   overwriting.
 - Conversion runs on the same device as capture and encode. A cross-device path means a
   readback, which §4 forbids implicitly.
+- **An integrated device powers its compute block down between frames, and the first
+  conversion after the gap pays the wakeup.** Measured on the open stack: 0.4 ms warm
+  against 1.3 ms after a few milliseconds of idle, with no encoder and no display activity
+  involved. The stream sends a partial-conversion poke two milliseconds before the display's
+  next present, where vblank events exist, so the conversion lands warm; the poke's size is a
+  named constant chosen by measurement, not a guess.
 
 ### §3.1 The colour matrix is fixed
 
@@ -165,9 +177,20 @@ Backends:
 
 | Backend | Status | Notes |
 |---|---|---|
-| hardware, NVIDIA | v1 | H.264 first, HEVC at Phase 6; low-latency preset, variable rate with a one-frame buffer, non-reference frames enabled |
-| software | v1 | dynamically loaded, resolved by codec name; the path for machines without hardware encode, and the path continuous integration runs |
-| hardware, open stack | later | for AMD and Intel parts, once there is hardware to test on |
+| hardware, NVIDIA | shipped | H.264 and HEVC; low-latency preset, variable rate with a one-frame buffer, non-reference frames enabled |
+| hardware, open stack | shipped | AMD and Intel parts, reached through the display interface |
+| hardware, Vulkan Video | written, unwired | conversion and encode on one interface; an explicit choice, never a default |
+| software | later | dynamically loaded, resolved by codec name; the path for machines without hardware encode, and the path continuous integration runs |
+
+**Selection policy, settled 2026-08-25.** The default follows the display: the encoder for
+the device the captured output is on, which is the NVIDIA backend on that vendor's cards and
+the open stack elsewhere. That pair is the coverage floor -- roughly a decade of hardware --
+and it stays the default. The Vulkan Video backend is offered as an explicit third choice
+and is never inferred: it is newer, covers less hardware, and before it can be offered at
+all it owes HEVC, predicted pictures, and a live session on its own path. The conversion
+runs on the compute interface by default and falls back to the GL interface on devices
+without it, which keeps old parts capturable; the GL interface cannot feed the NVIDIA
+encoder, and machines old enough to need it are served by the open stack anyway.
 
 Codec and colour scope is [00-overview.md](00-overview.md) D7: H.264 and HEVC, 8-bit 4:2:0.
 The wire bits for 10-bit and 4:4:4 are reserved now so enabling them later is not a wire
@@ -873,11 +896,17 @@ Every measurement below is per frame, reported as p50, p95, and p99, never as an
 
 | Stage | Measured from |
 |---|---|
-| acquire | previous present to frame available |
-| convert | acquire to conversion complete |
+| acquire | previous present to frame available, the submission half: display read, import, conversion submit |
+| convert | the wait for the conversion the acquire submitted |
 | encode | submit to bitstream collected |
 | packetize | bitstream to last packet enqueued |
 | wire | first packet sent to acknowledgement |
+
+The convert stage exists because the two halves used to be one figure: the conversion's
+fence wait sat inside the acquire, so a machine whose conversion waited on a shared device
+read as a slow capture rather than as the wait it was. The split is not only accounting; the
+conversion is submitted before the loop collects the previous picture, so the wait is
+normally already over when the convert stage asks.
 
 Stages are instrumented from the start, not added when something feels slow. A budget that
 cannot be attributed to a stage produces guesses, and every optimization in this pipeline that

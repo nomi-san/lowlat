@@ -1276,6 +1276,20 @@ decides what to do with them.
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
 
+- 2026-08-25: **The encoder set is settled: two defaults, one opt-in, and a fallback
+  conversion tier.** The vendor and open backends stay the shipped pair, chosen by following
+  the display. The Vulkan Video backend becomes a third, explicitly selected encoder and is
+  never chosen on a machine's behalf. The GL conversion becomes the fallback for devices
+  without the compute interface, rather than a measurement knob. What forced the question
+  was the third encoder existing; what settled it was measurement: the 1.45 ms a frame once
+  attributed to two interfaces sharing one device was mostly the integrated device's compute
+  wakeup, which the poke now pays, leaving on the order of a tenth of a millisecond -- not
+  enough to pay for stranding the hardware the shipped pair covers. Wiring order: selection
+  collapses into one place as part of adding the third member, not before; the fallback tier
+  logs which interface it chose; the third backend is offered only once HEVC, predicted
+  pictures and a live session pass on its path, and a device whose format query refuses a
+  storage-writable encode source is refused rather than served through a hidden copy.
+
 - 2026-08-19: **Phase 9 runs before Phase 8, and relative mode leaves Gate B.** The premise for
   putting the ABI first was that everything up to it needs no display hardware, which stopped
   being true when the development machine became bare metal with two drivers and the capture
