@@ -3,6 +3,17 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 11.4: a ring of source pictures on the third encoder
+
+**The third encoder takes a ring of source slots**, fixed at build, where it
+owned exactly one picture. One source serialises the pipeline -- nothing may
+write the picture an encode in flight is reading -- and a ring restores the
+discipline the other backends run under: the next picture is written while
+the previous one encodes. The planes a conversion writes and the picture a
+copy fills are now per slot, and a submit names the slot it encodes.
+Verified on both devices with alternating slots, 300 pictures each, decoded
+in full outside the project.
+
 ## 11.3: predicted pictures on the third encoder
 
 **The third encoder codes predicted pictures now**, where every picture had
