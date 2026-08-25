@@ -93,20 +93,36 @@ const REQUIRED: [&CStr; 3] = [
     ash::khr::video_encode_h264::NAME,
 ];
 
+/// What is enabled where the device has it, and never required.
+///
+/// **A codec the device does not carry must not close the path to the one it
+/// does.** Naming this alongside the list above would refuse a device that
+/// encodes one codec and not the other; asked for here, an absent codec is
+/// refused later by [`Device::caps`], which can say which one and why.
+const OPTIONAL: [&CStr; 1] = [ash::khr::video_encode_h265::NAME];
+
 /// The codecs this backend produces.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Codec {
     H264,
+    H265,
 }
 
 /// What a device says it will do.
 #[derive(Debug, Clone, Copy)]
 pub struct Caps {
+    /// Which codec these answers are about. Every later call needs the same
+    /// profile these were queried under, and carrying it here is what stops
+    /// a session being built against one codec's answers under the other's.
+    pub codec: Codec,
     /// Rate control modes offered. Anything but a mode taking a bitrate means
     /// the only congestion actuator the design has cannot be built here.
     pub rate_control: vk::VideoEncodeRateControlModeFlagsKHR,
     /// The largest picture a session may be built for.
     pub max_extent: vk::Extent2D,
+    /// The granularity the device accesses a picture at. A coded size that is
+    /// not a whole number of these is still read and written in whole ones.
+    pub picture_granularity: vk::Extent2D,
     /// How many reference slots a session may hold.
     pub max_dpb_slots: u32,
     /// How many of those may be active at once.
@@ -138,16 +154,32 @@ fn node_numbers(path: &Path) -> Option<(u32, u32)> {
 /// **Built inside a call rather than returned.** Each structure borrows the one
 /// it is pushed onto for as long as that one lives, so the chain cannot outlive
 /// the frame that made it and is handed to a closure instead.
-fn with_profile<R>(f: impl FnOnce(&vk::VideoProfileInfoKHR<'_>) -> R) -> R {
-    let mut h264 = vk::VideoEncodeH264ProfileInfoKHR::default()
-        .std_profile_idc(ash::vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_HIGH);
-    let profile = vk::VideoProfileInfoKHR::default()
-        .video_codec_operation(vk::VideoCodecOperationFlagsKHR::ENCODE_H264)
+fn with_profile<R>(codec: Codec, f: impl FnOnce(&vk::VideoProfileInfoKHR<'_>) -> R) -> R {
+    let base = vk::VideoProfileInfoKHR::default()
         .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::TYPE_420)
         .luma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
-        .chroma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
-        .push_next(&mut h264);
-    f(&profile)
+        .chroma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8);
+    match codec {
+        Codec::H264 => {
+            let mut h264 = vk::VideoEncodeH264ProfileInfoKHR::default().std_profile_idc(
+                ash::vk::native::StdVideoH264ProfileIdc_STD_VIDEO_H264_PROFILE_IDC_HIGH,
+            );
+            let profile = base
+                .video_codec_operation(vk::VideoCodecOperationFlagsKHR::ENCODE_H264)
+                .push_next(&mut h264);
+            f(&profile)
+        }
+        // Main, which is eight-bit 4:2:0 -- what the conversion produces.
+        Codec::H265 => {
+            let mut h265 = vk::VideoEncodeH265ProfileInfoKHR::default().std_profile_idc(
+                ash::vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN,
+            );
+            let profile = base
+                .video_codec_operation(vk::VideoCodecOperationFlagsKHR::ENCODE_H265)
+                .push_next(&mut h265);
+            f(&profile)
+        }
+    }
 }
 
 /// The loaded interface. Held for as long as anything built on it.
@@ -224,7 +256,10 @@ impl Vulkan {
                     ));
                 }
             }
-            return Device::open(&self.instance, &self._entry, physical);
+            // What the device also has is turned on with it: a session is
+            // built for one codec, but which one is not known here.
+            let extra: Vec<&CStr> = OPTIONAL.into_iter().filter(|name| has(name)).collect();
+            return Device::open(&self.instance, &self._entry, physical, &extra);
         }
         if answered {
             Err(Error::NoDeviceForNode)
@@ -344,6 +379,7 @@ impl Device {
         instance: &ash::Instance,
         entry: &ash::Entry,
         physical: vk::PhysicalDevice,
+        extra: &[&CStr],
     ) -> Result<Self> {
         // SAFETY: the device came from this instance.
         let families = unsafe { instance.get_physical_device_queue_family_properties(physical) };
@@ -383,8 +419,11 @@ impl Device {
                     .queue_priorities(&priorities),
             );
         }
-        let names: Vec<*const core::ffi::c_char> =
-            REQUIRED.iter().map(|name| name.as_ptr()).collect();
+        let names: Vec<*const core::ffi::c_char> = REQUIRED
+            .iter()
+            .chain(extra.iter())
+            .map(|name| name.as_ptr())
+            .collect();
         // The video interface is specified against the newer synchronisation,
         // so it is turned on even though nothing here names it directly.
         let mut sync = vk::PhysicalDeviceVulkan13Features::default().synchronization2(true);
@@ -437,16 +476,18 @@ impl Device {
 
     /// What this device will do for a codec.
     pub fn caps(&self, codec: Codec) -> Result<Caps> {
-        let Codec::H264 = codec;
         let mut encode = vk::VideoEncodeCapabilitiesKHR::default();
-        // **The codec's own capabilities have to be in the chain.** Asking for
-        // an H.264 encode without them is invalid, and a driver answers anyway
+        // **The codec's own capabilities have to be in the chain.** Asking
+        // about an encode without them is invalid, and a driver answers anyway
         // with a structure it never filled.
         let mut h264 = vk::VideoEncodeH264CapabilitiesKHR::default();
-        let mut caps = vk::VideoCapabilitiesKHR::default()
-            .push_next(&mut encode)
-            .push_next(&mut h264);
-        with_profile(|profile| {
+        let mut h265 = vk::VideoEncodeH265CapabilitiesKHR::default();
+        let mut caps = vk::VideoCapabilitiesKHR::default().push_next(&mut encode);
+        caps = match codec {
+            Codec::H264 => caps.push_next(&mut h264),
+            Codec::H265 => caps.push_next(&mut h265),
+        };
+        with_profile(codec, |profile| {
             // SAFETY: the chain outlives the call and the device came from
             // this instance.
             checked(unsafe {
@@ -458,6 +499,7 @@ impl Device {
             })
         })?;
         let max_extent = caps.max_coded_extent;
+        let picture_granularity = caps.picture_access_granularity;
         let max_dpb_slots = caps.max_dpb_slots;
         let max_active_references = caps.max_active_reference_pictures;
         let std_header = caps.std_header_version;
@@ -465,12 +507,15 @@ impl Device {
         let rate_control = encode.rate_control_modes;
 
         let picture = self
-            .formats(vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR | vk::ImageUsageFlags::TRANSFER_DST)?
+            .formats(
+                codec,
+                vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR | vk::ImageUsageFlags::TRANSFER_DST,
+            )?
             .first()
             .copied()
             .ok_or(Error::Unsupported("a layout for a picture it would encode"))?;
         let reference = self
-            .formats(vk::ImageUsageFlags::VIDEO_ENCODE_DPB_KHR)?
+            .formats(codec, vk::ImageUsageFlags::VIDEO_ENCODE_DPB_KHR)?
             .first()
             .copied()
             .ok_or(Error::Unsupported("a layout for a reference picture"))?;
@@ -479,12 +524,17 @@ impl Device {
         // on the wrong answer is building a copy that cannot be removed or one
         // that is missing.
         let shared_picture = self
-            .formats(vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR | vk::ImageUsageFlags::STORAGE)
+            .formats(
+                codec,
+                vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR | vk::ImageUsageFlags::STORAGE,
+            )
             .is_ok_and(|formats| formats.contains(&picture));
 
         Ok(Caps {
+            codec,
             rate_control,
             max_extent,
+            picture_granularity,
             max_dpb_slots,
             max_active_references,
             std_header,
@@ -495,9 +545,62 @@ impl Device {
         })
     }
 
+    /// The block sizes and level this codec's sets may declare.
+    ///
+    /// **The device's answer, not a preference.** The sets name the blocks and
+    /// the encoder codes to them, so a size the device does not implement is
+    /// coded at one it does with the declaration left standing -- a stream
+    /// whose syntax does not match its own description. The largest offered is
+    /// taken, which is the fewest blocks and the fewest headers with them; the
+    /// level is capped at what the device admits to, because a set naming a
+    /// level above it describes a device that is not there.
+    fn h265_limits(&self) -> Result<(u32, u32, u32)> {
+        let mut h265 = vk::VideoEncodeH265CapabilitiesKHR::default();
+        // **The encode capabilities belong in the chain even when nothing
+        // here reads them.** Asking about an encode profile without them is
+        // invalid, and a driver answers anyway.
+        let mut encode = vk::VideoEncodeCapabilitiesKHR::default();
+        let mut caps = vk::VideoCapabilitiesKHR::default()
+            .push_next(&mut encode)
+            .push_next(&mut h265);
+        with_profile(Codec::H265, |profile| {
+            // SAFETY: the chain outlives the call and the device came from
+            // this instance.
+            checked(unsafe {
+                (self.queries.fp().get_physical_device_video_capabilities_khr)(
+                    self.physical,
+                    profile,
+                    &mut caps,
+                )
+            })
+        })?;
+        let ctb = [
+            (vk::VideoEncodeH265CtbSizeFlagsKHR::TYPE_64, 6),
+            (vk::VideoEncodeH265CtbSizeFlagsKHR::TYPE_32, 5),
+            (vk::VideoEncodeH265CtbSizeFlagsKHR::TYPE_16, 4),
+        ]
+        .into_iter()
+        .find(|(flag, _)| h265.ctb_sizes.contains(*flag))
+        .map(|(_, log2)| log2)
+        .ok_or(Error::Unsupported("any coding tree block size"))?;
+        let transform = [
+            (vk::VideoEncodeH265TransformBlockSizeFlagsKHR::TYPE_32, 5),
+            (vk::VideoEncodeH265TransformBlockSizeFlagsKHR::TYPE_16, 4),
+            (vk::VideoEncodeH265TransformBlockSizeFlagsKHR::TYPE_8, 3),
+        ]
+        .into_iter()
+        .find(|(flag, _)| h265.transform_block_sizes.contains(*flag))
+        .map(|(_, log2)| log2)
+        .ok_or(Error::Unsupported("any transform block size"))?;
+        let level = h265
+            .max_level_idc
+            .min(ash::vk::native::StdVideoH265LevelIdc_STD_VIDEO_H265_LEVEL_IDC_5_2);
+        Ok((ctb, transform, level))
+    }
+
     /// Which layouts the device takes for one use of a video picture.
-    fn formats(&self, usage: vk::ImageUsageFlags) -> Result<Vec<vk::Format>> {
-        with_profile(|profile| {
+    fn formats(&self, codec: Codec, usage: vk::ImageUsageFlags) -> Result<Vec<vk::Format>> {
+        with_profile(codec, |profile| {
             let profiles = [*profile];
             let mut list = vk::VideoProfileListInfoKHR::default().profiles(&profiles);
             let info = vk::PhysicalDeviceVideoFormatInfoKHR::default()
@@ -586,6 +689,34 @@ impl Drop for Device {
     }
 }
 
+/// The smallest coding block this codec's sets declare, as a power of two.
+/// It is also what the coded picture size rounds up to.
+const LOG2_MIN_CODING_BLOCK: u32 = 3;
+
+/// The smallest transform, as a power of two.
+const LOG2_MIN_TRANSFORM_BLOCK: u32 = 2;
+
+/// Bits of picture order count before it wraps, less four.
+const LOG2_MAX_POC_LSB_MINUS4: u8 = 4;
+
+/// The size a sequence set declares, given what the device accesses.
+///
+/// **Whole units of the device's granularity, not of the codec's smallest
+/// coding block.** The block is all the codec asks for, and a set that
+/// declares it is legal and decodes to a picture whose last partial row of
+/// blocks is wrong: the device reads and writes whole units whatever the set
+/// says, so the set has to name them and the conformance window has to carry
+/// the difference. One device here accesses H.265 64x16 at a time where it
+/// accesses H.264 16x16, which is why rounding to the coding block was enough
+/// on one path and is not on the other.
+fn coded_size(extent: vk::Extent2D, granularity: vk::Extent2D) -> vk::Extent2D {
+    let unit = |granularity: u32| granularity.max(1 << LOG2_MIN_CODING_BLOCK);
+    vk::Extent2D {
+        width: extent.width.next_multiple_of(unit(granularity.width)),
+        height: extent.height.next_multiple_of(unit(granularity.height)),
+    }
+}
+
 /// How many pictures the session keeps.
 const DPB_SLOTS: u32 = 2;
 
@@ -608,6 +739,9 @@ struct Picture {
 /// path zero copy; where it does not, a caller copies into it instead.
 pub struct Encoder<'a> {
     device: &'a Device,
+    /// Which codec this session codes. Every recording's chain is the codec's
+    /// own, and a session cannot change it.
+    codec: Codec,
     session: vk::VideoSessionKHR,
     session_memory: Vec<vk::DeviceMemory>,
     parameters: vk::VideoSessionParametersKHR,
@@ -728,7 +862,7 @@ impl Device {
     }
 
     fn session(&self, caps: &Caps, extent: vk::Extent2D) -> Result<vk::VideoSessionKHR> {
-        with_profile(|profile| {
+        with_profile(caps.codec, |profile| {
             let create = vk::VideoSessionCreateInfoKHR::default()
                 .queue_family_index(self.family)
                 .video_profile(profile)
@@ -827,8 +961,8 @@ impl Device {
         sources: usize,
     ) -> Result<Encoder<'a>> {
         let session_memory = self.bind_session(session)?;
-        let parameters = self.parameters(session, extent)?;
-        let sets = self.encoded_parameters(parameters)?;
+        let parameters = self.parameters(caps, session, extent)?;
+        let sets = self.encoded_parameters(caps.codec, parameters)?;
 
         // **The picture the encoder reads, and where it comes from.** Where a
         // shader may write it, the conversion writes here and nothing moves;
@@ -837,6 +971,7 @@ impl Device {
         for _ in 0..sources {
             let shared_families = [self.writer_family, self.family];
             source_ring.push(self.picture(
+                caps.codec,
                 caps.picture,
                 extent,
                 if caps.shared_picture {
@@ -854,6 +989,7 @@ impl Device {
             )?);
         }
         let dpb = self.picture(
+            caps.codec,
             caps.reference,
             extent,
             vk::ImageUsageFlags::VIDEO_ENCODE_DPB_KHR,
@@ -862,8 +998,8 @@ impl Device {
             &[],
         )?;
 
-        let (bitstream, bitstream_memory) = self.bitstream()?;
-        let pool = self.feedback_pool()?;
+        let (bitstream, bitstream_memory) = self.bitstream(caps.codec)?;
+        let pool = self.feedback_pool(caps.codec)?;
         let create = vk::CommandPoolCreateInfo::default()
             .queue_family_index(self.family)
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
@@ -882,6 +1018,7 @@ impl Device {
 
         Ok(Encoder {
             device: self,
+            codec: caps.codec,
             session,
             session_memory,
             parameters,
@@ -914,15 +1051,32 @@ impl Device {
     /// Two calls: the first asks how many bytes, the second fills them. The
     /// driver encodes the sets it will actually code against, which is the
     /// property a hand-written copy cannot promise.
-    fn encoded_parameters(&self, parameters: vk::VideoSessionParametersKHR) -> Result<Vec<u8>> {
+    fn encoded_parameters(
+        &self,
+        codec: Codec,
+        parameters: vk::VideoSessionParametersKHR,
+    ) -> Result<Vec<u8>> {
         let mut h264 = vk::VideoEncodeH264SessionParametersGetInfoKHR::default()
             .write_std_sps(true)
             .write_std_pps(true)
             .std_sps_id(0)
             .std_pps_id(0);
+        // **Three sets on this codec, not two.** The extra one describes the
+        // sequence's layers, and a decoder that never sees it has nothing to
+        // attach the sequence to.
+        let mut h265 = vk::VideoEncodeH265SessionParametersGetInfoKHR::default()
+            .write_std_vps(true)
+            .write_std_sps(true)
+            .write_std_pps(true)
+            .std_vps_id(0)
+            .std_sps_id(0)
+            .std_pps_id(0);
         let info = vk::VideoEncodeSessionParametersGetInfoKHR::default()
-            .video_session_parameters(parameters)
-            .push_next(&mut h264);
+            .video_session_parameters(parameters);
+        let info = match codec {
+            Codec::H264 => info.push_next(&mut h264),
+            Codec::H265 => info.push_next(&mut h265),
+        };
         let mut size = 0usize;
         // SAFETY: asking for the size writes only the counter.
         checked(unsafe {
@@ -951,6 +1105,40 @@ impl Device {
 
     /// The parameter sets, written here because no driver emits them.
     fn parameters(
+        &self,
+        caps: &Caps,
+        session: vk::VideoSessionKHR,
+        extent: vk::Extent2D,
+    ) -> Result<vk::VideoSessionParametersKHR> {
+        match caps.codec {
+            Codec::H264 => self.parameters_h264(session, extent),
+            Codec::H265 => self.parameters_h265(caps, session, extent),
+        }
+    }
+
+    /// Hand the built chain over, whichever codec wrote it.
+    fn create_parameters(
+        &self,
+        create: &vk::VideoSessionParametersCreateInfoKHR<'_>,
+    ) -> Result<vk::VideoSessionParametersKHR> {
+        let mut handle = vk::VideoSessionParametersKHR::null();
+        // SAFETY: the chain outlives the call and the out handle is live.
+        let result = unsafe {
+            (self.video.fp().create_video_session_parameters_khr)(
+                self.device.handle(),
+                create,
+                core::ptr::null(),
+                &raw mut handle,
+            )
+        };
+        if result == vk::Result::SUCCESS {
+            Ok(handle)
+        } else {
+            Err(Error::BadParameters)
+        }
+    }
+
+    fn parameters_h264(
         &self,
         session: vk::VideoSessionKHR,
         extent: vk::Extent2D,
@@ -997,21 +1185,141 @@ impl Device {
         let create = vk::VideoSessionParametersCreateInfoKHR::default()
             .video_session(session)
             .push_next(&mut h264);
-        let mut handle = vk::VideoSessionParametersKHR::null();
-        // SAFETY: the chain outlives the call and the out handle is live.
-        let result = unsafe {
-            (self.video.fp().create_video_session_parameters_khr)(
-                self.device.handle(),
-                &create,
-                core::ptr::null(),
-                &raw mut handle,
-            )
-        };
-        if result == vk::Result::SUCCESS {
-            Ok(handle)
-        } else {
-            Err(Error::BadParameters)
+        self.create_parameters(&create)
+    }
+
+    /// The three sets this codec opens with.
+    ///
+    /// **The block sizes and the level are the device's**, read rather than
+    /// assumed: the sets declare what the encoder codes to, and a declaration
+    /// the device does not implement is coded around silently.
+    fn parameters_h265(
+        &self,
+        caps: &Caps,
+        session: vk::VideoSessionKHR,
+        extent: vk::Extent2D,
+    ) -> Result<vk::VideoSessionParametersKHR> {
+        let (ctb_log2, transform_log2_max, level) = self.h265_limits()?;
+        let small = |value: u32| u8::try_from(value).unwrap_or(0);
+
+        // SAFETY: plain data from the codec headers with no invariant beyond
+        // its layout; all-zero is a valid set with no optional tables, and
+        // every field that matters is written below. The same holds for the
+        // three that follow.
+        let mut tier: ash::vk::native::StdVideoH265ProfileTierLevel =
+            unsafe { core::mem::zeroed() };
+        tier.general_profile_idc =
+            ash::vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN;
+        tier.general_level_idc = level;
+        // **A decoder matches on these as well as on the profile.** Left
+        // clear, a main-profile stream looks like one no profile claims.
+        tier.flags.set_general_progressive_source_flag(1);
+        tier.flags.set_general_frame_only_constraint_flag(1);
+
+        // SAFETY: as above.
+        let mut buffering: ash::vk::native::StdVideoH265DecPicBufMgr =
+            unsafe { core::mem::zeroed() };
+        // One reference behind the picture being coded, and nothing reordered:
+        // every picture here predicts from the one before it.
+        buffering.max_dec_pic_buffering_minus1[0] = 1;
+        buffering.max_num_reorder_pics[0] = 0;
+        buffering.max_latency_increase_plus1[0] = 0;
+
+        // SAFETY: as above.
+        let mut vps: ash::vk::native::StdVideoH265VideoParameterSet =
+            unsafe { core::mem::zeroed() };
+        vps.vps_video_parameter_set_id = 0;
+        vps.vps_max_sub_layers_minus1 = 0;
+        vps.flags.set_vps_temporal_id_nesting_flag(1);
+        vps.flags.set_vps_sub_layer_ordering_info_present_flag(1);
+        vps.pDecPicBufMgr = &raw const buffering;
+        vps.pProfileTierLevel = &raw const tier;
+
+        // **The coded size rounds up to whole units of what the device
+        // accesses**, and the conformance window carries the remainder. The
+        // codec itself asks only for a whole number of the smallest coding
+        // block, and a set declaring that is legal and decodes to a picture
+        // whose last partial row of blocks is wrong: the device reads and
+        // writes whole units whatever the set says, so the set has to name
+        // them. One device here accesses this codec 64x16 at a time where it
+        // accesses the other 16x16, which is why the other path's rounding to
+        // its own block size was enough and this one's is not.
+        //
+        // The window is in chroma units for a 4:2:0 stream, so a crop of six
+        // luma rows is written as three.
+        let coded = coded_size(extent, caps.picture_granularity);
+        let (coded_width, coded_height) = (coded.width, coded.height);
+
+        // SAFETY: as above.
+        let mut sps: ash::vk::native::StdVideoH265SequenceParameterSet =
+            unsafe { core::mem::zeroed() };
+        sps.chroma_format_idc =
+            ash::vk::native::StdVideoH265ChromaFormatIdc_STD_VIDEO_H265_CHROMA_FORMAT_IDC_420;
+        sps.pic_width_in_luma_samples = coded_width;
+        sps.pic_height_in_luma_samples = coded_height;
+        sps.sps_video_parameter_set_id = 0;
+        sps.sps_max_sub_layers_minus1 = 0;
+        sps.sps_seq_parameter_set_id = 0;
+        sps.log2_max_pic_order_cnt_lsb_minus4 = LOG2_MAX_POC_LSB_MINUS4;
+        sps.log2_min_luma_coding_block_size_minus3 = small(LOG2_MIN_CODING_BLOCK - 3);
+        sps.log2_diff_max_min_luma_coding_block_size = small(ctb_log2 - LOG2_MIN_CODING_BLOCK);
+        sps.log2_min_luma_transform_block_size_minus2 = small(LOG2_MIN_TRANSFORM_BLOCK - 2);
+        sps.log2_diff_max_min_luma_transform_block_size =
+            small(transform_log2_max - LOG2_MIN_TRANSFORM_BLOCK);
+        // As far below the coding block as the transform can go, which is what
+        // the two sizes above already bound.
+        sps.max_transform_hierarchy_depth_inter = small(ctb_log2 - LOG2_MIN_TRANSFORM_BLOCK);
+        sps.max_transform_hierarchy_depth_intra = sps.max_transform_hierarchy_depth_inter;
+        // **No set is stored here**, so every predicted picture carries its
+        // own inline: one reference and one delta is shorter written out than
+        // a table would be, and it keeps the set beside the picture that uses
+        // it rather than in two places that have to agree.
+        sps.num_short_term_ref_pic_sets = 0;
+        sps.num_long_term_ref_pics_sps = 0;
+        sps.conf_win_right_offset = (coded_width - extent.width) / 2;
+        sps.conf_win_bottom_offset = (coded_height - extent.height) / 2;
+        sps.flags.set_sps_temporal_id_nesting_flag(1);
+        sps.flags.set_sps_sub_layer_ordering_info_present_flag(1);
+        sps.flags.set_amp_enabled_flag(1);
+        sps.flags.set_sample_adaptive_offset_enabled_flag(1);
+        if sps.conf_win_right_offset > 0 || sps.conf_win_bottom_offset > 0 {
+            sps.flags.set_conformance_window_flag(1);
         }
+        sps.pProfileTierLevel = &raw const tier;
+        sps.pDecPicBufMgr = &raw const buffering;
+
+        // SAFETY: as above.
+        let mut pps: ash::vk::native::StdVideoH265PictureParameterSet =
+            unsafe { core::mem::zeroed() };
+        pps.pps_pic_parameter_set_id = 0;
+        pps.pps_seq_parameter_set_id = 0;
+        pps.sps_video_parameter_set_id = 0;
+        pps.init_qp_minus26 = 0;
+        pps.flags.set_transform_skip_enabled_flag(1);
+        // **Rate control has no other handle on this codec.** The other one
+        // lets every block carry a quantiser delta unconditionally; here the
+        // delta exists only if this turns it on, so a stream without it is
+        // stuck at the slice quantiser and the configured bitrate does
+        // nothing.
+        pps.flags.set_cu_qp_delta_enabled_flag(1);
+        pps.flags.set_pps_loop_filter_across_slices_enabled_flag(1);
+
+        let vps_list = [vps];
+        let sps_list = [sps];
+        let pps_list = [pps];
+        let add = vk::VideoEncodeH265SessionParametersAddInfoKHR::default()
+            .std_vp_ss(&vps_list)
+            .std_sp_ss(&sps_list)
+            .std_pp_ss(&pps_list);
+        let mut h265 = vk::VideoEncodeH265SessionParametersCreateInfoKHR::default()
+            .max_std_vps_count(1)
+            .max_std_sps_count(1)
+            .max_std_pps_count(1)
+            .parameters_add_info(&add);
+        let create = vk::VideoSessionParametersCreateInfoKHR::default()
+            .video_session(session)
+            .push_next(&mut h265);
+        self.create_parameters(&create)
     }
 
     /// One video picture with its memory and views.
@@ -1019,8 +1327,13 @@ impl Device {
     /// `layers` is the reconstruction arrangement: the slots live as layers
     /// of one image, because the separate-images form is a capability only
     /// one vendor here reports and the layered form works everywhere.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one picture's whole description; a struct for it would be a type with one use"
+    )]
     fn picture(
         &self,
+        codec: Codec,
         format: vk::Format,
         extent: vk::Extent2D,
         usage: vk::ImageUsageFlags,
@@ -1028,7 +1341,7 @@ impl Device {
         layers: u32,
         families: &[u32],
     ) -> Result<Picture> {
-        let image = with_profile(|profile| {
+        let image = with_profile(codec, |profile| {
             let profiles = [*profile];
             let mut list = vk::VideoProfileListInfoKHR::default().profiles(&profiles);
             let mut create = vk::ImageCreateInfo::default()
@@ -1149,8 +1462,8 @@ impl Device {
     }
 
     /// Where a finished picture lands, in memory the processor can read.
-    fn bitstream(&self) -> Result<(vk::Buffer, vk::DeviceMemory)> {
-        let buffer = with_profile(|profile| {
+    fn bitstream(&self, codec: Codec) -> Result<(vk::Buffer, vk::DeviceMemory)> {
+        let buffer = with_profile(codec, |profile| {
             let profiles = [*profile];
             let mut list = vk::VideoProfileListInfoKHR::default().profiles(&profiles);
             let info = vk::BufferCreateInfo::default()
@@ -1176,13 +1489,13 @@ impl Device {
     }
 
     /// The pool a written length comes back through.
-    fn feedback_pool(&self) -> Result<vk::QueryPool> {
+    fn feedback_pool(&self, codec: Codec) -> Result<vk::QueryPool> {
         let mut feedback = vk::QueryPoolVideoEncodeFeedbackCreateInfoKHR::default()
             .encode_feedback_flags(
                 vk::VideoEncodeFeedbackFlagsKHR::BITSTREAM_BUFFER_OFFSET
                     | vk::VideoEncodeFeedbackFlagsKHR::BITSTREAM_BYTES_WRITTEN,
             );
-        with_profile(|profile| {
+        with_profile(codec, |profile| {
             let mut owned = *profile;
             let create = vk::QueryPoolCreateInfo::default()
                 .query_type(vk::QueryType::VIDEO_ENCODE_FEEDBACK_KHR)
@@ -1354,12 +1667,19 @@ impl Encoder<'_> {
         // count is type 2, derived from the unwrapped counter, so keeping the
         // counter continuous is exactly the codec's own derivation.
         let frame_num = self.frames_since_idr % (1 << 8);
+        // **One codec counts its order in twos, the other in ones.** The first
+        // derives the count from a frame number that advances by two a
+        // picture; the second carries the count itself, and a reference one
+        // picture back has to read as one step back.
         #[allow(
             clippy::cast_possible_wrap,
             reason = "wraps after two to the thirty-one pictures, which the codec's own \
                       arithmetic tolerates"
         )]
-        let poc = self.frames_since_idr.wrapping_mul(2) as i32;
+        let poc = match self.codec {
+            Codec::H264 => self.frames_since_idr.wrapping_mul(2) as i32,
+            Codec::H265 => self.frames_since_idr as i32,
+        };
         let previous = if idr { None } else { self.previous };
 
         let recon_resource = vk::VideoPictureResourceInfoKHR::default()
@@ -1374,75 +1694,113 @@ impl Encoder<'_> {
                 .base_array_layer(u32::try_from(reference.slot).unwrap_or(0))
                 .image_view_binding(self.dpb.view)
         });
-        // The scope names every slot it touches: the one being written, not
-        // yet active so index -1, and for a predicted picture the one being
-        // read.
-        let mut opening_std: ash::vk::native::StdVideoEncodeH264ReferenceInfo =
-            // SAFETY: plain data from the codec headers; all-zero is valid and
-            // the fields that matter are written below.
-            unsafe { core::mem::zeroed() };
-        let mut opening_h264 = vk::VideoEncodeH264DpbSlotInfoKHR::default();
+
+        // **Both codecs' structures stand, and one of each pair is chained.**
+        // A chain is a list of pointers into structures that have to outlive
+        // the call, so the pair is declared here and the match below decides
+        // which one the driver is handed. The alternative -- one recording per
+        // codec -- is two control flows to keep identical, and they would not
+        // stay identical.
+        //
         // The slot being activated carries the codec's description of what
         // will stand in it, exactly as a bound reference's does: the scope
         // marks it inactive with index -1 and chains the description all the
         // same.
-        let mut setup_open_std: ash::vk::native::StdVideoEncodeH264ReferenceInfo =
-            // SAFETY: plain data from the codec headers; all-zero is valid and
-            // the fields that matter are written below.
+        // SAFETY: plain data from the codec headers; all-zero is valid and the
+        // fields that matter are written below. The same holds for every
+        // codec structure in this function.
+        let mut setup_open_std_h264: ash::vk::native::StdVideoEncodeH264ReferenceInfo =
             unsafe { core::mem::zeroed() };
-        setup_open_std.primary_pic_type = if idr {
+        setup_open_std_h264.primary_pic_type = if idr {
             ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_IDR
         } else {
             ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_P
         };
-        setup_open_std.FrameNum = frame_num;
-        setup_open_std.PicOrderCnt = poc;
+        setup_open_std_h264.FrameNum = frame_num;
+        setup_open_std_h264.PicOrderCnt = poc;
+        // SAFETY: as above.
+        let mut setup_open_std_h265: ash::vk::native::StdVideoEncodeH265ReferenceInfo =
+            unsafe { core::mem::zeroed() };
+        setup_open_std_h265.pic_type = if idr {
+            ash::vk::native::StdVideoH265PictureType_STD_VIDEO_H265_PICTURE_TYPE_IDR
+        } else {
+            ash::vk::native::StdVideoH265PictureType_STD_VIDEO_H265_PICTURE_TYPE_P
+        };
+        setup_open_std_h265.PicOrderCntVal = poc;
         let mut setup_open_h264 =
-            vk::VideoEncodeH264DpbSlotInfoKHR::default().std_reference_info(&setup_open_std);
+            vk::VideoEncodeH264DpbSlotInfoKHR::default().std_reference_info(&setup_open_std_h264);
+        let mut setup_open_h265 =
+            vk::VideoEncodeH265DpbSlotInfoKHR::default().std_reference_info(&setup_open_std_h265);
+        let opening_setup = vk::VideoReferenceSlotInfoKHR::default()
+            .slot_index(-1)
+            .picture_resource(&recon_resource);
+        let opening_setup = match self.codec {
+            Codec::H264 => opening_setup.push_next(&mut setup_open_h264),
+            Codec::H265 => opening_setup.push_next(&mut setup_open_h265),
+        };
+
+        // The scope names every slot it touches: the one being written, not
+        // yet active so index -1, and for a predicted picture the one being
+        // read.
+        // SAFETY: as above.
+        let mut opening_std_h264: ash::vk::native::StdVideoEncodeH264ReferenceInfo =
+            unsafe { core::mem::zeroed() };
+        // SAFETY: as above.
+        let mut opening_std_h265: ash::vk::native::StdVideoEncodeH265ReferenceInfo =
+            unsafe { core::mem::zeroed() };
+        let mut opening_h264 = vk::VideoEncodeH264DpbSlotInfoKHR::default();
+        let mut opening_h265 = vk::VideoEncodeH265DpbSlotInfoKHR::default();
         let opening_refresh;
         let opening_predicted;
         let opening: &[vk::VideoReferenceSlotInfoKHR] = match (previous, &previous_resource) {
             (Some(reference), Some(resource)) => {
                 // The bound slot carries the codec's description of what
                 // stands in it, exactly as the encode command's does.
-                opening_std.primary_pic_type = if reference.idr {
+                opening_std_h264.primary_pic_type = if reference.idr {
                     ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_IDR
                 } else {
                     ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_P
                 };
-                opening_std.FrameNum = reference.frame_num;
-                opening_std.PicOrderCnt = reference.poc;
-                opening_h264 = opening_h264.std_reference_info(&opening_std);
-                opening_predicted = [
-                    vk::VideoReferenceSlotInfoKHR::default()
-                        .slot_index(-1)
-                        .picture_resource(&recon_resource)
-                        .push_next(&mut setup_open_h264),
-                    vk::VideoReferenceSlotInfoKHR::default()
-                        .slot_index(i32::try_from(reference.slot).unwrap_or(0))
-                        .picture_resource(resource)
-                        .push_next(&mut opening_h264),
-                ];
+                opening_std_h264.FrameNum = reference.frame_num;
+                opening_std_h264.PicOrderCnt = reference.poc;
+                opening_std_h265.pic_type = if reference.idr {
+                    ash::vk::native::StdVideoH265PictureType_STD_VIDEO_H265_PICTURE_TYPE_IDR
+                } else {
+                    ash::vk::native::StdVideoH265PictureType_STD_VIDEO_H265_PICTURE_TYPE_P
+                };
+                opening_std_h265.PicOrderCntVal = reference.poc;
+                opening_h264 = opening_h264.std_reference_info(&opening_std_h264);
+                opening_h265 = opening_h265.std_reference_info(&opening_std_h265);
+                let bound = vk::VideoReferenceSlotInfoKHR::default()
+                    .slot_index(i32::try_from(reference.slot).unwrap_or(0))
+                    .picture_resource(resource);
+                let bound = match self.codec {
+                    Codec::H264 => bound.push_next(&mut opening_h264),
+                    Codec::H265 => bound.push_next(&mut opening_h265),
+                };
+                opening_predicted = [opening_setup, bound];
                 &opening_predicted
             }
             _ => {
-                opening_refresh = [vk::VideoReferenceSlotInfoKHR::default()
-                    .slot_index(-1)
-                    .picture_resource(&recon_resource)
-                    .push_next(&mut setup_open_h264)];
+                opening_refresh = [opening_setup];
                 &opening_refresh
             }
         };
+
         // **The codec's half of the layer, which is not optional.** One vendor
         // accepts a layer without it and the other refuses the whole recording,
         // at the end of the buffer rather than at the command.
         let mut layer_h264 = vk::VideoEncodeH264RateControlLayerInfoKHR::default();
-        let layers = [vk::VideoEncodeRateControlLayerInfoKHR::default()
+        let mut layer_h265 = vk::VideoEncodeH265RateControlLayerInfoKHR::default();
+        let layer = vk::VideoEncodeRateControlLayerInfoKHR::default()
             .average_bitrate(u64::from(self.bitrate_bps))
             .max_bitrate(u64::from(self.bitrate_bps))
             .frame_rate_numerator(60)
-            .frame_rate_denominator(1)
-            .push_next(&mut layer_h264)];
+            .frame_rate_denominator(1);
+        let layers = [match self.codec {
+            Codec::H264 => layer.push_next(&mut layer_h264),
+            Codec::H265 => layer.push_next(&mut layer_h265),
+        }];
         // **The first picture configures with the rate off.** One vendor here
         // refuses a recording whose first control command both resets the
         // session and gives it a rate, and says so only at the end of the
@@ -1466,22 +1824,31 @@ impl Encoder<'_> {
                 .virtual_buffer_size_in_ms(1000)
                 .initial_virtual_buffer_size_in_ms(0);
         }
-        let mut h264_rate = vk::VideoEncodeH264RateControlInfoKHR::default()
+        let mut rate_h264 = vk::VideoEncodeH264RateControlInfoKHR::default()
             .gop_frame_count(60)
             .idr_period(60)
             .consecutive_b_frame_count(0)
             .temporal_layer_count(1);
+        let mut rate_h265 = vk::VideoEncodeH265RateControlInfoKHR::default()
+            .gop_frame_count(60)
+            .idr_period(60)
+            .consecutive_b_frame_count(0)
+            .sub_layer_count(1);
         // **Its own structures, not the control's.** A chain is a list of
         // pointers, so pushing one structure onto two of them makes a shape
         // neither call can read; it reports as a duplicate kind rather than as
         // a cycle.
         let mut applied_h264 = vk::VideoEncodeH264RateControlLayerInfoKHR::default();
-        let applied = [vk::VideoEncodeRateControlLayerInfoKHR::default()
+        let mut applied_h265 = vk::VideoEncodeH265RateControlLayerInfoKHR::default();
+        let applied_layer = vk::VideoEncodeRateControlLayerInfoKHR::default()
             .average_bitrate(u64::from(self.applied_bps))
             .max_bitrate(u64::from(self.applied_bps))
             .frame_rate_numerator(60)
-            .frame_rate_denominator(1)
-            .push_next(&mut applied_h264)];
+            .frame_rate_denominator(1);
+        let applied = [match self.codec {
+            Codec::H264 => applied_layer.push_next(&mut applied_h264),
+            Codec::H265 => applied_layer.push_next(&mut applied_h265),
+        }];
         let mut begin_rate =
             vk::VideoEncodeRateControlInfoKHR::default().rate_control_mode(self.mode);
         if self.mode == vk::VideoEncodeRateControlModeFlagsKHR::CBR {
@@ -1495,6 +1862,11 @@ impl Encoder<'_> {
             .idr_period(60)
             .consecutive_b_frame_count(0)
             .temporal_layer_count(1);
+        let mut begin_h265 = vk::VideoEncodeH265RateControlInfoKHR::default()
+            .gop_frame_count(60)
+            .idr_period(60)
+            .consecutive_b_frame_count(0)
+            .sub_layer_count(1);
         let mut begin_coding = vk::VideoBeginCodingInfoKHR::default()
             .video_session(self.session)
             .video_session_parameters(self.parameters)
@@ -1504,9 +1876,11 @@ impl Encoder<'_> {
         // first control command that is the default -- so naming a rate here
         // describes a session that does not exist yet.
         if self.mode != vk::VideoEncodeRateControlModeFlagsKHR::DEFAULT {
-            begin_coding = begin_coding
-                .push_next(&mut begin_rate)
-                .push_next(&mut begin_h264);
+            begin_coding = begin_coding.push_next(&mut begin_rate);
+            begin_coding = match self.codec {
+                Codec::H264 => begin_coding.push_next(&mut begin_h264),
+                Codec::H265 => begin_coding.push_next(&mut begin_h265),
+            };
         }
         // SAFETY: recording; the chain outlives the call.
         unsafe { (self.device.video.fp().cmd_begin_video_coding_khr)(self.buffer, &begin_coding) };
@@ -1525,8 +1899,11 @@ impl Encoder<'_> {
                     | vk::VideoCodingControlFlagsKHR::ENCODE_RATE_CONTROL
                     | vk::VideoCodingControlFlagsKHR::ENCODE_QUALITY_LEVEL
             })
-            .push_next(&mut rate)
-            .push_next(&mut h264_rate);
+            .push_next(&mut rate);
+        control = match self.codec {
+            Codec::H264 => control.push_next(&mut rate_h264),
+            Codec::H265 => control.push_next(&mut rate_h265),
+        };
         if !self.started {
             control = control.push_next(&mut quality);
         }
@@ -1536,64 +1913,140 @@ impl Encoder<'_> {
         // SAFETY: recording; every structure is a stack value that outlives
         // the call, and the codec structures are plain data.
         unsafe {
-            let mut slice: ash::vk::native::StdVideoEncodeH264SliceHeader = core::mem::zeroed();
-            slice.slice_type = if idr {
+            let mut slice_h264: ash::vk::native::StdVideoEncodeH264SliceHeader =
+                core::mem::zeroed();
+            slice_h264.slice_type = if idr {
                 ash::vk::native::StdVideoH264SliceType_STD_VIDEO_H264_SLICE_TYPE_I
             } else {
                 ash::vk::native::StdVideoH264SliceType_STD_VIDEO_H264_SLICE_TYPE_P
             };
+            let mut slice_h265: ash::vk::native::StdVideoEncodeH265SliceSegmentHeader =
+                core::mem::zeroed();
+            slice_h265.slice_type = if idr {
+                ash::vk::native::StdVideoH265SliceType_STD_VIDEO_H265_SLICE_TYPE_I
+            } else {
+                ash::vk::native::StdVideoH265SliceType_STD_VIDEO_H265_SLICE_TYPE_P
+            };
+            slice_h265.slice_segment_address = 0;
+            // The most the merge list may hold, which is the codec's own
+            // maximum; a smaller number is written as a subtraction from it.
+            slice_h265.MaxNumMergeCand = 5;
+            slice_h265.flags.set_first_slice_segment_in_pic_flag(1);
+            // **The sequence set turned the offset filter on**, and a slice
+            // that does not say it applies leaves it off for its own picture.
+            slice_h265.flags.set_slice_sao_luma_flag(1);
+            slice_h265.flags.set_slice_sao_chroma_flag(1);
+            slice_h265
+                .flags
+                .set_slice_loop_filter_across_slices_enabled_flag(1);
+
             // **Zero, because the rate is set.** A fixed quantiser and a
             // bitrate are two ways of saying the same thing and a device takes
             // only one; naming both is refused, and on one vendor the refusal
             // arrives as the whole recording failing to end.
-            let slices = [vk::VideoEncodeH264NaluSliceInfoKHR::default()
-                // Zero once a rate is set, because a fixed quantiser and a
-                // bitrate are two ways of saying the same thing and a device
-                // takes only one.
-                .constant_qp(if rated { 0 } else { 26 })
-                .std_slice_header(&slice)];
+            let quantiser = if rated { 0 } else { 26 };
+            let slices_h264 = [vk::VideoEncodeH264NaluSliceInfoKHR::default()
+                .constant_qp(quantiser)
+                .std_slice_header(&slice_h264)];
+            let slices_h265 = [vk::VideoEncodeH265NaluSliceSegmentInfoKHR::default()
+                .constant_qp(quantiser)
+                .std_slice_segment_header(&slice_h265)];
 
             // A predicted picture names its one reference in list zero;
             // every other entry is the no-reference sentinel.
-            let mut lists: ash::vk::native::StdVideoEncodeH264ReferenceListsInfo =
+            let mut lists_h264: ash::vk::native::StdVideoEncodeH264ReferenceListsInfo =
                 core::mem::zeroed();
-            lists.RefPicList0 = [0xff; 32];
-            lists.RefPicList1 = [0xff; 32];
+            lists_h264.RefPicList0 = [0xff; 32];
+            lists_h264.RefPicList1 = [0xff; 32];
+            let mut lists_h265: ash::vk::native::StdVideoEncodeH265ReferenceListsInfo =
+                core::mem::zeroed();
+            lists_h265.RefPicList0 = [0xff; 15];
+            lists_h265.RefPicList1 = [0xff; 15];
             if let Some(reference) = previous {
-                lists.RefPicList0[0] = u8::try_from(reference.slot).unwrap_or(0);
+                let slot = u8::try_from(reference.slot).unwrap_or(0);
+                lists_h264.RefPicList0[0] = slot;
+                lists_h265.RefPicList0[0] = slot;
             }
 
-            let mut picture: ash::vk::native::StdVideoEncodeH264PictureInfo = core::mem::zeroed();
-            picture.primary_pic_type = if idr {
+            // **The set of pictures this one may predict from, carried by the
+            // picture rather than stored in the sequence set.** One reference,
+            // one picture back: the sequence set declares no stored sets, so
+            // there is nothing for an index to select and this is what says
+            // what the reference is.
+            let mut short_term: ash::vk::native::StdVideoH265ShortTermRefPicSet =
+                core::mem::zeroed();
+            short_term.num_negative_pics = 1;
+            short_term.num_positive_pics = 0;
+            short_term.delta_poc_s0_minus1[0] = 0;
+            short_term.used_by_curr_pic_s0_flag = 1;
+
+            let mut picture_h264: ash::vk::native::StdVideoEncodeH264PictureInfo =
+                core::mem::zeroed();
+            picture_h264.primary_pic_type = if idr {
                 ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_IDR
             } else {
                 ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_P
             };
-            picture.flags.set_IdrPicFlag(u32::from(idr));
-            picture.flags.set_is_reference(1);
-            picture.frame_num = frame_num;
-            picture.PicOrderCnt = poc;
-            picture.idr_pic_id = self.idr_id;
+            picture_h264.flags.set_IdrPicFlag(u32::from(idr));
+            picture_h264.flags.set_is_reference(1);
+            picture_h264.frame_num = frame_num;
+            picture_h264.PicOrderCnt = poc;
+            picture_h264.idr_pic_id = self.idr_id;
             if previous.is_some() {
-                picture.pRefLists = &raw const lists;
+                picture_h264.pRefLists = &raw const lists_h264;
             }
-            let mut h264 = vk::VideoEncodeH264PictureInfoKHR::default()
-                .nalu_slice_entries(&slices)
-                .std_picture_info(&picture);
+
+            let mut picture_h265: ash::vk::native::StdVideoEncodeH265PictureInfo =
+                core::mem::zeroed();
+            picture_h265.pic_type = if idr {
+                ash::vk::native::StdVideoH265PictureType_STD_VIDEO_H265_PICTURE_TYPE_IDR
+            } else {
+                ash::vk::native::StdVideoH265PictureType_STD_VIDEO_H265_PICTURE_TYPE_P
+            };
+            picture_h265.PicOrderCntVal = poc;
+            picture_h265.TemporalId = 0;
+            picture_h265.sps_video_parameter_set_id = 0;
+            picture_h265.pps_seq_parameter_set_id = 0;
+            picture_h265.pps_pic_parameter_set_id = 0;
+            picture_h265.flags.set_is_reference(1);
+            picture_h265.flags.set_pic_output_flag(1);
+            // **A refresh on this codec is a random-access point**, which is
+            // the flag a decoder looks for to know it may start here.
+            picture_h265.flags.set_IrapPicFlag(u32::from(idr));
+            if previous.is_some() {
+                picture_h265.pRefLists = &raw const lists_h265;
+                picture_h265.pShortTermRefPicSet = &raw const short_term;
+            }
+
+            let mut encode_h264 = vk::VideoEncodeH264PictureInfoKHR::default()
+                .nalu_slice_entries(&slices_h264)
+                .std_picture_info(&picture_h264);
+            let mut encode_h265 = vk::VideoEncodeH265PictureInfoKHR::default()
+                .nalu_slice_segment_entries(&slices_h265)
+                .std_picture_info(&picture_h265);
 
             // The slot being written carries the description a later picture
             // will predict from: this picture's own numbers.
-            let mut setup_std: ash::vk::native::StdVideoEncodeH264ReferenceInfo =
+            let mut setup_std_h264: ash::vk::native::StdVideoEncodeH264ReferenceInfo =
                 core::mem::zeroed();
-            setup_std.primary_pic_type = picture.primary_pic_type;
-            setup_std.FrameNum = frame_num;
-            setup_std.PicOrderCnt = poc;
+            setup_std_h264.primary_pic_type = picture_h264.primary_pic_type;
+            setup_std_h264.FrameNum = frame_num;
+            setup_std_h264.PicOrderCnt = poc;
+            let mut setup_std_h265: ash::vk::native::StdVideoEncodeH265ReferenceInfo =
+                core::mem::zeroed();
+            setup_std_h265.pic_type = picture_h265.pic_type;
+            setup_std_h265.PicOrderCntVal = poc;
             let mut setup_h264 =
-                vk::VideoEncodeH264DpbSlotInfoKHR::default().std_reference_info(&setup_std);
+                vk::VideoEncodeH264DpbSlotInfoKHR::default().std_reference_info(&setup_std_h264);
+            let mut setup_h265 =
+                vk::VideoEncodeH265DpbSlotInfoKHR::default().std_reference_info(&setup_std_h265);
             let setup = vk::VideoReferenceSlotInfoKHR::default()
                 .slot_index(i32::try_from(self.recon).unwrap_or(0))
-                .picture_resource(&recon_resource)
-                .push_next(&mut setup_h264);
+                .picture_resource(&recon_resource);
+            let setup = match self.codec {
+                Codec::H264 => setup.push_next(&mut setup_h264),
+                Codec::H265 => setup.push_next(&mut setup_h265),
+            };
 
             let source_resource = vk::VideoPictureResourceInfoKHR::default()
                 .coded_offset(vk::Offset2D { x: 0, y: 0 })
@@ -1605,29 +2058,45 @@ impl Encoder<'_> {
                 .dst_buffer_offset(0)
                 .dst_buffer_range(BITSTREAM_BYTES)
                 .src_picture_resource(source_resource)
-                .setup_reference_slot(&setup)
-                .push_next(&mut h264);
+                .setup_reference_slot(&setup);
+            info = match self.codec {
+                Codec::H264 => info.push_next(&mut encode_h264),
+                Codec::H265 => info.push_next(&mut encode_h265),
+            };
 
             // The reference being read, described to the encode itself. The
             // scope named the slot; this is what tells the codec which
             // numbers stand in it.
-            let mut previous_std: ash::vk::native::StdVideoEncodeH264ReferenceInfo =
+            let mut previous_std_h264: ash::vk::native::StdVideoEncodeH264ReferenceInfo =
+                core::mem::zeroed();
+            let mut previous_std_h265: ash::vk::native::StdVideoEncodeH265ReferenceInfo =
                 core::mem::zeroed();
             let mut previous_h264 = vk::VideoEncodeH264DpbSlotInfoKHR::default();
+            let mut previous_h265 = vk::VideoEncodeH265DpbSlotInfoKHR::default();
             let active;
             if let (Some(reference), Some(resource)) = (previous, &previous_resource) {
-                previous_std.primary_pic_type = if reference.idr {
+                previous_std_h264.primary_pic_type = if reference.idr {
                     ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_IDR
                 } else {
                     ash::vk::native::StdVideoH264PictureType_STD_VIDEO_H264_PICTURE_TYPE_P
                 };
-                previous_std.FrameNum = reference.frame_num;
-                previous_std.PicOrderCnt = reference.poc;
-                previous_h264 = previous_h264.std_reference_info(&previous_std);
-                active = [vk::VideoReferenceSlotInfoKHR::default()
+                previous_std_h264.FrameNum = reference.frame_num;
+                previous_std_h264.PicOrderCnt = reference.poc;
+                previous_std_h265.pic_type = if reference.idr {
+                    ash::vk::native::StdVideoH265PictureType_STD_VIDEO_H265_PICTURE_TYPE_IDR
+                } else {
+                    ash::vk::native::StdVideoH265PictureType_STD_VIDEO_H265_PICTURE_TYPE_P
+                };
+                previous_std_h265.PicOrderCntVal = reference.poc;
+                previous_h264 = previous_h264.std_reference_info(&previous_std_h264);
+                previous_h265 = previous_h265.std_reference_info(&previous_std_h265);
+                let bound = vk::VideoReferenceSlotInfoKHR::default()
                     .slot_index(i32::try_from(reference.slot).unwrap_or(0))
-                    .picture_resource(resource)
-                    .push_next(&mut previous_h264)];
+                    .picture_resource(resource);
+                active = [match self.codec {
+                    Codec::H264 => bound.push_next(&mut previous_h264),
+                    Codec::H265 => bound.push_next(&mut previous_h265),
+                }];
                 info = info.reference_slots(&active);
             }
             device.cmd_begin_query(self.buffer, self.pool, 0, vk::QueryControlFlags::empty());
@@ -1839,5 +2308,52 @@ impl Drop for Encoder<'_> {
                 device.free_memory(memory, None);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn extent(width: u32, height: u32) -> vk::Extent2D {
+        vk::Extent2D { width, height }
+    }
+
+    /// **The defect this catches produced a picture whose bottom rows were
+    /// wrong and whose every other row was right**, on a stream that decoded
+    /// without a single error and reported the size that was asked for.
+    #[test]
+    fn the_coded_size_is_whole_units_of_what_the_device_accesses() {
+        // The height a display of this size really has: a whole number of the
+        // smallest coding block, and not of the sixteen rows this device
+        // reads at a time.
+        let coded = coded_size(extent(1920, 1080), extent(64, 16));
+        assert_eq!(
+            (coded.width, coded.height),
+            (1920, 1088),
+            "1080 is not a whole number of sixteen-row units"
+        );
+        // What the other codec on the same device asks for, where rounding to
+        // the coding block alone would have been enough.
+        let coded = coded_size(extent(1920, 1080), extent(16, 16));
+        assert_eq!((coded.width, coded.height), (1920, 1088));
+        // A size that needs both axes rounded.
+        let coded = coded_size(extent(1916, 1076), extent(64, 16));
+        assert_eq!((coded.width, coded.height), (1920, 1088));
+        // One already whole is left alone.
+        let coded = coded_size(extent(1280, 720), extent(64, 16));
+        assert_eq!((coded.width, coded.height), (1280, 720));
+    }
+
+    /// A device reporting a granularity finer than the codec's own block must
+    /// not talk this into declaring a size the codec forbids.
+    #[test]
+    fn the_coding_block_is_the_floor_whatever_the_device_reports() {
+        let coded = coded_size(extent(1918, 1074), extent(1, 1));
+        assert_eq!(
+            (coded.width, coded.height),
+            (1920, 1080),
+            "the smallest coding block is eight, whatever the device accesses"
+        );
     }
 }

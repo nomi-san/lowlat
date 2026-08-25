@@ -2082,12 +2082,7 @@ fn run_vulkan(
 ) -> Option<Exit> {
     let codec = match config.codec {
         Codec::H264 => lowlat_encode::vulkan::Codec::H264,
-        Codec::H265 => {
-            lowlat_common::log_info!(
-                "stream: the vulkan encoder does not carry H265 yet, following the display"
-            );
-            return None;
-        }
+        Codec::H265 => lowlat_encode::vulkan::Codec::H265,
     };
     // The display decides the size, exactly as on the other paths.
     let (width, height) = match await_display(config.output.as_deref()) {

@@ -1,6 +1,12 @@
 //! The third encoder, driven through its own surface.
 //!
-//!   vulkan-encoder [/dev/dri/card0] [frames]
+//!   vulkan-encoder [/dev/dri/card0] [frames] [width] [height]
+//!   LOWLAT_CODEC=h265 vulkan-encoder [/dev/dri/card0] [frames]
+//!
+//! **A size that is not a whole number of coding blocks is the interesting
+//! one**, because the sets declare the rounded size and a conformance window
+//! carries the remainder. A decoder that reports the rounded size back has
+//! been given a window that does not match its own set.
 //!
 //! **What the probe beside this proved by hand, through the module a stream
 //! would use.** It says what the device will do, encodes, changes the bitrate
@@ -19,6 +25,14 @@ fn main() {
         .next()
         .and_then(|value| value.parse().ok())
         .unwrap_or(300);
+    let width: u32 = args
+        .next()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1920);
+    let height: u32 = args
+        .next()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1080);
 
     let api = vulkan::Vulkan::load().unwrap_or_else(|e| fail(&format!("loader: {e}")));
     let device = api
@@ -26,16 +40,25 @@ fn main() {
         .unwrap_or_else(|e| fail(&format!("{}: {e}", node.display())));
     println!("{}: {}", node.display(), device.name());
 
+    let codec = match std::env::var("LOWLAT_CODEC").as_deref() {
+        Ok("h265" | "hevc") => vulkan::Codec::H265,
+        _ => vulkan::Codec::H264,
+    };
     let caps = device
-        .caps(vulkan::Codec::H264)
+        .caps(codec)
         .unwrap_or_else(|e| fail(&format!("caps: {e}")));
+    println!("  codec {codec:?}");
     println!(
         "  up to {}x{}, {} slot(s), conversion may write the encoder's picture: {}",
         caps.max_extent.width, caps.max_extent.height, caps.max_dpb_slots, caps.shared_picture
     );
+    println!(
+        "  pictures are accessed {}x{} at a time",
+        caps.picture_granularity.width, caps.picture_granularity.height
+    );
 
     let mut encoder = device
-        .encoder(&caps, 1920, 1080, 10_000_000, 2)
+        .encoder(&caps, width, height, 10_000_000, 2)
         .unwrap_or_else(|e| fail(&format!("encoder: {e}")));
     println!(
         "  encoder built at {}x{}, planes for a shader: {}",
@@ -87,14 +110,34 @@ fn main() {
         }
     }
     // Escaping makes a three-byte start code impossible inside a payload, so
-    // counting slice types over the whole stream is exact.
-    let units_of = |kind: u8| {
+    // counting unit types over the whole stream is exact.
+    //
+    // **The two codecs put the type in different bits of different bytes.**
+    // One reads five bits of the byte after the start code; the other has a
+    // two-byte header and reads six bits above the low one, so a reader
+    // written for the first lands on a plausible wrong value rather than
+    // failing.
+    let units_of = |kinds: &[u8]| {
+        let kinds = kinds.to_vec();
         stream
             .windows(4)
-            .filter(|window| window[..3] == [0, 0, 1] && window[3] & 0x1F == kind)
+            .filter(|window| {
+                window[..3] == [0, 0, 1] && {
+                    let kind = match codec {
+                        vulkan::Codec::H264 => window[3] & 0x1F,
+                        vulkan::Codec::H265 => (window[3] >> 1) & 0x3F,
+                    };
+                    kinds.contains(&kind)
+                }
+            })
             .count()
     };
-    let (coded_refreshes, predicted) = (units_of(5), units_of(1));
+    // A refresh with no leading pictures, or one that allows them: which of
+    // the two a device emits is the device's choice and both are refreshes.
+    let (coded_refreshes, predicted) = match codec {
+        vulkan::Codec::H264 => (units_of(&[5]), units_of(&[1])),
+        vulkan::Codec::H265 => (units_of(&[19, 20]), units_of(&[0, 1])),
+    };
     println!(
         "  {coded_refreshes} coded refreshes ({keyframes} reported), {predicted} predicted \
          pictures"
@@ -102,7 +145,10 @@ fn main() {
     if coded_refreshes != 2 || predicted != frames - 2 {
         fail("the stream does not carry the picture kinds that were asked for");
     }
-    let out = std::env::temp_dir().join("lowlat-vulkan.h264");
+    let out = std::env::temp_dir().join(match codec {
+        vulkan::Codec::H264 => "lowlat-vulkan.h264",
+        vulkan::Codec::H265 => "lowlat-vulkan.h265",
+    });
     std::fs::write(&out, &stream).unwrap_or_else(|e| fail(&format!("write: {e}")));
     println!("  wrote {}", out.display());
     each.sort_by(f64::total_cmp);

@@ -123,6 +123,15 @@ const REQUIRED_ENCODE: [&CStr; 4] = [
     ash::khr::synchronization2::NAME,
 ];
 
+/// What an encoder on this device may also use, where the device has it.
+///
+/// **Enabled where advertised and never required.** A device that encodes one
+/// codec and not the other has to keep the path for the one it has, so this
+/// list narrows nothing: a codec the device never advertised is refused later
+/// by the encoder, with a reason, rather than here by the device failing to
+/// open at all.
+const OPTIONAL_ENCODE: [&CStr; 1] = [ash::khr::video_encode_h265::NAME];
+
 /// What lets a device say which display node it drives.
 ///
 /// **Apart from the list above, because it is read rather than enabled.** It
@@ -476,6 +485,11 @@ impl Device {
             REQUIRED.iter().map(|name| name.as_ptr()).collect();
         if encode {
             names.extend(REQUIRED_ENCODE.iter().map(|name| name.as_ptr()));
+            for wanted in OPTIONAL_ENCODE {
+                if advertises(&available, wanted) {
+                    names.push(wanted.as_ptr());
+                }
+            }
         }
         // The single-byte and two-byte storage formats the conversion writes
         // are not in the set every device must support unasked.

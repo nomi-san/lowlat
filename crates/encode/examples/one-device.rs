@@ -1,6 +1,7 @@
 //! Convert and encode on one device, with the picture never leaving it.
 //!
 //!   sudo one-device [/dev/dri/card0]
+//!   LOWLAT_CODEC=h265 sudo -E one-device [/dev/dri/card0]
 //!
 //! **The arrangement the third encoder exists for.** The display's own device
 //! opens able to encode as well; the conversion writes its two planes into the
@@ -41,7 +42,11 @@ fn main() {
             std::process::exit(2);
         }
     };
-    let caps = match encoder_device.caps(vulkan::Codec::H264) {
+    let codec = match std::env::var("LOWLAT_CODEC").as_deref() {
+        Ok("h265" | "hevc") => vulkan::Codec::H265,
+        _ => vulkan::Codec::H264,
+    };
+    let caps = match encoder_device.caps(codec) {
         Ok(caps) => caps,
         Err(error) => {
             eprintln!("caps: {error}");
@@ -150,23 +155,39 @@ fn main() {
             }
         }
     }
-    let units_of = |kind: u8| {
+    // The two codecs put the unit type in different bits of different bytes.
+    let units_of = |kinds: &[u8]| {
+        let kinds = kinds.to_vec();
         stream
             .windows(4)
-            .filter(|window| window[..3] == [0, 0, 1] && window[3] & 0x1F == kind)
+            .filter(|window| {
+                window[..3] == [0, 0, 1] && {
+                    let kind = match codec {
+                        vulkan::Codec::H264 => window[3] & 0x1F,
+                        vulkan::Codec::H265 => (window[3] >> 1) & 0x3F,
+                    };
+                    kinds.contains(&kind)
+                }
+            })
             .count()
     };
+    let (refreshes, predicted) = match codec {
+        vulkan::Codec::H264 => (units_of(&[5]), units_of(&[1])),
+        vulkan::Codec::H265 => (units_of(&[19, 20]), units_of(&[0, 1])),
+    };
     println!(
-        "  {FRAMES} converted pictures encoded: {} coded refresh(es), {} predicted, {} bytes",
-        units_of(5),
-        units_of(1),
+        "  {FRAMES} converted pictures encoded: {refreshes} coded refresh(es), {predicted} \
+         predicted, {} bytes",
         stream.len()
     );
-    if units_of(5) != 1 || units_of(1) != FRAMES - 1 {
+    if refreshes != 1 || predicted != FRAMES - 1 {
         eprintln!("the stream does not carry the picture kinds that were asked for");
         std::process::exit(1);
     }
-    let out = std::env::temp_dir().join("lowlat-one-device.h264");
+    let out = std::env::temp_dir().join(match codec {
+        vulkan::Codec::H264 => "lowlat-one-device.h264",
+        vulkan::Codec::H265 => "lowlat-one-device.h265",
+    });
     if let Err(error) = std::fs::write(&out, &stream) {
         eprintln!("write: {error}");
         std::process::exit(1);
