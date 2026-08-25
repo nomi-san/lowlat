@@ -976,9 +976,11 @@ mode*: a requested width, height and refresh are applied to the output and captu
 whatever the display became ([05 §7](05-host.md) already says the stream and the display are the
 same size for this reason).
 
-- [ ] **Selecting which output to capture is a read**, and this backend can do it alone: walk
+- [x] **Selecting which output to capture is a read**, and this backend can do it alone: walk
   every device, take the lit controllers, and pick one. No permission beyond what capture
-  already needs.
+  already needs. *Closed 2026-08-26 against what was already shipping: `--outputs` lists them,
+  `--output` picks one, and a client's own chooser moves an established stream. Exercised
+  repeatedly across both cards while chasing an unrelated fault.*
 - [x] **Changing the mode of an output the session owns is not ours to do, and privilege is not
   what is missing.** Measured on this machine: one client at a time holds a display device, the
   session's compositor holds it, and a mode commit from anyone else is refused before the request
@@ -1000,9 +1002,13 @@ same size for this reason).
   properly for a headless host, and it is the product [07 §2.2](07-platforms.md) already
   separates out. **The two paths differ in who owns the display, not in what capture does with
   it.**
-- [ ] **A frame-rate cap needs none of that.** Capping the encoder at a requested rate while the
+- [x] **A frame-rate cap needs none of that.** Capping the encoder at a requested rate while the
   display runs at its own is already what this does, and it is the useful half of the request in
-  every case where the mode cannot be set.
+  every case where the mode cannot be set. *Closed 2026-08-26. The cap was a constant in the
+  daemon until `--fps` existed, so nothing above sixty could be asked for at all; with it the
+  loop paces on the requested rate and a guest may move it while the stream runs. It stays a
+  ceiling rather than a promise: the loop follows the display's own present, so asking for more
+  than the captured output refreshes at produces what it refreshes at.*
 
 **So the split to hold:** the output is selected here, the mode is followed rather than set, and
 a display this host creates is the one case where a requested size is ours to apply. That keeps
@@ -1012,9 +1018,12 @@ stream nobody is producing, which is the one mistake this phase has already made
 
 **Gate:**
 
-1. Enumeration lists every connected output on every card, with a rectangle that agrees with
-   what the session reports.
-2. A host told to capture the second output streams it.
+1. [x] Enumeration lists every connected output on every card, with a rectangle that agrees with
+   what the session reports. *Passed 2026-08-26: both cards' outputs listed with their
+   rectangles, agreeing with the session's own layout on a 4480x1440 desktop.*
+2. [x] A host told to capture the second output streams it. *Passed 2026-08-26 on both, named
+   and by letting the host choose: `card0:HDMI-A-1` at 1920x1080 and `card1:DP-4` at
+   2560x1440, each streamed to a client.*
 3. [x] **A mid-session switch keeps the session**: same guest, same channel, one coded refresh,
    the peer follows the new size. *Passed 2026-08-21, driven from a stock client's own display
    chooser.* **A requested output MUST be checked against what is lit before it is acted on**: an
