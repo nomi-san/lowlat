@@ -165,8 +165,19 @@ fn vblank_event(desktop: &crate::display::Display, budget_ms: f64) -> bool {
 /// this guards against is a screen that stops updating, and that is invisible
 /// in every test that does not look for it. `since_forced_ms` is the time since
 /// a picture was last actually submitted, which is what the heartbeat bounds.
-fn must_send(changed: bool, refresh: bool, seats_moved: bool, since_forced_ms: f64) -> bool {
-    changed || refresh || seats_moved || since_forced_ms >= HEARTBEAT_MS
+///
+/// **`full_fps` is a permission the boundary already offered.** It predates
+/// duplicate suppression, and when suppression arrived it was not wired to
+/// this, so an application that asked to be sent every picture was suppressed
+/// anyway -- a promise the boundary made and did not keep.
+fn must_send(
+    full_fps: bool,
+    changed: bool,
+    refresh: bool,
+    seats_moved: bool,
+    since_forced_ms: f64,
+) -> bool {
+    full_fps || changed || refresh || seats_moved || since_forced_ms >= HEARTBEAT_MS
 }
 
 /// How long a picture may be suppressed before one is sent anyway.
@@ -3333,7 +3344,13 @@ fn encode_loop<E: Encoder + FromDevice>(
             //   the next frame is for, and an arrival has received nothing.
             // - **the heartbeat is due.** See `HEARTBEAT_MS`: it bounds how
             //   long any mistake in this reasoning can leave a screen frozen.
-            let send = must_send(changed, force_keyframe, moved, now_ms - forced_ms);
+            let send = must_send(
+                live.full_fps,
+                changed,
+                force_keyframe,
+                moved,
+                now_ms - forced_ms,
+            );
             if send {
                 forced_ms = now_ms;
             } else {
@@ -5662,13 +5679,13 @@ mod tests {
     fn a_duplicate_is_still_sent_when_somebody_needs_it() {
         // The whole point: an unchanged picture nobody is waiting for.
         assert!(
-            !must_send(false, false, false, 0.0),
+            !must_send(false, false, false, false, 0.0),
             "an unchanged picture was sent with nothing owed, so nothing is ever suppressed"
         );
 
         // A changed picture always goes, whatever else is true.
         assert!(
-            must_send(true, false, false, 0.0),
+            must_send(false, true, false, false, 0.0),
             "a changed picture was held"
         );
 
@@ -5676,28 +5693,48 @@ mod tests {
         // has just joined, and a still screen is exactly when it would wait
         // forever.
         assert!(
-            must_send(false, true, false, 0.0),
+            must_send(false, false, true, false, 0.0),
             "a guest waiting for a keyframe was made to wait for the screen to move"
         );
 
         // The seats moved: an arrival has received nothing at all.
         assert!(
-            must_send(false, false, true, 0.0),
+            must_send(false, false, false, true, 0.0),
             "a guest that just took a seat was sent nothing because the screen was still"
         );
 
         // The heartbeat bounds how long any mistake above can freeze a screen.
         assert!(
-            !must_send(false, false, false, HEARTBEAT_MS - 1.0),
+            !must_send(false, false, false, false, HEARTBEAT_MS - 1.0),
             "the heartbeat fired early, which costs a picture a second for nothing"
         );
         assert!(
-            must_send(false, false, false, HEARTBEAT_MS),
+            must_send(false, false, false, false, HEARTBEAT_MS),
             "the heartbeat did not fire on its own boundary"
         );
         assert!(
-            must_send(false, false, false, HEARTBEAT_MS * 10.0),
+            must_send(false, false, false, false, HEARTBEAT_MS * 10.0),
             "a screen suppressed for ten heartbeats stayed suppressed"
+        );
+    }
+
+    /// **The permission the boundary offered and the loop ignored.**
+    ///
+    /// `full_fps` reached the live configuration and the log and stopped
+    /// there: an application that asked for every picture was suppressed
+    /// exactly as one that had not. Nothing failed, which is why it survived
+    /// -- a still desktop looks the same either way from the host's side.
+    #[test]
+    fn asking_for_every_picture_defeats_suppression() {
+        assert!(
+            must_send(true, false, false, false, 0.0),
+            "an unchanged picture was suppressed for an application that asked for all of them"
+        );
+        // And it is only a permission: it does not make an unasked-for stream
+        // spend the bitrate.
+        assert!(
+            !must_send(false, false, false, false, 0.0),
+            "suppression stopped working for everyone else"
         );
     }
 
