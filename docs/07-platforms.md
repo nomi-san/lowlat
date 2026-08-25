@@ -57,9 +57,9 @@ It is not fatal, because **the signal is only needed when a session exists**. An
 hides the pointer to take over input. That requires an application, which requires a logged-in
 session. On a greeter or an idle unattended machine there is nothing to put into relative mode.
 
-So the resolution is a **session-side probe**: when a user session is present, a small helper
-inside it reports pointer state to the daemon over the same channel the tray already uses
-([§5](#5-process-topology)). When no session is present, the daemon reports the pointer as
+So the resolution is a **session-side probe**: when a user session is present, a helper inside
+it reports pointer state to the daemon over the channel in
+[§5.1](#51-the-session-helper-and-the-channel-it-speaks-on). When no session is present, the daemon reports the pointer as
 shown and relative mode never engages, which is correct rather than degraded.
 
 That keeps scanout viable without weakening the cursor rules in [05 §8](05-host.md).
@@ -351,8 +351,8 @@ lowlatd            system service, owns capture, encode, inject, media
    |
    +-- unix socket, peer-credential authenticated
    |
-lowlat-tray        user session, configuration and guest list
-lowlat-cursor      user session, pointer state probe (§2.1), optional
+lowlatd helper     user session, the same binary in its session role, optional
+lowlat-tray        user session, configuration and guest list, optional
 ```
 
 **Compositor-mediated:**
@@ -375,6 +375,78 @@ from the start and it survives the capture decision either way.
 
 Buffer handles pass over the socket as file descriptors, so even the split topology stays
 zero-copy.
+
+### §5.1 The session helper, and the channel it speaks on
+
+**A system service cannot reach a desktop session, and the two ways it might are both
+wrong.** Measured on a live session:
+
+| route | result |
+|---|---|
+| the session's message bus | refused: the bus authenticates by peer identity and drops a service |
+| the compositor's own socket | reachable, but the protocol differs per compositor and one of the major ones offers none at all |
+| starting a process inside the session | works, and requires the service to discover a session, drop privilege and guess a desktop |
+
+So the service does not reach into the session at all. **The session side connects outward**,
+to a socket the service already listens on. That removes the problem rather than solving it:
+nothing discovers a session, nothing drops privilege, nothing has to know which desktop is
+running. It also arrives with an identity, because a local socket carries the peer's
+credentials.
+
+**One binary, two roles.** The helper is `lowlatd` invoked in its session role, not a second
+program. The reason is version skew: the two sides speak a private protocol that changes
+whenever either does, and one build cannot disagree with itself. The role is chosen by the
+first argument and by nothing else -- **never by a flag that may appear anywhere in a command
+line**, because a service and a session agent run at different privilege and a file that can
+be talked into the wrong one is a security defect rather than a bug.
+
+**The tray stays a separate program.** Not for protocol reasons: it will link a user-interface
+toolkit, and that has no business inside a system service's binary.
+
+#### What it is for
+
+Four things need session state, and none of them can be answered below it:
+
+| customer | shape | what is lost without a helper |
+|---|---|---|
+| relative pointer mode (§2.1) | a signal, pushed on change | the feature; a guest is never put into relative mode |
+| the idle inhibitor | a lease, held while asked | the screen may blank during a session |
+| the display layout | a question, asked when needed | the backend's own reading is used instead |
+| display mode and rotation | a request, rarely | a guest's request is refused with a reason |
+
+#### The rules that matter more than the encoding
+
+1. **The stream never depends on the helper.** No frame waits on it, no encode consults it,
+   and a helper that dies mid-session disturbs nothing. This is the same rule the tray has
+   always had, and it is what keeps a logout survivable.
+2. **Absent is not degraded.** With no helper the answers are the honest ones: the pointer is
+   reported shown, so relative mode never engages; no idle lease is held; a mode request is
+   refused and the guest is told why. Nothing guesses.
+3. **The service never blocks on it.** Every request carries a deadline, and a helper that
+   stops answering is dropped rather than waited for. An unbounded wait on a process in
+   somebody's session is an unbounded wait on somebody's session.
+4. **A helper speaks only for itself.** The peer's credentials, not its claims, say which user
+   is on the other end, and its statements apply to that user's session and no other. It is
+   never asked to do anything it could not do on its own behalf, so it carries no privilege
+   worth taking.
+5. **One helper to a session, newest wins.** A reconnect replaces its predecessor rather than
+   joining it, because two answers to "is the pointer hidden" is not a state anything can act
+   on.
+6. **Both directions, and they are not symmetric.** The session pushes signals as they change;
+   the service asks questions and gets one answer. A signal is never a reply and a reply is
+   never assumed.
+
+#### The channel
+
+Length-prefixed frames on a Unix stream socket: a length, a kind, and a body, fixed-width and
+little-endian, as everywhere else. The first frame each way is a version and what the sender
+can do, and a version that is not understood ends the connection rather than being worked
+around -- both sides ship in one file, so the only way to see a version mismatch is a stale
+process, and continuing with one is how a stale process becomes a wrong answer.
+
+The channel is local and carries no media, so it has none of the framing or congestion
+apparatus the wire protocol has. Buffer handles are a separate matter and belong to the
+compositor-mediated topology above, not here.
 
 ## §6 Privileges
 

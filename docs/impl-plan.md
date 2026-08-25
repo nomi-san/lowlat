@@ -1276,6 +1276,24 @@ decides what to do with them.
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
 
+- 2026-08-25: **The session helper is one binary in a second role, and the session connects
+  outward.** Everything that needs session state -- relative mode, the idle inhibitor, the
+  display layout, and display mode or rotation -- was blocked on a system service being unable
+  to reach a desktop session. Measured: the session's message bus refuses a service outright;
+  a compositor's own socket is reachable but differs per compositor and one major desktop
+  offers no such protocol at all; starting a process inside the session works but makes the
+  service discover a session, drop privilege and guess a desktop. So the direction inverts.
+  The session side connects to the socket the service already listens on, which removes the
+  problem rather than solving it and arrives with an identity, since a local socket carries
+  the peer's credentials. **The helper is `lowlatd` in a session role rather than a second
+  program**, because the two sides speak a private protocol and one build cannot disagree with
+  itself; the role is chosen by the first argument and never by a flag, since a file that can
+  be talked into the wrong privilege is a security defect. The tray stays separate: it links a
+  user-interface toolkit that has no business in a system service. Shape and rules in
+  [07 §5.1](07-platforms.md). **Relative mode is the customer it gets built around**, because
+  its signal is continuous and will shape the channel properly, where a single request and
+  reply would shape it wrongly and be bent later.
+
 - 2026-08-25: **The third encoder carries both codecs, and what it owed is paid.** It was
   offered as an explicit choice that owed HEVC, predicted pictures and a live session; all
   three are done, and a stock client has streamed HEVC on it. The rule that made it correct
