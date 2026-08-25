@@ -31,6 +31,26 @@ const KEYFRAME_INTERVAL_MS: f64 = 500.0;
 /// the stream has stopped producing stops deciding anything.
 const MARK_WINDOW_MS: f64 = 2_000.0;
 
+/// Whether `interval` has passed between two readings, **or the clock they
+/// were taken against has been replaced.**
+///
+/// This gate outlives the encoder: it is the session's, so that a guest the
+/// rebuild latched is retested against a size the stream really produced
+/// rather than against the first frame of the new one. The loop's clock does
+/// not outlive the encoder -- it starts again from nothing on every rebuild --
+/// so a stamp taken before one is a stamp from a clock that no longer exists.
+/// Subtracted plainly it reports that the interval will elapse in however long
+/// the previous run lasted: a keyframe nobody may ask for, a guest that waits
+/// for ever, and not one counter moved because the refusal happens before any
+/// of them are reached.
+///
+/// **A reading before the one on record means the clock restarted**, and the
+/// only honest answer then is that the interval is unmeasurable and the thing
+/// being throttled should go ahead.
+fn elapsed(then: f64, now_ms: f64, interval: f64) -> bool {
+    now_ms < then || now_ms - then >= interval
+}
+
 /// The absolute ceiling on outstanding fragments for a configured rate.
 ///
 /// **A ceiling, not a proportional margin.** A margin such as "free slots must
@@ -178,7 +198,7 @@ impl Gate {
     fn roll(&mut self, now_ms: f64) {
         match self.window_began_ms {
             None => self.window_began_ms = Some(now_ms),
-            Some(began) if now_ms - began >= MARK_WINDOW_MS => {
+            Some(began) if elapsed(began, now_ms, MARK_WINDOW_MS) => {
                 self.previous = self.largest;
                 self.largest = 0;
                 self.window_began_ms = Some(now_ms);
@@ -267,7 +287,7 @@ impl Gate {
     fn throttle_allows(&self, now_ms: f64) -> bool {
         match self.last_request_ms {
             None => true,
-            Some(last) => now_ms - last >= KEYFRAME_INTERVAL_MS,
+            Some(last) => elapsed(last, now_ms, KEYFRAME_INTERVAL_MS),
         }
     }
 }
@@ -417,6 +437,46 @@ mod tests {
         );
         assert!(guests[0].is_skipping());
         assert!(!guests[1].is_skipping());
+    }
+
+    /// **A rebuild gives the loop a new clock and this gate keeps its old
+    /// stamps**, which stopped every keyframe request for as long as the
+    /// previous run had lasted.
+    ///
+    /// The guest was admitted, seated and waiting; the host captured,
+    /// converted and encoded; and every refresh counter read zero, because the
+    /// throttle refuses before it reaches one. Switching displays appeared to
+    /// cure it, since a rebuild that granted a keyframe left a small stamp
+    /// behind instead of a large one.
+    #[test]
+    fn a_clock_that_restarted_does_not_hold_a_keyframe_for_ever() {
+        let mut gate = Gate::new();
+        let mut guests = [Guest::joining(10.0)];
+
+        // A keyframe is asked for late in a long run.
+        assert_eq!(gate.request_keyframe(71_000.0), Keyframe::Request);
+
+        // The encoder is rebuilt and the loop starts timing from nothing
+        // again. The guest is latched by the rebuild and needs a picture with
+        // no history behind it.
+        guests[0].mark_skipping();
+        assert_eq!(
+            gate.admit(10, false, 0.0, &mut guests, |_| {}),
+            Keyframe::Request,
+            "a stamp from a clock that no longer exists refused every request"
+        );
+
+        // The mark keeps its own stamp and must not freeze either.
+        let mut gate = Gate::new();
+        let mut guests = [Guest::joining(10.0)];
+        let spike = ceiling(10.0) + 500;
+        let _ = gate.admit(spike, true, 71_000.0, &mut guests, |_| {});
+        let _ = gate.admit(10, false, 0.0, &mut guests, |_| {});
+        assert_eq!(
+            gate.admit(10, false, MARK_WINDOW_MS + 1.0, &mut guests, |_| {}),
+            Keyframe::Request,
+            "the mark never rolled again, so the spike went on refusing everyone"
+        );
     }
 
     /// **One frame bigger than a guest's ceiling used to end delivery for the
