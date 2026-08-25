@@ -488,6 +488,7 @@ version = "0.0.0"
 dependencies = [
  "ash",
  "drm",
+ "drm-ffi",
  "khronos-egl",
  "libc",
  "libloading",
@@ -536,6 +537,7 @@ version = "0.0.0"
 dependencies = [
  "cbindgen",
  "drm",
+ "libc",
  "loom",
  "lowlat-audio",
  "lowlat-capture",

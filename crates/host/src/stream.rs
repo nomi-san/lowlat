@@ -95,6 +95,60 @@ const COLLECT_WAIT: std::time::Duration = std::time::Duration::from_millis(1);
 /// The same figure as a number, for comparing against a remaining interval.
 const POLL_MS: f64 = 1.0;
 
+/// How long past the frame deadline the tick waits for a vblank event.
+///
+/// **A bound, not a pace.** The event normally arrives within one refresh of
+/// the arm; this covers a display whose vblanks stop while the picture is
+/// static (panel self-refresh) and a controller that simply never answers, so
+/// neither can hold the stream. A tick that fires on the bound carries the
+/// previous picture, which the digest already suppresses.
+const VBLANK_CAP_MS: f64 = 50.0;
+
+/// How long the stream start waits for one vblank event before deciding the
+/// display has none.
+///
+/// **Once per stream, never per frame.** A refused arm answers immediately
+/// and a working display answers within a refresh; only a display that takes
+/// events and then stays silent costs the whole budget, and that is the one
+/// case where paying it once is the only way to learn it.
+const VBLANK_PROBE_MS: f64 = 150.0;
+
+/// Wait up to `budget_ms` for one vblank event, saying whether it arrived.
+///
+/// **For the stream start probe, not the loop.** The loop polls the card
+/// itself so the poll can share its pass with the collect; this is one wait
+/// for one answer.
+fn vblank_event(desktop: &crate::display::Display, budget_ms: f64) -> bool {
+    use std::os::fd::AsRawFd;
+    let began = lowlat_common::clock::Time::now();
+    while lowlat_common::clock::diff_ms(began, lowlat_common::clock::Time::now()) < budget_ms {
+        let remaining =
+            budget_ms - lowlat_common::clock::diff_ms(began, lowlat_common::clock::Time::now());
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            clippy::cast_precision_loss,
+            reason = "a timeout of at most VBLANK_PROBE_MS milliseconds"
+        )]
+        let timeout = remaining.ceil().max(1.0) as i32;
+        let mut pollfd = libc::pollfd {
+            fd: AsRawFd::as_raw_fd(&desktop.poll_fd()),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        // SAFETY: the descriptor is borrowed from the display, which outlives
+        // the call, and the array is a live local.
+        let ready = unsafe { libc::poll(&raw mut pollfd, 1, timeout) };
+        if ready > 0 {
+            return desktop.drain_events();
+        }
+        if ready < 0 {
+            return false;
+        }
+    }
+    false
+}
+
 /// Whether this picture has to be sent even if it is the previous one.
 ///
 /// **Every reason is enumerated here and nowhere else**, because the failure
@@ -2668,6 +2722,28 @@ fn encode_loop<E: Encoder + FromDevice>(
     let mut failures = 0u32;
     // Whether the last pass found the display dark.
     let mut held = false;
+    // **The vblank is the display's own pace.** Once the frame clock's
+    // deadline has passed, the tick waits for the event that says the picture
+    // on screen is a fresh one, so the capture lands on what is presented
+    // rather than at an arbitrary moment inside a refresh. `seen` starts true
+    // so the first frame fires without waiting; it is consumed by each tick
+    // and set again when the event arrives, or when the bound above says the
+    // display is not answering. `armed` says whether an event is pending, so
+    // one is requested per tick and never doubled.
+    let mut vblank_seen = true;
+    let mut vblank_armed = false;
+    // **Whether the display actually delivers vblank events.** Probed once,
+    // before the loop: a refused arm answers immediately and a working
+    // display answers within a refresh. Without this a display that cannot
+    // deliver events -- the vendor driver here refuses them outright -- would
+    // pace the stream at the cap instead of at the frame clock, which is a
+    // capture latency of up to the cap rather than a phase-locked tick.
+    let vblank_live = display.as_deref().is_some_and(|desktop| {
+        desktop.arm_vblank().is_ok() && vblank_event(desktop, VBLANK_PROBE_MS)
+    });
+    if display.is_some() && !vblank_live {
+        lowlat_common::log_info!("stream: no vblank events from this display, the timer paces");
+    }
     // When the pointer was last looked at, and what is known about where each
     // shape points.
     let mut pointer_ms = -POINTER_MS;
@@ -2783,7 +2859,18 @@ fn encode_loop<E: Encoder + FromDevice>(
         // block of the pass, and overlapped with it the conversion costs the
         // frame path nothing. The picture itself is collected on the other
         // side.
-        let due = now_ms >= next_frame_ms;
+        // **The frame clock caps the rate and the vblank sets the phase.** A
+        // tick is due once the deadline has passed and the display has
+        // presented since it did; with no display, or one without vblank
+        // events, the clock alone decides, as before. The bound covers a
+        // panel whose vblanks stop while nothing moves, so a stream cannot be
+        // held by a display that stopped answering.
+        let deadline_passed = now_ms >= next_frame_ms;
+        let due = deadline_passed
+            && (display.is_none()
+                || !vblank_live
+                || vblank_seen
+                || now_ms >= next_frame_ms + VBLANK_CAP_MS);
         if due {
             // The deadline advances by the interval rather than from now, so
             // the frame clock does not drift, and it is pulled forward after a
@@ -3136,6 +3223,24 @@ fn encode_loop<E: Encoder + FromDevice>(
             }
         }
 
+        // The event that fired this tick is spent. The next one is armed at
+        // the foot of the pass, once, so the arm is never doubled.
+        if due {
+            vblank_seen = false;
+        }
+
+        // **Arm after the tick, never before it.** The event fires on the
+        // next vblank after the call, which is the one the next tick's
+        // deadline will be waiting on. A refused arm leaves the timer as the
+        // sole pacer, which is the behaviour a display with no events gets.
+        if due
+            && vblank_live
+            && !vblank_armed
+            && let Some(desktop) = display.as_deref_mut()
+        {
+            vblank_armed = desktop.arm_vblank().is_ok();
+        }
+
         // Wait for the sooner of the next thing this loop owes anybody. **A
         // millisecond is the floor**, because anything shorter asked of the
         // scheduler is a busy wait with extra steps; the final approach to a
@@ -3159,6 +3264,33 @@ fn encode_loop<E: Encoder + FromDevice>(
             // The connector check is the only other thing owed on a pass, and
             // on a slow frame rate it can fall due first.
             until = until.min(attached_ms + ATTACHED_MS - now_ms);
+        }
+        // **The display's own present paces the tick.** With a passed
+        // deadline and no vblank seen, poll the card for the event the arm
+        // promised; when it arrives, the next pass ticks on the picture that
+        // was just presented. The bound in the tick gate is the fallback, so
+        // a poll that never fires cannot hold the stream.
+        if vblank_live
+            && now_ms >= next_frame_ms
+            && !vblank_seen
+            && let Some(desktop) = display.as_deref_mut()
+        {
+            let timeout = if waiting { 1 } else { 20 };
+            let mut pollfd = libc::pollfd {
+                fd: std::os::fd::AsRawFd::as_raw_fd(&desktop.poll_fd()),
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: the descriptor is borrowed from the display, which
+            // outlives the call, and the array is a live local.
+            let ready = unsafe { libc::poll(&raw mut pollfd, 1, timeout) };
+            if ready > 0 {
+                vblank_seen = desktop.drain_events();
+                if vblank_seen {
+                    vblank_armed = false;
+                }
+            }
+            continue;
         }
         if waiting && until > POLL_MS * 2.0 {
             std::thread::sleep(COLLECT_WAIT);

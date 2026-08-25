@@ -185,6 +185,16 @@ pub struct Layout {
     /// The plane it is on, so a later frame can be re-read without walking
     /// every plane and its properties again.
     pub primary_plane: plane::Handle,
+    /// The controller that plane is bound to, as the vblank interface
+    /// numbers it.
+    ///
+    /// **The index, not the handle.** The kernel numbers vblanks by the
+    /// controller's position in the mode configuration, which is unrelated
+    /// to the object identifier the walk above works in; measured here,
+    /// the controller that scans out is index zero while its handle is
+    /// 79. Resolved where the walk already knows which controller is lit,
+    /// so a caller arming an event cannot confuse the two.
+    pub crtc_index: u32,
     /// Absent when nothing is drawing a pointer.
     pub cursor: Option<Cursor>,
     /// The plane that pointer is on, so it can be re-read without walking the
@@ -232,9 +242,14 @@ impl Card {
     /// Nothing is ever committed through this descriptor. The capabilities
     /// change what the kernel is willing to describe, not what it will accept.
     pub fn open(path: &Path) -> Result<Self, Error> {
+        use std::os::unix::fs::OpenOptionsExt;
         let file = OpenOptions::new()
             .read(true)
             .write(true)
+            // **The descriptor is polled and then read**, and a blocking read
+            // is a wait the poll was there to avoid. The ioctls below do not
+            // care either way.
+            .custom_flags(libc::O_NONBLOCK)
             .open(path)
             .map_err(|error| Error::Open(error.raw_os_error().unwrap_or(0)))?;
         let card = Self(file);
@@ -357,10 +372,30 @@ impl Card {
             cursor = Some(seen);
         }
 
-        match (primary, primary_plane) {
-            (Some(primary), Some(primary_plane)) => Ok(Layout {
+        // The vblank index of the lit controller, by its position in the
+        // resource list. **A best effort**: a device that will not say leaves
+        // zero. A wrong index is not refused -- the kernel arms whichever
+        // controller the index names, and the events then carry another
+        // display's phase -- but the walk above has just read the same
+        // resource list, so the lookup failing while the walk succeeded is
+        // not a state this can reach.
+        let crtc_index = primary_crtc
+            .and_then(|crtc| {
+                self.resource_handles().ok().and_then(|resources| {
+                    resources
+                        .crtcs()
+                        .iter()
+                        .position(|listed| *listed == crtc)
+                        .and_then(|at| u32::try_from(at).ok())
+                })
+            })
+            .unwrap_or(0);
+
+        match (primary, primary_plane, primary_crtc) {
+            (Some(primary), Some(primary_plane), Some(_)) => Ok(Layout {
                 primary,
                 primary_plane,
+                crtc_index,
                 cursor,
                 cursor_plane,
                 connector,
@@ -648,6 +683,71 @@ impl Card {
     pub fn release_linear(&self, linear: Linear) {
         let _ = self.destroy_dumb_buffer(linear.dumb);
     }
+
+    /// Arm one vblank event on a controller, by its index.
+    ///
+    /// **The index, not the handle.** The kernel numbers vblanks by the
+    /// controller's position in the mode configuration, which is unrelated to
+    /// the object identifier this interface otherwise uses; measured here,
+    /// the controller that scans out is index zero while its handle is 79.
+    /// [`Card::scan`] resolves which is meant, and bits 1 to 5 of the type
+    /// word are where the kernel reads it from.
+    ///
+    /// **The event, not the wait.** The kernel delivers a `drm_event_vblank`
+    /// on this descriptor when the controller's next vblank passes, which is
+    /// what the capture loop polls on instead of a timer: the picture it reads
+    /// is then the one on the screen, not one taken at an arbitrary moment
+    /// inside a refresh.
+    ///
+    /// One event per call, and a call whose event was never read does not
+    /// produce a second; the caller arms again after each event it consumes.
+    /// The wrapper this crate uses elsewhere cannot name the controller, so
+    /// the request is built here from the raw type word.
+    pub fn arm_vblank(&self, index: u32) -> Result<(), Error> {
+        drm_ffi::wait_vblank(self.as_fd(), vblank_arm_type(index), 1, 0)
+            .map(|_| ())
+            .map_err(|error| device_error(&error))
+    }
+
+    /// Read every pending event, saying whether a vblank was among them.
+    ///
+    /// **Asked only after poll says the descriptor is readable**, which the
+    /// non-blocking open makes safe: an empty queue is `false`, not a wait.
+    /// Events accumulate while the loop is busy, so this drains rather than
+    /// reads one.
+    pub fn drain_events(&self) -> Result<bool, Error> {
+        let mut seen = false;
+        loop {
+            match self.receive_events() {
+                Ok(events) => {
+                    if events
+                        .into_iter()
+                        .any(|event| matches!(event, drm::control::Event::Vblank(_)))
+                    {
+                        seen = true;
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+                Err(error) => return Err(device_error(&error)),
+            }
+        }
+        Ok(seen)
+    }
+}
+
+/// The type word that arms one vblank event on a controller, by its index.
+///
+/// **The index rides in bits 1 to 5**, placed with the high-controller shift
+/// and mask; bit 0 is the relative flag. An index written into the low bits
+/// unshifted is not refused: the kernel arms the controller at half the
+/// value, which agrees with the right answer only at index zero.
+fn vblank_arm_type(index: u32) -> u32 {
+    use drm_ffi::drm_vblank_seq_type;
+    drm_vblank_seq_type::_DRM_VBLANK_RELATIVE
+        | drm_vblank_seq_type::_DRM_VBLANK_EVENT
+        | drm_vblank_seq_type::_DRM_VBLANK_NEXTONMISS
+        | ((index << drm_ffi::_DRM_VBLANK_HIGH_CRTC_SHIFT)
+            & drm_vblank_seq_type::_DRM_VBLANK_HIGH_CRTC_MASK)
 }
 
 /// A buffer this process allocated, untiled, for something to be written into.
@@ -736,6 +836,23 @@ mod tests {
         // And a plane that is merely dark right now is still the plane.
         assert_eq!(choose_cursor(&[dark], Some(3)), Some("dark"));
         assert_eq!(choose_cursor::<&str>(&[], Some(3)), None);
+    }
+
+    /// **The vblank arm carries the controller above the relative bit.** An
+    /// index written into the low bits unshifted collides with the relative
+    /// flag and names the controller at half the value, which is only right at
+    /// index zero -- and the machine this was built on scans out on index
+    /// zero, so nothing at the desk could tell the difference.
+    #[test]
+    fn the_vblank_arm_encodes_the_index_above_the_relative_bit() {
+        let base = vblank_arm_type(0);
+        // Bit 0 is the relative flag and is set regardless of the index.
+        assert_eq!(base & 1, 1);
+        // The index rides shifted by one: 1 lands in bit 1, 2 in bit 2.
+        assert_eq!(vblank_arm_type(1) ^ base, 0x2);
+        assert_eq!(vblank_arm_type(2) ^ base, 0x4);
+        // The mask bounds the index; nothing may spill into the flag bits.
+        assert_eq!(vblank_arm_type(u32::MAX) ^ base, 0x3e);
     }
 
     /// What the export actually asks for must never carry write access. The

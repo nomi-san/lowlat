@@ -24,6 +24,8 @@ lowlat-capture.workspace = true
 lowlat-audio.workspace = true
 # The display source names plane and format types from the capture interface.
 drm.workspace = true
+# The vblank poll: one fd in the loop's own wait, polled rather than slept.
+libc.workspace = true
 lowlat-encode.workspace = true
 lowlat-inject.workspace = true
 

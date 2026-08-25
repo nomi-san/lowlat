@@ -23,7 +23,7 @@ use lowlat_capture::desktop::Placement;
 use lowlat_capture::scanout::{self, Card, CursorPlane};
 use lowlat_capture::vulkan::{self, Imports, PlaneLayout};
 use lowlat_common::clock::Time;
-use std::os::fd::OwnedFd;
+use std::os::fd::{AsFd, OwnedFd};
 
 /// One output a host can be asked to capture.
 #[derive(Debug, Clone)]
@@ -459,6 +459,11 @@ pub struct Display {
     /// The import and conversion, on whichever interface was asked for.
     pipeline: Pipeline,
     plane: drm::control::plane::Handle,
+    /// The controller that plane is bound to.
+    ///
+    /// **What the vblank event is armed on.** The event fires per controller,
+    /// and asking the wrong one means the events belong to another output.
+    crtc_index: u32,
     /// What the display was doing when the imports below were built.
     shape: Shape,
     /// One per buffer of the display's rotation.
@@ -570,6 +575,7 @@ impl Display {
             card,
             pipeline,
             plane: layout.primary_plane,
+            crtc_index: layout.crtc_index,
             shape,
             next: 0,
             cursor_plane: layout.cursor_plane,
@@ -1092,6 +1098,35 @@ impl Display {
         // into it, and tearing a session down on a failed query would be worse
         // than the state it is looking for.
         self.card.attached().unwrap_or(true)
+    }
+
+    /// The descriptor the vblank event arrives on.
+    ///
+    /// **Handed out for a poll, not for a read.** The loop waits on this
+    /// alongside its own deadlines, then drains the event through
+    /// [`Display::drain_events`] once poll says it is readable.
+    pub fn poll_fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        self.card.as_fd()
+    }
+
+    /// Arm the next vblank event on the captured output's controller.
+    ///
+    /// **One per call, consumed by [`Display::drain_events`].** A refused arm
+    /// is not a failure: the loop's timer paces the tick alone, which is the
+    /// same behaviour a display with no vblank events gets.
+    pub fn arm_vblank(&self) -> Result<(), Error> {
+        self.card
+            .arm_vblank(self.crtc_index)
+            .map_err(Error::Capture)
+    }
+
+    /// Read every pending event, saying whether a vblank was among them.
+    ///
+    /// **Asked only after poll says the descriptor is readable.** Events
+    /// accumulate while the loop is busy, so this drains rather than reads
+    /// one, and an empty queue is `false` rather than a wait.
+    pub fn drain_events(&self) -> bool {
+        self.card.drain_events().unwrap_or(false)
     }
 
     /// Whether the display changed size, clearing the answer.
