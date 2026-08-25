@@ -2190,6 +2190,16 @@ fn run_vulkan(
             return Some(Exit::Failed(status::CAPTURE_UNAVAILABLE));
         }
     };
+    // **The line above named the backend the display would have chosen, and
+    // this one is what took the stream.** Nothing announced the third encoder
+    // building, so a log could only be read for which encoder ran by the
+    // shape of what the display was registered with -- which is describing
+    // the system from something that merely correlates with it.
+    lowlat_common::log_info!(
+        "stream: the shared-device encoder took it instead, codec={:?} backend=Vulkan on {}",
+        config.codec,
+        device.name()
+    );
     Some(encode_loop(
         shared,
         arrivals,
