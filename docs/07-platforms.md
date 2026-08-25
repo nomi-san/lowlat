@@ -602,6 +602,48 @@ for it**.
    operating-system call on another platform and has no equivalent here, which is why this host
    does not offer it ([05 §9.5](05-host.md)).
 
+### §7.1 The guest microphone as a device
+
+**A guest's microphone arrives decoded ([05 §9.6](05-host.md)); making it a capture device that
+other programs can select is a different problem, and it is the application's**
+([06 §13](06-api.md)). The library owns neither the session, the naming, nor the lifetime. What
+follows is what the two platforms make possible, because the shape differs enough to change who
+owns the timing.
+
+**Linux: a pipe-backed source, measured 2026-08-26.** One module load creates a device that
+programs list as a microphone rather than as a monitor, and feeding it is a write of raw
+sixteen-bit samples to a FIFO -- mono at 48 kHz, which is what the wire already carries, so
+nothing converts. It needs **no dependency this host does not already have**: the module is
+loaded over the same client interface §7 already speaks, and the write side is a file. Measured
+end to end on PipeWire's PulseAudio server: samples written to the pipe read back from the source
+at full amplitude with no gaps.
+
+**The obvious alternative does not work, and it fails quietly.** A null sink declared as a
+virtual source *is* offered as a real source, but it is not a sink, so a stream cannot be pointed
+at it by name: the session manager moves that stream to the default output instead, and the
+device stays silent while something else gets louder. Feeding one means linking ports through the
+native interface, which is a second sound library and a routing decision the session manager can
+override.
+
+**Linux leaves the timing with us.** A capture device is read on the sound server's clock and
+packets arrive on the network's, so writing only when a packet lands underruns and crackles. That
+costs a short prime before the first write and silence written rather than nothing on a gap --
+the same shape as the receive side of any jitter buffer, and the part worth measuring rather than
+assuming.
+
+**Windows inverts that.** A virtual capture device there is a kernel-mode driver, which makes it
+a signing and distribution problem rather than a coding one: it must be code signed to load at
+all. The drivers that exist are third-party and installed separately -- AudioRelay's microphone
+is one -- and **they carry the jitter buffer and the sample clocking inside the driver**. So the
+host's side of it is small and unglamorous: open the device handle and hand it fixed-size buffers
+of PCM through an IOCTL. The timing that Linux leaves to us is already handled behind that
+handle.
+
+**So this host ships no driver on either platform.** On Linux it can create the device itself,
+from what it already links. On Windows it can drive a device somebody else installed, and if
+nobody installed one there is no microphone -- which is a deployment answer rather than a
+missing feature.
+
 ## §8 GPU and encoder
 
 - Hardware encode requires an NVIDIA GPU and a current driver. The encoder library is loaded at
@@ -646,6 +688,8 @@ After Gate B. The differences are contained:
 - Completion-port receive rather than batched polling ([02 §6](02-io-shell.md)).
 - Shared texture handles use the legacy form, not the modern one, for cross-process
   compatibility.
+- A guest's microphone becomes a capture device only through a signed kernel-mode driver, which
+  this host does not ship and does not need to write ([§7.1](#71-the-guest-microphone-as-a-device)).
 
 None of this reaches the protocol core, the IO shell's logic, or the public API.
 
@@ -658,6 +702,7 @@ None of this reaches the protocol core, the IO shell's logic, or the public API.
 | capture backend | **closed**: scanout |
 | frame variant | **closed**: multi-plane, modifier-bearing, 10-bit capable |
 | process topology | **closed**: system service, session helpers optional (§5) |
+| guest microphone as a device | **open**: the Linux route is measured and unbuilt (§7.1); Windows needs a driver this host will not ship |
 | privilege requirement | **closed**: card node plus the elevated capability |
 | pointer-hidden signal source | **closed as a question, open as work**: the session-side probe is required, not preferred, and the plane signal was measured to be a different state (§2.1) |
 | scanout format stability | **closed**: it changes several times a minute in ordinary use (§3.3) |
