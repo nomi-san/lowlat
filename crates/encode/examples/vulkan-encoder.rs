@@ -58,7 +58,7 @@ fn main() {
     );
 
     let mut encoder = device
-        .encoder(&caps, width, height, 10_000_000, 2)
+        .encoder(&caps, width, height, 10_000_000, 60, 2)
         .unwrap_or_else(|e| fail(&format!("encoder: {e}")));
     println!(
         "  encoder built at {}x{}, planes for a shader: {}",

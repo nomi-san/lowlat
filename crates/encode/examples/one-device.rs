@@ -58,7 +58,7 @@ fn main() {
         caps.shared_picture
     );
 
-    let mut encoder = match encoder_device.encoder(&caps, 1920, 1080, 10_000_000, 2) {
+    let mut encoder = match encoder_device.encoder(&caps, 1920, 1080, 10_000_000, 60, 2) {
         Ok(encoder) => encoder,
         Err(error) => {
             eprintln!("encoder: {error}");

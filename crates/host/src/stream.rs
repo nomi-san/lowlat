@@ -2166,7 +2166,14 @@ fn run_vulkan(
 
     // From here on the device said it could, so a failure is reported
     // rather than masked.
-    let mut encoder = match device.encoder(&caps, width, height, start_bps(&config), VULKAN_SLOTS) {
+    let mut encoder = match device.encoder(
+        &caps,
+        width,
+        height,
+        start_bps(&config),
+        config.fps,
+        VULKAN_SLOTS,
+    ) {
         Ok(encoder) => encoder,
         Err(error) => {
             lowlat_common::log_error!("stream: the vulkan encoder failed to build, {error}");

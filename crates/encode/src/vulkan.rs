@@ -742,6 +742,11 @@ pub struct Encoder<'a> {
     /// Which codec this session codes. Every recording's chain is the codec's
     /// own, and a session cannot change it.
     codec: Codec,
+    /// **The rate the loop feeds this encoder at, which the rate control has
+    /// to be told.** A bitrate is a budget per second and the device spends it
+    /// per picture, so an encoder told sixty and fed a hundred and twenty is
+    /// working to twice the budget it was given.
+    fps: u32,
     session: vk::VideoSessionKHR,
     session_memory: Vec<vk::DeviceMemory>,
     parameters: vk::VideoSessionParametersKHR,
@@ -839,6 +844,7 @@ impl Device {
         width: u32,
         height: u32,
         bitrate_bps: u32,
+        fps: u32,
         sources: usize,
     ) -> Result<Encoder<'a>> {
         let extent = vk::Extent2D {
@@ -847,7 +853,14 @@ impl Device {
         };
         let session = self.session(caps, extent)?;
         let built = self
-            .finish_encoder(caps, extent, bitrate_bps, session, sources.clamp(1, 4))
+            .finish_encoder(
+                caps,
+                extent,
+                bitrate_bps,
+                fps.max(1),
+                session,
+                sources.clamp(1, 4),
+            )
             .inspect_err(|_| {
                 // SAFETY: created above and nothing was bound to it yet.
                 unsafe {
@@ -957,6 +970,7 @@ impl Device {
         caps: &Caps,
         extent: vk::Extent2D,
         bitrate_bps: u32,
+        fps: u32,
         session: vk::VideoSessionKHR,
         sources: usize,
     ) -> Result<Encoder<'a>> {
@@ -1019,6 +1033,7 @@ impl Device {
         Ok(Encoder {
             device: self,
             codec: caps.codec,
+            fps,
             session,
             session_memory,
             parameters,
@@ -1795,7 +1810,7 @@ impl Encoder<'_> {
         let layer = vk::VideoEncodeRateControlLayerInfoKHR::default()
             .average_bitrate(u64::from(self.bitrate_bps))
             .max_bitrate(u64::from(self.bitrate_bps))
-            .frame_rate_numerator(60)
+            .frame_rate_numerator(self.fps)
             .frame_rate_denominator(1);
         let layers = [match self.codec {
             Codec::H264 => layer.push_next(&mut layer_h264),
@@ -1825,13 +1840,13 @@ impl Encoder<'_> {
                 .initial_virtual_buffer_size_in_ms(0);
         }
         let mut rate_h264 = vk::VideoEncodeH264RateControlInfoKHR::default()
-            .gop_frame_count(60)
-            .idr_period(60)
+            .gop_frame_count(self.fps)
+            .idr_period(self.fps)
             .consecutive_b_frame_count(0)
             .temporal_layer_count(1);
         let mut rate_h265 = vk::VideoEncodeH265RateControlInfoKHR::default()
-            .gop_frame_count(60)
-            .idr_period(60)
+            .gop_frame_count(self.fps)
+            .idr_period(self.fps)
             .consecutive_b_frame_count(0)
             .sub_layer_count(1);
         // **Its own structures, not the control's.** A chain is a list of
@@ -1843,7 +1858,7 @@ impl Encoder<'_> {
         let applied_layer = vk::VideoEncodeRateControlLayerInfoKHR::default()
             .average_bitrate(u64::from(self.applied_bps))
             .max_bitrate(u64::from(self.applied_bps))
-            .frame_rate_numerator(60)
+            .frame_rate_numerator(self.fps)
             .frame_rate_denominator(1);
         let applied = [match self.codec {
             Codec::H264 => applied_layer.push_next(&mut applied_h264),
@@ -1858,13 +1873,13 @@ impl Encoder<'_> {
                 .initial_virtual_buffer_size_in_ms(0);
         }
         let mut begin_h264 = vk::VideoEncodeH264RateControlInfoKHR::default()
-            .gop_frame_count(60)
-            .idr_period(60)
+            .gop_frame_count(self.fps)
+            .idr_period(self.fps)
             .consecutive_b_frame_count(0)
             .temporal_layer_count(1);
         let mut begin_h265 = vk::VideoEncodeH265RateControlInfoKHR::default()
-            .gop_frame_count(60)
-            .idr_period(60)
+            .gop_frame_count(self.fps)
+            .idr_period(self.fps)
             .consecutive_b_frame_count(0)
             .sub_layer_count(1);
         let mut begin_coding = vk::VideoBeginCodingInfoKHR::default()
