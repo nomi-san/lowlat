@@ -106,6 +106,7 @@ fn describe(
     preferred: Option<&str>,
     captured: u32,
     settings: &Settings,
+    live: Option<lowlat::stream::LiveVideo>,
 ) -> Video {
     // **What is being captured beats what was asked for.** A guest can switch
     // outputs and a display can move to another card by itself, and a reader
@@ -139,14 +140,34 @@ fn describe(
                 .map(|found| (found.width, found.height))
         })
         .unwrap_or((0, 0));
+    // **What the stream is running at beats what it was started with.** The
+    // rate, the frame rate and the permission to send a repeated picture are
+    // all live, so a guest may have changed one a moment ago; a panel told the
+    // startup value shows the change never happened and asks for it again.
+    // Same rule as the output above, one field along.
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a live bitrate in megabits, rounded and floored at zero"
+    )]
+    let (bitrate_mbps, fps, full_fps) = live.map_or(
+        (settings.bitrate_mbps, settings.fps, settings.full_fps),
+        |live| {
+            (
+                live.bitrate_mbps.round().max(0.0) as u32,
+                live.fps,
+                live.full_fps,
+            )
+        },
+    );
     Video {
         output,
-        bitrate_mbps: settings.bitrate_mbps,
-        fps: settings.fps,
+        bitrate_mbps,
+        fps,
         width,
         height,
         rotated: settings.rotated,
-        full_fps: settings.full_fps,
+        full_fps,
         host_os: settings.host_os,
     }
 }
@@ -170,6 +191,7 @@ pub(crate) fn on_message(
                 Display::preferred().as_deref(),
                 seam.captured(),
                 settings,
+                seam.video(),
             );
             let body = config(&described, settings.accept_microphone);
             answered(seam, guest, id::CONFIG, &body);
@@ -187,8 +209,9 @@ pub(crate) fn on_message(
                 Display::preferred().as_deref(),
                 seam.captured(),
                 settings,
+                seam.video(),
             );
-            apply(seam, body, &described);
+            apply(seam, body, &described, settings);
             // **Not answered.** The client asks again with 9 the moment it has
             // sent one of these, so an answer here would arrive beside the one
             // it is about to ask for.
@@ -226,6 +249,7 @@ pub(crate) fn announce_capture(seam: &mut Admission, settings: &Settings, last: 
         Display::preferred().as_deref(),
         captured,
         settings,
+        seam.video(),
     );
     let config = config(&described, settings.accept_microphone);
     let outputs = outputs(settings.fake_output);
@@ -397,7 +421,7 @@ fn outputs(fake: bool) -> String {
 }
 
 /// Take what a client asked for, and act on the part of it that is ours.
-fn apply(seam: &mut Admission, body: &[u8], video: &Video) {
+fn apply(seam: &mut Admission, body: &[u8], video: &Video, ceiling: &Settings) {
     let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(body) else {
         lowlat_common::log_info!("lowlatd: a configuration arrived that is not JSON, ignoring it");
         return;
@@ -445,11 +469,7 @@ fn apply(seam: &mut Admission, body: &[u8], video: &Video) {
     // create that is the session (docs/impl-plan.md, output selection). A
     // request that is quietly dropped looks like a host that ignored its
     // guest, so it is reported.
-    for (field, current) in [
-        ("resolutionX", video.width),
-        ("resolutionY", video.height),
-        ("encoderFPS", video.fps),
-    ] {
+    for (field, current) in [("resolutionX", video.width), ("resolutionY", video.height)] {
         if let Some(asked) = first.get(field).and_then(serde_json::Value::as_u64)
             && asked != 0
             && asked != u64::from(current)
@@ -459,16 +479,76 @@ fn apply(seam: &mut Admission, body: &[u8], video: &Video) {
             );
         }
     }
+    if first
+        .get("rotated")
+        .and_then(serde_json::Value::as_bool)
+        .is_some_and(|asked| asked != video.rotated)
+    {
+        lowlat_common::log_info!("lowlatd: guest asked to rotate, which this host cannot set yet");
+    }
+
+    // **The rest is live and is applied.** The frame rate, the rate ceiling
+    // and the permission to send a repeated picture all reach the running
+    // loop without rebuilding anything, so a guest asking for one gets it
+    // rather than a log line saying it was heard.
+    let Some(running) = seam.video() else {
+        lowlat_common::log_info!("lowlatd: nothing is streaming, so there is nothing to change");
+        return;
+    };
+    let mut wanted = running;
+    // **Bounded by what this host was started with, not by what fits in the
+    // field.** The operator's figures are the machine's limits -- a guest may
+    // ask for less and be given it, and asking for more is capped rather than
+    // refused, because a capped stream is one a guest can still watch.
     if let Some(asked) = first
         .get("encoderMaxBitrate")
         .and_then(serde_json::Value::as_u64)
         && asked != 0
-        && asked != u64::from(video.bitrate_mbps)
     {
-        lowlat_common::log_info!(
-            "lowlatd: guest asked for {asked} Mbps, which needs a live reconfigure"
-        );
+        let capped = asked.min(u64::from(ceiling.bitrate_mbps)).max(1);
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "a bitrate in megabits, exact far past any real one"
+        )]
+        let capped_mbps = capped as f64;
+        if asked != capped {
+            lowlat_common::log_info!(
+                "lowlatd: guest asked for {asked} Mbps, capped to this host's {capped}"
+            );
+        }
+        wanted.bitrate_mbps = capped_mbps;
     }
+    if let Some(asked) = first.get("encoderFPS").and_then(serde_json::Value::as_u64)
+        && asked != 0
+    {
+        let capped = u32::try_from(asked.min(u64::from(ceiling.fps)).max(1)).unwrap_or(ceiling.fps);
+        if u64::from(capped) != asked {
+            lowlat_common::log_info!(
+                "lowlatd: guest asked for {asked} fps, capped to this host's {capped}"
+            );
+        }
+        wanted.fps = capped;
+    }
+    if let Some(asked) = first.get("fullFPS").and_then(serde_json::Value::as_bool) {
+        wanted.full_fps = asked;
+    }
+
+    // **The floor follows the ceiling down.** A rate lowered under the floor
+    // the controller was given leaves it unable to reach what it was told.
+    wanted.min_mbps = running.min_mbps.min(wanted.bitrate_mbps);
+    if (wanted.bitrate_mbps - running.bitrate_mbps).abs() < f64::EPSILON
+        && wanted.fps == running.fps
+        && wanted.full_fps == running.full_fps
+    {
+        return;
+    }
+    lowlat_common::log_info!(
+        "lowlatd: guest changed the stream, fps={} bitrate={:.1} full_fps={}",
+        wanted.fps,
+        wanted.bitrate_mbps,
+        u8::from(wanted.full_fps)
+    );
+    seam.set_video(wanted);
 }
 
 #[cfg(test)]
@@ -517,6 +597,40 @@ mod tests {
     /// -- which once told a peer its pointer was in a 1920x1080 space while the
     /// picture was 2560x1440, and every position landed short by the ratio.
     #[test]
+    /// **A panel told the startup value shows a change that never happened.**
+    /// The rate, the frame rate and the repeated-picture permission are live,
+    /// so a guest may have moved one a moment ago; describing from the
+    /// settings answers the question that was asked at boot.
+    #[test]
+    fn a_stream_is_described_by_what_it_runs_at_and_not_by_what_it_started_at() {
+        let started = settings();
+        let running = lowlat::stream::LiveVideo {
+            fps: 120,
+            bitrate_mbps: 7.0,
+            min_mbps: 1.0,
+            full_fps: true,
+        };
+        assert_ne!(started.fps, running.fps, "the test needs the two to differ");
+        let described = describe(
+            None,
+            &listed(),
+            Some("card0:DP-2"),
+            0,
+            &started,
+            Some(running),
+        );
+        assert_eq!(described.fps, 120, "the frame rate came from the settings");
+        assert_eq!(described.bitrate_mbps, 7, "the rate came from the settings");
+        assert!(described.full_fps, "the permission came from the settings");
+
+        // With nothing streaming there is nothing to read, and the settings
+        // are the only answer there is.
+        let early = describe(None, &listed(), Some("card0:DP-2"), 0, &started, None);
+        assert_eq!(early.fps, started.fps);
+        assert_eq!(early.bitrate_mbps, started.bitrate_mbps);
+    }
+
+    #[test]
     fn a_stream_is_described_by_the_picture_and_never_by_the_request() {
         // The picture wins whenever there is one, even against the display it
         // came from: a display that changed size mid-session is a picture the
@@ -527,13 +641,14 @@ mod tests {
             Some("card0:DP-2"),
             0,
             &settings(),
+            None,
         );
         assert_eq!((live.width, live.height), (3840, 2160));
 
         // And before a display has been opened, the output's own size is what
         // the stream is about to produce. What is never consulted is the
         // configuration, which carries no size at all.
-        let early = describe(None, &listed(), Some("card0:DP-2"), 0, &settings());
+        let early = describe(None, &listed(), Some("card0:DP-2"), 0, &settings(), None);
         assert_eq!((early.width, early.height), (2560, 1440));
     }
 
@@ -566,7 +681,7 @@ mod tests {
             },
         ];
         // The host would take the second; the first is merely first.
-        let described = describe(None, &listed, Some("card1:DP-4"), 0, &asked);
+        let described = describe(None, &listed, Some("card1:DP-4"), 0, &asked, None);
         assert_eq!(
             described.output, "card1:DP-4",
             "the enumeration order was reported instead of the choice"
@@ -579,7 +694,7 @@ mod tests {
             ..settings()
         };
         assert_eq!(
-            describe(None, &listed, Some("card1:DP-4"), 0, &told).output,
+            describe(None, &listed, Some("card1:DP-4"), 0, &told, None).output,
             "card0:HDMI-A-1"
         );
     }
@@ -596,16 +711,16 @@ mod tests {
             ..settings()
         };
         assert_eq!(
-            describe(None, &listed(), Some("card0:DP-2"), 0, &asked).output,
+            describe(None, &listed(), Some("card0:DP-2"), 0, &asked, None).output,
             "card0:DP-2"
         );
         assert_eq!(
-            describe(None, &listed(), Some("card0:DP-2"), 0, &settings()).output,
+            describe(None, &listed(), Some("card0:DP-2"), 0, &settings(), None).output,
             "card0:DP-2"
         );
 
         // Nothing lit is the one case where there is honestly nothing to name.
-        assert_eq!(describe(None, &[], None, 0, &asked).output, "");
+        assert_eq!(describe(None, &[], None, 0, &asked, None).output, "");
     }
 
     /// **The shape is the client's, not ours.** It reads named fields and
