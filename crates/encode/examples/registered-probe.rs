@@ -170,6 +170,7 @@ fn main() {
         level_idc: 123,
         log2_max_poc_lsb_minus4: 4,
         max_num_ref_frames: 1,
+        transform_depth: lowlat_encode::h265::TRANSFORM_HIERARCHY_DEPTH,
     };
     let mut encoder = context
         .encoder(vaapi::Params::H265(params), bps)

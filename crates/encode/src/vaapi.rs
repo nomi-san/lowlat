@@ -762,6 +762,7 @@ mod tests {
             // in every slice header is actually exercised.
             log2_max_poc_lsb_minus4: 4,
             max_num_ref_frames: 1,
+            transform_depth: crate::h265::TRANSFORM_HIERARCHY_DEPTH,
         };
         let mut encoder = context
             .encoder(Params::H265(params), 20_000_000)
@@ -817,6 +818,53 @@ mod tests {
         let path = std::env::var("LOWLAT_DUMP").unwrap_or_else(|_| "/tmp/vaapi.h265".into());
         std::fs::write(&path, &stream).expect("write");
         println!("wrote {path}");
+    }
+
+    /// **A set may not declare a transform tree deeper than the device codes.**
+    ///
+    /// This is the invariant the HEVC picture was wrong for: declaring four
+    /// where the device codes two produces a stream that encodes without
+    /// error, decodes without error, and carries the first row of blocks
+    /// followed by nothing that resembles the picture. No decode-error count
+    /// catches it, which is why the check is on the declaration rather than on
+    /// the output.
+    #[test]
+    #[ignore = "requires the open-stack driver"]
+    fn a_set_never_declares_a_deeper_transform_tree_than_the_device_codes() {
+        let va = Vaapi::load().expect("runtime");
+        let display = va.open(&node()).expect("render node");
+        let caps = display.caps(Codec::H265).expect("caps");
+        let Some(device) = display.transform_depth(caps) else {
+            println!("  this device does not report a depth; nothing to clamp against");
+            return;
+        };
+        let context = display
+            .create_context(caps, 1920, 1080, 2)
+            .expect("context");
+        let asked = crate::h265::Params {
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            level_idc: 123,
+            log2_max_poc_lsb_minus4: 4,
+            max_num_ref_frames: 1,
+            transform_depth: crate::h265::TRANSFORM_HIERARCHY_DEPTH,
+        };
+        let encoder = context
+            .encoder(Params::H265(asked), 10_000_000)
+            .expect("encoder");
+        let Params::H265(got) = encoder.params else {
+            panic!("the parameters changed codec");
+        };
+        println!(
+            "  device says {device}, asked {}, declared {}",
+            asked.transform_depth, got.transform_depth
+        );
+        assert!(
+            got.transform_depth <= device,
+            "declared a tree {} deep against a device that codes {device}",
+            got.transform_depth
+        );
     }
 
     /// Needs the open-stack driver, so it is off by default. Run with
@@ -896,6 +944,10 @@ impl Caps {
 #[derive(Debug)]
 pub struct Context<'a> {
     display: &'a Display<'a>,
+    /// What this context was configured from, kept because a later query has
+    /// to name the same profile and entry point the configuration was read
+    /// under.
+    caps: Caps,
     config: VAConfigID,
     context: VAContextID,
     /// Where a picture's pixels are read from.
@@ -906,6 +958,48 @@ pub struct Context<'a> {
 }
 
 impl Display<'_> {
+    /// How deep a transform tree this device will actually code, or `None`
+    /// where it does not say.
+    ///
+    /// **Zero is "did not answer" rather than "no splitting".** The attribute
+    /// is a packed word and an unreported field reads as zero, which is a
+    /// legal depth and a plausible wrong answer; one driver here reports two
+    /// and the other reports nothing while demonstrably coding deeper.
+    fn transform_depth(&self, caps: Caps) -> Option<u32> {
+        let mut attribs = [VAConfigAttrib {
+            type_: crate::ffi::va::VAConfigAttribEncHEVCBlockSizes,
+            value: 0,
+        }];
+        // SAFETY: the array is writable for the length passed.
+        let status = unsafe {
+            (self.va.get_config_attributes)(
+                self.raw,
+                caps.profile,
+                caps.entrypoint,
+                attribs.as_mut_ptr(),
+                1,
+            )
+        };
+        if self.va.check(status).is_err() || attribs[0].value == VA_ATTRIB_NOT_SUPPORTED {
+            return None;
+        }
+        // SAFETY: a plain word read through the bitfield view the interface
+        // defines for it. Every bit pattern is a valid value of both.
+        let blocks: crate::ffi::va::VAConfigAttribValEncHEVCBlockSizes =
+            unsafe { core::mem::transmute(attribs[0].value) };
+        // SAFETY: as above; only the bitfield view is read.
+        let (inter, intra) = unsafe {
+            (
+                blocks.bits.max_max_transform_hierarchy_depth_inter(),
+                blocks.bits.max_max_transform_hierarchy_depth_intra(),
+            )
+        };
+        // One number is written for both, so the stricter of the two is what
+        // can be declared.
+        let depth = inter.min(intra);
+        (depth > 0).then_some(depth)
+    }
+
     /// Ask what the driver offers for a codec.
     pub fn caps(&self, codec: Codec) -> Result<Caps> {
         let (profile, entrypoint) = self.encode_target(codec)?;
@@ -1051,6 +1145,7 @@ impl Display<'_> {
 
         Ok(Context {
             display: self,
+            caps,
             config,
             context,
             surfaces: pool,
@@ -1353,7 +1448,22 @@ const NO_COLLOCATED_PICTURE: u8 = 0xFF;
 
 impl<'a> Context<'a> {
     /// Build an encoder over this context.
-    pub fn encoder(&'a self, params: Params, bitrate_bps: u32) -> Result<Encoder<'a>> {
+    pub fn encoder(&'a self, mut params: Params, bitrate_bps: u32) -> Result<Encoder<'a>> {
+        // **The device decides the transform tree, not the caller.** A set
+        // declaring deeper than the hardware codes is read with the wrong
+        // syntax by every decoder and reported as an error by none. Clamped
+        // here because this is the only place that knows both the device and
+        // the parameters written for it.
+        if let Params::H265(h265) = &mut params
+            && let Some(depth) = self.display.transform_depth(self.caps)
+            && depth < h265.transform_depth
+        {
+            lowlat_common::log_info!(
+                "vaapi: the device codes a transform tree {depth} deep, not {}",
+                h265.transform_depth
+            );
+            h265.transform_depth = depth;
+        }
         let va = self.display.va;
         let display = self.display.raw;
         // Generous: a keyframe of a hard scene is far larger than the average,
@@ -1819,8 +1929,8 @@ impl Encoder<'_> {
         seq.log2_min_transform_block_size_minus2 = byte(crate::h265::LOG2_MIN_TB - 2);
         seq.log2_diff_max_min_transform_block_size =
             byte(crate::h265::LOG2_MAX_TB - crate::h265::LOG2_MIN_TB);
-        seq.max_transform_hierarchy_depth_inter = byte(crate::h265::TRANSFORM_HIERARCHY_DEPTH);
-        seq.max_transform_hierarchy_depth_intra = byte(crate::h265::TRANSFORM_HIERARCHY_DEPTH);
+        seq.max_transform_hierarchy_depth_inter = byte(params.transform_depth);
+        seq.max_transform_hierarchy_depth_intra = byte(params.transform_depth);
         // SAFETY: a union of a bitfield view and a plain word over a zeroed
         // structure, so either view is a valid value of it, and only the
         // bitfield view is used.

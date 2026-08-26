@@ -2292,6 +2292,7 @@ fn run_open(
                 level_idc: H265_LEVEL,
                 log2_max_poc_lsb_minus4: 4,
                 max_num_ref_frames: 1,
+                transform_depth: lowlat_encode::h265::TRANSFORM_HIERARCHY_DEPTH,
             }),
         ),
     };

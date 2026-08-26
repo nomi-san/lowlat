@@ -56,7 +56,11 @@ const CODED_ALIGN: u32 = 16;
 pub const LOG2_MIN_TB: u32 = 2;
 pub const LOG2_MAX_TB: u32 = 5;
 
-/// How far a transform may be split below the coding unit.
+/// How far a transform may be split below the coding unit, where the device
+/// does not say.
+///
+/// **A ceiling and a fallback, not a decision.** Devices differ and one of them
+/// says so; see [`Params::transform_depth`].
 pub const TRANSFORM_HIERARCHY_DEPTH: u32 = 4;
 
 // **These sets describe what the hardware will actually do, not what we would
@@ -80,6 +84,16 @@ pub struct Params {
     pub log2_max_poc_lsb_minus4: u32,
     /// One is enough without bidirectional pictures: each references the last.
     pub max_num_ref_frames: u32,
+    /// How far a transform may be split below the coding unit.
+    ///
+    /// **Asked of the device rather than chosen**, because a device that codes
+    /// a shallower tree than this declares produces a picture a decoder reads
+    /// with the wrong syntax and reports no error for: the first row of blocks
+    /// comes out and everything below it is wrong. The backend overwrites this
+    /// with what the device reports, where it reports anything at all; a device
+    /// answering zero has not answered, since one that genuinely split no
+    /// further would be describing hardware nobody ships.
+    pub transform_depth: u32,
 }
 
 impl Params {
@@ -206,8 +220,8 @@ pub fn sequence_parameter_set(params: &Params, out: &mut [u8]) -> Option<usize> 
     w.ue(LOG2_CTB - LOG2_MIN_CB); // log2_diff_max_min_luma_coding_block_size
     w.ue(LOG2_MIN_TB - 2); // log2_min_luma_transform_block_size_minus2
     w.ue(LOG2_MAX_TB - LOG2_MIN_TB); // log2_diff_max_min_luma_transform_block_size
-    w.ue(TRANSFORM_HIERARCHY_DEPTH); // max_transform_hierarchy_depth_inter
-    w.ue(TRANSFORM_HIERARCHY_DEPTH); // max_transform_hierarchy_depth_intra
+    w.ue(params.transform_depth); // max_transform_hierarchy_depth_inter
+    w.ue(params.transform_depth); // max_transform_hierarchy_depth_intra
 
     w.bit(false); // scaling_list_enabled_flag
     w.bit(true); // amp_enabled_flag
@@ -329,6 +343,7 @@ mod tests {
             level_idc: 123,
             log2_max_poc_lsb_minus4: 4,
             max_num_ref_frames: 1,
+            transform_depth: TRANSFORM_HIERARCHY_DEPTH,
         }
     }
 
