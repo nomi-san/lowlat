@@ -3,6 +3,36 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## HEVC predicted pictures drifted into a ghost, on the low-power path only
+
+**A live HEVC stream decodes into a ghost of earlier content** on the
+low-power entry point: the first picture is right and every one after is
+worse, until the moving parts of the picture smear and tear, with no
+decode error anywhere. The same stream on the other card decodes
+exactly, which is what made it look like a driver fault rather than one
+of our own.
+
+**The picture set declared the quantiser delta at the top of the block
+tree only.** `diff_cu_qp_delta_depth` was zero, which tells a decoder to
+read a quantiser delta at the 64x64 block and nowhere finer. The device
+quantises down to the smallest coding block regardless, so every decoder
+rebuilt each picture at a coarser quantiser than the encoder had
+predicted from. The difference is small for one picture and compounds
+across a run of predicted pictures.
+
+- **The device's own granularity is what the set now carries.** The
+  depth is the difference between the coding tree block and the smallest
+  coding block, written in both the packed set and the picture parameter
+  buffer, so the decoder's quantiser map and the encoder's match.
+- **The other card never showed it because it rewrites the set** to
+  match what it codes; the low-power driver writes exactly the bytes it
+  is handed, so a disagreement that was always wrong is only visible
+  there. The same shape as the two faults above it.
+- **Found by a pixel comparison over a run, not by a decode-error
+  count.** The stream decoded cleanly at every stage of being wrong: the
+  drift probe reads 42 dB at the sixtieth picture against 99 once fixed.
+  Named byte-level test on the picture set, watched to fail.
+
 ## Two faults in one picture, each hiding the other
 
 **H.264 encoded, returned plausible bytes, and decoded to flat grey** on
