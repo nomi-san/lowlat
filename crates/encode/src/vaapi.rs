@@ -25,8 +25,8 @@ use crate::ffi::va::{
     VA_PROGRESSIVE, VA_RC_CBR, VA_RC_CQP, VA_RC_VBR, VA_RT_FORMAT_YUV420, VA_STATUS_SUCCESS,
     VABufferID, VABufferType, VAConfigAttrib, VAConfigAttribEncPackedHeaders,
     VAConfigAttribRTFormat, VAConfigAttribRateControl, VAConfigID, VAContextID, VADisplay,
-    VAEntrypoint, VAEntrypointEncSlice, VAProfile, VAProfileH264High, VAProfileH264Main,
-    VAProfileHEVCMain, VAStatus, VASurfaceID,
+    VAEntrypoint, VAEntrypointEncSlice, VAEntrypointEncSliceLP, VAProfile, VAProfileH264High,
+    VAProfileH264Main, VAProfileHEVCMain, VAStatus, VASurfaceID,
 };
 use crate::ffi::va::{
     VA_FOURCC_NV12, VA_SURFACE_ATTRIB_SETTABLE, VAGenericValue, VAGenericValueTypeInteger,
@@ -436,7 +436,7 @@ impl Display<'_> {
     /// and the two are separate entry points against the same profile; taking
     /// the profile's presence as proof of encode support is the mistake this
     /// exists to avoid.
-    pub fn encode_profile(&self, codec: Codec) -> Result<VAProfile> {
+    pub fn encode_target(&self, codec: Codec) -> Result<(VAProfile, VAEntrypoint)> {
         let mut profiles = vec![0 as VAProfile; self.max_profiles()?];
         let mut found: c_int = 0;
         // SAFETY: the buffer is writable for the length the interface was told
@@ -451,8 +451,8 @@ impl Display<'_> {
             if !available.contains(wanted) {
                 continue;
             }
-            if self.has_encode_entrypoint(*wanted)? {
-                return Ok(*wanted);
+            if let Some(entrypoint) = self.encode_entrypoint(*wanted)? {
+                return Ok((*wanted, entrypoint));
             }
         }
         Err(Error::NoEncoder)
@@ -463,7 +463,7 @@ impl Display<'_> {
         Ok(count(unsafe { (self.va.max_num_profiles)(self.raw) }))
     }
 
-    fn has_encode_entrypoint(&self, profile: VAProfile) -> Result<bool> {
+    fn encode_entrypoint(&self, profile: VAProfile) -> Result<Option<VAEntrypoint>> {
         // SAFETY: the display is live.
         let capacity = count(unsafe { (self.va.max_num_entrypoints)(self.raw) });
         let mut entrypoints = vec![0 as VAEntrypoint; capacity];
@@ -478,10 +478,16 @@ impl Display<'_> {
             )
         };
         self.va.check(status)?;
-        Ok(entrypoints
-            .get(..count(found))
-            .unwrap_or(&[])
-            .contains(&VAEntrypointEncSlice))
+        let offered = entrypoints.get(..count(found)).unwrap_or(&[]);
+        // **The order is what a device already serving us keeps.** Where both
+        // are offered the slice entry point is what every shipped run has
+        // measured, and preferring the other one on that hardware would be a
+        // change to the encode nobody asked for. Which of the two a device
+        // that has both should use is a question for a measurement, not for
+        // this list.
+        Ok([VAEntrypointEncSlice, VAEntrypointEncSliceLP]
+            .into_iter()
+            .find(|entrypoint| offered.contains(entrypoint)))
     }
 }
 
@@ -500,10 +506,20 @@ impl Drop for Display<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
 
-    /// The open-stack device on this machine. Not the one driving the display,
-    /// which is the point: this backend is the non-zero-copy one here.
-    const NODE: &CStr = c"/dev/dri/renderD128";
+    /// Which render node these tests run against.
+    ///
+    /// **Nameable, because a machine with two cards has an encoder on each and
+    /// they do not answer the same.** A constant here can only ever measure
+    /// whichever node the loader numbered first, and the second card is
+    /// exactly where a backend's assumptions get found out. Set
+    /// `LOWLAT_VAAPI_NODE` to point it elsewhere.
+    fn node() -> CString {
+        let named =
+            std::env::var("LOWLAT_VAAPI_NODE").unwrap_or_else(|_| "/dev/dri/renderD128".into());
+        CString::new(named).expect("a node path with no interior nul")
+    }
 
     #[test]
     fn profiles_are_listed_best_first() {
@@ -524,7 +540,7 @@ mod tests {
     #[ignore = "requires the open-stack driver"]
     fn the_driver_reports_what_it_will_do_and_a_context_builds() {
         let va = Vaapi::load().expect("runtime");
-        let display = va.open(NODE).expect("render node");
+        let display = va.open(&node()).expect("render node");
 
         for codec in [Codec::H264, Codec::H265] {
             let caps = display.caps(codec).expect("caps");
@@ -546,7 +562,16 @@ mod tests {
                 .create_context(caps, 1920, 1080, 4)
                 .expect("context");
             assert_eq!(context.surfaces().len(), 4);
-            assert!(context.surfaces().iter().all(|id| *id != 0));
+            // **Zero is a surface, not a failure.** The interface spells an
+            // absent surface as its own sentinel, and one vendor's driver
+            // numbers its pool from one while another numbers it from zero, so
+            // reading zero as unallocated fails on the second for no reason.
+            assert!(
+                context
+                    .surfaces()
+                    .iter()
+                    .all(|id| *id != crate::ffi::va::VA_INVALID_SURFACE)
+            );
 
             // **The two pools must not intersect.** A picture read from the
             // same surface it reconstructs into makes the driver release the
@@ -578,7 +603,7 @@ mod tests {
         use std::time::Instant;
 
         let va = Vaapi::load().expect("runtime");
-        let display = va.open(NODE).expect("render node");
+        let display = va.open(&node()).expect("render node");
         let caps = display.caps(Codec::H264).expect("caps");
         let context = display
             .create_context(caps, 1920, 1080, 4)
@@ -712,7 +737,7 @@ mod tests {
     #[ignore = "requires the open-stack driver"]
     fn the_second_codec_encodes_and_the_driver_takes_our_sets() {
         let va = Vaapi::load().expect("runtime");
-        let display = va.open(NODE).expect("render node");
+        let display = va.open(&node()).expect("render node");
         let caps = display.caps(Codec::H265).expect("caps");
         // **The height is a knob because the rounding had to be measured.**
         // The device codes at its own alignment and corrects the size in the
@@ -804,22 +829,23 @@ mod tests {
             Err(Error::Unavailable) => panic!("no runtime present; this test needs the driver"),
             Err(error) => panic!("{error}"),
         };
-        let display = va.open(NODE).expect("render node did not open");
+        let display = va.open(&node()).expect("render node did not open");
         let (major, minor) = display.version();
         println!("display interface {major}.{minor}");
         assert!(major >= 1);
 
         for codec in [Codec::H264, Codec::H265] {
-            let profile = display.encode_profile(codec).expect("no encode profile");
-            println!("  {codec:?} encodes with profile {profile}");
+            let (profile, entrypoint) = display.encode_target(codec).expect("no encode profile");
+            println!("  {codec:?} encodes with profile {profile} through entry point {entrypoint}");
         }
 
         // A profile the driver does not encode must be refused rather than
         // substituted, which is what makes the answers above mean anything.
         assert!(
-            !display
-                .has_encode_entrypoint(crate::ffi::va::VAProfileNone)
-                .expect("query"),
+            display
+                .encode_entrypoint(crate::ffi::va::VAProfileNone)
+                .expect("query")
+                .is_none(),
             "the driver claims an encode entry point for no profile at all"
         );
     }
@@ -829,6 +855,14 @@ mod tests {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caps {
     pub profile: VAProfile,
+    /// Which entry point answered, and the one every later call must name.
+    ///
+    /// **A device offers one or the other and not always both.** The slice
+    /// entry point runs the encode through the shader cores; the low-power one
+    /// runs it on fixed function hardware. Newer parts of one vendor dropped
+    /// the first entirely, so a backend that names only it reports no encoder
+    /// on hardware that encodes perfectly well.
+    pub entrypoint: VAEntrypoint,
     /// Rate control modes offered, as the interface's bit set.
     pub rate_control: u32,
     /// Which headers the driver will **accept** from the caller.
@@ -874,7 +908,7 @@ pub struct Context<'a> {
 impl Display<'_> {
     /// Ask what the driver offers for a codec.
     pub fn caps(&self, codec: Codec) -> Result<Caps> {
-        let profile = self.encode_profile(codec)?;
+        let (profile, entrypoint) = self.encode_target(codec)?;
         let mut attribs = [
             VAConfigAttrib {
                 type_: VAConfigAttribRTFormat,
@@ -894,7 +928,7 @@ impl Display<'_> {
             (self.va.get_config_attributes)(
                 self.raw,
                 profile,
-                VAEntrypointEncSlice,
+                entrypoint,
                 attribs.as_mut_ptr(),
                 c_int::try_from(attribs.len()).unwrap_or(0),
             )
@@ -915,6 +949,7 @@ impl Display<'_> {
         }
         Ok(Caps {
             profile,
+            entrypoint,
             rate_control: value(&attribs[1]),
             packed_headers: value(&attribs[2]),
         })
@@ -955,7 +990,7 @@ impl Display<'_> {
             (self.va.create_config)(
                 self.raw,
                 caps.profile,
-                VAEntrypointEncSlice,
+                caps.entrypoint,
                 wanted.as_mut_ptr(),
                 c_int::try_from(wanted.len()).unwrap_or(0),
                 &raw mut config,
