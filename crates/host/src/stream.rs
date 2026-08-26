@@ -5977,6 +5977,27 @@ mod tests {
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
+        // **Reachable at the configuration a live stream runs**, because that
+        // is the only way this dump answers what a guest was actually sent. A
+        // fault appearing on one output, one codec and one size is not
+        // reproduced by a synthetic source at another.
+        let codec = match std::env::var("LOWLAT_CODEC").as_deref() {
+            Ok("hevc" | "h265") => Codec::H265,
+            _ => Codec::H264,
+        };
+        let output = std::env::var("LOWLAT_OUTPUT").ok();
+        // A still desktop sends about one picture a second, so a dump of a
+        // real output needs the suppression off or it never fills.
+        let full_fps = std::env::var("LOWLAT_FULL_FPS").is_ok();
+        let display = output.is_some();
+        let width: u32 = std::env::var("LOWLAT_W")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1920);
+        let height: u32 = std::env::var("LOWLAT_H")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1080);
         let stream = Stream::start(Config {
             audio: None,
             convert: None,
@@ -5985,14 +6006,14 @@ mod tests {
             accept_microphone: false,
             audio_kbps: 128,
             allow_raw_audio: false,
-            output: None,
-            display: false,
-            width: 1920,
-            height: 1080,
+            output,
+            display,
+            width,
+            height,
             fps: 60,
             cg_level: 1,
-            full_fps: false,
-            codec: Codec::H264,
+            full_fps,
+            codec,
             backend: Some(Backend::Open),
             configured_mbps: 10.0,
             min_mbps: 1.0,
@@ -6017,7 +6038,9 @@ mod tests {
             }
             sizes.len() >= 400
         });
-        std::fs::write("/tmp/lowlat-seat.h264", &out).expect("write");
+        let path =
+            std::env::var("LOWLAT_SEAT_DUMP").unwrap_or_else(|_| "/tmp/lowlat-seat.h264".into());
+        std::fs::write(&path, &out).expect("write");
         // One access-unit length per line, so a consumer can feed a decoder
         // the way a guest's loop does rather than as one stream.
         let index: String = sizes.iter().map(|(len, _)| format!("{len}\n")).collect();
