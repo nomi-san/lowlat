@@ -1612,13 +1612,16 @@ impl Encoder<'_> {
         let mut seq =
             unsafe { core::mem::zeroed::<crate::ffi::va::VAEncSequenceParameterBufferH264>() };
         seq.level_idc = u8::try_from(params.level_idc).unwrap_or(42);
-        // **Refreshes happen on request, not on a schedule.** Zero is the
-        // interface's way of saying no period applies; a period of one would
-        // declare every picture a refresh, which is what this backend used to
-        // do and what the delivery gate exists to decide instead. One picture
-        // between predicted pictures, because there are no bidirectional ones.
-        seq.intra_period = 0;
-        seq.intra_idr_period = 0;
+        // **Refreshes happen on request, not on a schedule**, and the way to
+        // say that is a period longer than any session rather than zero. Zero
+        // reads as "no period applies" on one driver and as something else on
+        // another, where it produced a picture whose entropy coding could not
+        // be followed past its first macroblock. A period of one would declare
+        // every picture a refresh, which is what this backend used to do and
+        // what the delivery gate exists to decide instead. One picture between
+        // predicted pictures, because there are no bidirectional ones.
+        seq.intra_period = u32::MAX;
+        seq.intra_idr_period = u32::MAX;
         seq.ip_period = 1;
         seq.bits_per_second = self.bitrate_bps;
         seq.max_num_ref_frames = params.max_num_ref_frames;
@@ -1709,6 +1712,15 @@ impl Encoder<'_> {
             bits.set_reference_pic_flag(1);
             bits.set_entropy_coding_mode_flag(1);
             bits.set_deblocking_filter_control_present_flag(1);
+            // **Every tool named here has a counterpart in the parameter set**
+            // ([`crate::h264`]), which is the rule the other codec's builder
+            // already states. This one is the tool that proved it: the device
+            // was told the eight-by-eight transform was available while the set
+            // written for it stopped above the field that declares it. One
+            // driver rewrites the set to agree with what it coded and the
+            // disagreement never reaches the wire; the other writes exactly the
+            // bytes it is handed, and then the picture is coded with a tool the
+            // decoder was told to expect nothing of.
             bits.set_transform_8x8_mode_flag(1);
         }
         push(self.buffer(crate::ffi::va::VAEncPictureParameterBufferType, &pic)?);

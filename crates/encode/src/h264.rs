@@ -163,6 +163,14 @@ pub fn picture_parameter_set(out: &mut [u8]) -> Option<usize> {
     w.bit(false); // prediction may cross slice boundaries
     w.bit(false); // no redundant pictures
 
+    // **The high-profile tail, and it is not optional here.** These three
+    // fields may be omitted, and omitting them declares by inference that the
+    // eight-by-eight transform is off -- while the device is told it is on.
+    // The two must agree: what this set describes is what the hardware codes.
+    w.bit(true); // the eight-by-eight transform may be used
+    w.bit(false); // no scaling matrices
+    w.se(0); // the second chroma quantiser matches the first
+
     if !w.trailing_bits() {
         return None;
     }
