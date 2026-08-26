@@ -3,6 +3,41 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## An encoder that reported no encoder, on a card that has two
+
+**The open backend asked for one entry point by name.** A device offers
+the slice entry point, the low-power one, or both; newer discrete parts
+of one vendor carry only the second, having dropped the shader-driven
+encode path entirely. Against those the probe walked every profile the
+driver listed, found none that answered on the entry point it knew, and
+refused with "no encoder" -- naming a missing profile for what was a
+missing entry point, on a card that encodes both codecs.
+
+The probe takes the first of the two a profile offers, and the
+capabilities carry which one answered, because everything downstream has
+to name what they were read under. **The order is unchanged where a
+device offers both**, so nothing already working changes: the shipped
+measurements were all taken on the slice entry point and they still
+describe what runs. Which one is better where both exist is a
+measurement nobody has made.
+
+- **A second card found two test assumptions, which is the point of
+  having one.** The render node was a constant, so only whichever the
+  loader numbered first could be measured at all, and the second card is
+  exactly where a backend's assumptions get found out. And a surface
+  identifier of zero was read as unallocated, which is one driver's
+  numbering rather than the interface's rule -- an absent surface has its
+  own sentinel, and the other driver numbers its pool from zero.
+- **What this does not fix**: on the low-power path H.264 encodes, returns
+  plausible bytes, and its first picture does not decode -- the entropy
+  decoder loses synchronisation on the very first macroblock and the
+  picture comes out flat. HEVC on the same card is clean, and the headers
+  are proven innocent three ways: the bytes handed to the driver appear in
+  the stream unchanged, the slice header decodes field by field to exactly
+  what it should be, and suppressing it so the driver writes its own
+  changes nothing. The fault is in what the device is configured with
+  rather than in what is written for it.
+
 ## A frame larger than a guest's ceiling stopped deciding forever
 
 **Connected, input working, nothing on screen**, and the only way out was
