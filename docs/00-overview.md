@@ -171,5 +171,6 @@ by definition. This table is the reason the project has the shape it does.
 | [06-api.md](06-api.md) | the C ABI, events, configuration, integration paths |
 | [07-platforms.md](07-platforms.md) | Linux display stacks, privileges, service topology, Windows notes |
 | [08-testing.md](08-testing.md) | test tiers, gates, fuzzing, simulation, benchmarks |
+| [09-compatibility.md](09-compatibility.md) | which hardware hosts, what sets each floor, and how each answer was established |
 | [impl-plan.md](impl-plan.md) | phases 0 to 12 with verification gates |
 | [changelog.md](changelog.md) | working log, newest first |
