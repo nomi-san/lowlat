@@ -3,6 +3,28 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## The open encoder's collect waited on the wrong object
+
+**Encode latency ran about twice what the hardware does**, and it was the
+collect, not the encoder. The collect synchronised on the coded buffer with a
+zero timeout and read the timeout as "not done yet". That buffer's completion
+signal lags the actual encode by milliseconds on every open-stack driver
+measured, so a finished picture was reported long after it finished.
+
+**The surface is what says the encode is done**, and it is what the reference
+encoder waits on. The collect now blocks on the surface synchronise, which is
+the encode time itself.
+
+- **Measured on both cards, 1080p HEVC, registered path**: the Intel
+  low-power path reads 7.5 ms against the buffer probe and 2.1 ms against
+  the surface; the other card 10.7 ms against 3.0 ms. The reference encoder
+  on the same device reads 3.2 ms.
+- **A picture in flight costs the wait either way.** Against a busy encoder
+  there is nothing the loop could usefully spend the gap on, so the probe
+  bought responsiveness it could not spend.
+- The coded-buffer symbol is gone from the loaded runtime; the surface
+  synchronise exists in every version this backend runs on.
+
 ## HEVC predicted pictures drifted into a ghost, on the low-power path only
 
 **A live HEVC stream decodes into a ghost of earlier content** on the
