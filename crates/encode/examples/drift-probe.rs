@@ -67,7 +67,11 @@ fn main() {
             max_num_ref_frames: 1,
         })
     };
-    let mut encoder = context.encoder(params, 20_000_000).expect("encoder");
+    let bps: u32 = std::env::var("LOWLAT_BPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20_000_000);
+    let mut encoder = context.encoder(params, bps).expect("encoder");
 
     let ext = if hevc { "265" } else { "264" };
     let mut stream = std::fs::File::create(format!("{stem}.{ext}")).expect("stream");
