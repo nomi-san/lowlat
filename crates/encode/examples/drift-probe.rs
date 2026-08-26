@@ -31,7 +31,14 @@ fn main() {
     let stem = std::env::args().nth(1).unwrap_or("/tmp/drift".into());
     let node = std::env::var("LOWLAT_VAAPI_NODE").unwrap_or("/dev/dri/renderD128".into());
     let hevc = std::env::var("LOWLAT_CODEC").is_ok_and(|c| c == "h265" || c == "hevc");
-    let (width, height) = (1920u32, 1080u32);
+    let width: u32 = std::env::var("LOWLAT_W")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1920);
+    let height: u32 = std::env::var("LOWLAT_H")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1080);
 
     let va = vaapi::Vaapi::load().expect("no open-stack runtime");
     let display = va
@@ -77,11 +84,41 @@ fn main() {
     let mut stream = std::fs::File::create(format!("{stem}.{ext}")).expect("stream");
     let mut source_out = std::fs::File::create(format!("{stem}.nv12")).expect("source");
 
+    // **A real clip where one is given**, because the synthetic source is
+    // nearly flat: sixty of its pictures fit in tens of kilobytes, so no
+    // ceiling ever binds and nothing about a starved encode can be measured
+    // through it. LOWLAT_SOURCE names raw NV12 at the size above.
+    let clip: Option<Vec<u8>> = std::env::var("LOWLAT_SOURCE")
+        .ok()
+        .map(|p| std::fs::read(p).expect("source clip"));
+    let frame_bytes = (width as usize) * (height as usize) * 3 / 2;
     let mut source = lowlat_capture::synthetic::Synthetic::new(width, height);
     let (mut submitted, mut collected) = (0usize, 0usize);
     while collected < PICTURES {
         if submitted < PICTURES && encoder.in_flight() < DEPTH {
-            let frame = source.acquire();
+            let held;
+            let frame = match &clip {
+                Some(bytes) => {
+                    let at = (submitted % (bytes.len() / frame_bytes)) * frame_bytes;
+                    let luma = (width as usize) * (height as usize);
+                    held = lowlat_capture::Frame {
+                        width,
+                        height,
+                        luma: lowlat_capture::Plane {
+                            bytes: &bytes[at..at + luma],
+                            stride: width as usize,
+                        },
+                        chroma: lowlat_capture::Plane {
+                            bytes: &bytes[at + luma..at + frame_bytes],
+                            stride: width as usize,
+                        },
+                        captured_at: lowlat_common::clock::Time::now(),
+                        index: submitted as u64,
+                    };
+                    held
+                }
+                None => source.acquire(),
+            };
             // **Written as the encoder was handed it**, row by row, because a
             // plane's stride is not its width and a bulk write would record
             // padding the encoder never saw.
