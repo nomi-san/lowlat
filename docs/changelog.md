@@ -3,6 +3,49 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## Two faults in one picture, each hiding the other
+
+**H.264 encoded, returned plausible bytes, and decoded to flat grey** on
+the low-power path -- the entropy decoder lost synchronisation on the
+very first macroblock of the first picture and never recovered. HEVC on
+the same card was clean throughout, which is what made it look like a
+codec-specific driver problem rather than two of our own mistakes.
+
+**A refresh period of zero is not "no period".** One driver reads it that
+way; another does not. The interface has no spelling for "never", so the
+period is now longer than any session will last, which both read alike.
+
+**And the picture parameter buffer named a tool the parameter set
+denied.** The device was told the eight-by-eight transform was available
+while the set written for it stopped above the field that declares it --
+and a set that omits that field declares, by inference, that the tool is
+off. So the hardware coded with it and the decoder was told to expect
+nothing of it. The set carries the field now, so the two agree and the
+tool is kept rather than surrendered.
+
+- **Neither is a device quirk and neither is guarded by one.** A
+  parameter set that disagrees with the device it configures was always
+  wrong. It never reached the wire because the driver in front of it
+  rewrites the set to match what it actually coded; the other driver
+  writes exactly the bytes it is handed, and that is the whole of the
+  difference. **A second vendor is what turned a latent error into a
+  visible one**, which is the argument for having one.
+- **Each fix alone changed the error count and fixed nothing**, so six
+  single-variable experiments came back negative against a configuration
+  the other fault was still poisoning. The hypotheses were not wrong; the
+  ground under them was. Where two faults overlap, a negative result
+  means less than it looks like -- and the way out was to stop testing
+  one variable against a broken baseline and compare the whole
+  configuration against an encoder known to work on the same device.
+- The headers were proven innocent first, three ways, and that held: the
+  bytes handed to the driver appear in the stream unchanged, the slice
+  header decodes field by field to exactly what it should be, and
+  suppressing it so the driver writes its own changes nothing.
+- Verified on both cards and both codecs, with the decoded picture
+  checked to be a picture rather than concealment -- identical luma
+  statistics from each. Then each fix was reverted on its own and watched
+  to fail.
+
 ## An encoder that reported no encoder, on a card that has two
 
 **The open backend asked for one entry point by name.** A device offers
@@ -28,15 +71,9 @@ measurement nobody has made.
   identifier of zero was read as unallocated, which is one driver's
   numbering rather than the interface's rule -- an absent surface has its
   own sentinel, and the other driver numbers its pool from zero.
-- **What this does not fix**: on the low-power path H.264 encodes, returns
-  plausible bytes, and its first picture does not decode -- the entropy
-  decoder loses synchronisation on the very first macroblock and the
-  picture comes out flat. HEVC on the same card is clean, and the headers
-  are proven innocent three ways: the bytes handed to the driver appear in
-  the stream unchanged, the slice header decodes field by field to exactly
-  what it should be, and suppressing it so the driver writes its own
-  changes nothing. The fault is in what the device is configured with
-  rather than in what is written for it.
+- **The H.264 fault this opened is closed below**, and the headers were
+  innocent as the evidence said: the fault was in what the device was
+  configured with.
 
 ## A frame larger than a guest's ceiling stopped deciding forever
 
