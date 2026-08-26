@@ -293,7 +293,12 @@ pub fn picture_parameter_set(out: &mut [u8]) -> Option<usize> {
     // exists if this flag turns it on, so a stream without it is stuck at the
     // slice quantiser and the configured bitrate does nothing.
     w.bit(true); // cu_qp_delta_enabled_flag
-    w.ue(0); // diff_cu_qp_delta_depth
+    // **The device's own granularity, not zero.** The delta is carried down
+    // to the smallest coding block; zero would declare it only at the block
+    // top while the device still quantises finer, so the decoder rebuilds the
+    // picture at a coarser quantiser than the encoder predicted from, and the
+    // difference compounds into a ghost of earlier content.
+    w.ue(LOG2_CTB - LOG2_MIN_CB); // diff_cu_qp_delta_depth
     w.se(0); // pps_cb_qp_offset
     w.se(0); // pps_cr_qp_offset
     w.bit(false); // pps_slice_chroma_qp_offsets_present_flag
@@ -477,6 +482,27 @@ mod tests {
             &[0x00, 0x00, 0x00, 0x01, 0x02, 0x01, 0xd0, 0x09, 0x7d, 0xe0]
         );
         assert_eq!(predicted.bit_length, predicted.bytes_written * 8);
+    }
+
+    /// **The picture set declares the device's own quantiser-delta depth.**
+    ///
+    /// The value this field carries decides where in the block tree a decoder
+    /// reads a quantiser delta. Declaring it shallower than the device
+    /// quantises -- zero, which this set used to write -- makes the decoder
+    /// rebuild each predicted picture at a coarser quantiser than the encoder
+    /// predicted from, and the difference compounds into a ghost of earlier
+    /// content. Bytes confirmed field by field against an external parser,
+    /// and re-confirmed rather than edited if the set changes.
+    #[test]
+    fn the_picture_set_carries_the_devices_quantiser_delta_depth() {
+        let mut buf = [0u8; 64];
+        let written = picture_parameter_set(&mut buf).expect("pps");
+        assert_eq!(
+            &buf[..written],
+            &[
+                0x00, 0x00, 0x00, 0x01, 0x44, 0x01, 0xc0, 0x76, 0x4c, 0x08, 0x90,
+            ]
+        );
     }
 
     /// The count is written at the width the sequence set declared, so the two

@@ -2002,6 +2002,9 @@ impl Encoder<'_> {
         // No collocated picture, which this value is the interface's way of
         // saying. Zero would name the first reference instead.
         pic.collocated_ref_pic_index = NO_COLLOCATED_PICTURE;
+        // The quantiser delta is carried at the device's own granularity,
+        // which the picture set declares the same way.
+        pic.diff_cu_qp_delta_depth = byte(crate::h265::LOG2_CTB - crate::h265::LOG2_MIN_CB);
         pic.pic_init_qp = INITIAL_QP;
         pic.nal_unit_type = plan.hevc_picture().unit_type();
         // SAFETY: as above, a zeroed union accessed only through one view.
