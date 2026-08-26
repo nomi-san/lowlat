@@ -109,10 +109,6 @@ type SyncSurface = unsafe extern "C" fn(VADisplay, VASurfaceID) -> VAStatus;
 type DeriveImage =
     unsafe extern "C" fn(VADisplay, VASurfaceID, *mut crate::ffi::va::VAImage) -> VAStatus;
 type DestroyImage = unsafe extern "C" fn(VADisplay, crate::ffi::va::VAImageID) -> VAStatus;
-/// Present from interface 1.15 onward, and the reason the collect can be a
-/// probe rather than a wait. Absent on an older runtime, where the surface
-/// sync above is the only option and it blocks.
-type SyncBuffer = unsafe extern "C" fn(VADisplay, VABufferID, u64) -> VAStatus;
 
 /// Why the backend could not be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -259,8 +255,6 @@ pub struct Vaapi {
     sync_surface: SyncSurface,
     derive_image: DeriveImage,
     destroy_image: DestroyImage,
-    /// Optional: an older runtime does not export it.
-    sync_buffer: Option<SyncBuffer>,
     get_display_drm: GetDisplayDrm,
     /// Last, so both outlive the addresses taken from them.
     _libva_drm: Library,
@@ -344,9 +338,6 @@ impl Vaapi {
                 destroy_image: libva
                     .symbol(c"vaDestroyImage")
                     .ok_or(Error::MissingSymbol)?,
-                // Absent before interface 1.15, and its absence is a
-                // capability question rather than a fault.
-                sync_buffer: libva.symbol(c"vaSyncBuffer"),
                 get_display_drm: libva_drm
                     .symbol(c"vaGetDisplayDRM")
                     .ok_or(Error::MissingSymbol)?,
@@ -626,7 +617,6 @@ mod tests {
         let mut encoder = context
             .encoder(Params::H264(params), 20_000_000)
             .expect("encoder");
-        println!("collect is a probe: {}", encoder.collect_is_a_probe());
         let mut source = lowlat_capture::synthetic::Synthetic::new(1920, 1080);
 
         let mut stream = Vec::new();
@@ -2223,29 +2213,24 @@ impl Encoder<'_> {
 
     /// Collect a finished picture, or report that none is ready.
     ///
-    /// **Asks rather than waits, where the runtime allows it.** From interface
-    /// 1.15 the coded buffer can be synchronised with a timeout, and zero makes
-    /// it a probe. Older runtimes offer only a surface synchronise, which
-    /// blocks, and that is reported honestly by the capability below rather
-    /// than hidden.
+    /// **Waits on the surface, not on the coded buffer.** The coded-buffer
+    /// synchronise reads as the obvious way to ask rather than wait, but its
+    /// completion signal lags the encode by milliseconds on every open-stack
+    /// driver measured here, so a probe built on it reports a picture finished
+    /// long after the surface one does. The surface synchronise blocks, and
+    /// that is the point: it returns the moment the encode is actually done,
+    /// which is what a latency figure is supposed to be. A picture still in
+    /// flight costs the wait; there is nothing the loop could usefully do
+    /// against a busy encoder in that time anyway.
     pub fn poll(&mut self) -> Result<Poll<'_>> {
         let Some(head) = self.pending.front() else {
             return Ok(Poll::Pending);
         };
         let (surface, coded, keyframe) = (head.surface, head.coded, head.keyframe);
 
-        if let Some(sync) = self.va().sync_buffer {
-            // SAFETY: the buffer is live. Zero timeout: ask, do not wait.
-            let status = unsafe { sync(self.display(), coded, 0) };
-            if status == crate::ffi::va::VA_STATUS_ERROR_TIMEDOUT as VAStatus {
-                return Ok(Poll::Pending);
-            }
-            self.va().check(status)?;
-        } else {
-            // SAFETY: the surface is live. This one blocks; see the note.
-            let status = unsafe { (self.va().sync_surface)(self.display(), surface) };
-            self.va().check(status)?;
-        }
+        // SAFETY: the surface is live. Blocking by design; see the note.
+        let status = unsafe { (self.va().sync_surface)(self.display(), surface) };
+        self.va().check(status)?;
 
         let mut mapped: *mut core::ffi::c_void = core::ptr::null_mut();
         // SAFETY: the buffer is live and the out pointer is a live local.
@@ -2290,11 +2275,6 @@ impl Encoder<'_> {
     /// time the network hiccuped.
     pub fn reconfigure(&mut self, bitrate_bps: u32) {
         self.bitrate_bps = bitrate_bps;
-    }
-
-    /// True when the collect can ask rather than wait.
-    pub fn collect_is_a_probe(&self) -> bool {
-        self.va().sync_buffer.is_some()
     }
 
     pub fn in_flight(&self) -> usize {
