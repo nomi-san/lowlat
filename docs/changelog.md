@@ -3,6 +3,34 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## The wakeup poke was too small to wake anything fully
+
+**The integrated device powers its compute block down between frames**, and a
+trivial submission is sent ahead of the next present so the conversion that
+follows runs warm. Both halves of how that was sized were wrong, and each hid
+the other: a poke that recovers half the wakeup reads as a working poke, and a
+lead that lands past the wake reads as a lead that does not matter.
+
+- **The poke covered a 256th of the picture.** Swept against 0.43 ms warm and
+  1.95 ms with no poke at all: a sixteenth of each axis leaves the conversion
+  at 0.93 ms, a quarter of each axis reaches 0.44 but keeps a 1.09 ms tail,
+  and only a whole-picture poke holds the median and the tail together, at
+  0.43 and 0.55.
+- **The lead only matters once the poke is large enough that it can.** At full
+  size the conversion after it costs 0.43 ms at half a millisecond of lead,
+  0.44 at one, 0.99 at two and 2.04 at three -- the last being the same as
+  never poking.
+- **Neither constant does anything alone.** Moving the lead by itself was
+  tried first, and measured as no change both live and on the bench, which is
+  what sent the search to the other half.
+- **Live, integrated head at 1080p**: the conversion stage reads 0.54 p50
+  where it read 1.00, and the figure a guest is told goes from about 4.0 ms to
+  about 3.6. At 1440p the bench reads 1.18 to 0.70 against 0.64 warm.
+
+The poke now costs a second conversion of device time per present. That is
+spent in the window the loop is already blocked waiting for the vblank, so it
+adds nothing to the latency it removes.
+
 ## The encoder ran on whichever device was numbered first
 
 **The open backend named its device by a constant** while the choice of
