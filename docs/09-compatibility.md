@@ -109,6 +109,16 @@ no encoder at all on a card that encodes both codecs. Fixed 2026-08-26; both cod
 an A380. **Meteor Lake and newer merge the two names back**, so the middle of the range is the
 only part of it that was ever affected. *Measured.*
 
+**It is a live path now, not just a correct one.** An A380 driving a display has captured,
+converted, encoded and streamed both codecs to a client. Getting there cost three faults, and
+every one of them was a parameter set that disagreed with the device it configured: an entry
+point named by hand, a transform tree declared deeper than the hardware codes, and a
+quantiser-delta granularity of zero against hardware that quantises to the smallest coding
+block. **None was device-specific and none is guarded by a device check.** They were invisible
+on the other vendor's driver, which rewrites the set to match what it coded, and fatal here,
+which writes exactly the bytes it is handed. A second vendor is what turned three latent errors
+into visible ones. *Measured.*
+
 **The vendor dispatch library adds nothing here.** On this platform it is a client of VAAPI --
 it links it and calls it -- so it cannot reach hardware VAAPI cannot, and the runtime that
 ships covers **only the newest generations**, where VAAPI covers all of them. This is the
@@ -204,5 +214,5 @@ closes half the gap and not the half that was open.
 | The vendor driver version that first offers the format-modifier extension | **unverified**, and it sets the real NVIDIA floor (§5) |
 | Whether GCN 1-2 host correctly when the modern driver is asked for at boot | untested; no such part here |
 | Whether the low-power entry point is better than the shader one where both exist | never measured; the order prefers the shader one so nothing already served changes |
-| Anything beyond correctness on Intel | no latency figure, no live session, no capture from an Intel display |
+| Whether the low-power path costs latency against the shader one | **answered 2026-08-27**: it does not. Intel discrete encodes 1080p desktop content in about 3.7 ms, roughly 1 to 1.5 ms behind the vendor backend, and the reference encoder on the same device reads 3.2 ms |
 | A conversion tier below OpenGL 4.3 | not planned (§4) |

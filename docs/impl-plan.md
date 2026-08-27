@@ -1257,16 +1257,22 @@ decides what to do with them.
 - [ ] Per-guest pressure gate and the skip-until-keyframe cascade, expressed so a skip cannot
   be issued without latching the pending-keyframe state.
 - [ ] Consensus actuators and the degraded-guest event.
-- [ ] FFmpeg software encoder, dynamically loaded, resolved by name.
+- ~~FFmpeg software encoder, dynamically loaded, resolved by name.~~ **Dropped 2026-08-27**;
+  see the change log entry of that date. Widening what the hardware backends reach is worth
+  more than a software path, and on this platform the encoder was never the floor anyway.
 
 **Gate:**
 
 1. Two stock clients stream from one encode simultaneously.
 2. A guest starved deliberately recovers through a keyframe resync without disturbing the
    other.
-3. **The software path runs the full pipeline with no GPU present**, which is the continuous
-   integration path.
-4. No GPL-licensed library appears in the link graph. *Checked mechanically.*
+3. **A machine with no usable encoder is refused with a reason naming the stage that failed**,
+   rather than served by a software path that no longer exists. *Replaced the software-path
+   item on 2026-08-27.*
+4. **No copyleft library is loaded into the process**, checked at runtime against the process
+   map after a stream has run -- not against the link graph, which a runtime load passes
+   trivially while putting the library in exactly the place the check exists to prevent.
+   *Reworded 2026-08-27; as written it could not fail.*
 
 ---
 
@@ -1288,6 +1294,40 @@ decides what to do with them.
 
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
+
+- 2026-08-27: **The software encoder is dropped, and the reason is that it was never the
+  floor.** It was carried as the path for a machine with no hardware encode and as the one
+  continuous integration runs. Both premises fail on this platform. **A host is stopped by
+  capture or by conversion long before it is stopped by an encoder**: the parts this excludes
+  are excluded at a display device that offers no atomic modesetting, or at a compute
+  interface that does not exist, and a software encoder sits downstream of both. The clearest
+  case is a decade of one vendor's integrated parts that encode H.264 in hardware and still
+  cannot host, because neither conversion tier reaches them -- the older one caps a version
+  below the compute shaders the conversion is written as, and has no Vulkan driver at all.
+  Widening what the hardware backends reach is worth more than a path that only helps where
+  everything upstream already works.
+
+  **And there is no software encoder here to reach for.** The system provides none, unlike the
+  other platform, which ships one in the operating system. The widely available one is under a
+  copyleft licence: it cannot be linked, and loading it at runtime does not escape the licence,
+  it only escapes the *check* -- on a stock distribution the whole media library is built
+  copyleft, so asking it for anything puts that library in this process. Of the permissive
+  alternatives, one is a dependency a distribution may not carry, and the pure-Rust one is
+  several times too slow at 1080p60 and offers neither live bitrate control nor keyframes on
+  demand, both of which this design requires. **The vendor dispatch library is not an answer
+  either**: on this platform it is a client of the same interface the open backend already
+  speaks, so it reaches no hardware that interface cannot, and the runtime that ships covers
+  only the newest generations where the interface covers all of them. That is the reverse of
+  the arrangement on the other platform, where the library ships inside the graphics driver
+  and is the only way in.
+
+  Gate items 3 and 4 are revised with it. Item 3 asked for a software path to run with no GPU;
+  it now asks that such a machine be refused with a reason naming the stage that failed. Item 4
+  asked that no copyleft library appear in the link graph, **which is a check that cannot
+  fail** -- a runtime load passes it while doing the exact thing the item exists to prevent --
+  and now asks that none be loaded into the process, checked against the process map after a
+  stream has run. The hardware matrix this argument rests on is
+  [09-compatibility.md](09-compatibility.md).
 
 - 2026-08-25: **Copied text is the helper's fifth customer, and its gate has four values.** A
   clipboard is an ownership rather than a value: setting one announces that you own the
