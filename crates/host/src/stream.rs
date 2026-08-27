@@ -2300,7 +2300,32 @@ fn run_open(
         lowlat_common::log_error!("stream: display runtime unavailable, nothing will encode");
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
-    let Ok(display) = display.open(c"/dev/dri/renderD128") else {
+    // **The encoder is built on the device that drew the picture.** The
+    // backend already follows the display; the node it encodes through has to
+    // follow it as well, and a constant only agrees with the display while the
+    // machine has one card. With two it depends on the order the kernel probed
+    // them, so adding or moving a card silently repoints the encoder at the
+    // other device: the picture is converted on one and coded on the other,
+    // which works, crosses the bus every frame, and costs the difference with
+    // nothing in the log to say so.
+    // Without a display there is nothing to follow, and the first node is as
+    // good an answer as any.
+    let node = crate::display::Display::render_node_of(config.output.as_deref())
+        .filter(|_| config.display);
+    let named = node
+        .as_deref()
+        .and_then(|node| std::ffi::CString::new(node.as_os_str().as_encoded_bytes()).ok());
+    let asked = named.as_deref().unwrap_or(c"/dev/dri/renderD128");
+    lowlat_common::log_info!(
+        "stream: encoding through {}, {}",
+        asked.to_string_lossy(),
+        if named.is_some() {
+            "the device the display is on"
+        } else {
+            "which is the default; no display to follow"
+        }
+    );
+    let Ok(display) = display.open(asked) else {
         lowlat_common::log_error!("stream: render node could not be opened");
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };

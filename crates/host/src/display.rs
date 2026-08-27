@@ -77,6 +77,28 @@ fn driver_of(node: &std::path::Path) -> Option<String> {
     Some(link.file_name()?.to_str()?.to_string())
 }
 
+/// The render node on the same device as a display node.
+///
+/// **Asked of the device, not computed from the number.** The two numbering
+/// spaces look parallel on a machine with one card and stop being parallel the
+/// moment there are two: which card gets the first render node is the order the
+/// kernel probed them in, and that changes when a card is added, removed or
+/// moved. A constant encodes one machine's probe order, and on any other it
+/// hands the picture to a device that did not draw it -- which encodes, across
+/// the bus, and costs the difference with nothing to say so.
+fn render_of(node: &std::path::Path) -> Option<std::path::PathBuf> {
+    let card = node.file_name()?.to_str()?;
+    std::fs::read_dir(format!("/sys/class/drm/{card}/device/drm"))
+        .ok()?
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name())
+        .find(|name| {
+            name.to_str()
+                .is_some_and(|name| name.starts_with("renderD"))
+        })
+        .map(|name| std::path::Path::new("/dev/dri").join(name))
+}
+
 /// Name one output the way it is asked for.
 ///
 /// The device, then the connector. Both halves are the system's own names
@@ -648,6 +670,15 @@ impl Display {
     /// that must build something on that device before opening the display.
     pub fn node_of(wanted: Option<&str>) -> Result<std::path::PathBuf, Error> {
         Self::find(wanted).map(|(node, _, _)| node)
+    }
+
+    /// The render node on the same device as the wanted output.
+    ///
+    /// `None` when there is no display to follow, or a device that offers no
+    /// render node at all; the caller decides what to do without one.
+    #[must_use]
+    pub fn render_node_of(wanted: Option<&str>) -> Option<std::path::PathBuf> {
+        render_of(&Self::node_of(wanted).ok()?)
     }
 
     pub fn open(
@@ -1404,6 +1435,50 @@ mod tests {
                 "a device that answered named an empty driver"
             );
         }
+    }
+
+    /// A card's render node is on that card, and a second card gets a
+    /// different one.
+    ///
+    /// **The pairing is the assertion, never the number.** Asserting that
+    /// card0 answers renderD128 would pass on the machine it was written on
+    /// and encode nothing about the rule, which is the mistake this replaces:
+    /// the two numbering spaces are parallel by coincidence on a single-card
+    /// machine and are not parallel at all once a card is added or moved. So
+    /// the check walks the sysfs device link both ways and requires the render
+    /// node and the display node to name the same device -- which is false for
+    /// any constant the moment a machine has two cards.
+    #[test]
+    fn a_render_node_is_on_the_device_that_asked_for_it() {
+        let mut seen: Vec<(std::path::PathBuf, std::path::PathBuf)> = Vec::new();
+        for index in 0..8 {
+            let card = std::path::PathBuf::from(format!("/dev/dri/card{index}"));
+            if !card.exists() {
+                continue;
+            }
+            let Some(render) = render_of(&card) else {
+                continue;
+            };
+            let of = |node: &std::path::Path| {
+                let name = node.file_name()?.to_str()?.to_string();
+                std::fs::canonicalize(format!("/sys/class/drm/{name}/device")).ok()
+            };
+            assert_eq!(
+                of(&card),
+                of(&render),
+                "{card:?} was given {render:?}, which is on another device"
+            );
+            seen.push((card, render));
+        }
+        // Two cards that were handed the same node would mean the answer is
+        // not being taken from the device at all.
+        for (card, render) in &seen {
+            assert!(
+                seen.iter().filter(|(_, other)| other == render).count() == 1,
+                "{card:?} shares {render:?} with another device"
+            );
+        }
+        println!("render nodes by device: {seen:?}");
     }
 
     /// A device that is not the one asked for is skipped before it is opened,
