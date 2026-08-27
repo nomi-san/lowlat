@@ -1,7 +1,12 @@
 //! What the conversion costs at a stream's cadence, with the source fixed or
 //! live.
 //!
-//!   sudo cadence-probe [fixed|live] [sleep_ms] [frames]
+//!   sudo cadence-probe [fixed|live] [sleep_ms] [frames] [/dev/dri/cardN]
+//!
+//! `poked` sends a partial conversion first, waits `LOWLAT_POKE_LEAD_US`, and
+//! then times the real one -- which is what the stream loop does around a
+//! vblank. `LOWLAT_POKE` sizes the poke: `8` for an eighth of
+//! each axis, `full` for the lot.
 //!
 //! `fixed` converts one imported framebuffer round and round; `live` re-reads
 //! the scanned-out framebuffer every iteration the way the stream does.
@@ -22,13 +27,19 @@ fn main() {
     let mode = args.next().unwrap_or_else(|| "fixed".to_string());
     let sleep_ms: u64 = args.next().and_then(|v| v.parse().ok()).unwrap_or(16);
     let frames: usize = args.next().and_then(|v| v.parse().ok()).unwrap_or(240);
+    // **Nameable, because a machine with several cards converts on each and
+    // they do not answer the same.** A constant here can only ever measure
+    // whichever the kernel numbered first, and that number moves when a card
+    // is added or removed.
+    let node = args.next().map_or_else(
+        || std::path::PathBuf::from("/dev/dri/card0"),
+        std::path::PathBuf::from,
+    );
 
-    let card = Card::open(std::path::Path::new("/dev/dri/card0"))
-        .unwrap_or_else(|e| fail(&format!("open: {e}")));
+    let card = Card::open(&node).unwrap_or_else(|e| fail(&format!("open: {e}")));
     let layout = card.scan().unwrap_or_else(|e| fail(&format!("scan: {e}")));
     let plane = layout.primary_plane;
-    let device = Device::for_display(std::path::Path::new("/dev/dri/card0"))
-        .unwrap_or_else(|e| fail(&format!("device: {e}")));
+    let device = Device::for_display(&node).unwrap_or_else(|e| fail(&format!("device: {e}")));
     let mut converter = Converter::new(&device).unwrap_or_else(|e| fail(&format!("pipeline: {e}")));
     let mut targets = Vec::new();
     for _ in 0..4 {
@@ -64,10 +75,18 @@ fn main() {
                 .unwrap_or_else(|| fail("missing target"));
             let gx = layout.primary.width.div_ceil(2).div_ceil(8);
             let gy = layout.primary.height.div_ceil(2).div_ceil(8);
+            // **The same shape the shipped poke is sized by**: a divisor on
+            // each axis, so `1` is the whole picture and `16` is what the
+            // stream sends. `min` is a single workgroup, the floor.
             let groups = match std::env::var("LOWLAT_POKE").as_deref() {
-                Ok("full") => (gx, gy),
-                Ok("8") => (gx.div_ceil(8), gy.div_ceil(8)),
-                _ => (1, 1),
+                Ok("min") => (1, 1),
+                Ok(named) => match named.parse::<u32>() {
+                    Ok(divisor) if divisor > 0 => {
+                        (gx.div_ceil(divisor).max(1), gy.div_ceil(divisor).max(1))
+                    }
+                    _ => (gx, gy),
+                },
+                Err(_) => (gx, gy),
             };
             converter
                 .poke(
@@ -80,7 +99,17 @@ fn main() {
             converter
                 .collect(&device)
                 .unwrap_or_else(|e| fail(&format!("poke collect: {e}")));
-            std::thread::sleep(std::time::Duration::from_millis(2));
+            // **The lead is the question, not a constant.** The stream sends
+            // its poke this far before the present it expects, and whether
+            // that buys anything depends on how long the block stays awake
+            // after a partial submission -- which is not the same curve as
+            // the gap between two whole conversions.
+            std::thread::sleep(std::time::Duration::from_micros(
+                std::env::var("LOWLAT_POKE_LEAD_US")
+                    .ok()
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(2000),
+            ));
             pinned
         } else {
             let fb = card
