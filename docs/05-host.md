@@ -184,7 +184,10 @@ Backends:
 
 **Selection policy, settled 2026-08-25.** The default follows the display: the encoder for
 the device the captured output is on, which is the NVIDIA backend on that vendor's cards and
-the open stack elsewhere. That pair is the coverage floor -- roughly a decade of hardware --
+the open stack elsewhere. **The device is resolved from the captured output, never from a
+node number**: numbering is the order the kernel probed the cards in and changes when one is
+added or moved, so a machine with two video-capable cards would otherwise encode on the one
+that did not draw the picture. That pair is the coverage floor -- roughly a decade of hardware --
 and it stays the default. The Vulkan Video backend is offered as an explicit third choice
 and is never inferred: it is newer and covers less hardware. It carries both codecs,
 predicted pictures and a live session now, so what remains is the coverage question rather

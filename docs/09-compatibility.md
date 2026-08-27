@@ -73,6 +73,12 @@ them, but only if asked at boot; its support for both generations defaults to of
 legacy driver is present. **This is a boot parameter and not something a host can fix**, and it
 is the reason those rows say "not as shipped" rather than "no". *From the driver.*
 
+**Vulkan Video does not cover this vendor at all.** The open driver hides its encode
+extensions behind an environment flag, and with them enabled the device offers no rate control
+beyond turning it off -- which is the one congestion actuator this design has -- and no encode
+completes. Measured on a discrete part, both codecs. So the open stack is not a fallback here,
+it is the only path.
+
 **Vulkan Video is not the newest-hardware option it sounds like.** It covers RDNA 1 through
 RDNA 3 and **stops before RDNA 4**, which the open driver has not implemented -- so the newest
 cards fall back to VAAPI like everything else. It is also gated on the encoder firmware
@@ -87,7 +93,7 @@ version, not only the part. *From the driver.*
 | Sandy Bridge, Ivy Bridge, Bay Trail | yes | **none** | VAAPI, H.264 | **no** |
 | Haswell, Broadwell | yes | Vulkan or GL | VAAPI, H.264 | **yes** |
 | Skylake through Tiger Lake | yes | Vulkan or GL | VAAPI, H.264 and HEVC | **yes** |
-| Arc, and Xe discrete | yes | Vulkan or GL | VAAPI through the **low-power** entry point | **yes, measured** |
+| Arc, and Xe discrete | yes | Vulkan or GL | VAAPI through the **low-power** entry point; **no Vulkan Video** | **yes, measured** |
 | Meteor Lake and newer | yes | Vulkan or GL | VAAPI | **yes** |
 
 **The floor is Haswell, and the encoder is not what sets it.** VAAPI encodes H.264 as far back

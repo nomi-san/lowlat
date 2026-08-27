@@ -3,6 +3,36 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## The encoder ran on whichever device was numbered first
+
+**The open backend named its device by a constant** while the choice of
+backend already followed the display. On a machine with one video-capable
+card the two agree and nothing shows. With two, which card is numbered first
+is the order the kernel probed them in, so installing or moving a card
+repoints the encoder at a device that did not draw the picture: it still
+encodes, it crosses the bus every frame, and nothing in the log says which
+device is doing the work.
+
+**The node is taken from the display's own device now.** The constant remains
+only for a host with no display to follow, and the device the encode runs on
+is logged once per stream.
+
+- **Measured on one head at 1080p, no code changing across the three**:
+  4.47 ms guest-visible with one video-capable card, 5.5 to 6.0 ms once a
+  second card took the first number and the encode landed on it, 4.0 ms with
+  that card removed again.
+- **The check asserts the pairing, not the number.** A test naming a
+  particular node passes on any single-card machine and verifies nothing;
+  this one requires the render node and the display node to resolve to the
+  same device, and that no two devices are handed the same node.
+- **The wait between a submit and the collect costs nothing**, which closes a
+  latency item this changelog's previous entry left open. The device begins
+  the picture when it is submitted, so a delay before the collect shortens
+  the wait by exactly itself and leaves the whole span unchanged -- measured
+  on three devices and both codecs. The gap that does cost is one taken
+  before the submit, on a device that powers its encode block down between
+  pictures.
+
 ## The open encoder's collect waited on the wrong object
 
 **Encode latency ran about twice what the hardware does**, and it was the
