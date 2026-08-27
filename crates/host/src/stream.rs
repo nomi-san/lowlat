@@ -116,12 +116,22 @@ const VBLANK_PROBE_MS: f64 = 150.0;
 /// How far ahead of the expected present the device poke lands.
 ///
 /// **The integrated device's wakeup, paid early.** Its compute block powers
-/// down after a few milliseconds of idle -- measured: a conversion after 2 ms
-/// of idle costs 0.4 ms, after 4 ms it costs 1.3 ms -- so a trivial
-/// submission is sent this far before the next vblank event, while the loop
-/// is waiting for it anyway, and the conversion that follows the event runs
-/// warm.
-const POKE_LEAD_MS: f64 = 2.0;
+/// down between frames, so a conversion-sized submission is sent this far
+/// before the next vblank event, while the loop is waiting for it anyway, and
+/// the conversion that follows the event runs warm.
+///
+/// **The device does not stay awake for long, and this is half of a pair.**
+/// Measured with a whole-picture poke: the conversion after it costs 0.43 ms
+/// at a lead of half a millisecond, 0.44 at one, 0.99 at two and 2.04 at
+/// three, which is the same as never poking. Two milliseconds was the earlier
+/// figure and it lands the conversion on the wrong side of that curve. The
+/// other half is how much the poke covers, in the conversion module; neither
+/// constant does anything on its own, so a change to one alone measures as no
+/// change and reads as a refuted idea.
+///
+/// A lead that is too short wastes the poke, which costs microseconds. One
+/// that is too long gives back the wakeup it exists to hide.
+const POKE_LEAD_MS: f64 = 1.0;
 
 /// Wait up to `budget_ms` for one vblank event, saying whether it arrived.
 ///

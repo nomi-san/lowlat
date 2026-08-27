@@ -40,14 +40,27 @@ const CONVERT: &[u8] = include_bytes!("../shaders/convert.spv");
 /// covers 16 by 16 pixels.
 const GROUP: u32 = 8;
 
-/// How little of the picture a poke needs to cover, per axis.
+/// How much of the picture a poke covers, per axis.
 ///
-/// **Measured, not chosen**: the wakeup the poke buys scales with its work up
-/// to a point, and on the open stack a sixteenth of the picture in each axis
-/// wakes the block fully -- the conversion that follows runs warm, and the
-/// poke itself is a fraction of a percent of a frame. One workgroup wakes
-/// only part of it, and a buffer fill wakes less than that.
-const POKE_DIVISOR: u32 = 16;
+/// **Measured, and the answer is all of it.** The wake scales with the work
+/// the poke submits and does not saturate until the dispatch is the size of a
+/// conversion. Swept on the integrated open-stack device at 1080p, against a
+/// warm conversion of 0.43 ms and 1.95 ms with no poke at all: a sixteenth of
+/// the picture in each axis leaves the conversion at 0.93 ms, a quarter of
+/// each axis reaches 0.44 but keeps a 1.09 ms tail, and only the whole
+/// picture holds both the median and the tail, at 0.43 and 0.55. One
+/// workgroup wakes least of all, and a buffer fill wakes less than that. The
+/// same sweep at 1440p reads 1.18, 0.70 and 0.70 against a warm 0.64.
+///
+/// **A sixteenth was the earlier figure and it was wrong on this hardware**,
+/// or stopped being right: it recovers about half the wakeup and reads as a
+/// working poke, because something is plainly better than nothing.
+///
+/// **This is half of a pair.** The poke buys nothing unless the conversion
+/// follows within about a millisecond of it, so this and the stream's poke
+/// lead have to move together -- changing either alone measures as no change
+/// at all, live and on the bench.
+const POKE_DIVISOR: u32 = 1;
 
 /// The workgroups a poke covers, from a picture's size.
 ///
