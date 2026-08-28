@@ -9,6 +9,22 @@
 //! smaller packets are acknowledged is indistinguishable from a peer whose
 //! receive buffer is smaller than the path allows, and the correct response is
 //! identical in both cases: stop here and keep what works.
+//!
+//! # This module has no callers, and wiring it needs one change first
+//!
+//! **A probe is a live data fragment, and a fragment cannot shrink.** A slot's
+//! length is fixed when it is written and a retransmission re-emits exactly
+//! those bytes, so a probe the peer cannot receive is retransmitted at the
+//! probe size for as long as the channel lives -- the channel wedges at that
+//! sequence rather than settling. [`PathMtu::on_probe_lost`] corrects the size
+//! used for the *next* fragment and can do nothing about the one already in the
+//! ring.
+//!
+//! So probing is safe only once a stored fragment can be re-fragmented on
+//! retransmission. Until then the floor is not a limitation being tolerated, it
+//! is the only size with no failure mode -- and the smallest receive buffer in
+//! circulation is exactly one floor-sized datagram, so the first rung would
+//! fail against a current peer anyway.
 
 use crate::envelope::ENVELOPE_LEN;
 use crate::packet::HEADER_LEN;
@@ -17,10 +33,13 @@ use crate::seq;
 /// Default and floor: 1200 of cleartext plus the envelope.
 pub const FLOOR: usize = crate::DEFAULT_DATAGRAM;
 
-/// Absolute ceiling. **Never emit above this**, probe or not: a peer that
-/// cannot accept it discards the whole datagram rather than truncating, so the
-/// failure is total and silent, and its reassembly copy is bounded only by its
-/// receive buffer.
+/// Absolute emission ceiling. **Never emit above this**, probe or not.
+///
+/// A peer that cannot accept a size may either discard the datagram or read it
+/// truncated and fail authentication; both are silent and both look exactly
+/// like ordinary loss. Not every peer reaches this ceiling: the smallest
+/// receive buffer in circulation is one default-sized datagram, so [`FLOOR`] is
+/// the only size every peer accepts.
 pub const CEILING: usize = crate::MAX_DATAGRAM;
 
 /// Largest datagram that fits a 1500-byte path without fragmenting.
