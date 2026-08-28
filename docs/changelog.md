@@ -3,6 +3,39 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## The encoder was never told how hard to search
+
+**Every picture carried a rate and a frame rate and nothing about effort**, so
+each device ran at whatever it considers balanced -- a setting chosen for
+transcoding a file rather than for a desktop somebody is waiting on. The
+interface has a level for it and both devices measured here advertise a range
+that was never read.
+
+**Effort is not fidelity**, and the two are easy to conflate. A level says how
+far the encoder searches -- motion range, sub-pixel refinement, how many modes
+it tries -- not how coarsely it quantises. The bitrate is already what holds
+fidelity up, so search the rate will not let the encoder spend is latency with
+nothing to show for it.
+
+- **Measured at 1080p, 500 pictures, against what each device does when
+  nothing is sent.** A discrete part offering seven levels: 1.98 ms unsent,
+  3.33 at the most thorough, 1.94 in the middle, 1.53 at the top. An
+  integrated part offering thirty-two: 2.97 unsent, then 3.23, 3.51 and 2.98.
+- **One implements the range and one does not.** The second's own default is
+  already as quick as anything it offers, and the middle of its range is
+  slower than doing nothing.
+- **So the top of a device's own range is what is asked for**, which serves
+  both without any knowledge of which device is which: half a millisecond on
+  the one that implements it, neither gain nor loss on the one that does not.
+- A device advertising no range is sent nothing, because a level it never
+  offered is a configuration it did not agree to.
+
+**What this is not.** It is not a quantiser floor, which is a different
+control with the opposite shape -- a floor bounds how many bits a picture may
+spend and so bounds its time on the wire, where this bounds how long the
+encoder spends deciding. That one is not implemented and the rate control
+buffer still carries a floor of zero.
+
 ## The wakeup poke was too small to wake anything fully
 
 **The integrated device powers its compute block down between frames**, and a
