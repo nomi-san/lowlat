@@ -79,6 +79,16 @@ fn main() {
         .and_then(|v| v.parse().ok())
         .unwrap_or(20_000_000);
     let mut encoder = context.encoder(params, bps).expect("encoder");
+    if let Ok(level) = std::env::var("LOWLAT_QUALITY")
+        && let Ok(level) = level.parse::<u32>()
+    {
+        encoder.set_quality(level);
+    }
+    println!(
+        "device offers {} effort level(s), asking for {}",
+        caps.quality_range,
+        encoder.quality()
+    );
 
     let ext = if hevc { "265" } else { "264" };
     let mut stream = std::fs::File::create(format!("{stem}.{ext}")).expect("stream");

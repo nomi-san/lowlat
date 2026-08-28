@@ -208,6 +208,16 @@ fn main() {
     let mut encoder = context
         .encoder(params, kbps.saturating_mul(1000))
         .unwrap_or_else(|error| fail(&format!("encoder: {error:?}")));
+    if let Ok(level) = std::env::var("LOWLAT_QUALITY")
+        && let Ok(level) = level.parse::<u32>()
+    {
+        encoder.set_quality(level);
+    }
+    println!(
+        "device offers {} effort level(s), asking for {}",
+        caps.quality_range,
+        encoder.quality()
+    );
 
     // Per delay: the sleep as it really landed, the block, and the whole span
     // a stream loop would charge the picture.
