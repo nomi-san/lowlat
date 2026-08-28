@@ -78,14 +78,11 @@ pub const KEY_LEN: usize = 32;
 /// four zero bytes and a counter authenticates nothing a peer will accept.
 pub const NONCE_PREFIX_LEN: usize = 4;
 
-/// Bytes of the credential the cipher actually consumes.
-const CONSUMED: usize = KEY_LEN + NONCE_PREFIX_LEN;
-
 /// Random bytes the media credential carries.
 ///
-/// Only [`CONSUMED`] of them are ever used. The field is this long because that
-/// is what a peer emits, and a host that emits a shorter one is proposing
-/// material a peer may reject on length alone.
+/// Only the leading key-plus-prefix bytes are ever used. The field is this
+/// long because that is what a peer emits, and a host that emits a shorter one
+/// is proposing material a peer may reject on length alone.
 const AES_MATERIAL: usize = 127;
 
 /// Fill a buffer with platform entropy.
@@ -127,28 +124,33 @@ pub fn transaction_seed() -> Result<[u8; 16], Error> {
 /// ignored. A check written to the length of the key rather than the length of
 /// the field rejects every real credential, because the field is far longer.
 ///
-/// **This decodes the 256-bit credential only.** It takes a fixed
-/// [`KEY_LEN`] bytes of key followed by [`NONCE_PREFIX_LEN`] of prefix, so it
-/// refuses anything shorter than 72 characters and always reads the prefix from
-/// the same offset. The 128-bit credential is half as long and carries its
-/// prefix at byte 16, so it does not decode here; a caller that needs it wants a
-/// variant taking the cipher, since the prefix follows the key rather than
-/// sitting at a fixed place.
-pub fn key_material(material: &str) -> Result<([u8; KEY_LEN], [u8; NONCE_PREFIX_LEN]), Error> {
+/// **The prefix follows the key, so its offset moves with the cipher.**
+/// `key_len` is the cipher's: 32 takes the media key, and 16 takes the
+/// 64-character fingerprint the legacy path keys from, whose prefix sits at
+/// byte 16. Only the first `key_len` bytes of the returned key are the key;
+/// the rest stay zero.
+pub fn key_material(
+    material: &str,
+    key_len: usize,
+) -> Result<([u8; KEY_LEN], [u8; NONCE_PREFIX_LEN]), Error> {
+    if key_len > KEY_LEN {
+        return Err(Error::Material);
+    }
+    let consumed = key_len + NONCE_PREFIX_LEN;
     let bytes = material.as_bytes();
-    if bytes.len() < CONSUMED * 2 {
+    if bytes.len() < consumed * 2 {
         return Err(Error::Material);
     }
     let mut key = [0u8; KEY_LEN];
     let mut prefix = [0u8; NONCE_PREFIX_LEN];
-    for index in 0..CONSUMED {
+    for index in 0..consumed {
         let high = nibble(bytes[index * 2])?;
         let low = nibble(bytes[index * 2 + 1])?;
         let byte = (high << 4) | low;
-        if index < KEY_LEN {
+        if index < key_len {
             key[index] = byte;
         } else {
-            prefix[index - KEY_LEN] = byte;
+            prefix[index - key_len] = byte;
         }
     }
     Ok((key, prefix))
@@ -199,6 +201,9 @@ pub fn base64(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    /// Bytes of the credential the 256-bit cipher consumes.
+    const CONSUMED: usize = KEY_LEN + NONCE_PREFIX_LEN;
+
     /// RFC 4648 section 10. An encoder that is wrong at a padding boundary
     /// produces a fragment a peer rejects, and only the boundaries show it.
     #[test]
@@ -248,7 +253,7 @@ mod tests {
     #[test]
     fn only_the_leading_material_is_consumed() {
         let creds = credentials().expect("entropy");
-        let (key, prefix) = key_material(&creds.aes256).expect("material");
+        let (key, prefix) = key_material(&creds.aes256, KEY_LEN).expect("material");
 
         let leading = &creds.aes256[..(KEY_LEN + NONCE_PREFIX_LEN) * 2];
         assert_eq!(hex(&key), leading[..KEY_LEN * 2]);
@@ -257,7 +262,7 @@ mod tests {
         // Anything past the consumed prefix may differ without changing the key.
         let mut altered = creds.aes256.clone();
         altered.replace_range(CONSUMED * 2.., &"0".repeat(altered.len() - CONSUMED * 2));
-        let (same_key, same_prefix) = key_material(&altered).expect("material");
+        let (same_key, same_prefix) = key_material(&altered, KEY_LEN).expect("material");
         assert_eq!(same_key, key);
         assert_eq!(same_prefix, prefix);
     }
@@ -267,16 +272,37 @@ mod tests {
     #[test]
     fn the_nonce_prefix_comes_from_the_credential() {
         let material = format!("{}aabbccdd{}", "11".repeat(KEY_LEN), "ff".repeat(64));
-        let (key, prefix) = key_material(&material).expect("material");
+        let (key, prefix) = key_material(&material, KEY_LEN).expect("material");
         assert_eq!(key, [0x11u8; KEY_LEN]);
         assert_eq!(prefix, [0xaa, 0xbb, 0xcc, 0xdd]);
     }
 
+    /// The legacy path: a 64-character fingerprint is 16 bytes of key with
+    /// the prefix at byte 16, and the trailing 12 bytes are ignored.
+    #[test]
+    fn a_fingerprint_decodes_under_the_legacy_key_length() {
+        let material = format!("{}aabbccdd{}", "22".repeat(16), "ee".repeat(12));
+        assert_eq!(material.len(), 64);
+
+        let (key, prefix) = key_material(&material, 16).expect("material");
+        assert_eq!(&key[..16], &[0x22u8; 16]);
+        assert_eq!(&key[16..], &[0u8; 16], "bytes past the key must stay zero");
+        assert_eq!(prefix, [0xaa, 0xbb, 0xcc, 0xdd]);
+
+        // The same string is too short for the 256-bit form, exactly as
+        // before: the cipher is never inferred from the length.
+        assert_eq!(
+            key_material(&material, KEY_LEN).unwrap_err(),
+            Error::Material
+        );
+    }
+
     #[test]
     fn short_or_non_hex_material_is_refused() {
-        assert_eq!(key_material("abcd").unwrap_err(), Error::Material);
+        assert_eq!(key_material("abcd", KEY_LEN).unwrap_err(), Error::Material);
+        assert_eq!(key_material("abcd", 16).unwrap_err(), Error::Material);
         assert_eq!(
-            key_material(&"zz".repeat(CONSUMED)).unwrap_err(),
+            key_material(&"zz".repeat(CONSUMED), KEY_LEN).unwrap_err(),
             Error::Material
         );
     }
