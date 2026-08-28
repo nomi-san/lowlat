@@ -39,6 +39,11 @@ const TAG_OFFSET: usize = 13;
 const TAG_LEN: usize = 16;
 /// Bytes of the nonce that come from the credential rather than the counter.
 const NONCE_PREFIX_LEN: usize = 4;
+
+/// One past the largest counter a record may carry. The eight-byte field is
+/// two bytes of epoch and six of sequence number, so the usable space is
+/// forty-eight bits, not sixty-four.
+const COUNTER_LIMIT: u64 = 1 << 48;
 const CIPHERTEXT_OFFSET: usize = 29;
 
 /// Constant added to the plaintext length when writing the ignored size field.
@@ -179,6 +184,13 @@ impl Envelope {
         plaintext_len: usize,
         out: &mut [u8],
     ) -> Result<usize> {
+        // The counter's field spans the record's epoch and sequence-number
+        // positions: forty-eight bits. A sender stops there rather than
+        // running into bits peers refuse, and stopping is a correctness rule
+        // because a counter that wrapped would reuse a nonce.
+        if counter >= COUNTER_LIMIT {
+            return Err(Error::Oversized);
+        }
         let total = plaintext_len
             .checked_add(ENVELOPE_LEN)
             .ok_or(Error::Oversized)?;
@@ -309,12 +321,24 @@ mod tests {
     fn layout_is_exact() {
         let env = Envelope::from_key(&KEY256).unwrap();
         let mut wire = [0u8; 64];
-        let n = env.seal(0x0102_0304_0506_0708, b"abcd", &mut wire).unwrap();
+        // The two counter bytes above the sequence space are always zero on
+        // the wire; a value that would set them is refused below.
+        let n = env.seal(0x0000_0304_0506_0708, b"abcd", &mut wire).unwrap();
         assert_eq!(n, 4 + ENVELOPE_LEN);
         assert_eq!(&wire[0..3], &MAGIC);
-        assert_eq!(&wire[3..11], &[1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(&wire[3..11], &[0, 0, 3, 4, 5, 6, 7, 8]);
         // 4 + 45 = 49
         assert_eq!(&wire[11..13], &[0, 49]);
+    }
+
+    /// The counter's usable space is forty-eight bits; the last legal value
+    /// seals and the first past it is refused rather than sent.
+    #[test]
+    fn the_counter_stops_at_the_sequence_space() {
+        let env = Envelope::from_key(&KEY256).unwrap();
+        let mut wire = [0u8; 64];
+        assert!(env.seal((1 << 48) - 1, b"x", &mut wire).is_ok());
+        assert_eq!(env.seal(1 << 48, b"x", &mut wire), Err(Error::Oversized));
     }
 
     #[test]

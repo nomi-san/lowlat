@@ -225,7 +225,9 @@ fn records_round_trip_on_both_ciphers() {
             let len = rng.below(1972) as usize;
             let plaintext = &mut plaintext[..len];
             rng.fill(plaintext);
-            let counter = rng.next();
+            // The sealable domain: the counter's usable space is 48 bits, and
+            // the sealer refuses anything past it rather than sending it.
+            let counter = rng.next() & ((1 << 48) - 1);
 
             let written = envelope.seal(counter, plaintext, &mut wire).expect("seal");
             let opened = envelope.open(&wire[..written], &mut out).expect("open");
