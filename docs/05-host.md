@@ -203,6 +203,48 @@ Codec and colour scope is [00-overview.md](00-overview.md) D7: H.264 and HEVC, 8
 The wire bits for 10-bit and 4:4:4 are reserved now so enabling them later is not a wire
 change.
 
+### §4.1 Where a host sits between delay and picture
+
+**One setting, three points, and everything else stays a default.** An encoder has a dozen knobs
+and almost none of them are a person's business; what a person actually wants to say is whether
+they would rather wait less or look at more. That is `lowlat_quality`
+([06 §quality](06-api.md)), live like the bitrate is, and it moves two levers underneath.
+
+| | Quantiser floor | Search effort |
+|---|---|---|
+| lowest latency, the default | 5 | the most a device offers |
+| balanced | none | the most a device offers |
+| highest | none | the least, and two passes where the encoder has them |
+
+**The floor is a latency control, not a quality one**, and it reads backwards until the chain is
+laid out: a lower floor lets the encoder spend more bits refining a picture, more bits is a larger
+frame, a larger frame is more packets, and more packets is longer on the wire and longer in every
+queue between here and the far side. Below about five those bits refine nothing the eye resolves,
+so they are spent purely on delay. Left off entirely the effect is not subtle: an unbounded
+encoder handed a flat picture emitted 2.5 MB for it, four fifths of what that frame occupies
+uncompressed, where a bounded one spent half a kilobyte on the same content. The floor applies to
+every picture kind, refreshes included -- a refresh is the largest frame in the stream and the one
+that matters most for delay, so bounding only the predicted pictures leaves the important one
+unbounded.
+
+**Search effort is a different lever and is not fidelity.** It says how far the encoder looks --
+motion range, sub-pixel refinement, how many modes it tries -- not how coarsely it quantises. At a
+fixed rate more effort spends fewer bits on the same picture, and it takes longer: measured at
+1080p on a discrete part offering seven levels, the fastest codes in 1.5 ms and the most thorough
+in 3.3. The rate is already what holds fidelity up, so effort the bitrate will not let the encoder
+spend is delay with nothing to show for it -- which is why the fastest level is what the first two
+settings ask for, and why the third carries a warning rather than being the default.
+
+**Ask for the top of a device's own range, never a tuned number.** Ranges are the device's and do
+not compare: one part here offers seven levels and another thirty-two, and the second's timings
+track none of them -- its own default is already as quick as anything it offers, and the middle of
+its range is slower than sending nothing at all. Asking for the top serves both without any
+knowledge of which device is which, and a device advertising no range is sent nothing, because a
+level it never offered is a configuration it did not agree to.
+
+**What a device does not implement, a host does not pretend it did.** The three values are points
+on a trade honoured as far as each device allows, and what a host reports is what it got.
+
 ## §5 Congestion and the frame gate
 
 Two actuators, driven entirely by host-local signals ([01 §10](01-protocol.md)). There is no

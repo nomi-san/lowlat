@@ -1257,6 +1257,21 @@ decides what to do with them.
 - [ ] Per-guest pressure gate and the skip-until-keyframe cascade, expressed so a skip cannot
   be issued without latching the pending-keyframe state.
 - [ ] Consensus actuators and the degraded-guest event.
+- [ ] **One quality setting on the boundary, and the two levers under it**
+  ([05 §4.1](05-host.md), [06 §quality](06-api.md)). `lowlat_quality` in the live half of the
+  video configuration, three values, zero meaning the low-latency end so a zeroed structure
+  gets the sensible default. Under it: a quantiser floor of five at the low-latency end and
+  none above it, and the effort level already asked for. Two encoders here honour a floor
+  nowhere -- **the open and Vulkan backends leave it at zero while the vendor one has carried
+  five since Phase 5** -- so the first half of this item is closing that gap rather than adding
+  a feature.
+  - Verification: the floor is what bounds a picture, so the check is a **frame size** and not
+    a latency figure. On each backend, encode a flat picture with the floor off and with it on
+    and compare the coded bytes; unbounded, one encoder here spent 2.5 MB on a frame that
+    another spent half a kilobyte on. Then the same three settings through the boundary, with
+    the daemon's flag, reported back through `lowlat_host_status`.
+  - **A device that does not implement a lever must not be reported as having applied it**, and
+    one of the two here advertises thirty-two effort levels and tracks none of them.
 - ~~FFmpeg software encoder, dynamically loaded, resolved by name.~~ **Dropped 2026-08-27**;
   see the change log entry of that date. Widening what the hardware backends reach is worth
   more than a software path, and on this platform the encoder was never the floor anyway.

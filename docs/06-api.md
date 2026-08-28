@@ -198,6 +198,37 @@ whole:
 | `min_bitrate_mbps` | yes | The floor congestion control may not descend below, and it **moves down with the ceiling**: a ceiling lowered under a floor that stayed leaves every controller pinned at a rate the operator just asked not to exceed. |
 | `full_fps` | yes | Emit at `fps` even when the picture has not changed. **Clearing it is a permission, not an instruction** -- there is no damage signal here, so nothing yet skips a repeated picture, and continuing to send costs bitrate rather than being wrong. |
 | `output` | yes | The exception in cost rather than in kind: a picture from another output cannot be absorbed into a stream built for one, so it rebuilds around the new source for **one coded refresh** and every guest keeps its seat and its channel. |
+| `quality` | yes | One of [`lowlat_quality`](#quality). Reaches the encoder the same way the bitrate does, so it costs no rebuild and no refresh. |
+
+<a name="quality"></a>
+**`lowlat_quality` names where a host sits between delay and picture**, and it is the only
+encoder tuning this boundary exposes:
+
+| Value | Quantiser floor | Search effort |
+|---|---|---|
+| `LOWLAT_QUALITY_LOWEST_LATENCY` = 0 | 5 | the most a device offers |
+| `LOWLAT_QUALITY_BALANCED` = 1 | none | the most a device offers |
+| `LOWLAT_QUALITY_HIGHEST` = 2 | none | the least, and two passes where the encoder has them |
+
+**Zero is the low-latency end, and that is deliberate**: a zeroed structure has to mean the
+sensible default, and for a product whose first goal is delay the sensible default is the floor.
+
+**The floor reads backwards until you see why.** A lower floor lets the encoder spend more bits
+refining a picture; more bits is a larger frame, a larger frame is more packets, and more packets
+is longer on the wire and longer in every queue in between. Below about five those bits refine
+nothing the eye resolves, so they are spent purely on delay. Raising the floor above five trades
+visible sharpness for smaller frames; removing it does the reverse.
+
+**Search effort is not fidelity and the two are easy to confuse.** Effort says how far the
+encoder looks -- motion range, sub-pixel refinement, how many modes it tries -- not how coarsely
+it quantises. At a fixed rate more effort spends fewer bits on the same picture; it also takes
+longer, and on one device measured here the span between the extremes is 1.5 ms against 3.3 at
+1080p. That is why the highest setting carries a warning rather than being the default.
+
+**What a device does not implement, it does not pretend to.** One encoder here advertises
+thirty-two effort levels and its timings track none of them; another has no second pass at all.
+The three values are points on a trade, honoured as far as each device allows, and a host is told
+what it got rather than what it asked for.
 
 Everything in `lowlat_host_config` outside that structure is settled at `lowlat_host_start`:
 
