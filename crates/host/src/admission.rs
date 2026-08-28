@@ -996,6 +996,12 @@ impl Admission {
     ///
     /// Answers whether there was a guest of that number to end.
     pub fn kick_guest(&mut self, guest: u32, reason: i32) -> bool {
+        // Refused here, where the reason enters the ask channel, and not only
+        // at the public boundary: a peer carries on through a zero status, so
+        // a kick carrying one ends nobody and reads as a kick that worked.
+        if reason == 0 {
+            return false;
+        }
         let Some(attempt) = self
             .attempts
             .values()
@@ -1842,6 +1848,9 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     let mut sound = AudioSent::default();
     let mut sound_rate = Throughput::default();
     let mut reported_ms = 0.0f64;
+    // Latch for the soft liveness warning, so a stall is said once on the
+    // transition rather than every pass for a minute.
+    let mut stalled_said = false;
     // The live-run probe: when it fires and whether the chord has been let go
     // of since, so holding the two buttons does not rumble continuously.
     let mut probe_until: Option<f64> = None;
@@ -2485,7 +2494,25 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                     );
                     Some(Outcome::Undeliverable)
                 }
-                _ => None,
+                // **The soft failure is worth one line.** Nothing has arrived
+                // for a minute; the session is not ended for it, but a live
+                // run reading backwards from a hard failure wants the moment
+                // the silence began, and this is the only place that sees it.
+                lowlat_core::session::Health::Stalled => {
+                    if !stalled_said {
+                        stalled_said = true;
+                        lowlat_common::log_warn!(
+                            "guest: attempt={} stalled, nothing received for {:.0} ms",
+                            args.attempt_id,
+                            lowlat_core::session::LIVENESS_SOFT_MS
+                        );
+                    }
+                    None
+                }
+                lowlat_core::session::Health::Alive => {
+                    stalled_said = false;
+                    None
+                }
             };
             if let Some(outcome) = outcome {
                 args.emit.send(Event::Ended {
