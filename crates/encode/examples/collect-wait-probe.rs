@@ -208,15 +208,21 @@ fn main() {
     let mut encoder = context
         .encoder(params, kbps.saturating_mul(1000))
         .unwrap_or_else(|error| fail(&format!("encoder: {error:?}")));
+    if let Ok(floor) = std::env::var("LOWLAT_MIN_QP")
+        && let Ok(floor) = floor.parse::<u32>()
+    {
+        encoder.set_min_qp(floor);
+    }
     if let Ok(level) = std::env::var("LOWLAT_QUALITY")
         && let Ok(level) = level.parse::<u32>()
     {
         encoder.set_quality(level);
     }
     println!(
-        "device offers {} effort level(s), asking for {}",
+        "device offers {} effort level(s), asking for {}, quantiser floor {}",
         caps.quality_range,
-        encoder.quality()
+        encoder.quality(),
+        encoder.min_qp()
     );
 
     // Per delay: the sleep as it really landed, the block, and the whole span

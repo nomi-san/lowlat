@@ -60,6 +60,12 @@ fn main() {
     let mut encoder = device
         .encoder(&caps, width, height, 10_000_000, 60, 2)
         .unwrap_or_else(|e| fail(&format!("encoder: {e}")));
+    if let Ok(floor) = std::env::var("LOWLAT_MIN_QP")
+        && let Ok(floor) = floor.parse::<u32>()
+    {
+        encoder.set_min_qp(floor);
+    }
+    println!("  quantiser floor {}", encoder.min_qp());
     println!(
         "  encoder built at {}x{}, planes for a shader: {}",
         encoder.extent().width,
