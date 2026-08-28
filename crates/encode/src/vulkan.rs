@@ -2307,10 +2307,6 @@ impl Encoder<'_> {
 }
 
 impl crate::Encoder for Encoder<'_> {
-    fn set_quality_setting(&mut self, quality: crate::Quality) {
-        Encoder::set_quality_setting(self, quality);
-    }
-
     type Error = Error;
 
     /// The generator's path, which this backend does not carry: its pictures

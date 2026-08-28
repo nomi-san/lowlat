@@ -470,15 +470,6 @@ pub struct lowlat_host_video_config {
     /// means whichever this host would pick on its own**, which is the output
     /// at the desktop's corner and then whatever is lit.
     pub output: [c_char; LOWLAT_OUTPUT_MAX],
-    /// One of [`lowlat_quality`], and appended so an application built against
-    /// an older header keeps working: `size` says whether it is there.
-    ///
-    /// **What a host reports back is what it asked for, not what a device
-    /// did.** No interface here says whether a driver honoured a quantiser
-    /// floor or an effort level, and one measured takes the floor on one codec
-    /// and ignores it on the other, so a host logs its request once per stream
-    /// and does not claim more than that.
-    pub quality: u32,
 }
 
 /// How sound is configured.
@@ -558,6 +549,15 @@ pub struct lowlat_host_config {
     pub encoder: u32,
     /// One of [`lowlat_cg_level`].
     pub cg_level: u32,
+    /// One of [`lowlat_quality`]. **Settled when hosting starts**: it is what
+    /// the encoder is built with, and one encode serves every seat.
+    ///
+    /// **What a host reports back is what it asked for, not what a device
+    /// did.** No interface here says whether a driver honoured a quantiser
+    /// floor or an effort level, and one measured takes the floor on one codec
+    /// and ignores it on the other, so a host logs its request once per stream
+    /// and does not claim more than that.
+    pub quality: u32,
     /// How long a guest keeps the pointer after its last movement, when
     /// `exclusive_pointer` is set. Clamped rather than refused: this is a
     /// comfort setting and the nearest usable value beats refusing to start.
@@ -990,6 +990,22 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
         code if code == lowlat_cg_level::LOWLAT_CG_LEVEL_RELAXED as u32 => 2,
         _ => return None,
     };
+    // **An unknown value is refused rather than rounded to something.** A
+    // setting nobody here recognises is a request this library cannot honour,
+    // and quietly serving the nearest one is how an application ends up
+    // believing it got what it asked for.
+    let quality = match cfg.quality {
+        code if code == lowlat_quality::LOWLAT_QUALITY_LOWEST_LATENCY as u32 => {
+            lowlat_encode::Quality::LowestLatency
+        }
+        code if code == lowlat_quality::LOWLAT_QUALITY_BALANCED as u32 => {
+            lowlat_encode::Quality::Balanced
+        }
+        code if code == lowlat_quality::LOWLAT_QUALITY_HIGHEST as u32 => {
+            lowlat_encode::Quality::Highest
+        }
+        _ => return None,
+    };
     if cfg.max_guests == 0 || cfg.max_guests > LOWLAT_GUESTS_MAX {
         return None;
     }
@@ -1085,7 +1101,7 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
             configured_mbps: video.bitrate_mbps,
             min_mbps: video.min_mbps,
             full_fps: video.full_fps,
-            quality: video.quality,
+            quality,
             output: (!output.is_empty()).then(|| output.to_string()),
         }),
     })
@@ -1108,28 +1124,11 @@ fn video_configured(cfg: &lowlat_host_video_config) -> Option<crate::stream::Liv
     // Read for its terminator even where the value is not wanted here: a field
     // that was overrun is refused rather than half-read.
     taken(&cfg.output)?;
-    // **An unknown value is refused rather than rounded to something.** A
-    // setting nobody here recognises is a request this library cannot honour,
-    // and quietly serving the nearest one is how an application ends up
-    // believing it got what it asked for.
-    let quality = match cfg.quality {
-        code if code == lowlat_quality::LOWLAT_QUALITY_LOWEST_LATENCY as u32 => {
-            lowlat_encode::Quality::LowestLatency
-        }
-        code if code == lowlat_quality::LOWLAT_QUALITY_BALANCED as u32 => {
-            lowlat_encode::Quality::Balanced
-        }
-        code if code == lowlat_quality::LOWLAT_QUALITY_HIGHEST as u32 => {
-            lowlat_encode::Quality::Highest
-        }
-        _ => return None,
-    };
     Some(crate::stream::LiveVideo {
         fps: cfg.fps,
         bitrate_mbps: cfg.bitrate_mbps,
         min_mbps: cfg.min_bitrate_mbps,
         full_fps: cfg.full_fps,
-        quality,
     })
 }
 
@@ -2774,7 +2773,6 @@ mod start_tests {
             bitrate_mbps: 10.0,
             min_bitrate_mbps: 1.0,
             full_fps: true,
-            quality: lowlat_quality::LOWLAT_QUALITY_LOWEST_LATENCY as u32,
             reserved: [0; 3],
             output: [0; LOWLAT_OUTPUT_MAX],
         }
@@ -2789,6 +2787,7 @@ mod start_tests {
             codec: lowlat_codec::LOWLAT_CODEC_H264 as u32,
             encoder: lowlat_encoder::LOWLAT_ENCODER_FOLLOW_DISPLAY as u32,
             cg_level: lowlat_cg_level::LOWLAT_CG_LEVEL_SENSITIVE as u32,
+            quality: lowlat_quality::LOWLAT_QUALITY_LOWEST_LATENCY as u32,
             exclusive_hold_ms: 500,
             exclusive_pointer: false,
             reserved2: [0; 3],

@@ -598,7 +598,6 @@ mod tests {
             bitrate_mbps: 7.0,
             min_mbps: 1.0,
             full_fps: true,
-            quality: lowlat::stream::Quality::default(),
         };
         assert_ne!(started.fps, running.fps, "the test needs the two to differ");
         let described = describe(

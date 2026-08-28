@@ -1471,10 +1471,6 @@ impl Encoder<'_> {
 }
 
 impl EncoderTrait for Encoder<'_> {
-    fn set_quality_setting(&mut self, quality: crate::Quality) {
-        Encoder::set_quality_setting(self, quality);
-    }
-
     type Error = Error;
 
     fn submit(

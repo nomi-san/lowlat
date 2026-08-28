@@ -426,15 +426,6 @@ typedef struct lowlat_host_video_config {
     // means whichever this host would pick on its own**, which is the output
     // at the desktop's corner and then whatever is lit.
     char output[LOWLAT_OUTPUT_MAX];
-    // One of [`lowlat_quality`], and appended so an application built against
-    // an older header keeps working: `size` says whether it is there.
-    //
-    // **What a host reports back is what it asked for, not what a device
-    // did.** No interface here says whether a driver honoured a quantiser
-    // floor or an effort level, and one measured takes the floor on one codec
-    // and ignores it on the other, so a host logs its request once per stream
-    // and does not claim more than that.
-    uint32_t quality;
 } lowlat_host_video_config;
 
 // How sound is configured.
@@ -509,6 +500,15 @@ typedef struct lowlat_host_config {
     uint32_t encoder;
     // One of [`lowlat_cg_level`].
     uint32_t cg_level;
+    // One of [`lowlat_quality`]. **Settled when hosting starts**: it is what
+    // the encoder is built with, and one encode serves every seat.
+    //
+    // **What a host reports back is what it asked for, not what a device
+    // did.** No interface here says whether a driver honoured a quantiser
+    // floor or an effort level, and one measured takes the floor on one codec
+    // and ignores it on the other, so a host logs its request once per stream
+    // and does not claim more than that.
+    uint32_t quality;
     // How long a guest keeps the pointer after its last movement, when
     // `exclusive_pointer` is set. Clamped rather than refused: this is a
     // comfort setting and the nearest usable value beats refusing to start.

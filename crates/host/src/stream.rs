@@ -1093,7 +1093,12 @@ pub struct Config {
     /// well as there: without it the cell is built from a default and whatever
     /// a caller set when the host started is silently dropped.
     pub full_fps: bool,
-    /// Where this host starts between delay and picture. Live thereafter.
+    /// Where this host sits between delay and picture.
+    ///
+    /// **Settled when hosting starts.** It is what the encoder is built with,
+    /// and one encode serves every seat, so moving it under a running session
+    /// would be changing the picture every guest is watching on one guest's
+    /// behalf.
     pub quality: lowlat_encode::Quality,
     /// Which congestion control level every guest's controller runs at.
     ///
@@ -1126,8 +1131,6 @@ pub struct LiveVideo {
     /// being wrong. Defaulting it on would promise to spend that bitrate
     /// forever, which is not what anybody wants asked for on their behalf.
     pub full_fps: bool,
-    /// Where this host sits between delay and picture.
-    pub quality: lowlat_encode::Quality,
 }
 
 impl Default for LiveVideo {
@@ -1137,7 +1140,6 @@ impl Default for LiveVideo {
             bitrate_mbps: 10.0,
             min_mbps: 1.0,
             full_fps: false,
-            quality: lowlat_encode::Quality::default(),
         }
     }
 }
@@ -1201,7 +1203,6 @@ impl Stream {
                 bitrate_mbps: config.configured_mbps,
                 min_mbps: config.min_mbps,
                 full_fps: config.full_fps,
-                quality: config.quality,
             }),
             epoch: AtomicU32::new(0),
         });
@@ -3344,19 +3345,12 @@ fn encode_loop<E: Encoder + FromDevice>(
             if take_live_video(shared, &mut video_seen, &mut live) {
                 interval_ms = 1000.0 / f64::from(live.fps.max(1));
                 budget.reconfigure(live.bitrate_mbps, live.min_mbps, controllers);
-                // **The quality setting reaches the encoder here**, the way
-                // the bitrate does: it moves what a picture may spend, which
-                // is per-picture state on every backend, so nothing is rebuilt
-                // and no picture loses the history behind it.
-                encoder.set_quality_setting(live.quality);
                 lowlat_common::log_info!(
-                    "stream: live video change, fps={} bitrate={:.1} floor={:.1} full_fps={} \
-                     quality={:?}",
+                    "stream: live video change, fps={} bitrate={:.1} floor={:.1} full_fps={}",
                     live.fps,
                     live.bitrate_mbps,
                     live.min_mbps,
-                    u8::from(live.full_fps),
-                    live.quality
+                    u8::from(live.full_fps)
                 );
             }
 
@@ -4181,6 +4175,7 @@ mod tests {
     #[test]
     fn a_live_video_change_is_taken_once_and_then_not_again() {
         let stream = Stream::start(Config {
+            quality: lowlat_encode::Quality::default(),
             audio: None,
             convert: None,
             prefer_vulkan: false,
@@ -4195,7 +4190,6 @@ mod tests {
             fps: 60,
             cg_level: 1,
             full_fps: false,
-            quality: lowlat_encode::Quality::default(),
             codec: Codec::H264,
             backend: Some(Backend::Open),
             configured_mbps: 10.0,
@@ -4216,7 +4210,6 @@ mod tests {
             bitrate_mbps: 4.0,
             min_mbps: 2.0,
             full_fps: false,
-            quality: lowlat_encode::Quality::default(),
         };
         stream.set_video(wanted);
         assert!(
@@ -4269,10 +4262,6 @@ mod tests {
 
     impl Encoder for Fake {
         type Error = Never;
-
-        /// A double codes nothing, so there is no picture for a quantiser
-        /// floor to bound.
-        fn set_quality_setting(&mut self, _quality: lowlat_encode::Quality) {}
 
         fn submit(
             &mut self,
@@ -4338,13 +4327,13 @@ mod tests {
                 height: 240,
                 fps: 240,
                 codec: Codec::H264,
+                quality: lowlat_encode::Quality::default(),
                 backend: Some(Backend::Open),
                 configured_mbps: 10.0,
                 min_mbps: 1.0,
                 rotation: lowlat_core::video::Rotation::None,
                 detail_rows: 0,
                 full_fps: false,
-                quality: lowlat_encode::Quality::default(),
                 cg_level: 1,
             };
             let shared = Arc::new(Shared {
@@ -4454,6 +4443,7 @@ mod tests {
 
     fn test_config(codec: Codec) -> Config {
         Config {
+            quality: lowlat_encode::Quality::default(),
             audio: None,
             convert: None,
             prefer_vulkan: false,
@@ -4473,7 +4463,6 @@ mod tests {
             rotation: lowlat_core::video::Rotation::None,
             detail_rows: 0,
             full_fps: false,
-            quality: lowlat_encode::Quality::default(),
             cg_level: 1,
         }
     }
@@ -5991,6 +5980,7 @@ mod tests {
     #[ignore = "requires a render node"]
     fn the_real_encoder_serves_a_seated_guest() {
         let stream = Stream::start(Config {
+            quality: lowlat_encode::Quality::default(),
             audio: None,
             convert: None,
             prefer_vulkan: false,
@@ -6005,7 +5995,6 @@ mod tests {
             fps: 60,
             cg_level: 1,
             full_fps: false,
-            quality: lowlat_encode::Quality::default(),
             codec: Codec::H264,
             backend: Some(Backend::Open),
             configured_mbps: 10.0,
@@ -6087,6 +6076,7 @@ mod tests {
             .and_then(|v| v.parse().ok())
             .unwrap_or(1080);
         let stream = Stream::start(Config {
+            quality: lowlat_encode::Quality::default(),
             audio: None,
             convert: None,
             prefer_vulkan: false,
@@ -6101,7 +6091,6 @@ mod tests {
             fps: 60,
             cg_level: 1,
             full_fps,
-            quality: lowlat_encode::Quality::default(),
             codec,
             backend: Some(Backend::Open),
             configured_mbps: 10.0,
@@ -6267,13 +6256,13 @@ mod tests {
             height: 1080,
             fps: 60,
             codec: Codec::H264,
+            quality: lowlat_encode::Quality::default(),
             backend: Some(Backend::Open),
             configured_mbps: 10.0,
             min_mbps: 1.0,
             rotation: lowlat_core::video::Rotation::None,
             detail_rows: 0,
             full_fps: false,
-            quality: lowlat_encode::Quality::default(),
             cg_level: 1,
         })
     }
@@ -6282,6 +6271,7 @@ mod tests {
     /// table docs/05-host.md section 10 asks for.
     fn measure(fps: u32, frames: usize) -> Report {
         let stream = Stream::start(Config {
+            quality: lowlat_encode::Quality::default(),
             audio: None,
             convert: None,
             prefer_vulkan: false,
@@ -6301,7 +6291,6 @@ mod tests {
             rotation: lowlat_core::video::Rotation::None,
             detail_rows: 0,
             full_fps: false,
-            quality: lowlat_encode::Quality::default(),
             cg_level: 1,
         });
         let wake = lowlat_net::Wake::new().expect("wake");

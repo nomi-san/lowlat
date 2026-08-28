@@ -139,19 +139,6 @@ pub trait Encoder {
     /// those would put a visible stutter in the stream every time the network
     /// hiccuped.
     fn reconfigure(&mut self, bitrate_bps: u32) -> Result<(), Self::Error>;
-
-    /// Move where this encoder sits between delay and picture.
-    ///
-    /// **Same rule as the bitrate: nothing is rebuilt and no picture loses its
-    /// history.** What the setting names is per-picture state on every backend
-    /// here, so a change costs the next picture and nothing before it.
-    ///
-    /// **No answer comes back.** A backend applies what it can express and a
-    /// device honours what it chooses to; nothing in any of these interfaces
-    /// reports which, and one driver measured takes the quantiser floor on one
-    /// codec and ignores it on the other. A caller that needs to know has to
-    /// measure coded bytes, not ask.
-    fn set_quality_setting(&mut self, quality: Quality);
 }
 
 #[cfg(test)]
