@@ -208,7 +208,9 @@ change.
 **One setting, three points, and everything else stays a default.** An encoder has a dozen knobs
 and almost none of them are a person's business; what a person actually wants to say is whether
 they would rather wait less or look at more. That is `lowlat_quality`
-([06 §quality](06-api.md)), live like the bitrate is, and it moves two levers underneath.
+([06 §quality](06-api.md)), **settled when hosting starts** -- one encode serves every seat, so
+moving it under a running session would change the picture every guest is watching on one
+guest's behalf -- and it moves two levers underneath.
 
 | | Quantiser floor | Search effort |
 |---|---|---|

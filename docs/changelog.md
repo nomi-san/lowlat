@@ -5,8 +5,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 
 ## One quality setting on the boundary
 
-**`lowlat_quality` in the live half of the video configuration**, three values,
-beside the bitrate. An encoder has a dozen knobs and almost none are an
+**`lowlat_quality` in the host configuration**, three values, settled when
+hosting starts. An encoder has a dozen knobs and almost none are an
 application's business; what an application wants to say is whether its guests
 would rather wait less or look at more.
 
@@ -19,9 +19,9 @@ would rather wait less or look at more.
   effort level, which is how far the encoder searches. Backends express what
   they can -- two of the three fix their effort when the session is created and
   take the floor alone.
-- **Live like the bitrate.** It reaches a running encoder through the pass that
-  already takes a rate change, so nothing is rebuilt and no picture loses the
-  history behind it.
+- **Settled rather than live.** It is what the encoder is built with, and one
+  encode serves every seat, so moving it under a running session would change
+  the picture every guest is watching on one guest's behalf.
 - **What a host reports back is what it asked for.** Nothing in any of these
   interfaces says whether a driver acted on either lever, and they differ: one
   takes the floor on H.264 and ignores it on H.265, on the same part. A host

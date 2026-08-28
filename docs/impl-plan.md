@@ -1258,8 +1258,8 @@ decides what to do with them.
   be issued without latching the pending-keyframe state.
 - [ ] Consensus actuators and the degraded-guest event.
 - [ ] **One quality setting on the boundary, and the two levers under it**
-  ([05 §4.1](05-host.md), [06 §quality](06-api.md)). `lowlat_quality` in the live half of the
-  video configuration, three values, zero meaning the low-latency end so a zeroed structure
+  ([05 §4.1](05-host.md), [06 §quality](06-api.md)). `lowlat_quality` in the host configuration, three
+  values, settled when hosting starts, zero meaning the low-latency end so a zeroed structure
   gets the sensible default. Under it: a quantiser floor of five at the low-latency end and
   none above it, and the effort level already asked for. Two encoders here honour a floor
   nowhere -- **the open and Vulkan backends leave it at zero while the vendor one has carried

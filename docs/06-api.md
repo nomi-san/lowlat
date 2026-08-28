@@ -198,7 +198,17 @@ whole:
 | `min_bitrate_mbps` | yes | The floor congestion control may not descend below, and it **moves down with the ceiling**: a ceiling lowered under a floor that stayed leaves every controller pinned at a rate the operator just asked not to exceed. |
 | `full_fps` | yes | Emit at `fps` even when the picture has not changed. **Clearing it is a permission, not an instruction** -- there is no damage signal here, so nothing yet skips a repeated picture, and continuing to send costs bitrate rather than being wrong. |
 | `output` | yes | The exception in cost rather than in kind: a picture from another output cannot be absorbed into a stream built for one, so it rebuilds around the new source for **one coded refresh** and every guest keeps its seat and its channel. |
-| `quality` | yes | One of [`lowlat_quality`](#quality). Reaches the encoder the same way the bitrate does, so it costs no rebuild and no refresh. |
+Everything in `lowlat_host_config` outside that structure is settled at `lowlat_host_start`:
+
+| Field | Why not live |
+|---|---|
+| `codec` | One encode serves every seat and a session has one video configuration ([00 §D11](00-overview.md)). |
+| `encoder` | A consequence of where the display is rather than a preference, and changing it rebuilds the pipeline. Absent means **follow the display**, which is the right default; choosing one is an override. |
+| `quality` | One of [`lowlat_quality`](#quality). It is what the encoder is built with, and one encode serves every seat, so moving it under a running session would change the picture every guest is watching on one guest's behalf. |
+| `cg_level` | Every guest's controller is built with it. **Zero is the most aggressive, not "off"**: its threshold declares congestion on any stale fragment once the send window passes its floor, and it exists only for compatibility with an older scheme. |
+| `base_port`, `servers` | Bound and consulted per attempt; moving them under running guests moves nothing that is already connected. |
+| `max_guests` | Advertised capacity, read when a guest asks for a seat. |
+| `exclusive_pointer`, `exclusive_hold_ms` | The pointer arbiter is built once with them. The hold is **clamped rather than refused**: it is a comfort setting, and the nearest usable value beats a host that will not start.
 
 <a name="quality"></a>
 **`lowlat_quality` names where a host sits between delay and picture**, and it is the only
@@ -232,17 +242,6 @@ it on the other, and a third has no second pass at all. So the three values are 
 honoured as far as each device allows, a host logs the request and the levers it derived once per
 stream, and an application that needs to know what a device really did has to measure coded bytes
 rather than ask.
-
-Everything in `lowlat_host_config` outside that structure is settled at `lowlat_host_start`:
-
-| Field | Why not live |
-|---|---|
-| `codec` | One encode serves every seat and a session has one video configuration ([00 §D11](00-overview.md)). |
-| `encoder` | A consequence of where the display is rather than a preference, and changing it rebuilds the pipeline. Absent means **follow the display**, which is the right default; choosing one is an override. |
-| `cg_level` | Every guest's controller is built with it. **Zero is the most aggressive, not "off"**: its threshold declares congestion on any stale fragment once the send window passes its floor, and it exists only for compatibility with an older scheme. |
-| `base_port`, `servers` | Bound and consulted per attempt; moving them under running guests moves nothing that is already connected. |
-| `max_guests` | Advertised capacity, read when a guest asks for a seat. |
-| `exclusive_pointer`, `exclusive_hold_ms` | The pointer arbiter is built once with them. The hold is **clamped rather than refused**: it is a comfort setting, and the nearest usable value beats a host that will not start.
 
 **Sound has no settled half at all**, so `lowlat_host_audio_config` is both what a host starts
 with and what `lowlat_host_set_audio_config` takes:
