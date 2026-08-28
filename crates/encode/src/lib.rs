@@ -14,6 +14,29 @@ pub mod nvenc;
 pub mod vaapi;
 pub mod vulkan;
 
+/// The quantiser floor that buys latency without costing anything the eye
+/// resolves.
+///
+/// **A latency control rather than a quality one, and it reads backwards.** A
+/// lower floor lets the encoder spend more bits refining a picture; more bits
+/// is a larger frame, a larger frame is more packets, and more packets is
+/// longer on the wire and longer in every queue in between. Below about five
+/// those bits refine nothing the eye resolves, so they are spent purely on
+/// delay.
+///
+/// **Left off the effect is not subtle.** An unbounded encoder handed a flat
+/// picture emitted 2.5 MB for it, four fifths of what that frame occupies
+/// uncompressed, where a bounded one spent half a kilobyte on the same
+/// content.
+///
+/// **It belongs to every backend, not to one.** It lived in the vendor module
+/// while that was the only encoder applying it, which is exactly how the three
+/// came to disagree about how large a frame may get.
+///
+/// See [05 §4.1](../../../docs/05-host.md) for where this sits in the one
+/// setting a boundary exposes.
+pub const DEFAULT_MIN_QP: u32 = 5;
+
 /// What a collect found.
 ///
 /// Shared by every backend, because the caller downstream of an encoder is the
@@ -303,7 +326,7 @@ mod tests {
                     height: HEIGHT,
                     fps: 60,
                     bitrate_bps: 20_000_000,
-                    min_qp: nvenc::DEFAULT_MIN_QP,
+                    min_qp: DEFAULT_MIN_QP,
                 },
             )
             .expect("initialize");
@@ -484,7 +507,7 @@ mod tests {
                     height: HEIGHT,
                     fps: 60,
                     bitrate_bps: 20_000_000,
-                    min_qp: nvenc::DEFAULT_MIN_QP,
+                    min_qp: DEFAULT_MIN_QP,
                 },
             )
             .expect("initialize");

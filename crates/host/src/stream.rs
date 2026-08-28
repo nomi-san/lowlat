@@ -2468,7 +2468,7 @@ fn run_vendor(
             height,
             fps: config.fps,
             bitrate_bps: start_bps(&config),
-            min_qp: lowlat_encode::nvenc::DEFAULT_MIN_QP,
+            min_qp: lowlat_encode::DEFAULT_MIN_QP,
         },
     ) else {
         lowlat_common::log_error!("stream: encoder could not be configured");

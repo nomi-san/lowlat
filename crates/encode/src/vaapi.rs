@@ -1411,6 +1411,8 @@ pub struct Encoder<'a> {
     /// The effort level asked for, or zero to leave the device on its own
     /// default.
     quality: u32,
+    /// The quantiser this encoder may not go below.
+    min_qp: u32,
 }
 
 /// A picture an encode may reference, as the driver needs to see it.
@@ -1553,6 +1555,7 @@ impl<'a> Context<'a> {
             frame_num: 0,
             reference: None,
             quality: quality_for(self.caps.quality_range),
+            min_qp: crate::DEFAULT_MIN_QP,
         })
     }
 }
@@ -1722,6 +1725,16 @@ impl Encoder<'_> {
         // asks for a target of nothing, which is what a zeroed buffer says.
         rate.rate.target_percentage = 100;
         rate.rate.window_size = 1000;
+        // **The quantiser floor, which bounds a frame's size and so its time
+        // on the wire.** Left zero the encoder is free to descend to a
+        // near-lossless quantiser on content it finds easy, and it does; the
+        // bits that buys refine nothing the eye resolves and every one of them
+        // is a packet. It is written here rather than in the sequence
+        // parameters because it travels with the rate it constrains, and it
+        // applies to every picture kind: a refresh is the largest frame in the
+        // stream and the one that matters most for delay, so bounding only the
+        // predicted pictures leaves the important one unbounded.
+        rate.rate.min_qp = self.min_qp;
         let rate_buffer = self.buffer(crate::ffi::va::VAEncMiscParameterBufferType, &rate)?;
 
         // **A rate is meaningless without the rate it is spent at**, and the
@@ -2371,6 +2384,17 @@ impl Encoder<'_> {
     #[must_use]
     pub fn quality(&self) -> u32 {
         self.quality
+    }
+
+    /// The quantiser floor in force.
+    #[must_use]
+    pub fn min_qp(&self) -> u32 {
+        self.min_qp
+    }
+
+    /// Move the quantiser floor. Zero removes it.
+    pub fn set_min_qp(&mut self, min_qp: u32) {
+        self.min_qp = min_qp;
     }
 
     /// Ask for a different effort level, for a measurement that sweeps it.

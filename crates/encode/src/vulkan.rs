@@ -747,6 +747,8 @@ pub struct Encoder<'a> {
     /// per picture, so an encoder told sixty and fed a hundred and twenty is
     /// working to twice the budget it was given.
     fps: u32,
+    /// The quantiser this encoder may not go below. Zero removes the floor.
+    min_qp: u32,
     session: vk::VideoSessionKHR,
     session_memory: Vec<vk::DeviceMemory>,
     parameters: vk::VideoSessionParametersKHR,
@@ -1031,6 +1033,7 @@ impl Device {
         let fence = unsafe { self.device.create_fence(&info, None) }.map_err(driver)?;
 
         Ok(Encoder {
+            min_qp: crate::DEFAULT_MIN_QP,
             device: self,
             codec: caps.codec,
             fps,
@@ -1525,6 +1528,21 @@ impl Device {
 }
 
 impl Encoder<'_> {
+    /// The quantiser floor in force.
+    #[must_use]
+    pub fn min_qp(&self) -> u32 {
+        self.min_qp
+    }
+
+    /// Move the quantiser floor. Zero removes it.
+    ///
+    /// **Takes effect with the next rate control command**, which the next
+    /// picture records, so nothing is rebuilt and no picture loses its
+    /// history.
+    pub fn set_min_qp(&mut self, min_qp: u32) {
+        self.min_qp = min_qp;
+    }
+
     /// The encoded sequence and picture sets a stream opens with.
     ///
     /// The bitstream a collect hands out carries slices only; a decoder that
@@ -1805,8 +1823,26 @@ impl Encoder<'_> {
         // **The codec's half of the layer, which is not optional.** One vendor
         // accepts a layer without it and the other refuses the whole recording,
         // at the end of the buffer rather than at the command.
-        let mut layer_h264 = vk::VideoEncodeH264RateControlLayerInfoKHR::default();
-        let mut layer_h265 = vk::VideoEncodeH265RateControlLayerInfoKHR::default();
+        // **The quantiser floor, on the codec's half of the layer.** It bounds
+        // how many bits a picture may spend, which bounds its size, its packet
+        // count and its time on the wire. The three picture kinds are named
+        // separately here and all three carry it: a refresh is the largest
+        // frame in the stream and the one that matters most for delay.
+        let floor = i32::try_from(self.min_qp).unwrap_or(0);
+        let mut layer_h264 = vk::VideoEncodeH264RateControlLayerInfoKHR::default()
+            .use_min_qp(self.min_qp != 0)
+            .min_qp(vk::VideoEncodeH264QpKHR {
+                qp_i: floor,
+                qp_p: floor,
+                qp_b: floor,
+            });
+        let mut layer_h265 = vk::VideoEncodeH265RateControlLayerInfoKHR::default()
+            .use_min_qp(self.min_qp != 0)
+            .min_qp(vk::VideoEncodeH265QpKHR {
+                qp_i: floor,
+                qp_p: floor,
+                qp_b: floor,
+            });
         let layer = vk::VideoEncodeRateControlLayerInfoKHR::default()
             .average_bitrate(u64::from(self.bitrate_bps))
             .max_bitrate(u64::from(self.bitrate_bps))
@@ -2267,11 +2303,7 @@ impl crate::Encoder for Encoder<'_> {
     /// are written on the device by the conversion, and nothing here uploads
     /// bytes. The stream never pairs this backend with a source that
     /// delivers them.
-    fn submit(
-        &mut self,
-        _frame: &lowlat_capture::Frame<'_>,
-        _force_keyframe: bool,
-    ) -> Result<()> {
+    fn submit(&mut self, _frame: &lowlat_capture::Frame<'_>, _force_keyframe: bool) -> Result<()> {
         Err(Error::Unsupported("a frame delivered as bytes"))
     }
 

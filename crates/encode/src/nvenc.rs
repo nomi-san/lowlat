@@ -286,7 +286,7 @@ mod tests {
                 height: 1080,
                 fps: 60,
                 bitrate_bps: 20_000_000,
-                min_qp: DEFAULT_MIN_QP,
+                min_qp: crate::DEFAULT_MIN_QP,
             };
             let mut encoder = session.initialize(&cuda, config).expect("initialize");
             assert_eq!(encoder.config().bitrate_bps, 20_000_000);
@@ -332,7 +332,7 @@ mod tests {
             height: 1080,
             fps: 60,
             bitrate_bps: 20_000_000,
-            min_qp: DEFAULT_MIN_QP,
+            min_qp: crate::DEFAULT_MIN_QP,
         };
         let mut encoder = session.initialize(&cuda, config).expect("initialize");
 
@@ -667,9 +667,6 @@ pub struct Config {
     /// latency. Raising it trades visible sharpness for smaller frames.
     pub min_qp: u32,
 }
-
-/// The floor that buys latency without costing anything the eye resolves.
-pub const DEFAULT_MIN_QP: u32 = 5;
 
 /// Colour signalling, from [05 §3.1](../../../docs/05-host.md).
 ///
