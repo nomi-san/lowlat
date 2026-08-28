@@ -229,6 +229,7 @@ fn main() {
     // a stream loop would charge the picture.
     let sweep = delays();
     let gap = gap();
+    let convert_between = std::env::var("LOWLAT_CONVERT_BETWEEN").is_ok();
     let mut slept: Vec<Vec<f64>> = vec![Vec::new(); sweep.len()];
     let mut blocked: Vec<Vec<f64>> = vec![Vec::new(); sweep.len()];
     let mut total: Vec<Vec<f64>> = vec![Vec::new(); sweep.len()];
@@ -247,6 +248,20 @@ fn main() {
             .unwrap_or_else(|error| fail(&format!("submit: {error:?}")));
         if delay > 0 {
             std::thread::sleep(Duration::from_micros(delay));
+        }
+        // **What the loop does on a pass that runs late.** Its tick normally
+        // collects the previous picture on a pass with nothing else to do, but
+        // once a frame overruns, the pass that collects is also the pass that
+        // reads the display and submits the next conversion -- and both land
+        // between the submit and the wait, on the same device the encode is
+        // running on. Set `LOWLAT_CONVERT_BETWEEN` to reproduce that ordering.
+        if convert_between {
+            let other = targets
+                .get((index + 1) % targets.len())
+                .unwrap_or_else(|| fail("missing target"));
+            converter
+                .run(&device, &source, &other.target(), false)
+                .unwrap_or_else(|error| fail(&format!("convert between: {error}")));
         }
         let asked = Instant::now();
         let len = match encoder
