@@ -21,12 +21,21 @@ use crate::vulkan::{Device, Error, Imported, PlaneLayout, driver};
 /// The untiled arrangement, as the display interface numbers it.
 const LINEAR: u64 = 0;
 
-/// Both ways a frame can be handed on, asked for together at allocation so the
-/// choice of encoder is not made here.
-const SHAREABLE: vk::ExternalMemoryHandleTypeFlags = vk::ExternalMemoryHandleTypeFlags::from_raw(
-    vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD.as_raw()
-        | vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT.as_raw(),
-);
+/// Both ways a frame can be handed on, in the order they are asked about.
+///
+/// **Wanted together so the choice of encoder is not made here**: one takes a
+/// display-interface descriptor and another this interface's own, and the
+/// picture is allocated before either has been picked. **But wanting both is
+/// not the same as getting both.** Which of them a device will export, and
+/// whether it will export them from one allocation, is a property of the exact
+/// image being made -- its format, tiling, usage and flags -- and has to be
+/// asked. Asking for a pair a device does not offer is not a refusal at
+/// allocation; it is accepted and the export fails later, or does not, and the
+/// only thing that says so is the validation layer.
+const WANTED: [vk::ExternalMemoryHandleTypeFlags; 2] = [
+    vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT,
+    vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD,
+];
 
 /// The compiled shader, committed rather than built.
 ///
@@ -637,15 +646,24 @@ impl Device {
         let width = width.next_multiple_of(2);
         let height = height.next_multiple_of(2);
 
-        let luma_image = self.plane_image(width, height, vk::Format::R8_UNORM)?;
-        let chroma_image = match self.plane_image(width / 2, height / 2, vk::Format::R8G8_UNORM) {
-            Ok(image) => image,
-            Err(error) => {
-                // SAFETY: created just above and nothing refers to it.
-                unsafe { self.device.destroy_image(luma_image, None) };
-                return Err(error);
-            }
-        };
+        // **Asked once, of the image that is actually made.** Both planes use
+        // the same tiling and usage and differ only in format and extent, and
+        // a device that answered differently for the two would leave one plane
+        // of a picture unexportable, so the narrower answer is what both are
+        // built with.
+        let usage = vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC;
+        let handle_types = self.exportable(vk::Format::R8_UNORM, usage, vk::ImageTiling::LINEAR)
+            & self.exportable(vk::Format::R8G8_UNORM, usage, vk::ImageTiling::LINEAR);
+        let luma_image = self.plane_image(width, height, vk::Format::R8_UNORM, handle_types)?;
+        let chroma_image =
+            match self.plane_image(width / 2, height / 2, vk::Format::R8G8_UNORM, handle_types) {
+                Ok(image) => image,
+                Err(error) => {
+                    // SAFETY: created just above and nothing refers to it.
+                    unsafe { self.device.destroy_image(luma_image, None) };
+                    return Err(error);
+                }
+            };
 
         match self.bind_planes(luma_image, chroma_image, width, height) {
             Ok(nv12) => Ok(nv12),
@@ -669,8 +687,115 @@ impl Device {
     /// encoder that wants a display-interface descriptor or one that wants this
     /// interface's own; a device that refused the pair would fail here rather
     /// than at the handover.
-    fn plane_image(&self, width: u32, height: u32, format: vk::Format) -> Result<vk::Image, Error> {
-        let mut external = vk::ExternalMemoryImageCreateInfo::default().handle_types(SHAREABLE);
+    /// Which of the two handle kinds this device will really export a plane
+    /// as, for the exact image the conversion allocates.
+    ///
+    /// **Asked per handle type, then intersected.** The interface answers one
+    /// type at a time and reports, for that type, whether it can be exported
+    /// at all and which other types it may be combined with in one allocation.
+    /// A pair that both sides do not name is a pair no allocation may carry,
+    /// and asking for it anyway is accepted by the drivers here while the
+    /// validation layer calls it out twice -- once for the image and once for
+    /// the memory.
+    ///
+    /// **One type is a normal answer, and none is too.** A device may export
+    /// pictures one way, or not at all -- a software implementation converts
+    /// perfectly well and hands nothing to anybody. Exporting is not a
+    /// precondition for converting, so an empty answer declares no external
+    /// kinds rather than refusing the allocation, and the refusal comes at the
+    /// export, where somebody actually wanted one.
+    fn exportable(
+        &self,
+        format: vk::Format,
+        usage: vk::ImageUsageFlags,
+        tiling: vk::ImageTiling,
+    ) -> vk::ExternalMemoryHandleTypeFlags {
+        let mut offered = vk::ExternalMemoryHandleTypeFlags::empty();
+        let mut compatible = vk::ExternalMemoryHandleTypeFlags::from_raw(u32::MAX);
+        for wanted in WANTED {
+            let mut external =
+                vk::PhysicalDeviceExternalImageFormatInfo::default().handle_type(wanted);
+            let info = vk::PhysicalDeviceImageFormatInfo2::default()
+                .format(format)
+                .ty(vk::ImageType::TYPE_2D)
+                .tiling(tiling)
+                .usage(usage)
+                .flags(vk::ImageCreateFlags::empty())
+                .push_next(&mut external);
+            let mut properties = vk::ExternalImageFormatProperties::default();
+            let mut out = vk::ImageFormatProperties2::default().push_next(&mut properties);
+            // SAFETY: both chains outlive the call.
+            let asked = unsafe {
+                self.instance.get_physical_device_image_format_properties2(
+                    self.physical,
+                    &info,
+                    &mut out,
+                )
+            };
+            // **A refusal here is an answer, not a fault.** A device that will
+            // not make this image for this handle type says so by refusing the
+            // query, and the other type may still work.
+            if asked.is_err() {
+                continue;
+            }
+            let features = properties
+                .external_memory_properties
+                .external_memory_features;
+            if !features.contains(vk::ExternalMemoryFeatureFlags::EXPORTABLE) {
+                continue;
+            }
+            offered |= wanted;
+            compatible &= properties
+                .external_memory_properties
+                .compatible_handle_types;
+        }
+        offered & compatible
+    }
+
+    /// Which handle kinds this device will export an *allocation* as.
+    ///
+    /// **A different question from the one above, with a different answer.**
+    /// The image query says how an image may be backed by foreign memory; this
+    /// says how memory may leave. One driver here refuses the image query for
+    /// a display-interface descriptor on an untiled image -- that kind wants a
+    /// modifier-tiled image, which this pipeline deliberately does not make --
+    /// while exporting the allocation as one perfectly well. Asking the image
+    /// question about the memory is how a working export gets refused, and
+    /// asking neither is how both end up declared and neither checked.
+    fn exportable_memory(&self) -> vk::ExternalMemoryHandleTypeFlags {
+        let mut offered = vk::ExternalMemoryHandleTypeFlags::empty();
+        let mut compatible = vk::ExternalMemoryHandleTypeFlags::from_raw(u32::MAX);
+        for wanted in WANTED {
+            let info = vk::PhysicalDeviceExternalBufferInfo::default()
+                .usage(vk::BufferUsageFlags::TRANSFER_SRC)
+                .handle_type(wanted);
+            let mut out = vk::ExternalBufferProperties::default();
+            // SAFETY: both structures outlive the call.
+            unsafe {
+                self.instance
+                    .get_physical_device_external_buffer_properties(self.physical, &info, &mut out);
+            }
+            if !out
+                .external_memory_properties
+                .external_memory_features
+                .contains(vk::ExternalMemoryFeatureFlags::EXPORTABLE)
+            {
+                continue;
+            }
+            offered |= wanted;
+            compatible &= out.external_memory_properties.compatible_handle_types;
+        }
+        offered & compatible
+    }
+
+    fn plane_image(
+        &self,
+        width: u32,
+        height: u32,
+        format: vk::Format,
+        handle_types: vk::ExternalMemoryHandleTypeFlags,
+    ) -> Result<vk::Image, Error> {
+        let mut external = vk::ExternalMemoryImageCreateInfo::default().handle_types(handle_types);
         let create = vk::ImageCreateInfo::default()
             .image_type(vk::ImageType::TYPE_2D)
             .format(format)
@@ -685,8 +810,16 @@ impl Device {
             .tiling(vk::ImageTiling::LINEAR)
             .usage(vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC)
             .sharing_mode(vk::SharingMode::EXCLUSIVE)
-            .initial_layout(vk::ImageLayout::UNDEFINED)
-            .push_next(&mut external);
+            .initial_layout(vk::ImageLayout::UNDEFINED);
+        // **Declared only where there is something to declare.** An empty
+        // chain here is not the same as an absent one: it names a set of
+        // foreign kinds this image may be backed by, and naming none of them
+        // is a different image from one that was never asked.
+        let create = if handle_types.is_empty() {
+            create
+        } else {
+            create.push_next(&mut external)
+        };
         // SAFETY: every borrowed structure outlives the call.
         unsafe { self.device.create_image(&create, None) }.map_err(driver)
     }
@@ -737,11 +870,20 @@ impl Device {
         let index =
             self.device_local_memory(luma_needs.memory_type_bits & chroma_needs.memory_type_bits)?;
 
-        let mut exportable = vk::ExportMemoryAllocateInfo::default().handle_types(SHAREABLE);
+        // **What the allocation may become, not what its images may be backed
+        // by.** The two are asked separately because the drivers here answer
+        // them differently, and using one answer for both either declares a
+        // kind the image cannot carry or refuses an export that works.
+        let exports = self.exportable_memory();
+        let mut exportable = vk::ExportMemoryAllocateInfo::default().handle_types(exports);
         let allocate = vk::MemoryAllocateInfo::default()
             .allocation_size(colour_at + chroma_needs.size)
-            .memory_type_index(index)
-            .push_next(&mut exportable);
+            .memory_type_index(index);
+        let allocate = if exports.is_empty() {
+            allocate
+        } else {
+            allocate.push_next(&mut exportable)
+        };
         // SAFETY: the chain outlives the call.
         let memory = unsafe { self.device.allocate_memory(&allocate, None) }.map_err(driver)?;
 
@@ -849,14 +991,23 @@ impl Device {
         nv12: &Nv12,
         display_interface: bool,
     ) -> Result<(OwnedFd, Exported), Error> {
+        let wanted = if display_interface {
+            vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT
+        } else {
+            vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD
+        };
+        // **Refused here rather than at the far end.** The allocation declared
+        // what it may become; asking for anything else is asking for a
+        // descriptor that was never made, and what comes back from a driver
+        // that does not refuse it is one an encoder cannot import for a reason
+        // naming neither side.
+        if !self.exportable_memory().contains(wanted) {
+            return Err(Error::NoExport);
+        }
         let external = ash::khr::external_memory_fd::Device::new(&self.instance, &self.device);
         let info = vk::MemoryGetFdInfoKHR::default()
             .memory(nv12.memory)
-            .handle_type(if display_interface {
-                vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT
-            } else {
-                vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD
-            });
+            .handle_type(wanted);
         // SAFETY: the info outlives the call and the memory is this device's.
         let fd = unsafe { external.get_memory_fd(&info) }.map_err(driver)?;
         // SAFETY: the driver returned a fresh owned descriptor.

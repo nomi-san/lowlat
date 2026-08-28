@@ -40,6 +40,15 @@ pub enum Error {
     UnknownFormat,
     /// No memory type satisfies both the image and the imported descriptor.
     NoMemoryType,
+    /// The device will export a picture in neither of the two ways a frame is
+    /// handed on.
+    ///
+    /// **Asked rather than assumed.** Which handle kinds a device exports, and
+    /// whether it exports a pair from one allocation, is a property of the
+    /// exact image being made and has to be queried; a device that offers
+    /// neither cannot hand a picture to any encoder here, so it is refused
+    /// while there is still nothing waiting on it.
+    NoExport,
     /// The committed shader is not a whole number of words, or the driver
     /// built nothing from it. Either way the file beside the source is wrong.
     BadShader,
@@ -66,6 +75,7 @@ impl core::fmt::Display for Error {
             Self::NoQueue => f.write_str("the display's device exposes no usable queue"),
             Self::UnknownFormat => f.write_str("captured pixel layout has no equivalent here"),
             Self::NoMemoryType => f.write_str("no memory type suits both image and descriptor"),
+            Self::NoExport => f.write_str("the device exports a picture in neither way"),
             Self::BadShader => f.write_str("the committed conversion shader is unusable"),
             Self::PlanesDisagree => {
                 f.write_str("the frame's planes cannot be laid out for an encoder")
