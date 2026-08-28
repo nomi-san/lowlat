@@ -15,7 +15,6 @@
 //! carries only control and video costs two rings rather than nineteen.
 
 use crate::channel::{Drops, RecvRing, Stored};
-use crate::congestion::Controller;
 use crate::envelope::{ENVELOPE_LEN, Envelope};
 use crate::error::{Error, Result};
 use crate::message::Message;
@@ -92,7 +91,6 @@ pub struct Session<'a> {
     envelope: Envelope,
     recv: [Option<RecvRing<'a>>; CHANNEL_COUNT],
     send: [Option<SendRing<'a>>; CHANNEL_COUNT],
-    controller: Controller,
     level: usize,
 
     /// Monotonic per sender. Never reused: a wrap would repeat a nonce.
@@ -134,7 +132,6 @@ impl<'a> Session<'a> {
             envelope,
             recv: core::array::from_fn(|_| None),
             send: core::array::from_fn(|_| None),
-            controller: Controller::new(level, 1.0, 500.0),
             level,
             tx_counter: 0,
             srtt_ms: 0.0,
@@ -176,11 +173,6 @@ impl<'a> Session<'a> {
     /// Smoothed round trip, in fractional milliseconds.
     pub fn srtt_ms(&self) -> f64 {
         self.srtt_ms
-    }
-
-    /// Encoder rate the controller currently wants.
-    pub fn rate_mbps(&self) -> f64 {
-        self.controller.rate_mbps()
     }
 
     /// Liveness, judged against the last forward progress in each direction.
@@ -428,7 +420,6 @@ impl<'a> Session<'a> {
             self.ack_due = true;
             self.ack_kind = AckKind::Keepalive;
         }
-        let (window, stale) = self.pressure();
         // **An empty channel is progress, not a stall.** A channel with
         // nothing outstanding can produce no acknowledgement, and a deadline
         // that did not say so would end every session that stopped sending.
@@ -442,18 +433,6 @@ impl<'a> Session<'a> {
                 entry.since_ms = now_ms;
             }
         }
-        self.controller.tick(window, stale, 0.0);
-    }
-
-    /// Combined window and stale counts across channels, for the controller.
-    fn pressure(&self) -> (u32, u32) {
-        let mut window = 0u32;
-        let mut stale = 0u32;
-        for ring in self.send.iter().flatten() {
-            window = window.saturating_add(ring.in_flight());
-            stale = stale.saturating_add(ring.stale());
-        }
-        (window, stale)
     }
 
     /// Milliseconds until the session next needs attention.
@@ -662,6 +641,19 @@ mod tests {
         let mut wire = [0u8; 512];
         while let Some(result) = from.get_output(now, &mut wire) {
             result.unwrap();
+        }
+    }
+
+    impl Session<'_> {
+        /// Test helper: combined window and stale counts across channels.
+        fn pressure(&self) -> (u32, u32) {
+            let mut window = 0u32;
+            let mut stale = 0u32;
+            for ring in self.send.iter().flatten() {
+                window = window.saturating_add(ring.in_flight());
+                stale = stale.saturating_add(ring.stale());
+            }
+            (window, stale)
         }
     }
 
