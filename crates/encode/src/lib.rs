@@ -37,6 +37,45 @@ pub mod vulkan;
 /// setting a boundary exposes.
 pub const DEFAULT_MIN_QP: u32 = 5;
 
+/// Where a host sits between delay and picture.
+///
+/// **One setting, because almost none of an encoder's knobs are a person's
+/// business.** What a person wants to say is whether they would rather wait
+/// less or look at more; the levers underneath are this crate's problem. See
+/// [05 §4.1](../../../docs/05-host.md).
+///
+/// **Zero is the low-latency end, deliberately.** A zeroed configuration has
+/// to mean the sensible default, and for a product whose first goal is delay
+/// the sensible default is the floor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Quality {
+    #[default]
+    LowestLatency,
+    Balanced,
+    Highest,
+}
+
+impl Quality {
+    /// The quantiser this setting may not go below, or zero for no floor.
+    #[must_use]
+    pub const fn min_qp(self) -> u32 {
+        match self {
+            Self::LowestLatency => DEFAULT_MIN_QP,
+            Self::Balanced | Self::Highest => 0,
+        }
+    }
+
+    /// Whether to spend the most search a device offers rather than the least.
+    ///
+    /// **Only the top setting asks for thorough**, and it is the one that
+    /// costs: measured at 1080p on a part offering seven levels, the fastest
+    /// codes in 1.5 ms and the most thorough in 3.3.
+    #[must_use]
+    pub const fn thorough(self) -> bool {
+        matches!(self, Self::Highest)
+    }
+}
+
 /// What a collect found.
 ///
 /// Shared by every backend, because the caller downstream of an encoder is the
@@ -100,6 +139,19 @@ pub trait Encoder {
     /// those would put a visible stutter in the stream every time the network
     /// hiccuped.
     fn reconfigure(&mut self, bitrate_bps: u32) -> Result<(), Self::Error>;
+
+    /// Move where this encoder sits between delay and picture.
+    ///
+    /// **Same rule as the bitrate: nothing is rebuilt and no picture loses its
+    /// history.** What the setting names is per-picture state on every backend
+    /// here, so a change costs the next picture and nothing before it.
+    ///
+    /// **No answer comes back.** A backend applies what it can express and a
+    /// device honours what it chooses to; nothing in any of these interfaces
+    /// reports which, and one driver measured takes the quantiser floor on one
+    /// codec and ignores it on the other. A caller that needs to know has to
+    /// measure coded bytes, not ask.
+    fn set_quality_setting(&mut self, quality: Quality);
 }
 
 #[cfg(test)]

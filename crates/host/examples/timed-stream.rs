@@ -51,6 +51,7 @@ fn main() {
         fps: 60,
         cg_level: 1,
         full_fps: false,
+        quality: lowlat::stream::Quality::default(),
         codec: match std::env::var("LOWLAT_CODEC").as_deref() {
             Ok("h265" | "hevc") => Codec::H265,
             _ => Codec::H264,

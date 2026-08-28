@@ -1041,6 +1041,21 @@ impl Encoder<'_> {
     /// the rate many times a minute; a keyframe or a reinitialisation at that
     /// cadence would be visible as a stutter every time the network hiccuped,
     /// which is the failure this actuator exists to avoid rather than cause.
+    /// Put a quality setting into the levers this backend has.
+    ///
+    /// **The floor only, and it takes effect on the next reconfigure**, which
+    /// the rate loop performs every pass. The effort half is the preset and
+    /// tuning this encoder was built with, and changing those means building
+    /// the session again -- which is not what a live setting may cost.
+    pub fn set_quality_setting(&mut self, quality: crate::Quality) {
+        self.encode_config.rcParams.minQP.qpIntra = quality.min_qp();
+        self.encode_config.rcParams.minQP.qpInterP = quality.min_qp();
+        self.encode_config.rcParams.minQP.qpInterB = quality.min_qp();
+        self.encode_config
+            .rcParams
+            .set_enableMinQP(u32::from(quality.min_qp() != 0));
+    }
+
     pub fn reconfigure(&mut self, bitrate_bps: u32) -> Result<(), Error> {
         use crate::ffi::nvenc as f;
 
@@ -1456,6 +1471,10 @@ impl Encoder<'_> {
 }
 
 impl EncoderTrait for Encoder<'_> {
+    fn set_quality_setting(&mut self, quality: crate::Quality) {
+        Encoder::set_quality_setting(self, quality);
+    }
+
     type Error = Error;
 
     fn submit(

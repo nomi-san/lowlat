@@ -959,6 +959,10 @@ impl TimingCells {
     }
 }
 
+/// Where a host sits between delay and picture, named here so a consumer
+/// does not have to depend on the encode crate to say it.
+pub use lowlat_encode::Quality;
+
 /// Which bitstream the stream produces.
 ///
 /// **One encode serves every guest**, so this is a property of the stream
@@ -1089,6 +1093,8 @@ pub struct Config {
     /// well as there: without it the cell is built from a default and whatever
     /// a caller set when the host started is silently dropped.
     pub full_fps: bool,
+    /// Where this host starts between delay and picture. Live thereafter.
+    pub quality: lowlat_encode::Quality,
     /// Which congestion control level every guest's controller runs at.
     ///
     /// **Level 0 is the most aggressive, not "off"** ([`lowlat_core::congestion`]),
@@ -1120,6 +1126,8 @@ pub struct LiveVideo {
     /// being wrong. Defaulting it on would promise to spend that bitrate
     /// forever, which is not what anybody wants asked for on their behalf.
     pub full_fps: bool,
+    /// Where this host sits between delay and picture.
+    pub quality: lowlat_encode::Quality,
 }
 
 impl Default for LiveVideo {
@@ -1129,6 +1137,7 @@ impl Default for LiveVideo {
             bitrate_mbps: 10.0,
             min_mbps: 1.0,
             full_fps: false,
+            quality: lowlat_encode::Quality::default(),
         }
     }
 }
@@ -1192,6 +1201,7 @@ impl Stream {
                 bitrate_mbps: config.configured_mbps,
                 min_mbps: config.min_mbps,
                 full_fps: config.full_fps,
+                quality: config.quality,
             }),
             epoch: AtomicU32::new(0),
         });
@@ -2190,6 +2200,16 @@ fn run_vulkan(
             return Some(Exit::Failed(status::ENCODER_UNAVAILABLE));
         }
     };
+    encoder.set_quality_setting(config.quality);
+    // **The floor only on this backend**, because the effort level is fixed
+    // when the session is created and moving it is not what a live setting may
+    // cost. What is asked for is logged; nothing here reports what was done
+    // with it.
+    lowlat_common::log_info!(
+        "stream: quality={:?}, quantiser floor {}, no effort lever on this backend",
+        config.quality,
+        encoder.min_qp()
+    );
     let mut targets = Vec::with_capacity(VULKAN_SLOTS);
     for slot in 0..VULKAN_SLOTS {
         let (Some(planes), Some(image)) = (encoder.planes(slot), encoder.source(slot)) else {
@@ -2352,6 +2372,18 @@ fn run_open(
         lowlat_common::log_error!("stream: encoder could not be configured");
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
+    encoder.set_quality_setting(config.quality);
+    // **What was asked for, not what the device did.** Nothing in this
+    // interface reports whether a driver honoured either lever, and one
+    // measured here takes the quantiser floor on one codec and ignores it on
+    // the other, so this is a record of the request.
+    lowlat_common::log_info!(
+        "stream: quality={:?}, quantiser floor {}, effort {} of {}",
+        config.quality,
+        encoder.min_qp(),
+        encoder.quality(),
+        caps.quality_range
+    );
     let mut desktop = if config.display {
         match crate::display::Display::open(
             ENCODE_DEPTH,
@@ -2468,12 +2500,17 @@ fn run_vendor(
             height,
             fps: config.fps,
             bitrate_bps: start_bps(&config),
-            min_qp: lowlat_encode::DEFAULT_MIN_QP,
+            min_qp: config.quality.min_qp(),
         },
     ) else {
         lowlat_common::log_error!("stream: encoder could not be configured");
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
+    lowlat_common::log_info!(
+        "stream: quality={:?}, quantiser floor {}",
+        config.quality,
+        config.quality.min_qp()
+    );
     let mut desktop = if config.display {
         match crate::display::Display::open(
             lowlat_encode::nvenc::IN_FLIGHT,
@@ -3307,12 +3344,19 @@ fn encode_loop<E: Encoder + FromDevice>(
             if take_live_video(shared, &mut video_seen, &mut live) {
                 interval_ms = 1000.0 / f64::from(live.fps.max(1));
                 budget.reconfigure(live.bitrate_mbps, live.min_mbps, controllers);
+                // **The quality setting reaches the encoder here**, the way
+                // the bitrate does: it moves what a picture may spend, which
+                // is per-picture state on every backend, so nothing is rebuilt
+                // and no picture loses the history behind it.
+                encoder.set_quality_setting(live.quality);
                 lowlat_common::log_info!(
-                    "stream: live video change, fps={} bitrate={:.1} floor={:.1} full_fps={}",
+                    "stream: live video change, fps={} bitrate={:.1} floor={:.1} full_fps={} \
+                     quality={:?}",
                     live.fps,
                     live.bitrate_mbps,
                     live.min_mbps,
-                    u8::from(live.full_fps)
+                    u8::from(live.full_fps),
+                    live.quality
                 );
             }
 
@@ -4151,6 +4195,7 @@ mod tests {
             fps: 60,
             cg_level: 1,
             full_fps: false,
+            quality: lowlat_encode::Quality::default(),
             codec: Codec::H264,
             backend: Some(Backend::Open),
             configured_mbps: 10.0,
@@ -4171,6 +4216,7 @@ mod tests {
             bitrate_mbps: 4.0,
             min_mbps: 2.0,
             full_fps: false,
+            quality: lowlat_encode::Quality::default(),
         };
         stream.set_video(wanted);
         assert!(
@@ -4223,6 +4269,10 @@ mod tests {
 
     impl Encoder for Fake {
         type Error = Never;
+
+        /// A double codes nothing, so there is no picture for a quantiser
+        /// floor to bound.
+        fn set_quality_setting(&mut self, _quality: lowlat_encode::Quality) {}
 
         fn submit(
             &mut self,
@@ -4294,6 +4344,7 @@ mod tests {
                 rotation: lowlat_core::video::Rotation::None,
                 detail_rows: 0,
                 full_fps: false,
+                quality: lowlat_encode::Quality::default(),
                 cg_level: 1,
             };
             let shared = Arc::new(Shared {
@@ -4422,6 +4473,7 @@ mod tests {
             rotation: lowlat_core::video::Rotation::None,
             detail_rows: 0,
             full_fps: false,
+            quality: lowlat_encode::Quality::default(),
             cg_level: 1,
         }
     }
@@ -5953,6 +6005,7 @@ mod tests {
             fps: 60,
             cg_level: 1,
             full_fps: false,
+            quality: lowlat_encode::Quality::default(),
             codec: Codec::H264,
             backend: Some(Backend::Open),
             configured_mbps: 10.0,
@@ -6048,6 +6101,7 @@ mod tests {
             fps: 60,
             cg_level: 1,
             full_fps,
+            quality: lowlat_encode::Quality::default(),
             codec,
             backend: Some(Backend::Open),
             configured_mbps: 10.0,
@@ -6219,6 +6273,7 @@ mod tests {
             rotation: lowlat_core::video::Rotation::None,
             detail_rows: 0,
             full_fps: false,
+            quality: lowlat_encode::Quality::default(),
             cg_level: 1,
         })
     }
@@ -6246,6 +6301,7 @@ mod tests {
             rotation: lowlat_core::video::Rotation::None,
             detail_rows: 0,
             full_fps: false,
+            quality: lowlat_encode::Quality::default(),
             cg_level: 1,
         });
         let wake = lowlat_net::Wake::new().expect("wake");

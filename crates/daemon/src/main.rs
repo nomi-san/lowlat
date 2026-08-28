@@ -390,6 +390,17 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // window passes its floor; it is compatibility-only and the guest loop was
     // pinned to it.
     // 1 is the default the core names; see its LEVELS table.
+    // **Named rather than numbered.** The values are a person's words for a
+    // trade, and a number here would be a code somebody has to look up.
+    let quality = match flag("--quality").as_deref() {
+        None | Some("latency" | "lowest-latency") => lowlat::stream::Quality::LowestLatency,
+        Some("balanced") => lowlat::stream::Quality::Balanced,
+        Some("quality" | "highest") => lowlat::stream::Quality::Highest,
+        Some(other) => {
+            eprintln!("lowlatd: --quality {other} is not one of latency, balanced, quality");
+            std::process::exit(2);
+        }
+    };
     let cg_level = flag("--cg-level")
         .and_then(|text| text.parse().ok())
         .filter(|level| *level < 3)
@@ -442,6 +453,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             backend,
             cg_level,
             full_fps: flag_set("--full-fps"),
+            quality,
             width,
             height,
             fps,

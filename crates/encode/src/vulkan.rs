@@ -1528,6 +1528,16 @@ impl Device {
 }
 
 impl Encoder<'_> {
+    /// Put a quality setting into the levers this backend has.
+    ///
+    /// **Only the floor here.** The session is created with one quality level
+    /// and changing it means recording a control command this path does not
+    /// send, so the effort half of the setting has no expression on this
+    /// backend and is not pretended to.
+    pub fn set_quality_setting(&mut self, quality: crate::Quality) {
+        self.min_qp = quality.min_qp();
+    }
+
     /// The quantiser floor in force.
     #[must_use]
     pub fn min_qp(&self) -> u32 {
@@ -2297,6 +2307,10 @@ impl Encoder<'_> {
 }
 
 impl crate::Encoder for Encoder<'_> {
+    fn set_quality_setting(&mut self, quality: crate::Quality) {
+        Encoder::set_quality_setting(self, quality);
+    }
+
     type Error = Error;
 
     /// The generator's path, which this backend does not carry: its pictures

@@ -2386,6 +2386,26 @@ impl Encoder<'_> {
         self.quality
     }
 
+    /// Put a quality setting into the two levers it names.
+    ///
+    /// **The effort half is clamped to what the device advertised**, and a
+    /// device that advertised nothing is left alone: a level it never offered
+    /// is a configuration it did not agree to. Nothing here reports back
+    /// whether the device acted on either -- one driver measured takes the
+    /// floor on one codec and ignores it on the other, and there is no
+    /// capability that says which, so a host logs what it asked for.
+    pub fn set_quality_setting(&mut self, quality: crate::Quality) {
+        self.min_qp = quality.min_qp();
+        let range = self.context.caps.quality_range;
+        self.quality = if range <= 1 {
+            0
+        } else if quality.thorough() {
+            1
+        } else {
+            range
+        };
+    }
+
     /// The quantiser floor in force.
     #[must_use]
     pub fn min_qp(&self) -> u32 {
@@ -2408,6 +2428,10 @@ impl Encoder<'_> {
 }
 
 impl EncoderTrait for Encoder<'_> {
+    fn set_quality_setting(&mut self, quality: crate::Quality) {
+        Encoder::set_quality_setting(self, quality);
+    }
+
     type Error = Error;
 
     fn submit(&mut self, frame: &lowlat_capture::Frame<'_>, force_keyframe: bool) -> Result<()> {

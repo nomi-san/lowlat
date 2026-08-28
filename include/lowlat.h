@@ -340,6 +340,34 @@ typedef uint32_t lowlat_log_level;
 #endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
 
+// Where a host sits between delay and picture.
+//
+// **The only encoder tuning this boundary exposes.** An encoder has a dozen
+// knobs and almost none of them are an application's business; what an
+// application wants to say is whether its guests would rather wait less or
+// look at more. See [05 §4.1](../../../docs/05-host.md) for the levers this
+// moves and [06 §quality](../../../docs/06-api.md).
+//
+// **Zero is the low-latency end, and that is deliberate**: a zeroed structure
+// has to mean the sensible default, and for a product whose first goal is
+// delay the sensible default is a bounded frame.
+enum lowlat_quality
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+    LOWLAT_QUALITY_LOWEST_LATENCY = 0,
+    LOWLAT_QUALITY_BALANCED = 1,
+    LOWLAT_QUALITY_HIGHEST = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum lowlat_quality lowlat_quality;
+#else
+typedef uint32_t lowlat_quality;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
 // One host session, as the application holds it.
 //
 // Opaque: the application holds a pointer it cannot look inside, so what is
@@ -398,6 +426,15 @@ typedef struct lowlat_host_video_config {
     // means whichever this host would pick on its own**, which is the output
     // at the desktop's corner and then whatever is lit.
     char output[LOWLAT_OUTPUT_MAX];
+    // One of [`lowlat_quality`], and appended so an application built against
+    // an older header keeps working: `size` says whether it is there.
+    //
+    // **What a host reports back is what it asked for, not what a device
+    // did.** No interface here says whether a driver honoured a quantiser
+    // floor or an effort level, and one measured takes the floor on one codec
+    // and ignores it on the other, so a host logs its request once per stream
+    // and does not claim more than that.
+    uint32_t quality;
 } lowlat_host_video_config;
 
 // How sound is configured.
