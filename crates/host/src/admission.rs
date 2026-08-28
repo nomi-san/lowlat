@@ -2350,6 +2350,16 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                     .session()
                     .recv_cumulative(CONTROL_CHANNEL)
                     .unwrap_or(0);
+                // **What the ring refused, which delivery cannot show.**
+                // Duplicates are a peer retransmitting what was already
+                // taken; out-of-window and oversized stores are a peer past
+                // this ring's bounds, and both read as plain loss from the
+                // far side.
+                let rx_drops = shell
+                    .endpoint()
+                    .session()
+                    .recv_drops(CONTROL_CHANNEL)
+                    .unwrap_or_default();
                 let input_tally = input
                     .as_ref()
                     .map(|i| i.injector.tally())
@@ -2390,9 +2400,12 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 args.telemetry
                     .progressed(now, u32::try_from(sent).unwrap_or(u32::MAX));
                 lowlat_common::log_info!(
-                    "guest: attempt={} frames={sent} window={window} stale={stale} mbps={measured:.2} encode_ms={:.2} rx_frag={rx} rx_msg={inbound_messages} dg_in={} dg_out={} rej={} srtt={:.1} keys={} btn={} wheel={} motion={} pad={} snd={} snd_drop={} snd_mbps={sound_mbps:.3} mic={} mic_refused={} mic_panicked={}",
+                    "guest: attempt={} frames={sent} window={window} stale={stale} mbps={measured:.2} encode_ms={:.2} rx_frag={rx} rx_msg={inbound_messages} rx_dup={} rx_oow={} rx_big={} dg_in={} dg_out={} rej={} srtt={:.1} keys={} btn={} wheel={} motion={} pad={} snd={} snd_drop={} snd_mbps={sound_mbps:.3} mic={} mic_refused={} mic_panicked={}",
                     args.attempt_id,
                     seat.encode_latency_ms(),
+                    rx_drops.duplicate,
+                    rx_drops.out_of_window,
+                    rx_drops.too_large,
                     datagrams.datagrams_in,
                     datagrams.datagrams_out,
                     datagrams.rejected,
