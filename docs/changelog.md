@@ -3,6 +3,17 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## The legacy cipher path
+
+**An offer without a media key takes the 128-bit mode, keyed from the host's
+fingerprint.** The field does not exist for that peer generation, so its
+absence is the selection -- exactly what the attempt info always documented
+and the implementation never honored: every session was keyed 256-bit
+regardless, so a peer of that generation could never establish. The material
+decoder now takes the cipher's key length (the nonce prefix follows the key,
+so its offset moves with it), the guest session is built with the attempt's
+own cipher, and a legacy answer carries no media key at all.
+
 ## Three small guards
 
 - **The counter stops at the sequence space.** The envelope's counter field is

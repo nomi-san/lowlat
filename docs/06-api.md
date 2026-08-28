@@ -294,6 +294,13 @@ connecting until its own deadline expires.
 `lowlat_host_begin_p2p` writes host credentials into `out` for the application to send as its
 answer. It does not send anything, because the SDK has no transport.
 
+**The offer's media key selects the cipher, by presence alone.** An offer registered with an
+empty `aes256` comes from a peer generation that has no such field: the session keys from the
+answer's fingerprint under the legacy 128-bit mode, and `out->aes256` comes back empty -- the
+application relays no media key, because the peer has no field to read one from. An offer that
+carried one takes the 256-bit mode, keyed from the answer's media key as usual. The peer's own
+material is never the key either way; presence is the whole of what it says.
+
 **The port is an in and an out pair, and they are different questions.** `port` is where the
 bind *starts*; `out->port` is where it *landed*. The bind walks when a port is taken and takes
 any port once the walk is exhausted, so the two differ whenever the range is busy -- and
