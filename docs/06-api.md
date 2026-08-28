@@ -225,10 +225,13 @@ it quantises. At a fixed rate more effort spends fewer bits on the same picture;
 longer, and on one device measured here the span between the extremes is 1.5 ms against 3.3 at
 1080p. That is why the highest setting carries a warning rather than being the default.
 
-**What a device does not implement, it does not pretend to.** One encoder here advertises
-thirty-two effort levels and its timings track none of them; another has no second pass at all.
-The three values are points on a trade, honoured as far as each device allows, and a host is told
-what it got rather than what it asked for.
+**What a host reports back is what it asked for.** No interface here says whether a driver acted
+on a quantiser floor or an effort level, and the drivers differ: one encoder advertises thirty-two
+effort levels and its timings track none of them, another takes the floor on one codec and ignores
+it on the other, and a third has no second pass at all. So the three values are points on a trade
+honoured as far as each device allows, a host logs the request and the levers it derived once per
+stream, and an application that needs to know what a device really did has to measure coded bytes
+rather than ask.
 
 Everything in `lowlat_host_config` outside that structure is settled at `lowlat_host_start`:
 

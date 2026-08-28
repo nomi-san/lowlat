@@ -242,8 +242,11 @@ its range is slower than sending nothing at all. Asking for the top serves both 
 knowledge of which device is which, and a device advertising no range is sent nothing, because a
 level it never offered is a configuration it did not agree to.
 
-**What a device does not implement, a host does not pretend it did.** The three values are points
-on a trade honoured as far as each device allows, and what a host reports is what it got.
+**What a device does not implement, a host does not pretend it did -- and it cannot tell.** No
+interface here reports whether a driver acted on either lever, and the drivers differ: one takes
+the quantiser floor on H.264 and ignores it on H.265, on the same part. So a host logs the setting
+and the two levers it derived, once per stream, and reports that setting back unchanged. Finding
+out what a device really did means measuring coded bytes.
 
 ## §5 Congestion and the frame gate
 

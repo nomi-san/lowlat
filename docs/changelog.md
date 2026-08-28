@@ -3,6 +3,34 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## One quality setting on the boundary
+
+**`lowlat_quality` in the live half of the video configuration**, three values,
+beside the bitrate. An encoder has a dozen knobs and almost none are an
+application's business; what an application wants to say is whether its guests
+would rather wait less or look at more.
+
+- **Zero is the low-latency end**, so a zeroed structure gets the sensible
+  default rather than the middle of a range.
+- **An unrecognised value is refused, not rounded.** Serving the nearest
+  setting is how an application comes to believe it got what it asked for.
+- **Two levers underneath, both already present**: the quantiser floor, which
+  bounds how many bits a picture may spend and so its time on the wire, and the
+  effort level, which is how far the encoder searches. Backends express what
+  they can -- two of the three fix their effort when the session is created and
+  take the floor alone.
+- **Live like the bitrate.** It reaches a running encoder through the pass that
+  already takes a rate change, so nothing is rebuilt and no picture loses the
+  history behind it.
+- **What a host reports back is what it asked for.** Nothing in any of these
+  interfaces says whether a driver acted on either lever, and they differ: one
+  takes the floor on H.264 and ignores it on H.265, on the same part. A host
+  logs the setting and the derived levers once per stream; measuring coded
+  bytes is the only way to learn what a device really did.
+
+The daemon takes `--quality latency|balanced|quality`, named rather than
+numbered, because a number there is a code somebody has to look up.
+
 ## The encoder was never told how hard to search
 
 **Every picture carried a rate and a frame rate and nothing about effort**, so
