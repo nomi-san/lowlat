@@ -14,13 +14,14 @@
 //! Storage for the per-channel rings is lent by the caller, so a session that
 //! carries only control and video costs two rings rather than nineteen.
 
-use crate::channel::RecvRing;
+use crate::channel::{Drops, RecvRing, Stored};
 use crate::congestion::Controller;
 use crate::envelope::{ENVELOPE_LEN, Envelope};
 use crate::error::{Error, Result};
 use crate::message::Message;
 use crate::packet::{self, Ack, AckKind, CHANNEL_COUNT, Packet};
 use crate::send::SendRing;
+use crate::seq;
 
 /// Longest gap between group acknowledgements while a session is alive.
 pub const ACK_CADENCE_MS: f64 = 30.0;
@@ -45,7 +46,8 @@ const SRTT_ALPHA: f64 = 0.1;
 /// What a datagram turned out to be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Inbound {
-    /// A fragment was stored on this channel.
+    /// Data arrived on a channel we hold a ring for. The ring may still have
+    /// refused the store; [`Session::recv_drops`] carries the counts.
     Data { channel: u8 },
     /// An acknowledgement, which may have advanced windows.
     Ack,
@@ -108,10 +110,13 @@ pub struct Session<'a> {
     /// cheap traffic and never reports the expensive traffic going nowhere.
     delivery: [Delivery; CHANNEL_COUNT],
     ack_due: bool,
-    /// Why the pending acknowledgement is owed. Data arrival makes it an
+    /// Why the pending acknowledgement is owed. An accepted store makes it an
     /// acknowledgement; the cadence alone makes it a keepalive.
     ack_kind: AckKind,
+    /// The accepted fragment the next acknowledgement names.
     trigger: (u8, u32),
+    /// Whether that fragment revealed a gap on its own channel.
+    trigger_nack: bool,
 
     /// Which channel the output drain is working through.
     drain_channel: usize,
@@ -139,6 +144,7 @@ impl<'a> Session<'a> {
             ack_due: false,
             ack_kind: AckKind::Ack,
             trigger: (0, 0),
+            trigger_nack: false,
             drain_channel: 0,
             drain_started: false,
         }
@@ -227,6 +233,11 @@ impl<'a> Session<'a> {
         Some(self.recv.get(channel as usize)?.as_ref()?.cumulative_ack())
     }
 
+    /// Stores the ring on `channel` refused, counted per kind.
+    pub fn recv_drops(&self, channel: u8) -> Option<Drops> {
+        Some(self.recv.get(channel as usize)?.as_ref()?.drops())
+    }
+
     /// Anchor a receive channel at `sequence`.
     ///
     /// For a session joined mid-stream, or a replay that does not begin at
@@ -298,11 +309,6 @@ impl<'a> Session<'a> {
 
         match packet {
             Packet::Data(data) => {
-                self.trigger = (data.channel, data.seq);
-                // Any data arrival makes an acknowledgement due; the cadence
-                // check in get_output decides when it actually leaves.
-                self.ack_due = true;
-                self.ack_kind = AckKind::Ack;
                 let Some(ring) = self
                     .recv
                     .get_mut(data.channel as usize)
@@ -312,7 +318,28 @@ impl<'a> Session<'a> {
                         channel: data.channel,
                     });
                 };
-                ring.store(data.seq, data.body);
+                // **Only an accepted store is acknowledged, and the
+                // acknowledgement is its own.** The trigger names the fragment
+                // that was stored, and the negative bit is this channel's gap
+                // at that moment: a fragment more than two past the frontier
+                // reveals a loss, anything nearer is reordering. A store the
+                // ring refused names nothing -- the peer clears the slot for a
+                // fragment it is told arrived, so naming one that was not kept
+                // loses it for good.
+                if ring.store(data.seq, data.body) == Stored::Accepted {
+                    let nack = seq::gt(data.seq, ring.cumulative_ack().wrapping_add(2));
+                    // A pending negative acknowledgement is not displaced by a
+                    // later clean arrival: it rides the next acknowledgement
+                    // out, where the peer's fast retransmission waits on it.
+                    let held =
+                        self.ack_due && self.ack_kind == AckKind::Ack && self.trigger_nack && !nack;
+                    if !held {
+                        self.trigger = (data.channel, data.seq);
+                        self.trigger_nack = nack;
+                    }
+                    self.ack_due = true;
+                    self.ack_kind = AckKind::Ack;
+                }
                 Ok(Inbound::Data {
                     channel: data.channel,
                 })
@@ -453,26 +480,23 @@ impl<'a> Session<'a> {
 
     /// Build and seal a group acknowledgement covering every channel.
     ///
-    /// A keepalive carries the same nineteen cumulative counts but no trigger
-    /// and no negative acknowledgement: nothing prompted it, so there is
-    /// nothing to point at, and the flag combination with a trigger is not one
-    /// a peer accepts.
+    /// The trigger and the negative bit were captured at the accepted store
+    /// they belong to. A keepalive carries the same nineteen cumulative counts
+    /// but no trigger and no negative acknowledgement: nothing prompted it, so
+    /// there is nothing to point at, and the flag combination with a trigger
+    /// is not one a peer accepts.
     fn emit_ack(&mut self, out: &mut [u8]) -> Result<usize> {
         let mut cumulative = [0u32; CHANNEL_COUNT];
-        let mut gap = false;
         for (index, slot) in self.recv.iter().enumerate() {
             let Some(ring) = slot.as_ref() else { continue };
             if let Some(entry) = cumulative.get_mut(index) {
                 *entry = ring.cumulative_ack();
             }
-            if ring.has_gap() {
-                gap = true;
-            }
         }
         let keepalive = self.ack_kind == AckKind::Keepalive;
         let ack = Ack {
             kind: self.ack_kind,
-            nack: gap && !keepalive,
+            nack: self.trigger_nack && !keepalive,
             trigger_channel: if keepalive { 0 } else { self.trigger.0 },
             trigger_seq: if keepalive { 0 } else { self.trigger.1 },
             cumulative,
@@ -480,6 +504,9 @@ impl<'a> Session<'a> {
             // all. A peer with fewer reads the prefix it understands.
             reported: CHANNEL_COUNT,
         };
+        // The negative spans one emission: it was captured with the trigger
+        // it belongs to, and the next acknowledgement carries its own.
+        self.trigger_nack = false;
         let body = out.get_mut(ENVELOPE_LEN..).ok_or(Error::BufferTooSmall)?;
         let written = packet::encode_ack(body, &ack)?;
         self.seal(written, out)
@@ -603,6 +630,22 @@ mod tests {
         let mut wire = [0u8; 512];
         while let Some(result) = from.get_output(now, &mut wire) {
             result.unwrap();
+        }
+    }
+
+    /// Drain one endpoint until it emits an acknowledgement, and return it.
+    fn next_ack(session: &mut Session<'_>, now: f64) -> Ack {
+        let mut wire = [0u8; 512];
+        let mut scratch = [0u8; 512];
+        loop {
+            let written = session
+                .get_output(now, &mut wire)
+                .expect("nothing left to emit and no acknowledgement seen")
+                .unwrap();
+            let opened = session.envelope.open(&wire[..written], &mut scratch).unwrap();
+            if let Packet::Ack(ack) = packet::parse(opened.cleartext).unwrap() {
+                return ack;
+            }
         }
     }
 
@@ -912,6 +955,153 @@ mod tests {
         assert!(
             (session.next_timer_ms(1000.0)).abs() < 1e-9,
             "must not go negative"
+        );
+    }
+
+    /// The negative acknowledgement is the accepted store's own: its bit is
+    /// the storing channel's gap at that moment, a reorder of two or less is
+    /// not a gap, and a pending negative is not displaced by a later clean
+    /// arrival on another channel.
+    #[test]
+    fn the_negative_acknowledgement_is_the_accepted_stores_own() {
+        let mut left_arena = Arena::new();
+        let mut right_arena = Arena::new();
+        let mut left = endpoint_pair(&mut left_arena, 0.0, true);
+        let mut right = endpoint_pair(&mut right_arena, 0.0, true);
+
+        // In order: an ordinary acknowledgement naming what arrived.
+        left.send_message(CONTROL, &[], b"a").unwrap();
+        pump(&mut left, &mut right, 1.0);
+        let ack = next_ack(&mut right, 1.0);
+        assert!(!ack.nack);
+        assert_eq!((ack.trigger_channel, ack.trigger_seq), (CONTROL, 0));
+
+        // Sequence 1 is lost; 2 and 3 arrive. A gap of two is reordering and
+        // fires no negative acknowledgement.
+        left.send_message(CONTROL, &[], b"b").unwrap();
+        discard(&mut left, 2.0);
+        left.send_message(CONTROL, &[], b"c").unwrap();
+        left.send_message(CONTROL, &[], b"d").unwrap();
+        pump(&mut left, &mut right, 3.0);
+        let ack = next_ack(&mut right, 3.0);
+        assert!(!ack.nack, "a reorder of two fired a negative acknowledgement");
+        assert_eq!((ack.trigger_channel, ack.trigger_seq), (CONTROL, 3));
+
+        // Sequence 4 is the third past the frontier: that is a loss.
+        left.send_message(CONTROL, &[], b"e").unwrap();
+        pump(&mut left, &mut right, 4.0);
+        // A clean arrival on another channel before the acknowledgement
+        // leaves must not displace the pending negative.
+        left.send_message(VIDEO, &[], b"v").unwrap();
+        pump(&mut left, &mut right, 5.0);
+        let ack = next_ack(&mut right, 5.0);
+        assert!(ack.nack, "the loss was not reported");
+        assert_eq!(
+            (ack.trigger_channel, ack.trigger_seq),
+            (CONTROL, 4),
+            "the negative acknowledgement was displaced"
+        );
+
+        // The negative spans one emission; the next acknowledgement is its
+        // own again.
+        left.send_message(VIDEO, &[], b"w").unwrap();
+        pump(&mut left, &mut right, 6.0);
+        let ack = next_ack(&mut right, 6.0);
+        assert!(!ack.nack);
+        assert_eq!((ack.trigger_channel, ack.trigger_seq), (VIDEO, 1));
+    }
+
+    /// A store the ring refused is never named: the peer clears the slot for
+    /// a fragment it is told arrived, so naming one that was not kept loses
+    /// it for good.
+    #[test]
+    fn a_refused_store_is_never_named_by_the_acknowledgement() {
+        // A sender with a deeper ring than the receiver, which is what a peer
+        // of a later generation looks like.
+        let mut rogue_bodies = std::vec![0u8; SLOT * SLOTS * 2];
+        let mut rogue_meta = std::vec![SendSlot::default(); SLOTS * 2];
+        let mut left = Session::new(Envelope::from_key(&KEY).unwrap(), 1, 0.0);
+        left.attach_send(
+            CONTROL,
+            SendRing::new(&mut rogue_bodies, &mut rogue_meta, SLOT, CONTROL).unwrap(),
+        )
+        .unwrap();
+
+        let mut right_arena = Arena::new();
+        let mut right = endpoint_pair(&mut right_arena, 0.0, true);
+
+        // More single-fragment messages than the receiver's ring holds.
+        for _ in 0..SLOTS + 8 {
+            left.send_message(CONTROL, &[], b"x").unwrap();
+        }
+        pump(&mut left, &mut right, 1.0);
+
+        let drops = right.recv_drops(CONTROL).unwrap();
+        assert_eq!(drops.out_of_window, 8, "the refused stores were not counted");
+
+        let ack = next_ack(&mut right, 1.0);
+        assert_eq!(
+            (ack.trigger_channel, ack.trigger_seq),
+            (CONTROL, SLOTS as u32 - 1),
+            "the acknowledgement named a fragment that was refused"
+        );
+        assert!(!ack.nack);
+    }
+
+    /// A fragment wider than a slot is refused, counted, and acknowledged by
+    /// nothing at all.
+    #[test]
+    fn a_fragment_too_large_for_a_slot_produces_no_acknowledgement() {
+        let mut rogue_bodies = std::vec![0u8; SLOT * 2 * SLOTS];
+        let mut rogue_meta = std::vec![SendSlot::default(); SLOTS];
+        let mut left = Session::new(Envelope::from_key(&KEY).unwrap(), 1, 0.0);
+        left.attach_send(
+            CONTROL,
+            SendRing::new(&mut rogue_bodies, &mut rogue_meta, SLOT * 2, CONTROL).unwrap(),
+        )
+        .unwrap();
+
+        let mut right_arena = Arena::new();
+        let mut right = endpoint_pair(&mut right_arena, 0.0, true);
+
+        // One fragment of a hundred bytes against sixty-four byte slots.
+        left.send_message(CONTROL, &[], &[7u8; 100]).unwrap();
+        pump(&mut left, &mut right, 1.0);
+
+        assert_eq!(right.recv_drops(CONTROL).unwrap().too_large, 1);
+        let mut wire = [0u8; 512];
+        assert!(
+            right.get_output(2.0, &mut wire).is_none(),
+            "a refused store produced an acknowledgement"
+        );
+    }
+
+    /// A retransmission of what is already held is routine, is counted, and
+    /// produces no acknowledgement of its own.
+    #[test]
+    fn a_duplicate_store_produces_no_acknowledgement() {
+        let mut left_arena = Arena::new();
+        let mut right_arena = Arena::new();
+        let mut left = endpoint_pair(&mut left_arena, 0.0, true);
+        let mut right = endpoint_pair(&mut right_arena, 0.0, true);
+
+        left.send_message(CONTROL, &[], b"a").unwrap();
+        let mut wire = [0u8; 512];
+        let mut scratch = [0u8; 512];
+        let written = left.get_output(1.0, &mut wire).unwrap().unwrap();
+        right
+            .process_input(&wire[..written], 1.0, &mut scratch)
+            .unwrap();
+        next_ack(&mut right, 1.0);
+
+        // The same datagram again, as a retransmission delivers it.
+        right
+            .process_input(&wire[..written], 2.0, &mut scratch)
+            .unwrap();
+        assert_eq!(right.recv_drops(CONTROL).unwrap().duplicate, 1);
+        assert!(
+            right.get_output(2.0, &mut wire).is_none(),
+            "a duplicate produced an acknowledgement"
         );
     }
 

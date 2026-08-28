@@ -39,6 +39,21 @@ pub enum Stored {
     TooLarge,
 }
 
+/// Stores the ring refused, counted per kind.
+///
+/// Delivery cannot show any of this: retransmissions of what was already
+/// taken, a sender running past the window, fragments wider than a slot all
+/// vanish silently without a count.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Drops {
+    /// Below the reader, or a slot already holding the same fragment.
+    pub duplicate: u64,
+    /// Further ahead than the ring can hold.
+    pub out_of_window: u64,
+    /// Larger than a slot.
+    pub too_large: u64,
+}
+
 /// Per-slot bookkeeping, kept out of the body storage so bodies stay a flat
 /// byte arena.
 #[derive(Debug, Clone, Copy, Default)]
@@ -59,6 +74,7 @@ pub struct RecvRing<'a> {
     cumulative: u32,
     /// One past the highest sequence seen, for gap detection.
     highest: u32,
+    drops: Drops,
 }
 
 impl<'a> RecvRing<'a> {
@@ -79,6 +95,7 @@ impl<'a> RecvRing<'a> {
             delivered: 0,
             cumulative: 0,
             highest: 0,
+            drops: Drops::default(),
         })
     }
 
@@ -102,8 +119,13 @@ impl<'a> RecvRing<'a> {
         self.delivered
     }
 
+    /// Stores this ring refused, counted per kind.
+    pub fn drops(&self) -> Drops {
+        self.drops
+    }
+
     /// True if something arrived past the contiguous frontier, so a fragment is
-    /// missing. This is what justifies setting the negative acknowledgement bit.
+    /// missing.
     pub fn has_gap(&self) -> bool {
         self.cumulative != self.highest
     }
@@ -130,6 +152,19 @@ impl<'a> RecvRing<'a> {
 
     /// Offer a fragment to the ring.
     pub fn store(&mut self, sequence: u32, body: &[u8]) -> Stored {
+        let stored = self.store_inner(sequence, body);
+        match stored {
+            Stored::Accepted => {}
+            Stored::Duplicate => self.drops.duplicate = self.drops.duplicate.saturating_add(1),
+            Stored::OutOfWindow => {
+                self.drops.out_of_window = self.drops.out_of_window.saturating_add(1);
+            }
+            Stored::TooLarge => self.drops.too_large = self.drops.too_large.saturating_add(1),
+        }
+        stored
+    }
+
+    fn store_inner(&mut self, sequence: u32, body: &[u8]) -> Stored {
         if seq::lt(sequence, self.delivered) {
             return Stored::Duplicate;
         }
@@ -459,6 +494,35 @@ mod tests {
         let mut out = [0u8; 32];
         ring.take_message(&mut out).unwrap().unwrap();
         assert_eq!(ring.store(SLOTS as u32, &parts[0]), Stored::Accepted);
+    }
+
+    /// Every refused store is counted, by kind, and accepted ones are not.
+    #[test]
+    fn refused_stores_are_counted_per_kind() {
+        let mut storage = Storage::new();
+        let mut ring = storage.ring();
+        let parts = fragments(b"n", SLOT);
+
+        assert_eq!(ring.store(0, &parts[0]), Stored::Accepted);
+        assert_eq!(ring.drops(), Drops::default());
+
+        ring.store(0, &parts[0]);
+        assert_eq!(ring.drops().duplicate, 1);
+
+        ring.store(SLOTS as u32 + 5, &parts[0]);
+        assert_eq!(ring.drops().out_of_window, 1);
+
+        ring.store(1, &[0u8; SLOT + 1]);
+        assert_eq!(ring.drops().too_large, 1);
+
+        assert_eq!(
+            ring.drops(),
+            Drops {
+                duplicate: 1,
+                out_of_window: 1,
+                too_large: 1,
+            }
+        );
     }
 
     #[test]
