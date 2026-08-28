@@ -3,6 +3,14 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## The vestigial controller
+
+**The session no longer carries a second rate controller.** It ticked at poll
+cadence with a hardcoded zero throughput, summed pressure across every
+channel, and its output was read by nobody -- the live control is the
+per-guest controller fed per frame with the video channel's real samples. A
+duplicate that is wrong on every input is a trap for whoever finds it first.
+
 ## The send window holds to the shallow ring until the peer is known
 
 **The send window may not exceed the peer's ring depth, and that depth is not
