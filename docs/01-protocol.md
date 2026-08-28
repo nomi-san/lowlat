@@ -303,6 +303,11 @@ Two consequences:
   whether it is acknowledged. Against the newest generation the first step simply fails and the
   session stays at the floor for its lifetime, which is the intended outcome. Expect probing to
   buy nothing against a current client and do not read its failure as a defect.
+- **A probe rides a live data fragment, and staying at the floor after a loss requires
+  re-emitting that fragment at the floor once the probe is judged lost.** An implementation
+  whose retransmission re-emits stored bytes verbatim MUST NOT probe: the oversized fragment
+  is retransmitted at the probe size for as long as the channel lives, and the channel wedges
+  at that sequence instead of settling.
 
 **Emission ceiling: 2000 bytes.** No implementation may emit more under any circumstance,
 including after a successful probe -- the current generation's slot capacity is the binding
