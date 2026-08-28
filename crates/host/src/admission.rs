@@ -438,11 +438,12 @@ impl Telemetry {
         f32::from_bits(cell.load(Ordering::Relaxed))
     }
 
-    /// What the loop measured this pass.
+    /// What the loop measured this pass. `mbps` arrives in the control path's
+    /// mebibits and is stored as the decimal megabits the boundary reports.
     pub(crate) fn measured(&self, window: u32, stale: u32, mbps: f64, encode_ms: f64, srtt: f64) {
         self.window.store(window, Ordering::Relaxed);
         self.stale.store(stale, Ordering::Relaxed);
-        Self::store(&self.bitrate_bits, mbps);
+        Self::store(&self.bitrate_bits, crate::rate::to_decimal_mbps(mbps));
         Self::store(&self.encode_bits, encode_ms);
         Self::store(&self.network_bits, srtt);
     }

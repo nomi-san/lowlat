@@ -18,6 +18,37 @@
 
 use lowlat_core::congestion::Controller;
 
+/// Decimal megabits per second, as the boundary speaks them, into the
+/// mebibits per second the control path runs in.
+///
+/// **The control path's unit is the mebibit.** The throughput sample, the
+/// sound cost and the controller's tuning constants all divide by 2^20, so a
+/// configured rate fed in undivided overstates the budget by 4.66 percent,
+/// and an actuator multiplying by 10^6 understates the encoder by the same
+/// on the way out. Decimal megabits exist only at the public boundary; they
+/// convert here on the way in and in [`to_encoder_bps`] or
+/// [`to_decimal_mbps`] on the way out.
+pub fn from_decimal_mbps(mbps: f64) -> f64 {
+    mbps * (1_000_000.0 / 1_048_576.0)
+}
+
+/// A control-path rate, in mebibits per second, as decimal megabits for a
+/// figure that leaves the boundary.
+pub fn to_decimal_mbps(rate_mib: f64) -> f64 {
+    rate_mib * (1_048_576.0 / 1_000_000.0)
+}
+
+/// A controller rate, in mebibits per second, as the bits per second an
+/// encoder is configured with.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a rate the controller has already clamped to its bounds"
+)]
+pub fn to_encoder_bps(rate_mib: f64) -> u32 {
+    (rate_mib * 1_048_576.0) as u32
+}
+
 /// How far the rate must move before the encoder is reconfigured.
 ///
 /// **Without it the encoder is reconfigured every frame.** The controller's
@@ -58,6 +89,9 @@ pub struct Budget {
 }
 
 impl Budget {
+    /// Rates are in mebibits per second, the control path's unit. A boundary
+    /// value in decimal megabits converts through [`from_decimal_mbps`]
+    /// before it reaches here.
     pub fn new(configured_mbps: f64, min_mbps: f64) -> Self {
         Self {
             configured_mbps,
@@ -320,6 +354,25 @@ mod tests {
             (applied - slow).abs() < 1e-9,
             "the applied rate {applied} is not the slowest guest's {slow}"
         );
+    }
+
+    /// One decimal megabit at the boundary is one million bits at the
+    /// encoder: the two conversions are inverses through the control path's
+    /// mebibit unit.
+    #[test]
+    fn the_boundary_megabit_reaches_the_encoder_as_itself() {
+        let internal = from_decimal_mbps(10.0);
+        assert!((internal - 9.536_743_164_062_5).abs() < 1e-12);
+        assert_eq!(to_encoder_bps(internal), 10_000_000);
+        assert!((to_decimal_mbps(internal) - 10.0).abs() < 1e-12);
+    }
+
+    /// A controller decision of N mebibits per second reaches the encoder as
+    /// N x 1,048,576 bits, never N x 10^6.
+    #[test]
+    fn a_controller_mebibit_is_two_to_the_twenty_bits() {
+        assert_eq!(to_encoder_bps(1.0), 1_048_576);
+        assert_eq!(to_encoder_bps(4.0), 4 * 1_048_576);
     }
 
     /// The deadband is what stops a reconfigure per frame.

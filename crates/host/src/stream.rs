@@ -2065,7 +2065,10 @@ fn reconcile_sound(shared: &Arc<Shared>, listeners: usize, config: &Config) {
     reason = "a rate in megabits, only used to pick one of three ceiling steps"
 )]
 fn ceiling_step(budget: &Budget) -> f32 {
-    budget.ceiling() as f32
+    // The gate's steps are defined on the boundary's decimal scale, so the
+    // budget's mebibit ceiling converts back and the documented thresholds
+    // keep their meaning.
+    crate::rate::to_decimal_mbps(budget.ceiling()) as f32
 }
 
 /// Seats with a guest on them, admitted or not.
@@ -2964,7 +2967,12 @@ fn encode_loop<E: Encoder + FromDevice>(
     };
     let mut source =
         Synthetic::with_detail(config.width, config.height, config.detail_rows).with_marker(marker);
-    let mut budget = Budget::new(config.configured_mbps, config.min_mbps);
+    // The configuration speaks decimal megabits; the control path runs in
+    // mebibits. Converted once, here and at the live change below.
+    let mut budget = Budget::new(
+        crate::rate::from_decimal_mbps(config.configured_mbps),
+        crate::rate::from_decimal_mbps(config.min_mbps),
+    );
     let mut stages = Stages::default();
 
     // Compact and parallel: one entry per streaming guest, in no particular
@@ -3344,7 +3352,11 @@ fn encode_loop<E: Encoder + FromDevice>(
             // load a pass.
             if take_live_video(shared, &mut video_seen, &mut live) {
                 interval_ms = 1000.0 / f64::from(live.fps.max(1));
-                budget.reconfigure(live.bitrate_mbps, live.min_mbps, controllers);
+                budget.reconfigure(
+                    crate::rate::from_decimal_mbps(live.bitrate_mbps),
+                    crate::rate::from_decimal_mbps(live.min_mbps),
+                    controllers,
+                );
                 lowlat_common::log_info!(
                     "stream: live video change, fps={} bitrate={:.1} floor={:.1} full_fps={}",
                     live.fps,
@@ -3703,12 +3715,7 @@ fn tick_rate<E: Encoder>(
         }
     }
     if let Some(rate_mbps) = budget.tick(controllers, samples) {
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "a rate the controller has already clamped to its bounds"
-        )]
-        let bps = (rate_mbps * 1_000_000.0) as u32;
+        let bps = crate::rate::to_encoder_bps(rate_mbps);
         // A live change. It reinitialises nothing and forces no refresh, which
         // is what keeps the stream unbroken across a reconfigure.
         let _ = encoder.reconfigure(bps);
