@@ -127,9 +127,13 @@ pub fn transaction_seed() -> Result<[u8; 16], Error> {
 /// ignored. A check written to the length of the key rather than the length of
 /// the field rejects every real credential, because the field is far longer.
 ///
-/// Accepts the legacy path too: a fingerprint is shorter than a media key and
-/// yields the 16-byte key that path uses, which is why the caller passes
-/// whichever the peer supplied rather than deciding by length here.
+/// **This decodes the 256-bit credential only.** It takes a fixed
+/// [`KEY_LEN`] bytes of key followed by [`NONCE_PREFIX_LEN`] of prefix, so it
+/// refuses anything shorter than 72 characters and always reads the prefix from
+/// the same offset. The 128-bit credential is half as long and carries its
+/// prefix at byte 16, so it does not decode here; a caller that needs it wants a
+/// variant taking the cipher, since the prefix follows the key rather than
+/// sitting at a fixed place.
 pub fn key_material(material: &str) -> Result<([u8; KEY_LEN], [u8; NONCE_PREFIX_LEN]), Error> {
     let bytes = material.as_bytes();
     if bytes.len() < CONSUMED * 2 {
