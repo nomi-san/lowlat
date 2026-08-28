@@ -212,17 +212,13 @@ impl<'a> SendRing<'a> {
         Ok(count)
     }
 
-    /// Apply an incoming acknowledgement.
-    ///
-    /// Returns a round-trip sample when the acknowledgement names a fragment we
-    /// are still holding. The sample comes from the fragment's **first** send,
-    /// so a retransmitted fragment does not report an artificially short trip.
-    pub fn on_ack(&mut self, ack: &Ack, now_ms: f64) -> Option<f64> {
+    /// Advance the base from an acknowledgement's cumulative counts, returning
+    /// the base as it stood before.
+    fn apply_cumulative(&mut self, ack: &Ack) -> u32 {
         let previous = self.base;
         // **Only a channel the sender actually reported.** Peers differ in how
         // many they carry, and a value that is not there says nothing about
-        // this channel. The trigger below is in the header and is read either
-        // way.
+        // this channel.
         let cumulative = ack
             .cumulative
             .get(self.channel as usize)
@@ -238,6 +234,25 @@ impl<'a> SendRing<'a> {
                 self.cursor = self.base;
             }
         }
+        previous
+    }
+
+    /// Apply a keepalive: the cumulative counts and nothing else.
+    ///
+    /// A keepalive points at nothing -- its trigger is zeros by construction,
+    /// not a name -- so reading the trigger from one would clear whichever
+    /// fragment sits at sequence zero and report its age as a round trip.
+    pub fn on_keepalive(&mut self, ack: &Ack) {
+        self.apply_cumulative(ack);
+    }
+
+    /// Apply an ordinary acknowledgement.
+    ///
+    /// Returns a round-trip sample when the acknowledgement names a fragment we
+    /// are still holding. The sample comes from the fragment's **first** send,
+    /// so a retransmitted fragment does not report an artificially short trip.
+    pub fn on_ack(&mut self, ack: &Ack, now_ms: f64) -> Option<f64> {
+        let previous = self.apply_cumulative(ack);
 
         if ack.nack && ack.trigger_channel == self.channel {
             self.nack_below = Some(ack.trigger_seq);
@@ -633,6 +648,27 @@ mod tests {
             drain(&mut ring, now, 1.0).is_empty(),
             "a second pass sent more of the same window"
         );
+    }
+
+    /// A keepalive advances the base and touches nothing else: the fragment
+    /// its zeroed trigger happens to name stays held and is retransmitted.
+    #[test]
+    fn a_keepalive_frees_the_window_and_touches_no_slot() {
+        let mut storage = Storage::new();
+        let mut ring = storage.ring();
+        for _ in 0..4 {
+            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+        }
+        drain(&mut ring, 0.0, 10.0);
+
+        let mut keepalive = ack_with(2, false, 0);
+        keepalive.kind = AckKind::Keepalive;
+        ring.on_keepalive(&keepalive);
+        assert_eq!(ring.in_flight(), 2, "the counts were not applied");
+
+        // Sequences 2 and 3 are still due at their timeout; nothing was
+        // cleared by the trigger.
+        assert_eq!(drain(&mut ring, 200.0, 10.0), std::vec![2, 3]);
     }
 
     #[test]

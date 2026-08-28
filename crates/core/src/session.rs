@@ -317,21 +317,28 @@ impl<'a> Session<'a> {
                     channel: data.channel,
                 })
             }
-            Packet::Ack(ack) => {
-                let mut sample = None;
-                for ring in self.send.iter_mut().flatten() {
-                    if let Some(taken) = ring.on_ack(&ack, now_ms) {
-                        sample = Some(taken);
+            Packet::Ack(ack) => match ack.kind {
+                AckKind::Ack => {
+                    let mut sample = None;
+                    for ring in self.send.iter_mut().flatten() {
+                        if let Some(taken) = ring.on_ack(&ack, now_ms) {
+                            sample = Some(taken);
+                        }
                     }
+                    if let Some(sample) = sample {
+                        self.observe_rtt(sample);
+                    }
+                    Ok(Inbound::Ack)
                 }
-                if let Some(sample) = sample {
-                    self.observe_rtt(sample);
+                // A keepalive frees windows and proves liveness; its trigger
+                // is zeros, not a name, and must not reach the trigger path.
+                AckKind::Keepalive => {
+                    for ring in self.send.iter_mut().flatten() {
+                        ring.on_keepalive(&ack);
+                    }
+                    Ok(Inbound::Keepalive)
                 }
-                Ok(match ack.kind {
-                    AckKind::Ack => Inbound::Ack,
-                    AckKind::Keepalive => Inbound::Keepalive,
-                })
-            }
+            },
         }
     }
 
@@ -906,6 +913,72 @@ mod tests {
             (session.next_timer_ms(1000.0)).abs() < 1e-9,
             "must not go negative"
         );
+    }
+
+    /// The regression for a keepalive read as an acknowledgement of channel 0,
+    /// sequence 0. A keepalive points at nothing, and the zeros in its trigger
+    /// are not a name: reading them as one clears the control channel's first
+    /// fragment while it is in flight and reports its age as a round trip, so
+    /// a lost first fragment is never retransmitted and the channel wedges
+    /// until the delivery deadline.
+    #[test]
+    fn a_keepalive_takes_no_trigger_slot_and_no_round_trip_sample() {
+        let mut left_arena = Arena::new();
+        let mut right_arena = Arena::new();
+        let mut left = endpoint_pair(&mut left_arena, 0.0, true);
+        let mut right = endpoint_pair(&mut right_arena, 0.0, true);
+
+        // The first control fragment goes out and is lost.
+        left.send_message(CONTROL, &[], b"x").unwrap();
+        discard(&mut left, 0.0);
+
+        // The peer heard nothing, so its cadence produces a keepalive.
+        right.poll(ACK_CADENCE_MS);
+        assert!(pump(&mut right, &mut left, ACK_CADENCE_MS) >= 1);
+
+        assert!(
+            left.srtt_ms().abs() < 1e-9,
+            "a keepalive produced a round-trip sample of {}",
+            left.srtt_ms()
+        );
+
+        // Well past the retransmission timeout the fragment must go out again.
+        let mut wire = [0u8; 512];
+        let mut scratch = [0u8; 512];
+        let mut resent = false;
+        while let Some(result) = left.get_output(200.0, &mut wire) {
+            let written = result.unwrap();
+            let opened = left.envelope.open(&wire[..written], &mut scratch).unwrap();
+            if let Packet::Data(data) = packet::parse(opened.cleartext).unwrap() {
+                assert_eq!((data.channel, data.seq), (CONTROL, 0));
+                resent = true;
+            }
+        }
+        assert!(resent, "the lost fragment was never retransmitted");
+    }
+
+    /// A keepalive still frees the window: its cumulative counts are as good
+    /// as any acknowledgement's.
+    #[test]
+    fn a_keepalive_still_frees_the_window() {
+        let mut left_arena = Arena::new();
+        let mut right_arena = Arena::new();
+        let mut left = endpoint_pair(&mut left_arena, 0.0, true);
+        let mut right = endpoint_pair(&mut right_arena, 0.0, true);
+
+        left.send_message(CONTROL, &[], b"x").unwrap();
+        pump(&mut left, &mut right, 1.0);
+        let mut body = [0u8; SLOT];
+        right.take_message(CONTROL, &mut body);
+
+        // The ordinary acknowledgement is emitted and lost, so the only word
+        // that reaches the sender is the keepalive the cadence produces next.
+        discard(&mut right, 2.0);
+        right.poll(ACK_CADENCE_MS + 2.0);
+        pump(&mut right, &mut left, ACK_CADENCE_MS + 2.0);
+
+        let (window, _) = left.pressure();
+        assert_eq!(window, 0, "the keepalive did not free the window");
     }
 
     #[test]
