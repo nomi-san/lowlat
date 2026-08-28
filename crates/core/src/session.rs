@@ -642,7 +642,10 @@ mod tests {
                 .get_output(now, &mut wire)
                 .expect("nothing left to emit and no acknowledgement seen")
                 .unwrap();
-            let opened = session.envelope.open(&wire[..written], &mut scratch).unwrap();
+            let opened = session
+                .envelope
+                .open(&wire[..written], &mut scratch)
+                .unwrap();
             if let Packet::Ack(ack) = packet::parse(opened.cleartext).unwrap() {
                 return ack;
             }
@@ -984,7 +987,10 @@ mod tests {
         left.send_message(CONTROL, &[], b"d").unwrap();
         pump(&mut left, &mut right, 3.0);
         let ack = next_ack(&mut right, 3.0);
-        assert!(!ack.nack, "a reorder of two fired a negative acknowledgement");
+        assert!(
+            !ack.nack,
+            "a reorder of two fired a negative acknowledgement"
+        );
         assert_eq!((ack.trigger_channel, ack.trigger_seq), (CONTROL, 3));
 
         // Sequence 4 is the third past the frontier: that is a loss.
@@ -1037,7 +1043,10 @@ mod tests {
         pump(&mut left, &mut right, 1.0);
 
         let drops = right.recv_drops(CONTROL).unwrap();
-        assert_eq!(drops.out_of_window, 8, "the refused stores were not counted");
+        assert_eq!(
+            drops.out_of_window, 8,
+            "the refused stores were not counted"
+        );
 
         let ack = next_ack(&mut right, 1.0);
         assert_eq!(

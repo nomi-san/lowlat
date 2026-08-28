@@ -83,14 +83,17 @@ const CONTROL_SEND_SLOTS: usize = 256;
 /// several hundred fragments is recorded on this protocol.
 const CONTROL_RECV_SLOTS: usize = 1024;
 
-/// The longest inbound control message that will be taken.
+/// The longest inbound control message that will be taken: the user-data
+/// ceiling plus its header, which is the largest message the protocol permits
+/// a peer to send.
 ///
-/// **A message longer than this wedges the channel**, because a take that
-/// does not fit does not consume it and the next pass reads the same one
-/// forever. So the buffer is generous against what a peer actually sends --
-/// declarations, input batches, and small configuration bodies -- and a
-/// message past it ends the attempt rather than stalling it silently.
-const MAX_INBOUND: usize = 64 * 1024;
+/// **A message longer than this ends the attempt**, because a take that does
+/// not fit does not consume the message and the next pass reads the same one
+/// forever. Sized below the ceiling, that turned a legal message into a dead
+/// session; past the ceiling it is a peer this host cannot serve, and ending
+/// beats stalling silently.
+const MAX_INBOUND: usize =
+    lowlat_core::control::USER_DATA_MAX + lowlat_core::control::CONTROL_HEADER_LEN;
 
 /// How often the loop reports what it has gathered, in passes. Cheap, and only
 /// reads state the loop already owns.
@@ -3220,6 +3223,58 @@ mod geometry {
         )
         .expect("drained");
         negotiation
+    }
+
+    /// A control message longer than the old 64 KiB take buffer but inside
+    /// the protocol's ceiling is delivered, not fatal. A take that does not
+    /// fit ends the attempt, so an undersized buffer turned a legal message
+    /// into a dead session.
+    #[test]
+    fn a_user_data_message_past_sixty_four_kib_is_delivered() {
+        let mut ours = Arena::new();
+        let mut ours = ours.session();
+        let mut theirs = Arena::new();
+        let mut theirs = theirs.session();
+
+        let text = vec![b'q'; 100 * 1024];
+        let mut body = text.clone();
+        body.push(0);
+        theirs
+            .send_message(
+                CONTROL_CHANNEL,
+                &[],
+                &control_bytes(&Control {
+                    a0: u32::try_from(body.len()).expect("length"),
+                    a1: 7,
+                    a2: 0,
+                    opcode: op::USER_DATA,
+                    body: &body,
+                }),
+            )
+            .expect("queue");
+        pump(&mut theirs, &mut ours, 1.0);
+
+        let mut negotiation = Negotiation::opened(0.0);
+        let mut inbound = vec![0u8; MAX_INBOUND];
+        let mut heard: Option<(u32, Vec<u8>)> = None;
+        drain_control(
+            &mut ours,
+            &mut negotiation,
+            NO_INPUT,
+            no_pointer(),
+            &mut inbound,
+            Consumers {
+                count: &mut 0,
+                said: &mut |said| heard = Some(said),
+                ear: None,
+                census: &mut [false; 256],
+            },
+        )
+        .expect("a message inside the protocol ceiling ended the attempt");
+
+        let (id, heard) = heard.expect("the message was not handed up");
+        assert_eq!(id, 7);
+        assert_eq!(heard, text);
     }
 
     /// **Both consumers of the control channel get what is theirs.** The
