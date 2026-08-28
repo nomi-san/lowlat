@@ -1,10 +1,12 @@
 //! Per-channel receive ring and message reassembly (docs/01-protocol.md 7).
 //!
 //! The ring is direct-mapped: a sequence number's slot is `seq mod slots`, so
-//! it is a sliding window rather than a queue. **Peer ring depth is 4000 and is
-//! a protocol constant**, not a tuning knob: a sender more than that far ahead
-//! of the receiver's cumulative acknowledgement wraps onto occupied slots and
-//! destroys data that was already delivered.
+//! it is a sliding window rather than a queue, and a sender further ahead of
+//! the receiver's cumulative acknowledgement than the receiver's depth wraps
+//! onto slots still in use. **Ring depth is each peer generation's own
+//! choice, not a protocol constant**: current generations carry 4000 slots
+//! per channel where older ones carry 1500, so 1500 is all that may be
+//! assumed of a peer that has not been identified.
 //!
 //! Storage is supplied by the caller. This crate has no allocator, and a ring
 //! sized for the protocol is megabytes, so the shell allocates once at session
@@ -21,7 +23,7 @@ use crate::error::{Error, Result};
 use crate::message::{self, LENGTH_PREFIX_LEN};
 use crate::seq;
 
-/// Slots per channel per direction, fixed by the protocol.
+/// Slots per channel per direction, matching the current peer generation.
 pub const RING_SLOTS: usize = 4000;
 
 /// Outcome of offering a fragment to the ring.
