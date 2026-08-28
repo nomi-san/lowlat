@@ -3,6 +3,94 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## Three small guards
+
+- **The counter stops at the sequence space.** The envelope's counter field is
+  two bytes of epoch and six of sequence number, so the usable space is 48
+  bits; the sealer now refuses the first value past it rather than running
+  into bits peers refuse. Nine centuries away at ten thousand packets a
+  second, and stated in code because a counter that wrapped would reuse a
+  nonce.
+- **A stall is said once.** The 60-second soft liveness state was computed and
+  observed by nothing; the guest loop now logs it once per transition, which
+  is the line a live run reads backwards from a hard failure.
+- **A zero kick reason is refused at the seam** as well as at the public
+  boundary. A peer carries on through a zero status, so a kick carrying one
+  ends nobody while reporting that it worked.
+
+## One unit on the control path
+
+**The rate control path runs in mebibits per second; decimal megabits exist
+only at the boundary.** The throughput sample, the sound cost and the
+controller's tuning constants all divide by 2^20, but the configured rate
+entered undivided and the actuator multiplied by 10^6 -- the budget ran 4.66
+percent high and the encoder was driven the same amount low. The
+configuration, the live change and the reported per-guest bitrate speak
+decimal megabits and convert once at the boundary. The delivery gate's
+ceiling steps stay on the boundary scale, so the documented thresholds keep
+their meaning.
+
+## The acknowledgement path, corrected in three places
+
+- **A keepalive frees windows and nothing else.** Its trigger field is zeros by
+  construction, not a name; read as an acknowledgement it cleared the fragment
+  at sequence zero of channel zero while that fragment was in flight, and
+  fabricated a round-trip sample from its age. A lost first control fragment
+  was never retransmitted and the channel wedged until the delivery deadline.
+  The cumulative counts still apply.
+- **The group acknowledgement names the accepted store.** The trigger was
+  stamped from the last data arrival on any channel, before the ring was even
+  consulted, and the negative bit was a gap on any ring. An acknowledgement
+  could therefore name a fragment whose store was refused -- which the peer
+  clears and never retransmits, a permanent gap -- and a gap on one channel
+  could fast-retransmit another's window. The trigger is now captured at the
+  accepted store; the negative bit is the storing channel's own gap, with a
+  reorder of two or less tolerated; a refused store is counted per kind
+  (`rx_dup`, `rx_oow`, `rx_big` on the guest line) and acknowledged by
+  nothing. A pending negative is not displaced by a later clean arrival
+  before the acknowledgement leaves.
+- **A control message up to the protocol ceiling is taken.** The take buffer
+  stopped at 64 KiB against the mebibyte the protocol permits, and a take that
+  does not fit ends the attempt, so a peer sending a legal 100 KiB body killed
+  its own session. The buffer is now the ceiling plus a header, sized once at
+  guest spawn; only a message past the protocol ceiling remains terminal.
+
+Each carries a regression test that was watched to fail first.
+
+## Three peer sizes that were never one size
+
+**`docs/01-protocol.md` corrected in three places.** The document treated a
+peer's ring depth, its slot payload capacity and its receive buffer as protocol
+constants. They are none of them constants; each peer generation picks its own,
+and the three in circulation disagree on every one.
+
+- **Ring depth is 1500 to 4000, not 4000.** The oldest generation runs four
+  channels of 1500 slots where the current two run nineteen of 4000. The safe
+  send window against an unidentified peer is therefore 1500. Nothing shipping
+  is affected -- the outstanding fragment cap of 100 holds a conforming sender
+  an order of magnitude below either -- but the bound was stated as a MUST and
+  the MUST was wrong.
+- **The newest generation receives 1229 bytes and no more**, exactly one
+  default-sized datagram, against 2000 and 3000 for the other two. It does not
+  test whether a read was truncated, so an oversized datagram is cut short,
+  fails authentication and is counted as corrupt. That is indistinguishable
+  from ordinary loss, which is why nothing ever surfaced it. **1229 is the only
+  datagram size every peer accepts.**
+- **The path probe is unchanged and still correct**: a probe is judged by
+  whether it is acknowledged, so against a current peer the first step fails
+  and the session stays at the floor, which is the intended outcome. What
+  changes is the expectation -- probing buys nothing against a current client,
+  and its failure is not a defect.
+- **The group acknowledgement has no fixed size.** The entry count is the
+  sender's channel count, so 23 bytes and 83 bytes are both valid and a decoder
+  that requires either drops every acknowledgement the other generation sends.
+  The constants table said 83.
+
+Also recorded in §3: the envelope's counter sits in the record's epoch and
+sequence-number positions, giving a **48-bit** space rather than 64, and a
+sender must stop rather than wrap. Nine centuries away at ten thousand packets
+a second, and stated because a wrapped counter reuses a nonce.
+
 ## One quality setting on the boundary
 
 **`lowlat_quality` in the host configuration**, three values, settled when

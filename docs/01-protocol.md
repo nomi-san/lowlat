@@ -62,6 +62,13 @@ appends will fail every decryption.
 datagram length instead: `plaintext_len = datagram_len - 29`. Trusting it is a parsing
 vulnerability and it is not what peers do.
 
+**The counter occupies the record's epoch and sequence-number positions**, two bytes then six,
+so it carries a 48-bit sequence space rather than a 64-bit one. A sender MUST stop emitting once
+the counter would set any bit above 48; peers refuse to send past that point rather than
+wrapping. At ten thousand packets a second the limit is nine centuries away, so this is a
+correctness statement and not an operational concern -- but a counter that wraps silently
+reuses a nonce, which is the one failure this rule exists to prevent.
+
 A datagram shorter than 29 bytes is rejected before decryption.
 
 ## §4 Cryptography
@@ -78,10 +85,16 @@ Two modes, selected by the credential and never negotiated on the wire:
 | `aes256` present | AES-256-GCM | 32 bytes |
 | `aes256` absent | AES-128-GCM | 16 bytes |
 
-The AEAD nonce is 12 bytes: a 4-byte zero prefix followed by the 8-byte big-endian counter
-from envelope offset 3. Nonces are **derived, never generated**, which is why the protocol core
-requires no random number generator and remains deterministic under replay and simulation
-(D4).
+The AEAD nonce is 12 bytes: a 4-byte prefix followed by the 8-byte big-endian counter from
+envelope offset 3.
+
+**Correction (2026-08-28).** This section previously said the prefix is four zero bytes. It is
+not: the credential's decoded material is the key followed by the 4-byte prefix, so the prefix
+sits immediately after the key -- offset 32 under AES-256, offset 16 under AES-128 -- and a
+session sealed under a zero prefix produces records no peer opens.
+
+Nonces are **derived, never generated**, which is why the protocol core requires no random
+number generator and remains deterministic under replay and simulation (D4).
 
 There is no associated data. The envelope header is not authenticated.
 
@@ -208,16 +221,31 @@ collides and corrupts.
 ## §7 Rings, reassembly, and flow control
 
 Each channel holds a fixed ring per direction. The slot for a sequence number is
-`seq mod ring_depth`, so the ring is a direct-mapped window rather than a queue.
+`seq mod depth`, so the ring is a direct-mapped window rather than a queue, and a sender that
+gets more than `depth` sequence numbers ahead of the peer's cumulative acknowledgement wraps
+onto occupied slots and destroys data that was already delivered.
 
-**Peer ring depth is 4000 slots per channel per direction.** This is a protocol constant, not
-an implementation choice, because the peer indexes by `seq mod 4000`. A sender that gets more
-than 4000 sequence numbers ahead of the peer's cumulative acknowledgement wraps onto occupied
-slots and destroys data that was already delivered. **The send window MUST never exceed 4000
-outstanding sequence numbers on a channel.**
+**Correction (2026-08-28).** This section previously gave the ring depth as 4000 and the slot
+payload capacity as 2000, and called both protocol constants rather than implementation
+choices. **Neither is a constant.** Each peer generation picks its own, and the three in
+circulation disagree:
 
-**Peer slot payload capacity is 2000 bytes.** Combined with §8 this is satisfied by
-construction, but an implementation that raises the MTU without reading §8 will overrun it.
+| Generation | Slots per channel | Slot payload capacity | Channels |
+|---|---|---|---|
+| oldest | 1500 | 3000 | 4 |
+| current | 4000 | 2000 | 19 |
+| newest | 4000 | 1232 | 19 |
+
+Only the 1193-byte body budget (§8) is common to all three, and it is the one figure that may be
+relied on.
+
+**So the safe send window is 1500 outstanding sequence numbers on a channel, not 4000**, and an
+implementation MUST NOT assume more of a peer it has not identified. The outstanding fragment
+cap of 100 (§9) holds a conforming sender an order of magnitude below either figure, so this
+bound constrains a future change rather than anything shipping.
+
+The same caution applies to slot payload capacity. Sizing emissions to 2000 overruns the newest
+generation, which is what §8's ceiling now reflects.
 
 A receiver drops a packet whose sequence is below the current base, or whose slot is already
 occupied, and counts it. Otherwise it stores the payload, marks the slot ready, and advances
@@ -242,11 +270,14 @@ is a deliberate divergence.
 goes wrong.** The probed quantity is the **datagram size**, meaning the UDP payload length,
 because that is what the path constrains.
 
-| Quantity | Relation | Default | Ceiling |
+| Quantity | Relation | Default | Emission ceiling |
 |---|---|---|---|
 | datagram (UDP payload) | `M` | 1229 | 2000 |
 | plaintext | `M - 29` | 1200 | 1971 |
 | payload | `M - 36` | 1193 | 1964 |
+
+The ceiling column is what an implementation may **emit**, not what a peer will receive; see the
+correction below.
 
 On IPv4 the on-wire IP packet is `M + 28`, so the default occupies 1257 bytes and a 1500-byte
 path allows `M` up to 1472.
@@ -254,10 +285,28 @@ path allows `M` up to 1472.
 **Default and floor: a 1229-byte datagram.** Every peer accepts this and it survives PPPoE,
 tunnels, and relay framing.
 
-**Absolute ceiling: a 2000-byte datagram.** Implementations MUST NOT emit more under any
-circumstance, including after a successful probe. Peers are not required to accept more, and a
-peer that cannot will discard the entire datagram rather than truncating it, so the failure is
-total and silent.
+**Correction (2026-08-28).** This section previously gave the absolute ceiling as a 2000-byte
+datagram and said a peer that cannot accept a size discards the whole datagram rather than
+truncating it. Both were read from one peer generation and neither generalises.
+
+**The newest generation posts a 1229-byte receive buffer** -- exactly one default-sized
+datagram -- where the current one posts 2000 and the oldest 3000. It does not check whether the
+read was truncated, so a larger datagram is silently cut short, fails authentication, and is
+counted as a corrupt packet. The observable effect is the same as a discard, which is why this
+went unnoticed: the datagram is lost either way, and nothing distinguishes it from ordinary loss.
+
+Two consequences:
+
+- **1229 is the only datagram size every peer accepts.** It is the floor, the default, and
+  against an unidentified peer it is also the ceiling.
+- **The probe ladder below is unchanged and still correct**, because a probe is judged by
+  whether it is acknowledged. Against the newest generation the first step simply fails and the
+  session stays at the floor for its lifetime, which is the intended outcome. Expect probing to
+  buy nothing against a current client and do not read its failure as a defect.
+
+**Emission ceiling: 2000 bytes.** No implementation may emit more under any circumstance,
+including after a successful probe -- the current generation's slot capacity is the binding
+limit and there is no path to discovering headroom beyond it.
 
 **The MTU is not negotiated and cannot be.** No field in signaling or on the wire carries it.
 An endpoint's configured MTU bounds only what that endpoint emits. This means peer capacity is
@@ -805,7 +854,7 @@ bit 3 is set on every offer, so `_flags` of 8 alone is the ordinary case: H.264,
 |---|---|---|
 | envelope size | 29 | §3 |
 | data header size | 7 | §5.1 |
-| group ack size | 83 | §5.2 |
+| group ack size | 3 + 4 + 4 x channels | §5.2, **not fixed**: the count is the sender's channel count, so 23 and 83 are both valid |
 | message length prefix | 4 | §5.3, big endian, first fragment only |
 | body capacity per fragment | 1229 - 36 = 1193 at the default | §5.3, tracks the datagram size |
 | channel count | 19 | §6 |
@@ -813,10 +862,11 @@ bit 3 is set on every offer, so `_flags` of 8 alone is the ordinary case: H.264,
 | retransmission floor | 50 ms | §9 |
 | retransmission ceiling | 1000 ms | §9 |
 | retransmission grace | 30 ms | §9, added after the clamp |
-| peer ring depth | 4000 | §7, bounds the send window |
-| peer slot payload capacity | 2000 | §7 |
+| peer ring depth | 1500 to 4000 | §7, **generation dependent**; assume 1500 of an unidentified peer |
+| peer slot payload capacity | 1232 to 3000 | §7, **generation dependent** |
 | datagram size, floor and default | 1229 | §8, yields 1193 payload |
-| datagram size, absolute ceiling | 2000 | §8, MUST NOT exceed |
+| datagram size, emission ceiling | 2000 | §8, MUST NOT exceed |
+| datagram size, universally accepted | 1229 | §8, the newest peers receive no more |
 | direct path clamp | 1472 | §8 |
 | ack cadence | 30 ms | §9 |
 | soft liveness timeout | 60 s | §9 |

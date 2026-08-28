@@ -417,7 +417,7 @@ encoder that just failed at whatever rate the device refuses it.
 
 ```
 on encoded frame F, fragment count N, keyframe K:
-    largest = max(largest, N)                   // session high-water mark, not this frame
+    largest = max(largest, N)                   // recent high-water mark, not this frame
     want_keyframe = false
     for each guest G:
         if G.pending_keyframe:
@@ -452,11 +452,20 @@ and it is wrong in both directions: it refuses frames at low occupancy on a deep
 admits them when the window is nearly full because the remaining room still happens to be twice
 a small frame.
 
-**A skipping guest is retested against the largest frame the session has produced**, not
+**A skipping guest is retested against the largest frame the recent stream has produced**, not
 against the frame in hand. Testing against the current frame lets a guest out of the cascade on
 a small predicted frame, whereupon the keyframe it needs does not fit, the keyframe grant is
 spent, and every guest pays the bitrate spike for a recovery that did not happen. The
-high-water mark costs one integer and removes the whole failure.
+high-water mark costs two integers and a timestamp and removes the whole failure.
+
+**Correction (2026-08-28).** This section previously called the mark a session high-water
+mark. It decays: the mark is kept over two rolling two-second windows and read as the larger
+of the pair, so it spans at least two seconds of stream and at most four. Held for the whole
+session it only ever grows, and one frame larger than a guest's ceiling then locks every
+skipping guest out of readmission -- and out of asking for the keyframe it needs -- for as
+long as the stream lives. The window is measured in time rather than frames because the frame
+rate is not a constant: a still desktop sends one picture a second, and a window counted in
+frames would hold a spike for minutes on exactly the stream a guest is most likely to join.
 
 **The cascade is the invariant.** A guest that misses one frame must miss every frame until
 the next keyframe. Dropping a single dependent frame breaks the reference chain silently: the
