@@ -134,6 +134,15 @@ pub enum Error {
     /// in on a guess, because a wrong guess is a picture that decodes to
     /// something plausible and wrong.
     UnsupportedLayout,
+    /// A picture needed more buffers than the array that carries them holds.
+    ///
+    /// **A programming error, reported rather than absorbed.** This used to be
+    /// a silent drop: the array was one short of what a refresh needs, the
+    /// last buffer pushed was the slice header's payload, and the stream went
+    /// out with keyframes a decoder could not find a slice in. Every predicted
+    /// picture was fine, so nothing failed until an output switch forced a
+    /// refresh.
+    TooManyBuffers,
 }
 
 impl core::fmt::Display for Error {
@@ -146,6 +155,7 @@ impl core::fmt::Display for Error {
             Self::QueueFull => f.write_str("every surface is in flight"),
             Self::NoEncoder => f.write_str("device offers no encode entry point"),
             Self::UnsupportedLayout => f.write_str("surface layout cannot be written"),
+            Self::TooManyBuffers => f.write_str("a picture needed more buffers than are carried"),
         }
     }
 }
@@ -2239,20 +2249,34 @@ impl Encoder<'_> {
             poc,
         };
 
-        let mut buffers = [0 as VABufferID; 9];
+        // **Sized by a refresh, which is the picture that needs the most.** In
+        // order: the sequence parameters, the rate, the frame rate, the effort
+        // level, the packed parameter sets as a header and its payload, the
+        // picture parameters, the slice parameters, and the packed slice
+        // header as a header and its payload. A predicted picture drops the
+        // two set buffers and needs eight.
+        let mut buffers = [0 as VABufferID; 10];
+        // **Counted past the end rather than stopped at it.** Silently
+        // dropping the last buffer is how a stream goes out with keyframes
+        // that carry no slice header, which decodes as nothing on the far side
+        // and points at everything except the array that was one too short.
         let mut used = 0usize;
         {
             let mut push = |id: VABufferID| {
                 if let Some(slot) = buffers.get_mut(used) {
                     *slot = id;
-                    used += 1;
                 }
+                used += 1;
             };
             match self.params {
                 Params::H264(params) => self.picture_h264(&params, plan, &mut push)?,
                 Params::H265(params) => self.picture_h265(&params, plan, &mut push)?,
             }
         }
+        if used > buffers.len() {
+            return Err(Error::TooManyBuffers);
+        }
+        {}
         let buffers = buffers.get_mut(..used).ok_or(Error::NoEncoder)?;
 
         // SAFETY: the list is readable for its length.
