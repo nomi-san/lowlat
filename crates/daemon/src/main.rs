@@ -658,7 +658,10 @@ async fn session_loop(
                         let host = seam.begin_p2p(&offer.attempt_id, 0)?;
 
                         let creds = Credentials {
-                            aes256: Some(host.aes256),
+                            // Empty means the attempt keys from the
+                            // fingerprint, and the answer omits the field a
+                            // peer of that generation cannot read.
+                            aes256: (!host.aes256.is_empty()).then_some(host.aes256),
                             fingerprint: host.fingerprint,
                             ice_ufrag: host.ufrag,
                             ice_pwd: host.pwd,

@@ -3053,6 +3053,9 @@ mod seam_tests {
         put(&mut info.attempt_id, id);
         put(&mut info.ufrag, "G+sZxQ==");
         put(&mut info.pwd, "Det3D+arYViymh6I2v7UaOnrsHieoTRE");
+        // A media key in the offer, as every current client sends one. An
+        // attempt registered without one takes the legacy cipher.
+        put(&mut info.aes256, "deadbeef");
         info
     }
 
@@ -3123,8 +3126,28 @@ mod seam_tests {
             Some(254),
             "the media key is the field this array is sized for"
         );
-
         unsafe { lowlat_host_end_connection(handle, c"a".as_ptr()) };
+
+        // An offer without a media key selects the legacy cipher, and the
+        // answer states it: the field comes back empty for a peer generation
+        // that has no field to read.
+        let mut info = attempt("old");
+        info.aes256 = [0; LOWLAT_ICE_MAX];
+        assert_eq!(
+            unsafe { lowlat_host_new_attempt(handle, &raw const info) },
+            LOWLAT_OK
+        );
+        let mut legacy = credentials();
+        assert_eq!(
+            unsafe { lowlat_host_begin_p2p(handle, c"old".as_ptr(), 0, &raw mut legacy) },
+            LOWLAT_OK
+        );
+        assert_eq!(
+            taken(&legacy.aes256),
+            Some(""),
+            "a legacy answer carried a media key"
+        );
+        unsafe { lowlat_host_end_connection(handle, c"old".as_ptr()) };
         unsafe { lowlat_destroy(handle) };
     }
 

@@ -758,22 +758,45 @@ impl Admission {
 
         let local = lowlat_crypto::credentials().map_err(|_| Error::Crypto)?;
         let seed = lowlat_crypto::transaction_seed().map_err(|_| Error::Crypto)?;
+        // **Which cipher is the offer's own statement.** An offer that carried
+        // a media key takes the 256-bit mode, keyed from ours; one that did
+        // not comes from a generation with no such field, and both ends key
+        // from this host's fingerprint under the legacy 128-bit mode. The
+        // peer's own material is never the key either way -- presence is the
+        // whole of what it says.
+        let cipher = if attempt.peer.aes256.is_some() {
+            Cipher::Aes256
+        } else {
+            Cipher::Aes128
+        };
+        let source = match cipher {
+            Cipher::Aes256 => &local.aes256,
+            Cipher::Aes128 => &local.fingerprint,
+        };
         // **Key and nonce prefix together, and both are needed.** The nonce is
         // the credential's four-byte prefix followed by the counter, never
         // four zeros, so a session built from the key alone seals records no
         // peer can open and rejects every record a peer sends. That looks
-        // exactly like a path that established and carries nothing.
+        // exactly like a path that established and carries nothing. The
+        // prefix follows the key, so its offset moves with the cipher.
+        let key_len = cipher.key_len();
         let (key, prefix) =
-            lowlat_crypto::key_material(&local.aes256).map_err(|_| Error::Crypto)?;
+            lowlat_crypto::key_material(source, key_len).map_err(|_| Error::Crypto)?;
         let mut material = [0u8; MATERIAL_LEN];
         material
-            .get_mut(..key.len())
+            .get_mut(..key_len)
             .ok_or(Error::Crypto)?
-            .copy_from_slice(&key);
+            .copy_from_slice(key.get(..key_len).ok_or(Error::Crypto)?);
         material
-            .get_mut(key.len()..)
+            .get_mut(key_len..key_len + prefix.len())
             .ok_or(Error::Crypto)?
             .copy_from_slice(&prefix);
+        if cipher == Cipher::Aes128 {
+            lowlat_common::log_info!(
+                "guest: attempt={} takes the legacy cipher, the offer carried no media key",
+                id
+            );
+        }
 
         // Walks from where it was asked to start, so a second concurrent guest
         // lands on the next free port rather than failing to bind at all, and
@@ -834,6 +857,7 @@ impl Admission {
                     ours,
                     theirs,
                     material,
+                    cipher,
                     seed,
                     seats,
                     video,
@@ -883,7 +907,14 @@ impl Admission {
             ufrag: local.ufrag,
             pwd: local.pwd,
             fingerprint: local.fingerprint,
-            aes256: local.aes256,
+            // **A legacy answer carries no media key.** The peer has no field
+            // to read one from, and the empty string is the truth about the
+            // session rather than an omission: this attempt is keyed from the
+            // fingerprint above.
+            aes256: match cipher {
+                Cipher::Aes256 => local.aes256,
+                Cipher::Aes128 => String::new(),
+            },
             port: bound,
         })
     }
@@ -1174,8 +1205,10 @@ struct Attached {
     microphone: Option<crate::microphone::Sender>,
     ours: (String, String),
     theirs: (String, String),
-    /// The 256-bit key and the four-byte nonce prefix that follows it.
+    /// The key and the four-byte nonce prefix that follows it, packed at the
+    /// front; the cipher says how much of it is key.
     material: [u8; MATERIAL_LEN],
+    cipher: Cipher,
     seed: [u8; 16],
     /// A way onto the stream, taken once this guest is streamable.
     seats: Option<Seats>,
@@ -1723,7 +1756,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     let mut audio_send_meta = vec![SendSlot::default(); AUDIO_SEND_SLOTS];
     let mut inbound = vec![0u8; MAX_INBOUND];
 
-    let Ok(envelope) = Envelope::from_credential(&args.material, Cipher::Aes256) else {
+    let Ok(envelope) = Envelope::from_credential(&args.material, args.cipher) else {
         return;
     };
     let mut session = Session::new(envelope, 1, 0.0);
@@ -2538,6 +2571,14 @@ mod tests_support {
             aes256: None,
         }
     }
+
+    /// A peer whose offer carried a media key, as every current client's does.
+    pub(super) fn modern_peer() -> Peer {
+        Peer {
+            aes256: Some("deadbeef".into()),
+            ..peer()
+        }
+    }
 }
 
 #[cfg(test)]
@@ -2679,8 +2720,8 @@ mod tests {
     #[test]
     fn credentials_appear_at_approval_and_are_not_reused() {
         let mut seam = admission(4);
-        seam.new_attempt("a", peer()).expect("register");
-        seam.new_attempt("b", peer()).expect("register");
+        seam.new_attempt("a", modern_peer()).expect("register");
+        seam.new_attempt("b", modern_peer()).expect("register");
         let first = seam.begin_p2p("a", 0).expect("approve a");
         let second = seam.begin_p2p("b", 0).expect("approve b");
 
@@ -2693,6 +2734,29 @@ mod tests {
 
         seam.end_connection("a");
         seam.end_connection("b");
+    }
+
+    /// **An offer without a media key selects the legacy cipher.** The field
+    /// does not exist for that peer generation, so the session keys from this
+    /// host's fingerprint under the 128-bit mode, and the answer carries no
+    /// media key: the empty field is the truth about the session, not an
+    /// omission.
+    #[test]
+    fn an_offer_without_a_media_key_selects_the_legacy_cipher() {
+        let mut seam = admission(4);
+        seam.new_attempt("old", peer()).expect("register");
+        let creds = seam.begin_p2p("old", 0).expect("approve");
+
+        assert!(
+            creds.aes256.is_empty(),
+            "the answer carried a media key the peer cannot read"
+        );
+        assert_eq!(
+            creds.fingerprint.len(),
+            64,
+            "the fingerprint is the session key material and must decode"
+        );
+        seam.end_connection("old");
     }
 
     /// One socket per guest, so a second concurrent guest cannot have the base

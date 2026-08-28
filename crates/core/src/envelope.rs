@@ -331,6 +331,29 @@ mod tests {
         assert_eq!(&wire[11..13], &[0, 49]);
     }
 
+    /// The legacy credential shape: sixteen bytes of key with the prefix
+    /// immediately after it. Two envelopes built from the same material
+    /// interoperate, and the prefix is load bearing.
+    #[test]
+    fn the_legacy_credential_keys_a_working_pair() {
+        let mut material = [0u8; 20];
+        material[..16].copy_from_slice(&[0x22u8; 16]);
+        material[16..].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD]);
+
+        let left = Envelope::from_credential(&material, Cipher::Aes128).unwrap();
+        let right = Envelope::from_credential(&material, Cipher::Aes128).unwrap();
+        let mut wire = [0u8; 64];
+        let n = left.seal(7, b"legacy", &mut wire).unwrap();
+        let mut out = [0u8; 64];
+        let opened = right.open(&wire[..n], &mut out).unwrap();
+        assert_eq!(opened.cleartext, b"legacy");
+
+        // A session that ignored the prefix and used zeros opens nothing.
+        let zeros = Envelope::from_key(&material[..16]).unwrap();
+        let mut scratch = [0u8; 64];
+        assert!(zeros.open(&wire[..n], &mut scratch).is_err());
+    }
+
     /// The counter's usable space is forty-eight bits; the last legal value
     /// seals and the first past it is refused rather than sent.
     #[test]

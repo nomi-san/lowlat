@@ -333,6 +333,9 @@ int main(int argc, char **argv)
     snprintf(offer.attempt_id, sizeof offer.attempt_id, "%s", "3dea9cd3-3dc4a5c3");
     snprintf(offer.ufrag, sizeof offer.ufrag, "%s", "G+sZxQ==");
     snprintf(offer.pwd, sizeof offer.pwd, "%s", "Det3D+arYViymh6I2v7UaOnrsHieoTRE");
+    /* A media key in the offer, as every current client sends one. An offer
+     * without one selects the legacy cipher; that path is checked below. */
+    snprintf(offer.aes256, sizeof offer.aes256, "%s", "deadbeef");
     offer.permissions.keyboard = true;
     offer.permissions.pointer = true;
     offer.permissions.gamepad = true;
@@ -374,6 +377,28 @@ int main(int argc, char **argv)
         fprintf(stderr, "harness: approving twice was not refused\n");
         return 1;
     }
+    /* An offer without a media key selects the legacy cipher, and the answer
+     * says so: the field comes back empty, because that peer generation has
+     * no field to read one from. */
+    lowlat_attempt_info legacy = offer;
+    snprintf(legacy.attempt_id, sizeof legacy.attempt_id, "%s", "legacy-attempt");
+    memset(legacy.aes256, 0, sizeof legacy.aes256);
+    if (new_attempt(ll, &legacy) != LOWLAT_OK) {
+        fprintf(stderr, "harness: a legacy offer could not be registered\n");
+        return 1;
+    }
+    lowlat_credentials old_answer;
+    memset(&old_answer, 0, sizeof old_answer);
+    old_answer.size = (uint32_t) sizeof old_answer;
+    if (begin_p2p(ll, legacy.attempt_id, 0, &old_answer) != LOWLAT_OK) {
+        fprintf(stderr, "harness: a legacy attempt could not be approved\n");
+        return 1;
+    }
+    if (old_answer.aes256[0] != '\0') {
+        fprintf(stderr, "harness: a legacy answer carried a media key\n");
+        return 1;
+    }
+    end_connection(ll, legacy.attempt_id);
     /* The roster, in the two calls an application makes: how many, then who.
      * Nothing is allocated on the caller's behalf, so there is nothing to
      * free. */
