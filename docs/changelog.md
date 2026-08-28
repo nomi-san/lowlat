@@ -3,6 +3,19 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## The send window holds to the shallow ring until the peer is known
+
+**The send window may not exceed the peer's ring depth, and that depth is not
+a constant.** The oldest generation carries 1500 slots per channel where
+current ones carry 4000, and the window was bounded by the host's own storage
+instead -- so against a shallow peer it could run onto slots the peer had not
+delivered from, a wrap that looks like the peer losing fragments it already
+took. The window now starts at the smallest ring in circulation and opens to
+the deep ring once the peer reports the full channel count in a group
+acknowledgement, which is its generation's own statement and arrives during
+the control handshake, before any media is under load. A peer reporting fewer
+channels is the older generation and the floor stands.
+
 ## The legacy cipher path
 
 **An offer without a media key takes the 128-bit mode, keyed from the host's

@@ -240,9 +240,16 @@ Only the 1193-byte body budget (§8) is common to all three, and it is the one f
 relied on.
 
 **So the safe send window is 1500 outstanding sequence numbers on a channel, not 4000**, and an
-implementation MUST NOT assume more of a peer it has not identified. The outstanding fragment
-cap of 100 (§9) holds a conforming sender an order of magnitude below either figure, so this
-bound constrains a future change rather than anything shipping.
+implementation MUST NOT assume more of a peer it has not identified.
+
+**A peer identifies its generation in its group acknowledgements.** The acknowledgement's entry
+count is the sender's channel count (§5.2), so a peer reporting the full 19 channels carries the
+deep ring, and a peer reporting fewer -- or one not yet heard from -- is held to the 1500 floor.
+The window opens on the first full-count acknowledgement, which arrives during the control
+handshake, before any media channel is under load. The outstanding fragment cap of 100 (§9)
+holds a conforming sender an order of magnitude below either figure, so a frame that fits at all
+fits both rings; the bound matters for a future change that lifts the cap, not for anything
+shipping.
 
 The same caution applies to slot payload capacity. Sizing emissions to 2000 overruns the newest
 generation, which is what §8's ceiling now reflects.
