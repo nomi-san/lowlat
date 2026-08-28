@@ -79,6 +79,12 @@ pub struct SendRing<'a> {
     nack_below: Option<u32>,
     outstanding: u32,
     stale: u32,
+    /// The peer's ring depth, which bounds how far ahead we may run: getting
+    /// more than this far ahead of the peer's cumulative acknowledgement wraps
+    /// onto slots it has not delivered from. **Starts at the smallest ring in
+    /// circulation** and opens once the peer's generation is identified, since
+    /// an unidentified peer may be the shallow one.
+    peer_depth: u32,
     /// Payload bytes handed to the wire, retransmissions included.
     ///
     /// **Retransmissions count**, because this measures what the path was made
@@ -103,6 +109,11 @@ impl<'a> SendRing<'a> {
         if bodies.len() != meta.len().checked_mul(slot_len).ok_or(Error::BadLength)? {
             return Err(Error::BadLength);
         }
+        // Our own storage bounds the window too; the effective depth is the
+        // smaller of the two, so a peer depth wider than our ring never lets
+        // the ring wrap onto itself.
+        let ours = u32::try_from(meta.len()).unwrap_or(u32::MAX);
+        let depth = ours.min(crate::channel::PEER_RING_FLOOR);
         Ok(Self {
             bodies,
             meta,
@@ -114,9 +125,21 @@ impl<'a> SendRing<'a> {
             nack_below: None,
             outstanding: 0,
             stale: 0,
+            peer_depth: depth,
             bytes_sent: 0,
             acked: 0,
         })
+    }
+
+    /// Open the window to what the identified peer's ring can hold, capped at
+    /// our own storage.
+    ///
+    /// **The peer's generation is read from its first group acknowledgement**,
+    /// whose entry count is the peer's channel count: a nineteen-channel peer
+    /// carries the deep ring, and until one is seen the floor stands.
+    pub fn raise_peer_depth(&mut self, peer_slots: u32) {
+        let ours = u32::try_from(self.meta.len()).unwrap_or(u32::MAX);
+        self.peer_depth = peer_slots.min(ours);
     }
 
     /// Fragments the peer has not acknowledged.
@@ -129,8 +152,7 @@ impl<'a> SendRing<'a> {
     /// Bounded by the **peer's** ring depth, not ours: running further ahead
     /// than that wraps onto slots the peer has already delivered from.
     pub fn window_free(&self) -> usize {
-        let depth = u32::try_from(self.meta.len()).unwrap_or(u32::MAX);
-        depth.saturating_sub(self.in_flight()) as usize
+        self.peer_depth.saturating_sub(self.in_flight()) as usize
     }
 
     /// Fragments the peer has acknowledged since the ring was created.
@@ -600,6 +622,32 @@ mod tests {
         let emitted = drain(&mut ring, 0.0, 10.0);
         assert_eq!(emitted.len(), SLOTS, "cap should not bite below 100");
         assert_eq!(ring.outstanding(), SLOTS as u32);
+    }
+
+    /// The window assumes the smallest ring in circulation until the peer
+    /// says otherwise: running further ahead than a peer's ring holds wraps
+    /// onto slots it has not freed.
+    #[test]
+    fn the_window_assumes_the_floor_until_the_peer_is_identified() {
+        const FLOOR: usize = crate::channel::PEER_RING_FLOOR as usize;
+        const DEEP: usize = FLOOR + 500;
+        let mut storage = Storage::wide(DEEP);
+        let mut ring = storage.ring();
+
+        for _ in 0..FLOOR {
+            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+        }
+        assert_eq!(ring.window_free(), 0, "the floor did not bound the window");
+        assert!(
+            ring.enqueue(&Message::new(&[], b"y").unwrap()).is_err(),
+            "ran past the floor against an unidentified peer"
+        );
+
+        // The peer identified itself as a generation with deeper rings; the
+        // window opens to our own storage.
+        ring.raise_peer_depth(u32::try_from(crate::channel::RING_SLOTS).unwrap_or(u32::MAX));
+        assert_eq!(ring.window_free(), DEEP - FLOOR);
+        assert!(ring.enqueue(&Message::new(&[], b"y").unwrap()).is_ok());
     }
 
     /// **The only ceiling on retransmission there is.** A window of stale

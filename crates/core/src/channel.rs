@@ -26,6 +26,16 @@ use crate::seq;
 /// Slots per channel per direction, matching the current peer generation.
 pub const RING_SLOTS: usize = 4000;
 
+/// The smallest ring depth in circulation, and the depth assumed of a peer
+/// whose generation has not yet been identified.
+///
+/// **The send window may not exceed the peer's ring depth**, and the oldest
+/// generation carries 1500 slots where current ones carry [`RING_SLOTS`]. A
+/// peer is not identified until its first group acknowledgement, whose entry
+/// count is its channel count, so a sender holds to this floor until then
+/// rather than running onto a shallow peer's occupied slots.
+pub const PEER_RING_FLOOR: u32 = 1500;
+
 /// Outcome of offering a fragment to the ring.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stored {

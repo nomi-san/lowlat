@@ -121,6 +121,10 @@ pub struct Session<'a> {
     /// Which channel the output drain is working through.
     drain_channel: usize,
     drain_started: bool,
+
+    /// Set once the peer reports the full channel count, which opens the send
+    /// windows from the shallow-ring floor to the current generation's depth.
+    peer_identified: bool,
 }
 
 impl<'a> Session<'a> {
@@ -147,6 +151,7 @@ impl<'a> Session<'a> {
             trigger_nack: false,
             drain_channel: 0,
             drain_started: false,
+            peer_identified: false,
         }
     }
 
@@ -344,28 +349,55 @@ impl<'a> Session<'a> {
                     channel: data.channel,
                 })
             }
-            Packet::Ack(ack) => match ack.kind {
-                AckKind::Ack => {
-                    let mut sample = None;
-                    for ring in self.send.iter_mut().flatten() {
-                        if let Some(taken) = ring.on_ack(&ack, now_ms) {
-                            sample = Some(taken);
+            Packet::Ack(ack) => {
+                self.identify_peer(&ack);
+                match ack.kind {
+                    AckKind::Ack => {
+                        let mut sample = None;
+                        for ring in self.send.iter_mut().flatten() {
+                            if let Some(taken) = ring.on_ack(&ack, now_ms) {
+                                sample = Some(taken);
+                            }
                         }
+                        if let Some(sample) = sample {
+                            self.observe_rtt(sample);
+                        }
+                        Ok(Inbound::Ack)
                     }
-                    if let Some(sample) = sample {
-                        self.observe_rtt(sample);
+                    // A keepalive frees windows and proves liveness; its
+                    // trigger is zeros, not a name, and must not reach the
+                    // trigger path.
+                    AckKind::Keepalive => {
+                        for ring in self.send.iter_mut().flatten() {
+                            ring.on_keepalive(&ack);
+                        }
+                        Ok(Inbound::Keepalive)
                     }
-                    Ok(Inbound::Ack)
                 }
-                // A keepalive frees windows and proves liveness; its trigger
-                // is zeros, not a name, and must not reach the trigger path.
-                AckKind::Keepalive => {
-                    for ring in self.send.iter_mut().flatten() {
-                        ring.on_keepalive(&ack);
-                    }
-                    Ok(Inbound::Keepalive)
-                }
-            },
+            }
+        }
+    }
+
+    /// Open every send ring's window once the peer's generation is known.
+    ///
+    /// **The peer's channel count is what a group acknowledgement reveals**:
+    /// its entry count is the number of channels it carries, and only the
+    /// current generation carries the full [`CHANNEL_COUNT`] and the deep
+    /// ring that comes with it. A peer reporting fewer is the shallow
+    /// generation, or is not yet distinguishable from it, so the window holds
+    /// to the floor. Idempotent, and the send ring caps the raise at our own
+    /// storage.
+    fn identify_peer(&mut self, ack: &Ack) {
+        if ack.reported < CHANNEL_COUNT {
+            return;
+        }
+        if self.peer_identified {
+            return;
+        }
+        self.peer_identified = true;
+        let slots = u32::try_from(crate::channel::RING_SLOTS).unwrap_or(u32::MAX);
+        for ring in self.send.iter_mut().flatten() {
+            ring.raise_peer_depth(slots);
         }
     }
 
@@ -1111,6 +1143,80 @@ mod tests {
         assert!(
             right.get_output(2.0, &mut wire).is_none(),
             "a duplicate produced an acknowledgement"
+        );
+    }
+
+    /// **The send window holds to the shallow-ring floor until the peer
+    /// reports the full channel count.** A peer that acknowledges with fewer
+    /// channels is a generation whose ring may be as small as the floor, so
+    /// running past it would wrap onto its occupied slots; the full count is
+    /// what says the deep ring is safe.
+    #[test]
+    fn the_window_opens_when_the_peer_reports_every_channel() {
+        use crate::channel::{PEER_RING_FLOOR, RING_SLOTS};
+        use crate::packet::{Ack, AckKind};
+
+        // A send ring deeper than the floor, so the floor is what bounds it
+        // rather than our storage.
+        const DEEP: usize = PEER_RING_FLOOR as usize + 200;
+        let mut bodies = std::vec![0u8; SLOT * DEEP];
+        let mut meta = std::vec![SendSlot::default(); DEEP];
+        let mut session = Session::new(Envelope::from_key(&KEY).unwrap(), 1, 0.0);
+        session
+            .attach_send(
+                VIDEO,
+                SendRing::new(&mut bodies, &mut meta, SLOT, VIDEO).unwrap(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            session
+                .send
+                .get(VIDEO as usize)
+                .and_then(|r| r.as_ref())
+                .map(SendRing::window_free),
+            Some(PEER_RING_FLOOR as usize),
+            "an unidentified peer's window is not the floor"
+        );
+
+        // A short acknowledgement -- a four-channel peer -- does not open it.
+        let mut short = [0u32; CHANNEL_COUNT];
+        short[VIDEO as usize] = 0;
+        session.identify_peer(&Ack {
+            reported: 4,
+            kind: AckKind::Keepalive,
+            nack: false,
+            trigger_channel: 0,
+            trigger_seq: 0,
+            cumulative: short,
+        });
+        assert_eq!(
+            session
+                .send
+                .get(VIDEO as usize)
+                .and_then(|r| r.as_ref())
+                .map(SendRing::window_free),
+            Some(PEER_RING_FLOOR as usize),
+            "a short acknowledgement opened the window"
+        );
+
+        // The full channel count identifies the current generation.
+        session.identify_peer(&Ack {
+            reported: CHANNEL_COUNT,
+            kind: AckKind::Keepalive,
+            nack: false,
+            trigger_channel: 0,
+            trigger_seq: 0,
+            cumulative: [0u32; CHANNEL_COUNT],
+        });
+        assert_eq!(
+            session
+                .send
+                .get(VIDEO as usize)
+                .and_then(|r| r.as_ref())
+                .map(SendRing::window_free),
+            Some(DEEP.min(RING_SLOTS)),
+            "the window did not open to the deep ring"
         );
     }
 

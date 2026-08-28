@@ -3215,10 +3215,39 @@ mod geometry {
         assert_eq!(largest, lowlat_core::DEFAULT_DATAGRAM);
     }
 
+    /// Seal a keepalive that reports `channels` cumulative counts, which is
+    /// how a peer's group acknowledgement reveals its channel count and so its
+    /// generation.
+    fn identifying_keepalive(channels: usize) -> ([u8; 256], usize) {
+        use lowlat_core::packet::{Ack, AckKind, encode_ack};
+        let ack = Ack {
+            reported: channels,
+            kind: AckKind::Keepalive,
+            nack: false,
+            trigger_channel: 0,
+            trigger_seq: 0,
+            cumulative: [0u32; lowlat_core::packet::CHANNEL_COUNT],
+        };
+        // encode_ack always writes the full array; the reported prefix is what
+        // a shorter datagram would have carried, so truncate to it.
+        let mut cleartext = [0u8; 256];
+        let full = encode_ack(&mut cleartext, &ack).expect("encode");
+        let len = lowlat_core::packet::HEADER_LEN + channels * 4;
+        assert!(len <= full);
+        let env = Envelope::from_key(&KEY).expect("envelope");
+        let mut wire = [0u8; 256];
+        let sealed = env.seal(1, &cleartext[..len], &mut wire).expect("seal");
+        (wire, sealed)
+    }
+
     /// The video ring is the peer's ring depth, which is also the delivery
     /// gate's top ceiling: a frame the gate admits must fit the ring it is
     /// admitted into. Sizing the ring from control traffic fails this.
-    /// *Named regression test.*
+    ///
+    /// **The top ceiling is the current generation's**, whose peer reports the
+    /// full channel count; the send window holds to the shallow floor until it
+    /// does, so the peer is identified here exactly as the control handshake
+    /// identifies it before any video. *Named regression test.*
     #[test]
     fn the_video_ring_holds_a_frame_as_large_as_the_gate_will_admit() {
         let mut arena = Arena::new();
@@ -3229,6 +3258,14 @@ mod geometry {
             ceiling, VIDEO_SEND_SLOTS,
             "the ring and the gate's top ceiling have parted company"
         );
+
+        // A current-generation peer identifies itself by acknowledging with
+        // the full channel count, which opens the window to the deep ring.
+        let (wire, len) = identifying_keepalive(lowlat_core::packet::CHANNEL_COUNT);
+        let mut scratch = [0u8; 256];
+        session
+            .process_input(&wire[..len], 1.0, &mut scratch)
+            .expect("keepalive");
 
         // Exactly the ceiling's worth of fragments. **The length prefix rides
         // in the first fragment**, so the largest frame that fits is four
@@ -3244,6 +3281,44 @@ mod geometry {
         assert!(
             session.send_message(VIDEO_CHANNEL, &[], &[0u8; 1]).is_err(),
             "the ring accepted a fragment past the peer's ring depth"
+        );
+    }
+
+    /// Before the peer is identified the window holds to the shallow-ring
+    /// floor, and a peer that acknowledges with fewer than the full channel
+    /// count -- an older generation -- never opens it. *Named regression
+    /// test.*
+    #[test]
+    fn an_unidentified_peer_holds_the_window_to_the_floor() {
+        use lowlat_core::channel::PEER_RING_FLOOR;
+        let floor = PEER_RING_FLOOR as usize;
+
+        let mut arena = Arena::new();
+        let mut session = arena.session();
+
+        // A frame at the floor fits; one fragment past it does not, with no
+        // acknowledgement seen yet.
+        let frame = vec![0u8; floor * SLOT - lowlat_core::message::LENGTH_PREFIX_LEN];
+        assert_eq!(
+            session
+                .send_message(VIDEO_CHANNEL, &[], &frame)
+                .expect("a frame at the floor was refused") as usize,
+            floor
+        );
+        assert!(
+            session.send_message(VIDEO_CHANNEL, &[], &[0u8; 1]).is_err(),
+            "ran past the floor against an unidentified peer"
+        );
+
+        // A four-channel peer is the shallow generation and does not open it.
+        let (wire, len) = identifying_keepalive(4);
+        let mut scratch = [0u8; 256];
+        session
+            .process_input(&wire[..len], 1.0, &mut scratch)
+            .expect("keepalive");
+        assert!(
+            session.send_message(VIDEO_CHANNEL, &[], &[0u8; 1]).is_err(),
+            "a short acknowledgement opened the window past the floor"
         );
     }
 
