@@ -25,7 +25,7 @@ use std::thread;
 use lowlat_common::alloc_counter::{self, Counting};
 use lowlat_common::clock::{Time, elapsed_ms};
 use lowlat_core::channel::{RecvRing, SlotMeta};
-use lowlat_core::conn::{Conn, Credentials};
+use lowlat_core::conn::{Conn, Credentials, Kind};
 use lowlat_core::endpoint::Endpoint;
 use lowlat_core::envelope::Envelope;
 use lowlat_core::send::{SendRing, SendSlot};
@@ -178,8 +178,15 @@ fn a_pass_larger_than_the_staging_batch_still_completes() {
         let mut right = shell(&mut right_arena, RIGHT, LEFT, 0xD4);
         let left_addr = loopback_of(&left);
         let right_addr = loopback_of(&right);
-        left.endpoint().conn().add_candidate(right_addr).unwrap();
-        right.endpoint().conn().add_candidate(left_addr).unwrap();
+        left.endpoint()
+            .conn()
+            .add_candidate(right_addr, Kind::Reflexive)
+            .unwrap();
+        right
+            .endpoint()
+            .conn()
+            .add_candidate(left_addr, Kind::Reflexive)
+            .unwrap();
 
         let started = Time::now();
         while elapsed_ms(started) < 4_000.0 && left.endpoint().path().is_none() {
@@ -232,8 +239,15 @@ fn a_sustained_stream_loses_nothing_allocates_nothing_and_does_not_tick() {
     let left_addr = loopback_of(&left);
     let right_addr = loopback_of(&right);
     let right_port = right_addr.port();
-    left.endpoint().conn().add_candidate(right_addr).unwrap();
-    right.endpoint().conn().add_candidate(left_addr).unwrap();
+    left.endpoint()
+        .conn()
+        .add_candidate(right_addr, Kind::Reflexive)
+        .unwrap();
+    right
+        .endpoint()
+        .conn()
+        .add_candidate(left_addr, Kind::Reflexive)
+        .unwrap();
 
     // Punch first, on one thread, because there is nowhere to send until both
     // sides have a path and the stream would otherwise be measuring the punch.

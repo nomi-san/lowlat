@@ -313,12 +313,18 @@ internal struct Candidate
     public uint Size;
     public ushort Port;
     public byte SyncByte;
-    public byte Reserved;
+    public byte ReflexiveByte;
 
     public bool Sync
     {
         get => SyncByte != 0;
         set => SyncByte = value ? (byte)1 : (byte)0;
+    }
+
+    public bool Reflexive
+    {
+        get => ReflexiveByte != 0;
+        set => ReflexiveByte = value ? (byte)1 : (byte)0;
     }
     [InlineArray(Sizes.Address)] public struct AddressField { private byte first; }
     public AddressField Address;

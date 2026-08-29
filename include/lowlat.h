@@ -574,7 +574,12 @@ typedef struct lowlat_candidate {
     // candidate until it has seen one, so an application that never forwards
     // one negotiates against a peer that never offers anything to check.
     bool sync;
-    uint8_t reserved;
+    // Whether a reflexive server reported this address to the peer. The
+    // path-opening probe goes only toward such a candidate; an address the
+    // peer knows directly needs no path opened ahead of its first check.
+    // Zero is safe when the application cannot say -- the punch still runs,
+    // without the early probe.
+    bool reflexive;
     char address[LOWLAT_ADDRESS_MAX];
 } lowlat_candidate;
 

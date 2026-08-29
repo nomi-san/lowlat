@@ -302,7 +302,7 @@ internal sealed class Host
         }
     }
 
-    public void AddCandidate(string attemptId, string ip, ushort port, bool sync)
+    public void AddCandidate(string attemptId, string ip, ushort port, bool sync, bool reflexive)
     {
         unsafe
         {
@@ -311,6 +311,7 @@ internal sealed class Host
                 Size = (uint)sizeof(Candidate),
                 Port = port,
                 Sync = sync,
+                Reflexive = reflexive,
             };
             Text.Put(((Span<byte>)cand.Address)[..Sizes.Address], ip);
             var id = System.Text.Encoding.UTF8.GetBytes(attemptId + "\0");
@@ -370,8 +371,8 @@ internal sealed class Host
         }
         Console.WriteLine($"offline: approved, bound to port {ours.Port}");
 
-        AddCandidate(attempt, "", 41000, sync: true);
-        AddCandidate(attempt, "192.168.1.100", 41000, sync: false);
+        AddCandidate(attempt, "", 41000, sync: true, reflexive: false);
+        AddCandidate(attempt, "192.168.1.100", 41000, sync: false, reflexive: false);
 
         unsafe
         {

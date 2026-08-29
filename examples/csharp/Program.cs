@@ -207,7 +207,8 @@ internal static class Session
                             attemptId,
                             data["ip"]?.GetValue<string>() ?? "",
                             (ushort)(data["port"]?.GetValue<int>() ?? 0),
-                            data["sync"]?.GetValue<bool>() ?? false);
+                            data["sync"]?.GetValue<bool>() ?? false,
+                            data["from_stun"]?.GetValue<bool>() ?? false);
                     }
                     break;
                 }

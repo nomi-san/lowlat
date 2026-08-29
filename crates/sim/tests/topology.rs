@@ -10,7 +10,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use lowlat_core::conn::{Conn, Credentials, Failure, PROBE_TTL, PUNCH_WINDOW_MS, State, Ttl};
+use lowlat_core::conn::{Conn, Credentials, Failure, Kind, PROBE_TTL, PUNCH_WINDOW_MS, State, Ttl};
 use lowlat_sim::{HostId, Nat, Sim};
 
 const A_UFRAG: &str = "aaaa";
@@ -84,8 +84,10 @@ fn punch(build: impl FnOnce(&mut Sim) -> (HostId, HostId)) -> (State, State) {
         [0xB2; 16],
         0.0,
     );
-    a.add_candidate(b_candidate).expect("candidate refused");
-    b.add_candidate(a_candidate).expect("candidate refused");
+    a.add_candidate(b_candidate, Kind::Reflexive)
+        .expect("candidate refused");
+    b.add_candidate(a_candidate, Kind::Reflexive)
+        .expect("candidate refused");
 
     let mut buf = [0u8; 256];
     while sim.now_ms() <= PUNCH_WINDOW_MS {

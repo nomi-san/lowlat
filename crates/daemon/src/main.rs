@@ -691,10 +691,19 @@ async fn session_loop(
                                     &relay.attempt_id,
                                     UNREAD_MARKER_ADDRESS,
                                     true,
+                                    lowlat::admission::Kind::Direct,
                                 );
                             }
                             Relayed::Probe(addr) => {
-                                seam.add_candidate(&relay.attempt_id, addr, false);
+                                // The peer says which of its addresses a
+                                // reflexive server reported, and that is the
+                                // one the path-opening probe is for.
+                                let kind = if relay.data.from_stun {
+                                    lowlat::admission::Kind::Reflexive
+                                } else {
+                                    lowlat::admission::Kind::Direct
+                                };
+                                seam.add_candidate(&relay.attempt_id, addr, false, kind);
                             }
                             // Not every candidate is an address: a peer may
                             // anonymise a host candidate behind a `.local` name

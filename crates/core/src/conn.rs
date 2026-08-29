@@ -16,7 +16,8 @@
 //!
 //! ```text
 //! t=0      the attempt begins
-//! once     one probe at a TTL too low to leave the local network
+//! once     one probe toward the reflexive candidate, at a TTL too low
+//!          to leave the local network
 //! every    500 ms per candidate, an authenticated check
 //! t=7500   no answer, the attempt is over
 //! ```
@@ -123,6 +124,23 @@ pub enum Inbound {
     Redundant,
 }
 
+/// What kind of candidate an address is, as far as the punch cares.
+///
+/// One distinction is load bearing: whether this is the peer's
+/// server-reflexive address. That is the path that crosses translation, and
+/// the one the mapping probe exists for. An address that is routable as
+/// given -- a host candidate, or the observed source of a verified check --
+/// needs no mapping of ours opened ahead of its first full check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Kind {
+    /// Routable as given. Never the probe's target.
+    Direct,
+    /// The peer's server-reflexive address: the path that crosses
+    /// translation, and the mapping probe's only target.
+    Reflexive,
+}
+
 /// Credentials for one attempt, from the signaling exchange.
 ///
 /// Two passwords, and mixing them up produces a connection that authenticates
@@ -184,6 +202,7 @@ impl SentIds {
 #[derive(Debug, Clone, Copy)]
 struct Candidate {
     addr: SocketAddr,
+    kind: Kind,
     /// When a check was last emitted, or `None` if none ever was.
     last_check_ms: Option<f64>,
     /// Every check emitted toward this candidate, matched against answers.
@@ -292,7 +311,7 @@ impl<'a> Conn<'a> {
     /// Candidates trickle in as the peer discovers them, so this is called
     /// repeatedly and at any time. A duplicate is ignored and a full table
     /// drops the arrival rather than evicting something already being checked.
-    pub fn add_candidate(&mut self, addr: SocketAddr) -> Result<()> {
+    pub fn add_candidate(&mut self, addr: SocketAddr, kind: Kind) -> Result<()> {
         let addr = stun::canonical(addr);
         if self.candidates.iter().flatten().any(|c| c.addr == addr) {
             return Ok(());
@@ -304,6 +323,7 @@ impl<'a> Conn<'a> {
             .ok_or(Error::Oversized)?;
         *slot = Some(Candidate {
             addr,
+            kind,
             last_check_ms: None,
             sent: SentIds::new(),
         });
@@ -386,7 +406,7 @@ impl<'a> Conn<'a> {
                 // A full table refuses the addition, which is correct and not
                 // fatal: the check is still answered, so the peer can still
                 // reach us on a path it already had.
-                let _ = self.add_candidate(from);
+                let _ = self.add_candidate(from, Kind::Direct);
 
                 self.queue_response(from, message.transaction_id(), local)?;
                 // Answering is unconditional and stays that way after a path is
@@ -514,11 +534,19 @@ impl<'a> Conn<'a> {
             return None;
         }
 
-        // One probe per attempt, at the first candidate to arrive. It exists to
-        // open the local mapping, not to reach anyone, so repeating it per
-        // candidate would buy nothing and cost budget.
+        // One probe per attempt, toward the peer's reflexive candidate alone.
+        // It exists to open our own mapping on the path that crosses
+        // translation, ahead of anything full-length; a direct candidate
+        // needs no mapping opened, so it never draws the probe, and the latch
+        // waits for a reflexive candidate to exist rather than spending the
+        // one probe on whichever address arrived first.
         if !self.probe_sent
-            && let Some(to) = self.candidates.iter().flatten().next().map(|c| c.addr)
+            && let Some(to) = self
+                .candidates
+                .iter()
+                .flatten()
+                .find(|c| c.kind == Kind::Reflexive)
+                .map(|c| c.addr)
         {
             self.probe_sent = true;
             return Some(self.emit_check(to, Ttl::Probe, now_ms, out));
@@ -760,8 +788,8 @@ mod tests {
     #[test]
     fn the_first_datagram_is_a_probe_and_only_the_first() {
         let mut conn = conn();
-        conn.add_candidate(addr(1, 4000)).unwrap();
-        conn.add_candidate(addr(2, 4000)).unwrap();
+        conn.add_candidate(addr(1, 4000), Kind::Reflexive).unwrap();
+        conn.add_candidate(addr(2, 4000), Kind::Reflexive).unwrap();
 
         let sent = drain(&mut conn, 0.0);
         assert_eq!(sent.first().map(|(e, _)| e.ttl), Some(Ttl::Probe));
@@ -776,6 +804,51 @@ mod tests {
         );
     }
 
+    /// The probe opens our mapping on the path that crosses translation, so
+    /// its target is the peer's reflexive candidate -- whichever position it
+    /// arrived in. A direct candidate needs no mapping opened, and a probe
+    /// spent on it leaves the crossing path unopened.
+    #[test]
+    fn the_probe_goes_to_a_reflexive_candidate_not_the_first() {
+        let mut conn = conn();
+        conn.add_candidate(addr(1, 4000), Kind::Direct).unwrap();
+        conn.add_candidate(addr(2, 4000), Kind::Reflexive).unwrap();
+
+        let sent = drain(&mut conn, 0.0);
+        let probe = sent
+            .iter()
+            .find(|(egress, _)| egress.ttl == Ttl::Probe)
+            .expect("no probe went out");
+        assert_eq!(
+            probe.0.to,
+            addr(2, 4000),
+            "the probe went to a direct candidate"
+        );
+    }
+
+    /// No reflexive candidate, no probe -- and the latch waits for a target
+    /// to exist rather than for the first arrival, so one turning up late
+    /// still draws it.
+    #[test]
+    fn the_probe_waits_for_a_reflexive_candidate() {
+        let mut conn = conn();
+        conn.add_candidate(addr(1, 4000), Kind::Direct).unwrap();
+
+        let sent = drain(&mut conn, 0.0);
+        assert!(
+            sent.iter().all(|(egress, _)| egress.ttl == Ttl::Default),
+            "a direct candidate drew the probe"
+        );
+
+        conn.add_candidate(addr(2, 4000), Kind::Reflexive).unwrap();
+        let sent = drain(&mut conn, 600.0);
+        assert!(
+            sent.iter()
+                .any(|(egress, _)| egress.ttl == Ttl::Probe && egress.to == addr(2, 4000)),
+            "a late reflexive candidate never drew the probe"
+        );
+    }
+
     /// The regression for the restore obligation. A probe is emitted at a TTL
     /// that cannot reach the peer, and every datagram after it must be back at
     /// the default; a shell that never restored would show as a path that
@@ -783,7 +856,7 @@ mod tests {
     #[test]
     fn only_the_probe_carries_the_reduced_ttl() {
         let mut conn = conn();
-        conn.add_candidate(addr(1, 4000)).unwrap();
+        conn.add_candidate(addr(1, 4000), Kind::Reflexive).unwrap();
 
         let mut ttls = std::vec::Vec::new();
         let mut at = 0.0;
@@ -811,7 +884,7 @@ mod tests {
     fn a_candidate_that_answers_becomes_the_path() {
         let mut conn = conn();
         let peer = addr(1, 4000);
-        conn.add_candidate(peer).unwrap();
+        conn.add_candidate(peer, Kind::Reflexive).unwrap();
 
         let sent = drain(&mut conn, 0.0);
         let (egress, buf) = sent.last().copied().unwrap();
@@ -830,8 +903,8 @@ mod tests {
     fn checks_stop_once_a_path_is_chosen() {
         let mut conn = conn();
         let peer = addr(1, 4000);
-        conn.add_candidate(peer).unwrap();
-        conn.add_candidate(addr(2, 4000)).unwrap();
+        conn.add_candidate(peer, Kind::Reflexive).unwrap();
+        conn.add_candidate(addr(2, 4000), Kind::Reflexive).unwrap();
 
         let sent = drain(&mut conn, 0.0);
         let (egress, buf) = sent.last().copied().unwrap();
@@ -851,7 +924,7 @@ mod tests {
     fn inbound_checks_are_answered_even_after_the_path_is_chosen() {
         let mut conn = conn();
         let peer = addr(1, 4000);
-        conn.add_candidate(peer).unwrap();
+        conn.add_candidate(peer, Kind::Reflexive).unwrap();
         let sent = drain(&mut conn, 0.0);
         let (egress, buf) = sent.last().copied().unwrap();
         let mut response = [0u8; 256];
@@ -897,7 +970,7 @@ mod tests {
     fn an_answer_slower_than_the_check_cadence_still_establishes() {
         let mut conn = conn();
         let peer = addr(1, 4000);
-        conn.add_candidate(peer).unwrap();
+        conn.add_candidate(peer, Kind::Reflexive).unwrap();
 
         // The first round leaves, and the peer's answer to it is built now
         // but will arrive late.
@@ -1006,7 +1079,7 @@ mod tests {
         let mut conn = conn();
         let peer = addr(1, 4000);
         let proven = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3));
-        conn.add_candidate(peer).unwrap();
+        conn.add_candidate(peer, Kind::Reflexive).unwrap();
 
         let sent = drain(&mut conn, 0.0);
         assert!(
@@ -1320,7 +1393,7 @@ mod tests {
     #[test]
     fn the_window_closes_with_a_typed_failure() {
         let mut conn = conn();
-        conn.add_candidate(addr(1, 4000)).unwrap();
+        conn.add_candidate(addr(1, 4000), Kind::Reflexive).unwrap();
 
         conn.poll(PUNCH_WINDOW_MS - 1.0);
         assert_eq!(conn.state(), State::Checking);
@@ -1340,16 +1413,16 @@ mod tests {
     #[test]
     fn a_duplicate_candidate_is_ignored_and_a_full_table_refuses() {
         let mut conn = conn();
-        conn.add_candidate(addr(1, 4000)).unwrap();
-        conn.add_candidate(addr(1, 4000)).unwrap();
+        conn.add_candidate(addr(1, 4000), Kind::Reflexive).unwrap();
+        conn.add_candidate(addr(1, 4000), Kind::Reflexive).unwrap();
         assert_eq!(conn.candidate_count(), 1);
 
         for index in 0..MAX_CANDIDATES {
-            let _ = conn.add_candidate(addr(2, 4000 + index as u16));
+            let _ = conn.add_candidate(addr(2, 4000 + index as u16), Kind::Reflexive);
         }
         assert_eq!(conn.candidate_count(), MAX_CANDIDATES);
         assert_eq!(
-            conn.add_candidate(addr(3, 9999)),
+            conn.add_candidate(addr(3, 9999), Kind::Reflexive),
             Err(Error::Oversized),
             "a full table must refuse rather than evict"
         );
@@ -1360,9 +1433,12 @@ mod tests {
     #[test]
     fn a_v4_mapped_candidate_is_not_a_second_candidate() {
         let mut conn = conn();
-        conn.add_candidate(addr(1, 4000)).unwrap();
-        conn.add_candidate("[::ffff:198.51.100.1]:4000".parse().unwrap())
-            .unwrap();
+        conn.add_candidate(addr(1, 4000), Kind::Reflexive).unwrap();
+        conn.add_candidate(
+            "[::ffff:198.51.100.1]:4000".parse().unwrap(),
+            Kind::Reflexive,
+        )
+        .unwrap();
         assert_eq!(conn.candidate_count(), 1);
     }
 
@@ -1392,7 +1468,7 @@ mod tests {
         let mut conn = conn();
         assert!(conn.next_timer_ms(0.0).is_finite());
 
-        conn.add_candidate(addr(1, 4000)).unwrap();
+        conn.add_candidate(addr(1, 4000), Kind::Reflexive).unwrap();
         assert!(
             conn.next_timer_ms(0.0).abs() < 1e-9,
             "a fresh candidate is due immediately"

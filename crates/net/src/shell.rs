@@ -350,7 +350,7 @@ mod tests {
     use super::*;
     use core::net::{IpAddr, Ipv6Addr, SocketAddr};
     use lowlat_core::channel::{RecvRing, SlotMeta};
-    use lowlat_core::conn::{Conn, Credentials};
+    use lowlat_core::conn::{Conn, Credentials, Kind};
     use lowlat_core::envelope::Envelope;
     use lowlat_core::send::{SendRing, SendSlot};
     use lowlat_core::session::Session;
@@ -441,8 +441,15 @@ mod tests {
 
         let left_addr = loopback_of(&left);
         let right_addr = loopback_of(&right);
-        left.endpoint().conn().add_candidate(right_addr).unwrap();
-        right.endpoint().conn().add_candidate(left_addr).unwrap();
+        left.endpoint()
+            .conn()
+            .add_candidate(right_addr, Kind::Reflexive)
+            .unwrap();
+        right
+            .endpoint()
+            .conn()
+            .add_candidate(left_addr, Kind::Reflexive)
+            .unwrap();
         left.endpoint()
             .session()
             .send_message(CHANNEL, b"hdr", b"body")
@@ -587,7 +594,11 @@ mod tests {
         let sink = Socket::open(0).expect("sink");
         let mut to = sink.local_addr().expect("addr");
         to.set_ip(IpAddr::V6(Ipv6Addr::LOCALHOST));
-        shell.endpoint().conn().add_candidate(to).unwrap();
+        shell
+            .endpoint()
+            .conn()
+            .add_candidate(to, Kind::Reflexive)
+            .unwrap();
 
         // The probe leaves at once; pacing then holds the first real check
         // ten milliseconds out, which is the deadline under test.
@@ -623,8 +634,15 @@ mod tests {
         // cadence, and nothing leaves on it until there is somewhere to send.
         let left_addr = loopback_of(&left);
         let right_addr = loopback_of(&right);
-        left.endpoint().conn().add_candidate(right_addr).unwrap();
-        right.endpoint().conn().add_candidate(left_addr).unwrap();
+        left.endpoint()
+            .conn()
+            .add_candidate(right_addr, Kind::Reflexive)
+            .unwrap();
+        right
+            .endpoint()
+            .conn()
+            .add_candidate(left_addr, Kind::Reflexive)
+            .unwrap();
         let punch = std::time::Instant::now();
         while punch.elapsed() < std::time::Duration::from_secs(4)
             && (left.endpoint().path().is_none() || right.endpoint().path().is_none())

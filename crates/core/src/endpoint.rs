@@ -271,8 +271,13 @@ mod tests {
 
         let left_addr = addr(10, 5000);
         let right_addr = addr(20, 6000);
-        left.conn().add_candidate(right_addr).unwrap();
-        right.conn().add_candidate(left_addr).unwrap();
+        left.conn()
+            .add_candidate(right_addr, conn::Kind::Reflexive)
+            .unwrap();
+        right
+            .conn()
+            .add_candidate(left_addr, conn::Kind::Reflexive)
+            .unwrap();
 
         // Media queued before a path exists must wait, not vanish.
         left.session()
@@ -335,8 +340,13 @@ mod tests {
         // What each side's own socket would report its arrivals at.
         let left_local = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3));
         let right_local = IpAddr::V4(Ipv4Addr::new(20, 0, 0, 7));
-        left.conn().add_candidate(right_addr).unwrap();
-        right.conn().add_candidate(left_addr).unwrap();
+        left.conn()
+            .add_candidate(right_addr, conn::Kind::Reflexive)
+            .unwrap();
+        right
+            .conn()
+            .add_candidate(left_addr, conn::Kind::Reflexive)
+            .unwrap();
 
         let mut now = 0.0;
         while now < 2_000.0 && (left.path().is_none() || right.path().is_none()) {
@@ -400,7 +410,10 @@ mod tests {
 
         // A fresh candidate is due immediately, well inside the acknowledgement
         // cadence, so connectivity sets the deadline.
-        endpoint.conn().add_candidate(addr(20, 6000)).unwrap();
+        endpoint
+            .conn()
+            .add_candidate(addr(20, 6000), conn::Kind::Reflexive)
+            .unwrap();
         assert!(endpoint.next_timer_ms(0.0).abs() < 1e-9);
 
         // Once the attempt is over it asks for nothing, and the session's
@@ -435,7 +448,9 @@ mod tests {
         );
 
         let left_addr = addr(10, 5000);
-        left.conn().add_candidate(addr(20, 6000)).unwrap();
+        left.conn()
+            .add_candidate(addr(20, 6000), conn::Kind::Reflexive)
+            .unwrap();
 
         let mut wire = [0u8; 512];
         let mut scratch = [0u8; 512];

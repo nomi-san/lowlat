@@ -24,7 +24,7 @@ use std::thread;
 use std::time::Duration;
 
 use lowlat_core::channel::{RecvRing, SlotMeta};
-use lowlat_core::conn::{Conn, Credentials, State};
+use lowlat_core::conn::{Conn, Credentials, Kind, State};
 use lowlat_core::endpoint::Endpoint;
 use lowlat_core::envelope::Envelope;
 use lowlat_core::send::{SendRing, SendSlot};
@@ -163,7 +163,7 @@ fn peer(args: &[String]) -> Result<(), String> {
         shell
             .endpoint()
             .conn()
-            .add_candidate(candidate)
+            .add_candidate(candidate, Kind::Direct)
             .map_err(|e| e.to_string())?;
         println!("candidate {candidate}");
     }
@@ -179,7 +179,7 @@ fn peer(args: &[String]) -> Result<(), String> {
         let turn = shell
             .turn(|endpoint| {
                 while let Ok(addr) = inbox.try_recv() {
-                    if endpoint.conn().add_candidate(addr).is_ok() {
+                    if endpoint.conn().add_candidate(addr, Kind::Reflexive).is_ok() {
                         arrived = Some(addr);
                     }
                 }

@@ -21,6 +21,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, mpsc};
 
 use lowlat_core::channel::{RecvRing, SlotMeta};
+pub use lowlat_core::conn::Kind;
 use lowlat_core::conn::{Conn, Credentials};
 use lowlat_core::control::{self, CONTROL_CHANNEL, status};
 use lowlat_core::endpoint::Endpoint;
@@ -377,9 +378,9 @@ struct Attempt {
     peer_ready: bool,
     /// Buffered until approval, because candidates trickle and the peer starts
     /// sending them before the answer reaches it.
-    pending: Vec<SocketAddr>,
+    pending: Vec<(SocketAddr, Kind)>,
     guest: Option<Guest>,
-    inject: Option<mpsc::Sender<SocketAddr>>,
+    inject: Option<mpsc::Sender<(SocketAddr, Kind)>>,
     /// Application messages waiting to go to this guest.
     ///
     /// **The body is built where the caller is**, so the thread serving the
@@ -715,7 +716,7 @@ impl Admission {
     ///
     /// Unknown attempts are a no-op rather than an error: an identifier that
     /// has just been torn down is a race with the peer, not a fault.
-    pub fn add_candidate(&mut self, id: &str, addr: SocketAddr, sync: bool) {
+    pub fn add_candidate(&mut self, id: &str, addr: SocketAddr, sync: bool, kind: Kind) {
         let Some(attempt) = self.attempts.get_mut(id) else {
             return;
         };
@@ -725,14 +726,14 @@ impl Admission {
         }
         match (&attempt.inject, &attempt.guest) {
             (Some(inject), Some(guest)) => {
-                if inject.send(addr).is_ok() {
+                if inject.send((addr, kind)).is_ok() {
                     // The loop waits on its own deadline, so a candidate that
                     // only lands in the queue is not seen until that expires.
                     let _ = guest.wake_handle().notify();
                 }
             }
             // Before approval there is nowhere to put it but the buffer.
-            _ => attempt.pending.push(addr),
+            _ => attempt.pending.push((addr, kind)),
         }
     }
 
@@ -815,9 +816,9 @@ impl Admission {
         let bound = socket.local_addr().map_err(|_| Error::Io)?.port();
         let wake = Wake::new().map_err(|_| Error::Io)?;
 
-        let (inject, arrivals) = mpsc::channel::<SocketAddr>();
-        for addr in attempt.pending.drain(..) {
-            let _ = inject.send(addr);
+        let (inject, arrivals) = mpsc::channel::<(SocketAddr, Kind)>();
+        for arrival in attempt.pending.drain(..) {
+            let _ = inject.send(arrival);
         }
         let (say, said) = mpsc::channel::<Said>();
         let (ask, asked) = mpsc::channel::<Ask>();
@@ -1194,7 +1195,7 @@ struct Attached {
     emit: crate::events::Sender,
     socket: Socket,
     servers: Vec<SocketAddr>,
-    arrivals: mpsc::Receiver<SocketAddr>,
+    arrivals: mpsc::Receiver<(SocketAddr, Kind)>,
     /// Application messages the seam wants sent to this guest.
     said: mpsc::Receiver<Said>,
     /// What the application has asked of this guest.
@@ -1959,8 +1960,8 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         // triggers, and nothing else releases them. The session is over either
         // way; the difference is whether the host knows.
         let turn = match shell.turn(|endpoint| {
-            while let Ok(addr) = arrivals.try_recv() {
-                let _ = endpoint.conn().add_candidate(addr);
+            while let Ok((addr, kind)) = arrivals.try_recv() {
+                let _ = endpoint.conn().add_candidate(addr, kind);
             }
             if let (Some(seat), Some(packetiser), Some(negotiation)) =
                 (seated, framing.as_deref_mut(), declaring.as_deref_mut())
@@ -2639,7 +2640,12 @@ mod tests {
         });
         // A candidate for an identifier that never existed, or has just been
         // torn down, is a race with the peer and not an error.
-        seam.add_candidate("nope", "127.0.0.1:9000".parse().unwrap(), false);
+        seam.add_candidate(
+            "nope",
+            "127.0.0.1:9000".parse().unwrap(),
+            false,
+            Kind::Reflexive,
+        );
         assert_eq!(
             seam.begin_p2p("nope", 0).unwrap_err(),
             Error::UnknownAttempt
@@ -2706,8 +2712,18 @@ mod tests {
     fn candidates_arriving_before_approval_are_kept() {
         let mut seam = admission(4);
         seam.new_attempt("a", peer()).expect("register");
-        seam.add_candidate("a", "203.0.113.9:41000".parse().unwrap(), false);
-        seam.add_candidate("a", "203.0.113.9:41001".parse().unwrap(), false);
+        seam.add_candidate(
+            "a",
+            "203.0.113.9:41000".parse().unwrap(),
+            false,
+            Kind::Reflexive,
+        );
+        seam.add_candidate(
+            "a",
+            "203.0.113.9:41001".parse().unwrap(),
+            false,
+            Kind::Reflexive,
+        );
 
         let buffered = seam.attempts.get("a").map(|a| a.pending.len());
         assert_eq!(buffered, Some(2), "a candidate before approval was dropped");
@@ -2890,7 +2906,7 @@ mod tests {
     fn a_sync_marker_never_becomes_a_candidate() {
         let mut seam = admission(4);
         seam.new_attempt("a", peer()).expect("register");
-        seam.add_candidate("a", "1.2.3.4:1234".parse().unwrap(), true);
+        seam.add_candidate("a", "1.2.3.4:1234".parse().unwrap(), true, Kind::Reflexive);
 
         let attempt = seam.attempts.get("a").expect("attempt");
         assert!(attempt.peer_ready, "the marker was not recorded");

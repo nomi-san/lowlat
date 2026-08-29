@@ -294,6 +294,10 @@ pub struct RelayedCandidate {
     pub port: u16,
     #[serde(default)]
     pub sync: bool,
+    /// Whether a reflexive server reported this address to the peer. Absent
+    /// on older senders, and absent means not reflexive.
+    #[serde(default)]
+    pub from_stun: bool,
 }
 
 /// A withdrawal, which is addressed by attempt and carries no reason.
@@ -341,6 +345,7 @@ mod tests {
             ip: ip.to_string(),
             port: 1234,
             sync: true,
+            from_stun: false,
         };
         assert_eq!(
             marker("1c4d9ae8-f7a8-4513-affb-dcbb40048922.local").read(),
@@ -362,6 +367,7 @@ mod tests {
             ip: ip.to_string(),
             port: 41000,
             sync: false,
+            from_stun: true,
         };
         let dotted = candidate("::ffff:192.0.2.7").read();
         let hex = candidate("::ffff:c000:207").read();
@@ -378,6 +384,7 @@ mod tests {
             ip: ip.to_string(),
             port: 31064,
             sync: false,
+            from_stun: false,
         };
         assert_eq!(
             candidate("2405:4802:d0f5:6ec0:c048:4183:5759:8357").read(),

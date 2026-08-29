@@ -664,7 +664,12 @@ pub struct lowlat_candidate {
     /// candidate until it has seen one, so an application that never forwards
     /// one negotiates against a peer that never offers anything to check.
     pub sync: bool,
-    pub reserved: u8,
+    /// Whether a reflexive server reported this address to the peer. The
+    /// path-opening probe goes only toward such a candidate; an address the
+    /// peer knows directly needs no path opened ahead of its first check.
+    /// Zero is safe when the application cannot say -- the punch still runs,
+    /// without the early probe.
+    pub reflexive: bool,
     pub address: [c_char; LOWLAT_ADDRESS_MAX],
 }
 
@@ -1324,7 +1329,12 @@ pub unsafe extern "C" fn lowlat_host_add_candidate(
             let Some(seam) = held.seam.as_mut() else {
                 return LOWLAT_ERR_NOT_STARTED;
             };
-            seam.add_candidate(attempt, addr, cand.sync);
+            let kind = if cand.reflexive {
+                lowlat_core::conn::Kind::Reflexive
+            } else {
+                lowlat_core::conn::Kind::Direct
+            };
+            seam.add_candidate(attempt, addr, cand.sync, kind);
             LOWLAT_OK
         });
     }
@@ -3257,7 +3267,7 @@ mod seam_tests {
             size: u32::try_from(core::mem::size_of::<lowlat_candidate>()).unwrap_or(u32::MAX),
             port: 41000,
             sync: true,
-            reserved: 0,
+            reflexive: false,
             address: [0; LOWLAT_ADDRESS_MAX],
         };
         // Accepted with nothing in the address at all.

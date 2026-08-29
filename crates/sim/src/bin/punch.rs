@@ -20,7 +20,7 @@ use std::net::{SocketAddr, UdpSocket};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use lowlat_core::conn::{Conn, Credentials, Inbound, PROBE_TTL, State, Ttl};
+use lowlat_core::conn::{Conn, Credentials, Inbound, Kind, PROBE_TTL, State, Ttl};
 use lowlat_core::demux::{self, Datagram};
 use lowlat_core::stun::{self, Message, Method};
 
@@ -159,7 +159,8 @@ fn peer(args: &[String]) -> Result<(), String> {
         let candidate: SocketAddr = candidate
             .parse()
             .map_err(|_| "bad --candidate".to_string())?;
-        conn.add_candidate(candidate).map_err(|e| e.to_string())?;
+        conn.add_candidate(candidate, Kind::Direct)
+            .map_err(|e| e.to_string())?;
         awaited = true;
         println!("candidate {candidate}");
     }
@@ -188,7 +189,8 @@ fn peer(args: &[String]) -> Result<(), String> {
             && let Ok(text) = fs::read_to_string(path)
             && let Ok(addr) = text.trim().parse::<SocketAddr>()
         {
-            conn.add_candidate(addr).map_err(|e| e.to_string())?;
+            conn.add_candidate(addr, Kind::Reflexive)
+                .map_err(|e| e.to_string())?;
             awaited = true;
             println!("candidate {addr}");
         }
