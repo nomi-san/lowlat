@@ -762,9 +762,18 @@ impl Device {
     /// while exporting the allocation as one perfectly well. Asking the image
     /// question about the memory is how a working export gets refused, and
     /// asking neither is how both end up declared and neither checked.
+    ///
+    /// **Every kind the device will export, and not the kinds it will export
+    /// together.** `compatibleHandleTypes` says which kinds may share one
+    /// allocation, and intersecting it across the kinds wanted answers a
+    /// question nobody asked: a picture is exported as one kind at a time, and
+    /// which one depends on the encoder that has not been chosen yet. One
+    /// vendor here reports each kind compatible with itself alone, so that
+    /// intersection is empty and the allocation ends up declaring nothing
+    /// exportable -- which took capture on that card out entirely, and only a
+    /// live output switch found it.
     fn exportable_memory(&self) -> vk::ExternalMemoryHandleTypeFlags {
         let mut offered = vk::ExternalMemoryHandleTypeFlags::empty();
-        let mut compatible = vk::ExternalMemoryHandleTypeFlags::from_raw(u32::MAX);
         for wanted in WANTED {
             let info = vk::PhysicalDeviceExternalBufferInfo::default()
                 .usage(vk::BufferUsageFlags::TRANSFER_SRC)
@@ -783,9 +792,8 @@ impl Device {
                 continue;
             }
             offered |= wanted;
-            compatible &= out.external_memory_properties.compatible_handle_types;
         }
-        offered & compatible
+        offered
     }
 
     fn plane_image(
@@ -1751,6 +1759,44 @@ impl Device {
 
 #[cfg(test)]
 mod tests {
+
+    /// Both descriptor kinds export, on every display device present.
+    ///
+    /// **This exists because a change to what an allocation declares took
+    /// capture out on one card and passed everything here.** Nothing else in
+    /// the suite exports a picture: the conversion tests convert and compare,
+    /// and the fault reached a person as an output that would not switch, with
+    /// a message naming neither the handle kind nor the card.
+    #[test]
+    #[ignore = "requires a display device"]
+    fn a_conversion_target_exports_both_ways_on_every_device() {
+        let mut seen = 0;
+        for index in 0..8 {
+            let node = std::path::PathBuf::from(format!("/dev/dri/card{index}"));
+            if !node.exists() {
+                continue;
+            }
+            let Ok(device) = crate::vulkan::Device::for_display(&node) else {
+                continue;
+            };
+            let target = device.allocate_nv12(64, 64).expect("a target");
+            for display_interface in [true, false] {
+                let got = device.export_nv12(&target, display_interface);
+                assert!(
+                    got.is_ok(),
+                    "{node:?} refused a picture with display_interface={display_interface}: {:?}",
+                    got.err()
+                );
+            }
+            device.release_nv12(target);
+            println!("{node:?}: exports both ways");
+            seen += 1;
+        }
+        assert!(
+            seen > 0,
+            "no display device answered, so nothing was tested"
+        );
+    }
     use std::io::Seek;
 
     use super::*;
