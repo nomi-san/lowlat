@@ -284,14 +284,25 @@ in the daemon's startup diagnostics, which check for it and warn rather than fai
 Per [AGENTS.md](../AGENTS.md) §14, what in this document is confirmed against a real peer
 versus carried from earlier work and pending re-verification.
 
-**Confirmed, and load bearing for what we offer:** a peer gathers host candidates on **IPv4
-only**, and only from private address space -- `10/8`, `172.16/12`, `192.168/16`, and shared
-address space behind a setting. A public address is never offered as a host candidate, and an
-IPv6 one never is at all. A peer's only route to a v6 address of its own is a reflexive probe
-against a v6-capable server, so a v6 address from one should arrive as server reflexive rather
-than as a host candidate. **The IPv6 host candidate this implementation offers is therefore an
-extension, not parity**; peers accept and probe it, and a live session has been carried over
-one.
+**Confirmed, and load bearing for what we offer:** a peer gathers v4 host candidates only
+from private address space -- `10/8`, `172.16/12`, `192.168/16`, and shared address space
+behind a setting; a public v4 address is never offered as a host candidate.
+
+*(Corrected 2026-08-29, against a three-client host capture.)* Two claims this paragraph
+used to make did not survive that capture. A peer **does** offer a globally routable IPv6
+address, and it arrives **marked lan**, not server reflexive: on that family there is no
+translation to negotiate, so the lan marking means "check this without ceremony" rather
+than "this is your segment", and it applies however the address was discovered. This
+implementation now marks its own v6 the same way on the way out, whichever probe found it,
+so the peer checks it at once and keeps its one path-opening probe for a translated path.
+
+Also from the same capture: **a candidate may carry neither marking** -- a peer's public
+address at its local port, a translated-path guess no server verified, offered in case its
+translator preserves ports (observed beside the server-verified mapping at a different
+port, and observed alone). The candidate model carries all three classes end to end for
+that reason. And a readiness marker's address field is arbitrary in practice: one peer
+sends a fixed placeholder, another echoes the recipient's own reflexive address, so the
+marker must never reach the candidate table whatever it carries.
 
 **Confirmed:** the shared socket and its demultiplexing rule; binding requests and responses
 carrying message integrity; the fixed controlling role; TTL-scoped probes with restoration;

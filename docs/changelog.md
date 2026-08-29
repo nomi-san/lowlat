@@ -3,6 +3,24 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## The candidate model carries what the exchange carries
+
+**The boundary collapsed the exchange's two candidate markings into one**,
+and a capture of a live multi-client session showed all three of their
+combinations in real traffic: lan (host addresses, and every IPv6 address
+-- no translation to negotiate on that family, however the address was
+found), server-reflexive, and neither -- a peer's public address at its
+local port, a translated-path guess no server verified. The candidate
+struct and the outbound candidate event now carry both flags; the boundary
+decides the marking (IPv6 goes out lan whichever probe discovered it, so a
+peer checks it at once and keeps its one path-opening probe for a
+translated path) and applications relay both directions verbatim. The
+engine models the third class alongside the other two: checked like
+anything else, never the probe's target. Two stale claims in the
+connectivity document fell to the same capture and are corrected in place,
+and the readiness placeholder this implementation sends was observed
+verbatim from a stock peer.
+
 ## An answer of any latency inside the window matches
 
 **A candidate and a server held one transaction identifier, overwritten by

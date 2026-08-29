@@ -330,11 +330,14 @@ the offer it withdraws is **remembered**, so admitting that offer afterwards is 
 address rides along is ignored -- so it alone is accepted without one. A peer may withhold every
 real candidate until it has seen one.
 
-**A candidate marked `reflexive` is one a reflexive server reported to the peer** (2026-08-29),
-and the application copies that from its signaling when the peer says so. It steers one thing:
-the path-opening probe goes only toward such a candidate, because that is the path that crosses
-translation. Zero is safe when the signaling cannot say -- the punch still runs, without the
-early probe.
+**A candidate carries the exchange's two markings, `lan` and `reflexive`, copied verbatim
+from the signaling** (2026-08-29). `reflexive` steers the path-opening probe: it goes only
+toward such a candidate, because that is the path that crosses translation. `lan` names an
+address that is directly routable -- a host address, or any IPv6 one -- and wins when both
+are set. Neither set is a real class of its own, a translated-path guess no server verified,
+so all-zero is safe and means exactly that. The outbound candidate event carries the same
+two flags, decided by the boundary -- IPv6 goes out marked `lan` whichever probe discovered
+it -- so an application relays both directions without interpreting either.
 
 **`lowlat_host_end_connection` takes no reason**, for the same reason `lowlat_host_stop` does
 not: ending stops the guest's loop, and the far side learns from its own liveness deadline
