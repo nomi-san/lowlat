@@ -141,22 +141,63 @@ pub struct Credentials<'a> {
     pub remote_pwd: &'a str,
 }
 
+/// Checks the window's budget allows one target: fifteen at the cadence,
+/// and the mapping probe can add one more.
+const SENT_IDS: usize = 16;
+
+/// Every identifier one target has been asked with, kept for the life of
+/// the attempt.
+///
+/// An answer is matched against all of them, because a true answer can be
+/// slower than the cadence that emits the next identifier: matched against
+/// only the newest, a path whose round trip exceeds the cadence fails
+/// deterministically, the answer forever one identifier behind. The budget
+/// bounds the set, so the storage is fixed; were it ever exceeded, the
+/// oldest is overwritten, which narrows matching by one rather than
+/// anything worse.
+#[derive(Debug, Clone, Copy)]
+struct SentIds {
+    slots: [Option<TransactionId>; SENT_IDS],
+    at: usize,
+}
+
+impl SentIds {
+    const fn new() -> Self {
+        Self {
+            slots: [None; SENT_IDS],
+            at: 0,
+        }
+    }
+
+    fn push(&mut self, tid: TransactionId) {
+        if let Some(slot) = self.slots.get_mut(self.at) {
+            *slot = Some(tid);
+        }
+        self.at = (self.at + 1) % SENT_IDS;
+    }
+
+    fn contains(&self, tid: TransactionId) -> bool {
+        self.slots.iter().flatten().any(|sent| *sent == tid)
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Candidate {
     addr: SocketAddr,
     /// When a check was last emitted, or `None` if none ever was.
     last_check_ms: Option<f64>,
-    /// Identifier of the outstanding check, matched against a response.
-    outstanding: Option<TransactionId>,
+    /// Every check emitted toward this candidate, matched against answers.
+    sent: SentIds,
 }
 
 #[derive(Debug, Clone, Copy)]
 struct Server {
     addr: SocketAddr,
     last_probe_ms: Option<f64>,
-    /// Identifier of the outstanding probe. A server answer carries no
-    /// credentials, so this is the only thing that admits one.
-    outstanding: Option<TransactionId>,
+    /// Every probe emitted toward this server. An answer carries no
+    /// credentials, so this set and the source address are the whole of what
+    /// admits one.
+    sent: SentIds,
     answered: bool,
     /// The address this server reported seeing us at, once it has.
     mapped: Option<SocketAddr>,
@@ -264,7 +305,7 @@ impl<'a> Conn<'a> {
         *slot = Some(Candidate {
             addr,
             last_check_ms: None,
-            outstanding: None,
+            sent: SentIds::new(),
         });
         Ok(())
     }
@@ -291,7 +332,7 @@ impl<'a> Conn<'a> {
         *slot = Some(Server {
             addr,
             last_probe_ms: None,
-            outstanding: None,
+            sent: SentIds::new(),
             answered: false,
             mapped: None,
         });
@@ -364,9 +405,8 @@ impl<'a> Conn<'a> {
                     .servers
                     .iter_mut()
                     .flatten()
-                    .find(|s| s.outstanding == Some(tid) && s.addr == from)
+                    .find(|s| s.sent.contains(tid) && s.addr == from)
                 {
-                    server.outstanding = None;
                     server.answered = true;
                     return match message.mapped_address() {
                         Some(mapped) => {
@@ -384,13 +424,13 @@ impl<'a> Conn<'a> {
                     .candidates
                     .iter_mut()
                     .flatten()
-                    .find(|c| c.outstanding == Some(tid));
+                    .find(|c| c.sent.contains(tid));
                 let Some(candidate) = known else {
-                    // A late answer to a transaction we have moved past. Not an
-                    // error; it is a race with the cadence.
+                    // An answer to a transaction this attempt never sent.
+                    // Authenticated, so it is a duplicate or a replay rather
+                    // than an error.
                     return Ok(Inbound::Redundant);
                 };
-                candidate.outstanding = None;
                 let addr = candidate.addr;
 
                 if matches!(self.state, State::Checking) {
@@ -564,7 +604,7 @@ impl<'a> Conn<'a> {
             self.credentials.remote_pwd,
         )?;
         if let Some(candidate) = self.candidates.iter_mut().flatten().find(|c| c.addr == to) {
-            candidate.outstanding = Some(tid);
+            candidate.sent.push(tid);
         }
         self.last_sent_ms = Some(now_ms);
         // The latch is None for the whole punch, so checks let the kernel
@@ -589,7 +629,7 @@ impl<'a> Conn<'a> {
         let len = stun::encode_reflexive_request(out, tid)?;
         if let Some(server) = self.servers.get_mut(index).and_then(Option::as_mut) {
             server.last_probe_ms = Some(now_ms);
-            server.outstanding = Some(tid);
+            server.sent.push(tid);
         }
         self.last_sent_ms = Some(now_ms);
         // Unpinned on purpose: the question is what mapping the default route
@@ -628,7 +668,7 @@ impl<'a> Conn<'a> {
     ///
     /// Never random. The identifier is echoed rather than validated and the
     /// integrity attribute is what authenticates, so it only has to be unique
-    /// among our outstanding transactions. Deriving it keeps the core free of a
+    /// among the transactions this attempt has sent. Deriving it keeps the core free of a
     /// random number generator and makes a failing run replayable from its
     /// seed.
     fn next_transaction_id(&mut self) -> TransactionId {
@@ -846,6 +886,62 @@ mod tests {
             "a response must be signed with our own password"
         );
         assert_eq!(reply.mapped_address(), Some(peer));
+    }
+
+    /// An answer that took longer than the check cadence is still an answer.
+    /// Every identifier this attempt has asked a candidate with stays valid
+    /// for the attempt's life: matched against only the newest, a path whose
+    /// round trip exceeds the cadence fails deterministically, the answer
+    /// forever one identifier behind.
+    #[test]
+    fn an_answer_slower_than_the_check_cadence_still_establishes() {
+        let mut conn = conn();
+        let peer = addr(1, 4000);
+        conn.add_candidate(peer).unwrap();
+
+        // The first round leaves, and the peer's answer to it is built now
+        // but will arrive late.
+        let sent = drain(&mut conn, 0.0);
+        let (egress, buf) = sent.last().copied().unwrap();
+        let mut response = [0u8; 256];
+        let len = answer(&buf, egress.len, addr(9, 5000), &mut response);
+
+        // The cadence re-checks before the answer lands. The drain helper
+        // paces its emissions, so the first check left a pace step after the
+        // probe; ask comfortably past one cadence from there.
+        let again = drain(&mut conn, CHECK_CADENCE_MS + 2.0 * PACING_MS);
+        assert!(!again.is_empty(), "no re-check went out, fixture broken");
+
+        assert_eq!(
+            conn.process_input(&response[..len], peer, None).unwrap(),
+            Inbound::PathEstablished(peer),
+            "a true answer one identifier old was discarded"
+        );
+    }
+
+    /// The same rule for a reflexive server: its report is matched against
+    /// every probe this attempt sent it, not only the newest.
+    #[test]
+    fn a_server_answer_slower_than_the_cadence_still_teaches() {
+        let mut conn = conn();
+        let server = addr(50, 3478);
+        let observed = addr(9, 41_000);
+        conn.add_server(server).unwrap();
+
+        let sent = drain(&mut conn, 0.0);
+        let (egress, buf) = sent.first().copied().unwrap();
+        let tid = Message::parse(&buf[..egress.len]).unwrap().transaction_id();
+
+        let again = drain(&mut conn, CHECK_CADENCE_MS + 1.0);
+        assert!(!again.is_empty(), "no re-probe went out, fixture broken");
+
+        let mut response = [0u8; 256];
+        let len = stun::encode_binding_response(&mut response, tid, observed, "any").unwrap();
+        assert_eq!(
+            conn.process_input(&response[..len], server, None).unwrap(),
+            Inbound::Reflexive(observed),
+            "a true report one identifier old was refused"
+        );
     }
 
     /// A check is answered from the address it arrived at. The peer's filter
