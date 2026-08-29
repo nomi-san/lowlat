@@ -10,8 +10,12 @@
 //! batch closes when the size changes, the destination changes, or a datagram
 //! needs a hop limit of its own.
 //!
-//! Offload is a fast path, never a requirement. Where the kernel refuses it,
-//! the batch falls back to a datagram per syscall permanently and says so once.
+//! Offload is a fast path, never a requirement. A kernel that cannot segment
+//! at all sends the whole run to a datagram per syscall, said once; a refusal
+//! about one batch -- a full send buffer in the middle of a burst is the
+//! ordinary case -- falls back for that batch alone, because trading the fast
+//! path away forever on a transient is exactly backwards: the bursts that
+//! fill the buffer are the ones segmentation exists for.
 
 use core::net::{IpAddr, SocketAddr};
 use std::io;
@@ -21,8 +25,17 @@ use lowlat_core::conn::{Egress, Ttl};
 
 use crate::socket::{DEFAULT_TTL, PROBE_TTL_MAX, Socket, to_storage};
 
-/// Staging capacity. The kernel will not segment more than this in one call.
+/// Staging buffer size.
 const SEND_BUF: usize = 64 * 1024;
+
+/// Bytes the kernel will segment in one call: one maximal UDP payload, at
+/// the v4 figure because it is the smaller of the two families -- 65,535
+/// less 20 of IP header less 8 of UDP header. A batch staged past this is
+/// refused whole, so the join bound closes here rather than at the buffer:
+/// sixty-four kibibyte segments fit the buffer exactly and are one byte
+/// ladder past what a single send may carry.
+const OFFLOAD_MAX: usize = 65_507;
+const _: () = assert!(OFFLOAD_MAX <= SEND_BUF);
 
 /// Segments the kernel accepts in one offloaded send.
 const MAX_SEGMENTS: usize = 64;
@@ -65,7 +78,9 @@ pub struct Batch {
     /// The source the staged burst is pinned to, if any. Part of the batch
     /// key like the destination: one burst, one source.
     from: Option<IpAddr>,
-    /// Cleared for good the first time the kernel refuses to segment.
+    /// Cleared for good when the kernel says it cannot segment at all. A
+    /// refusal about one batch -- a full buffer during a burst -- leaves it
+    /// set, and that batch alone takes the ordinary path.
     offload: bool,
     /// Datagrams the path has refused since the last one it took.
     ///
@@ -183,7 +198,7 @@ impl Batch {
             && self.from == egress.from
             && !self.closed
             && self.count < MAX_SEGMENTS
-            && self.used + egress.len <= SEND_BUF
+            && self.used + egress.len <= OFFLOAD_MAX
             && egress.len <= self.segment
     }
 
@@ -220,14 +235,22 @@ impl Batch {
             match offload_send(socket, staged, self.segment, to, self.from) {
                 Ok(()) => return Ok(()),
                 Err(error) => {
-                    // Not every kernel and interface pair will segment. Say so
-                    // once, then take the ordinary path for the rest of the run
-                    // rather than paying a failed syscall per burst.
-                    self.offload = false;
-                    lowlat_common::log_warn!(
-                        "net: offload refused, per-datagram send from here, err={}",
-                        error
-                    );
+                    if offload_unsupported(&error) {
+                        // Not every kernel and interface pair will segment.
+                        // Say so once, then take the ordinary path for the
+                        // rest of the run rather than paying a failed syscall
+                        // per burst.
+                        self.offload = false;
+                        lowlat_common::log_warn!(
+                            "net: offload refused, per-datagram send from here, err={}",
+                            error
+                        );
+                    }
+                    // Anything else is about this batch or this moment -- a
+                    // send buffer full mid-burst is the ordinary case -- so
+                    // only these datagrams fall back and offload stays. The
+                    // per-datagram sends below meet the same condition and
+                    // `refused` keeps their logging bounded.
                 }
             }
         }
@@ -281,6 +304,23 @@ impl Batch {
         self.ttl = Ttl::Default;
         self.from = None;
     }
+}
+
+/// Whether a refused offload send says the kernel cannot segment, as opposed
+/// to refusing this batch.
+///
+/// A closed set on purpose, and the default is transient: `EOPNOTSUPP` and
+/// `EINVAL` are what a kernel or interface without segmentation answers, and
+/// `EMSGSIZE` a batch past the segmentable maximum -- which the join bound
+/// rules out, so if it arrives anyway the kernel is refusing the shape
+/// itself. Everything else -- a full buffer, an interrupt, a policy or a
+/// route refusing this destination -- is about the moment, not the
+/// capability, and must not cost the fast path for the rest of the session.
+fn offload_unsupported(error: &io::Error) -> bool {
+    matches!(
+        error.raw_os_error(),
+        Some(libc::EOPNOTSUPP | libc::EINVAL | libc::EMSGSIZE)
+    )
 }
 
 /// One syscall, many datagrams: the kernel splits `staged` every `segment`
@@ -546,6 +586,94 @@ mod tests {
             source,
             "the kernel default equals the pinned address, so the test is vacuous"
         );
+    }
+
+    /// The set of errors that latch offload off, written out rather than
+    /// derived, so a kind moving between the two classes fails here instead
+    /// of agreeing with itself.
+    #[test]
+    fn only_capability_errors_disable_offload() {
+        for capability in [libc::EOPNOTSUPP, libc::EINVAL, libc::EMSGSIZE] {
+            assert!(
+                offload_unsupported(&io::Error::from_raw_os_error(capability)),
+                "{capability} must disable offload for the run"
+            );
+        }
+        for transient in [
+            libc::EAGAIN,
+            libc::ENOBUFS,
+            libc::EINTR,
+            libc::EACCES,
+            libc::ENETUNREACH,
+        ] {
+            assert!(
+                !offload_unsupported(&io::Error::from_raw_os_error(transient)),
+                "{transient} is about the moment and must not cost the fast path"
+            );
+        }
+    }
+
+    /// A refusal about one batch must not cost offload for the session. Only
+    /// the kernel saying it cannot segment at all is permanent; a full send
+    /// buffer mid-burst, an interrupt, or a destination the policy refuses
+    /// are about the moment, and the burst falls back alone.
+    #[test]
+    fn a_batch_scoped_refusal_keeps_offload() {
+        let sender = Socket::open(0).expect("sender");
+        let mut batch = Batch::new();
+
+        // Broadcast without SO_BROADCAST is refused at the syscall: a real
+        // send failure that needs no network state and says nothing about
+        // whether the kernel can segment.
+        let to = SocketAddr::new(IpAddr::V4(core::net::Ipv4Addr::new(255, 255, 255, 255)), 9);
+        push(&mut batch, &sender, to, Ttl::Default, &[1u8; 256]);
+        push(&mut batch, &sender, to, Ttl::Default, &[2u8; 256]);
+        batch.flush(&sender).expect("a refusal is not an error");
+
+        assert!(
+            batch.offloading(),
+            "a refusal about one batch disabled offload for the session"
+        );
+        assert_eq!(batch.refused(), 2, "the fallback sends were not counted");
+    }
+
+    /// The join bound closes at what the kernel will segment, not at the
+    /// staging buffer. Sixty-four kibibyte datagrams fill the buffer exactly
+    /// and overrun the segmentable maximum; staged, that batch is refused
+    /// whole -- and under a bound at the buffer size the refusal also cost
+    /// offload for the rest of the session.
+    #[test]
+    fn a_batch_closes_at_the_segmentable_maximum() {
+        let sender = Socket::open(0).expect("sender");
+        let receiver = Socket::open(0).expect("receiver");
+        let to = loopback_of(&receiver);
+        let mut batch = Batch::new();
+
+        for index in 0..64u8 {
+            push(&mut batch, &sender, to, Ttl::Default, &[index; 1024]);
+        }
+        assert_eq!(
+            batch.staged(),
+            1,
+            "a kibibyte datagram joined a batch the kernel cannot segment"
+        );
+        assert!(
+            batch.offloading(),
+            "the oversized batch reached the kernel and cost offload"
+        );
+
+        // And the sixty-three that flushed ahead of it all arrived.
+        let mut inbound = recv::Batch::new();
+        let mut got = 0;
+        for _ in 0..20 {
+            if got >= 63 {
+                break;
+            }
+            if receiver.wait_readable(200.0).expect("poll") {
+                got += inbound.drain(&receiver).expect("drain");
+            }
+        }
+        assert_eq!(got, 63, "the flushed burst did not arrive whole");
     }
 
     /// The pin survives segmentation offload: an offloaded burst carries the
