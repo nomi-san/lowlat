@@ -126,19 +126,44 @@ pub enum Inbound {
 
 /// What kind of candidate an address is, as far as the punch cares.
 ///
-/// One distinction is load bearing: whether this is the peer's
-/// server-reflexive address. That is the path that crosses translation, and
-/// the one the mapping probe exists for. An address that is routable as
-/// given -- a host candidate, or the observed source of a verified check --
-/// needs no mapping of ours opened ahead of its first full check.
+/// The exchange marks every candidate with two flags, and all three of their
+/// meaningful combinations arrive from real peers, so all three are modeled:
+/// direct (the lan flag, which a peer also sets on every IPv6 address --
+/// there is no translation to negotiate on that family however the address
+/// was found), server-reflexive (the from-stun flag), and neither -- a
+/// translated-path guess no server verified, typically the peer's public
+/// address at its local port, offered in case its translator preserves
+/// ports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Kind {
-    /// Routable as given. Never the probe's target.
+    /// Routable as given: host candidates, every IPv6 address, and the
+    /// observed source of a verified check. Never the probe's target.
     Direct,
     /// The peer's server-reflexive address: the path that crosses
     /// translation, and the mapping probe's only target.
     Reflexive,
+    /// A translated-path address no server verified. It crosses translation,
+    /// so it is not direct; it is unverified, so the one probe is not spent
+    /// on it.
+    Wan,
+}
+
+impl Kind {
+    /// Classify from the exchange's two flags.
+    ///
+    /// The lan flag wins when both are set, mirroring how the direct
+    /// behaviors short-circuit ahead of the translated ones on the far side.
+    /// Both set has never been observed on a wire.
+    pub fn marked(lan: bool, reflexive: bool) -> Self {
+        if lan {
+            Kind::Direct
+        } else if reflexive {
+            Kind::Reflexive
+        } else {
+            Kind::Wan
+        }
+    }
 }
 
 /// Credentials for one attempt, from the signaling exchange.
@@ -846,6 +871,26 @@ mod tests {
             sent.iter()
                 .any(|(egress, _)| egress.ttl == Ttl::Probe && egress.to == addr(2, 4000)),
             "a late reflexive candidate never drew the probe"
+        );
+    }
+
+    /// The exchange's flags map onto the three kinds, lan winning, and a
+    /// translated-path guess no server verified is checked but never draws
+    /// the one probe.
+    #[test]
+    fn a_wan_guess_is_checked_but_never_probed() {
+        assert_eq!(Kind::marked(true, false), Kind::Direct);
+        assert_eq!(Kind::marked(false, true), Kind::Reflexive);
+        assert_eq!(Kind::marked(false, false), Kind::Wan);
+        assert_eq!(Kind::marked(true, true), Kind::Direct, "lan must win");
+
+        let mut conn = conn();
+        conn.add_candidate(addr(1, 4000), Kind::Wan).unwrap();
+        let sent = drain(&mut conn, 0.0);
+        assert!(!sent.is_empty(), "a wan guess must still be checked");
+        assert!(
+            sent.iter().all(|(egress, _)| egress.ttl == Ttl::Default),
+            "the probe was spent on an unverified guess"
         );
     }
 

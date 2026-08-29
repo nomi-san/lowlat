@@ -298,6 +298,10 @@ pub struct RelayedCandidate {
     /// on older senders, and absent means not reflexive.
     #[serde(default)]
     pub from_stun: bool,
+    /// The sender's lan marking: directly routable, which a peer also sets
+    /// on every IPv6 address. Absent means not marked.
+    #[serde(default)]
+    pub lan: bool,
 }
 
 /// A withdrawal, which is addressed by attempt and carries no reason.
@@ -346,6 +350,7 @@ mod tests {
             port: 1234,
             sync: true,
             from_stun: false,
+            lan: false,
         };
         assert_eq!(
             marker("1c4d9ae8-f7a8-4513-affb-dcbb40048922.local").read(),
@@ -368,6 +373,7 @@ mod tests {
             port: 41000,
             sync: false,
             from_stun: true,
+            lan: false,
         };
         let dotted = candidate("::ffff:192.0.2.7").read();
         let hex = candidate("::ffff:c000:207").read();
@@ -385,6 +391,7 @@ mod tests {
             port: 31064,
             sync: false,
             from_stun: false,
+            lan: true,
         };
         assert_eq!(
             candidate("2405:4802:d0f5:6ec0:c048:4183:5759:8357").read(),

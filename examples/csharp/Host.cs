@@ -302,7 +302,8 @@ internal sealed class Host
         }
     }
 
-    public void AddCandidate(string attemptId, string ip, ushort port, bool sync, bool reflexive)
+    public void AddCandidate(
+        string attemptId, string ip, ushort port, bool sync, bool reflexive, bool lan)
     {
         unsafe
         {
@@ -312,6 +313,7 @@ internal sealed class Host
                 Port = port,
                 Sync = sync,
                 Reflexive = reflexive,
+                Lan = lan,
             };
             Text.Put(((Span<byte>)cand.Address)[..Sizes.Address], ip);
             var id = System.Text.Encoding.UTF8.GetBytes(attemptId + "\0");
@@ -371,8 +373,8 @@ internal sealed class Host
         }
         Console.WriteLine($"offline: approved, bound to port {ours.Port}");
 
-        AddCandidate(attempt, "", 41000, sync: true, reflexive: false);
-        AddCandidate(attempt, "192.168.1.100", 41000, sync: false, reflexive: false);
+        AddCandidate(attempt, "", 41000, sync: true, reflexive: false, lan: false);
+        AddCandidate(attempt, "192.168.1.100", 41000, sync: false, reflexive: false, lan: true);
 
         unsafe
         {
@@ -568,11 +570,11 @@ internal sealed class Host
             {
                 case EventType.Candidate:
                 {
-                    var (attempt, address, port, fromStun) = Events.Candidate(ev);
+                    var (attempt, address, port, fromStun, lan) = Events.Candidate(ev);
                     if (signaling is not null && peers.TryGetValue(attempt, out var to))
                     {
                         await signaling.CandidateAsync(
-                            attempt, to, address, port, fromStun, false, token);
+                            attempt, to, address, port, lan, fromStun, false, token);
                     }
                     break;
                 }
@@ -584,7 +586,7 @@ internal sealed class Host
                         // A readiness marker rather than an address, and the
                         // peer may withhold every real candidate until it sees
                         // one.
-                        await signaling.CandidateAsync(attempt, to, "", 0, false, true, token);
+                        await signaling.CandidateAsync(attempt, to, "", 0, false, false, true, token);
                     }
                     break;
                 }
@@ -673,13 +675,14 @@ internal static class Events
     public static string Attempt(Event ev) =>
         Text.Take(((ReadOnlySpan<byte>)ev.Payload)[..Sizes.Attempt]);
 
-    public static (string, string, ushort, bool) Candidate(Event ev)
+    public static (string, string, ushort, bool, bool) Candidate(Event ev)
     {
         var body = (ReadOnlySpan<byte>)ev.Payload;
         var address = Text.Take(body.Slice(Sizes.Attempt, Sizes.Address));
         var port = BitConverter.ToUInt16(body.Slice(Sizes.Attempt + Sizes.Address, 2));
         var fromStun = body[Sizes.Attempt + Sizes.Address + 2] != 0;
-        return (Attempt(ev), address, port, fromStun);
+        var lan = body[Sizes.Attempt + Sizes.Address + 3] != 0;
+        return (Attempt(ev), address, port, fromStun, lan);
     }
 
     public static (string, Outcome, int) Ended(Event ev)

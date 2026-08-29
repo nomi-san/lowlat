@@ -208,7 +208,8 @@ internal static class Session
                             data["ip"]?.GetValue<string>() ?? "",
                             (ushort)(data["port"]?.GetValue<int>() ?? 0),
                             data["sync"]?.GetValue<bool>() ?? false,
-                            data["from_stun"]?.GetValue<bool>() ?? false);
+                            data["from_stun"]?.GetValue<bool>() ?? false,
+                            data["lan"]?.GetValue<bool>() ?? false);
                     }
                     break;
                 }

@@ -231,7 +231,11 @@ pub struct lowlat_candidate_event {
     pub port: u16,
     /// Whether a reflexive server reported this one.
     pub from_stun: bool,
-    pub reserved: u8,
+    /// Whether the exchange should mark it lan: host candidates, and every
+    /// IPv6 address -- there is no translation to negotiate on that family
+    /// however the address was found. Copy both flags into the signaling
+    /// verbatim; the marking is decided here so no application re-derives it.
+    pub lan: bool,
 }
 
 /// Tell the peer this host is ready to be checked.
@@ -670,6 +674,12 @@ pub struct lowlat_candidate {
     /// Zero is safe when the application cannot say -- the punch still runs,
     /// without the early probe.
     pub reflexive: bool,
+    /// The exchange's lan marking, copied verbatim from the peer's
+    /// signaling: directly routable, checked without ceremony. When both
+    /// this and `reflexive` are set, lan wins. Neither set is a real class
+    /// too -- a translated-path guess no server verified -- so zero for both
+    /// is safe and means exactly that.
+    pub lan: bool,
     pub address: [c_char; LOWLAT_ADDRESS_MAX],
 }
 
@@ -1329,11 +1339,7 @@ pub unsafe extern "C" fn lowlat_host_add_candidate(
             let Some(seam) = held.seam.as_mut() else {
                 return LOWLAT_ERR_NOT_STARTED;
             };
-            let kind = if cand.reflexive {
-                lowlat_core::conn::Kind::Reflexive
-            } else {
-                lowlat_core::conn::Kind::Direct
-            };
+            let kind = lowlat_core::conn::Kind::marked(cand.lan, cand.reflexive);
             seam.add_candidate(attempt, addr, cand.sync, kind);
             LOWLAT_OK
         });
@@ -2477,13 +2483,14 @@ fn described(received: &crate::events::Received) -> lowlat_event {
             attempt,
             addr,
             from_stun,
+            lan,
         } => {
             let mut body = lowlat_candidate_event {
                 attempt: [0; LOWLAT_ATTEMPT_MAX],
                 address: [0; LOWLAT_ADDRESS_MAX],
                 port: 0,
                 from_stun: *from_stun,
-                reserved: 0,
+                lan: *lan,
             };
             put(&mut body.attempt, attempt);
             put_address(&mut body.address, &mut body.port, addr);
@@ -3268,6 +3275,7 @@ mod seam_tests {
             port: 41000,
             sync: true,
             reflexive: false,
+            lan: false,
             address: [0; LOWLAT_ADDRESS_MAX],
         };
         // Accepted with nothing in the address at all.

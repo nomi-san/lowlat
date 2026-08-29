@@ -212,6 +212,7 @@ fn candex<'a>(
     ip: String,
     port: u16,
     lan: bool,
+    from_stun: bool,
     sync: bool,
 ) -> Candex<'a> {
     Candex {
@@ -221,7 +222,7 @@ fn candex<'a>(
             ip,
             port,
             lan,
-            from_stun: !lan && !sync,
+            from_stun,
             sync,
         },
         to,
@@ -695,14 +696,12 @@ async fn session_loop(
                                 );
                             }
                             Relayed::Probe(addr) => {
-                                // The peer says which of its addresses a
-                                // reflexive server reported, and that is the
-                                // one the path-opening probe is for.
-                                let kind = if relay.data.from_stun {
-                                    lowlat::admission::Kind::Reflexive
-                                } else {
-                                    lowlat::admission::Kind::Direct
-                                };
+                                // Both of the peer's markings, classified in
+                                // one place for every caller of the seam.
+                                let kind = lowlat::admission::Kind::marked(
+                                    relay.data.lan,
+                                    relay.data.from_stun,
+                                );
                                 seam.add_candidate(&relay.attempt_id, addr, false, kind);
                             }
                             // Not every candidate is an address: a peer may
@@ -762,12 +761,15 @@ async fn session_loop(
                     attempt,
                     addr,
                     from_stun,
+                    lan,
                 } => {
                     let Some(to) = peers.get(&attempt) else {
                         continue;
                     };
                     let kind = if from_stun { "reflexive" } else { "host" };
                     lowlat_common::log_info!("lowlatd: {kind} candidate {addr} for {attempt}");
+                    // Both flags copied from the event verbatim: the marking
+                    // is the boundary's decision, not this program's.
                     client.send(
                         "candex",
                         &candex(
@@ -775,7 +777,8 @@ async fn session_loop(
                             to,
                             addr.ip().to_string(),
                             addr.port(),
-                            !from_stun,
+                            lan,
+                            from_stun,
                             false,
                         ),
                     )?;
@@ -791,6 +794,7 @@ async fn session_loop(
                             to,
                             READY_PLACEHOLDER.to_string(),
                             READY_PORT,
+                            false,
                             false,
                             true,
                         ),

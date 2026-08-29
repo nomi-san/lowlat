@@ -580,6 +580,12 @@ typedef struct lowlat_candidate {
     // Zero is safe when the application cannot say -- the punch still runs,
     // without the early probe.
     bool reflexive;
+    // The exchange's lan marking, copied verbatim from the peer's
+    // signaling: directly routable, checked without ceremony. When both
+    // this and `reflexive` are set, lan wins. Neither set is a real class
+    // too -- a translated-path guess no server verified -- so zero for both
+    // is safe and means exactly that.
+    bool lan;
     char address[LOWLAT_ADDRESS_MAX];
 } lowlat_candidate;
 
@@ -746,7 +752,11 @@ typedef struct lowlat_candidate_event {
     uint16_t port;
     // Whether a reflexive server reported this one.
     bool from_stun;
-    uint8_t reserved;
+    // Whether the exchange should mark it lan: host candidates, and every
+    // IPv6 address -- there is no translation to negotiate on that family
+    // however the address was found. Copy both flags into the signaling
+    // verbatim; the marking is decided here so no application re-derives it.
+    bool lan;
 } lowlat_candidate_event;
 
 // Tell the peer this host is ready to be checked.

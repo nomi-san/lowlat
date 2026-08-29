@@ -314,6 +314,7 @@ internal struct Candidate
     public ushort Port;
     public byte SyncByte;
     public byte ReflexiveByte;
+    public byte LanByte;
 
     public bool Sync
     {
@@ -325,6 +326,12 @@ internal struct Candidate
     {
         get => ReflexiveByte != 0;
         set => ReflexiveByte = value ? (byte)1 : (byte)0;
+    }
+
+    public bool Lan
+    {
+        get => LanByte != 0;
+        set => LanByte = value ? (byte)1 : (byte)0;
     }
     [InlineArray(Sizes.Address)] public struct AddressField { private byte first; }
     public AddressField Address;

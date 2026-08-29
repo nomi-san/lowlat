@@ -178,6 +178,7 @@ internal sealed class Signaling : IDisposable
         string to,
         string ip,
         ushort port,
+        bool lan,
         bool fromStun,
         bool sync,
         CancellationToken token)
@@ -192,7 +193,9 @@ internal sealed class Signaling : IDisposable
                 ["versions"] = Versions(),
                 ["ip"] = ip,
                 ["port"] = port,
-                ["lan"] = !fromStun && !sync,
+                // Both flags come from the boundary's event verbatim; the
+                // marking is decided there, not here.
+                ["lan"] = lan,
                 ["from_stun"] = fromStun,
                 ["sync"] = sync,
             },

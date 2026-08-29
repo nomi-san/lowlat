@@ -123,6 +123,13 @@ pub enum Event {
         attempt: String,
         addr: SocketAddr,
         from_stun: bool,
+        /// Whether the exchange should mark it lan: host candidates, and
+        /// every IPv6 address -- there is no translation to negotiate on that
+        /// family however the address was found, and marking it anything else
+        /// sends the peer's one path-opening probe to an address that needs
+        /// none. The application copies this and `from_stun` into its
+        /// signaling verbatim and decides nothing.
+        lan: bool,
     },
     /// Send the peer a candidate marked `sync`, once.
     ///
@@ -891,6 +898,7 @@ impl Admission {
                 attempt: id.to_string(),
                 addr: SocketAddr::new(ip, bound),
                 from_stun: false,
+                lan: true,
             });
         }
 
@@ -2493,7 +2501,11 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             args.emit.send(Event::Candidate {
                 attempt: args.attempt_id.clone(),
                 addr,
-                from_stun: true,
+                // A v6 address goes out marked lan whatever discovered it:
+                // no translation to negotiate, so the peer checks it at once
+                // and keeps its one probe for a translated path.
+                from_stun: addr.is_ipv4(),
+                lan: addr.is_ipv6(),
             });
         }
 
