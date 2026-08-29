@@ -3,6 +3,33 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## Translated-path checks wait for the readiness marker
+
+**The readiness marker was recorded and read by nothing**, while the far
+side of this exchange gates its own translated-path checks on it and checks
+direct candidates immediately. A full-length check that reaches a
+translator before the peer has sent anything outward is unsolicited traffic
+that can commit a state entry whose reply tuple is exactly the one the
+peer's punch then needs -- the poisoning the namespace fixtures' own guard
+comment describes. The engine now holds checks toward reflexive and
+unverified translated-path candidates until the marker arrives, forwarded
+from the seam as readiness rather than as the arbitrary address that rides
+on it; direct candidates and the mapping probe never wait, a gated
+candidate does not arm the wakeup timer, and a peer that never sends the
+marker still establishes through the checks it sends us. A failed punch
+also says which typed failure it was in the log now, because a probe
+timeout is the one outcome that justifies escalating and a missing
+candidate list is a signaling gap, not a network one.
+
+## A lying emission length is refused, not copied
+
+**The send batch bounded a committed length against the whole staging
+buffer while its restart copy spans that length from the current offset**,
+so an emission that claimed more than the stage had handed out read past
+the buffer and panicked on the send path. Bounded against the actual room
+now; watched panicking first with a sixty-three kibibyte stage and a
+two-kilobyte lie.
+
 ## The candidate model carries what the exchange carries
 
 **The boundary collapsed the exchange's two candidate markings into one**,

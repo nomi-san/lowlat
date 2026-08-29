@@ -159,6 +159,14 @@ first.)*
 
 - Checks repeat on a bounded schedule until a response arrives or the attempt times out.
 - Both sides probe simultaneously. Simultaneous open is the normal case, not an exception.
+- **Full-length checks toward translated-path candidates wait for the peer's readiness
+  marker** (2026-08-29); direct candidates and the mapping probe do not. A check that
+  reaches a translated path before the peer has sent anything outward is unsolicited
+  traffic to its translator, which can commit a state entry whose reply tuple is exactly
+  the one the peer's own punch then needs -- poisoning the very mapping under negotiation.
+  A direct candidate has no translator on its path to poison, and the probe never reaches
+  the peer at all. A peer that never sends the marker still establishes through us: its
+  own checks arrive, are answered, and teach a direct candidate that is checked at once.
 - **The local address the winning answer arrived at is adopted with the path** (2026-08-29),
   and every datagram for the life of the session claims it. Left to itself the kernel
   re-selects the source per send, and on a multihomed host a routing change moves it
