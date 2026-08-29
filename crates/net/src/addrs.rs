@@ -19,7 +19,7 @@
 //!   and offering all three makes the peer spend checks discovering which of
 //!   them answers.
 
-use core::net::{IpAddr, Ipv4Addr};
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::net::UdpSocket;
 
 /// Private address space, always offered.
@@ -114,14 +114,34 @@ fn enumerated_v4(shared: bool) -> Vec<IpAddr> {
     found
 }
 
+/// Whether a probed IPv6 source is one to offer as a host candidate.
+///
+/// Separate from the probe so the decision can be checked without a machine
+/// that happens to carry the wrong addresses. A source a peer cannot reach is
+/// worse than no candidate: it spends part of a bounded check budget and
+/// answers nothing.
+///
+/// Only global unicast is offered. The routing table answers the probe with
+/// whatever source it would use, and on a network built on unique-local
+/// addressing that answer is a ULA: routable here, invisible everywhere
+/// else. Link-local would need a scope the candidate cannot carry. Loopback
+/// and unspecified are what a probe that went nowhere reports.
+fn wanted_v6(ip: Ipv6Addr) -> bool {
+    !ip.is_loopback()
+        && !ip.is_unspecified()
+        && !ip.is_unique_local()
+        && !ip.is_unicast_link_local()
+}
+
 /// The IPv6 source address a peer would see us arrive from, if any.
 fn probed_v6() -> Option<IpAddr> {
     let probe = UdpSocket::bind("[::]:0").ok()?;
     probe.connect(V6_ROUTE_QUESTION).ok()?;
-    let ip = probe.local_addr().ok()?.ip();
-    // A source a peer cannot reach is worse than no candidate: it spends part
-    // of the budget and answers nothing.
-    (!ip.is_loopback() && !ip.is_unspecified()).then_some(ip)
+    match probe.local_addr().ok()?.ip() {
+        IpAddr::V6(v6) => wanted_v6(v6).then_some(IpAddr::V6(v6)),
+        // A route question asked over v6 cannot be answered by a v4 source.
+        IpAddr::V4(_) => None,
+    }
 }
 
 /// The addresses to offer as host candidates, IPv4 first.
@@ -209,6 +229,27 @@ mod tests {
             let addr: Ipv4Addr = text.parse().expect("address");
             assert!(wanted(addr, false));
             assert!(wanted(addr, true));
+        }
+    }
+
+    /// Only a source the world can route back to is offered. The probe asks
+    /// the routing table which source would reach a global destination, and on
+    /// a network built on unique-local addressing the answer is a ULA:
+    /// routable here, invisible everywhere else. Link-local would need a scope
+    /// the candidate does not carry, and loopback and unspecified are what a
+    /// probe that went nowhere reports.
+    #[test]
+    fn only_a_global_unicast_v6_source_is_offered() {
+        for outside in ["::1", "::", "fc00::1", "fd12:3456:789a::1", "fe80::1"] {
+            let ip: Ipv6Addr = outside.parse().expect("address");
+            assert!(
+                !wanted_v6(ip),
+                "{outside} cannot be reached from outside and was offered"
+            );
+        }
+        for inside in ["2001:db8::7", "2a01:4f8::2", "2606:4700:4700::1111"] {
+            let ip: Ipv6Addr = inside.parse().expect("address");
+            assert!(wanted_v6(ip), "{inside} is global unicast and was withheld");
         }
     }
 

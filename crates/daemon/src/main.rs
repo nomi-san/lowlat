@@ -34,11 +34,18 @@ const DEFAULT_PORT: u16 = 9000;
 
 /// Reflexive servers, for discovering our own mapped address.
 ///
-/// **A name, so both address families are reachable.** One dual-stack name
+/// **Names, so both address families are reachable.** One dual-stack name
 /// answers with an A and an AAAA record, and both are asked; a literal can only
 /// ever be one family, and a v4 literal is why this host had no v6 reflexive
 /// candidate to offer.
-const DEFAULT_STUN: &str = "stun.l.google.com:19302";
+///
+/// **Two operators, because one server can only ever agree with itself.** Two
+/// servers reporting different mapped ports is how a symmetric translator is
+/// told from an endpoint-independent one, and two names on separate
+/// infrastructure keep one outage from costing every reflexive candidate at
+/// once. Two names by two families is four servers, which is exactly what the
+/// engine holds.
+const DEFAULT_STUN: &str = "stun.l.google.com:19302,stun.cloudflare.com:3478";
 
 /// What the stream produces by default. The guest declares what it can decode
 /// and the host is authoritative over all of it, so a declaration is a request.
