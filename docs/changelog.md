@@ -3,6 +3,22 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## The acknowledgement cadence has two floors, not one
+
+**Every accepted store was answered immediately**, so a video channel at full
+rate produced one acknowledgement per fragment: hundreds of datagrams a
+second, each one a receive, a decrypt and a send on the far side for nothing
+the cumulative counts would not have carried within the floor anyway. The
+cadence is two floors on one timestamp: a data-driven acknowledgement is
+suppressed unless 10 ms have passed since the last one, leaving early only
+when it carries a negative acknowledgement or the arriving fragment ends its
+message, and the 30 ms timer is the keepalive, firing only when nothing else
+has sent. Control and input messages are single fragments, so the second
+bypass keeps the handshake and small messages at full speed. Watched red
+first: a non-tail fragment inside the floor is now answered by nothing, a
+gap or a message tail inside the floor still answers at once, and the
+keepalive cadence is untouched.
+
 ## Translated-path checks wait for the readiness marker
 
 **The readiness marker was recorded and read by nothing**, while the far

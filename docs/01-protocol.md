@@ -351,11 +351,20 @@ silently discards whole datagrams and presents as "control works, video does not
 
 ## §9 Acknowledgement, retransmission, and recovery
 
+**Correction (2026-08-29).** The cadence this section stated -- a 30 ms timer plus an
+immediate answer to any accepted receive -- was wrong. There are two floors sharing one
+timestamp, and the cadence bullet below is the rewrite.
+
 - **Sequence arithmetic is RFC 1982 everywhere.** A naive 32-bit comparison inverts at wrap,
   which arrives in roughly 15 days of continuous high-rate video. Every comparison of
   sequence, base, and cumulative acknowledgement uses signed difference.
-- **Acknowledgement cadence:** a group acknowledgement is emitted when 30 ms have elapsed
-  since the last one, and immediately on a receive that advances a base or reveals a gap.
+- **Acknowledgement cadence has two floors on one timestamp.** A receive whose store is
+  accepted is answered when 10 ms have passed since the last acknowledgement of either
+  kind, and at once when the fragment reveals a gap or ends its message. Anything in
+  between waits, and what it advanced rides the next acknowledgement's cumulative counts,
+  so nothing is lost by waiting. A session with nothing to answer is held open by a
+  keepalive 30 ms after the last acknowledgement of either kind, and every
+  acknowledgement sent resets the one clock both floors read.
 - **Round trip estimate** is an exponentially weighted moving average, `rtt = rtt * 0.9 +
   sample * 0.1`, sampled when an acknowledgement clears a slot carrying a send timestamp.
 - **Retransmission timeout** is per fragment and exponential in its retry count:
