@@ -3,6 +3,21 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## The transport counts what the path did, beside what it was asked
+
+**The numbers a host steers by said nothing about delivery.** The byte count
+a stream's throughput is read from includes retransmissions by design, so
+what climbed under loss was the offered load; a negative acknowledgement
+fired the fast retransmission and reached no counter; the round-trip
+estimate had no recent minimum to read a building queue against; and an
+acknowledgement silence -- the earliest signal a return path has stopped --
+was not timestamped at all. The send rings now count delivered payload bytes
+beside offered ones and resends by cause (the peer reported the gap, or the
+timeout found it), the session keeps a windowed minimum round trip and the
+arrival time of the last acknowledgement, and the guest log line carries all
+four beside the figures it already had. Telemetry only: nothing actuates on
+any of them, and the wire and the controller are untouched.
+
 ## The acknowledgement cadence has two floors, not one
 
 **Every accepted store was answered immediately**, so a video channel at full
