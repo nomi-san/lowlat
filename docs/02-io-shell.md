@@ -86,8 +86,9 @@ Linux, `WaitOnAddress` and `WakeByAddress` on Windows, `__ulock` on macOS.
 
 ```
 loop:
-    timeout = clamp(endpoint.next_timer_ms(now), 1, 50)
+    timeout = clamp(endpoint.next_timer_ms(now), 1, 50)   // rounded up, never down
     wait:    poll(fd, timeout) -> which descriptors spoke
+    now = clock()                                         // the pass runs on this
     receive: if the socket spoke: batch drain -> endpoint.process_input(...)
     deliver: drain complete messages -> pipeline rings (+ notify)
     if app_send_seq changed:
@@ -99,6 +100,16 @@ loop:
 
 - **There is no tick.** The timeout comes from the core. A next-timer function that exists but
   is never consumed leaves a fixed over-poll in place, which is a real bug that shipped.
+- **The clock is read twice per pass, and the pass runs on the second reading** (corrected
+  2026-08-29; the loop previously reused its pre-wait reading). The first reading arms the
+  wait and does nothing else. A pass stamped with its pre-wait clock sees the deadline it
+  woke for as not yet due, emits nothing, and pays a second wake one clamped minimum later --
+  every deadline costs two wakes and fires a pass late -- and a round trip whose
+  acknowledgement arrived mid-wait is stamped before it arrived, reading short by up to a
+  full wait. For the same reason the wait rounds a fractional timeout **up** to the poll's
+  whole-millisecond granularity: truncation wakes the loop just before the deadline it armed.
+  The shell owns this clock and hands the pass's reading back to its caller, which times
+  everything else in its pass with it rather than reading a clock of its own.
 - **The upper clamp is a safety net and must sit well above every real deadline, or it becomes
   the cadence it was meant to prevent.** The session's own timer is bounded by the 30 ms
   acknowledgement cadence, so a 5 ms cap would bind on *every* wake and reinstate exactly the

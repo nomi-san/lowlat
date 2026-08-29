@@ -3,6 +3,24 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## The pass runs on the post-wait clock
+
+**The shell read its clock once per pass, before the wait, and stamped
+everything after the wait with it.** A pass woken by its own deadline saw the
+deadline as not yet due, emitted nothing, and paid a second wake one clamped
+minimum later -- every idle-path deadline cost two wakes and fired a pass late
+-- and an acknowledgement arriving mid-wait was stamped before it arrived, so
+round-trip samples read short by up to a full wait and fed the retransmission
+clock noise. The wait is now armed from one reading and the pass runs on a
+second, taken as the wait returns; the shell owns the clock outright and hands
+the pass's reading back, so its caller times the rest of the pass with the
+same value. The poll timeout also rounds up rather than truncating, because a
+fractional wait rounded down wakes just before the deadline it was armed for
+-- the same two-wake pattern by another route. The idle wake-accounting test
+now runs on real time over an established path, where it fails against either
+half of the defect; it previously stepped a synthetic clock by exactly the
+cadence, which is the one drive pattern that cannot see them.
+
 ## The vestigial controller
 
 **The session no longer carries a second rate controller.** It ticked at poll
