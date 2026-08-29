@@ -203,6 +203,16 @@ was the difference between zero and complete delivery of a keyframe burst on loo
 Windows, falling back to per-datagram send. One syscall per batch. This matters more as the
 datagram size rises, since the packet rate falls but the burst size does not.
 
+**Only a capability refusal disables offload for the run** (corrected 2026-08-29; previously
+any refusal was permanent). A kernel or interface that cannot segment at all says so once and
+the run takes per-datagram sends from there. A refusal about one batch -- a full send buffer
+in the middle of a burst is the ordinary case -- falls back for that batch alone, because the
+bursts that fill the buffer are exactly the ones offload exists for, and trading the fast path
+away forever on a transient is backwards. A staged batch is also bounded by what one send may
+carry (one maximal UDP payload), not by the staging buffer: the two differ by twenty-nine
+bytes, and a bound at the buffer let an exact-fit batch reach the kernel only to be refused
+whole.
+
 ## §7 Buffers and allocation
 
 - **The shell allocates nothing on a data path.** Receive slots, rings, and scratch are

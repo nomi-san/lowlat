@@ -3,6 +3,25 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## A transient refusal no longer costs offload for the session
+
+**One failed offload send disabled segmentation for the rest of the run,
+whatever the failure was.** A full send buffer in the middle of a keyframe
+burst -- the exact load segmentation exists for -- counted the same as a
+kernel that cannot segment at all, and the session paid a syscall per
+datagram forever after, on one warning line. The latch now fires only on the
+capability errors, written out as a closed set with transient as the
+default; anything about the moment (a full buffer, an interrupt, a policy or
+a route refusing the destination) falls back for that batch alone, and the
+per-datagram sends it falls back to are counted by the existing refusal
+accounting. The join bound also closes at what one send may carry (one
+maximal UDP payload) rather than at the staging buffer, which is
+twenty-nine bytes larger: an exact-fit batch of kibibyte segments used to
+reach the kernel only to be refused whole -- and that refusal then killed
+offload too. Both halves watched red first: a policy-refused burst kept
+offload where it used to lose it, and the sixty-fourth kibibyte datagram now
+starts a new batch instead of poisoning the one it filled.
+
 ## The answer leaves from the address it was asked at
 
 **Packet information was enabled at the socket and never consumed**, so every
