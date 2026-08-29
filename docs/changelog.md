@@ -3,6 +3,25 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## The controller's trajectory is measured, beside its candidates
+
+**A rate-controlled loop was being changed on argument.** The simulator now
+drives a session over a scripted link with the sender offering frames at the
+rate the controller lands on, so the window is the path's answer to the rate
+and nothing else; the incumbent and the two candidate predicates -- an
+explicit loss rate, and a peak tracker fed delivered bytes instead of
+offered -- run over identical seeded traffic, with the rate reported in
+tenths. The link also carries an optional byte budget, a policer rather than
+a queue, because a loss-only profile cannot show the case the candidates are
+aimed at and a queued model under a rate-following sender never converges.
+The congested half of the controller's tick split into a `cut` so a
+candidate predicate runs through the same arithmetic. First picture: under
+pure loss the incumbent's cuts come from the timeout's resends going stale
+rather than from any peer report; under an 8 Mibit/s cap the incumbent
+settles at 8.3, the loss-rate candidate at 7.2 with fewer cuts, and the
+goodput-fed peak at 6.9 with the fewest. Nothing actuates anywhere else; the
+candidates earn adoption from this picture or not at all.
+
 ## The transport counts what the path did, beside what it was asked
 
 **The numbers a host steers by said nothing about delivery.** The byte count
