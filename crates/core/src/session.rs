@@ -24,6 +24,12 @@ use crate::seq;
 
 /// Longest gap between group acknowledgements while a session is alive.
 pub const ACK_CADENCE_MS: f64 = 30.0;
+/// Shortest gap between data-driven group acknowledgements. An arrival ends
+/// the wait early only when it reveals a gap or ends a message; anything else
+/// rides the next acknowledgement of either kind, whose cumulative counts
+/// cover it. One timestamp serves both floors: every acknowledgement sent
+/// resets the clock for each.
+const ACK_DATA_FLOOR_MS: f64 = 10.0;
 /// No progress for this long is a soft failure.
 pub const LIVENESS_SOFT_MS: f64 = 60_000.0;
 /// No progress for this long is a hard failure.
@@ -334,8 +340,15 @@ impl<'a> Session<'a> {
                         self.trigger = (data.channel, data.seq);
                         self.trigger_nack = nack;
                     }
-                    self.ack_due = true;
-                    self.ack_kind = AckKind::Ack;
+                    // **The cadence has two floors on one timestamp.** A gap
+                    // or the last fragment of a message is answered at once;
+                    // anything else waits out the data floor, and what it
+                    // advanced rides the keepalive if no later arrival answers
+                    // first. A held negative is already due.
+                    if nack || data.last || now_ms - self.last_ack_sent_ms >= ACK_DATA_FLOOR_MS {
+                        self.ack_due = true;
+                        self.ack_kind = AckKind::Ack;
+                    }
                 }
                 Ok(Inbound::Data {
                     channel: data.channel,
@@ -829,6 +842,113 @@ mod tests {
         };
         assert_eq!(ack.kind, AckKind::Ack);
         assert_eq!(ack.trigger_channel, VIDEO);
+    }
+
+    /// **The data floor.** A fragment that ends no message and reveals no gap,
+    /// arriving inside the floor, is not answered: an acknowledgement costs a
+    /// datagram, and a video channel at full rate would otherwise produce a
+    /// hundred of them a second. What it advanced rides the next
+    /// acknowledgement of any kind, so nothing is lost by waiting.
+    #[test]
+    fn a_fragment_inside_the_data_floor_waits() {
+        let mut left_arena = Arena::new();
+        let mut right_arena = Arena::new();
+        let mut left = endpoint(&mut left_arena, 0.0);
+        let mut right = endpoint(&mut right_arena, 0.0);
+
+        let payload: Vec<u8> = (0..500u32).map(|i| i as u8).collect();
+        left.send_message(VIDEO, &[], &payload).unwrap();
+
+        // The first fragment ends no message and lands inside the floor:
+        // nothing is owed yet.
+        let mut wire = [0u8; 512];
+        let mut scratch = [0u8; 512];
+        let written = left.get_output(1.0, &mut wire).unwrap().unwrap();
+        right
+            .process_input(&wire[..written], 1.0, &mut scratch)
+            .unwrap();
+        let mut out = [0u8; 512];
+        assert!(
+            right.get_output(1.0, &mut out).is_none(),
+            "a fragment inside the floor was answered"
+        );
+
+        // Once the floor has passed, an arrival of the same kind is answered.
+        let written = left.get_output(11.0, &mut wire).unwrap().unwrap();
+        right
+            .process_input(&wire[..written], 11.0, &mut scratch)
+            .unwrap();
+        let ack = next_ack(&mut right, 11.0);
+        assert_eq!(ack.kind, AckKind::Ack);
+        assert!(!ack.nack);
+    }
+
+    /// The floor's first bypass: a gap is answered at once, because the peer's
+    /// fast retransmission waits on it.
+    #[test]
+    fn a_negative_acknowledgement_does_not_wait_for_the_floor() {
+        let mut left_arena = Arena::new();
+        let mut right_arena = Arena::new();
+        let mut left = endpoint(&mut left_arena, 0.0);
+        let mut right = endpoint(&mut right_arena, 0.0);
+
+        // A delivered fragment, answered inside the floor because it ends its
+        // message, so the floor is running when the loss lands.
+        left.send_message(VIDEO, &[], b"a").unwrap();
+        pump(&mut left, &mut right, 1.0);
+        next_ack(&mut right, 1.0);
+
+        // Sequences 1 to 3 are lost; a fragment of sequence 4 that ends no
+        // message lands inside the floor. The gap alone answers it.
+        let mut wire = [0u8; 512];
+        let mut scratch = [0u8; 512];
+        let body = wire.get_mut(ENVELOPE_LEN..).unwrap();
+        let written = packet::encode_data(
+            body,
+            &packet::Data {
+                channel: VIDEO,
+                seq: 4,
+                last: false,
+                body: b"x",
+            },
+        )
+        .unwrap();
+        let written = left.seal(written, &mut wire).unwrap();
+        right
+            .process_input(&wire[..written], 2.0, &mut scratch)
+            .unwrap();
+
+        let ack = next_ack(&mut right, 2.0);
+        assert!(ack.nack, "a loss inside the floor waited");
+        assert_eq!((ack.trigger_channel, ack.trigger_seq), (VIDEO, 4));
+    }
+
+    /// The floor's second bypass: the last fragment of a message is answered
+    /// at once, which is what keeps the control handshake and small messages
+    /// at full speed whatever the floor.
+    #[test]
+    fn a_message_tail_does_not_wait_for_the_floor() {
+        let mut left_arena = Arena::new();
+        let mut right_arena = Arena::new();
+        let mut left = endpoint(&mut left_arena, 0.0);
+        let mut right = endpoint(&mut right_arena, 0.0);
+
+        // Wide enough for several fragments, delivered whole and well inside
+        // the floor: every fragment but the last is too early to answer, and
+        // the last is answered because it ends the message.
+        let payload: Vec<u8> = (0..500u32).map(|i| i as u8).collect();
+        let fragments = left.send_message(VIDEO, &[], &payload).unwrap();
+        assert!(fragments > 2, "the message has to have a middle");
+        pump(&mut left, &mut right, 1.0);
+
+        let ack = next_ack(&mut right, 1.0);
+        assert_eq!(ack.kind, AckKind::Ack);
+        assert!(!ack.nack);
+        assert_eq!(
+            (ack.trigger_channel, ack.trigger_seq),
+            (VIDEO, fragments - 1),
+            "the acknowledgement did not name the tail"
+        );
     }
 
     /// The regression for an idle session dying. Nothing is sent by the
