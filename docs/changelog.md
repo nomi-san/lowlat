@@ -3,6 +3,32 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## An answer of any latency inside the window matches
+
+**A candidate and a server held one transaction identifier, overwritten by
+each re-check**, so an answer slower than the 500 ms cadence always matched
+an already-replaced identifier and was discarded as redundant: a path whose
+round trip exceeds the cadence failed all fifteen checks deterministically,
+the answer forever one identifier behind. Every identifier is now kept for
+the life of the attempt, per target, in storage fixed by what the window's
+budget allows, and freed with the attempt. Watched red first from both
+sides: a candidate's slow answer establishing, and a server's slow report
+teaching.
+
+## The probe waits for the candidate it exists for
+
+**The one path-opening probe went to whichever candidate arrived first**,
+and the document showed a probe per candidate; both were wrong. The probe
+is once per attempt and its target is the peer's server-reflexive candidate
+alone -- the path that crosses translation, the only mapping worth opening
+ahead of a full-length check -- so a directly routable candidate never draws
+it, and the latch waits for a reflexive candidate to exist rather than
+spending itself on the first arrival. Candidates now carry the distinction
+from the application's signaling through the boundary (`reflexive` on the
+candidate struct, in what was a reserved byte; zero is safe and merely
+forgoes the early probe), 03 s5's pseudocode is corrected in place, and all
+seven namespace topologies still establish or refuse exactly as specified.
+
 ## Only a global unicast v6 source is offered
 
 **The probed IPv6 host candidate excluded only loopback and the unspecified

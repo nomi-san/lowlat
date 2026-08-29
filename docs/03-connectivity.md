@@ -140,16 +140,24 @@ Standard STUN binding requests and responses, with these specifics:
 ## §5 The punch
 
 ```
+once, when a reflexive candidate exists:
+    send low-TTL probe to it    -> opens our mapping on the crossing path
 for each remote candidate, in arrival order:
-    send low-TTL probe          -> opens the local mapping
-    send binding request        -> full TTL, authenticated
+    send binding request        -> full TTL, authenticated, repeating
     on binding response:
         mark the candidate reachable
         adopt it as the active path
         stop probing others
 ```
 
-- Probes repeat on a bounded schedule until a response arrives or the attempt times out.
+*(Corrected 2026-08-29: this section previously showed a low-TTL probe per candidate. The
+probe is one per attempt, and its target is the peer's server-reflexive candidate alone --
+that is the path that crosses translation, which is the only mapping worth opening ahead of
+a full-length check. A directly routable candidate never draws it, and the probe waits for
+a reflexive candidate to exist rather than spending itself on whichever address arrived
+first.)*
+
+- Checks repeat on a bounded schedule until a response arrives or the attempt times out.
 - Both sides probe simultaneously. Simultaneous open is the normal case, not an exception.
 - **The local address the winning answer arrived at is adopted with the path** (2026-08-29),
   and every datagram for the life of the session claims it. Left to itself the kernel
