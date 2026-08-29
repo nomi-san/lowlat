@@ -154,7 +154,11 @@ impl Batch {
     /// which is the common case at a size or destination change rather than an
     /// error.
     pub fn commit(&mut self, socket: &Socket, egress: Egress) -> io::Result<()> {
-        if egress.len == 0 || egress.len > SEND_BUF {
+        // Bounded against the room the stage actually handed out, not the
+        // whole buffer: the restart copy below spans exactly the claimed
+        // length, and a miscounted emission must be refused here rather than
+        // read past the buffer there.
+        if egress.len == 0 || self.used + egress.len > SEND_BUF {
             return Err(io::Error::other("datagram outside the staging buffer"));
         }
 
@@ -635,6 +639,36 @@ mod tests {
             "a refusal about one batch disabled offload for the session"
         );
         assert_eq!(batch.refused(), 2, "the fallback sends were not counted");
+    }
+
+    /// A length larger than the room the stage handed out is refused, not
+    /// trusted. The copy that restarts a batch around a flush spans exactly
+    /// the claimed length, so a miscounted emission would read past the
+    /// buffer -- and a panic on the send path is the one answer worse than
+    /// refusing the datagram.
+    #[test]
+    fn a_length_past_the_staged_room_is_refused() {
+        let sender = Socket::open(0).expect("sender");
+        let receiver = Socket::open(0).expect("receiver");
+        let to = loopback_of(&receiver);
+        let mut batch = Batch::new();
+
+        for index in 0..63u8 {
+            push(&mut batch, &sender, to, Ttl::Default, &[index; 1024]);
+        }
+
+        // A different destination forces the restart copy, and the claimed
+        // length is more than the stage could have held.
+        let lie = Egress {
+            to: loopback_of(&sender),
+            ttl: Ttl::Default,
+            len: 2000,
+            from: None,
+        };
+        assert!(
+            batch.commit(&sender, lie).is_err(),
+            "a length past the staged room was accepted"
+        );
     }
 
     /// The join bound closes at what the kernel will segment, not at the
