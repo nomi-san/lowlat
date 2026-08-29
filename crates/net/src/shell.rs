@@ -450,6 +450,8 @@ mod tests {
             .conn()
             .add_candidate(left_addr, Kind::Reflexive)
             .unwrap();
+        left.endpoint().conn().set_peer_ready();
+        right.endpoint().conn().set_peer_ready();
         left.endpoint()
             .session()
             .send_message(CHANNEL, b"hdr", b"body")
@@ -599,6 +601,7 @@ mod tests {
             .conn()
             .add_candidate(to, Kind::Reflexive)
             .unwrap();
+        shell.endpoint().conn().set_peer_ready();
 
         // The probe leaves at once; pacing then holds the first real check
         // ten milliseconds out, which is the deadline under test.
@@ -643,6 +646,8 @@ mod tests {
             .conn()
             .add_candidate(left_addr, Kind::Reflexive)
             .unwrap();
+        left.endpoint().conn().set_peer_ready();
+        right.endpoint().conn().set_peer_ready();
         let punch = std::time::Instant::now();
         while punch.elapsed() < std::time::Duration::from_secs(4)
             && (left.endpoint().path().is_none() || right.endpoint().path().is_none())

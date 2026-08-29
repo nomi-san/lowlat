@@ -182,6 +182,10 @@ fn peer(args: &[String]) -> Result<(), String> {
                     if endpoint.conn().add_candidate(addr, Kind::Reflexive).is_ok() {
                         arrived = Some(addr);
                     }
+                    // The rendezvous file is the whole of this fixture's
+                    // signaling: a peer that published is bound and
+                    // listening, so readiness rides along with its candidate.
+                    endpoint.conn().set_peer_ready();
                 }
             })
             .map_err(|e| format!("turn: {e}"))?;

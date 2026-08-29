@@ -187,6 +187,8 @@ fn a_pass_larger_than_the_staging_batch_still_completes() {
             .conn()
             .add_candidate(left_addr, Kind::Reflexive)
             .unwrap();
+        left.endpoint().conn().set_peer_ready();
+        right.endpoint().conn().set_peer_ready();
 
         let started = Time::now();
         while elapsed_ms(started) < 4_000.0 && left.endpoint().path().is_none() {
@@ -248,6 +250,8 @@ fn a_sustained_stream_loses_nothing_allocates_nothing_and_does_not_tick() {
         .conn()
         .add_candidate(left_addr, Kind::Reflexive)
         .unwrap();
+    left.endpoint().conn().set_peer_ready();
+    right.endpoint().conn().set_peer_ready();
 
     // Punch first, on one thread, because there is nowhere to send until both
     // sides have a path and the stream would otherwise be measuring the punch.

@@ -88,6 +88,10 @@ fn punch(build: impl FnOnce(&mut Sim) -> (HostId, HostId)) -> (State, State) {
         .expect("candidate refused");
     b.add_candidate(a_candidate, Kind::Reflexive)
         .expect("candidate refused");
+    // The simulator's exchange is instantaneous, so readiness rides along
+    // with the candidates exactly as the fixture rendezvous does.
+    a.set_peer_ready();
+    b.set_peer_ready();
 
     let mut buf = [0u8; 256];
     while sim.now_ms() <= PUNCH_WINDOW_MS {

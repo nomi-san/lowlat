@@ -191,6 +191,9 @@ fn peer(args: &[String]) -> Result<(), String> {
         {
             conn.add_candidate(addr, Kind::Reflexive)
                 .map_err(|e| e.to_string())?;
+            // The rendezvous file is this fixture's signaling: a peer that
+            // published is listening, so readiness rides along.
+            conn.set_peer_ready();
             awaited = true;
             println!("candidate {addr}");
         }

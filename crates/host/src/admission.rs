@@ -23,6 +23,16 @@ use std::sync::{Arc, mpsc};
 use lowlat_core::channel::{RecvRing, SlotMeta};
 pub use lowlat_core::conn::Kind;
 use lowlat_core::conn::{Conn, Credentials};
+
+/// One thing signaling delivered for a running guest's engine.
+#[derive(Debug, Clone, Copy)]
+enum Arrival {
+    /// An address to check, with the exchange's marking.
+    Candidate(SocketAddr, Kind),
+    /// The peer says it is bound and listening; translated-path checks may
+    /// begin.
+    PeerReady,
+}
 use lowlat_core::control::{self, CONTROL_CHANNEL, status};
 use lowlat_core::endpoint::Endpoint;
 use lowlat_core::envelope::{Cipher, ENVELOPE_LEN, Envelope};
@@ -385,9 +395,9 @@ struct Attempt {
     peer_ready: bool,
     /// Buffered until approval, because candidates trickle and the peer starts
     /// sending them before the answer reaches it.
-    pending: Vec<(SocketAddr, Kind)>,
+    pending: Vec<Arrival>,
     guest: Option<Guest>,
-    inject: Option<mpsc::Sender<(SocketAddr, Kind)>>,
+    inject: Option<mpsc::Sender<Arrival>>,
     /// Application messages waiting to go to this guest.
     ///
     /// **The body is built where the caller is**, so the thread serving the
@@ -727,20 +737,22 @@ impl Admission {
         let Some(attempt) = self.attempts.get_mut(id) else {
             return;
         };
-        if sync {
+        let arrival = if sync {
             attempt.peer_ready = true;
-            return;
-        }
+            Arrival::PeerReady
+        } else {
+            Arrival::Candidate(addr, kind)
+        };
         match (&attempt.inject, &attempt.guest) {
             (Some(inject), Some(guest)) => {
-                if inject.send((addr, kind)).is_ok() {
-                    // The loop waits on its own deadline, so a candidate that
+                if inject.send(arrival).is_ok() {
+                    // The loop waits on its own deadline, so an arrival that
                     // only lands in the queue is not seen until that expires.
                     let _ = guest.wake_handle().notify();
                 }
             }
             // Before approval there is nowhere to put it but the buffer.
-            _ => attempt.pending.push((addr, kind)),
+            _ => attempt.pending.push(arrival),
         }
     }
 
@@ -823,7 +835,7 @@ impl Admission {
         let bound = socket.local_addr().map_err(|_| Error::Io)?.port();
         let wake = Wake::new().map_err(|_| Error::Io)?;
 
-        let (inject, arrivals) = mpsc::channel::<(SocketAddr, Kind)>();
+        let (inject, arrivals) = mpsc::channel::<Arrival>();
         for arrival in attempt.pending.drain(..) {
             let _ = inject.send(arrival);
         }
@@ -1203,7 +1215,7 @@ struct Attached {
     emit: crate::events::Sender,
     socket: Socket,
     servers: Vec<SocketAddr>,
-    arrivals: mpsc::Receiver<(SocketAddr, Kind)>,
+    arrivals: mpsc::Receiver<Arrival>,
     /// Application messages the seam wants sent to this guest.
     said: mpsc::Receiver<Said>,
     /// What the application has asked of this guest.
@@ -1968,8 +1980,13 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         // triggers, and nothing else releases them. The session is over either
         // way; the difference is whether the host knows.
         let turn = match shell.turn(|endpoint| {
-            while let Ok((addr, kind)) = arrivals.try_recv() {
-                let _ = endpoint.conn().add_candidate(addr, kind);
+            while let Ok(arrival) = arrivals.try_recv() {
+                match arrival {
+                    Arrival::Candidate(addr, kind) => {
+                        let _ = endpoint.conn().add_candidate(addr, kind);
+                    }
+                    Arrival::PeerReady => endpoint.conn().set_peer_ready(),
+                }
             }
             if let (Some(seat), Some(packetiser), Some(negotiation)) =
                 (seated, framing.as_deref_mut(), declaring.as_deref_mut())
@@ -2101,7 +2118,14 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                     addr,
                 });
             }
-            lowlat_core::conn::State::Failed(_) => {
+            lowlat_core::conn::State::Failed(failure) => {
+                // The type is the diagnosis: a probe timeout is the one
+                // outcome that justifies escalating to a relay, and no
+                // candidates is a signaling gap rather than a network one.
+                lowlat_common::log_info!(
+                    "guest: punch failed, outcome={failure:?} attempt={}",
+                    args.attempt_id
+                );
                 args.emit.send(Event::Ended {
                     attempt: args.attempt_id.clone(),
                     outcome: Outcome::ConnectivityFailed,
@@ -2922,9 +2946,14 @@ mod tests {
 
         let attempt = seam.attempts.get("a").expect("attempt");
         assert!(attempt.peer_ready, "the marker was not recorded");
-        assert_eq!(
-            attempt.pending.len(),
-            0,
+        // Forwarded so the engine can lift its gate, but as readiness --
+        // never as the arbitrary address that rode along with it.
+        assert_eq!(attempt.pending.len(), 1, "the marker was not forwarded");
+        assert!(
+            attempt
+                .pending
+                .iter()
+                .all(|arrival| matches!(arrival, Arrival::PeerReady)),
             "a readiness marker was queued as a candidate"
         );
     }

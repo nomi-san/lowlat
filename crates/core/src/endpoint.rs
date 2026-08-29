@@ -278,6 +278,8 @@ mod tests {
             .conn()
             .add_candidate(left_addr, conn::Kind::Reflexive)
             .unwrap();
+        left.conn().set_peer_ready();
+        right.conn().set_peer_ready();
 
         // Media queued before a path exists must wait, not vanish.
         left.session()
@@ -347,6 +349,8 @@ mod tests {
             .conn()
             .add_candidate(left_addr, conn::Kind::Reflexive)
             .unwrap();
+        left.conn().set_peer_ready();
+        right.conn().set_peer_ready();
 
         let mut now = 0.0;
         while now < 2_000.0 && (left.path().is_none() || right.path().is_none()) {
@@ -408,12 +412,14 @@ mod tests {
             0xA1,
         );
 
-        // A fresh candidate is due immediately, well inside the acknowledgement
-        // cadence, so connectivity sets the deadline.
+        // A fresh candidate is due immediately once the peer says it is
+        // listening, well inside the acknowledgement cadence, so connectivity
+        // sets the deadline.
         endpoint
             .conn()
             .add_candidate(addr(20, 6000), conn::Kind::Reflexive)
             .unwrap();
+        endpoint.conn().set_peer_ready();
         assert!(endpoint.next_timer_ms(0.0).abs() < 1e-9);
 
         // Once the attempt is over it asks for nothing, and the session's

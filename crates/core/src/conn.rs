@@ -264,6 +264,10 @@ pub struct Conn<'a> {
     pending: [Option<(SocketAddr, TransactionId, Option<IpAddr>)>; MAX_PENDING],
 
     state: State,
+    /// Whether the peer has said it is listening. Full-length checks toward
+    /// translated-path candidates wait for this; direct candidates and the
+    /// probe do not.
+    peer_ready: bool,
     /// The local address the winning answer arrived at, latched when the path
     /// is chosen and reused for every send after it. `None` until then, and
     /// `None` for the whole attempt if the shell could not say.
@@ -286,6 +290,7 @@ impl<'a> Conn<'a> {
             servers: [None; MAX_SERVERS],
             pending: [None; MAX_PENDING],
             state: State::Checking,
+            peer_ready: false,
             local: None,
             started_ms: now_ms,
             last_sent_ms: None,
@@ -329,6 +334,24 @@ impl<'a> Conn<'a> {
     /// move to a sibling address, which the peer's filter never probed.
     pub fn local(&self) -> Option<IpAddr> {
         self.local
+    }
+
+    /// The peer's readiness marker arrived: it is bound and listening.
+    ///
+    /// Until then, full-length checks go only to direct candidates. A check
+    /// that reaches a translated path before the peer has sent anything
+    /// outward is unsolicited traffic to its translator, which can commit a
+    /// state entry that then blocks the peer's own punch -- so the checks
+    /// that cross translation wait, while a direct candidate (reachable as
+    /// given, no translator to poison) and the mapping probe (which never
+    /// reaches the peer at all) do not.
+    pub fn set_peer_ready(&mut self) {
+        self.peer_ready = true;
+    }
+
+    /// Whether a candidate of `kind` may be sent full-length checks yet.
+    fn checkable(&self, kind: Kind) -> bool {
+        kind == Kind::Direct || self.peer_ready
     }
 
     /// Offer a remote candidate.
@@ -525,6 +548,9 @@ impl<'a> Conn<'a> {
             soonest = soonest.min(self.pace_wait(now_ms));
         }
         for candidate in self.candidates.iter().flatten() {
+            if !self.checkable(candidate.kind) {
+                continue;
+            }
             let due = match candidate.last_check_ms {
                 Some(last) => (last + CHECK_CADENCE_MS - now_ms).max(0.0),
                 None => 0.0,
@@ -599,6 +625,9 @@ impl<'a> Conn<'a> {
             .enumerate()
             .find_map(|(index, slot)| {
                 let candidate = slot.as_ref()?;
+                if !self.checkable(candidate.kind) {
+                    return None;
+                }
                 let ready = match candidate.last_check_ms {
                     Some(last) => now_ms - last >= CHECK_CADENCE_MS,
                     None => true,
@@ -874,9 +903,9 @@ mod tests {
         );
     }
 
-    /// The exchange's flags map onto the three kinds, lan winning, and a
-    /// translated-path guess no server verified is checked but never draws
-    /// the one probe.
+    /// The exchange's flags map onto the three kinds, lan winning; a
+    /// translated-path guess no server verified waits for the readiness
+    /// marker like the reflexive path, and never draws the one probe.
     #[test]
     fn a_wan_guess_is_checked_but_never_probed() {
         assert_eq!(Kind::marked(true, false), Kind::Direct);
@@ -886,11 +915,64 @@ mod tests {
 
         let mut conn = conn();
         conn.add_candidate(addr(1, 4000), Kind::Wan).unwrap();
-        let sent = drain(&mut conn, 0.0);
-        assert!(!sent.is_empty(), "a wan guess must still be checked");
+        assert!(
+            drain(&mut conn, 0.0).is_empty(),
+            "a translated-path guess was checked before the peer said it listens"
+        );
+
+        conn.set_peer_ready();
+        let sent = drain(&mut conn, 20.0);
+        assert!(
+            !sent.is_empty(),
+            "a wan guess must be checked once the peer is ready"
+        );
         assert!(
             sent.iter().all(|(egress, _)| egress.ttl == Ttl::Default),
             "the probe was spent on an unverified guess"
+        );
+    }
+
+    /// Full-length checks toward translated paths wait for the readiness
+    /// marker; the probe does not, because it never reaches the peer. A
+    /// check that arrives before the peer has sent anything outward is
+    /// unsolicited traffic to its translator, which can commit a state entry
+    /// that then blocks the peer's own punch.
+    #[test]
+    fn wan_checks_wait_for_the_readiness_marker() {
+        let mut conn = conn();
+        conn.add_candidate(addr(1, 4000), Kind::Reflexive).unwrap();
+
+        let sent = drain(&mut conn, 0.0);
+        assert_eq!(sent.len(), 1, "only the probe may leave before readiness");
+        assert_eq!(sent.first().map(|(egress, _)| egress.ttl), Some(Ttl::Probe));
+
+        // And the gated candidate does not drive the timer to zero, or the
+        // loop would spin on a deadline it is not allowed to act on.
+        let wait = conn.next_timer_ms(20.0);
+        assert!(wait > 400.0, "a gated candidate armed the timer: {wait}");
+
+        conn.set_peer_ready();
+        assert!(
+            conn.next_timer_ms(20.0).abs() < 1e-9,
+            "readiness must make the candidate due"
+        );
+        let sent = drain(&mut conn, 20.0);
+        assert!(
+            sent.iter().any(|(egress, _)| egress.ttl == Ttl::Default),
+            "no check followed the readiness marker"
+        );
+    }
+
+    /// A direct candidate never waits: it is reachable as given and there is
+    /// no translator on its path to poison.
+    #[test]
+    fn direct_candidates_never_wait() {
+        let mut conn = conn();
+        conn.add_candidate(addr(1, 4000), Kind::Direct).unwrap();
+        let sent = drain(&mut conn, 0.0);
+        assert!(
+            sent.iter().any(|(egress, _)| egress.ttl == Ttl::Default),
+            "a direct candidate was held for a marker it does not need"
         );
     }
 
@@ -902,6 +984,7 @@ mod tests {
     fn only_the_probe_carries_the_reduced_ttl() {
         let mut conn = conn();
         conn.add_candidate(addr(1, 4000), Kind::Reflexive).unwrap();
+        conn.set_peer_ready();
 
         let mut ttls = std::vec::Vec::new();
         let mut at = 0.0;
@@ -1016,6 +1099,7 @@ mod tests {
         let mut conn = conn();
         let peer = addr(1, 4000);
         conn.add_candidate(peer, Kind::Reflexive).unwrap();
+        conn.set_peer_ready();
 
         // The first round leaves, and the peer's answer to it is built now
         // but will arrive late.
@@ -1514,6 +1598,7 @@ mod tests {
         assert!(conn.next_timer_ms(0.0).is_finite());
 
         conn.add_candidate(addr(1, 4000), Kind::Reflexive).unwrap();
+        conn.set_peer_ready();
         assert!(
             conn.next_timer_ms(0.0).abs() < 1e-9,
             "a fresh candidate is due immediately"
