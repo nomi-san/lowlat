@@ -1866,6 +1866,9 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     // rather than on every pass regardless.
     let mut counted = lowlat_inject::event::Tally::default();
     let mut throughput = Throughput::default();
+    // What the peer acknowledged receiving, sampled on the same interval as
+    // what it was offered. The two apart are the loss picture.
+    let mut delivered = Throughput::default();
     // What this guest has been told about the pointer, and what it holds.
     let mut pointer = crate::cursor::Sender::new();
     let mut declared = false;
@@ -1901,6 +1904,11 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     let mut sound = AudioSent::default();
     let mut sound_rate = Throughput::default();
     let mut reported_ms = 0.0f64;
+    // The resend counters at the last report, so the line carries per-window
+    // deltas, and the widest acknowledgement silence seen since it.
+    let mut nack_resends_seen = 0u64;
+    let mut timeout_resends_seen = 0u64;
+    let mut ack_gap_peak = 0.0f64;
     // Latch for the soft liveness warning, so a stall is said once on the
     // transition rather than every pass for a minute.
     let mut stalled_said = false;
@@ -2401,10 +2409,19 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         // What the stream's controller and gate are steered by. Cheap, and it
         // reads state this loop already owns.
         if let Some(seat) = seat.as_ref()
-            && let Some((window, stale, bytes)) =
-                shell.endpoint().session().send_pressure(VIDEO_CHANNEL)
+            && let Some(pressure) = shell.endpoint().session().send_pressure(VIDEO_CHANNEL)
         {
-            let measured = throughput.sample(bytes, now);
+            let window = pressure.window;
+            let stale = pressure.stale;
+            let measured = throughput.sample(pressure.bytes_sent, now);
+            // What the path delivered, beside what it was offered. The
+            // controller still steers by the offered figure; this one is for
+            // the person reading the line.
+            let got = delivered.sample(pressure.acked_bytes, now);
+            // **The widest silence from the peer, sampled on wakes.** The
+            // timer caps the spacing between wakes, so a gap longer than the
+            // cadence is seen while it is happening rather than after it.
+            ack_gap_peak = ack_gap_peak.max(now - shell.endpoint().session().last_ack_in_ms());
             seat.report(window, stale, measured);
             // **Published where it is already computed.** These are the
             // controller's own inputs; an application asking what a guest is
@@ -2423,6 +2440,16 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             // stream that stops is one of the three going flat.
             if now - reported_ms >= PROGRESS_MS {
                 reported_ms = now;
+                // Resends since the last report, by cause. A gap the peer
+                // reported apart from one the timeout had to find.
+                let nacks = pressure.nack_resends.saturating_sub(nack_resends_seen);
+                let rtos = pressure
+                    .timeout_resends
+                    .saturating_sub(timeout_resends_seen);
+                nack_resends_seen = pressure.nack_resends;
+                timeout_resends_seen = pressure.timeout_resends;
+                let ack_gap = ack_gap_peak;
+                ack_gap_peak = 0.0;
                 // **What the peer is still doing, not only what we are.** A
                 // guest that stops acknowledging while its own messages keep
                 // arriving is alive and has stopped reading; one that goes
@@ -2462,6 +2489,9 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 // sending them at all, and the two are otherwise identical
                 // from here.
                 let srtt = shell.endpoint().session().srtt_ms();
+                // The smallest recent sample beside the smoothed one: the
+                // gradient between them is the queue building.
+                let rtt_min = shell.endpoint().session().rtt_min_ms();
                 // **What sound is costing on the wire**, which is the only
                 // place it can be seen: a silent desktop keeps sending
                 // compressed packets, so the count climbing says nothing about
@@ -2471,7 +2501,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                     .endpoint()
                     .session()
                     .send_pressure(AUDIO_CHANNEL)
-                    .map_or(0.0, |(_, _, bytes)| sound_rate.sample(bytes, now));
+                    .map_or(0.0, |p| sound_rate.sample(p.bytes_sent, now));
                 // **What a guest's microphone delivered, and what it cost.** A
                 // packet the codec refused and one that made it panic are
                 // counted apart: the second is the number that says whether
@@ -2483,7 +2513,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 args.telemetry
                     .progressed(now, u32::try_from(sent).unwrap_or(u32::MAX));
                 lowlat_common::log_info!(
-                    "guest: attempt={} frames={sent} window={window} stale={stale} mbps={measured:.2} encode_ms={:.2} rx_frag={rx} rx_msg={inbound_messages} rx_dup={} rx_oow={} rx_big={} dg_in={} dg_out={} rej={} srtt={:.1} keys={} btn={} wheel={} motion={} pad={} snd={} snd_drop={} snd_mbps={sound_mbps:.3} mic={} mic_refused={} mic_panicked={}",
+                    "guest: attempt={} frames={sent} window={window} stale={stale} mbps={measured:.2} delivered={got:.2} nacks={nacks} rtos={rtos} encode_ms={:.2} rx_frag={rx} rx_msg={inbound_messages} rx_dup={} rx_oow={} rx_big={} dg_in={} dg_out={} rej={} srtt={:.1} rtt_min={rtt_min:.1} ack_gap={ack_gap:.0} keys={} btn={} wheel={} motion={} pad={} snd={} snd_drop={} snd_mbps={sound_mbps:.3} mic={} mic_refused={} mic_panicked={}",
                     args.attempt_id,
                     seat.encode_latency_ms(),
                     rx_drops.duplicate,
@@ -2561,10 +2591,10 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                     lowlat_common::log_warn!(
                         "guest: nothing acknowledged for {DELIVERY_DEADLINE_MS:.0} ms, \
                          video window={} stale={}, control window={} stale={}",
-                        video.0,
-                        video.1,
-                        control.0,
-                        control.1
+                        video.window,
+                        video.stale,
+                        control.window,
+                        control.stale
                     );
                     Some(Outcome::Undeliverable)
                 }

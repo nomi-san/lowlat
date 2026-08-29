@@ -93,6 +93,12 @@ pub struct SendRing<'a> {
     bytes_sent: u64,
     /// Fragments the peer has acknowledged since the ring was created.
     acked: u64,
+    /// Payload bytes the peer's cumulative acknowledgements have covered.
+    acked_bytes: u64,
+    /// Fast retransmissions taken on negative acknowledgements.
+    nack_resends: u64,
+    /// Retransmissions taken on the timeout.
+    timeout_resends: u64,
 }
 
 impl<'a> SendRing<'a> {
@@ -128,6 +134,9 @@ impl<'a> SendRing<'a> {
             peer_depth: depth,
             bytes_sent: 0,
             acked: 0,
+            acked_bytes: 0,
+            nack_resends: 0,
+            timeout_resends: 0,
         })
     }
 
@@ -164,6 +173,26 @@ impl<'a> SendRing<'a> {
     /// this figure moves.
     pub fn acked(&self) -> u64 {
         self.acked
+    }
+
+    /// Payload bytes the peer's cumulative acknowledgements have covered.
+    ///
+    /// **Delivered, not offered.** A retransmission moves
+    /// [`SendRing::bytes_sent`] and adds nothing here, which is the
+    /// difference between what the path carried and what it was asked to.
+    /// Cumulative and never reset, for the same reason as `bytes_sent`.
+    pub fn acked_bytes(&self) -> u64 {
+        self.acked_bytes
+    }
+
+    /// Fast retransmissions taken on negative acknowledgements. Cumulative.
+    pub fn nack_resends(&self) -> u64 {
+        self.nack_resends
+    }
+
+    /// Retransmissions taken on the timeout. Cumulative.
+    pub fn timeout_resends(&self) -> u64 {
+        self.timeout_resends
     }
 
     /// Outstanding count from the last completed scan.
@@ -248,6 +277,23 @@ impl<'a> SendRing<'a> {
             .filter(|_| (self.channel as usize) < ack.reported)
             .unwrap_or(self.base);
         if seq::gt(cumulative, self.base) && seq::le(cumulative, self.next) {
+            // **Delivered payload bytes: what the advance covers and still
+            // holds.** A slot the trigger path already cleared is not counted
+            // twice, and one the receiver abandoned by escaping a stall
+            // counts anyway -- this side cannot tell it apart from
+            // delivered. The walk is bounded by the advance and each step is
+            // a read.
+            let mut covered = 0u64;
+            let mut sequence = self.base;
+            while seq::lt(sequence, cumulative) {
+                if let Some(slot) = self.meta.get(self.index(sequence))
+                    && slot.occupied
+                {
+                    covered = covered.saturating_add(u64::from(slot.len));
+                }
+                sequence = sequence.wrapping_add(1);
+            }
+            self.acked_bytes = self.acked_bytes.saturating_add(covered);
             self.acked = self
                 .acked
                 .saturating_add(u64::from(cumulative.wrapping_sub(self.base)));
@@ -396,7 +442,8 @@ impl<'a> SendRing<'a> {
             let Some(entry) = self.meta.get_mut(index) else {
                 return Some(Err(Error::BadLength));
             };
-            if entry.sent {
+            let resent = entry.sent;
+            if resent {
                 if nacked {
                     entry.nack_resent = true;
                 } else {
@@ -407,6 +454,15 @@ impl<'a> SendRing<'a> {
                 entry.first_sent_ms = now_ms;
             }
             entry.last_sent_ms = now_ms;
+            // Counted by cause, so a loss rate can be read without inferring
+            // one kind from the other.
+            if resent {
+                if nacked {
+                    self.nack_resends = self.nack_resends.saturating_add(1);
+                } else {
+                    self.timeout_resends = self.timeout_resends.saturating_add(1);
+                }
+            }
             self.outstanding = self.outstanding.saturating_add(1);
             self.bytes_sent = self.bytes_sent.saturating_add(u64::from(slot.len));
 
@@ -819,6 +875,66 @@ mod tests {
         // fragment is older than the staleness threshold.
         assert!(drain(&mut ring, 40.0, 5.0).is_empty());
         assert_eq!(ring.stale(), 1);
+    }
+
+    /// **Delivered bytes, not offered ones.** The cumulative advance counts
+    /// the payload it covers exactly once; a retransmission moves
+    /// `bytes_sent` and adds nothing here, which is the difference between
+    /// what the path carried and what it was asked to.
+    #[test]
+    fn acknowledged_bytes_count_what_the_cumulative_covers_once() {
+        let mut storage = Storage::new();
+        let mut ring = storage.ring();
+        // Four single-fragment one-byte messages: five bytes of body each,
+        // the four-byte length prefix and the byte.
+        for _ in 0..4 {
+            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+        }
+        drain(&mut ring, 0.0, 10.0);
+        assert_eq!(ring.bytes_sent(), 20);
+        assert_eq!(ring.acked_bytes(), 0, "nothing has been acknowledged");
+
+        ring.on_ack(&ack_with(2, false, 1), 5.0);
+        assert_eq!(ring.acked_bytes(), 10, "half the window delivered");
+
+        // The rest is lost, retransmitted on the timeout, and then covered.
+        // The retransmission is offered load, not delivered.
+        assert_eq!(drain(&mut ring, 200.0, 10.0), std::vec![2, 3]);
+        assert_eq!(ring.bytes_sent(), 30);
+        assert_eq!(
+            ring.acked_bytes(),
+            10,
+            "a retransmission counted as delivered"
+        );
+        ring.on_ack(&ack_with(4, false, 3), 250.0);
+        assert_eq!(ring.acked_bytes(), 20);
+    }
+
+    /// Resends are counted by cause: a negative acknowledgement's fast
+    /// retransmission apart from the timeout's, so a loss rate can be read
+    /// without inferring either from the other.
+    #[test]
+    fn resends_are_counted_by_cause() {
+        let mut storage = Storage::new();
+        let mut ring = storage.ring();
+        for _ in 0..4 {
+            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+        }
+        drain(&mut ring, 0.0, 10.0);
+        assert_eq!(ring.nack_resends(), 0);
+        assert_eq!(ring.timeout_resends(), 0);
+
+        // Nack below sequence 3, well inside the timeout: fast retransmission.
+        ring.on_ack(&ack_with(0, true, 3), 1.0);
+        assert_eq!(drain(&mut ring, 2.0, 10.0), std::vec![0, 1, 2]);
+        assert_eq!(ring.nack_resends(), 3);
+        assert_eq!(ring.timeout_resends(), 0, "a fast resend is not a timeout");
+
+        // Past the timeout the same fragments go again, on the timer this
+        // time: the nack latch held and the resend is not a second fast one.
+        assert_eq!(drain(&mut ring, 200.0, 10.0), std::vec![0, 1, 2]);
+        assert_eq!(ring.timeout_resends(), 3);
+        assert_eq!(ring.nack_resends(), 3);
     }
 
     #[test]

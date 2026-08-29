@@ -48,6 +48,14 @@ pub const DELIVERY_DEADLINE_MS: f64 = 15_000.0;
 /// Weight given to a new round-trip sample.
 const SRTT_ALPHA: f64 = 0.1;
 
+/// Round-trip samples kept for the windowed minimum.
+///
+/// **Sample-counted, not timed.** Under load a sample arrives with most
+/// acknowledgements, so the window spans well under a second; sparse traffic
+/// stretches it. Either way it is recent, which is what a minimum has to be
+/// to say the queue is growing rather than the path having always been so.
+const RTT_WINDOW: usize = 64;
+
 /// What a datagram turned out to be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Inbound {
@@ -91,6 +99,29 @@ struct Delivery {
     since_ms: f64,
 }
 
+/// One channel's send pressure, as the congestion controller, the delivery
+/// gate and the diagnostics all read it.
+///
+/// The byte counters come in pairs on purpose. **Offered** is what the path
+/// was asked to carry, retransmissions included; **delivered** is what the
+/// peer's cumulative acknowledgements covered, counted once. Their difference
+/// is the loss picture, and neither says it alone.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Pressure {
+    /// Fragments between the send base and the send next.
+    pub window: u32,
+    /// Stale count from the last completed scan.
+    pub stale: u32,
+    /// Payload bytes handed to the wire, retransmissions included.
+    pub bytes_sent: u64,
+    /// Payload bytes the peer's cumulative acknowledgements have covered.
+    pub acked_bytes: u64,
+    /// Fast retransmissions taken on negative acknowledgements.
+    pub nack_resends: u64,
+    /// Retransmissions taken on the timeout.
+    pub timeout_resends: u64,
+}
+
 /// One peer-to-peer session.
 #[derive(Debug)]
 pub struct Session<'a> {
@@ -103,8 +134,17 @@ pub struct Session<'a> {
     tx_counter: u64,
     srtt_ms: f64,
     srtt_seeded: bool,
+    /// Recent round-trip samples, for the windowed minimum.
+    rtt_window: [f64; RTT_WINDOW],
+    /// How many of them are populated.
+    rtt_window_len: usize,
+    /// Where the next sample goes.
+    rtt_window_at: usize,
 
     last_ack_sent_ms: f64,
+    /// When the most recent group acknowledgement of either kind arrived.
+    /// The gap since it is the earliest silence signal there is.
+    last_ack_in_ms: f64,
     last_progress_ms: f64,
     /// Per channel, when delivery on it last made progress.
     ///
@@ -142,7 +182,11 @@ impl<'a> Session<'a> {
             tx_counter: 0,
             srtt_ms: 0.0,
             srtt_seeded: false,
+            rtt_window: [0.0; RTT_WINDOW],
+            rtt_window_len: 0,
+            rtt_window_at: 0,
             last_ack_sent_ms: now_ms,
+            last_ack_in_ms: now_ms,
             last_progress_ms: now_ms,
             delivery: [Delivery {
                 acked_seen: 0,
@@ -219,16 +263,22 @@ impl<'a> Session<'a> {
         })
     }
 
-    /// One channel's send pressure: the outstanding window, the stale count
-    /// from the last scan, and the payload bytes sent so far.
+    /// One channel's send pressure.
     ///
     /// **The window is `send_next - send_base`**, which is what both the
     /// congestion controller and the delivery gate's room test are defined
     /// against. It is not [`crate::send::SendRing::outstanding`], which counts
     /// what a single scan released and is bounded by the per-channel cap.
-    pub fn send_pressure(&self, channel: u8) -> Option<(u32, u32, u64)> {
+    pub fn send_pressure(&self, channel: u8) -> Option<Pressure> {
         let ring = self.send.get(channel as usize)?.as_ref()?;
-        Some((ring.in_flight(), ring.stale(), ring.bytes_sent()))
+        Some(Pressure {
+            window: ring.in_flight(),
+            stale: ring.stale(),
+            bytes_sent: ring.bytes_sent(),
+            acked_bytes: ring.acked_bytes(),
+            nack_resends: ring.nack_resends(),
+            timeout_resends: ring.timeout_resends(),
+        })
     }
 
     /// Contiguous frontier on `channel`: what we would acknowledge.
@@ -355,6 +405,11 @@ impl<'a> Session<'a> {
                 })
             }
             Packet::Ack(ack) => {
+                // **Either kind stamps the arrival.** The peer's own
+                // guarantee covers both halves of it -- data answered inside
+                // its floor, an idle session inside the cadence -- so the gap
+                // since this stamp is the earliest silence signal there is.
+                self.last_ack_in_ms = now_ms;
                 self.identify_peer(&ack);
                 match ack.kind {
                     AckKind::Ack => {
@@ -415,12 +470,43 @@ impl<'a> Session<'a> {
         if !sample_ms.is_finite() || sample_ms < 0.0 {
             return;
         }
+        if let Some(slot) = self.rtt_window.get_mut(self.rtt_window_at) {
+            *slot = sample_ms;
+            self.rtt_window_len = (self.rtt_window_len + 1).min(RTT_WINDOW);
+            self.rtt_window_at = (self.rtt_window_at + 1) % RTT_WINDOW;
+        }
         if self.srtt_seeded {
             self.srtt_ms = self.srtt_ms * (1.0 - SRTT_ALPHA) + sample_ms * SRTT_ALPHA;
         } else {
             self.srtt_ms = sample_ms;
             self.srtt_seeded = true;
         }
+    }
+
+    /// The smallest round-trip sample in the recent window, or zero before
+    /// any has arrived. Read beside the smoothed estimate: the gradient
+    /// between them is the queue building, which neither shows alone.
+    pub fn rtt_min_ms(&self) -> f64 {
+        let populated = self.rtt_window_len.min(RTT_WINDOW);
+        if populated == 0 {
+            return 0.0;
+        }
+        self.rtt_window
+            .get(..populated)
+            .unwrap_or(&[])
+            .iter()
+            .copied()
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    /// When the most recent group acknowledgement of either kind arrived.
+    ///
+    /// The peer answers data inside its own floor and an idle session inside
+    /// the keepalive cadence, so a long gap with media in flight says the
+    /// return path -- or the peer's reading of it -- has stopped, long
+    /// before any deadline notices.
+    pub fn last_ack_in_ms(&self) -> f64 {
+        self.last_ack_in_ms
     }
 
     /// Housekeeping. Safe to call whenever the loop wakes.
@@ -1396,6 +1482,65 @@ mod tests {
 
         let (window, _) = left.pressure();
         assert_eq!(window, 0, "the keepalive did not free the window");
+    }
+
+    /// The windowed minimum is the recent samples' floor, and it slides:
+    /// once the window has moved past them, old low samples stop deciding it.
+    /// The gradient between this and the smoothed estimate is the queue
+    /// building, which neither figure shows alone.
+    #[test]
+    fn the_windowed_minimum_follows_recent_round_trips() {
+        let mut arena = Arena::new();
+        let mut session = endpoint(&mut arena, 0.0);
+        assert!(
+            session.rtt_min_ms().abs() < 1e-9,
+            "a window with no samples"
+        );
+
+        session.observe_rtt(30.0);
+        session.observe_rtt(10.0);
+        session.observe_rtt(20.0);
+        assert!((session.rtt_min_ms() - 10.0).abs() < 1e-9);
+
+        // Fill the window past its depth with worse samples: the low ones
+        // leave it and the minimum follows what remains.
+        for _ in 0..64 {
+            session.observe_rtt(50.0);
+        }
+        assert!(
+            (session.rtt_min_ms() - 50.0).abs() < 1e-9,
+            "the window did not slide: minimum is {}",
+            session.rtt_min_ms()
+        );
+    }
+
+    /// A group acknowledgement of either kind timestamps its arrival. The gap
+    /// since that stamp is the earliest silence signal there is: a peer
+    /// answers data inside its own floor and an idle session inside the
+    /// keepalive cadence, so a long gap with media in flight precedes every
+    /// deadline that would eventually notice.
+    #[test]
+    fn acknowledgement_arrivals_are_timestamped() {
+        let mut left_arena = Arena::new();
+        let mut right_arena = Arena::new();
+        let mut left = endpoint(&mut left_arena, 0.0);
+        let mut right = endpoint(&mut right_arena, 0.0);
+
+        left.send_message(VIDEO, &[], b"x").unwrap();
+        pump(&mut left, &mut right, 1.0);
+        assert!(left.last_ack_in_ms() < 2.0);
+        pump(&mut right, &mut left, 2.0);
+        assert!(
+            (left.last_ack_in_ms() - 2.0).abs() < 1e-9,
+            "the data acknowledgement was not stamped"
+        );
+
+        right.poll(ACK_CADENCE_MS + 2.0);
+        pump(&mut right, &mut left, ACK_CADENCE_MS + 2.0);
+        assert!(
+            (left.last_ack_in_ms() - ACK_CADENCE_MS - 2.0).abs() < 1e-9,
+            "the keepalive was not stamped"
+        );
     }
 
     #[test]
