@@ -78,7 +78,9 @@ Network namespaces with kernel address translation give real sockets and real ke
 under topologies the developer's network cannot produce.
 
 Fixtures: full cone, restricted cone, port restricted, symmetric, carrier-grade double
-translation, and hairpin.
+translation, hairpin, and multihome -- a host carrying two addresses, probed at the
+secondary, where the peer's own port restricted translator is the assertion that the
+answer came back from the address that was asked (2026-08-29).
 
 - Each fixture is a script that builds the topology, runs the case, and tears it down, leaving
   no state behind.

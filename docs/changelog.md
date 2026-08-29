@@ -3,6 +3,25 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## The answer leaves from the address it was asked at
+
+**Packet information was enabled at the socket and never consumed**, so every
+reply left from whatever source the routing table picked. On a host with
+several addresses -- the exact case enumerating host candidates exists for --
+a check probing the second address was answered from the first: unsolicited
+traffic to the peer's filtering translator, which drops it, so that
+candidate could never complete a check. Receive now reports the address each
+datagram arrived at; a binding answer leaves from exactly that address; and
+the address the winning answer arrived at is latched with the path and
+claimed on every datagram for the session's life, so a routing change cannot
+move the source out from under the peer's filter mid-stream. The claim rides
+the offloaded send path too, and only names the source -- the interface
+choice stays with the routing table. A seventh namespace fixture (multihome)
+proves it end to end: the probing side sits behind a port restricted
+translator, so the kernel itself drops an answer from the wrong address and
+the punch only completes when the pin is real -- watched failing with the
+pin disabled before it was trusted.
+
 ## The pass runs on the post-wait clock
 
 **The shell read its clock once per pass, before the wait, and stamped

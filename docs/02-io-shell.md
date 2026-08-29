@@ -151,7 +151,7 @@ setup path that shrank a 64 MB receive buffer to 5 MB left it that way for the e
 | `SO_RCVBUF` | request 64 MB, log what was granted | keyframe bursts of roughly 2550 packets per 100 ms overflow 16 MB |
 | `SO_SNDBUF` | 4 to 5 MB | the default drops connectivity-check and video bursts |
 | `IPV6_V6ONLY` | 0, dual stack on one socket | one socket serves both families |
-| `IP_PKTINFO`, `IPV6_PKTINFO` | on | source address selection parity |
+| `IP_PKTINFO`, `IPV6_PKTINFO` | on, and consumed | the arrival address of every datagram is read back and claimed on sends; see below |
 | `IP_TOS`, `IPV6_TCLASS` | EF (`0xB8`) | |
 | `IP_MTU_DISCOVER`, `IPV6_MTU_DISCOVER` | `IP_PMTUDISC_DO`, `IPV6_PMTUDISC_DO` | refuse to fragment, so an oversized probe fails fast instead of being split and arriving anyway ([01 §8](01-protocol.md)). **Both families: neither setting carries to the other**, and a socket left at the v6 default fragments locally, which a probe reads as the size having worked -- on a path whose minimum is 1280 and a ladder that climbs past it |
 | non-blocking | on | all paths |
@@ -167,6 +167,18 @@ recv_slot = 2000 (absolute datagram ceiling) + 64 (relay framing margin)
 Sizing from the negotiated or probed size silently discards whole datagrams and presents as
 "control works, video does not". The probed size and the receive slot size are **different
 named constants** and must never be spelled with the same identifier.
+
+**Packet information is consumed, not merely enabled** (corrected 2026-08-29; the options
+were previously set and the control messages never read, which is the worst of the three
+states -- the table claimed a parity the code did not deliver). Receive reports the address
+each datagram arrived at beside the address it came from. A connectivity answer leaves from
+exactly the address the check arrived at, and the address the winning answer arrived at is
+latched with the path and claimed on every datagram for the life of the session
+([03 s4](03-connectivity.md)). On a host with several addresses the kernel's own source
+selection follows the routing table, which is free to answer from a sibling address the peer
+never probed; a filtering translator then drops the answer, and the punch dies on exactly the
+multi-address case host candidates exist for. Only the source address is claimed -- the
+interface choice stays with the routing table.
 
 **Address family is determined structurally, never by scanning for a colon.** A v4-mapped
 address contains colons and is not IPv6; classifying it as such kills v4 connectivity.

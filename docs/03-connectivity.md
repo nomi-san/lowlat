@@ -130,6 +130,12 @@ Standard STUN binding requests and responses, with these specifics:
 - Responses are answered from the same socket, with the same credentials, immediately on
   receipt. A peer that does not answer checks is treated as unreachable even if media is
   flowing, which matters for §7.
+- **A response leaves from the address the request arrived at** (2026-08-29). The peer's
+  filter admitted exactly that address pair, and on a multihomed host the kernel's default
+  source selection answers from the primary sibling instead -- unsolicited traffic to a
+  filtering translator, which drops it, so the one candidate a second address exists for
+  never completes a check. The shell reports each datagram's arrival address and the engine
+  carries it on the queued answer ([02 s5](02-io-shell.md)).
 
 ## §5 The punch
 
@@ -145,6 +151,11 @@ for each remote candidate, in arrival order:
 
 - Probes repeat on a bounded schedule until a response arrives or the attempt times out.
 - Both sides probe simultaneously. Simultaneous open is the normal case, not an exception.
+- **The local address the winning answer arrived at is adopted with the path** (2026-08-29),
+  and every datagram for the life of the session claims it. Left to itself the kernel
+  re-selects the source per send, and on a multihomed host a routing change moves it
+  mid-session -- the peer's filter then sees a stranger where its session was. Checks and
+  reflexive probes before the path exists leave unpinned, because nothing is proven yet.
 - The first candidate to answer wins. There is no priority ordering and no attempt to find a
   better path afterward; the cost of switching mid-stream exceeds the benefit.
 - **Local-network candidates are probed alongside public ones**, not after. On a LAN the local
