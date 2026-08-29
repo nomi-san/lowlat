@@ -14,9 +14,9 @@
 pub const WINDOW_FLOOR: u32 = 100;
 
 /// Consecutive clean ticks between rate increases.
-const INCREASE_PERIOD: u32 = 30;
+pub const INCREASE_PERIOD: u32 = 30;
 /// Consecutive congested ticks between rate decreases.
-const DECREASE_PERIOD: u32 = 60;
+pub const DECREASE_PERIOD: u32 = 60;
 /// Multiplicative decrease.
 const DECREASE_FACTOR: f64 = 0.7;
 /// Additive increase per step unit.
@@ -153,35 +153,47 @@ impl Controller {
     /// rounds to zero.
     pub fn tick(&mut self, window: u32, stale: u32, measured_mbps: f64) -> f64 {
         if self.is_congested(window, stale) {
-            // The pre-increment value is tested, so the first congested tick
-            // acts and then every sixtieth after it.
-            let observed = self.decrease_ticks;
-            self.decrease_ticks = self.decrease_ticks.wrapping_add(1);
-            if observed % DECREASE_PERIOD == 0 {
-                self.total_decreases = self.total_decreases.saturating_add(1);
-                self.increase_ticks = 0;
-                self.peak_mbps *= DECREASE_FACTOR;
-                self.current_mbps = self.peak_mbps;
-            }
-        } else {
-            // Here the post-increment value is tested, so the first action
-            // lands on the thirtieth clean tick rather than the first.
-            self.increase_ticks = self.increase_ticks.wrapping_add(1);
-            if self.increase_ticks % INCREASE_PERIOD == 0 {
-                self.decrease_ticks = 0;
-                if self.reset_pending {
-                    self.current_mbps = self.min_mbps;
-                    self.peak_mbps = self.min_mbps;
-                    self.reset_pending = false;
-                } else {
-                    if measured_mbps > self.peak_mbps {
-                        self.peak_mbps = measured_mbps;
-                    }
-                    let step = self.step.min(STEP_CAP);
-                    self.current_mbps += f64::from(step) * INCREASE_STEP_MBPS;
-                    self.step = self.step.saturating_add(STEP_GROWTH);
+            return self.cut();
+        }
+        // Here the post-increment value is tested, so the first action
+        // lands on the thirtieth clean tick rather than the first.
+        self.increase_ticks = self.increase_ticks.wrapping_add(1);
+        if self.increase_ticks % INCREASE_PERIOD == 0 {
+            self.decrease_ticks = 0;
+            if self.reset_pending {
+                self.current_mbps = self.min_mbps;
+                self.peak_mbps = self.min_mbps;
+                self.reset_pending = false;
+            } else {
+                if measured_mbps > self.peak_mbps {
+                    self.peak_mbps = measured_mbps;
                 }
+                let step = self.step.min(STEP_CAP);
+                self.current_mbps += f64::from(step) * INCREASE_STEP_MBPS;
+                self.step = self.step.saturating_add(STEP_GROWTH);
             }
+        }
+        self.rate_mbps()
+    }
+
+    /// One congested tick, for a predicate this controller does not compute.
+    ///
+    /// The same arithmetic the congested half of [`Controller::tick`] runs:
+    /// the first congested tick of a run cuts and every sixtieth after it
+    /// does. It exists so a host-side experiment can extend the predicate --
+    /// a loss rate the window floor cannot see -- while the arithmetic stays
+    /// in one place. If the extension earns adoption it moves in here and the
+    /// separate call goes.
+    pub fn cut(&mut self) -> f64 {
+        // The pre-increment value is tested, so the first congested tick
+        // acts and then every sixtieth after it.
+        let observed = self.decrease_ticks;
+        self.decrease_ticks = self.decrease_ticks.wrapping_add(1);
+        if observed % DECREASE_PERIOD == 0 {
+            self.total_decreases = self.total_decreases.saturating_add(1);
+            self.increase_ticks = 0;
+            self.peak_mbps *= DECREASE_FACTOR;
+            self.current_mbps = self.peak_mbps;
         }
         self.rate_mbps()
     }
