@@ -140,17 +140,27 @@ struct Outcome {
     decreases: u32,
 }
 
-/// Run `duration_ms` of stream at `loss`, ticking `mode`, and report it.
+/// The path for a run: a loss rate and, where the profile wants it, a
+/// capacity cap in mebibits per second.
+#[derive(Debug, Clone, Copy, Default)]
+struct Profile {
+    loss: f64,
+    capacity_mibps: f64,
+}
+
+/// Run `duration_ms` of stream at `profile`, ticking `mode`, and report it.
 ///
 /// The offered load follows the controller's rate: each frame is as large as
 /// the current rate allows in one frame interval, so a path that cannot carry
 /// the rate is what loss stands in for, and the controller's answer to it is
 /// the trajectory.
-fn run(seed: u64, loss: f64, duration_ms: f64, mode: Mode) -> Outcome {
+fn run(seed: u64, profile: Profile, duration_ms: f64, mode: Mode) -> Outcome {
     let link = Link {
-        loss,
+        loss: profile.loss,
         one_way_ms: 10.0,
         jitter_ms: 2.0,
+        // Mibit/s to bytes per millisecond.
+        capacity_bytes_per_ms: profile.capacity_mibps * 1_048_576.0 / 8.0 / 1000.0,
         ..Link::default()
     };
     let mut sim = Sim::new(seed).with_link(link);
@@ -317,11 +327,50 @@ fn tick_as(
 fn trajectories_under_loss() {
     for loss in LOSS_STEPS {
         for mode in [Mode::Incumbent, Mode::LossRate, Mode::GoodputPeak] {
-            let outcome = run(0x5EED, loss, 60_000.0, mode);
+            let outcome = run(
+                0x5EED,
+                Profile {
+                    loss,
+                    ..Profile::default()
+                },
+                60_000.0,
+                mode,
+            );
             println!(
                 "loss={:.0}% {mode:?}: final={:.2} Mibit/s offered={:.2} delivered={:.2} \
                  decreases={} below_mean={:.0} ms",
                 loss * 100.0,
+                outcome.final_mbps,
+                outcome.offered_mbps,
+                outcome.delivered_mbps,
+                outcome.decreases,
+                outcome.below_mean_ms
+            );
+        }
+    }
+}
+
+/// The profile the candidates are really aimed at: a clean path whose
+/// capacity the stream can exceed. **The incumbent is the wire-compatible
+/// shape, so its ceiling here is the answer the candidates are measured
+/// against, not a fault to fix.** What the print line carries is whether
+/// either candidate finds the cap sooner or sits closer to it.
+#[test]
+fn trajectories_under_a_capacity_cap() {
+    for capacity in [4.0, 8.0] {
+        for mode in [Mode::Incumbent, Mode::LossRate, Mode::GoodputPeak] {
+            let outcome = run(
+                0xCA90,
+                Profile {
+                    loss: 0.0,
+                    capacity_mibps: capacity,
+                },
+                60_000.0,
+                mode,
+            );
+            println!(
+                "cap={capacity:.0} {mode:?}: final={:.2} Mibit/s offered={:.2} delivered={:.2} \
+                 decreases={} below_mean={:.0} ms",
                 outcome.final_mbps,
                 outcome.offered_mbps,
                 outcome.delivered_mbps,
@@ -342,7 +391,15 @@ fn trajectories_under_loss() {
 /// controller before the window has to say it.
 #[test]
 fn the_incumbent_cuts_only_after_the_window_fills() {
-    let outcome = run(0x5EED, 0.02, 30_000.0, Mode::Incumbent);
+    let outcome = run(
+        0x5EED,
+        Profile {
+            loss: 0.02,
+            ..Profile::default()
+        },
+        30_000.0,
+        Mode::Incumbent,
+    );
     assert!(
         outcome.delivered_mbps < outcome.offered_mbps,
         "the loss never reached the wire: offered={:.2} delivered={:.2}",
@@ -355,7 +412,15 @@ fn the_incumbent_cuts_only_after_the_window_fills() {
 /// declares congestion and the rate pays for it.
 #[test]
 fn the_loss_rate_candidate_declares_below_the_floor() {
-    let outcome = run(0x5EED, 0.02, 30_000.0, Mode::LossRate);
+    let outcome = run(
+        0x5EED,
+        Profile {
+            loss: 0.02,
+            ..Profile::default()
+        },
+        30_000.0,
+        Mode::LossRate,
+    );
     assert!(
         outcome.decreases > 0,
         "a two percent loss rate declared nothing"
@@ -366,8 +431,12 @@ fn the_loss_rate_candidate_declares_below_the_floor() {
 /// one, because retransmitted bytes stop looking like capacity.
 #[test]
 fn the_goodput_peak_climbs_more_slowly_than_the_offered_peak() {
-    let incumbent = run(0xD1CE, 0.05, 60_000.0, Mode::Incumbent);
-    let candidate = run(0xD1CE, 0.05, 60_000.0, Mode::GoodputPeak);
+    let profile = Profile {
+        loss: 0.05,
+        ..Profile::default()
+    };
+    let incumbent = run(0xD1CE, profile, 60_000.0, Mode::Incumbent);
+    let candidate = run(0xD1CE, profile, 60_000.0, Mode::GoodputPeak);
     assert!(
         candidate.final_mbps <= incumbent.final_mbps,
         "delivered-fed peak climbed past offered-fed: incumbent={:.2} candidate={:.2}",

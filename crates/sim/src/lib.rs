@@ -43,6 +43,15 @@ pub struct Link {
     /// Routers between the endpoints, each consuming one unit of TTL. A
     /// datagram whose TTL does not exceed this never arrives.
     pub hops: u8,
+    /// Path capacity as a byte budget per millisecond, refilled per send.
+    ///
+    /// **A policer, not a queue.** An affordable datagram leaves at the
+    /// link's own delay and an unaffordable one drops, so the profile is
+    /// drop-the-tail rather than queue-and-delay: standing queuing delay is
+    /// left out on purpose, because a queued model under a sender whose load
+    /// follows the controller's rate never converges and the run answers
+    /// nothing. Zero is no limit, which is what every existing fixture gets.
+    pub capacity_bytes_per_ms: f64,
 }
 
 impl Default for Link {
@@ -55,6 +64,7 @@ impl Default for Link {
             reorder: 0.0,
             reorder_ms: 0.0,
             hops: 8,
+            capacity_bytes_per_ms: 0.0,
         }
     }
 }
@@ -157,6 +167,8 @@ pub enum Dropped {
     TtlExpired,
     /// The path lost it.
     Lost,
+    /// The path's byte budget would not take it.
+    OverCapacity,
     /// No translator mapping matched, or filtering refused the sender.
     Filtered,
     /// Addressed to a translator that does not loop back to its own inside.
@@ -172,6 +184,12 @@ pub struct Sim {
     seq: u64,
     rng: Rng,
     link: Link,
+    /// Bytes the budget will take right now. A capped link starts empty:
+    /// the first send pays for its datagram or drops it, so the capacity
+    /// asserts from the first datagram rather than after a grace.
+    budget: f64,
+    /// When the budget last saw a send, in the clock's own units.
+    budget_at_us: u64,
     nats: Vec<Nat>,
     hosts: Vec<Host>,
     queue: Vec<Delivery>,
@@ -186,6 +204,8 @@ impl Sim {
             seq: 0,
             rng: Rng::new(seed),
             link: Link::default(),
+            budget: 0.0,
+            budget_at_us: 0,
             nats: Vec::new(),
             hosts: Vec::new(),
             queue: Vec::new(),
@@ -273,6 +293,22 @@ impl Sim {
         let Some((target, delivered_from)) = self.resolve(source, to) else {
             return;
         };
+
+        // The byte budget, when the link has one. It refills with time and
+        // pays for whole datagrams: one that does not fit drops. One link,
+        // one budget, because a per-direction pair would be speculative
+        // until a test needs asymmetry.
+        if self.link.capacity_bytes_per_ms > 0.0 {
+            let refill = self.now_us.saturating_sub(self.budget_at_us) as f64 / 1000.0;
+            self.budget = (self.budget + refill * self.link.capacity_bytes_per_ms)
+                .min(self.link.capacity_bytes_per_ms * 100.0);
+            self.budget_at_us = self.now_us;
+            if (self.budget - bytes.len() as f64) < 0.0 {
+                self.dropped.push(Dropped::OverCapacity);
+                return;
+            }
+            self.budget -= bytes.len() as f64;
+        }
 
         if self.rng.chance(self.link.loss) {
             self.dropped.push(Dropped::Lost);
