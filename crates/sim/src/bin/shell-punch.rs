@@ -23,7 +23,6 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
 
-use lowlat_common::clock::{Time, elapsed_ms};
 use lowlat_core::channel::{RecvRing, SlotMeta};
 use lowlat_core::conn::{Conn, Credentials, State};
 use lowlat_core::endpoint::Endpoint;
@@ -169,12 +168,25 @@ fn peer(args: &[String]) -> Result<(), String> {
         println!("candidate {candidate}");
     }
 
-    let started = Time::now();
     let mut published = false;
     let mut settled_at: Option<f64> = None;
 
     loop {
-        let now_ms = elapsed_ms(started);
+        // Whatever signaling delivered, injected where the application's work is
+        // pulled: after the wake has been taken, so nothing enqueued from here
+        // on is lost.
+        let mut arrived = None;
+        let turn = shell
+            .turn(|endpoint| {
+                while let Ok(addr) = inbox.try_recv() {
+                    if endpoint.conn().add_candidate(addr).is_ok() {
+                        arrived = Some(addr);
+                    }
+                }
+            })
+            .map_err(|e| format!("turn: {e}"))?;
+        // The loop's own bookkeeping runs on the same clock the pass ran on.
+        let now_ms = turn.now;
         if now_ms > timeout_ms {
             println!("timeout");
             return Ok(());
@@ -184,20 +196,6 @@ fn peer(args: &[String]) -> Result<(), String> {
         {
             return Ok(());
         }
-
-        // Whatever signaling delivered, injected where the application's work is
-        // pulled: after the wake has been taken, so nothing enqueued from here
-        // on is lost.
-        let mut arrived = None;
-        let turn = shell
-            .turn(now_ms, |endpoint| {
-                while let Ok(addr) = inbox.try_recv() {
-                    if endpoint.conn().add_candidate(addr).is_ok() {
-                        arrived = Some(addr);
-                    }
-                }
-            })
-            .map_err(|e| format!("turn: {e}"))?;
         if let Some(addr) = arrived {
             println!("candidate {addr}");
         }

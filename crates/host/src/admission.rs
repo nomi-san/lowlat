@@ -1799,7 +1799,6 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     }
 
     let mut shell = Shell::new(args.socket, wake, Endpoint::new(conn, session));
-    let started = lowlat_common::clock::Time::now();
     args.telemetry.began();
     let mut reported: Vec<SocketAddr> = Vec::new();
     // The negotiation, from the moment the media path exists. Absent before
@@ -1891,7 +1890,6 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     let mut pass: u32 = 0;
 
     while !running.stopping() {
-        let now = lowlat_common::clock::elapsed_ms(started);
         // Candidates are injected where the application's work is pulled, after
         // the wake has been taken, so nothing enqueued from here on is lost.
         // **The size the stream settled on, checked every pass rather than
@@ -1960,7 +1958,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         // the advertised capacity are all released by the reaping the event
         // triggers, and nothing else releases them. The session is over either
         // way; the difference is whether the host knows.
-        if let Err(error) = shell.turn(now, |endpoint| {
+        let turn = match shell.turn(|endpoint| {
             while let Ok(addr) = arrivals.try_recv() {
                 let _ = endpoint.conn().add_candidate(addr);
             }
@@ -1980,13 +1978,19 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 send_audio(endpoint.session(), seat, seat.audio_raw(), sounded);
             }
         }) {
-            lowlat_common::log_warn!("guest: the transport stopped, err={error}");
-            args.emit.send(Event::Ended {
-                attempt: args.attempt_id.clone(),
-                outcome: Outcome::TransportFailed,
-            });
-            return;
-        }
+            Ok(turn) => turn,
+            Err(error) => {
+                lowlat_common::log_warn!("guest: the transport stopped, err={error}");
+                args.emit.send(Event::Ended {
+                    attempt: args.attempt_id.clone(),
+                    outcome: Outcome::TransportFailed,
+                });
+                return;
+            }
+        };
+        // The pass runs on the shell's clock, read after its wait returned, so
+        // every deadline below sees the same time the session was driven with.
+        let now = turn.now;
 
         // Release anything held while the devices were becoming usable. On
         // its own timer, so a guest that pressed one key and waited does not

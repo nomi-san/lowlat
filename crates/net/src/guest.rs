@@ -171,11 +171,9 @@ mod tests {
         let mut shell = Shell::new(socket, wake, Endpoint::new(conn, session));
         let _ = bound.send(shell.socket().local_addr().unwrap());
 
-        let started = Instant::now();
         let mut count = 0u64;
         while !running.stopping() {
-            let now = started.elapsed().as_secs_f64() * 1000.0;
-            let _ = shell.turn(now, |_| {});
+            let _ = shell.turn(|_| {});
             count += 1;
         }
         let _ = passes.send(count);

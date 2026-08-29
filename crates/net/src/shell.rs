@@ -9,6 +9,15 @@
 //! sits well above every deadline the core actually arms -- a cap shorter than
 //! the acknowledgement cadence would bind on every pass and quietly reinstate
 //! the fixed poll it was meant to prevent.
+//!
+//! **The clock is the shell's own, and it is read twice per pass.** The
+//! pre-wait reading arms the wait and does nothing else; the pass's work --
+//! stamping arrivals, firing deadlines, stamping sends -- runs on a reading
+//! taken after the wait returns, which [`Turn::now`] hands back so the caller
+//! times the rest of its pass with the same value. A pass stamped with its
+//! pre-wait clock sees the deadline it woke for as not yet due, so every
+//! deadline costs two wakes and fires a pass late, and a round trip measured
+//! against it reads short by up to a full wait.
 
 use std::io;
 use std::os::fd::AsRawFd;
@@ -55,11 +64,15 @@ struct Ready {
 }
 
 /// What one pass did.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub struct Turn {
     pub woke: Woke,
     pub received: usize,
     pub sent: usize,
+    /// When the pass ran: milliseconds on the shell's clock, read after the
+    /// wait returned. The caller times the rest of its pass with this rather
+    /// than with a reading of its own that predates the wait.
+    pub now: f64,
 }
 
 /// Wake accounting, which is how the loop is shown to be event driven rather
@@ -103,10 +116,16 @@ pub struct Shell<'a> {
     outbound: send::Batch,
     scratch: Box<[u8]>,
     stats: Stats,
+    /// The loop's epoch. Every pass is stamped in milliseconds since this,
+    /// so the endpoint's engines are built against time zero.
+    base: lowlat_common::clock::Time,
 }
 
 impl<'a> Shell<'a> {
     /// Take ownership of the socket and wake for the life of the session.
+    ///
+    /// The shell's clock starts here: passes are stamped in milliseconds
+    /// since construction, so build the endpoint's engines against time zero.
     pub fn new(socket: Socket, wake: Wake, endpoint: Endpoint<'a>) -> Self {
         lowlat_common::log_info!(
             "net: socket open, rcvbuf={} sndbuf={}",
@@ -121,6 +140,7 @@ impl<'a> Shell<'a> {
             outbound: send::Batch::new(),
             scratch: vec![0u8; crate::socket::RECV_SLOT].into_boxed_slice(),
             stats: Stats::default(),
+            base: lowlat_common::clock::Time::now(),
         }
     }
 
@@ -150,16 +170,21 @@ impl<'a> Shell<'a> {
     /// was one, to pull whatever the application has enqueued. Input is pulled
     /// there before receive processing produces any output, because input
     /// latency is the one budget with a human in it.
-    pub fn turn(
-        &mut self,
-        now_ms: f64,
-        mut app: impl FnMut(&mut Endpoint<'a>),
-    ) -> io::Result<Turn> {
+    ///
+    /// **The pass runs on the shell's own clock, read after the wait
+    /// returns.** The reading comes back in [`Turn::now`], and the caller uses
+    /// it for whatever else its pass does. A reading taken before the wait
+    /// arms the timeout and nothing else -- a pass stamped with it sees the
+    /// deadline it woke for as not yet due, does nothing, and pays a second
+    /// wake one clamped minimum later.
+    pub fn turn(&mut self, mut app: impl FnMut(&mut Endpoint<'a>)) -> io::Result<Turn> {
+        let armed_ms = lowlat_common::clock::elapsed_ms(self.base);
         let timeout = self
             .endpoint
-            .next_timer_ms(now_ms)
+            .next_timer_ms(armed_ms)
             .clamp(MIN_WAIT_MS, MAX_WAIT_MS);
         let ready = self.wait(timeout)?;
+        let now_ms = lowlat_common::clock::elapsed_ms(self.base);
 
         // Taken before the application is pulled, never after. Anything
         // enqueued from here on leaves the descriptor armed, so the next wait
@@ -200,6 +225,7 @@ impl<'a> Shell<'a> {
             woke,
             received,
             sent,
+            now: now_ms,
         })
     }
 
@@ -208,11 +234,14 @@ impl<'a> Shell<'a> {
     /// Reports which descriptors poll spoke about rather than a bare "something
     /// happened", so the pass can leave the quiet ones alone.
     fn wait(&self, timeout_ms: f64) -> io::Result<Ready> {
+        // Rounded up, never truncated: poll takes whole milliseconds, and a
+        // fractional wait rounded down wakes just before the armed deadline --
+        // the pass then finds nothing due and pays a second wake to act on it.
         #[allow(
             clippy::cast_possible_truncation,
             reason = "clamped to the wait bounds by the caller"
         )]
-        let timeout = timeout_ms.max(MIN_WAIT_MS) as libc::c_int;
+        let timeout = timeout_ms.max(MIN_WAIT_MS).ceil() as libc::c_int;
         let mut fds = [
             libc::pollfd {
                 fd: self.socket.as_raw_fd(),
@@ -419,25 +448,24 @@ mod tests {
             .send_message(CHANNEL, b"hdr", b"body")
             .unwrap();
 
-        let mut now = 0.0;
+        let started = std::time::Instant::now();
         let mut out = [0u8; 512];
         let mut arrived = None;
         // Both sides must settle, not just the one that happens to establish
         // first: a message can arrive before the far side's own check has been
         // answered, and stopping there would hide a half-open path.
-        while now < 4_000.0
+        while started.elapsed() < std::time::Duration::from_secs(4)
             && (arrived.is_none()
                 || left.endpoint().path().is_none()
                 || right.endpoint().path().is_none())
         {
-            left.turn(now, |_| {}).expect("left turn");
-            right.turn(now, |_| {}).expect("right turn");
+            left.turn(|_| {}).expect("left turn");
+            right.turn(|_| {}).expect("right turn");
             if arrived.is_none()
                 && let Some(Ok(len)) = right.endpoint().session().take_message(CHANNEL, &mut out)
             {
                 arrived = Some(out[..len].to_vec());
             }
-            now += 10.0;
         }
 
         assert_eq!(
@@ -464,7 +492,7 @@ mod tests {
         let producer = shell.wake_handle().expect("handle");
 
         // Nothing enqueued: the pass is a timeout.
-        assert_eq!(shell.turn(0.0, |_| {}).expect("turn").woke, Woke::Timeout);
+        assert_eq!(shell.turn(|_| {}).expect("turn").woke, Woke::Timeout);
 
         // A sending thread enqueues and notifies.
         std::thread::spawn(move || producer.notify().expect("notify"))
@@ -473,7 +501,7 @@ mod tests {
 
         let started = std::time::Instant::now();
         let turn = shell
-            .turn(1.0, |endpoint| {
+            .turn(|endpoint| {
                 endpoint
                     .session()
                     .send_message(CHANNEL, &[], b"input")
@@ -505,7 +533,7 @@ mod tests {
         let mut shell = shell(&mut arena, LEFT, RIGHT, 0xA1);
 
         let mut pulled = 0;
-        let turn = shell.turn(0.0, |_| pulled += 1).expect("turn");
+        let turn = shell.turn(|_| pulled += 1).expect("turn");
 
         assert_eq!(turn.woke, Woke::Timeout, "the pass was not a quiet one");
         assert_eq!(pulled, 1, "a quiet pass did not pull the application");
@@ -529,7 +557,7 @@ mod tests {
             .send_to(b"neither a check nor a record", to)
             .expect("send");
 
-        let turn = shell.turn(0.0, |_| {}).expect("turn");
+        let turn = shell.turn(|_| {}).expect("turn");
 
         assert_eq!(
             turn.received, 1,
@@ -547,28 +575,80 @@ mod tests {
         );
     }
 
-    /// A loop armed from the core's deadline must not wake more often than the
-    /// deadlines it arms. This is the wake-accounting gate in miniature: a
-    /// polling loop shows an order of magnitude more.
+    /// A deadline armed at D is acted on by the pass that woke at D, not the
+    /// one after. A pass that processes with its pre-wait clock sees the
+    /// deadline it woke for as not yet due, emits nothing, and pays a second
+    /// wake one clamped minimum later -- every deadline costs two wakes and
+    /// fires a pass late.
     #[test]
-    fn an_idle_loop_wakes_on_its_deadline_not_on_a_tick() {
+    fn the_pass_that_wakes_on_a_deadline_acts_on_it() {
         let mut arena = Arena::new();
         let mut shell = shell(&mut arena, LEFT, RIGHT, 0xA1);
+        let sink = Socket::open(0).expect("sink");
+        let mut to = sink.local_addr().expect("addr");
+        to.set_ip(IpAddr::V6(Ipv6Addr::LOCALHOST));
+        shell.endpoint().conn().add_candidate(to).unwrap();
 
-        // No candidate and no traffic, so the only deadline is the session's
-        // acknowledgement cadence.
-        let span_ms = 300.0;
-        let mut now = 0.0;
-        while now < span_ms {
-            shell.turn(now, |_| {}).expect("turn");
-            now += lowlat_core::session::ACK_CADENCE_MS;
+        // The probe leaves at once; pacing then holds the first real check
+        // ten milliseconds out, which is the deadline under test.
+        let first = shell.turn(|_| {}).expect("turn");
+        assert!(first.sent >= 1, "the probe did not leave");
+
+        let due = shell.endpoint().next_timer_ms(first.now);
+        assert!(
+            due > 2.0,
+            "the pacing deadline is not ahead of the pass, fixture broken: {due}"
+        );
+        let second = shell.turn(|_| {}).expect("turn");
+        assert_eq!(second.woke, Woke::Timeout);
+        assert_eq!(
+            second.sent, 1,
+            "the pass that woke on the deadline emitted nothing"
+        );
+    }
+
+    /// A loop armed from the core's deadline must not wake more often than the
+    /// deadlines it arms. This is the wake-accounting gate in miniature: a
+    /// polling loop shows an order of magnitude more, and a loop that
+    /// processes on its pre-wait clock shows exactly double, because every
+    /// deadline pays a second wake to be acted on.
+    #[test]
+    fn an_idle_loop_wakes_on_its_deadline_not_on_a_tick() {
+        let mut left_arena = Arena::new();
+        let mut right_arena = Arena::new();
+        let mut left = shell(&mut left_arena, LEFT, RIGHT, 0xA1);
+        let mut right = shell(&mut right_arena, RIGHT, LEFT, 0xB2);
+
+        // A path first: an idle session's one deadline is its acknowledgement
+        // cadence, and nothing leaves on it until there is somewhere to send.
+        let left_addr = loopback_of(&left);
+        let right_addr = loopback_of(&right);
+        left.endpoint().conn().add_candidate(right_addr).unwrap();
+        right.endpoint().conn().add_candidate(left_addr).unwrap();
+        let punch = std::time::Instant::now();
+        while punch.elapsed() < std::time::Duration::from_secs(4)
+            && (left.endpoint().path().is_none() || right.endpoint().path().is_none())
+        {
+            left.turn(|_| {}).expect("left turn");
+            right.turn(|_| {}).expect("right turn");
+        }
+        assert!(left.endpoint().path().is_some(), "no path, fixture broken");
+
+        // Only the left side keeps turning, so its wakes are its own cadence
+        // and nothing else. Counted from here, not from the punch.
+        let before = left.stats().wakes();
+        let started = std::time::Instant::now();
+        let span = std::time::Duration::from_millis(300);
+        while started.elapsed() < span {
+            left.turn(|_| {}).expect("turn");
         }
 
-        let armed = (span_ms / lowlat_core::session::ACK_CADENCE_MS).ceil() as u64;
+        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let armed = (elapsed_ms / lowlat_core::session::ACK_CADENCE_MS).ceil() as u64;
+        let woke = left.stats().wakes() - before;
         assert!(
-            shell.stats().wakes() <= armed + 1,
-            "woke {} times for {armed} deadlines, which is a tick rather than a wait",
-            shell.stats().wakes()
+            woke <= armed + 1,
+            "woke {woke} times for {armed} deadlines, which is a tick rather than a wait"
         );
     }
 }

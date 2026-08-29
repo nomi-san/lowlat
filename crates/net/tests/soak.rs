@@ -183,9 +183,8 @@ fn a_pass_larger_than_the_staging_batch_still_completes() {
 
         let started = Time::now();
         while elapsed_ms(started) < 4_000.0 && left.endpoint().path().is_none() {
-            let now = elapsed_ms(started);
-            left.turn(now, |_| {}).expect("left turn");
-            right.turn(now, |_| {}).expect("right turn");
+            left.turn(|_| {}).expect("left turn");
+            right.turn(|_| {}).expect("right turn");
         }
         assert!(left.endpoint().path().is_some(), "no path to send over");
 
@@ -202,10 +201,8 @@ fn a_pass_larger_than_the_staging_batch_still_completes() {
                 break;
             }
         }
-        let mut now = elapsed_ms(started);
         for _ in 0..64 {
-            left.turn(now, |_| {}).expect("turn");
-            now += 10.0;
+            left.turn(|_| {}).expect("turn");
         }
         flag.store(true, Ordering::SeqCst);
     });
@@ -241,16 +238,15 @@ fn a_sustained_stream_loses_nothing_allocates_nothing_and_does_not_tick() {
     // Punch first, on one thread, because there is nowhere to send until both
     // sides have a path and the stream would otherwise be measuring the punch.
     //
-    // One clock for the whole run, shared with both loops below. A per-thread
-    // clock restarts at zero after the punch has already advanced the session,
-    // so time moves backwards and the schedule never comes due again.
+    // Each shell runs on its own clock from construction, so the punch and the
+    // stream share a timeline per side by construction; the clock below paces
+    // the sender and bounds the phases, nothing else.
     let started = Time::now();
     while elapsed_ms(started) < 4_000.0
         && (left.endpoint().path().is_none() || right.endpoint().path().is_none())
     {
-        let now = elapsed_ms(started);
-        left.turn(now, |_| {}).expect("left turn");
-        right.turn(now, |_| {}).expect("right turn");
+        left.turn(|_| {}).expect("left turn");
+        right.turn(|_| {}).expect("right turn");
     }
     assert!(left.endpoint().path().is_some(), "left found no path");
     assert!(right.endpoint().path().is_some(), "right found no path");
@@ -293,7 +289,7 @@ fn a_sustained_stream_loses_nothing_allocates_nothing_and_does_not_tick() {
                 )]
                 let owed = ((now - punched).max(0.0) / 1000.0 * TARGET_PPS as f64) as u64;
                 let ceiling = next + SLOTS as u64;
-                left.turn(now, |endpoint| {
+                left.turn(|endpoint| {
                     while next < owed.min(ceiling) {
                         body[..8].copy_from_slice(&next.to_be_bytes());
                         // The window is bounded by the peer's ring depth, so a
@@ -326,7 +322,7 @@ fn a_sustained_stream_loses_nothing_allocates_nothing_and_does_not_tick() {
                 if stop_receiver.load(Ordering::Relaxed) {
                     break;
                 }
-                right.turn(now, |_| {}).expect("right turn");
+                right.turn(|_| {}).expect("right turn");
                 // Bounded per pass for the same reason as the sender: a drain
                 // that never yields cannot notice the run has ended.
                 let mut drained = 0;
