@@ -3,6 +3,24 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## Only a global unicast v6 source is offered
+
+**The probed IPv6 host candidate excluded only loopback and the unspecified
+address**, while 03 s3 has always required a globally routable one. On a
+network built on unique-local addressing the routing table answers the probe
+with a ULA -- routable here, invisible everywhere else -- and a link-local
+answer would need a scope the candidate cannot carry; either way the peer
+spends part of a bounded check budget on an address that cannot answer. The
+filter now requires global unicast, as its own predicate with the decision
+table written out in a test. The validated v6 discovery is the reflexive
+path, which needs no filter by construction: a server that answered over v6
+proves the route, and every configured server name resolves to one address
+per family already. The daemon's default server list now names two operators
+on separate infrastructure -- two answers is what tells a symmetric
+translator from an endpoint-independent one, one outage no longer costs
+every reflexive candidate, and two names by two families fills exactly the
+four server slots the engine holds.
+
 ## A transient refusal no longer costs offload for the session
 
 **One failed offload send disabled segmentation for the rest of the run,
