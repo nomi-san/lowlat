@@ -8,12 +8,21 @@
 //! into the slots, so a received datagram costs no copy on our side and no
 //! allocation on any path after construction.
 
-use core::net::SocketAddr;
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::io;
 use std::mem;
 use std::os::fd::AsRawFd;
 
 use crate::socket::{RECV_BATCH, RECV_SLOT, Socket, from_storage, socklen};
+
+/// Room for one datagram's control messages: one packet-information
+/// structure, well under this either way.
+const CONTROL_LEN: usize = 64;
+
+/// Control message storage, aligned as the kernel requires.
+#[repr(align(8))]
+#[derive(Clone, Copy)]
+struct Control([u8; CONTROL_LEN]);
 
 /// Reusable receive storage: slots, addresses, and the descriptors pointing at
 /// them.
@@ -31,6 +40,10 @@ pub struct Batch {
     /// kernel writing through dangling pointers.
     #[allow(dead_code, reason = "kept alive for the pointers in msgs")]
     iovs: Box<[libc::iovec]>,
+    /// As `iovs`: the descriptors point into it, and the kernel writes each
+    /// datagram's packet information there.
+    #[allow(dead_code, reason = "kept alive for the pointers in msgs")]
+    controls: Box<[Control]>,
     msgs: Box<[libc::mmsghdr]>,
     filled: usize,
 }
@@ -59,6 +72,7 @@ impl Batch {
         let mut names =
             vec![unsafe { mem::zeroed::<libc::sockaddr_storage>() }; RECV_BATCH].into_boxed_slice();
         let mut iovs = vec![unsafe { mem::zeroed::<libc::iovec>() }; RECV_BATCH].into_boxed_slice();
+        let mut controls = vec![Control([0u8; CONTROL_LEN]); RECV_BATCH].into_boxed_slice();
         let mut msgs =
             vec![unsafe { mem::zeroed::<libc::mmsghdr>() }; RECV_BATCH].into_boxed_slice();
 
@@ -78,18 +92,25 @@ impl Batch {
                 None => continue,
             };
             let iov_ptr: *mut libc::iovec = iov;
+            let Some(control) = controls.get_mut(index) else {
+                continue;
+            };
+            let control_ptr: *mut u8 = control.0.as_mut_ptr();
             let Some(msg) = msgs.get_mut(index) else {
                 continue;
             };
             msg.msg_hdr.msg_iov = iov_ptr;
             msg.msg_hdr.msg_iovlen = 1;
             msg.msg_hdr.msg_name = name.cast();
+            msg.msg_hdr.msg_control = control_ptr.cast();
+            msg.msg_hdr.msg_controllen = CONTROL_LEN;
         }
 
         Self {
             slots,
             names,
             iovs,
+            controls,
             msgs,
             filled: 0,
         }
@@ -101,13 +122,14 @@ impl Batch {
     /// caller stops when it sees a short batch, because a full one means there
     /// may be more behind it.
     pub fn drain(&mut self, socket: &Socket) -> io::Result<usize> {
-        // The address length is in and out: the kernel overwrites it with what
-        // it actually wrote, so a reused descriptor that is not reset presents
-        // the previous datagram's length on the next call and truncates the
-        // address. Reset every slot, every pass.
+        // The address and control lengths are in and out: the kernel
+        // overwrites each with what it actually wrote, so a reused descriptor
+        // that is not reset presents the previous datagram's lengths on the
+        // next call and truncates both. Reset every slot, every pass.
         let name_len = socklen(mem::size_of::<libc::sockaddr_storage>());
         for msg in self.msgs.iter_mut() {
             msg.msg_hdr.msg_namelen = name_len;
+            msg.msg_hdr.msg_controllen = CONTROL_LEN;
             msg.msg_len = 0;
         }
 
@@ -147,17 +169,62 @@ impl Batch {
         self.filled == RECV_BATCH
     }
 
-    /// The datagrams from the last drain, each with the address it came from.
+    /// The datagrams from the last drain: the address each came from, the
+    /// local address it arrived at, and the bytes.
     ///
-    /// A v4-mapped source is reported as IPv4, structurally.
-    pub fn iter(&self) -> impl Iterator<Item = (SocketAddr, &[u8])> {
+    /// A v4-mapped source is reported as IPv4, structurally. The local
+    /// address is `None` when the kernel attached no packet information,
+    /// which a caller treats as "could not say" rather than an error.
+    pub fn iter(&self) -> impl Iterator<Item = (SocketAddr, Option<IpAddr>, &[u8])> {
         (0..self.filled).filter_map(move |index| {
             let msg = self.msgs.get(index)?;
             let len = usize::try_from(msg.msg_len).unwrap_or(0);
             let bytes = self.slots.get(index)?.get(..len)?;
             let from = from_storage(self.names.get(index)?)?;
-            Some((from, bytes))
+            Some((from, local_of(&msg.msg_hdr), bytes))
         })
+    }
+}
+
+/// The local address a datagram arrived at, from its control messages.
+///
+/// The v4 answer arrives as `(IPPROTO_IP, IP_PKTINFO)` -- and `IP_PKTINFO`
+/// is **8 on Linux**, not the 19 other platforms use -- while the v6 answer
+/// arrives as `(IPPROTO_IPV6, IPV6_PKTINFO)` (50): `IPV6_RECVPKTINFO` (49)
+/// switches delivery on but is not the type that arrives. On receive the
+/// address is `ipi_addr`; `ipi6_spec_dst` does not exist and the v4
+/// `ipi_spec_dst` is the send-side field, carrying the routing answer here.
+fn local_of(msg: &libc::msghdr) -> Option<IpAddr> {
+    // SAFETY: the descriptor's control pointer and length name storage this
+    // batch owns, sized by the kernel to what it actually wrote; the CMSG
+    // macros only compute offsets inside that region, and the reads are
+    // unaligned-tolerant.
+    unsafe {
+        let mut cmsg = libc::CMSG_FIRSTHDR(msg);
+        while !cmsg.is_null() {
+            let level = (*cmsg).cmsg_level;
+            let kind = (*cmsg).cmsg_type;
+            if level == libc::IPPROTO_IP && kind == libc::IP_PKTINFO {
+                let info =
+                    core::ptr::read_unaligned(libc::CMSG_DATA(cmsg).cast::<libc::in_pktinfo>());
+                return Some(IpAddr::V4(Ipv4Addr::from(u32::from_be(
+                    info.ipi_addr.s_addr,
+                ))));
+            }
+            if level == libc::IPPROTO_IPV6 && kind == libc::IPV6_PKTINFO {
+                let info =
+                    core::ptr::read_unaligned(libc::CMSG_DATA(cmsg).cast::<libc::in6_pktinfo>());
+                let ip = Ipv6Addr::from(info.ipi6_addr.s6_addr);
+                // Structural, as everywhere: a v4 arrival reported v4-mapped
+                // is a v4 address.
+                return Some(match ip.to_ipv4_mapped() {
+                    Some(v4) => IpAddr::V4(v4),
+                    None => IpAddr::V6(ip),
+                });
+            }
+            cmsg = libc::CMSG_NXTHDR(msg, cmsg);
+        }
+        None
     }
 }
 
@@ -206,7 +273,7 @@ mod tests {
         let got = batch.drain(&receiver).expect("drain");
         assert_eq!(got, burst, "the burst did not arrive in one call");
 
-        for (index, (_, bytes)) in batch.iter().enumerate() {
+        for (index, (_, _, bytes)) in batch.iter().enumerate() {
             assert_eq!(bytes.len(), 200);
             assert_eq!(bytes[0], index as u8, "datagrams arrived out of order");
         }
@@ -226,19 +293,60 @@ mod tests {
         first.send_to(b"one", to).expect("send");
         assert!(receiver.wait_readable(1000.0).expect("poll"));
         assert_eq!(batch.drain(&receiver).expect("drain"), 1);
-        let (from_first, bytes) = batch.iter().next().expect("one datagram");
+        let (from_first, _, bytes) = batch.iter().next().expect("one datagram");
         assert_eq!(bytes, b"one");
         assert_eq!(from_first.port(), loopback_of(&first).port());
 
         second.send_to(b"two", to).expect("send");
         assert!(receiver.wait_readable(1000.0).expect("poll"));
         assert_eq!(batch.drain(&receiver).expect("drain"), 1);
-        let (from_second, bytes) = batch.iter().next().expect("one datagram");
+        let (from_second, _, bytes) = batch.iter().next().expect("one datagram");
         assert_eq!(bytes, b"two");
         assert_eq!(
             from_second.port(),
             loopback_of(&second).port(),
             "the second pass reported the first sender"
+        );
+    }
+
+    /// The address a datagram arrived at is reported beside the address it
+    /// came from. Any 127/8 destination reaches the same wildcard-bound
+    /// socket, so two arrivals only differ by what the control message says
+    /// -- which is exactly what a check answer needs to leave from the right
+    /// address on a host that has more than one.
+    #[test]
+    fn the_address_a_datagram_arrived_at_is_reported() {
+        let sender = Socket::open(0).expect("sender");
+        let receiver = Socket::open(0).expect("receiver");
+        let port = receiver.local_addr().expect("addr").port();
+        let mut batch = Batch::new();
+
+        let v4_dest = IpAddr::V4(core::net::Ipv4Addr::new(127, 0, 0, 11));
+        sender
+            .send_to(b"v4", SocketAddr::new(v4_dest, port))
+            .expect("send");
+        assert!(receiver.wait_readable(1000.0).expect("poll"));
+        assert_eq!(batch.drain(&receiver).expect("drain"), 1);
+        let (_, local, bytes) = batch.iter().next().expect("datagram");
+        assert_eq!(bytes, b"v4");
+        assert_eq!(
+            local,
+            Some(v4_dest),
+            "the v4 arrival address was not reported"
+        );
+
+        let v6_dest = IpAddr::V6(Ipv6Addr::LOCALHOST);
+        sender
+            .send_to(b"v6", SocketAddr::new(v6_dest, port))
+            .expect("send");
+        assert!(receiver.wait_readable(1000.0).expect("poll"));
+        assert_eq!(batch.drain(&receiver).expect("drain"), 1);
+        let (_, local, bytes) = batch.iter().next().expect("datagram");
+        assert_eq!(bytes, b"v6");
+        assert_eq!(
+            local,
+            Some(v6_dest),
+            "the v6 arrival address was not reported"
         );
     }
 
@@ -256,7 +364,7 @@ mod tests {
 
         let mut batch = Batch::new();
         assert_eq!(batch.drain(&receiver).expect("drain"), 1);
-        let (_, bytes) = batch.iter().next().expect("one datagram");
+        let (_, _, bytes) = batch.iter().next().expect("one datagram");
         assert_eq!(
             bytes.len(),
             lowlat_core::MAX_DATAGRAM,

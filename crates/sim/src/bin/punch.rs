@@ -208,7 +208,7 @@ fn peer(args: &[String]) -> Result<(), String> {
                         };
                         println!("  {now_ms:.0} rx {kind} <- {from}");
                     }
-                    match conn.process_input(datagram, from) {
+                    match conn.process_input(datagram, from, None) {
                         Ok(Inbound::Reflexive(mapped)) => {
                             if !published && let Some(path) = publish.as_ref() {
                                 fs::write(path, mapped.to_string())

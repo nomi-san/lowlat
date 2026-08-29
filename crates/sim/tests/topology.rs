@@ -100,7 +100,7 @@ fn punch(build: impl FnOnce(&mut Sim) -> (HostId, HostId)) -> (State, State) {
                 &mut b
             };
             // A datagram that fails authentication is dropped, not fatal.
-            let _ = conn.process_input(&arrival.bytes, arrival.from);
+            let _ = conn.process_input(&arrival.bytes, arrival.from, None);
         }
 
         if matches!(a.state(), State::Established(_)) && matches!(b.state(), State::Established(_))

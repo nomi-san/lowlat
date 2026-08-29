@@ -331,6 +331,71 @@ topology_carrier_grade() {
     judge "carrier-grade" established
 }
 
+# A multihomed host answers from the address it was probed at.
+#
+# The left host carries two public addresses on one interface and the right
+# host, behind a port restricted translator, is handed only the secondary.
+# Its checks open its translator for exactly (secondary, port), so the
+# binding response must leave from the secondary: the kernel's own source
+# selection picks the primary, the translator sees a source the inside never
+# contacted, and the answer dies there. The translator is the assertion --
+# no packet capture, the guard either passes the right source or the punch
+# never completes.
+#
+# The left side is expected to fail, and that is the topology's artifice
+# rather than a defect: it is never probed at its primary, so its own checks
+# (unpinned until a path is proven) leave from an address the right side's
+# translator never admitted. A real peer is handed both candidates and opens
+# the filter for each; this fixture withholds one to force the response path
+# it exists to check.
+topology_multihome() {
+    mkns llnet llgwb llha llhb || return 1
+    wire llha inta 203.0.113.9/29 llnet neta 203.0.113.14/29 || return 1
+    # The second address on the same interface. Added second, so the kernel
+    # marks it secondary and source selection prefers the primary -- which is
+    # exactly the wrong answer the response pin exists to override.
+    ip -n llha addr add 203.0.113.10/29 dev inta || return 1
+    wire llgwb extb "$RIGHT_PUBLIC/30" llnet netb 203.0.113.6/30 || return 1
+    wire llhb intb 192.168.20.2/24 llgwb lanb 192.168.20.1/24 || return 1
+
+    forward llnet || return 1
+    forward llgwb || return 1
+    ip -n llnet addr add "$SERVER/32" dev lo || return 1
+    ip -n llha route add default via 203.0.113.14 || return 1
+    ip -n llhb route add default via 192.168.20.1 || return 1
+    ip -n llgwb route add default via 203.0.113.6 || return 1
+
+    nat_port_restricted llgwb extb $RIGHT_PORT || return 1
+
+    start_server
+
+    # The right side is not told what the left publishes; it is handed the
+    # secondary address alone, which is what "the peer probes the secondary"
+    # means concretely.
+    echo "203.0.113.10:$LEFT_PORT" >"$RUN/forced.cand"
+    start_peer llha "203.0.113.9:$LEFT_PORT" "$RUN/a.cand" "$RUN/b.cand" \
+        "$LEFT_UFRAG" "$LEFT_PWD" "$RIGHT_UFRAG" "$RIGHT_PWD" 161 "$RUN/a.out"
+    local a=$!
+    start_peer llhb "192.168.20.2:$RIGHT_PORT" "$RUN/b.cand" "$RUN/forced.cand" \
+        "$RIGHT_UFRAG" "$RIGHT_PWD" "$LEFT_UFRAG" "$LEFT_PWD" 178 "$RUN/b.out"
+    local b=$!
+    wait "$a" 2>/dev/null
+    wait "$b" 2>/dev/null
+
+    # Judged on the probing side alone: it must establish at the secondary,
+    # which its translator only lets happen when the answer came from it.
+    local left right
+    left=$(grep -Eo '^(established|failed|timeout).*' "$RUN/a.out" | tail -1)
+    right=$(grep -Eo '^(established|failed|timeout).*' "$RUN/b.out" | tail -1)
+    if [[ $right == "established 203.0.113.10:$LEFT_PORT" ]]; then
+        pass=$((pass + 1))
+        log "  PASS multihome: probed at the secondary and answered from it, right [$right] left [$left]"
+    else
+        fail=$((fail + 1))
+        log "  FAIL multihome: the answer did not come from the probed address, right [$right] left [$left]"
+    fi
+}
+
 # Both hosts behind one translator, reaching each other by its public address.
 topology_hairpin() {
     mkns llnet llgwa llha llhb || return 1
@@ -397,7 +462,7 @@ fi
 
 trap cleanup EXIT
 
-ALL="port-restricted full-cone restricted-cone symmetric carrier-grade hairpin"
+ALL="port-restricted full-cone restricted-cone symmetric carrier-grade hairpin multihome"
 if [[ $# -gt 0 ]]; then
     topologies=("$@")
 else

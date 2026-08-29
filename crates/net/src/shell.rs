@@ -287,7 +287,7 @@ impl<'a> Shell<'a> {
             }
             total += got;
             let mut refused = 0u64;
-            for (from, datagram) in self.inbound.iter() {
+            for (from, local, datagram) in self.inbound.iter() {
                 // A datagram that fails to parse or authenticate is dropped and
                 // the loop continues. Hostile and corrupt input is the normal
                 // case on a network, not an error path -- but it is counted,
@@ -295,7 +295,7 @@ impl<'a> Shell<'a> {
                 // that carried nothing.
                 if self
                     .endpoint
-                    .process_input(datagram, from, now_ms, &mut self.scratch)
+                    .process_input(datagram, from, local, now_ms, &mut self.scratch)
                     .is_err()
                 {
                     refused += 1;

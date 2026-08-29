@@ -25,7 +25,7 @@
 //! tier behind it, which is why a candidate that cannot possibly answer must
 //! never be admitted in the first place.
 
-use core::net::SocketAddr;
+use core::net::{IpAddr, SocketAddr};
 
 use sha1::{Digest, Sha1};
 
@@ -72,6 +72,14 @@ pub struct Egress {
     pub ttl: Ttl,
     /// How much of the caller's buffer was written.
     pub len: usize,
+    /// The source address to send from, or `None` to let the kernel choose.
+    ///
+    /// A check answer names the address the check arrived at, and a session
+    /// keeps sending from the address its path was proven at. On a host with
+    /// several addresses the kernel's own choice follows the routing table,
+    /// which is free to pick a sibling address -- the peer's filter then sees
+    /// a source it never probed and drops what the check just earned.
+    pub from: Option<IpAddr>,
 }
 
 /// Why an attempt ended without a path.
@@ -165,9 +173,16 @@ pub struct Conn<'a> {
 
     candidates: [Option<Candidate>; MAX_CANDIDATES],
     servers: [Option<Server>; MAX_SERVERS],
-    pending: [Option<(SocketAddr, TransactionId)>; MAX_PENDING],
+    /// Answers owed: the peer's address, the transaction to echo, and the
+    /// local address the request arrived at, which is the address the answer
+    /// must leave from.
+    pending: [Option<(SocketAddr, TransactionId, Option<IpAddr>)>; MAX_PENDING],
 
     state: State,
+    /// The local address the winning answer arrived at, latched when the path
+    /// is chosen and reused for every send after it. `None` until then, and
+    /// `None` for the whole attempt if the shell could not say.
+    local: Option<IpAddr>,
     started_ms: f64,
     /// When the last datagram left, for pacing.
     last_sent_ms: Option<f64>,
@@ -186,6 +201,7 @@ impl<'a> Conn<'a> {
             servers: [None; MAX_SERVERS],
             pending: [None; MAX_PENDING],
             state: State::Checking,
+            local: None,
             started_ms: now_ms,
             last_sent_ms: None,
             probe_sent: false,
@@ -219,6 +235,15 @@ impl<'a> Conn<'a> {
             State::Established(addr) => Some(addr),
             _ => None,
         }
+    }
+
+    /// The local address the path was proven at, once there is one.
+    ///
+    /// Everything sent for the rest of the session leaves from this address;
+    /// the kernel's own selection follows the routing table and is free to
+    /// move to a sibling address, which the peer's filter never probed.
+    pub fn local(&self) -> Option<IpAddr> {
+        self.local
     }
 
     /// Offer a remote candidate.
@@ -277,8 +302,22 @@ impl<'a> Conn<'a> {
     ///
     /// `from` is the address it actually arrived from, which is the only
     /// trustworthy source: a peer behind address translation cannot know it.
-    pub fn process_input(&mut self, datagram: &[u8], from: SocketAddr) -> Result<Inbound> {
+    /// `local` is the address it arrived *at*, when the shell can say -- the
+    /// address an answer must leave from, and the one the session keeps once
+    /// the path is chosen.
+    pub fn process_input(
+        &mut self,
+        datagram: &[u8],
+        from: SocketAddr,
+        local: Option<IpAddr>,
+    ) -> Result<Inbound> {
         let from = stun::canonical(from);
+        // A v4 arrival on a dual-stack socket may be reported v4-mapped;
+        // collapse it the same way the peer address is.
+        let local = local.map(|ip| match ip {
+            IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(ip, IpAddr::V4),
+            IpAddr::V4(_) => ip,
+        });
         let message = Message::parse(datagram)?;
 
         match message.method() {
@@ -308,7 +347,7 @@ impl<'a> Conn<'a> {
                 // reach us on a path it already had.
                 let _ = self.add_candidate(from);
 
-                self.queue_response(from, message.transaction_id())?;
+                self.queue_response(from, message.transaction_id(), local)?;
                 // Answering is unconditional and stays that way after a path is
                 // chosen. A peer that stops seeing answers withdraws the path,
                 // and on a relayed path it withholds media entirely.
@@ -358,7 +397,13 @@ impl<'a> Conn<'a> {
                     // The first candidate to answer wins, and nothing looks for
                     // a better path afterwards: switching mid-stream costs more
                     // than the improvement is worth.
+                    //
+                    // The address the winning answer arrived at is latched with
+                    // it: the peer proved this exact address pair, and every
+                    // later send keeps it rather than letting the routing
+                    // table move the source mid-session.
                     self.state = State::Established(addr);
+                    self.local = local;
                     Ok(Inbound::PathEstablished(addr))
                 } else {
                     Ok(Inbound::Redundant)
@@ -420,9 +465,9 @@ impl<'a> Conn<'a> {
         // Owed responses go first. A peer waiting on one is being told we are
         // unreachable for as long as it waits.
         if let Some(slot) = self.pending.iter_mut().find(|slot| slot.is_some()) {
-            let (to, tid) = (*slot)?;
+            let (to, tid, local) = (*slot)?;
             *slot = None;
-            return Some(self.emit_response(to, tid, now_ms, out));
+            return Some(self.emit_response(to, tid, local, now_ms, out));
         }
 
         if !matches!(self.state, State::Checking) {
@@ -487,13 +532,18 @@ impl<'a> Conn<'a> {
         }
     }
 
-    fn queue_response(&mut self, to: SocketAddr, tid: TransactionId) -> Result<()> {
+    fn queue_response(
+        &mut self,
+        to: SocketAddr,
+        tid: TransactionId,
+        local: Option<IpAddr>,
+    ) -> Result<()> {
         let slot = self
             .pending
             .iter_mut()
             .find(|slot| slot.is_none())
             .ok_or(Error::Oversized)?;
-        *slot = Some((to, tid));
+        *slot = Some((to, tid, local));
         Ok(())
     }
 
@@ -517,7 +567,15 @@ impl<'a> Conn<'a> {
             candidate.outstanding = Some(tid);
         }
         self.last_sent_ms = Some(now_ms);
-        Ok(Egress { to, ttl, len })
+        // The latch is None for the whole punch, so checks let the kernel
+        // choose; it is carried anyway so a check emitted after a path exists
+        // would leave from the proven address like everything else.
+        Ok(Egress {
+            to,
+            ttl,
+            len,
+            from: self.local,
+        })
     }
 
     fn emit_reflexive(
@@ -534,10 +592,13 @@ impl<'a> Conn<'a> {
             server.outstanding = Some(tid);
         }
         self.last_sent_ms = Some(now_ms);
+        // Unpinned on purpose: the question is what mapping the default route
+        // produces, and servers are never probed once a path exists.
         Ok(Egress {
             to,
             ttl: Ttl::Default,
             len,
+            from: None,
         })
     }
 
@@ -545,15 +606,21 @@ impl<'a> Conn<'a> {
         &mut self,
         to: SocketAddr,
         tid: TransactionId,
+        local: Option<IpAddr>,
         now_ms: f64,
         out: &mut [u8],
     ) -> Result<Egress> {
         let len = stun::encode_binding_response(out, tid, to, self.credentials.local_pwd)?;
         self.last_sent_ms = Some(now_ms);
+        // Answered from the address the check arrived at. The peer's filter
+        // admitted exactly that pair; a reply from a sibling address is
+        // unsolicited traffic to it, and on a multi-homed host the kernel's
+        // default choice is the sibling.
         Ok(Egress {
             to,
             ttl: Ttl::Default,
             len,
+            from: local,
         })
     }
 
@@ -712,7 +779,7 @@ mod tests {
         let len = answer(&buf, egress.len, addr(9, 5000), &mut response);
 
         assert_eq!(
-            conn.process_input(&response[..len], peer).unwrap(),
+            conn.process_input(&response[..len], peer, None).unwrap(),
             Inbound::PathEstablished(peer)
         );
         assert_eq!(conn.state(), State::Established(peer));
@@ -730,7 +797,7 @@ mod tests {
         let (egress, buf) = sent.last().copied().unwrap();
         let mut response = [0u8; 256];
         let len = answer(&buf, egress.len, addr(9, 5000), &mut response);
-        conn.process_input(&response[..len], peer).unwrap();
+        conn.process_input(&response[..len], peer, None).unwrap();
 
         assert!(
             drain(&mut conn, 600.0).is_empty(),
@@ -749,7 +816,7 @@ mod tests {
         let (egress, buf) = sent.last().copied().unwrap();
         let mut response = [0u8; 256];
         let len = answer(&buf, egress.len, addr(9, 5000), &mut response);
-        conn.process_input(&response[..len], peer).unwrap();
+        conn.process_input(&response[..len], peer, None).unwrap();
 
         // Now the peer checks us. It signs with our password, because from its
         // side we are the remote.
@@ -765,7 +832,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            conn.process_input(&theirs[..len], peer).unwrap(),
+            conn.process_input(&theirs[..len], peer, None).unwrap(),
             Inbound::CheckAnswered
         );
         let sent = drain(&mut conn, 700.0);
@@ -779,6 +846,91 @@ mod tests {
             "a response must be signed with our own password"
         );
         assert_eq!(reply.mapped_address(), Some(peer));
+    }
+
+    /// A check is answered from the address it arrived at. The peer's filter
+    /// admitted exactly that pair; on a multi-homed host the kernel's default
+    /// pick is the primary sibling, and a reply from it is unsolicited traffic
+    /// the peer never sees -- the one candidate the second address exists for
+    /// then never completes a check.
+    #[test]
+    fn a_response_leaves_from_the_address_the_check_arrived_at() {
+        let mut conn = conn();
+        let arrived_at = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3));
+        let mut theirs = [0u8; 256];
+        let len = stun::encode_binding_request(
+            &mut theirs,
+            TransactionId([0x5A; 12]),
+            THEIRS,
+            OURS,
+            [0; 8],
+            OUR_PWD,
+        )
+        .unwrap();
+        conn.process_input(&theirs[..len], addr(7, 41_000), Some(arrived_at))
+            .unwrap();
+
+        let sent = drain(&mut conn, 0.0);
+        let (response, _) = sent
+            .iter()
+            .copied()
+            .find(|(egress, _)| egress.to == addr(7, 41_000) && egress.ttl == Ttl::Default)
+            .expect("the answer");
+        assert_eq!(
+            response.from,
+            Some(arrived_at),
+            "the answer must leave from the address the check arrived at"
+        );
+
+        // And a shell that could not say leaves the choice to the kernel.
+        let len = stun::encode_binding_request(
+            &mut theirs,
+            TransactionId([0x5B; 12]),
+            THEIRS,
+            OURS,
+            [0; 8],
+            OUR_PWD,
+        )
+        .unwrap();
+        conn.process_input(&theirs[..len], addr(7, 41_000), None)
+            .unwrap();
+        let sent = drain(&mut conn, 100.0);
+        let answer = sent
+            .iter()
+            .find(|(egress, _)| egress.to == addr(7, 41_000) && egress.ttl == Ttl::Default)
+            .expect("the answer");
+        assert_eq!(answer.0.from, None);
+    }
+
+    /// The winning answer's arrival address is latched with the path, and it
+    /// is what [`Conn::local`] reports from then on. Checks and probes before
+    /// it leave unpinned, because nothing is proven yet.
+    #[test]
+    fn the_winning_answer_latches_the_local_address() {
+        let mut conn = conn();
+        let peer = addr(1, 4000);
+        let proven = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3));
+        conn.add_candidate(peer).unwrap();
+
+        let sent = drain(&mut conn, 0.0);
+        assert!(
+            sent.iter().all(|(egress, _)| egress.from.is_none()),
+            "a check before the path exists must not claim a source"
+        );
+        assert_eq!(conn.local(), None);
+
+        let (egress, buf) = sent.last().copied().unwrap();
+        let mut response = [0u8; 256];
+        let len = answer(&buf, egress.len, addr(9, 5000), &mut response);
+        conn.process_input(&response[..len], peer, Some(proven))
+            .unwrap();
+
+        assert_eq!(conn.state(), State::Established(peer));
+        assert_eq!(
+            conn.local(),
+            Some(proven),
+            "the address the winning answer arrived at was not latched"
+        );
     }
 
     /// The regression for a real wide-area failure. A peer behind symmetric
@@ -802,7 +954,7 @@ mod tests {
             OUR_PWD,
         )
         .unwrap();
-        conn.process_input(&theirs[..len], observed).unwrap();
+        conn.process_input(&theirs[..len], observed, None).unwrap();
 
         assert_eq!(
             conn.candidate_count(),
@@ -837,7 +989,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            conn.process_input(&theirs[..len], addr(7, 41_000)),
+            conn.process_input(&theirs[..len], addr(7, 41_000), None),
             Err(Error::Decrypt)
         );
         assert_eq!(
@@ -863,7 +1015,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            conn.process_input(&theirs[..len], peer),
+            conn.process_input(&theirs[..len], peer, None),
             Err(Error::Decrypt)
         );
         assert!(
@@ -914,7 +1066,7 @@ mod tests {
                 stun::encode_binding_response(&mut response, request.transaction_id(), seen, "any")
                     .unwrap();
             assert_eq!(
-                conn.process_input(&response[..len], server).unwrap(),
+                conn.process_input(&response[..len], server, None).unwrap(),
                 Inbound::Reflexive(seen)
             );
         }
@@ -960,7 +1112,7 @@ mod tests {
                 .unwrap();
 
         assert_eq!(
-            conn.process_input(&response[..len], server).unwrap(),
+            conn.process_input(&response[..len], server, None).unwrap(),
             Inbound::Reflexive(observed)
         );
     }
@@ -991,7 +1143,7 @@ mod tests {
         let len =
             stun::encode_binding_response(&mut response, request.transaction_id(), observed, "any")
                 .unwrap();
-        conn.process_input(&response[..len], server).unwrap();
+        conn.process_input(&response[..len], server, None).unwrap();
 
         let mut gathered = conn.reflexive();
         assert_eq!(
@@ -1022,7 +1174,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            conn.process_input(&response[..len], server),
+            conn.process_input(&response[..len], server, None),
             Err(Error::Decrypt),
             "an unexpected transaction must not set our advertised address"
         );
@@ -1044,7 +1196,7 @@ mod tests {
             stun::encode_binding_response(&mut response, tid, addr(9, 41_000), "any").unwrap();
 
         assert_eq!(
-            conn.process_input(&response[..len], addr(66, 1234)),
+            conn.process_input(&response[..len], addr(66, 1234), None),
             Err(Error::Decrypt)
         );
     }
@@ -1061,7 +1213,7 @@ mod tests {
         let mut response = [0u8; 256];
         let len =
             stun::encode_binding_response(&mut response, tid, addr(9, 41_000), "any").unwrap();
-        conn.process_input(&response[..len], server).unwrap();
+        conn.process_input(&response[..len], server, None).unwrap();
 
         assert!(
             drain(&mut conn, CHECK_CADENCE_MS + 1.0).is_empty(),

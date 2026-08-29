@@ -13,7 +13,7 @@
 //! loop:
 //!     timeout = endpoint.next_timer_ms(now)
 //!     wait for a datagram, an application send, or that timeout
-//!     for each datagram:  endpoint.process_input(bytes, from, now, scratch)
+//!     for each datagram:  endpoint.process_input(bytes, from, local, now, scratch)
 //!     endpoint.poll(now)
 //!     drain:              while let Some(e) = endpoint.get_output(now, buf) { send(e) }
 //! ```
@@ -22,7 +22,7 @@
 //! probe leaves at a TTL that must be restored afterwards and a shell cannot be
 //! trusted to remember an obligation that is not in the type.
 
-use core::net::SocketAddr;
+use core::net::{IpAddr, SocketAddr};
 
 use crate::conn::{self, Conn, Egress, Ttl};
 use crate::demux::{self, Datagram};
@@ -84,16 +84,21 @@ impl<'a> Endpoint<'a> {
     /// engine sees the bytes. Anything not shaped like a check goes to the
     /// record layer, where authentication rejects it, so the check parser is
     /// never handed input that was not already check-shaped.
+    ///
+    /// `local` is the address the datagram arrived at, when the shell can
+    /// say. The connectivity engine answers a check from it and latches the
+    /// winning answer's; the record layer has no use for it.
     pub fn process_input(
         &mut self,
         datagram: &[u8],
         from: SocketAddr,
+        local: Option<IpAddr>,
         now_ms: f64,
         scratch: &mut [u8],
     ) -> Result<Inbound> {
         match demux::classify(datagram) {
             Datagram::Check => Ok(Inbound::Connectivity(
-                self.conn.process_input(datagram, from)?,
+                self.conn.process_input(datagram, from, local)?,
             )),
             Datagram::Record => Ok(Inbound::Media(
                 self.session.process_input(datagram, now_ms, scratch)?,
@@ -137,6 +142,11 @@ impl<'a> Endpoint<'a> {
                 to,
                 ttl: Ttl::Default,
                 len,
+                // The address the path was proven at. Left to itself the
+                // kernel re-selects per send, and on a multi-homed host a
+                // routing change moves the source mid-session -- the peer's
+                // filter then sees a stranger where its session was.
+                from: self.conn.local(),
             }),
             Err(error) => Err(error),
         })
@@ -218,10 +228,14 @@ mod tests {
     }
 
     /// Move everything one side wants to send to the other, as the shell would.
+    ///
+    /// `local` is the address `to` receives at, handed to its input exactly as
+    /// a shell reading its own socket would.
     fn pump(
         from: &mut Endpoint<'_>,
         from_addr: SocketAddr,
         to: &mut Endpoint<'_>,
+        local: Option<IpAddr>,
         now: f64,
     ) -> usize {
         let mut wire = [0u8; 512];
@@ -229,7 +243,7 @@ mod tests {
         let mut moved = 0;
         while let Some(result) = from.get_output(now, &mut wire) {
             let egress = result.unwrap();
-            to.process_input(&wire[..egress.len], from_addr, now, &mut scratch)
+            to.process_input(&wire[..egress.len], from_addr, local, now, &mut scratch)
                 .unwrap();
             moved += 1;
         }
@@ -267,8 +281,8 @@ mod tests {
 
         let mut now = 0.0;
         while now < 2_000.0 && (left.path().is_none() || right.path().is_none()) {
-            pump(&mut left, left_addr, &mut right, now);
-            pump(&mut right, right_addr, &mut left, now);
+            pump(&mut left, left_addr, &mut right, None, now);
+            pump(&mut right, right_addr, &mut left, None, now);
             now += 10.0;
             left.poll(now);
             right.poll(now);
@@ -279,8 +293,8 @@ mod tests {
 
         // Now the queued message crosses, addressed to the chosen path.
         for _ in 0..8 {
-            pump(&mut left, left_addr, &mut right, now);
-            pump(&mut right, right_addr, &mut left, now);
+            pump(&mut left, left_addr, &mut right, None, now);
+            pump(&mut right, right_addr, &mut left, None, now);
             now += 10.0;
             left.poll(now);
             right.poll(now);
@@ -293,6 +307,64 @@ mod tests {
             .expect("no message arrived")
             .unwrap();
         assert_eq!(&out[..len], b"hdrbody");
+    }
+
+    /// Every record leaves from the address the path was proven at. The
+    /// winning answer's arrival address rides the whole session, so the
+    /// peer's filter keeps seeing the pair it admitted whatever the routing
+    /// table would rather pick.
+    #[test]
+    fn media_leaves_from_the_address_the_path_was_proven_at() {
+        let mut left_arena = Arena::new();
+        let mut right_arena = Arena::new();
+        let mut left = endpoint(
+            &mut left_arena,
+            (LEFT_UFRAG, LEFT_PWD),
+            (RIGHT_UFRAG, RIGHT_PWD),
+            0xA1,
+        );
+        let mut right = endpoint(
+            &mut right_arena,
+            (RIGHT_UFRAG, RIGHT_PWD),
+            (LEFT_UFRAG, LEFT_PWD),
+            0xB2,
+        );
+
+        let left_addr = addr(10, 5000);
+        let right_addr = addr(20, 6000);
+        // What each side's own socket would report its arrivals at.
+        let left_local = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 3));
+        let right_local = IpAddr::V4(Ipv4Addr::new(20, 0, 0, 7));
+        left.conn().add_candidate(right_addr).unwrap();
+        right.conn().add_candidate(left_addr).unwrap();
+
+        let mut now = 0.0;
+        while now < 2_000.0 && (left.path().is_none() || right.path().is_none()) {
+            pump(&mut left, left_addr, &mut right, Some(right_local), now);
+            pump(&mut right, right_addr, &mut left, Some(left_local), now);
+            now += 10.0;
+            left.poll(now);
+            right.poll(now);
+        }
+        assert!(left.path().is_some() && right.path().is_some(), "no path");
+
+        left.session()
+            .send_message(CHANNEL, &[], b"pinned")
+            .unwrap();
+        let mut wire = [0u8; 512];
+        let mut media_from = None;
+        while let Some(result) = left.get_output(now, &mut wire) {
+            let egress = result.unwrap();
+            if demux::classify(&wire[..egress.len]) == Datagram::Record {
+                media_from = Some(egress.from);
+                break;
+            }
+        }
+        assert_eq!(
+            media_from,
+            Some(Some(left_local)),
+            "a record did not claim the address the path was proven at"
+        );
     }
 
     /// Media has nowhere to go before a path is chosen, and must not be emitted
@@ -370,7 +442,7 @@ mod tests {
         let egress = left.get_output(0.0, &mut wire).unwrap().unwrap();
         assert!(matches!(
             right
-                .process_input(&wire[..egress.len], left_addr, 0.0, &mut scratch)
+                .process_input(&wire[..egress.len], left_addr, None, 0.0, &mut scratch)
                 .unwrap(),
             Inbound::Connectivity(_)
         ));
@@ -387,7 +459,7 @@ mod tests {
         let len = solo.session().get_output(0.0, &mut wire).unwrap().unwrap();
         assert!(matches!(
             right
-                .process_input(&wire[..len], left_addr, 0.0, &mut scratch)
+                .process_input(&wire[..len], left_addr, None, 0.0, &mut scratch)
                 .unwrap(),
             Inbound::Media(_)
         ));
