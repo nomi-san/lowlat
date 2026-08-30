@@ -16,12 +16,18 @@
 //!
 //!   ffmpeg -i /tmp/pipeline.h264 -f null -
 //!   ffmpeg -i /tmp/pipeline.h264 -frames:v 1 /tmp/pipeline.png
+//!
+//! `LOWLAT_CHROMA=444` walks the same path through the full-chroma layout:
+//! the conversion writes three planes, the export describes three, and the
+//! encoder reads three. `LOWLAT_DEPTH=10` deepens the samples the same way it
+//! does elsewhere. Full chroma implies HEVC, which is the hardware's rule
+//! rather than the probe's.
 
 use std::io::Write;
 use std::os::fd::IntoRawFd;
 use std::path::PathBuf;
 
-use lowlat_capture::convert::Converter;
+use lowlat_capture::convert::{Converter, Depth, Layout};
 use lowlat_capture::scanout::Card;
 use lowlat_capture::vulkan::{Device, Imports, PlaneLayout};
 use lowlat_encode::{Poll, cuda, nvenc};
@@ -38,6 +44,11 @@ fn main() {
     let out = args
         .next()
         .map_or_else(|| PathBuf::from("/tmp/pipeline.h264"), PathBuf::from);
+
+    // **Both knobs default to the shipped shape**, so the ordinary run is the
+    // ordinary pipeline.
+    let chroma444 = std::env::var("LOWLAT_CHROMA").is_ok_and(|v| v == "444");
+    let ten_bit = std::env::var("LOWLAT_DEPTH").is_ok_and(|v| v == "10");
 
     let card = Card::open(&node).unwrap_or_else(|e| fail(&format!("open {node:?}: {e}")));
     let layout = card.scan().unwrap_or_else(|e| fail(&format!("scan: {e}")));
@@ -76,20 +87,58 @@ fn main() {
         .unwrap_or_else(|e| fail(&format!("import capture: {e}")));
 
     let mut converter = Converter::new(&device).unwrap_or_else(|e| fail(&format!("pipeline: {e}")));
-    let target = device
-        .allocate_nv12(fb.width, fb.height)
-        .unwrap_or_else(|e| fail(&format!("allocate: {e}")));
+    let depth = if ten_bit { Depth::Ten } else { Depth::Eight };
+
+    // **One target enum so the two layouts share the walk below.** The
+    // subsampled target and the full-chroma one differ in type, not in role:
+    // each converts, exports, registers and releases.
+    enum Target {
+        Subsampled(lowlat_capture::convert::Nv12),
+        Full(lowlat_capture::convert::Planar444),
+    }
+    impl Target {
+        fn view(&self) -> lowlat_capture::convert::TargetRef {
+            match self {
+                Self::Subsampled(target) => target.target(),
+                Self::Full(target) => target.target(),
+            }
+        }
+    }
+    let target = if chroma444 {
+        Target::Full(
+            device
+                .allocate_planar_444(fb.width, fb.height, depth)
+                .unwrap_or_else(|e| fail(&format!("allocate 4:4:4: {e}"))),
+        )
+    } else {
+        Target::Subsampled(
+            device
+                .allocate_planar(fb.width, fb.height, depth)
+                .unwrap_or_else(|e| fail(&format!("allocate: {e}"))),
+        )
+    };
 
     // The vendor's compute interface has no name for a display-interface
     // descriptor, so the frame leaves the other way. The same allocation can
     // produce either.
-    let (frame_fd, exported) = device
-        .export_nv12(&target, false)
-        .unwrap_or_else(|e| fail(&format!("export frame: {e}")));
-    let bytes = u64::from(exported.pitch) * u64::from(exported.height) * 3 / 2;
+    let (frame_fd, exported) = match &target {
+        Target::Subsampled(target) => device
+            .export_nv12(target, false)
+            .unwrap_or_else(|e| fail(&format!("export frame: {e}"))),
+        Target::Full(target) => device
+            .export_planar_444(target, false)
+            .unwrap_or_else(|e| fail(&format!("export frame: {e}"))),
+    };
+    // **Three full planes rather than luma plus half as much colour.** The
+    // encoder is told the layout at registration, and the byte count here is
+    // the allocation the runtime takes, so the two must name the same shape.
+    let bytes = match exported.kind {
+        Layout::SemiPlanar420 => u64::from(exported.pitch) * u64::from(exported.height) * 3 / 2,
+        Layout::Planar444 => u64::from(exported.pitch) * u64::from(exported.height) * 3,
+    };
     println!(
-        "frame {}x{} pitch {}, colour at {}, {bytes} bytes",
-        exported.width, exported.height, exported.pitch, exported.planes[1].offset
+        "frame {}x{} {:?} pitch {}, colour at {}, {bytes} bytes",
+        exported.width, exported.height, exported.kind, exported.pitch, exported.planes[1].offset
     );
 
     // The encoder runs on the same device the conversion did. Anything else is
@@ -118,18 +167,35 @@ fn main() {
     let session = api
         .open_session(context)
         .unwrap_or_else(|e| fail(&format!("session: {e}")));
+    // **Full chroma implies HEVC**, the same rule the wire enforces: the
+    // vendor interface will encode H.264 4:4:4 and its own part refuses to
+    // decode it, so only the second codec makes a stream a decoder reads.
+    let chroma = if chroma444 {
+        nvenc::Chroma::Yuv444
+    } else {
+        nvenc::Chroma::Yuv420
+    };
+    let codec = if chroma444 {
+        nvenc::Codec::H265
+    } else {
+        nvenc::Codec::H264
+    };
     let mut encoder = session
         .initialize(
             &cuda,
             nvenc::Config {
-                codec: nvenc::Codec::H264,
+                codec,
                 width: exported.width,
                 height: exported.height,
                 fps: 60,
                 bitrate_bps: 20_000_000,
                 min_qp: lowlat_encode::DEFAULT_MIN_QP,
-                chroma: nvenc::Chroma::Yuv420,
-                depth: nvenc::Depth::Eight,
+                chroma,
+                depth: if ten_bit {
+                    nvenc::Depth::Ten
+                } else {
+                    nvenc::Depth::Eight
+                },
             },
         )
         .unwrap_or_else(|e| fail(&format!("configure: {e}")));
@@ -147,7 +213,7 @@ fn main() {
         // Each picture is converted from the display as it is now, so the
         // stream is a real recording rather than one frame repeated.
         converter
-            .run(&device, &imported, &target.target(), false)
+            .run(&device, &imported, &target.view(), false)
             .unwrap_or_else(|e| fail(&format!("convert: {e}")));
         if let Err(error) = encoder.submit_registered(&input, at == 0) {
             println!("submit refused at {at}: {error}");
@@ -180,7 +246,10 @@ fn main() {
     );
 
     converter.destroy(&device);
-    device.release_nv12(target);
+    match target {
+        Target::Subsampled(target) => device.release_nv12(target),
+        Target::Full(target) => device.release_planar_444(target),
+    }
     device.release(imported);
 }
 

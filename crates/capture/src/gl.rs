@@ -1208,7 +1208,11 @@ impl Converter {
                 DIGEST as isize,
                 zeroed.as_ptr().cast(),
             );
-            (gl.BindBufferBase)(raw::SHADER_STORAGE_BUFFER, 3, self.summary);
+            // **Base four, the summary's binding in the source.** It moved
+            // from three so the full-chroma entry's third plane could take
+            // the binding beside the other two; this tier compiles only the
+            // subsampled entry, and the binding index still has to agree.
+            (gl.BindBufferBase)(raw::SHADER_STORAGE_BUFFER, 4, self.summary);
 
             (gl.Uniform2i)(
                 0,

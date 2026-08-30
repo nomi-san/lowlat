@@ -45,6 +45,11 @@ const WANTED: [vk::ExternalMemoryHandleTypeFlags; 2] = [
 /// `scripts/build-shaders.sh` regenerates it.
 const CONVERT: &[u8] = include_bytes!("../shaders/convert.spv");
 
+/// The full-chroma entry point, from the same source file as [`CONVERT`] and
+/// committed beside it. The two cannot drift: they are one body compiled
+/// twice, because a compiler strips an uncalled entry point as dead.
+const CONVERT_444: &[u8] = include_bytes!("../shaders/convert-444.spv");
+
 /// Invocations per workgroup, per axis. Each one owns a 2x2 block, so a group
 /// covers 16 by 16 pixels.
 const GROUP: u32 = 8;
@@ -181,18 +186,37 @@ impl Depth {
 }
 
 /// How a converted frame is laid out, for whatever imports it next.
+/// How a converted frame is laid out, for whatever imports it next.
+///
+/// **Two layouts, one entry point each in the shader, and a third to come
+/// with the packed path.** An encoder that reads full-resolution chroma as
+/// three planes is not the same encoder that reads it packed into one, so the
+/// kind travels with every handover rather than being inferable from the
+/// offsets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Layout {
+    /// Luma, then interleaved colour at half resolution in both directions.
+    #[default]
+    SemiPlanar420,
+    /// Luma, blue difference, red difference, each at full resolution.
+    Planar444,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Exported {
     pub width: u32,
     pub height: u32,
     pub modifier: u64,
-    /// Bytes per row, the same for both planes, which is the single figure an
+    /// Bytes per row, the same for every plane, which is the single figure an
     /// encoder registering by pointer is given.
     pub pitch: u32,
-    /// Luma first, then the interleaved colour. The colour plane begins exactly
-    /// one luma plane in, which is what an encoder assumes and what this
-    /// allocation is built to guarantee.
-    pub planes: [PlaneLayout; 2],
+    /// Luma first, then the colour. For the subsampled layout the interleaved
+    /// colour plane begins exactly one luma plane in, which is what an encoder
+    /// assumes and what this allocation is built to guarantee; for the
+    /// full-chroma layout the two colour planes follow in order.
+    pub planes: [PlaneLayout; 3],
+    /// How the planes above are arranged.
+    pub kind: Layout,
     /// How many bits each sample carries. **An importer cannot work this out
     /// from the offsets**: a ten-bit frame and an eight-bit one twice as wide
     /// have the same pitch and the same plane split, and describing one as the
@@ -220,11 +244,16 @@ impl Exported {
             depth,
             modifier: LINEAR,
             pitch,
+            kind: Layout::SemiPlanar420,
             planes: [
                 PlaneLayout { offset: 0, pitch },
                 PlaneLayout {
                     offset: pitch * height,
                     pitch,
+                },
+                PlaneLayout {
+                    offset: 0,
+                    pitch: 0,
                 },
             ],
         }
@@ -267,14 +296,21 @@ pub struct Nv12 {
 /// transition.
 #[derive(Debug, Clone, Copy)]
 pub struct TargetRef {
-    /// The image behind each plane; one two-plane image repeats itself.
+    /// The image behind each plane; one two-plane image repeats itself, and a
+    /// subsampled target carries its third slot as the same image so the
+    /// barrier pass can deduplicate it.
     pub luma_image: vk::Image,
     pub chroma_image: vk::Image,
-    /// One view per plane, what the shader writes through.
-    pub planes: [vk::ImageView; 2],
+    pub cr_image: vk::Image,
+    /// One view per plane, what the shader writes through. The third slot is
+    /// unset for the subsampled layout, whose entry point never reads it.
+    pub planes: [vk::ImageView; 3],
     /// The layout the pictures are left in. [`vk::ImageLayout::GENERAL`] for
     /// an owned target; a lent picture names what its reader expects.
     pub final_layout: vk::ImageLayout,
+    /// How the planes above are arranged, which is what picks the shader's
+    /// entry point.
+    pub kind: Layout,
     /// How many bits a sample in these planes carries. **Travels with the
     /// handles rather than being configured**, because a lent picture's depth
     /// belongs to the encoder that lent it and the conversion has to be told,
@@ -296,8 +332,10 @@ impl TargetRef {
         Self {
             luma_image: image,
             chroma_image: image,
-            planes,
+            cr_image: image,
+            planes: [planes[0], planes[1], vk::ImageView::null()],
             final_layout: vk::ImageLayout::VIDEO_ENCODE_SRC_KHR,
+            kind: Layout::SemiPlanar420,
             depth,
         }
     }
@@ -309,10 +347,61 @@ impl Nv12 {
         TargetRef {
             luma_image: self.luma_image,
             chroma_image: self.chroma_image,
-            planes: self.planes,
+            cr_image: self.chroma_image,
+            planes: [self.planes[0], self.planes[1], vk::ImageView::null()],
             final_layout: vk::ImageLayout::GENERAL,
+            kind: Layout::SemiPlanar420,
             depth: self.depth,
         }
+    }
+}
+
+/// A converted frame in the three-plane full-chroma layout: luma, blue
+/// difference and red difference, each at full resolution, in one allocation.
+///
+/// **Three images rather than one, for the same reason the subsampled target
+/// is two.** An encoder registering a frame by pointer is given one address
+/// and one row length and takes each plane to follow the one before it; three
+/// images bound into one allocation at offsets of our choosing put them
+/// exactly where the encoder expects, and cost nothing more than the two-plane
+/// arrangement does.
+pub struct Planar444 {
+    luma_image: vk::Image,
+    cb_image: vk::Image,
+    cr_image: vk::Image,
+    pub(crate) memory: vk::DeviceMemory,
+    /// One view per plane, which is what the conversion writes through.
+    planes: [vk::ImageView; 3],
+    pub width: u32,
+    pub height: u32,
+    /// Bytes per row, the same for all three planes.
+    pub pitch: u32,
+    /// How many bits each sample carries.
+    pub depth: Depth,
+}
+
+impl Planar444 {
+    /// This target, by its handles.
+    pub fn target(&self) -> TargetRef {
+        TargetRef {
+            luma_image: self.luma_image,
+            chroma_image: self.cb_image,
+            cr_image: self.cr_image,
+            planes: self.planes,
+            final_layout: vk::ImageLayout::GENERAL,
+            kind: Layout::Planar444,
+            depth: self.depth,
+        }
+    }
+}
+
+impl core::fmt::Debug for Planar444 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Planar444")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("pitch", &self.pitch)
+            .finish_non_exhaustive()
     }
 }
 
@@ -351,6 +440,9 @@ pub struct Converter {
     layout: vk::DescriptorSetLayout,
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
+    /// The full-chroma entry point, beside the subsampled one above. The two
+    /// share a layout and a descriptor set; only the entry differs.
+    pipeline_444: vk::Pipeline,
     pool: vk::DescriptorPool,
     commands: vk::CommandPool,
     /// Reset and reused, never recreated.
@@ -511,6 +603,11 @@ impl Converter {
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
             vk::DescriptorSetLayoutBinding::default()
                 .binding(3)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(4)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
@@ -533,7 +630,13 @@ impl Converter {
             unsafe { vk_device.create_pipeline_layout(&pipeline_layout_info, None) }
                 .map_err(driver)?;
 
-        let pipeline = Self::build_pipeline(vk_device, pipeline_layout)?;
+        let pipeline = Self::build_pipeline(vk_device, pipeline_layout, CONVERT, c"main")?;
+        // **The second entry point, same module and same layout.** The two
+        // pipelines differ only in which function they run, which is what
+        // keeps the colour rules and the summary in one file. The interface
+        // names every stage's entry point main, so the full-chroma function
+        // was renamed at compile time and the name here is the same.
+        let pipeline_444 = Self::build_pipeline(vk_device, pipeline_layout, CONVERT_444, c"main")?;
 
         let sizes = [
             vk::DescriptorPoolSize::default()
@@ -541,7 +644,7 @@ impl Converter {
                 .descriptor_count(1),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(2),
+                .descriptor_count(3),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1),
@@ -620,6 +723,7 @@ impl Converter {
             layout,
             pipeline_layout,
             pipeline,
+            pipeline_444,
             pool,
             commands,
             fence,
@@ -638,15 +742,17 @@ impl Converter {
     fn build_pipeline(
         device: &ash::Device,
         layout: vk::PipelineLayout,
+        code: &[u8],
+        entry: &core::ffi::CStr,
     ) -> Result<vk::Pipeline, Error> {
         // The committed shader is a byte array; the interface wants words. A
         // misaligned or odd-length blob is a corrupt file rather than a
         // runtime condition, so it is refused rather than patched around.
-        if CONVERT.len() % 4 != 0 {
+        if code.len() % 4 != 0 {
             return Err(Error::BadShader);
         }
-        let mut words = Vec::with_capacity(CONVERT.len() / 4);
-        for chunk in CONVERT.chunks_exact(4) {
+        let mut words = Vec::with_capacity(code.len() / 4);
+        for chunk in code.chunks_exact(4) {
             let quad: [u8; 4] = chunk.try_into().map_err(|_| Error::BadShader)?;
             words.push(u32::from_le_bytes(quad));
         }
@@ -655,7 +761,6 @@ impl Converter {
         // SAFETY: the words outlive the call.
         let module = unsafe { device.create_shader_module(&module_info, None) }.map_err(driver)?;
 
-        let entry = c"main";
         let stage = vk::PipelineShaderStageCreateInfo::default()
             .stage(vk::ShaderStageFlags::COMPUTE)
             .module(module)
@@ -714,6 +819,7 @@ impl Converter {
             vk_device.destroy_command_pool(self.commands, None);
             vk_device.destroy_descriptor_pool(self.pool, None);
             vk_device.destroy_pipeline(self.pipeline, None);
+            vk_device.destroy_pipeline(self.pipeline_444, None);
             vk_device.destroy_pipeline_layout(self.pipeline_layout, None);
             vk_device.destroy_descriptor_set_layout(self.layout, None);
             vk_device.destroy_sampler(self.sampler, None);
@@ -1011,12 +1117,10 @@ impl Device {
             // the shader stores through, so one narrower than its image writes
             // a byte into every two-byte sample and leaves the other untouched
             // -- which is not a refusal anywhere, just half a picture.
-            for (at, (image, format)) in [
-                (luma_image, depth.luma()),
-                (chroma_image, depth.chroma()),
-            ]
-            .into_iter()
-            .enumerate()
+            for (at, (image, format)) in
+                [(luma_image, depth.luma()), (chroma_image, depth.chroma())]
+                    .into_iter()
+                    .enumerate()
             {
                 let info = vk::ImageViewCreateInfo::default()
                     .image(image)
@@ -1052,6 +1156,188 @@ impl Device {
             Ok(planes) => Ok(Nv12 {
                 luma_image,
                 chroma_image,
+                memory,
+                depth,
+                planes,
+                width,
+                height,
+                pitch,
+            }),
+            Err(error) => {
+                // SAFETY: nothing is bound to it any more.
+                unsafe { self.device.free_memory(memory, None) };
+                Err(error)
+            }
+        }
+    }
+
+    /// Allocate a conversion target in the three-plane full-chroma layout.
+    ///
+    /// All three planes are the picture's own size, which is the whole
+    /// difference from [`Device::allocate_planar`]: the colour is not
+    /// subsampled, so nothing about the allocation may halve it.
+    pub fn allocate_planar_444(
+        &self,
+        width: u32,
+        height: u32,
+        depth: Depth,
+    ) -> Result<Planar444, Error> {
+        // Every plane is full resolution, so the only rounding left is the
+        // dispatch grid's own.
+        let usage = vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC;
+        let handle_types = self.exportable(depth.luma(), usage, vk::ImageTiling::LINEAR);
+        let luma_image = self.plane_image(width, height, depth.luma(), handle_types)?;
+        let cb_image = match self.plane_image(width, height, depth.luma(), handle_types) {
+            Ok(image) => image,
+            Err(error) => {
+                // SAFETY: created just above and nothing refers to it.
+                unsafe { self.device.destroy_image(luma_image, None) };
+                return Err(error);
+            }
+        };
+        let cr_image = match self.plane_image(width, height, depth.luma(), handle_types) {
+            Ok(image) => image,
+            Err(error) => {
+                // SAFETY: both created above and nothing refers to either.
+                unsafe {
+                    self.device.destroy_image(luma_image, None);
+                    self.device.destroy_image(cb_image, None);
+                }
+                return Err(error);
+            }
+        };
+
+        match self.bind_planes_444(luma_image, cb_image, cr_image, width, height, depth) {
+            Ok(target) => Ok(target),
+            Err(error) => {
+                // SAFETY: all three created above; binding is what failed.
+                unsafe {
+                    self.device.destroy_image(luma_image, None);
+                    self.device.destroy_image(cb_image, None);
+                    self.device.destroy_image(cr_image, None);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Put three full-resolution planes in one allocation, each exactly one
+    /// plane after the one before it.
+    fn bind_planes_444(
+        &self,
+        luma_image: vk::Image,
+        cb_image: vk::Image,
+        cr_image: vk::Image,
+        width: u32,
+        height: u32,
+        depth: Depth,
+    ) -> Result<Planar444, Error> {
+        let subresource = vk::ImageSubresource {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            mip_level: 0,
+            array_layer: 0,
+        };
+        // SAFETY: all three images are this device's and untiled, which is
+        // what makes this query answerable.
+        let (luma_layout, cb_layout) = unsafe {
+            (
+                self.device
+                    .get_image_subresource_layout(luma_image, subresource),
+                self.device
+                    .get_image_subresource_layout(cb_image, subresource),
+            )
+        };
+        // All three planes are one sample wide, so their row lengths must
+        // agree or the single pitch the encoder is given cannot describe them.
+        if luma_layout.row_pitch != cb_layout.row_pitch {
+            return Err(Error::PlanesDisagree);
+        }
+        let pitch = u32::try_from(luma_layout.row_pitch).map_err(|_| Error::PlanesDisagree)?;
+        let plane_bytes = luma_layout.row_pitch * u64::from(height);
+
+        // SAFETY: the images are this device's.
+        let (luma_needs, cb_needs) = unsafe {
+            (
+                self.device.get_image_memory_requirements(luma_image),
+                self.device.get_image_memory_requirements(cb_image),
+            )
+        };
+        // **A driver's own number, checked before it is divided by.** Zero
+        // here is not a layout this code can place a plane in.
+        if cb_needs.alignment == 0
+            || plane_bytes % cb_needs.alignment != 0
+            || (plane_bytes * 2) % cb_needs.alignment != 0
+        {
+            return Err(Error::PlanesDisagree);
+        }
+        let index =
+            self.device_local_memory(luma_needs.memory_type_bits & cb_needs.memory_type_bits)?;
+
+        // **What the allocation may become, not what its images may be backed
+        // by**, exactly as on the subsampled target.
+        let exports = self.exportable_memory();
+        let mut exportable = vk::ExportMemoryAllocateInfo::default().handle_types(exports);
+        let allocate = vk::MemoryAllocateInfo::default()
+            .allocation_size(plane_bytes * 2 + cb_needs.size)
+            .memory_type_index(index);
+        let allocate = if exports.is_empty() {
+            allocate
+        } else {
+            allocate.push_next(&mut exportable)
+        };
+        // SAFETY: the chain outlives the call.
+        let memory = unsafe { self.device.allocate_memory(&allocate, None) }.map_err(driver)?;
+
+        let bound = (|| -> Result<[vk::ImageView; 3], Error> {
+            // SAFETY: no image is bound yet and all are this device's.
+            unsafe {
+                self.device
+                    .bind_image_memory(luma_image, memory, 0)
+                    .map_err(driver)?;
+                self.device
+                    .bind_image_memory(cb_image, memory, plane_bytes)
+                    .map_err(driver)?;
+                self.device
+                    .bind_image_memory(cr_image, memory, plane_bytes * 2)
+                    .map_err(driver)?;
+            }
+            let mut planes = [vk::ImageView::null(); 3];
+            for (at, image) in [luma_image, cb_image, cr_image].into_iter().enumerate() {
+                let info = vk::ImageViewCreateInfo::default()
+                    .image(image)
+                    .view_type(vk::ImageViewType::TYPE_2D)
+                    .format(depth.luma())
+                    .subresource_range(vk::ImageSubresourceRange {
+                        aspect_mask: vk::ImageAspectFlags::COLOR,
+                        base_mip_level: 0,
+                        level_count: 1,
+                        base_array_layer: 0,
+                        layer_count: 1,
+                    });
+                // SAFETY: the create info outlives the call.
+                match unsafe { self.device.create_image_view(&info, None) } {
+                    Ok(view) => {
+                        if let Some(slot) = planes.get_mut(at) {
+                            *slot = view;
+                        }
+                    }
+                    Err(result) => {
+                        for view in planes.into_iter().filter(|v| *v != vk::ImageView::null()) {
+                            // SAFETY: created just above on this device.
+                            unsafe { self.device.destroy_image_view(view, None) };
+                        }
+                        return Err(driver(result));
+                    }
+                }
+            }
+            Ok(planes)
+        })();
+
+        match bound {
+            Ok(planes) => Ok(Planar444 {
+                luma_image,
+                cb_image,
+                cr_image,
                 memory,
                 depth,
                 planes,
@@ -1135,6 +1421,61 @@ impl Device {
         ))
     }
 
+    /// Hand a full-chroma frame out as a descriptor an encoder can take.
+    ///
+    /// Same contract as [`Device::export_nv12`]; the descriptor carries three
+    /// plane offsets instead of two, and an importer that reads only the first
+    /// two is an importer of the wrong layout.
+    pub fn export_planar_444(
+        &self,
+        frame: &Planar444,
+        display_interface: bool,
+    ) -> Result<(OwnedFd, Exported), Error> {
+        let wanted = if display_interface {
+            vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT
+        } else {
+            vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD
+        };
+        if !self.exportable_memory().contains(wanted) {
+            return Err(Error::NoExport);
+        }
+        let external = ash::khr::external_memory_fd::Device::new(&self.instance, &self.device);
+        let info = vk::MemoryGetFdInfoKHR::default()
+            .memory(frame.memory)
+            .handle_type(wanted);
+        // SAFETY: the info outlives the call and the memory is this device's.
+        let fd = unsafe { external.get_memory_fd(&info) }.map_err(driver)?;
+        // SAFETY: the driver returned a fresh owned descriptor.
+        let fd = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+
+        let plane_bytes = u64::from(frame.pitch) * u64::from(frame.height);
+        Ok((
+            fd,
+            Exported {
+                width: frame.width,
+                height: frame.height,
+                modifier: LINEAR,
+                pitch: frame.pitch,
+                kind: Layout::Planar444,
+                depth: frame.depth,
+                planes: [
+                    PlaneLayout {
+                        offset: 0,
+                        pitch: frame.pitch,
+                    },
+                    PlaneLayout {
+                        offset: u32::try_from(plane_bytes).unwrap_or(0),
+                        pitch: frame.pitch,
+                    },
+                    PlaneLayout {
+                        offset: u32::try_from(plane_bytes * 2).unwrap_or(0),
+                        pitch: frame.pitch,
+                    },
+                ],
+            },
+        ))
+    }
+
     /// Release a conversion target.
     pub fn release_nv12(&self, nv12: Nv12) {
         // SAFETY: every handle came from this device, and the wait means no
@@ -1147,6 +1488,22 @@ impl Device {
             self.device.destroy_image(nv12.luma_image, None);
             self.device.destroy_image(nv12.chroma_image, None);
             self.device.free_memory(nv12.memory, None);
+        }
+    }
+
+    /// Release a full-chroma conversion target.
+    pub fn release_planar_444(&self, frame: Planar444) {
+        // SAFETY: every handle came from this device, and the wait means no
+        // submitted work still refers to them.
+        unsafe {
+            let _ = self.device.device_wait_idle();
+            for view in frame.planes {
+                self.device.destroy_image_view(view, None);
+            }
+            self.device.destroy_image(frame.luma_image, None);
+            self.device.destroy_image(frame.cb_image, None);
+            self.device.destroy_image(frame.cr_image, None);
+            self.device.free_memory(frame.memory, None);
         }
     }
 }
@@ -1376,6 +1733,19 @@ impl Converter {
         let chroma = [vk::DescriptorImageInfo::default()
             .image_view(*target.planes.get(1).ok_or(Error::BadShader)?)
             .image_layout(vk::ImageLayout::GENERAL)];
+        // **Null for the subsampled layout, whose entry point never reads the
+        // binding.** The descriptor is still written so one set serves both
+        // pipelines; a binding no entry point statically uses may hold
+        // nothing.
+        let cr = [vk::DescriptorImageInfo::default()
+            .image_view(
+                target
+                    .planes
+                    .get(2)
+                    .copied()
+                    .unwrap_or(vk::ImageView::null()),
+            )
+            .image_layout(vk::ImageLayout::GENERAL)];
         let summary = [vk::DescriptorBufferInfo::default()
             .buffer(self.summary)
             .offset(0)
@@ -1399,6 +1769,11 @@ impl Converter {
             vk::WriteDescriptorSet::default()
                 .dst_set(self.set)
                 .dst_binding(3)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(&cr),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.set)
+                .dst_binding(4)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .buffer_info(&summary),
         ];
@@ -1470,11 +1845,18 @@ impl Converter {
             .image(source.image)
             .subresource_range(whole);
         // The target's previous contents are nobody's -- this conversion
-        // overwrites the whole picture -- so discarding them is correct. One
-        // two-plane image transitions once, not once per plane view.
-        let mut prepare_images = [Some(target.luma_image), Some(target.chroma_image)];
-        if target.luma_image == target.chroma_image {
-            prepare_images[1] = None;
+        // overwrites the whole picture -- so discarding them is correct. The
+        // same image appearing in more than one slot transitions once, not
+        // once per view.
+        let mut prepare_images = [
+            Some(target.luma_image),
+            Some(target.chroma_image),
+            Some(target.cr_image),
+        ];
+        for slot in 1..prepare_images.len() {
+            if prepare_images[..slot].contains(&prepare_images[slot]) {
+                prepare_images[slot] = None;
+            }
         }
         let prepare: Vec<vk::ImageMemoryBarrier<'_>> = prepare_images
             .into_iter()
@@ -1509,14 +1891,16 @@ impl Converter {
             )
         };
 
-        // One invocation per 2x2 block, rounded up so an odd edge is covered.
-        // A poke overrides this with a single workgroup: it needs the block
+        // One invocation per 2x2 block for the subsampled entry, one per pixel
+        // for the full-chroma one, rounded up so an odd edge is covered. A
+        // poke overrides this with a single workgroup: it needs the block
         // awake, not the picture converted.
-        let (groups_x, groups_y) = groups.unwrap_or_else(|| {
-            (
+        let (groups_x, groups_y) = groups.unwrap_or_else(|| match target.kind {
+            Layout::SemiPlanar420 => (
                 source.width.div_ceil(2).div_ceil(GROUP),
                 source.height.div_ceil(2).div_ceil(GROUP),
-            )
+            ),
+            Layout::Planar444 => (source.width.div_ceil(GROUP), source.height.div_ceil(GROUP)),
         });
 
         // **Zeroed here rather than on the processor**, so nothing has to wait
@@ -1558,7 +1942,11 @@ impl Converter {
                 &[],
                 &opening_barriers,
             );
-            vk_device.cmd_bind_pipeline(commands, vk::PipelineBindPoint::COMPUTE, self.pipeline);
+            let pipeline = match target.kind {
+                Layout::SemiPlanar420 => self.pipeline,
+                Layout::Planar444 => self.pipeline_444,
+            };
+            vk_device.cmd_bind_pipeline(commands, vk::PipelineBindPoint::COMPUTE, pipeline);
             vk_device.cmd_bind_descriptor_sets(
                 commands,
                 vk::PipelineBindPoint::COMPUTE,
@@ -1583,9 +1971,15 @@ impl Converter {
         // writer's own recording so the reader never touches a picture it
         // does not own.
         if target.final_layout != vk::ImageLayout::GENERAL {
-            let mut handover_images = [Some(target.luma_image), Some(target.chroma_image)];
-            if target.luma_image == target.chroma_image {
-                handover_images[1] = None;
+            let mut handover_images = [
+                Some(target.luma_image),
+                Some(target.chroma_image),
+                Some(target.cr_image),
+            ];
+            for slot in 1..handover_images.len() {
+                if handover_images[..slot].contains(&handover_images[slot]) {
+                    handover_images[slot] = None;
+                }
             }
             let handover: Vec<vk::ImageMemoryBarrier<'_>> = handover_images
                 .into_iter()
@@ -1697,19 +2091,72 @@ impl Device {
         // SAFETY: the create info outlives the call.
         let buffer = unsafe { self.device.create_buffer(&info, None) }.map_err(driver)?;
 
-        let result = self.read_nv12_into(nv12, buffer, luma_bytes, chroma_bytes);
+        let result = self.read_planes(
+            &[
+                (nv12.luma_image, nv12.width, nv12.height),
+                (nv12.chroma_image, nv12.width / 2, nv12.height / 2),
+            ],
+            &[0, luma_bytes, luma_bytes + chroma_bytes],
+            buffer,
+        );
         // SAFETY: created above; the copy inside waited before returning.
         unsafe { self.device.destroy_buffer(buffer, None) };
-        result
+        let all = result?;
+        let split = usize::try_from(luma_bytes).unwrap_or(0);
+        Ok((
+            all.get(..split).unwrap_or_default().to_vec(),
+            all.get(split..).unwrap_or_default().to_vec(),
+        ))
     }
 
-    fn read_nv12_into(
+    /// The same diagnostic for a full-chroma frame: three full-resolution
+    /// planes, luma then blue difference then red difference.
+    pub fn read_planar_444(&self, frame: &Planar444) -> Result<[Vec<u8>; 3], Error> {
+        let plane_bytes = u64::from(frame.width)
+            * u64::from(frame.height)
+            * u64::from(frame.depth.bytes_per_sample());
+        let info = vk::BufferCreateInfo::default()
+            .size(plane_bytes * 3)
+            .usage(vk::BufferUsageFlags::TRANSFER_DST)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        // SAFETY: the create info outlives the call.
+        let buffer = unsafe { self.device.create_buffer(&info, None) }.map_err(driver)?;
+
+        let result = self.read_planes(
+            &[
+                (frame.luma_image, frame.width, frame.height),
+                (frame.cb_image, frame.width, frame.height),
+                (frame.cr_image, frame.width, frame.height),
+            ],
+            &[0, plane_bytes, plane_bytes * 2, plane_bytes * 3],
+            buffer,
+        );
+        // SAFETY: created above; the copy inside waited before returning.
+        unsafe { self.device.destroy_buffer(buffer, None) };
+        let all = result?;
+        let (one, two) = (
+            usize::try_from(plane_bytes).unwrap_or(0),
+            usize::try_from(plane_bytes * 2).unwrap_or(0),
+        );
+        Ok([
+            all.get(..one).unwrap_or_default().to_vec(),
+            all.get(one..two).unwrap_or_default().to_vec(),
+            all.get(two..).unwrap_or_default().to_vec(),
+        ])
+    }
+
+    /// Copy whole planes into one buffer, in the order and at the offsets
+    /// given, and read the whole of it back.
+    ///
+    /// `splits` names one more offset than there are planes: the first is
+    /// zero and the last is the buffer length, so the caller states where
+    /// each plane goes and the lengths are derived rather than repeated.
+    fn read_planes(
         &self,
-        nv12: &Nv12,
+        planes: &[(vk::Image, u32, u32)],
+        splits: &[u64],
         buffer: vk::Buffer,
-        luma_bytes: u64,
-        chroma_bytes: u64,
-    ) -> Result<(Vec<u8>, Vec<u8>), Error> {
+    ) -> Result<Vec<u8>, Error> {
         // SAFETY: the buffer was created on this device.
         let requirements = unsafe { self.device.get_buffer_memory_requirements(buffer) };
         let index = self.host_visible_memory(requirements.memory_type_bits)?;
@@ -1719,12 +2166,12 @@ impl Device {
         // SAFETY: the allocate info outlives the call.
         let memory = unsafe { self.device.allocate_memory(&allocate, None) }.map_err(driver)?;
 
-        let outcome = (|| -> Result<(Vec<u8>, Vec<u8>), Error> {
+        let outcome = (|| -> Result<Vec<u8>, Error> {
             // SAFETY: neither handle is bound yet.
             unsafe { self.device.bind_buffer_memory(buffer, memory, 0) }.map_err(driver)?;
-            self.copy_planes(nv12, buffer, luma_bytes)?;
+            self.copy_planes(planes, splits, buffer)?;
 
-            let total = luma_bytes + chroma_bytes;
+            let total = splits.last().copied().unwrap_or(0);
             // SAFETY: host visible, nothing else maps it, and the copy above
             // completed before this line.
             let mapped = unsafe {
@@ -1733,15 +2180,13 @@ impl Device {
             }
             .map_err(driver)?;
             let length = usize::try_from(total).unwrap_or(0);
-            let split = usize::try_from(luma_bytes).unwrap_or(0);
             // SAFETY: the driver returned a mapping of at least `total` bytes,
             // valid until the unmap below.
             let all = unsafe { core::slice::from_raw_parts(mapped.cast::<u8>(), length) };
-            let luma = all.get(..split).unwrap_or_default().to_vec();
-            let chroma = all.get(split..).unwrap_or_default().to_vec();
+            let copied = all.to_vec();
             // SAFETY: mapped just above and not referenced after this.
             unsafe { self.device.unmap_memory(memory) };
-            Ok((luma, chroma))
+            Ok(copied)
         })();
 
         // SAFETY: nothing submitted still refers to it.
@@ -1749,8 +2194,13 @@ impl Device {
         outcome
     }
 
-    /// Copy both planes into one buffer, luma first.
-    fn copy_planes(&self, nv12: &Nv12, buffer: vk::Buffer, split: u64) -> Result<(), Error> {
+    /// Copy each named plane into the buffer at its offset, luma order.
+    fn copy_planes(
+        &self,
+        planes: &[(vk::Image, u32, u32)],
+        splits: &[u64],
+        buffer: vk::Buffer,
+    ) -> Result<(), Error> {
         let pool_info = vk::CommandPoolCreateInfo::default().queue_family_index(self.queue_family);
         // SAFETY: the create info outlives the call.
         let pool = unsafe { self.device.create_command_pool(&pool_info, None) }.map_err(driver)?;
@@ -1771,23 +2221,26 @@ impl Device {
 
             // The conversion wrote it and this reads it, so the write has to be
             // made visible before the copy rather than merely have happened.
-            let settle = [nv12.luma_image, nv12.chroma_image].map(|image| {
-                vk::ImageMemoryBarrier::default()
-                    .src_access_mask(vk::AccessFlags::SHADER_WRITE)
-                    .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
-                    .old_layout(vk::ImageLayout::GENERAL)
-                    .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
-                    .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
-                    .image(image)
-                    .subresource_range(vk::ImageSubresourceRange {
-                        aspect_mask: vk::ImageAspectFlags::COLOR,
-                        base_mip_level: 0,
-                        level_count: 1,
-                        base_array_layer: 0,
-                        layer_count: 1,
-                    })
-            });
+            let settle: Vec<vk::ImageMemoryBarrier<'_>> = planes
+                .iter()
+                .map(|(image, _, _)| {
+                    vk::ImageMemoryBarrier::default()
+                        .src_access_mask(vk::AccessFlags::SHADER_WRITE)
+                        .dst_access_mask(vk::AccessFlags::TRANSFER_READ)
+                        .old_layout(vk::ImageLayout::GENERAL)
+                        .new_layout(vk::ImageLayout::TRANSFER_SRC_OPTIMAL)
+                        .src_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .dst_queue_family_index(vk::QUEUE_FAMILY_IGNORED)
+                        .image(*image)
+                        .subresource_range(vk::ImageSubresourceRange {
+                            aspect_mask: vk::ImageAspectFlags::COLOR,
+                            base_mip_level: 0,
+                            level_count: 1,
+                            base_array_layer: 0,
+                            layer_count: 1,
+                        })
+                })
+                .collect();
 
             let plain = |aspect| vk::ImageSubresourceLayers {
                 aspect_mask: aspect,
@@ -1795,24 +2248,6 @@ impl Device {
                 base_array_layer: 0,
                 layer_count: 1,
             };
-            let luma_region = [vk::BufferImageCopy::default()
-                .buffer_offset(0)
-                .image_subresource(plain(vk::ImageAspectFlags::COLOR))
-                .image_extent(vk::Extent3D {
-                    width: nv12.width,
-                    height: nv12.height,
-                    depth: 1,
-                })];
-            // Half resolution in both directions, stated in the plane's own
-            // texels rather than the picture's.
-            let chroma_region = [vk::BufferImageCopy::default()
-                .buffer_offset(split)
-                .image_subresource(plain(vk::ImageAspectFlags::COLOR))
-                .image_extent(vk::Extent3D {
-                    width: nv12.width / 2,
-                    height: nv12.height / 2,
-                    depth: 1,
-                })];
 
             // SAFETY: recording into a begun command buffer with borrowed
             // structures that outlive the call.
@@ -1824,22 +2259,25 @@ impl Device {
                     vk::DependencyFlags::empty(),
                     &[],
                     &[],
-                    &[settle[0], settle[1]],
+                    &settle,
                 );
-                self.device.cmd_copy_image_to_buffer(
-                    commands,
-                    nv12.luma_image,
-                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                    buffer,
-                    &luma_region,
-                );
-                self.device.cmd_copy_image_to_buffer(
-                    commands,
-                    nv12.chroma_image,
-                    vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
-                    buffer,
-                    &chroma_region,
-                );
+                for (at, (image, width, height)) in planes.iter().enumerate() {
+                    let region = [vk::BufferImageCopy::default()
+                        .buffer_offset(splits.get(at).copied().unwrap_or(0))
+                        .image_subresource(plain(vk::ImageAspectFlags::COLOR))
+                        .image_extent(vk::Extent3D {
+                            width: *width,
+                            height: *height,
+                            depth: 1,
+                        })];
+                    self.device.cmd_copy_image_to_buffer(
+                        commands,
+                        *image,
+                        vk::ImageLayout::TRANSFER_SRC_OPTIMAL,
+                        buffer,
+                        &region,
+                    );
+                }
                 self.device.end_command_buffer(commands).map_err(driver)?;
             }
 
@@ -2058,6 +2496,95 @@ mod tests {
                 got_u.abs_diff(want_u) <= 2 && got_v.abs_diff(want_v) <= 2,
                 "block {block} chroma {got_u} {got_v} wanted {want_u} {want_v}"
             );
+        }
+    }
+
+    /// The full-chroma conversion lands on the reference at both depths,
+    /// sample for sample, with nothing averaged.
+    ///
+    /// **This is what the full-chroma entry exists for**: each pixel keeps
+    /// its own colour planes, so the check is per pixel rather than per
+    /// block, and a body that quietly fell back to the subsampled one would
+    /// fail it on every block boundary. Runs by default for the same reason
+    /// the subsampled one does: it needs a driver but not a card.
+    #[test]
+    fn the_444_conversion_matches_the_reference_at_both_depths() {
+        for depth in [Depth::Eight, Depth::Ten] {
+            let width = u32::try_from(PATTERN.len()).unwrap() * 2;
+            let height = 2;
+
+            let mut pixels = vec![0u8; (width as usize) * (height as usize) * 4];
+            for (block, colour) in PATTERN.iter().enumerate() {
+                for dy in 0..2usize {
+                    for dx in 0..2usize {
+                        let at = (dy * (width as usize) + block * 2 + dx) * 4;
+                        pixels[at] = colour[0];
+                        pixels[at + 1] = colour[1];
+                        pixels[at + 2] = colour[2];
+                        pixels[at + 3] = 255;
+                    }
+                }
+            }
+
+            let device = Device::any().expect("a device that can convert");
+            let source = device
+                .upload_rgba(width, height, &pixels)
+                .expect("upload the pattern");
+            let target = device
+                .allocate_planar_444(width, height, depth)
+                .expect("a full-chroma target");
+            let mut converter = Converter::new(&device).expect("a pipeline");
+            converter
+                .run(&device, &source, &target.target(), false)
+                .expect("convert");
+            let [luma, cb, cr] = device.read_planar_444(&target).expect("read the planes");
+
+            for (block, colour) in PATTERN.iter().enumerate() {
+                for dy in 0..2usize {
+                    for dx in 0..2usize {
+                        let at = dy * (width as usize) + block * 2 + dx;
+                        let (got_y, got_u, got_v, want_y, want_u, want_v) = match depth {
+                            Depth::Eight => {
+                                let byte = |plane: &[u8], at: usize| plane[at];
+                                let (want_y, want_u, want_v) =
+                                    reference(colour[0], colour[1], colour[2]);
+                                (
+                                    u16::from(byte(&luma, at)),
+                                    u16::from(byte(&cb, at)),
+                                    u16::from(byte(&cr, at)),
+                                    u16::from(want_y),
+                                    u16::from(want_u),
+                                    u16::from(want_v),
+                                )
+                            }
+                            Depth::Ten => {
+                                let sample = |plane: &[u8], at: usize| -> u16 {
+                                    u16::from_le_bytes([plane[at * 2], plane[at * 2 + 1]]) >> 6
+                                };
+                                let (want_y, want_u, want_v) =
+                                    reference_ten(colour[0], colour[1], colour[2]);
+                                (
+                                    sample(&luma, at),
+                                    sample(&cb, at),
+                                    sample(&cr, at),
+                                    want_y,
+                                    want_u,
+                                    want_v,
+                                )
+                            }
+                        };
+                        assert!(
+                            got_y.abs_diff(want_y) <= 2,
+                            "block {block} {depth:?} luma {got_y} wanted {want_y}"
+                        );
+                        assert!(
+                            got_u.abs_diff(want_u) <= 2 && got_v.abs_diff(want_v) <= 2,
+                            "block {block} {depth:?} chroma {got_u} {got_v} \
+                             wanted {want_u} {want_v}"
+                        );
+                    }
+                }
+            }
         }
     }
 
@@ -2332,4 +2859,3 @@ mod tests {
         device.release_nv12(target);
     }
 }
-

@@ -125,8 +125,10 @@ fn main() {
         let target = lowlat_capture::convert::TargetRef {
             luma_image: image,
             chroma_image: image,
-            planes,
+            cr_image: image,
+            planes: [planes[0], planes[1], ash::vk::ImageView::null()],
             final_layout: ash::vk::ImageLayout::VIDEO_ENCODE_SRC_KHR,
+            kind: lowlat_capture::convert::Layout::SemiPlanar420,
             depth: lowlat_capture::convert::Depth::Eight,
         };
         if let Err(e) = converter.run(&capture, &source, &target, false) {

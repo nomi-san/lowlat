@@ -1,7 +1,7 @@
 #version 430
 
 // Colour conversion: whatever the display scans out, into the planar 4:2:0 an
-// encoder takes.
+// encoder takes, with a second entry point for the three-plane 4:4:4 layout.
 //
 // **One shader for every input depth.** A normalized format arrives here as
 // float regardless of how many bits it was stored in, so a ten-bit capture and
@@ -9,17 +9,19 @@
 // line of this. That matters because the display switches between the two
 // several times a minute; see docs/07-platforms.md section 3.3.
 //
+// **One shader for every output depth too, and one body per output layout.**
+// The targets carry no format -- a format layout qualifier is required only
+// for image loads, and a writeonly image may omit it, so the store converts
+// to whatever format the view was made with -- which is what lets one body
+// serve both depths. What a uniform cannot do is change the number of planes:
+// the subsampled entry writes two, the full-chroma entry writes three, and
+// both keep the colour rules, the ranges and the summary shared so the two
+// cannot drift apart over time. The device feature this needs is checked and
+// enabled where the device is made.
+//
 // Read through a sampler rather than as a storage image, which is what makes
 // the above true: a storage read needs the format written into the shader, and
 // packed ten-bit storage support is not universal.
-//
-// **The targets carry no format either, and that is what makes one shader
-// cover both output depths.** A format layout qualifier is required only for
-// image loads; a writeonly image may omit it, and then the store's float
-// converts to whatever format the view was made with. Naming `r8` here would
-// pin this file to eight-bit output and force a second compiled copy of it for
-// ten, which is how the same body comes to disagree with itself over time. The
-// device feature this needs is checked and enabled where the device is made.
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -32,10 +34,12 @@ layout(local_size_x = 8, local_size_y = 8) in;
 layout(set = 0, binding = 0) uniform sampler2D source;
 layout(set = 0, binding = 1) uniform writeonly image2D luma;
 layout(set = 0, binding = 2) uniform writeonly image2D chroma;
+layout(set = 0, binding = 3) uniform writeonly image2D cr;
 #else
 layout(binding = 0) uniform sampler2D source;
 layout(binding = 1) uniform writeonly image2D luma;
 layout(binding = 2) uniform writeonly image2D chroma;
+layout(binding = 3) uniform writeonly image2D cr;
 #endif
 
 // **What the picture came to, in eight bytes.** The loop needs to know whether
@@ -43,12 +47,17 @@ layout(binding = 2) uniform writeonly image2D chroma;
 // drawn: the buffer it was drawn into can be reused without being replaced, so
 // its identity says nothing. This pass already reads every pixel, so the
 // summary is free here and would cost a second read anywhere else.
+//
+// **Binding four, so the three plane bindings can line up.** The full-chroma
+// entry points below need a third plane, and renumbering the summary is the
+// only way to give them one without two shaders disagreeing about which
+// binding is which.
 #ifdef TARGET_VULKAN
-layout(set = 0, binding = 3) buffer Digest {
+layout(set = 0, binding = 4) buffer Digest {
     uint accumulated[2];
 } digest;
 #else
-layout(binding = 3) buffer Digest {
+layout(binding = 4) buffer Digest {
     uint accumulated[2];
 } digest;
 #endif
@@ -186,7 +195,9 @@ void store_luma(ivec2 at, vec3 colour) {
     imageStore(luma, at, vec4(y * store_scale(), 0.0, 0.0, 0.0));
 }
 
-void main() {
+// The subsampled conversion: one invocation owns a 2x2 block, four luma
+// samples and the single chroma sample they share.
+void body_420() {
     // **Zeroed by the group before anything adds to it**, and the barrier is
     // what makes that ordering real rather than likely.
     if (gl_LocalInvocationIndex == 0u) {
@@ -194,7 +205,6 @@ void main() {
         block_xor = 0u;
     }
     barrier();
-
     // One invocation owns a 2x2 block: four luma samples and the single chroma
     // sample they share.
     ivec2 block = ivec2(gl_GlobalInvocationID.xy);
@@ -268,3 +278,66 @@ void main() {
         atomicXor(digest.accumulated[1], block_xor);
     }
 }
+
+// One colour plane at full resolution, written by the full-chroma entry
+// below.
+void store_cb(ivec2 at, float cb_sample) {
+    imageStore(chroma, at, vec4(cb_sample * store_scale(), 0.0, 0.0, 0.0));
+}
+
+void store_cr(ivec2 at, float cr_sample) {
+    imageStore(cr, at, vec4(cr_sample * store_scale(), 0.0, 0.0, 0.0));
+}
+
+// Full-resolution chroma: three planes, one sample each per pixel.
+//
+// **A body beside the subsampled one, not a copy of it.** The colour rules,
+// the ranges and the summary are shared with `body_420`, so a correction
+// lands in one place; what differs is the dispatch shape -- one invocation
+// per pixel rather than per 2x2 block -- and that nothing is averaged.
+void body_444() {
+    // **Zeroed by the group before anything adds to it**, exactly as the
+    // subsampled body does.
+    if (gl_LocalInvocationIndex == 0u) {
+        block_sum = 0u;
+        block_xor = 0u;
+    }
+    barrier();
+
+    ivec2 at = ivec2(gl_GlobalInvocationID.xy);
+    bool inside = at.x < EXTENT.x && at.y < EXTENT.y;
+    if (inside) {
+        vec3 colour = fetch(at);
+        store_luma(at, colour);
+
+        float y = luma_of(colour);
+        float u = (colour.b - y) / (2.0 - 2.0 * KB);
+        float v = (colour.r - y) / (2.0 - 2.0 * KR);
+        float cb = u * c_scale() + c_offset() + spread(at);
+        float cr_value = v * c_scale() + c_offset() + spread(at + ivec2(2, 0));
+        store_cb(at, cb);
+        store_cr(at, cr_value);
+
+        uint q = quantise(y * y_scale() + y_offset());
+        uint colour_bits = quantise(cb) | (quantise(cr_value) << 16);
+        uint position = mix32(uint(at.y) * 65536u + uint(at.x));
+        atomicAdd(block_sum, mix32(q ^ position));
+        atomicXor(block_xor, mix32(colour_bits + position));
+    }
+
+    barrier();
+    if (gl_LocalInvocationIndex == 0u) {
+        atomicAdd(digest.accumulated[0], block_sum);
+        atomicXor(digest.accumulated[1], block_xor);
+    }
+}
+
+// **The interface names every stage's entry point main**, so one source file
+// carries both bodies and a compile-time define picks which one the wrapper
+// runs. The other body is then dead and a compiler strips it, which is how
+// two pipelines are built from one file without a second copy of anything.
+#ifdef MAIN_444
+void main() { body_444(); }
+#else
+void main() { body_420(); }
+#endif
