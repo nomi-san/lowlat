@@ -1371,17 +1371,40 @@ eight-bit targets are the only thing the shader can address.
 
 **Gate:**
 
-1. **Decoded pixels match a ten-bit source on every backend that claims the depth**, with a
+1. [ ] **Decoded pixels match a ten-bit source on every backend that claims the depth**, with a
    count check that as many pictures were decoded as were submitted. An aggregate over zero
    pictures has scored well here before.
-2. **Two decoder families stream ten-bit HEVC end to end.** One family passing has already
-   proved insufficient once: an eight-bit stream carrying the depth bit failed on exactly one
-   decoder family and presented as a peer-specific defect.
-3. **A peer that cannot decode is named, not merely gone.** The status it disconnects with is
-   read and reported.
-4. **A guest asking for a depth the built encoder cannot emit is refused with the backend
-   named**, verified by forcing the refusal rather than by reading the code.
-5. **Status reports the live triple across a mid-session change**, read while it runs.
+   *Open on two of three backends.* The open stack is measured over sixty pictures against the
+   source on both of its devices -- 53.9 dB, flat, where the same run read 13.1 before the
+   device was told its depth -- and **the spread across the run is the reading, not the
+   average**: a stream that starts right and ends wrong has an average like a correct one. The
+   vendor and Vulkan backends have no such comparison; their streams decode and look right,
+   which is what the open stack's did while it was drifting. The source is also an eight-bit
+   picture widened rather than a real ten-bit one.
+2. [x] **Two decoder families stream ten-bit HEVC end to end.** *Met 2026-08-30: a stock client
+   on one platform's system decoder and a second on a software one, both live against this
+   host on all three heads.* One family passing had already proved insufficient once: an
+   eight-bit stream carrying the depth bit failed on exactly one decoder family and presented
+   as a peer-specific defect.
+3. [ ] **A peer that cannot decode is named, not merely gone.** The status it disconnects with
+   is read and reported.
+   *Mechanism proven, condition not.* Every live session so far has ended `PeerLeft(0)`, which
+   is a peer that simply left, so the value reaches the boundary but nothing has yet left with
+   a decode status. Forcing it needs a peer whose decoder is made to disagree with the stream
+   mid-session rather than one that refuses at the start, because a peer that cannot decode
+   what it asked for never connects.
+4. [x] **A guest asking for a depth this pipeline cannot emit is refused with the reason
+   named**, verified by forcing the refusal rather than by reading the code. *Met 2026-08-30
+   from a live session: a peer asked to reinitialize with `0x18` -- ten-bit without the codec
+   that carries it -- and got*
+   `guests asked for flags=0x18 and a H264 pipeline cannot emit 0x10 of it, so it is not granted`.
+   *Reworded the same day: this said "with the backend named", and the backend is the wrong
+   thing to name. No encoder on any of the three interfaces offers an H.264 profile above eight
+   bits and one cannot express one at all, so the constraint belongs to the codec and naming a
+   backend would suggest another might serve it.*
+5. [ ] **Status reports the live triple across a mid-session change**, read while it runs.
+   *The change is proven and the reading is not.* One live session moved the depth six times in
+   both directions, each rebuilding the encoder; nothing read the status while it did.
 
 ---
 
