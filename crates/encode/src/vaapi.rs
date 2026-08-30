@@ -26,7 +26,7 @@ use crate::ffi::va::{
     VABufferID, VABufferType, VAConfigAttrib, VAConfigAttribEncPackedHeaders,
     VAConfigAttribRTFormat, VAConfigAttribRateControl, VAConfigID, VAContextID, VADisplay,
     VAEntrypoint, VAEntrypointEncSlice, VAEntrypointEncSliceLP, VAProfile, VAProfileH264High,
-    VAProfileH264Main, VAProfileHEVCMain, VAStatus, VASurfaceID,
+    VAProfileH264Main, VAProfileHEVCMain, VAProfileHEVCMain10, VAStatus, VASurfaceID,
 };
 use crate::ffi::va::{
     VA_FOURCC_NV12, VA_SURFACE_ATTRIB_SETTABLE, VAGenericValue, VAGenericValueTypeInteger,
@@ -185,11 +185,31 @@ impl Codec {
     ///
     /// High before Main for H.264: every decoder that matters handles High,
     /// and it is what a peer expects to receive.
-    fn profiles(self) -> &'static [VAProfile] {
-        match self {
-            Self::H264 => &[VAProfileH264High, VAProfileH264Main],
-            Self::H265 => &[VAProfileHEVCMain],
+    /// The profiles this codec may be coded as, best first.
+    ///
+    /// **Ten bits is HEVC only and this is where that stops being a comment.**
+    /// No H.264 profile on any device here codes above eight bits, so asking
+    /// for one returns the eight-bit list and the caller's own check refuses
+    /// what it cannot serve, rather than a profile being invented that the
+    /// device would then reject for a reason naming neither depth nor codec.
+    fn profiles(self, ten_bit: bool) -> &'static [VAProfile] {
+        match (self, ten_bit) {
+            (Self::H264, _) => &[VAProfileH264High, VAProfileH264Main],
+            (Self::H265, false) => &[VAProfileHEVCMain],
+            (Self::H265, true) => &[VAProfileHEVCMain10],
         }
+    }
+}
+
+/// The runtime layout a device is asked to allocate surfaces in.
+///
+/// Named once because four places need it and a disagreement between any two
+/// of them is a surface the encoder reads as the other depth.
+const fn runtime_format(ten_bit: bool) -> u32 {
+    if ten_bit {
+        crate::ffi::va::VA_RT_FORMAT_YUV420_10
+    } else {
+        VA_RT_FORMAT_YUV420
     }
 }
 
@@ -225,6 +245,15 @@ impl Params {
         match self {
             Self::H264(p) => p.height,
             Self::H265(p) => p.height,
+        }
+    }
+
+    /// Whether these parameters describe a ten-bit stream.
+    pub fn ten_bit(self) -> bool {
+        match self {
+            // No H.264 profile here codes above eight bits.
+            Self::H264(_) => false,
+            Self::H265(p) => p.bit_depth_minus8 != 0,
         }
     }
 
@@ -438,6 +467,15 @@ impl Display<'_> {
     /// the profile's presence as proof of encode support is the mistake this
     /// exists to avoid.
     pub fn encode_target(&self, codec: Codec) -> Result<(VAProfile, VAEntrypoint)> {
+        self.encode_target_at(codec, false)
+    }
+
+    /// The same, for a chosen depth.
+    pub fn encode_target_at(
+        &self,
+        codec: Codec,
+        ten_bit: bool,
+    ) -> Result<(VAProfile, VAEntrypoint)> {
         let mut profiles = vec![0 as VAProfile; self.max_profiles()?];
         let mut found: c_int = 0;
         // SAFETY: the buffer is writable for the length the interface was told
@@ -448,7 +486,7 @@ impl Display<'_> {
         self.va.check(status)?;
         let available = profiles.get(..count(found)).unwrap_or(&[]);
 
-        for wanted in codec.profiles() {
+        for wanted in codec.profiles(ten_bit) {
             if !available.contains(wanted) {
                 continue;
             }
@@ -526,9 +564,18 @@ mod tests {
     fn profiles_are_listed_best_first() {
         // High before Main, because every decoder that matters takes High and
         // it is what a peer expects.
-        assert_eq!(Codec::H264.profiles()[0], VAProfileH264High);
-        assert!(Codec::H264.profiles().contains(&VAProfileH264Main));
-        assert_eq!(Codec::H265.profiles(), &[VAProfileHEVCMain]);
+        assert_eq!(Codec::H264.profiles(false)[0], VAProfileH264High);
+        assert!(Codec::H264.profiles(false).contains(&VAProfileH264Main));
+        assert_eq!(Codec::H265.profiles(false), &[VAProfileHEVCMain]);
+        // **Ten bits is a different profile, not the same one configured.**
+        // A device offering Main and not Main 10 must be found to have no
+        // encoder for the depth rather than handed Main and told ten bits.
+        assert_eq!(Codec::H265.profiles(true), &[VAProfileHEVCMain10]);
+        assert_eq!(
+            Codec::H264.profiles(true),
+            Codec::H264.profiles(false),
+            "no H.264 profile here codes above eight bits"
+        );
     }
 
     /// What the driver offers, and a context built on it.
@@ -738,7 +785,16 @@ mod tests {
     fn the_second_codec_encodes_and_the_driver_takes_our_sets() {
         let va = Vaapi::load().expect("runtime");
         let display = va.open(&node()).expect("render node");
-        let caps = display.caps(Codec::H265).expect("caps");
+        // **A knob for the same reason the height is one**: the depth changes
+        // the profile, the runtime layout and two fields of the sequence set
+        // together, and the only way to know they agree is to encode at both
+        // and read what came out with something that is not this code.
+        let ten_bit = std::env::var("LOWLAT_PROBE_TEN_BIT").is_ok_and(|v| v != "0");
+        let Ok(caps) = display.caps_at(Codec::H265, ten_bit) else {
+            // A device without the profile is not a failure of this test.
+            println!("this device offers no ten_bit={ten_bit} encoder for H.265");
+            return;
+        };
         // **The height is a knob because the rounding had to be measured.**
         // The device codes at its own alignment and corrects the size in the
         // sets it is handed, so what that alignment is cannot be read off one
@@ -763,6 +819,7 @@ mod tests {
             log2_max_poc_lsb_minus4: 4,
             max_num_ref_frames: 1,
             transform_depth: crate::h265::TRANSFORM_HIERARCHY_DEPTH,
+            bit_depth_minus8: if ten_bit { 2 } else { 0 },
         };
         let mut encoder = context
             .encoder(Params::H265(params), 20_000_000)
@@ -849,6 +906,7 @@ mod tests {
             log2_max_poc_lsb_minus4: 4,
             max_num_ref_frames: 1,
             transform_depth: crate::h265::TRANSFORM_HIERARCHY_DEPTH,
+            bit_depth_minus8: 0,
         };
         let encoder = context
             .encoder(Params::H265(asked), 10_000_000)
@@ -903,6 +961,11 @@ mod tests {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caps {
     pub profile: VAProfile,
+    /// Whether these answers are about a ten-bit stream. **Carried with them
+    /// rather than passed again**, because the configuration, the surfaces and
+    /// the parameter sets all have to name the same depth and this is the one
+    /// value they can all read it from.
+    pub ten_bit: bool,
     /// Which entry point answered, and the one every later call must name.
     ///
     /// **A device offers one or the other and not always both.** The slice
@@ -1014,7 +1077,12 @@ impl Display<'_> {
 
     /// Ask what the driver offers for a codec.
     pub fn caps(&self, codec: Codec) -> Result<Caps> {
-        let (profile, entrypoint) = self.encode_target(codec)?;
+        self.caps_at(codec, false)
+    }
+
+    /// The same, for a chosen depth.
+    pub fn caps_at(&self, codec: Codec, ten_bit: bool) -> Result<Caps> {
+        let (profile, entrypoint) = self.encode_target_at(codec, ten_bit)?;
         let mut attribs = [
             VAConfigAttrib {
                 type_: VAConfigAttribRTFormat,
@@ -1054,12 +1122,18 @@ impl Display<'_> {
                 attrib.value
             }
         };
-        if value(&attribs[0]) & VA_RT_FORMAT_YUV420 == 0 {
+        // **The runtime format is asked about for the depth in hand.** A
+        // device offering the eight-bit layout and not the ten-bit one is a
+        // device that cannot serve this configuration, and reporting it as
+        // capable here is how that becomes a failure much later with a status
+        // naming neither.
+        if value(&attribs[0]) & runtime_format(ten_bit) == 0 {
             return Err(Error::NoEncoder);
         }
         Ok(Caps {
             profile,
             entrypoint,
+            ten_bit,
             rate_control: value(&attribs[1]),
             packed_headers: value(&attribs[2]),
             quality_range: value(&attribs[3]),
@@ -1080,7 +1154,7 @@ impl Display<'_> {
         let mut wanted = [
             VAConfigAttrib {
                 type_: VAConfigAttribRTFormat,
-                value: VA_RT_FORMAT_YUV420,
+                value: runtime_format(caps.ten_bit),
             },
             VAConfigAttrib {
                 type_: VAConfigAttribRateControl,
@@ -1117,7 +1191,7 @@ impl Display<'_> {
         // its reference store, and encodes from the freed pointer. The first
         // picture survives whenever the allocator hands the same block back,
         // so this presents as an intermittent fault several pictures in.
-        let mut pool = match self.surface_pool(width, height, surfaces) {
+        let mut pool = match self.surface_pool(width, height, surfaces, caps.ten_bit) {
             Ok(pool) => pool,
             Err(error) => {
                 // SAFETY: the configuration was created above and nothing else
@@ -1126,7 +1200,7 @@ impl Display<'_> {
                 return Err(error);
             }
         };
-        let mut recon = match self.surface_pool(width, height, surfaces) {
+        let mut recon = match self.surface_pool(width, height, surfaces, caps.ten_bit) {
             Ok(recon) => recon,
             Err(error) => {
                 self.destroy_pool(&mut pool);
@@ -1171,7 +1245,13 @@ impl Display<'_> {
     }
 
     /// One pool of `count` surfaces in the encoder's runtime format.
-    fn surface_pool(&self, width: u32, height: u32, count: usize) -> Result<Vec<VASurfaceID>> {
+    fn surface_pool(
+        &self,
+        width: u32,
+        height: u32,
+        count: usize,
+        ten_bit: bool,
+    ) -> Result<Vec<VASurfaceID>> {
         let mut pool = vec![0 as VASurfaceID; count];
         // SAFETY: the pool is writable for its own length. No surface
         // attributes: the runtime format already fixes the layout, and an
@@ -1180,7 +1260,7 @@ impl Display<'_> {
         let status = unsafe {
             (self.va.create_surfaces)(
                 self.raw,
-                VA_RT_FORMAT_YUV420,
+                runtime_format(ten_bit),
                 width,
                 height,
                 pool.as_mut_ptr(),
@@ -1295,7 +1375,7 @@ impl Display<'_> {
         let status = unsafe {
             (self.va.create_surfaces)(
                 self.raw,
-                VA_RT_FORMAT_YUV420,
+                runtime_format(frame.depth.ten_bit()),
                 frame.width,
                 frame.height,
                 core::ptr::from_mut(&mut surface),
@@ -1381,7 +1461,7 @@ fn copy_plane(
     destination: &mut [u8],
     offset: usize,
     stride: usize,
-    source: lowlat_capture::Plane<'_>,
+    source: &lowlat_capture::Plane<'_>,
     row_bytes: usize,
     rows: usize,
 ) -> Result<()> {
@@ -1398,6 +1478,47 @@ fn copy_plane(
             .get_mut(at..at + row_bytes)
             .ok_or(Error::UnsupportedLayout)?;
         into.copy_from_slice(from);
+    }
+    Ok(())
+}
+
+/// Write one eight-bit plane into a ten-bit surface, widening as it goes.
+///
+/// **Two moves, and both matter.** Eight bits become ten by repeating the top
+/// two into the bottom, so 255 reaches 1023 rather than 1020 -- plain shifting
+/// leaves white a little short of white at every pixel. Then the ten sit in
+/// the *high* ten of the sixteen-bit word, which is where an encoder reading
+/// this layout looks for them; low-aligned samples decode to a picture that is
+/// dark and washed out and reports nothing.
+///
+/// This exists for the path that hands over a picture from ordinary memory. A
+/// picture converted on the device arrives at the right depth already and is
+/// handed over by reference without passing through here.
+fn widen_plane(
+    destination: &mut [u8],
+    offset: usize,
+    stride: usize,
+    source: &lowlat_capture::Plane<'_>,
+    samples: usize,
+    rows: usize,
+) -> Result<()> {
+    if stride < samples * 2 {
+        return Err(Error::UnsupportedLayout);
+    }
+    for row in 0..rows {
+        let from = source
+            .row(row)
+            .and_then(|full| full.get(..samples))
+            .ok_or(Error::UnsupportedLayout)?;
+        let at = offset + row * stride;
+        let into = destination
+            .get_mut(at..at + samples * 2)
+            .ok_or(Error::UnsupportedLayout)?;
+        for (sample, word) in from.iter().zip(into.chunks_exact_mut(2)) {
+            let value = u16::from(*sample);
+            let ten = (value << 2) | (value >> 6);
+            word.copy_from_slice(&(ten << 6).to_le_bytes());
+        }
     }
     Ok(())
 }
@@ -1679,9 +1800,15 @@ impl Encoder<'_> {
         image: &crate::ffi::va::VAImage,
         frame: &lowlat_capture::Frame<'_>,
     ) -> Result<()> {
-        // Two planes, luma then interleaved chroma. A driver offering some
-        // other layout is refused rather than filled in wrongly.
-        if image.num_planes < 2 || image.format.fourcc != crate::ffi::va::VA_FOURCC_NV12 {
+        // Two planes, luma then interleaved chroma, at one depth or the
+        // other. A driver offering some other layout is refused rather than
+        // filled in wrongly.
+        let ten_bit = match image.format.fourcc {
+            crate::ffi::va::VA_FOURCC_NV12 => false,
+            crate::ffi::va::VA_FOURCC_P010 => true,
+            _ => return Err(Error::UnsupportedLayout),
+        };
+        if image.num_planes < 2 {
             return Err(Error::UnsupportedLayout);
         }
 
@@ -1703,21 +1830,33 @@ impl Encoder<'_> {
         };
 
         let rows = usize::try_from(frame.height).unwrap_or(0);
-        let result = copy_plane(
-            destination,
-            usize::try_from(image.offsets[0]).unwrap_or(0),
-            usize::try_from(image.pitches[0]).unwrap_or(0),
-            frame.luma,
-            usize::try_from(frame.width).unwrap_or(0),
+        let luma_samples = usize::try_from(frame.width).unwrap_or(0);
+        let chroma_samples = usize::try_from(frame.width.div_ceil(2) * 2).unwrap_or(0);
+        let mut plane =
+            |offset: u32, pitch: u32, source: &lowlat_capture::Plane<'_>, samples, rows| {
+                let (offset, pitch) = (
+                    usize::try_from(offset).unwrap_or(0),
+                    usize::try_from(pitch).unwrap_or(0),
+                );
+                if ten_bit {
+                    widen_plane(destination, offset, pitch, source, samples, rows)
+                } else {
+                    copy_plane(destination, offset, pitch, source, samples, rows)
+                }
+            };
+        let result = plane(
+            image.offsets[0],
+            image.pitches[0],
+            &frame.luma,
+            luma_samples,
             rows,
         )
         .and_then(|()| {
-            copy_plane(
-                destination,
-                usize::try_from(image.offsets[1]).unwrap_or(0),
-                usize::try_from(image.pitches[1]).unwrap_or(0),
-                frame.chroma,
-                usize::try_from(frame.width.div_ceil(2) * 2).unwrap_or(0),
+            plane(
+                image.offsets[1],
+                image.pitches[1],
+                &frame.chroma,
+                chroma_samples,
                 rows.div_ceil(2),
             )
         });

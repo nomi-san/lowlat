@@ -1271,8 +1271,7 @@ impl Encoder<'_> {
         // One planar frame per allocation: luma rows, then half as many rows
         // of interleaved chroma, at the driver's preferred pitch.
         let width = usize::try_from(self.config.width).unwrap_or(0);
-        let rows =
-            usize::try_from(self.config.chroma.rows_for(self.config.height)).unwrap_or(0);
+        let rows = usize::try_from(self.config.chroma.rows_for(self.config.height)).unwrap_or(0);
         for _ in 0..IN_FLIGHT {
             let buffer = cuda
                 .alloc_pitch(width, rows)

@@ -188,7 +188,10 @@ fn main() {
         .next()
         .and_then(|value| value.parse().ok())
         .unwrap_or(10.0);
-    let fps: u32 = args.next().and_then(|value| value.parse().ok()).unwrap_or(60);
+    let fps: u32 = args
+        .next()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(60);
 
     let cuda = cuda::Cuda::load().unwrap_or_else(|e| fail(&format!("compute runtime: {e}")));
     let device = cuda
@@ -245,7 +248,11 @@ fn main() {
             } else {
                 0.0
             },
-            if bits > 0.0 { full.mbps(fps) / bits } else { 0.0 },
+            if bits > 0.0 {
+                full.mbps(fps) / bits
+            } else {
+                0.0
+            },
         );
     }
 }
@@ -301,8 +308,7 @@ fn measure(
             nvenc::Chroma::Yuv420 => "colour-cost-420.h265",
             nvenc::Chroma::Yuv444 => "colour-cost-444.h265",
         });
-        std::fs::File::create(&name)
-            .unwrap_or_else(|e| fail(&format!("{}: {e}", name.display())))
+        std::fs::File::create(&name).unwrap_or_else(|e| fail(&format!("{}: {e}", name.display())))
     });
 
     let mut planes = Planes::new();

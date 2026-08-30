@@ -292,11 +292,7 @@ impl TargetRef {
     }
 
     /// The same, for an encoder whose picture is not eight-bit.
-    pub fn lent_to_encoder_at(
-        image: vk::Image,
-        planes: [vk::ImageView; 2],
-        depth: Depth,
-    ) -> Self {
+    pub fn lent_to_encoder_at(image: vk::Image, planes: [vk::ImageView; 2], depth: Depth) -> Self {
         Self {
             luma_image: image,
             chroma_image: image,
@@ -2233,4 +2229,3 @@ mod tests {
         device.release_nv12(target);
     }
 }
-

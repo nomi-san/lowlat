@@ -18,6 +18,13 @@ const START_CODE: [u8; 4] = [0, 0, 0, 1];
 
 /// Main profile: 8-bit 4:2:0, which is what this pipeline produces.
 pub const PROFILE_MAIN: u32 = 1;
+/// The same coding tools at ten bits a sample.
+///
+/// **A ten-bit stream is not compatible with Main and must not claim to be.**
+/// The compatibility flags say which profiles a decoder may treat this as, and
+/// Main covers eight bits only, so a stream that sets Main's bit as well is
+/// telling a decoder that cannot read it that it can.
+pub const PROFILE_MAIN10: u32 = 2;
 
 /// Unspecified, which is what a frame that never touched an analogue format is.
 const VIDEO_FORMAT_UNSPECIFIED: u32 = 5;
@@ -94,9 +101,26 @@ pub struct Params {
     /// answering zero has not answered, since one that genuinely split no
     /// further would be describing hardware nobody ships.
     pub transform_depth: u32,
+    /// Bits a sample carries, less eight: zero for Main, two for Main 10.
+    ///
+    /// **The sets and the surfaces have to agree.** This is written into the
+    /// sequence set and it also decides the layout the device is given; a
+    /// stream whose set says eight over ten-bit surfaces decodes to noise and
+    /// reports nothing.
+    pub bit_depth_minus8: u32,
 }
 
 impl Params {
+    /// Which profile these parameters describe.
+    #[must_use]
+    pub const fn profile(&self) -> u32 {
+        if self.bit_depth_minus8 == 0 {
+            PROFILE_MAIN
+        } else {
+            PROFILE_MAIN10
+        }
+    }
+
     /// The coded size, which is what the device actually encodes.
     ///
     /// **The conformance window crops the difference**, and it is measured in
@@ -132,14 +156,14 @@ impl Params {
 /// compatibility flags are not optional decoration**: a decoder matches the
 /// profile by them as well as by the profile field, and leaving them clear
 /// makes a main-profile stream look like one no profile claims.
-fn profile_tier_level(w: &mut BitWriter<'_>, level_idc: u32) {
+fn profile_tier_level(w: &mut BitWriter<'_>, level_idc: u32, profile: u32) {
     w.bits(0, 2); // general_profile_space
     w.bit(false); // general_tier_flag: main tier
-    w.bits(PROFILE_MAIN, 5);
+    w.bits(profile, 5);
     // general_profile_compatibility_flag[32], with the bit for our own
     // profile set.
     for index in 0..32u32 {
-        w.bit(index == PROFILE_MAIN);
+        w.bit(index == profile);
     }
     w.bit(true); // general_progressive_source_flag
     w.bit(false); // general_interlaced_source_flag
@@ -164,7 +188,7 @@ pub fn video_parameter_set(params: &Params, out: &mut [u8]) -> Option<usize> {
     w.bits(0, 3); // vps_max_sub_layers_minus1
     w.bit(true); // vps_temporal_id_nesting_flag
     w.bits(0xFFFF, 16); // vps_reserved_0xffff_16bits
-    profile_tier_level(&mut w, params.level_idc);
+    profile_tier_level(&mut w, params.level_idc, params.profile());
     w.bit(true); // vps_sub_layer_ordering_info_present_flag
     // One picture is reordered by nothing and held by one reference.
     w.ue(params.max_num_ref_frames); // vps_max_dec_pic_buffering_minus1[0]
@@ -189,7 +213,7 @@ pub fn sequence_parameter_set(params: &Params, out: &mut [u8]) -> Option<usize> 
     w.bits(0, 4); // sps_video_parameter_set_id
     w.bits(0, 3); // sps_max_sub_layers_minus1
     w.bit(true); // sps_temporal_id_nesting_flag
-    profile_tier_level(&mut w, params.level_idc);
+    profile_tier_level(&mut w, params.level_idc, params.profile());
     w.ue(0); // sps_seq_parameter_set_id
     w.ue(1); // chroma_format_idc: 4:2:0
 
@@ -208,8 +232,8 @@ pub fn sequence_parameter_set(params: &Params, out: &mut [u8]) -> Option<usize> 
         w.ue(bottom / 2);
     }
 
-    w.ue(0); // bit_depth_luma_minus8
-    w.ue(0); // bit_depth_chroma_minus8
+    w.ue(params.bit_depth_minus8); // bit_depth_luma_minus8
+    w.ue(params.bit_depth_minus8); // bit_depth_chroma_minus8
     w.ue(params.log2_max_poc_lsb_minus4);
     w.bit(true); // sps_sub_layer_ordering_info_present_flag
     w.ue(params.max_num_ref_frames); // sps_max_dec_pic_buffering_minus1[0]
@@ -349,6 +373,7 @@ mod tests {
             log2_max_poc_lsb_minus4: 4,
             max_num_ref_frames: 1,
             transform_depth: TRANSFORM_HIERARCHY_DEPTH,
+            bit_depth_minus8: 0,
         }
     }
 
