@@ -2187,6 +2187,13 @@ impl Encoder<'_> {
         unsafe {
             let bits = &mut seq.seq_fields.bits;
             bits.set_chroma_format_idc(1);
+            bits.set_bit_depth_luma_minus8(params.bit_depth_minus8);
+            bits.set_bit_depth_chroma_minus8(params.bit_depth_minus8);
+            // **Told, never left at zero.** Zero here is eight bits, and the
+            // device believes it over anything the parameter sets say: the
+            // pictures carry eight bits of residual while the header promises
+            // ten, which is an intra picture that looks nearly right and a
+            // predicted one that walks away from it.
             bits.set_amp_enabled_flag(1);
             bits.set_sample_adaptive_offset_enabled_flag(1);
             bits.set_strong_intra_smoothing_enabled_flag(0);

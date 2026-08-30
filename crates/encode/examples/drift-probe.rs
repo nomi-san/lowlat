@@ -31,6 +31,10 @@ fn main() {
     let stem = std::env::args().nth(1).unwrap_or("/tmp/drift".into());
     let node = std::env::var("LOWLAT_VAAPI_NODE").unwrap_or("/dev/dri/renderD128".into());
     let hevc = std::env::var("LOWLAT_CODEC").is_ok_and(|c| c == "h265" || c == "hevc");
+    // The depth is a knob for the same reason the codec is: a set and a device
+    // that disagree about it produce an intra picture that looks nearly right
+    // and predicted ones that walk away from it, which is what this measures.
+    let ten_bit = std::env::var("LOWLAT_TEN_BIT").is_ok_and(|v| v != "0");
     let width: u32 = std::env::var("LOWLAT_W")
         .ok()
         .and_then(|v| v.parse().ok())
@@ -49,7 +53,7 @@ fn main() {
     } else {
         vaapi::Codec::H264
     };
-    let caps = display.caps(codec).expect("caps");
+    let caps = display.caps_at(codec, ten_bit).expect("caps");
     let context = display
         .create_context(caps, width, height, 4)
         .expect("context");
@@ -62,7 +66,7 @@ fn main() {
             log2_max_poc_lsb_minus4: 4,
             max_num_ref_frames: 1,
             transform_depth: lowlat_encode::h265::TRANSFORM_HIERARCHY_DEPTH,
-            bit_depth_minus8: 0,
+            bit_depth_minus8: if ten_bit { 2 } else { 0 },
         })
     } else {
         vaapi::Params::H264(lowlat_encode::h264::Params {
