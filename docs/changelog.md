@@ -3,6 +3,19 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-08-30 - The vendor interface codes 4:4:4 on the live path
+
+### Measured
+- **The conversion gained its first 4:4:4 body.** The shader is still one file: the
+  full-chroma conversion is a second entry in it, compiled to its own blob with a define that
+  picks the wrapper, so the colour rules and the summary stay in one place. It lands on the
+  reference at both depths in the committed test.
+- **`pipeline-probe` walks the whole path at 4:4:4.** A chroma knob makes it capture, convert
+  into three full-resolution planes, export, import into the vendor's runtime and register,
+  and an outside decoder reads `Rext / yuv444p` and `Rext / yuv444p10le` from the 2560x1440
+  output. The 4:2:0 run beside it still decodes, so the renumbered descriptor layout changed
+  nothing on the ordinary path.
+
 ## 2026-08-30 - Phase 11.6 is written, and 4:4:4 is measured at both depths
 
 ### Measured

@@ -1443,9 +1443,15 @@ The conversion shapes are settled, asked of the devices rather than guessed:
   three planar planes and one packed plane; both keep the depth uniform and share the colour
   rules and summary with the shipped 4:2:0 body, so a depth known in one body and not another
   cannot return.
-- [ ] **The vendor backend codes 4:4:4 at both depths on the live path.** The input formats
+  *Done in part 2026-08-30: the three-plane body is built as a second entry in the one shader
+  file, compiled to its own blob, and lands on the reference at both depths; the packed body
+  lands with the open backend.*
+- [x] **The vendor backend codes 4:4:4 at both depths on the live path.** The input formats
   and profile selection exist and are probe-verified; what remains is the pipeline wiring and
   the three-plane registration.
+  *Done 2026-08-30: `pipeline-probe` takes a chroma knob and walks capture, conversion,
+  export, registration and encode at 4:4:4; an outside decoder reads `Rext / yuv444p` and
+  `Rext / yuv444p10le` from the 2560x1440 output, and the 4:2:0 run beside it still decodes.*
 - [ ] **The open backend codes Main444 and Main444_10 through the low-power entry point.**
   Packed surfaces, hand-written range-extension parameter sets, and the recorded low-power
   traps (the transform-tree depth and the driver-rewrites-the-set one) re-verified on this
