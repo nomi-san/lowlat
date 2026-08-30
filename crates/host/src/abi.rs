@@ -261,8 +261,13 @@ pub struct lowlat_established_event {
 pub struct lowlat_ended_event {
     pub attempt: [c_char; LOWLAT_ATTEMPT_MAX],
     pub outcome: lowlat_outcome,
-    /// What the peer was told, when the outcome is that the host ended it.
-    /// Zero otherwise, and zero is not a status a peer stops on.
+    /// The status on the ending, from whichever side sent it: what the peer
+    /// was told when this host ended it, and what the peer said when it left.
+    ///
+    /// **A negative value from a peer is the far end reporting its own
+    /// fault**, and it is the only account of one there is -- a host cannot
+    /// see that a guest failed to decode. Zero otherwise, and zero is not a
+    /// status anything stops on.
     pub reason: i32,
 }
 
@@ -2534,7 +2539,7 @@ fn described(received: &crate::events::Received) -> lowlat_event {
                 Outcome::ConnectivityFailed => (LOWLAT_OUTCOME_CONNECTIVITY_FAILED, 0),
                 Outcome::PeerGone => (LOWLAT_OUTCOME_PEER_GONE, 0),
                 Outcome::Undeliverable => (LOWLAT_OUTCOME_UNDELIVERABLE, 0),
-                Outcome::PeerLeft => (LOWLAT_OUTCOME_PEER_LEFT, 0),
+                Outcome::PeerLeft(reason) => (LOWLAT_OUTCOME_PEER_LEFT, *reason),
                 Outcome::NeverDeclared => (LOWLAT_OUTCOME_NEVER_DECLARED, 0),
                 Outcome::TransportFailed => (LOWLAT_OUTCOME_TRANSPORT_FAILED, 0),
                 Outcome::ControlStalled => (LOWLAT_OUTCOME_CONTROL_STALLED, 0),

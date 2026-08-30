@@ -776,8 +776,13 @@ typedef struct lowlat_established_event {
 typedef struct lowlat_ended_event {
     char attempt[LOWLAT_ATTEMPT_MAX];
     lowlat_outcome outcome;
-    // What the peer was told, when the outcome is that the host ended it.
-    // Zero otherwise, and zero is not a status a peer stops on.
+    // The status on the ending, from whichever side sent it: what the peer
+    // was told when this host ended it, and what the peer said when it left.
+    //
+    // **A negative value from a peer is the far end reporting its own
+    // fault**, and it is the only account of one there is -- a host cannot
+    // see that a guest failed to decode. Zero otherwise, and zero is not a
+    // status anything stops on.
     int32_t reason;
 } lowlat_ended_event;
 

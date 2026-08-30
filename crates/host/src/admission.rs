@@ -212,7 +212,16 @@ pub enum Outcome {
     /// this the only thing that notices is the media path's liveness deadline,
     /// and the guest's port and its share of the bitrate budget stay spent
     /// until then. Repeated test connections exhaust capacity that way.
-    PeerLeft,
+    ///
+    /// **Carries the status the peer left with, and that number is the only
+    /// account of what went wrong at the far end.** A peer is the one party
+    /// that can tell whether its decoder failed, and it says so here rather
+    /// than by degrading quietly: a codec or a colour depth it cannot decode
+    /// arrives as a negative status on this message. Dropping it makes a guest
+    /// that could not read the stream indistinguishable from one that closed
+    /// its window, which is the difference between a diagnosis and a shrug.
+    /// Zero is the ordinary case and means a peer that simply left.
+    PeerLeft(i32),
     /// Connected, then never said what it could decode.
     ///
     /// Distinct from [`Outcome::PeerGone`] on purpose: a peer that reached us
@@ -1384,7 +1393,11 @@ fn drain_control<S: lowlat_inject::event::Sink>(
         // **A peer that is leaving says so here.** Nothing in signaling
         // reports it, so this message is the only prompt notice there is.
         if message.opcode == control::op::DISCONNECT {
-            return Err(Outcome::PeerLeft);
+            // **The argument is read, not just the opcode.** It is a status
+            // and a negative one is the far side reporting a fault of its own.
+            return Err(Outcome::PeerLeft(i32::from_ne_bytes(
+                message.a0.to_ne_bytes(),
+            )));
         }
         // **Handed on rather than read.** The sub-identifier and the body are
         // an application's own protocol, and a host that acted on either would
@@ -2648,6 +2661,51 @@ mod tests_support {
         Peer {
             aes256: Some("deadbeef".into()),
             ..peer()
+        }
+    }
+}
+
+#[cfg(test)]
+mod disconnect_status {
+    use lowlat_core::control;
+
+    /// **A peer's parting status survives the wire as a signed value.**
+    ///
+    /// It is written into an unsigned argument and read back out of one, and
+    /// every status that matters here is negative, so a conversion that
+    /// saturates or clamps anywhere along the way turns "my decoder failed"
+    /// into zero -- which is the value that means a peer simply left. The two
+    /// are the difference between a diagnosis and a shrug, and nothing else in
+    /// the system can tell them apart afterwards.
+    #[test]
+    fn a_negative_status_survives_the_round_trip() {
+        // The three a peer really stops on, from the vendored enumeration:
+        // a failed decode, a decoder that supports nothing we sent, and a
+        // colour format it cannot read. Plus zero, the ordinary departure.
+        for reason in [-14_i32, -17, -18, 0] {
+            let mut bytes = [0_u8; 32];
+            #[expect(
+                clippy::cast_sign_loss,
+                reason = "the status is signed and the argument that carries it is not"
+            )]
+            let written = control::encode_header(
+                &mut bytes,
+                &control::Control {
+                    a0: reason as u32,
+                    a1: 0,
+                    a2: 0,
+                    opcode: control::op::DISCONNECT,
+                    body: &[],
+                },
+            )
+            .expect("encode");
+            let parsed = control::parse(&bytes[..written]).expect("parse");
+            assert_eq!(parsed.opcode, control::op::DISCONNECT);
+            assert_eq!(
+                i32::from_ne_bytes(parsed.a0.to_ne_bytes()),
+                reason,
+                "a status of {reason} did not survive being carried"
+            );
         }
     }
 }
