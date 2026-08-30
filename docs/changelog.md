@@ -3,6 +3,67 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-08-30 - Ten-bit is v1 on HEVC, 4:4:4 is out, and both were measured first
+
+### Decided
+- **Ten-bit colour enters v1 on HEVC** and gets its own phase (11.5). The display already hands
+  the conversion ten bits for the ordinary desktop and the conversion discards them at the
+  write, so this recovers a loss rather than adding a feature. **Negotiated, not configured**:
+  a guest declares the depth, the consensus across seated guests decides, and a session runs
+  eight-bit until one asks. No host setting and no new configuration field.
+- **4:4:4 is out**, with the cost recorded so the question is not re-opened from intuition:
+  **0.22 ms a picture (1.09x) and 1.39x the bytes**, measured at 1080p over 2000 pictures on
+  the vendor backend with identical content both ways. What settles it is coverage rather than
+  cost -- one of the three encoders produces no 4:4:4 at any depth, and since the encoder
+  follows the display, a host that offered it and then had its captured output moved to that
+  device would have to end the session rather than degrade.
+
+### Measured
+- **The colour matrix, per part, through all three interfaces.** Ten-bit 4:2:0 is universal
+  among parts that can host at all, including on the interface where the conversion writes the
+  encoder's own picture -- that arrangement survives the depth change, which was the open
+  question. 4:4:4 is absent from one vendor in both directions.
+- **H.264 above 8-bit 4:2:0 does not exist to be used**, established four independent ways: no
+  profile on the open stack, an outright refusal from the vendor encoder, no way to name one in
+  the third interface's headers at all, and a part that will encode H.264 4:4:4 refusing to
+  decode it on the same chip.
+- Two probes are committed and reproduce all of it: `colour-profile-probe` asks each interface
+  what colour it will encode and whether a shader may still write the picture; `colour-cost-probe`
+  measures one chroma layout against another and **dumps both streams so an outside decoder can
+  say what they really were** -- two runs silently coding the same chroma would otherwise
+  produce a believable comparison of nothing.
+
+### Corrected
+- **A quoted figure of "4:4:4 triples encode time" is withdrawn.** It came from a platform where
+  4:4:4 also loses encode overlap, because the encoder there reads the capture's own staging
+  surface. Overlap here comes from a per-slot ring and is unaffected by the input format, and
+  the measured cost is 1.09x.
+- **"4:4:4 is a branch in the existing conversion shader" is withdrawn.** That reasoning came
+  from the decode direction, where a sampler hides subsampling and the layout is a texture
+  dimension. Writing is not symmetric: the two chroma layouts differ in kind rather than in
+  size, so it needs its own compiled variant exactly as depth does.
+- **The video header's depth bit stops being "never set".** The rule that mattered was always
+  that the bit must describe the pixels, not that it must be clear; a receiver builds its
+  decoder from it before parsing anything, so a bit disagreeing with the stream fails every
+  picture whichever way it disagrees.
+
+### Found
+- **The host parses a peer's disconnect status and throws it away.** A guest leaving because it
+  could not decode is currently indistinguishable from one that closed its window, which is
+  exactly the failure ten-bit can cause and the only place it is reportable. Fixed as an item
+  in phase 11.5 rather than separately, because that is what makes it load-bearing.
+
+### Changed
+- `lowlat_host_status` gains the **live** codec, chroma and depth, read from the running encoder
+  rather than the configuration, because a guest's request moves them mid-session. Enumerations
+  where the axis can grow, a flag where it cannot.
+- The set of capabilities a pipeline cannot emit stops being a constant and becomes a function
+  of the encoder actually built, so a refusal can name the backend that refused.
+- The vendor backend carries a chroma setting used by the probe alone, default unchanged, plus
+  a 4:4:4 capability query. It ships default-off so the measurement stays reproducible against
+  future drivers.
+
+
 ## The controller's trajectory is measured, beside its candidates
 
 **A rate-controlled loop was being changed on argument.** The simulator now

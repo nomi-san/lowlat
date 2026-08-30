@@ -130,10 +130,31 @@ type present, full range clear, and primaries, matrix and transfer all BT.709. D
 conversion correctly and then leaving the description absent produces a stream that any
 decoder is entitled to interpret with a different matrix, and some do.
 
-**Depth is 8-bit, also measured.** The same recording is `yuv420p` throughout. A 10-bit capture
-path is still required ([07 §3.1](07-platforms.md)) because that is what the display hands us,
-but it is converted down and the wire carries 8-bit. Nothing observed streams 10-bit, and the
-reserved flag bits stay reserved (D7).
+**8-bit is the default and 10-bit is what a guest may ask for** (D7, from 2026-08-30). A
+recorded reference session is `yuv420p` throughout and a stream runs at eight bits until a
+seated guest declares otherwise, so nothing changes for a peer that says nothing.
+
+**The ten-bit capture path was always required** ([07 §3.1](07-platforms.md)) because that is
+what the display hands us; what changed is that it is no longer converted down on the way out.
+The conversion reads through a sampler, which normalises any depth to float, so **the loss was
+happening at the write and nowhere else**.
+
+**The depth is settled by negotiation, not by configuration.** It is the intersection across
+seated guests, exactly as the codec is (§6.1), and a request to change it rebuilds the
+encoder. There is no host setting for it: one encode serves every seat, and a person choosing
+a depth on behalf of guests whose decoders they cannot see would be choosing wrong for some of
+them. What a host owes instead is the truth about what it is producing, which is why the live
+codec, chroma and depth are on `lowlat_host_status` ([06 §status](06-api.md)) rather than only
+in the configuration that was asked for.
+
+**Ten-bit is HEVC only**, and that is the hardware's constraint rather than a policy: no
+encoder on any of the three interfaces offers an H.264 profile above eight bits, and one of
+them cannot express one at all. A peer that asks for depth without asking for HEVC is asking
+for something nothing can produce.
+
+**4:4:4 is out of v1 and the reason is coverage, not cost** (D7). It measures at 0.22 ms a
+picture and 1.39x the bytes, which is affordable; what is not is that one of the three
+encoders produces none of it at any depth, and the encoder follows the display.
 
 **Chroma is averaged over each 2x2 block on the way out.** This is worth stating because the
 reverse direction is free and invites the assumption that this one is too: a decoder samples
@@ -199,9 +220,10 @@ runs on the compute interface by default and falls back to the GL interface on d
 without it, which keeps old parts capturable; the GL interface cannot feed the NVIDIA
 encoder, and machines old enough to need it are served by the open stack anyway.
 
-Codec and colour scope is [00-overview.md](00-overview.md) D7: H.264 and HEVC, 8-bit 4:2:0.
-The wire bits for 10-bit and 4:4:4 are reserved now so enabling them later is not a wire
-change.
+Codec and colour scope is [00-overview.md](00-overview.md) D7: H.264 and HEVC, 4:2:0, eight
+bits by default and ten when the seated guests ask for it. **A backend that cannot code what
+was asked says so and is named**, rather than the pipeline asserting a fixed answer: what a
+device will emit is a capability it reports, not a constant.
 
 ### §4.1 Where a host sits between delay and picture
 

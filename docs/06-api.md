@@ -158,6 +158,17 @@ display decides its own size and the room decides its own occupancy. It answers 
 is not hosting too, with `running` clear -- an application asking what state something is in
 should not have to know the answer to ask.
 
+**The live codec, chroma and depth are there for the same reason**, and they are the half the
+settings genuinely cannot express: a seated guest may ask for a different codec or a different
+depth mid-session and the host rebuilds the encoder to match ([05 §6.1](05-host.md)), so what
+the configuration holds is what was asked for at the start and what this holds is what is
+coming out now. `codec` and `chroma` are enumerations, `ten_bit` is a flag -- **an enumeration
+where the axis can grow and a flag where it cannot**: a codec may gain another entry and chroma
+already has a third layout in wide use, while no encoder on this platform offers a depth above
+ten and one of them cannot express one. All three read zero, zero and clear on a handle that is
+not streaming, the same way the picture's size does, because until then there is nothing
+truthful to report.
+
 **Sound is there for the same reason, and it is the half the settings cannot express.**
 `audio_active` is whether a device is being read right now, which is clear in an empty room
 however sound is configured, and clear when the device could not be opened or has gone away --

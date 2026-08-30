@@ -23,8 +23,38 @@ thing here and the reason this document exists. Hardware that has encoded video 
 can still be out of reach, because the picture has to get to the encoder before the encoder
 matters.
 
-**Codec scope is [00 §D7](00-overview.md): H.264 and HEVC, 8-bit 4:2:0.** A part that encodes
-only VP9 or only AV1 does not host, whatever else it can do.
+**Codec scope is [00 §D7](00-overview.md): H.264 and HEVC, 4:2:0, eight bits by default and ten
+where a guest asks and the part can.** A part that encodes only VP9 or only AV1 does not host,
+whatever else it can do. **Depth does not decide whether a part hosts**, only what it can be
+asked for; §5a is that column.
+
+---
+
+## §1a Colour, measured
+
+Every row here was run on the part named, not read from a support matrix. Two committed probes
+reproduce it: one asks each interface which colour profiles it will encode, the other measures
+what a chroma layout costs against another on the same content.
+
+| | HEVC 10-bit 4:2:0 | HEVC 4:4:4 | H.264 above 8-bit 4:2:0 |
+|---|---|---|---|
+| AMD, RDNA2 | **yes**, both interfaces | **none, at any depth** | no profile exists |
+| Intel, Arc | **yes** | encode-capable, low-power entry point only | no profile exists |
+| NVIDIA, Turing and newer | **yes** | encode-capable | **the driver refuses it** |
+
+Three things follow, and each cost time to establish:
+
+- **Ten-bit 4:2:0 is universal among the parts that host at all**, which is what makes it v1
+  and settled per session rather than a capability a host has to advertise carefully.
+- **4:4:4 is absent from one vendor entirely** -- not a driver gap, no profile in either
+  direction, confirmed through two independent interfaces and on more than one generation. That
+  is why it is out of v1 (D7) rather than merely unimplemented.
+- **H.264 above 8-bit 4:2:0 does not exist to be used.** No profile on the open stack, an
+  outright refusal from the vendor encoder, and the third interface's own headers cannot name
+  one. **Where a part will encode H.264 4:4:4 it will not decode it**, on the same chip, which
+  makes it an encode-only format and therefore not a format.
+
+**A guest's decoder is the other half and is not in these tables**; see [§6](#6-guests).
 
 ---
 
@@ -167,9 +197,18 @@ software otherwise. A guest that cannot decode what it is sent is the one party 
 and it reports that itself ([05 §6.2](05-host.md)); the host is not able to detect it and does
 not try.
 
-The one thing a guest's hardware does decide is **which codec the session uses**, which is
-settled once from what every seated guest declares ([05 §6.1](05-host.md)) and never adapted
-afterwards.
+The one thing a guest's hardware does decide is **which codec and which depth the session
+uses**, settled from what every seated guest declares ([05 §6.1](05-host.md)) and never adapted
+to a seat that arrives later.
+
+**Ten-bit decode is as widely available as HEVC decode itself** -- every part in §3 to §5
+decodes it, and so does software -- so a guest asking for it is not asking for something
+exotic. **4:4:4 decode is not**, which is the other half of why it is out of v1: one vendor
+decodes none of it, and a client meeting a 4:4:4 stream there falls back to software or fails.
+
+**A guest that cannot decode what it is sent is the one party that can tell**, and it says so
+by disconnecting with a decode status rather than by degrading quietly. A host reads that
+status and reports it; it cannot detect the condition itself and does not guess.
 
 ---
 

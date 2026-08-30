@@ -671,7 +671,13 @@ The evidence was already in this section and was read backwards: across 4883 vid
 the flags byte was `0x01` on every one, **including both messages whose first unit was a
 parameter set**. A host that never sets the bit on its own keyframes cannot be describing
 keyframes with it; an eight-bit host never setting a ten-bit flag is exactly what it looks
-like. **We never set it.**
+like.
+
+**Amended 2026-08-30: we set it when, and only when, the stream really is ten-bit.** The rule
+that mattered was never "never set it" but "the bit must describe the pixels": a receiver builds
+its decoder from this before parsing any bitstream, so a bit that disagrees with the stream
+fails every picture whichever way it disagrees. An eight-bit stream still clears it, which is
+every stream until a guest asks otherwise.
 
 Bit 4, called full screen above, has never been observed set either, and now carries the same
 doubt. Nothing turns on it while we leave it clear.
@@ -857,7 +863,18 @@ The flag bits:
 
 **Bit 2 is not 10-bit**, and reading it as such is a mistake that has been made. The base flag at
 bit 3 is set on every offer, so `_flags` of 8 alone is the ordinary case: H.264, 8-bit, 4:2:0.
-10-bit and 4:4:4 are reserved and unused in v1 (D7).
+
+**Both "implies HEVC" notes are the sender's own rule and the receiver enforces it too**, so
+neither is advisory. A host that codes what these name promotes the codec with them rather than
+honouring one and not the other; a peer asking for depth on H.264 is asking for something no
+hardware produces.
+
+**4:4:4 is read and refused, 10-bit is read and honoured** (D7, from 2026-08-30). A guest
+declaring bit 4 gets a ten-bit stream where the built encoder can produce one and a refusal
+naming that encoder where it cannot. A guest declaring bit 1 is always refused, and the refusal
+is the honest answer rather than silence: a peer builds one decoder from what it declared and
+does not switch on what arrives, so a request treated as granted leaves it failing every
+picture.
 
 ## §12 Session lifecycle
 

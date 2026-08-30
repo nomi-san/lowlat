@@ -1291,6 +1291,69 @@ decides what to do with them.
 
 ---
 
+## Phase 11.5 - Ten-bit colour
+
+**Its own phase rather than a fifth Phase 11 item.** It spans capture, both conversion tiers,
+three encoder backends, the parameter sets, the wire and the boundary, which is wider than
+anything else in that phase and shares no failure mode with multi-guest delivery. Folding it in
+would also stop Phase 11 closing until this works, and the two have no reason to block each
+other.
+
+**The motivation is that the bits are already being thrown away.** The compositor scans out
+`ABGR2101010` for the ordinary desktop ([07 §3.3](07-platforms.md)) and the conversion reads it
+through a sampler, which normalises any depth to float. The loss happens at the write, where
+eight-bit targets are the only thing the shader can address.
+
+- [ ] **The conversion writes ten-bit targets.** A second compiled variant of the one shader
+  rather than a second shader: a storage image's format qualifier is static, so `r8`/`rg8`
+  cannot become `r16`/`rg16` under a push constant. The build already selects variants by
+  definition for the two interfaces; depth is another. Limited-range constants move to the
+  ten-bit set in [05 §3](05-host.md), and the ordered dither that exists to hide a two-bit
+  reduction is compiled out rather than left computing zero.
+  - **The picture is ten bits in the high bits of sixteen** on every interface here. A
+    normalised store of `value / 1023` lands in the low bits, which is the opposite, and the
+    result decodes cleanly and renders with a colour cast. This is the item's real risk and it
+    has no symptom on the wire.
+- [ ] **The plane path stops being written around one layout.** Allocation, plane binding,
+  export and readback are shaped for 8-bit 4:2:0 in both conversion tiers. Parameterise them
+  over component size rather than adding a parallel copy. **Offsets are asked, never
+  computed** ([07 §3](07-platforms.md)): a driver here places the colour plane past the
+  obvious arithmetic and no unit test can tell a wrong offset from a right one.
+- [ ] **Each backend encodes Main10, or says it cannot.** Surface formats and profile
+  selection per backend, and a capability query whose answer is reported rather than assumed.
+- [ ] **The depth is negotiated, not configured.** A guest declares it, the consensus is the
+  intersection across seated guests, and a reinitialization request rebuilds the encoder --
+  the path the codec switch already uses ([05 §6.1](05-host.md)). **No host setting and no new
+  boundary field**: 8-bit is what a session runs at until a guest asks otherwise.
+  - The set of capabilities a pipeline cannot emit **stops being a constant** and becomes a
+    function of the encoder actually built, so a refusal can name the backend that refused
+    instead of asserting a fixed answer.
+- [ ] **The wire depth bit is set when the stream is ten-bit** ([01 §11.3](01-protocol.md)).
+  The two tests asserting it is never set become conditional rather than being deleted.
+- [ ] **`lowlat_host_status` reports the live codec, chroma and depth** ([06 §status](06-api.md)),
+  read from the running encoder rather than from the configuration, because a guest's request
+  moves them mid-session.
+- [ ] **The host reads the disconnect status a peer sends** ([01 §11](01-protocol.md)). It is
+  parsed and discarded today, so a guest leaving because it could not decode is
+  indistinguishable from one that closed its window. Ten-bit is what makes this load-bearing:
+  a depth a peer cannot decode is reported by the peer and by nothing else.
+
+**Gate:**
+
+1. **Decoded pixels match a ten-bit source on every backend that claims the depth**, with a
+   count check that as many pictures were decoded as were submitted. An aggregate over zero
+   pictures has scored well here before.
+2. **Two decoder families stream ten-bit HEVC end to end.** One family passing has already
+   proved insufficient once: an eight-bit stream carrying the depth bit failed on exactly one
+   decoder family and presented as a peer-specific defect.
+3. **A peer that cannot decode is named, not merely gone.** The status it disconnects with is
+   read and reported.
+4. **A guest asking for a depth the built encoder cannot emit is refused with the backend
+   named**, verified by forcing the refusal rather than by reading the code.
+5. **Status reports the live triple across a mid-session change**, read while it runs.
+
+---
+
 ## Phase 12 - Daemon and tray
 
 - [ ] `lowlatd` as a system service, with the unit file and device access rules.
@@ -1309,6 +1372,46 @@ decides what to do with them.
 
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
+
+- 2026-08-30: **Ten-bit is v1 on HEVC and 4:4:4 is out, both decided from measurement.** D7 is
+  rewritten and Phase 11.5 is added.
+
+  **Ten-bit is in because the loss is already happening.** The display hands us ten bits for
+  the ordinary desktop and the conversion discards them at the write; every part that can host
+  here encodes and decodes HEVC Main10, and on the device where the third backend matters the
+  conversion can still write the encoder's own picture at ten bits, so nothing about that
+  arrangement is given up. It is **negotiated rather than configured**: a guest declares the
+  depth, the consensus decides, and a session runs eight-bit until one asks. No host setting
+  and no new boundary field -- but `lowlat_host_status` gains the live codec, chroma and depth,
+  because a guest's request moves them while the stream runs and the configuration only ever
+  held what was asked.
+
+  **4:4:4 is out, and the numbers are recorded so the question is not re-opened from
+  intuition.** Measured on the vendor backend at 1080p over 2000 pictures: **0.22 ms a picture
+  (1.09x) and 1.39x the bytes**. The time is nearly free; the bandwidth is not, and at a real
+  ceiling it stops being bandwidth and becomes picture quality, because the rate control spends
+  the budget it has on twice the chroma. That points the same way the quantiser floor does in
+  [05 §4.1](05-host.md), backwards.
+
+  **What settles it is not the cost but the coverage.** One of the three encoders here produces
+  no 4:4:4 at any depth -- no profile on either entrypoint, and the same refusal through a
+  second interface. The encoder follows the display and D11 forbids adapting an announced
+  format for a later seat, so a host that offered 4:4:4 and then had its captured output moved
+  to that device would have to **end the session** rather than degrade. Offering it would mean
+  gating on every encoder a host could select, not the one it is using.
+
+  Two earlier claims are withdrawn with this entry, because both were wrong in ways worth not
+  repeating. **The often-quoted "4:4:4 triples encode time" is from the other platform** and
+  does not transfer: there it also loses encode overlap, because the encoder reads the
+  capture's own staging surface; here the overlap comes from a per-slot ring and is unaffected.
+  And **4:4:4 is not "a branch in the existing shader"** -- the reasoning came from the decode
+  direction, where a sampler hides subsampling entirely and the layout is a texture dimension.
+  Writing is not symmetric: the two chroma layouts differ in kind rather than in size, so it
+  needs its own compiled variant exactly as depth does.
+
+  Neither is closed forever. Ten-bit generalises the plane path over component size, and after
+  that 4:4:4 is close to the shader body plus the coverage gate -- which is the order to do
+  them in if it is ever revisited.
 
 - 2026-08-27: **The software encoder is dropped, and the reason is that it was never the
   floor.** It was carried as the path for a machine with no hardware encode and as the one
