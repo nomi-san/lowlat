@@ -607,6 +607,11 @@ pub struct Caps {
     /// Chroma at full resolution. Asked here because it is a capability, not
     /// because anything ships it; see [`Chroma`].
     pub yuv444: bool,
+    /// How many encoder engines the part carries. Asked because the one
+    /// latency feature the newer interface adds -- split encode -- exists
+    /// only on parts with more than one, and a backend that never asks
+    /// cannot say whether the knob it is missing was ever usable.
+    pub engines: u32,
 }
 
 /// An open encode session.
@@ -702,6 +707,10 @@ impl Session<'_> {
                 .unsigned_abs(),
             ten_bit: self.cap(codec, f::NV_ENC_CAPS_SUPPORT_10BIT_ENCODE)? != 0,
             yuv444: self.cap(codec, f::NV_ENC_CAPS_SUPPORT_YUV444_ENCODE)? != 0,
+            engines: self
+                .cap(codec, f::NV_ENC_CAPS_NUM_ENCODER_ENGINES)?
+                .max(0)
+                .unsigned_abs(),
         })
     }
 
@@ -811,7 +820,7 @@ impl Depth {
     }
 
     /// Bytes one sample occupies in the picture handed over.
-    const fn bytes_per_sample(self) -> usize {
+    pub const fn bytes_per_sample(self) -> usize {
         match self {
             Self::Eight => 1,
             Self::Ten => 2,

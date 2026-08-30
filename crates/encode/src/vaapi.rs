@@ -54,6 +54,20 @@ type GetConfigAttributes = unsafe extern "C" fn(
     *mut VAConfigAttrib,
     c_int,
 ) -> VAStatus;
+/// What layouts a configuration will bind as a surface, asked of the driver
+/// rather than read off a support matrix. The count is in/out: a null list
+/// makes the call report the number of entries, and the second call fills
+/// them.
+///
+/// **Probe-only for now**: the 4:4:4 path this answers for is not emitted
+/// (D7), so nothing in a shipped build calls it.
+#[cfg(test)]
+type QuerySurfaceAttributes = unsafe extern "C" fn(
+    VADisplay,
+    VAConfigID,
+    *mut VASurfaceAttrib,
+    *mut c_uint,
+) -> VAStatus;
 type CreateConfig = unsafe extern "C" fn(
     VADisplay,
     VAProfile,
@@ -213,6 +227,22 @@ const fn runtime_format(ten_bit: bool) -> u32 {
     }
 }
 
+/// The same, for a full-resolution-chroma configuration.
+///
+/// Kept beside its 4:2:0 twin rather than folded into it, because nothing
+/// shipped uses this and the two questions must not share an answer by
+/// accident: a device offering 4:4:4 profiles that takes only 4:2:0 surfaces
+/// is a device this cannot serve, and folding the constants would read that
+/// as capable.
+#[cfg(test)]
+const fn runtime_format_444(ten_bit: bool) -> u32 {
+    if ten_bit {
+        crate::ffi::va::VA_RT_FORMAT_YUV444_10
+    } else {
+        crate::ffi::va::VA_RT_FORMAT_YUV444
+    }
+}
+
 /// What an encoder codes with, which is the codec and that codec's parameters
 /// in one value.
 ///
@@ -278,6 +308,10 @@ pub struct Vaapi {
     query_config_entrypoints: QueryConfigEntrypoints,
     error_str: ErrorStr,
     get_config_attributes: GetConfigAttributes,
+    /// Probe-only, like the type: loaded because the 4:4:4 surface question
+    /// exists, not because anything shipped asks it.
+    #[cfg(test)]
+    query_surface_attributes: QuerySurfaceAttributes,
     create_config: CreateConfig,
     destroy_config: DestroyConfig,
     create_surfaces: CreateSurfaces,
@@ -338,6 +372,10 @@ impl Vaapi {
                 error_str: libva.symbol(c"vaErrorStr").ok_or(Error::MissingSymbol)?,
                 get_config_attributes: libva
                     .symbol(c"vaGetConfigAttributes")
+                    .ok_or(Error::MissingSymbol)?,
+                #[cfg(test)]
+                query_surface_attributes: libva
+                    .symbol(c"vaQuerySurfaceAttributes")
                     .ok_or(Error::MissingSymbol)?,
                 create_config: libva
                     .symbol(c"vaCreateConfig")
@@ -527,6 +565,190 @@ impl Display<'_> {
         Ok([VAEntrypointEncSlice, VAEntrypointEncSliceLP]
             .into_iter()
             .find(|entrypoint| offered.contains(entrypoint)))
+    }
+
+    /// The profile this driver would code 4:4:4 with, if any.
+    ///
+    /// **Not reachable through [`Display::encode_target_at`]**, which names
+    /// the 4:2:0 profiles only, because 4:4:4 is not emitted and the question
+    /// is whether it ever could be. Asked by the surface probe; a device
+    /// without the profile is a refusal, exactly as a missing depth is.
+    #[cfg(test)]
+    fn encode_target_444(&self, ten_bit: bool) -> Result<(VAProfile, VAEntrypoint)> {
+        let wanted: &[VAProfile] = if ten_bit {
+            &[crate::ffi::va::VAProfileHEVCMain444_10]
+        } else {
+            &[crate::ffi::va::VAProfileHEVCMain444]
+        };
+        let mut profiles = vec![0 as VAProfile; self.max_profiles()?];
+        let mut found: c_int = 0;
+        // SAFETY: the buffer is writable for the length the interface was told
+        // about, and the count is written back.
+        let status = unsafe {
+            (self.va.query_config_profiles)(self.raw, profiles.as_mut_ptr(), &raw mut found)
+        };
+        self.va.check(status)?;
+        let available = profiles.get(..count(found)).unwrap_or(&[]);
+
+        for wanted in wanted {
+            if !available.contains(wanted) {
+                continue;
+            }
+            if let Some(entrypoint) = self.encode_entrypoint(*wanted)? {
+                return Ok((*wanted, entrypoint));
+            }
+        }
+        Err(Error::NoEncoder)
+    }
+
+    /// The capabilities of a 4:4:4 configuration, asked of the device.
+    ///
+    /// The shipped path asks [`Display::caps_at`]; this asks the profile that
+    /// path does not name. The runtime-format check is the 4:4:4 one, so a
+    /// device that lists the profile but takes only 4:2:0 surfaces reports a
+    /// refusal rather than a configuration that cannot be built.
+    #[cfg(test)]
+    fn caps_444(&self, ten_bit: bool) -> Result<Caps> {
+        let (profile, entrypoint) = self.encode_target_444(ten_bit)?;
+        let mut attribs = [
+            VAConfigAttrib {
+                type_: VAConfigAttribRTFormat,
+                value: 0,
+            },
+            VAConfigAttrib {
+                type_: VAConfigAttribRateControl,
+                value: 0,
+            },
+            VAConfigAttrib {
+                type_: VAConfigAttribEncPackedHeaders,
+                value: 0,
+            },
+            VAConfigAttrib {
+                type_: crate::ffi::va::VAConfigAttribEncQualityRange,
+                value: 0,
+            },
+        ];
+        // SAFETY: the array is writable for the length passed.
+        let status = unsafe {
+            (self.va.get_config_attributes)(
+                self.raw,
+                profile,
+                entrypoint,
+                attribs.as_mut_ptr(),
+                c_int::try_from(attribs.len()).unwrap_or(0),
+            )
+        };
+        self.va.check(status)?;
+
+        let value = |attrib: &VAConfigAttrib| {
+            if attrib.value == VA_ATTRIB_NOT_SUPPORTED {
+                0
+            } else {
+                attrib.value
+            }
+        };
+        if value(&attribs[0]) & runtime_format_444(ten_bit) == 0 {
+            return Err(Error::NoEncoder);
+        }
+        Ok(Caps {
+            profile,
+            entrypoint,
+            ten_bit,
+            rate_control: value(&attribs[1]),
+            packed_headers: value(&attribs[2]),
+            quality_range: value(&attribs[3]),
+        })
+    }
+
+    /// What the driver will bind as an encode surface under a configuration.
+    ///
+    /// **The 4:4:4 question the shipped path cannot answer, and the reason
+    /// this method exists.** The conversion writes the layout the encoder
+    /// reads, so the four-character codes named here decide whether a 4:4:4
+    /// path is a second shader with a third plane or something else entirely.
+    /// Asked against a built configuration because the driver's answer is per
+    /// profile and entry point, not a global list.
+    ///
+    /// The runtime format is a parameter rather than a constant for the same
+    /// reason the probe asks both: the 4:4:4 answer is only readable next to
+    /// the 4:2:0 one the shipped path already uses, and the two must come
+    /// from the same call.
+    #[cfg(test)]
+    fn surface_attributes(
+        &self,
+        caps: Caps,
+        rt_format: u32,
+    ) -> Result<Vec<VASurfaceAttrib>> {
+        let mut wanted = [
+            VAConfigAttrib {
+                type_: VAConfigAttribRTFormat,
+                value: rt_format,
+            },
+            VAConfigAttrib {
+                type_: VAConfigAttribRateControl,
+                value: if caps.rate_control & VA_RC_VBR != 0 {
+                    VA_RC_VBR
+                } else if caps.rate_control & VA_RC_CBR != 0 {
+                    VA_RC_CBR
+                } else {
+                    VA_RC_CQP
+                },
+            },
+        ];
+
+        let mut config: VAConfigID = 0;
+        // SAFETY: the array is readable for the length passed and the output
+        // is a live local.
+        let status = unsafe {
+            (self.va.create_config)(
+                self.raw,
+                caps.profile,
+                caps.entrypoint,
+                wanted.as_mut_ptr(),
+                c_int::try_from(wanted.len()).unwrap_or(0),
+                &raw mut config,
+            )
+        };
+        self.va.check(status)?;
+
+        let mut count: c_uint = 0;
+        // SAFETY: a null list makes the call report the count it would fill.
+        let status = unsafe {
+            (self.va.query_surface_attributes)(
+                self.raw,
+                config,
+                core::ptr::null_mut(),
+                &raw mut count,
+            )
+        };
+        if let Err(error) = self.va.check(status) {
+            // SAFETY: created above and owned by this scope until the destroy.
+            unsafe { (self.va.destroy_config)(self.raw, config) };
+            return Err(error);
+        }
+
+        let mut list = vec![
+            // SAFETY: the interface writes every field it reports.
+            unsafe { core::mem::zeroed::<VASurfaceAttrib>() };
+            usize::try_from(count).unwrap_or(0)
+        ];
+        // SAFETY: the list is writable for its length, which is the count the
+        // driver reported for this configuration, and the count is read back.
+        let status = unsafe {
+            (self.va.query_surface_attributes)(
+                self.raw,
+                config,
+                list.as_mut_ptr(),
+                &raw mut count,
+            )
+        };
+        let result = self.va.check(status);
+        // SAFETY: created above; destroyed once, after the last query that
+        // names it.
+        unsafe { (self.va.destroy_config)(self.raw, config) };
+        result?;
+        list.truncate(usize::try_from(count).unwrap_or(0));
+        Ok(list)
     }
 }
 
@@ -954,6 +1176,198 @@ mod tests {
                 .is_none(),
             "the driver claims an encode entry point for no profile at all"
         );
+    }
+
+    /// What layouts a device will bind as a 4:4:4 encode surface, asked of
+    /// the driver rather than read off a support matrix.
+    ///
+    /// **The question the 4:4:4 decision needs answered before any code.**
+    /// The conversion writes the layout the encoder reads, so the
+    /// four-character codes named here decide whether a 4:4:4 path is a
+    /// second shader with a third plane or something else entirely. The
+    /// 4:2:0 answers come back from the same call, so the comparison cannot
+    /// drift. The memory types say whether a 4:4:4 surface can be imported
+    /// through DRM prime at all; the shipped path's zero copy depends on it.
+    #[test]
+    #[ignore = "requires the open-stack driver"]
+    fn the_444_surface_layouts_are_what_the_driver_says() {
+        let va = Vaapi::load().expect("runtime");
+
+        // Every render node, because the question is per device and the two
+        // cards here do not answer the same. An explicit node narrows it.
+        let mut nodes = Vec::new();
+        if let Ok(named) = std::env::var("LOWLAT_VAAPI_NODE") {
+            nodes.push(named);
+        } else {
+            let found = std::fs::read_dir("/dev/dri").expect("no /dev/dri");
+            nodes = found
+                .flatten()
+                .map(|entry| entry.path().display().to_string())
+                .filter(|path| path.contains("renderD"))
+                .collect();
+            nodes.sort();
+        }
+
+        for node in nodes {
+            let path = CString::new(node.as_str()).expect("a node path with no interior nul");
+            let Ok(display) = va.open(&path) else {
+                println!("{node}: does not open");
+                continue;
+            };
+            println!("{node} (display interface {})", display.version().0);
+            for ten_bit in [false, true] {
+                let depth = if ten_bit { "10-bit" } else { "8-bit" };
+                // The shipped path, as the cross-check the 4:4:4 answers are
+                // read against.
+                match display.caps_at(Codec::H265, ten_bit) {
+                    Ok(caps) => {
+                        println!(
+                            "  4:2:0 {depth}: {} through {}",
+                            profile_name(caps.profile),
+                            entrypoint_name(caps.entrypoint)
+                        );
+                        match display.surface_attributes(caps, runtime_format(ten_bit)) {
+                            Ok(attribs) => print_surface_attributes(&attribs),
+                            Err(error) => println!("    surface attributes refused: {error}"),
+                        }
+                    }
+                    Err(error) => println!("  4:2:0 {depth}: no encoder ({error})"),
+                }
+                match display.caps_444(ten_bit) {
+                    Ok(caps) => {
+                        println!(
+                            "  4:4:4 {depth}: {} through {}",
+                            profile_name(caps.profile),
+                            entrypoint_name(caps.entrypoint)
+                        );
+                        match display.surface_attributes(caps, runtime_format_444(ten_bit)) {
+                            Ok(attribs) => print_surface_attributes(&attribs),
+                            Err(error) => println!("    surface attributes refused: {error}"),
+                        }
+                    }
+                    Err(error) => println!("  4:4:4 {depth}: no encoder ({error})"),
+                }
+            }
+        }
+    }
+
+    /// One attribute line, with the values this question cares about decoded.
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "the driver reports these values through a signed field; the bits are what matter"
+    )]
+    #[expect(
+        non_upper_case_globals,
+        reason = "the constants keep the vendored interface's C naming"
+    )]
+    fn print_surface_attributes(attribs: &[VASurfaceAttrib]) {
+        use crate::ffi::va::{
+            VASurfaceAttribExternalBufferDescriptor, VASurfaceAttribMaxHeight,
+            VASurfaceAttribMaxWidth, VASurfaceAttribMemoryType, VASurfaceAttribMinHeight,
+            VASurfaceAttribMinWidth, VASurfaceAttribPixelFormat, VASurfaceAttribUsageHint,
+        };
+        for attrib in attribs {
+            match attrib.type_ {
+                VASurfaceAttribPixelFormat => {
+                    println!("    pixel format {}", fourcc(int(attrib)))
+                }
+                VASurfaceAttribMinWidth => println!("    min width {}", int(attrib)),
+                VASurfaceAttribMaxWidth => println!("    max width {}", int(attrib)),
+                VASurfaceAttribMinHeight => println!("    min height {}", int(attrib)),
+                VASurfaceAttribMaxHeight => println!("    max height {}", int(attrib)),
+                VASurfaceAttribMemoryType => {
+                    println!("    memory types {}", memory_types(int(attrib) as u32))
+                }
+                VASurfaceAttribExternalBufferDescriptor => {
+                    println!("    external buffer descriptor")
+                }
+                VASurfaceAttribUsageHint => println!("    usage hint {}", int(attrib)),
+                other => println!("    attribute {other}"),
+            }
+        }
+    }
+
+    /// The integer an attribute was reported as.
+    ///
+    /// **A union read, and the only one this test makes.** The driver fills
+    /// the union as an integer and nothing here reads it as anything else.
+    fn int(attrib: &VASurfaceAttrib) -> i32 {
+        // SAFETY: the driver sets the type tag to integer and writes this
+        // member; the same tag is how each caller chose this helper.
+        unsafe { attrib.value.value.i }
+    }
+
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "the fourcc travels through a signed field; the bytes are what matter"
+    )]
+    fn fourcc(value: i32) -> String {
+        let bytes = (value as u32).to_le_bytes();
+        let mut out = String::with_capacity(4);
+        for byte in bytes {
+            out.push(if (0x20..=0x7e).contains(&byte) {
+                byte as char
+            } else {
+                '?'
+            });
+        }
+        out
+    }
+
+    /// Which import paths a surface takes, decoded rather than printed as a
+    /// word.
+    fn memory_types(bits: u32) -> String {
+        use crate::ffi::va::{
+            VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME, VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
+            VA_SURFACE_ATTRIB_MEM_TYPE_KERNEL_DRM, VA_SURFACE_ATTRIB_MEM_TYPE_USER_PTR,
+            VA_SURFACE_ATTRIB_MEM_TYPE_V4L2, VA_SURFACE_ATTRIB_MEM_TYPE_VA,
+        };
+        let names = [
+            (VA_SURFACE_ATTRIB_MEM_TYPE_VA, "va"),
+            (VA_SURFACE_ATTRIB_MEM_TYPE_V4L2, "v4l2"),
+            (VA_SURFACE_ATTRIB_MEM_TYPE_USER_PTR, "user"),
+            (VA_SURFACE_ATTRIB_MEM_TYPE_KERNEL_DRM, "kernel-drm"),
+            (VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME, "drm-prime"),
+            (VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2, "drm-prime-2"),
+        ];
+        let mut out = String::new();
+        for (bit, name) in names {
+            if bits & bit != 0 {
+                if !out.is_empty() {
+                    out.push(' ');
+                }
+                out.push_str(name);
+            }
+        }
+        if out.is_empty() {
+            format!("{bits:#x}")
+        } else {
+            out
+        }
+    }
+
+    fn profile_name(profile: VAProfile) -> String {
+        let named = match profile {
+            crate::ffi::va::VAProfileHEVCMain => "Main",
+            crate::ffi::va::VAProfileHEVCMain10 => "Main10",
+            crate::ffi::va::VAProfileHEVCMain444 => "Main444",
+            crate::ffi::va::VAProfileHEVCMain444_10 => "Main444_10",
+            _ => return profile.to_string(),
+        };
+        named.to_owned()
+    }
+
+    #[expect(
+        non_upper_case_globals,
+        reason = "the constants keep the vendored interface's C naming"
+    )]
+    fn entrypoint_name(entrypoint: VAEntrypoint) -> String {
+        let named = match entrypoint {
+            VAEntrypointEncSlice => "slice",
+            VAEntrypointEncSliceLP => "slice-low-power",
+            _ => return entrypoint.to_string(),
+        };
+        named.to_owned()
     }
 }
 
