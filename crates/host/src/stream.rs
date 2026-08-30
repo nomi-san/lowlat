@@ -503,6 +503,14 @@ pub(crate) struct Shared {
     /// from the generation in the video header; a guest that never noticed
     /// would keep announcing the old one.
     epoch: AtomicU32,
+    /// Whether the encoder behind that epoch codes ten bits a sample.
+    ///
+    /// **Published beside the epoch because it travels with it.** The depth
+    /// is in the video header every frame carries, and a peer builds its
+    /// decoder from that header before parsing anything -- so a guest still
+    /// stamping the old depth after a rebuild describes the stream wrongly to
+    /// every peer, in the one field where being wrong fails every picture.
+    ten_bit: AtomicU32,
 }
 
 /// The pointer as a guest needs to report it, in the captured picture's own
@@ -1021,6 +1029,15 @@ pub struct Config {
     /// costs an order of magnitude more of the uplink.
     pub allow_raw_audio: bool,
     pub codec: Codec,
+    /// Whether the stream codes ten bits a sample.
+    ///
+    /// **Settled by what the seated guests declare, not configured.** One
+    /// encode serves every seat, so a person choosing a depth would be
+    /// choosing for guests whose decoders they cannot see; a session runs
+    /// eight-bit until a guest asks otherwise and the encoder is rebuilt for
+    /// it ([05 §3](../../../docs/05-host.md)). What a host owes instead is the
+    /// truth about what it is producing, which is on the status.
+    pub ten_bit: bool,
     /// Which encoder to build, or **nothing to follow the display**.
     ///
     /// **Following is the right default and choosing is the override.** A
@@ -1205,6 +1222,7 @@ impl Stream {
                 full_fps: config.full_fps,
             }),
             epoch: AtomicU32::new(0),
+            ten_bit: AtomicU32::new(0),
         });
         let (joins, arrivals) = mpsc::channel();
         let (outputs, asked) = mpsc::channel();
@@ -1655,6 +1673,11 @@ impl SeatHold {
     pub fn epoch(&self) -> u32 {
         self.shared.epoch.load(Ordering::Acquire)
     }
+
+    /// Whether the encoder behind the current epoch codes ten bits.
+    pub fn ten_bit(&self) -> bool {
+        self.shared.ten_bit.load(Ordering::Acquire) != 0
+    }
 }
 
 impl Drop for SeatHold {
@@ -1725,7 +1748,9 @@ fn run(
     // different encoder, so the loop can hand this one back and ask for
     // another. The guests outlive that; see [`Roster`].
     let mut roster = Roster::default();
-    let mut previous: Option<Codec> = None;
+    // Codec and depth together: a reconfiguration settles both, so reverting
+    // one and not the other leaves a configuration nobody asked for.
+    let mut previous: Option<(Codec, bool)> = None;
     // **What the capture was on before a guest asked to move it.**
     //
     // Held for the same reason the codec above is: a request that turns out to
@@ -1868,29 +1893,34 @@ fn run(
                     continue;
                 };
                 lowlat_common::log_warn!(
-                    "stream: codec={:?} could not be configured (reason={}), staying on {:?}",
+                    "stream: codec={:?} ten_bit={} could not be configured (reason={}), \
+                     staying on {:?}",
                     config.codec,
+                    config.ten_bit,
                     reason,
                     back
                 );
                 kick_asked(shared, &roster.active, reason);
-                config.codec = back;
+                (config.codec, config.ten_bit) = back;
             }
-            Exit::Rediscover(_) | Exit::Reconfigure(_) => {
+            Exit::Rediscover(_) | Exit::Reconfigure(..) => {
                 // **Disarmed, because the output it was holding worked.** A
                 // run that got this far captured the screen it was asked for,
                 // so a failure later belongs to whatever changed after it and
                 // reverting the output then would move a guest off a screen
                 // that was serving it perfectly well.
                 previous_output = None;
-                if let Exit::Reconfigure(codec) = exit {
+                if let Exit::Reconfigure(codec, ten_bit) = exit {
                     lowlat_common::log_info!(
-                        "stream: reconfiguring codec={:?} -> {:?}",
+                        "stream: reconfiguring codec={:?} -> {:?}, ten_bit={} -> {}",
                         config.codec,
-                        codec
+                        codec,
+                        config.ten_bit,
+                        ten_bit
                     );
-                    previous = Some(config.codec);
+                    previous = Some((config.codec, config.ten_bit));
                     config.codec = codec;
+                    config.ten_bit = ten_bit;
                 } else if let Exit::Rediscover(why) = exit {
                     // What it changed to is not carried: the loop reads it
                     // from the display on the way back in, which is the one
@@ -1905,6 +1935,11 @@ fn run(
                 for guest in &mut roster.guests {
                     guest.mark_skipping();
                 }
+                // Set before the epoch, so a guest that notices the epoch
+                // reads a depth that already belongs to it.
+                shared
+                    .ten_bit
+                    .store(u32::from(config.ten_bit), Ordering::Release);
                 shared.epoch.fetch_add(1, Ordering::Release);
             }
         }
@@ -1919,9 +1954,9 @@ enum Exit {
     /// The encoder could not be built, or stopped working, and the guests are
     /// owed the reason.
     Failed(i32),
-    /// Every seated guest can decode this codec, and at least one asked for a
-    /// configuration the running encoder does not produce.
-    Reconfigure(Codec),
+    /// Every seated guest can decode this codec at this depth, and at least
+    /// one asked for a configuration the running encoder does not produce.
+    Reconfigure(Codec, bool),
     /// What is being captured changed, and the pipeline has to be found again.
     ///
     /// **The encoder is built around one display and cannot follow one.** A
@@ -2090,7 +2125,18 @@ fn occupied_seats(shared: &Shared) -> usize {
 /// **The base flag is not a capability and is not listed here.** It is set on
 /// every declaration and means nothing; testing it as one reports a refusal on
 /// every ordinary request, which is what it did.
-const NOT_EMITTED: u32 = lowlat_core::init::FLAG_COLOR444 | lowlat_core::init::FLAG_10BIT;
+fn not_emitted(codec: Codec) -> u32 {
+    let mut refused = lowlat_core::init::FLAG_COLOR444;
+    // **Ten bits is HEVC only, and that is the hardware rather than a
+    // policy.** No encoder on any of the three interfaces offers an H.264
+    // profile above eight bits and one of them cannot express one at all, so a
+    // peer asking for depth without asking for the codec is asking for
+    // something nothing here can produce.
+    if codec == Codec::H264 {
+        refused |= lowlat_core::init::FLAG_10BIT;
+    }
+    refused
+}
 
 /// How many pictures the third encoder's ring holds.
 ///
@@ -2118,6 +2164,11 @@ fn run_vulkan(
     let codec = match config.codec {
         Codec::H264 => lowlat_encode::vulkan::Codec::H264,
         Codec::H265 => lowlat_encode::vulkan::Codec::H265,
+    };
+    let depth = if config.ten_bit {
+        lowlat_encode::vulkan::Depth::Ten
+    } else {
+        lowlat_encode::vulkan::Depth::Eight
     };
     // The display decides the size, exactly as on the other paths.
     let (width, height) = match await_display(config.output.as_deref()) {
@@ -2169,7 +2220,7 @@ fn run_vulkan(
             return None;
         }
     };
-    let caps = match device.caps(codec) {
+    let caps = match device.caps_at(codec, depth) {
         Ok(caps) => caps,
         Err(error) => {
             lowlat_common::log_info!(
@@ -2327,7 +2378,7 @@ fn run_open(
                 log2_max_poc_lsb_minus4: 4,
                 max_num_ref_frames: 1,
                 transform_depth: lowlat_encode::h265::TRANSFORM_HIERARCHY_DEPTH,
-                bit_depth_minus8: 0,
+                bit_depth_minus8: if config.ten_bit { 2 } else { 0 },
             }),
         ),
     };
@@ -2364,7 +2415,7 @@ fn run_open(
         lowlat_common::log_error!("stream: render node could not be opened");
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
-    let Ok(caps) = display.caps(codec) else {
+    let Ok(caps) = display.caps_at(codec, config.ten_bit) else {
         lowlat_common::log_error!("stream: render node reports no encode for codec={codec:?}");
         return Exit::Failed(status::ENCODER_CAPABILITIES);
     };
@@ -2508,7 +2559,11 @@ fn run_vendor(
             min_qp: config.quality.min_qp(),
             // The wire carries 4:2:0 only (00-overview.md D7).
             chroma: lowlat_encode::nvenc::Chroma::Yuv420,
-            depth: lowlat_encode::nvenc::Depth::Eight,
+            depth: if config.ten_bit {
+                lowlat_encode::nvenc::Depth::Ten
+            } else {
+                lowlat_encode::nvenc::Depth::Eight
+            },
         },
     ) else {
         lowlat_common::log_error!("stream: encoder could not be configured");
@@ -3126,14 +3181,22 @@ fn encode_loop<E: Encoder + FromDevice>(
         } else {
             Codec::H264
         };
-        let disagrees = asked != 0 && wanted != config.codec;
+        // **Granted only where the codec can carry it.** The depth is refused
+        // rather than silently dropped on H.264, because a peer builds one
+        // decoder from what it declared and does not switch on what arrives.
+        let wanted_ten_bit =
+            asked & lowlat_core::init::FLAG_10BIT != 0 && not_emitted(wanted) & lowlat_core::init::FLAG_10BIT == 0;
+        let disagrees =
+            asked != 0 && (wanted != config.codec || wanted_ten_bit != config.ten_bit);
         if reconfigure_asked(shared, active) || disagrees {
-            if asked & NOT_EMITTED != 0 {
+            let refused = asked & not_emitted(wanted);
+            if refused != 0 {
                 lowlat_common::log_warn!(
-                    "stream: guests asked for flags={:#x} and this pipeline emits 8-bit 4:2:0, \
-                     so {:#x} of it is not granted",
+                    "stream: guests asked for flags={:#x} and a {:?} pipeline cannot emit \
+                     {:#x} of it, so it is not granted",
                     asked,
-                    asked & NOT_EMITTED
+                    wanted,
+                    refused
                 );
             }
             // **The whole decision on one line.** What every seat agreed on,
@@ -3142,15 +3205,18 @@ fn encode_loop<E: Encoder + FromDevice>(
             // nothing, a request that is outvoted, and a declaration nobody
             // asked about look identical from the outside otherwise.
             lowlat_common::log_info!(
-                "stream: reinit {}, consensus={:#x} over {} seat(s), codec={:?} -> {:?}",
+                "stream: reinit {}, consensus={:#x} over {} seat(s), codec={:?} -> {:?}, \
+                 ten_bit={} -> {}",
                 if disagrees { "by declaration" } else { "asked" },
                 asked,
                 active.len(),
                 config.codec,
-                wanted
+                wanted,
+                config.ten_bit,
+                wanted_ten_bit
             );
-            if wanted != config.codec {
-                return Exit::Reconfigure(wanted);
+            if wanted != config.codec || wanted_ten_bit != config.ten_bit {
+                return Exit::Reconfigure(wanted, wanted_ten_bit);
             }
             // Nothing here this encoder does not already produce, so what the
             // request is owed is what a reinitialization would have given it:
@@ -4187,6 +4253,7 @@ mod tests {
     fn a_live_video_change_is_taken_once_and_then_not_again() {
         let stream = Stream::start(Config {
             quality: lowlat_encode::Quality::default(),
+            ten_bit: false,
             audio: None,
             convert: None,
             prefer_vulkan: false,
@@ -4325,6 +4392,7 @@ mod tests {
         /// that ring still has room, so each path can be reached on its own.
         fn with_pool(slots: usize) -> Self {
             let config = Config {
+                ten_bit: false,
                 audio: None,
                 convert: None,
                 prefer_vulkan: false,
@@ -4372,6 +4440,7 @@ mod tests {
                 video_asked: AtomicU32::new(0),
                 video: std::sync::Mutex::new(LiveVideo::default()),
                 epoch: AtomicU32::new(0),
+                ten_bit: AtomicU32::new(0),
             });
             let (joins, arrivals) = mpsc::channel();
             let forced = Arc::new(AtomicU32::new(0));
@@ -4441,6 +4510,7 @@ mod tests {
             video_asked: AtomicU32::new(0),
             video: std::sync::Mutex::new(LiveVideo::default()),
             epoch: AtomicU32::new(0),
+            ten_bit: AtomicU32::new(0),
         });
         let (joins, arrivals) = mpsc::channel();
         let stream = Stream {
@@ -4455,6 +4525,7 @@ mod tests {
     fn test_config(codec: Codec) -> Config {
         Config {
             quality: lowlat_encode::Quality::default(),
+            ten_bit: false,
             audio: None,
             convert: None,
             prefer_vulkan: false,
@@ -4655,6 +4726,7 @@ mod tests {
             video_asked: AtomicU32::new(0),
             video: std::sync::Mutex::new(LiveVideo::default()),
             epoch: AtomicU32::new(0),
+            ten_bit: AtomicU32::new(0),
         });
         let (outputs, asked) = mpsc::channel();
         let stream = Stream {
@@ -5449,20 +5521,40 @@ mod tests {
     /// it did until a live run showed the line.
     #[test]
     fn the_base_flag_is_not_a_capability_that_can_be_refused() {
-        assert_eq!(
-            lowlat_core::init::FLAG_BASE & NOT_EMITTED,
+        for codec in [Codec::H264, Codec::H265] {
+            assert_eq!(
+                lowlat_core::init::FLAG_BASE & not_emitted(codec),
+                0,
+                "the always-set flag is being read as a request on {codec:?}"
+            );
+            let ordinary = lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC;
+            assert_eq!(
+                ordinary & not_emitted(codec),
+                0,
+                "an ordinary request for the second codec reports something ungranted"
+            );
+            // Full-resolution chroma is not emitted at all, on either codec.
+            assert_ne!(lowlat_core::init::FLAG_COLOR444 & not_emitted(codec), 0);
+        }
+    }
+
+    /// **Ten bits is refused on one codec and granted on the other**, and that
+    /// is the hardware rather than a policy: no encoder on any of the three
+    /// interfaces offers an H.264 profile above eight bits, and one of them
+    /// cannot describe one at all. Granting it there would leave a peer
+    /// building a decoder for a stream nothing can produce.
+    #[test]
+    fn ten_bits_is_refused_on_the_codec_that_cannot_carry_it() {
+        assert_ne!(
+            lowlat_core::init::FLAG_10BIT & not_emitted(Codec::H264),
             0,
-            "the always-set flag is being read as a request"
+            "ten bits was granted on a codec with no profile for it"
         );
-        let ordinary = lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC;
         assert_eq!(
-            ordinary & NOT_EMITTED,
+            lowlat_core::init::FLAG_10BIT & not_emitted(Codec::H265),
             0,
-            "an ordinary request for the second codec reports something ungranted"
+            "ten bits was refused on the codec that carries it"
         );
-        // The two that really are not emitted still are.
-        assert_ne!(lowlat_core::init::FLAG_COLOR444 & NOT_EMITTED, 0);
-        assert_ne!(lowlat_core::init::FLAG_10BIT & NOT_EMITTED, 0);
     }
 
     /// **A peer changes what it can decode with a message, not by
@@ -5509,7 +5601,7 @@ mod tests {
         shared.stopping.store(0, Ordering::Release);
         assert_eq!(
             exit,
-            Exit::Reconfigure(Codec::H265),
+            Exit::Reconfigure(Codec::H265, false),
             "the request for the other codec was not answered with one"
         );
 
@@ -5992,6 +6084,7 @@ mod tests {
     fn the_real_encoder_serves_a_seated_guest() {
         let stream = Stream::start(Config {
             quality: lowlat_encode::Quality::default(),
+            ten_bit: false,
             audio: None,
             convert: None,
             prefer_vulkan: false,
@@ -6088,6 +6181,7 @@ mod tests {
             .unwrap_or(1080);
         let stream = Stream::start(Config {
             quality: lowlat_encode::Quality::default(),
+            ten_bit: false,
             audio: None,
             convert: None,
             prefer_vulkan: false,
@@ -6254,6 +6348,7 @@ mod tests {
     /// rate low enough that a guest which never drains runs out of room.
     fn report_stream() -> Stream {
         Stream::start(Config {
+            ten_bit: false,
             audio: None,
             convert: None,
             prefer_vulkan: false,
@@ -6283,6 +6378,7 @@ mod tests {
     fn measure(fps: u32, frames: usize) -> Report {
         let stream = Stream::start(Config {
             quality: lowlat_encode::Quality::default(),
+            ten_bit: false,
             audio: None,
             convert: None,
             prefer_vulkan: false,

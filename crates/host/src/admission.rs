@@ -1555,6 +1555,11 @@ fn follow_epoch(
         return;
     }
     *seen = epoch;
+    // **The depth is taken from the encoder that just replaced the old one**,
+    // not from what this guest was admitted with. A reinitialisation is
+    // exactly when it can change, and the header a peer builds its decoder
+    // from is the only place it is said.
+    packetiser.set_ten_bit(seat.ten_bit());
     packetiser.reconfigured();
     negotiation.encoder_initialised(packetiser.generation());
     lowlat_common::log_info!(

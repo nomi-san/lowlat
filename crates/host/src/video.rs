@@ -23,6 +23,17 @@ pub struct Packetiser {
 }
 
 impl Packetiser {
+    /// Say what depth the pictures now are.
+    ///
+    /// **Called when the encoder is rebuilt, which is the only time it can
+    /// change.** The header is written once here and lent to every frame, so
+    /// a stale value would describe every picture until the next rebuild.
+    pub fn set_ten_bit(&mut self, ten_bit: bool) {
+        // The bytes are rewritten from the header on the next frame, so
+        // recording it here is the whole of the change.
+        self.header.ten_bit = ten_bit;
+    }
+
     /// Begin a stream.
     ///
     /// **The rotation is one-based**, so an unrotated display is
@@ -178,6 +189,32 @@ mod tests {
                 header.ten_bit
             );
         }
+    }
+
+    /// **A rebuilt encoder changes the depth of every frame after it.**
+    ///
+    /// The header is written from one struct and lent to each frame, so a
+    /// depth recorded once and never updated would describe every picture
+    /// until the next rebuild -- and describe them wrongly, in the one field a
+    /// receiver reads before it parses any bitstream.
+    #[test]
+    fn a_rebuild_changes_the_depth_of_later_frames() {
+        let mut packetiser = Packetiser::new(1920, 1080, Rotation::None, false);
+        let unit = coded(32);
+
+        let first = packetiser.frame(&unit, false).expect("framed");
+        assert!(
+            !header_as_a_peer_sees_it(&first).ten_bit,
+            "an eight-bit stream described itself as ten"
+        );
+
+        packetiser.set_ten_bit(true);
+        packetiser.reconfigured();
+        let second = packetiser.frame(&unit, false).expect("framed");
+        assert!(
+            header_as_a_peer_sees_it(&second).ten_bit,
+            "the frames after a rebuild still describe the old depth"
+        );
     }
 
     /// **Upright is one, not zero.** A stream that emitted zero would be

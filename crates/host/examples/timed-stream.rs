@@ -37,6 +37,9 @@ fn main() {
     unsafe { libc::alarm(u32::try_from(seconds).unwrap_or(30) * 2 + 30) };
 
     let stream = Stream::start(Config {
+        // A live-run knob: the depth is otherwise the guests' to settle, and
+        // this probe drives the loop without any.
+        ten_bit: std::env::var("LOWLAT_TEN_BIT").is_ok_and(|v| v != "0"),
         audio: None,
         convert: None,
         prefer_vulkan: false,

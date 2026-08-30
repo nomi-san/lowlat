@@ -438,6 +438,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         servers: stun,
         shared_address_space: flag_set("--shared-address-space"),
         stream: Some(lowlat::stream::Config {
+            // **Not a flag.** The depth is what the seated guests declare, so
+            // the daemon starts eight-bit and the encoder is rebuilt if one
+            // asks for ten; a switch here would choose for guests whose
+            // decoders nobody running the daemon can see.
+            ten_bit: false,
             convert,
             // Prefer the encoder that shares the capture's device, where the
             // device can serve it; the environment (LOWLAT_VULKAN_ENCODE=1)

@@ -1080,6 +1080,10 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
         // A live-run aid, and nothing an application should be able to ask for.
         rumble_probe: false,
         stream: Some(crate::stream::Config {
+            // **Settled by what the guests declare, never configured.** One
+            // encode serves every seat, so a depth chosen here would be chosen
+            // for guests whose decoders an application cannot see.
+            ten_bit: false,
             // **Not exposed at the boundary.** An application has no way to
             // know which interface a machine should use, so the stream
             // follows the device; naming one is the daemon's measurement
