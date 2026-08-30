@@ -1311,36 +1311,60 @@ eight-bit targets are the only thing the shader can address.
   convert to whatever the view was made with. The body stays one file and only the view's
   format moves. It costs a device feature, checked before it is requested; every device here
   offers it, including the software one.*
-- [ ] **The conversion writes ten-bit targets.** The views become the ten-bit formats and the
-  depth reaches the shader beside the dispatch, because the parts that really do differ are
-  arithmetic rather than layout: **the limited-range constants are not the same numbers at the
-  two depths** -- 16 and 235 of 255 do not scale to 64 and 940 of 1023 -- and the summary
-  quantises against a different maximum. The ordered dither that exists to hide a two-bit
-  reduction is skipped rather than left computing zero.
-  - **The picture is ten bits in the high bits of sixteen** on every interface here. A
-    normalised store of `value / 1023` lands in the low bits, which is the opposite, and the
-    result decodes cleanly and renders with a colour cast. This is the item's real risk and it
-    has no symptom on the wire.
-- [ ] **The plane path stops being written around one layout.** Allocation, plane binding,
-  export and readback are shaped for 8-bit 4:2:0 in both conversion tiers. Parameterise them
-  over component size rather than adding a parallel copy. **Offsets are asked, never
-  computed** ([07 §3](07-platforms.md)): a driver here places the colour plane past the
-  obvious arithmetic and no unit test can tell a wrong offset from a right one.
-- [ ] **Each backend encodes Main10, or says it cannot.** Surface formats and profile
-  selection per backend, and a capability query whose answer is reported rather than assumed.
-- [ ] **The depth is negotiated, not configured.** A guest declares it, the consensus is the
+- [x] **The conversion writes ten-bit targets.** *Done 2026-08-30.* The depth reaches the
+  shader beside the dispatch, because the parts that really do differ are arithmetic rather
+  than layout: **the limited-range constants are not the same numbers at the two depths** --
+  16 and 235 of 255 do not scale to 64 and 940 of 1023 -- and the summary quantises against a
+  different maximum, and could not simply widen: four ten-bit samples do not pack into a word,
+  and shifting them by eight anyway makes neighbours cancel in a detector whose whole job is
+  to notice them. The ordered dither is skipped rather than left computing zero.
+  - **The planes are sixteen bits a sample, not the packed ten-bit formats, and the devices
+    decided that.** One part here offers no `R10X6` storage image at all -- either tiling, with
+    or without a transfer usage -- while offering `R16` everywhere, so the shader places the
+    samples in the high ten bits itself rather than this growing a second allocation path for
+    one vendor.
+  - **The views a shader stores through must be the plane formats of the image, and were
+    not.** Both places that built them named eight-bit formats outright, so a ten-bit picture
+    got one byte written into every two-byte sample and half of every row survived. Nothing
+    refused it: the images were the right format, the pitches agreed, and a decoder read the
+    result as a valid ten-bit picture. Now checked by comparing the conversion against a
+    ten-bit reference computed from the definitions.
+- [x] **The plane path stops being written around one layout.** *Done 2026-08-30.* Allocation,
+  plane binding, export and readback are parameterised over the sample size, and the exported
+  descriptor names the depth because **an importer cannot work it out**: a ten-bit frame and an
+  eight-bit one twice as wide have the same pitch and the same plane split, so the wrong
+  four-character code imports cleanly and decodes noise. The GL tier refuses ten bits rather
+  than allocating eight for it.
+  - **The live pipeline allocated its targets through the eight-bit shorthand** whatever depth
+    the stream had settled on, and the encoder then read them two bytes to the sample: the luma
+    came out at half the width it was written and duplicated, and the colour plane was found in
+    the middle of the luma. The depth now travels from the stream to the allocation through one
+    function, because the two are read in different places.
+- [x] **Each backend encodes Main10, or says it cannot.** *Done 2026-08-30, all three, each
+  read back by a decoder that is not this code.* Surface formats and profile selection per
+  backend, and a capability query whose answer is reported rather than assumed.
+  - **The depth is named in three places per backend and the stream is the only proof they
+    agree**: a profile, the codec's own bit-depth field, and the layout the picture is
+    registered or allocated in. Any two agreeing and the third not is a session that builds, an
+    encode that succeeds, and a picture nothing reads.
+  - **The open stack's device was never told the depth**, so it coded eight-bit residuals under
+    sets promising ten. It presents as an intra picture that looks nearly right and predicted
+    ones that walk away from it, and a decode-error count sees none of it. Measured over sixty
+    pictures against the source: **13.1 dB before, 53.9 after**, and the min against the max is
+    the reading -- a run that starts right and ends wrong has a max like a correct one.
+- [x] **The depth is negotiated, not configured.** *Done 2026-08-30.* A guest declares it, the consensus is the
   intersection across seated guests, and a reinitialization request rebuilds the encoder --
   the path the codec switch already uses ([05 §6.1](05-host.md)). **No host setting and no new
   boundary field**: 8-bit is what a session runs at until a guest asks otherwise.
   - The set of capabilities a pipeline cannot emit **stops being a constant** and becomes a
     function of the encoder actually built, so a refusal can name the backend that refused
     instead of asserting a fixed answer.
-- [ ] **The wire depth bit is set when the stream is ten-bit** ([01 §11.3](01-protocol.md)).
+- [x] **The wire depth bit is set when the stream is ten-bit** *(done 2026-08-30)* ([01 §11.3](01-protocol.md)).
   The two tests asserting it is never set become conditional rather than being deleted.
-- [ ] **`lowlat_host_status` reports the live codec, chroma and depth** ([06 §status](06-api.md)),
+- [x] **`lowlat_host_status` reports the live codec, chroma and depth** *(done 2026-08-30)* ([06 §status](06-api.md)),
   read from the running encoder rather than from the configuration, because a guest's request
   moves them mid-session.
-- [ ] **The host reads the disconnect status a peer sends** ([01 §11](01-protocol.md)). It is
+- [x] **The host reads the disconnect status a peer sends** *(done 2026-08-30)* ([01 §11](01-protocol.md)). It is
   parsed and discarded today, so a guest leaving because it could not decode is
   indistinguishable from one that closed its window. Ten-bit is what makes this load-bearing:
   a depth a peer cannot decode is reported by the peer and by nothing else.
