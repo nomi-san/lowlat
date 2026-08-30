@@ -1364,10 +1364,14 @@ eight-bit targets are the only thing the shader can address.
 - [x] **`lowlat_host_status` reports the live codec, chroma and depth** *(done 2026-08-30)* ([06 §status](06-api.md)),
   read from the running encoder rather than from the configuration, because a guest's request
   moves them mid-session.
-- [x] **The host reads the disconnect status a peer sends** *(done 2026-08-30)* ([01 §11](01-protocol.md)). It is
-  parsed and discarded today, so a guest leaving because it could not decode is
-  indistinguishable from one that closed its window. Ten-bit is what makes this load-bearing:
-  a depth a peer cannot decode is reported by the peer and by nothing else.
+- [x] **The host reads the disconnect status a peer sends** *(done 2026-08-30)*
+  ([01 §11](01-protocol.md)). It was parsed and discarded.
+  - *Corrected the same day, by forcing a real client to fail.* This item said a depth a peer
+    cannot decode is reported by the peer and by nothing else. **It is not reported at all.** A
+    peer that leaves because something broke sends nothing and the host learns it from the
+    delivery deadline; a peer that leaves cleanly sends the opcode with the argument **always
+    zero**. The status travels host to peer, not peer to host. Reading the field inbound is
+    still right and costs nothing, but nothing may wait on it.
 
 **Gate:**
 
@@ -1386,13 +1390,19 @@ eight-bit targets are the only thing the shader can address.
    host on all three heads.* One family passing had already proved insufficient once: an
    eight-bit stream carrying the depth bit failed on exactly one decoder family and presented
    as a peer-specific defect.
-3. [ ] **A peer that cannot decode is named, not merely gone.** The status it disconnects with
-   is read and reported.
-   *Mechanism proven, condition not.* Every live session so far has ended `PeerLeft(0)`, which
-   is a peer that simply left, so the value reaches the boundary but nothing has yet left with
-   a decode status. Forcing it needs a peer whose decoder is made to disagree with the stream
-   mid-session rather than one that refuses at the start, because a peer that cannot decode
-   what it asked for never connects.
+3. [x] **What a peer says on its way out is read rather than discarded, and what it does not
+   say is written down.** *Reworded 2026-08-30 after forcing a real client to fail, because as
+   written the item could not pass and would have been chased indefinitely.*
+   It asked that a peer which cannot decode be named rather than merely gone. **A peer does not
+   name itself.** Driven to a decoder it could not build, the reference client logged its own
+   `DECODE_ERR_INIT` and then *skipped the disconnect message altogether*; this host learned of
+   it as `Undeliverable`, from the delivery deadline. A peer that leaves cleanly does send the
+   opcode, with the argument **always zero** -- the reference emits `(10, 0, 0, 0)` and sends
+   nothing at all unless its own status is healthy.
+   So the direction is the other one: a **host** puts a status there to tell a peer why it was
+   ended, and that is read by the far side. Reading it inbound stays, because it costs nothing
+   and a peer is free to send one, but no diagnosis may depend on it -- and a guest that went
+   quiet is diagnosed from the deadline, which is what it was already for.
 4. [x] **A guest asking for a depth this pipeline cannot emit is refused with the reason
    named**, verified by forcing the refusal rather than by reading the code. *Met 2026-08-30
    from a live session: a peer asked to reinitialize with `0x18` -- ten-bit without the codec

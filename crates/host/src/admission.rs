@@ -213,14 +213,25 @@ pub enum Outcome {
     /// and the guest's port and its share of the bitrate budget stay spent
     /// until then. Repeated test connections exhaust capacity that way.
     ///
-    /// **Carries the status the peer left with, and that number is the only
-    /// account of what went wrong at the far end.** A peer is the one party
-    /// that can tell whether its decoder failed, and it says so here rather
-    /// than by degrading quietly: a codec or a colour depth it cannot decode
-    /// arrives as a negative status on this message. Dropping it makes a guest
-    /// that could not read the stream indistinguishable from one that closed
-    /// its window, which is the difference between a diagnosis and a shrug.
-    /// Zero is the ordinary case and means a peer that simply left.
+    /// Carries the status the peer left with, which in practice is zero.
+    ///
+    /// **Corrected 2026-08-30, and the correction is the useful part.** This
+    /// said the number was the far end's account of its own failure -- that a
+    /// peer which could not decode said so here. It does not. Measured against
+    /// a real client made to fail: **a peer that leaves because something broke
+    /// sends nothing at all** and the host learns it from the delivery deadline
+    /// instead, while a peer that leaves cleanly sends this opcode with the
+    /// argument **always zero**. The reference client emits literally
+    /// `(10, 0, 0, 0)` and skips the message entirely unless its own status is
+    /// still healthy.
+    ///
+    /// **The status travels the other way.** A host puts one here to tell a
+    /// peer why it was ended, which is [`Outcome::Kicked`]'s number and is read
+    /// by the far side. Reading the field inbound is still right -- it costs
+    /// nothing, a peer is free to send one, and discarding a field because
+    /// today's peers leave it zero is how a protocol gets read wrong later --
+    /// but it is not a diagnosis of the far end and nothing should wait for
+    /// one.
     PeerLeft(i32),
     /// Connected, then never said what it could decode.
     ///
