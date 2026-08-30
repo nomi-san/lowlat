@@ -135,6 +135,8 @@ fn main() {
     let bytes = match exported.kind {
         Layout::SemiPlanar420 => u64::from(exported.pitch) * u64::from(exported.height) * 3 / 2,
         Layout::Planar444 => u64::from(exported.pitch) * u64::from(exported.height) * 3,
+        // One word per pixel, which the pitch already counts in bytes.
+        Layout::Packed444 => u64::from(exported.pitch) * u64::from(exported.height),
     };
     println!(
         "frame {}x{} {:?} pitch {}, colour at {}, {bytes} bytes",

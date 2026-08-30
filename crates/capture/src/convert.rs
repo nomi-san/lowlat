@@ -50,6 +50,9 @@ const CONVERT: &[u8] = include_bytes!("../shaders/convert.spv");
 /// twice, because a compiler strips an uncalled entry point as dead.
 const CONVERT_444: &[u8] = include_bytes!("../shaders/convert-444.spv");
 
+/// The packed full-chroma entry point, the third body from the same file.
+const CONVERT_PACKED: &[u8] = include_bytes!("../shaders/convert-packed.spv");
+
 /// Invocations per workgroup, per axis. Each one owns a 2x2 block, so a group
 /// covers 16 by 16 pixels.
 const GROUP: u32 = 8;
@@ -200,6 +203,9 @@ pub enum Layout {
     SemiPlanar420,
     /// Luma, blue difference, red difference, each at full resolution.
     Planar444,
+    /// One word per pixel carrying all three, which is the open stack's
+    /// full-chroma surface: AYUV at eight bits, Y410 at ten.
+    Packed444,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -405,6 +411,52 @@ impl core::fmt::Debug for Planar444 {
     }
 }
 
+/// A converted frame in the packed full-chroma layout: one word per pixel
+/// carrying luma and both colour differences.
+///
+/// **One image of plain thirty-two-bit words, not a colour format.** The
+/// packed ten-bit layouts cannot be written as storage images on the parts
+/// seen here, so the shader composes each word itself and the image only
+/// carries it; an importer names the layout from the descriptor, and the
+/// bytes are the same either way.
+pub struct Packed444 {
+    image: vk::Image,
+    pub(crate) memory: vk::DeviceMemory,
+    /// The view the conversion writes through.
+    view: vk::ImageView,
+    pub width: u32,
+    pub height: u32,
+    /// Bytes per row.
+    pub pitch: u32,
+    /// How many bits each sample carries, which is what picks AYUV over Y410.
+    pub depth: Depth,
+}
+
+impl Packed444 {
+    /// This target, by its handles.
+    pub fn target(&self) -> TargetRef {
+        TargetRef {
+            luma_image: self.image,
+            chroma_image: self.image,
+            cr_image: self.image,
+            planes: [self.view, vk::ImageView::null(), vk::ImageView::null()],
+            final_layout: vk::ImageLayout::GENERAL,
+            kind: Layout::Packed444,
+            depth: self.depth,
+        }
+    }
+}
+
+impl core::fmt::Debug for Packed444 {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Packed444")
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("pitch", &self.pitch)
+            .finish_non_exhaustive()
+    }
+}
+
 impl core::fmt::Debug for Nv12 {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Nv12")
@@ -443,6 +495,8 @@ pub struct Converter {
     /// The full-chroma entry point, beside the subsampled one above. The two
     /// share a layout and a descriptor set; only the entry differs.
     pipeline_444: vk::Pipeline,
+    /// The packed full-chroma entry point, third from the same source file.
+    pipeline_packed: vk::Pipeline,
     pool: vk::DescriptorPool,
     commands: vk::CommandPool,
     /// Reset and reused, never recreated.
@@ -611,6 +665,12 @@ impl Converter {
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1)
                 .stage_flags(vk::ShaderStageFlags::COMPUTE),
+            // The packed body's own binding: the same picture, integer-typed.
+            vk::DescriptorSetLayoutBinding::default()
+                .binding(5)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .descriptor_count(1)
+                .stage_flags(vk::ShaderStageFlags::COMPUTE),
         ];
         let layout_info = vk::DescriptorSetLayoutCreateInfo::default().bindings(&bindings);
         // SAFETY: the bindings outlive the call.
@@ -637,6 +697,8 @@ impl Converter {
         // names every stage's entry point main, so the full-chroma function
         // was renamed at compile time and the name here is the same.
         let pipeline_444 = Self::build_pipeline(vk_device, pipeline_layout, CONVERT_444, c"main")?;
+        let pipeline_packed =
+            Self::build_pipeline(vk_device, pipeline_layout, CONVERT_PACKED, c"main")?;
 
         let sizes = [
             vk::DescriptorPoolSize::default()
@@ -644,7 +706,7 @@ impl Converter {
                 .descriptor_count(1),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_IMAGE)
-                .descriptor_count(3),
+                .descriptor_count(4),
             vk::DescriptorPoolSize::default()
                 .ty(vk::DescriptorType::STORAGE_BUFFER)
                 .descriptor_count(1),
@@ -724,6 +786,7 @@ impl Converter {
             pipeline_layout,
             pipeline,
             pipeline_444,
+            pipeline_packed,
             pool,
             commands,
             fence,
@@ -820,6 +883,7 @@ impl Converter {
             vk_device.destroy_descriptor_pool(self.pool, None);
             vk_device.destroy_pipeline(self.pipeline, None);
             vk_device.destroy_pipeline(self.pipeline_444, None);
+            vk_device.destroy_pipeline(self.pipeline_packed, None);
             vk_device.destroy_pipeline_layout(self.pipeline_layout, None);
             vk_device.destroy_descriptor_set_layout(self.layout, None);
             vk_device.destroy_sampler(self.sampler, None);
@@ -1353,6 +1417,104 @@ impl Device {
         }
     }
 
+    /// Allocate a conversion target in the packed full-chroma layout.
+    ///
+    /// One word per pixel for the whole picture, which is the shape the open
+    /// stack's full-chroma surfaces take.
+    pub fn allocate_packed_444(
+        &self,
+        width: u32,
+        height: u32,
+        depth: Depth,
+    ) -> Result<Packed444, Error> {
+        let usage = vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC;
+        // **A plain word format, which is a storage format everywhere.** The
+        // packed colour layouts this stands in for cannot be written directly
+        // on the parts seen here; the shader composes the word and nothing
+        // reads it as colour on this side.
+        let handle_types = self.exportable(vk::Format::R32_UINT, usage, vk::ImageTiling::LINEAR);
+        let image = self.plane_image(width, height, vk::Format::R32_UINT, handle_types)?;
+
+        match self.bind_packed(image, width, height, depth) {
+            Ok(target) => Ok(target),
+            Err(error) => {
+                // SAFETY: created above; binding is what failed.
+                unsafe { self.device.destroy_image(image, None) };
+                Err(error)
+            }
+        }
+    }
+
+    /// Put the one packed plane in its own allocation.
+    fn bind_packed(
+        &self,
+        image: vk::Image,
+        width: u32,
+        height: u32,
+        depth: Depth,
+    ) -> Result<Packed444, Error> {
+        let subresource = vk::ImageSubresource {
+            aspect_mask: vk::ImageAspectFlags::COLOR,
+            mip_level: 0,
+            array_layer: 0,
+        };
+        // SAFETY: the image is this device's and untiled.
+        let layout = unsafe { self.device.get_image_subresource_layout(image, subresource) };
+        let pitch = u32::try_from(layout.row_pitch).map_err(|_| Error::PlanesDisagree)?;
+
+        // SAFETY: the image is this device's.
+        let needs = unsafe { self.device.get_image_memory_requirements(image) };
+        let index = self.device_local_memory(needs.memory_type_bits)?;
+
+        let exports = self.exportable_memory();
+        let mut exportable = vk::ExportMemoryAllocateInfo::default().handle_types(exports);
+        let allocate = vk::MemoryAllocateInfo::default()
+            .allocation_size(needs.size)
+            .memory_type_index(index);
+        let allocate = if exports.is_empty() {
+            allocate
+        } else {
+            allocate.push_next(&mut exportable)
+        };
+        // SAFETY: the chain outlives the call.
+        let memory = unsafe { self.device.allocate_memory(&allocate, None) }.map_err(driver)?;
+
+        let bound = (|| -> Result<vk::ImageView, Error> {
+            // SAFETY: the image is not bound yet and is this device's.
+            unsafe { self.device.bind_image_memory(image, memory, 0) }.map_err(driver)?;
+            let info = vk::ImageViewCreateInfo::default()
+                .image(image)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(vk::Format::R32_UINT)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::COLOR,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: 1,
+                });
+            // SAFETY: the create info outlives the call.
+            unsafe { self.device.create_image_view(&info, None) }.map_err(driver)
+        })();
+
+        match bound {
+            Ok(view) => Ok(Packed444 {
+                image,
+                memory,
+                view,
+                width,
+                height,
+                pitch,
+                depth,
+            }),
+            Err(error) => {
+                // SAFETY: nothing is bound to it any more.
+                unsafe { self.device.free_memory(memory, None) };
+                Err(error)
+            }
+        }
+    }
+
     /// Memory the device reads fastest, which is where a conversion target
     /// belongs: nothing on the processor reads it.
     pub(crate) fn device_local_memory(&self, allowed: u32) -> Result<u32, Error> {
@@ -1503,6 +1665,72 @@ impl Device {
             self.device.destroy_image(frame.luma_image, None);
             self.device.destroy_image(frame.cb_image, None);
             self.device.destroy_image(frame.cr_image, None);
+            self.device.free_memory(frame.memory, None);
+        }
+    }
+
+    /// Hand a packed full-chroma frame out as a descriptor.
+    ///
+    /// One plane, one offset, one row length; the importer names the layout
+    /// from the four-character code the descriptor's kind implies, which is
+    /// why the kind travels with it.
+    pub fn export_packed_444(
+        &self,
+        frame: &Packed444,
+        display_interface: bool,
+    ) -> Result<(OwnedFd, Exported), Error> {
+        let wanted = if display_interface {
+            vk::ExternalMemoryHandleTypeFlags::DMA_BUF_EXT
+        } else {
+            vk::ExternalMemoryHandleTypeFlags::OPAQUE_FD
+        };
+        if !self.exportable_memory().contains(wanted) {
+            return Err(Error::NoExport);
+        }
+        let external = ash::khr::external_memory_fd::Device::new(&self.instance, &self.device);
+        let info = vk::MemoryGetFdInfoKHR::default()
+            .memory(frame.memory)
+            .handle_type(wanted);
+        // SAFETY: the info outlives the call and the memory is this device's.
+        let fd = unsafe { external.get_memory_fd(&info) }.map_err(driver)?;
+        // SAFETY: the driver returned a fresh owned descriptor.
+        let fd = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+
+        Ok((
+            fd,
+            Exported {
+                width: frame.width,
+                height: frame.height,
+                modifier: LINEAR,
+                pitch: frame.pitch,
+                kind: Layout::Packed444,
+                depth: frame.depth,
+                planes: [
+                    PlaneLayout {
+                        offset: 0,
+                        pitch: frame.pitch,
+                    },
+                    PlaneLayout {
+                        offset: 0,
+                        pitch: 0,
+                    },
+                    PlaneLayout {
+                        offset: 0,
+                        pitch: 0,
+                    },
+                ],
+            },
+        ))
+    }
+
+    /// Release a packed full-chroma conversion target.
+    pub fn release_packed_444(&self, frame: Packed444) {
+        // SAFETY: every handle came from this device, and the wait means no
+        // submitted work still refers to them.
+        unsafe {
+            let _ = self.device.device_wait_idle();
+            self.device.destroy_image_view(frame.view, None);
+            self.device.destroy_image(frame.image, None);
             self.device.free_memory(frame.memory, None);
         }
     }
@@ -1750,6 +1978,9 @@ impl Converter {
             .buffer(self.summary)
             .offset(0)
             .range(DIGEST_BYTES)];
+        let packed = [vk::DescriptorImageInfo::default()
+            .image_view(*target.planes.first().ok_or(Error::BadShader)?)
+            .image_layout(vk::ImageLayout::GENERAL)];
         let writes = [
             vk::WriteDescriptorSet::default()
                 .dst_set(self.set)
@@ -1776,6 +2007,11 @@ impl Converter {
                 .dst_binding(4)
                 .descriptor_type(vk::DescriptorType::STORAGE_BUFFER)
                 .buffer_info(&summary),
+            vk::WriteDescriptorSet::default()
+                .dst_set(self.set)
+                .dst_binding(5)
+                .descriptor_type(vk::DescriptorType::STORAGE_IMAGE)
+                .image_info(&packed),
         ];
         // SAFETY: every borrowed structure outlives the call, and the set is
         // idle because its previous submission's fence has fired.
@@ -1900,7 +2136,9 @@ impl Converter {
                 source.width.div_ceil(2).div_ceil(GROUP),
                 source.height.div_ceil(2).div_ceil(GROUP),
             ),
-            Layout::Planar444 => (source.width.div_ceil(GROUP), source.height.div_ceil(GROUP)),
+            Layout::Planar444 | Layout::Packed444 => {
+                (source.width.div_ceil(GROUP), source.height.div_ceil(GROUP))
+            }
         });
 
         // **Zeroed here rather than on the processor**, so nothing has to wait
@@ -1945,6 +2183,7 @@ impl Converter {
             let pipeline = match target.kind {
                 Layout::SemiPlanar420 => self.pipeline,
                 Layout::Planar444 => self.pipeline_444,
+                Layout::Packed444 => self.pipeline_packed,
             };
             vk_device.cmd_bind_pipeline(commands, vk::PipelineBindPoint::COMPUTE, pipeline);
             vk_device.cmd_bind_descriptor_sets(
@@ -2143,6 +2382,27 @@ impl Device {
             all.get(one..two).unwrap_or_default().to_vec(),
             all.get(two..).unwrap_or_default().to_vec(),
         ])
+    }
+
+    /// The same diagnostic for a packed full-chroma frame: the one word
+    /// plane, which the caller may unpack with the orders the shader wrote.
+    pub fn read_packed_444(&self, frame: &Packed444) -> Result<Vec<u8>, Error> {
+        let bytes = u64::from(frame.pitch) * u64::from(frame.height);
+        let info = vk::BufferCreateInfo::default()
+            .size(bytes)
+            .usage(vk::BufferUsageFlags::TRANSFER_DST)
+            .sharing_mode(vk::SharingMode::EXCLUSIVE);
+        // SAFETY: the create info outlives the call.
+        let buffer = unsafe { self.device.create_buffer(&info, None) }.map_err(driver)?;
+
+        let result = self.read_planes(
+            &[(frame.image, frame.width, frame.height)],
+            &[0, bytes],
+            buffer,
+        );
+        // SAFETY: created above; the copy inside waited before returning.
+        unsafe { self.device.destroy_buffer(buffer, None) };
+        result
     }
 
     /// Copy whole planes into one buffer, in the order and at the offsets
@@ -2570,6 +2830,98 @@ mod tests {
                                     want_y,
                                     want_u,
                                     want_v,
+                                )
+                            }
+                        };
+                        assert!(
+                            got_y.abs_diff(want_y) <= 2,
+                            "block {block} {depth:?} luma {got_y} wanted {want_y}"
+                        );
+                        assert!(
+                            got_u.abs_diff(want_u) <= 2 && got_v.abs_diff(want_v) <= 2,
+                            "block {block} {depth:?} chroma {got_u} {got_v} \
+                             wanted {want_u} {want_v}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// The packed full-chroma conversion composes the documented word at both
+    /// depths.
+    ///
+    /// **This checks what this side writes, not what an importer reads.** The
+    /// packed orders are the importer's own documented layout, and the only
+    /// check that catches a backwards order is the decoder comparison the
+    /// phase gate runs; this test pins the composition so that at least one
+    /// side of the contract is held still while the other is verified.
+    #[test]
+    fn the_packed_444_conversion_matches_the_reference_at_both_depths() {
+        for depth in [Depth::Eight, Depth::Ten] {
+            let width = u32::try_from(PATTERN.len()).unwrap() * 2;
+            let height = 2;
+
+            let mut pixels = vec![0u8; (width as usize) * (height as usize) * 4];
+            for (block, colour) in PATTERN.iter().enumerate() {
+                for dy in 0..2usize {
+                    for dx in 0..2usize {
+                        let at = (dy * (width as usize) + block * 2 + dx) * 4;
+                        pixels[at] = colour[0];
+                        pixels[at + 1] = colour[1];
+                        pixels[at + 2] = colour[2];
+                        pixels[at + 3] = 255;
+                    }
+                }
+            }
+
+            let device = Device::any().expect("a device that can convert");
+            let source = device
+                .upload_rgba(width, height, &pixels)
+                .expect("upload the pattern");
+            let target = device
+                .allocate_packed_444(width, height, depth)
+                .expect("a packed full-chroma target");
+            let mut converter = Converter::new(&device).expect("a pipeline");
+            converter
+                .run(&device, &source, &target.target(), false)
+                .expect("convert");
+            let words = device.read_packed_444(&target).expect("read the plane");
+
+            for (block, colour) in PATTERN.iter().enumerate() {
+                for dy in 0..2usize {
+                    for dx in 0..2usize {
+                        let at = dy * (width as usize) + block * 2 + dx;
+                        let word = u32::from_le_bytes(
+                            words
+                                .get(at * 4..at * 4 + 4)
+                                .expect("a word per pixel")
+                                .try_into()
+                                .expect("four bytes"),
+                        );
+                        let (got_y, got_u, got_v, want_y, want_u, want_v) = match depth {
+                            Depth::Eight => {
+                                let (want_y, want_u, want_v) =
+                                    reference(colour[0], colour[1], colour[2]);
+                                (
+                                    (word >> 16) & 0xff,
+                                    (word >> 8) & 0xff,
+                                    word & 0xff,
+                                    u32::from(want_y),
+                                    u32::from(want_u),
+                                    u32::from(want_v),
+                                )
+                            }
+                            Depth::Ten => {
+                                let (want_y, want_u, want_v) =
+                                    reference_ten(colour[0], colour[1], colour[2]);
+                                (
+                                    (word >> 22) & 0x3ff,
+                                    (word >> 12) & 0x3ff,
+                                    (word >> 2) & 0x3ff,
+                                    u32::from(want_y),
+                                    u32::from(want_u),
+                                    u32::from(want_v),
                                 )
                             }
                         };

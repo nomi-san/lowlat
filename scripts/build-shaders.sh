@@ -26,4 +26,11 @@ for source in crates/*/shaders/*.comp; do
         spirv-val "$out444"
         echo "built $out444 from $source"
     fi
+    if grep -q 'void body_444_packed' "$source"; then
+        outpacked="${source%.comp}-packed.spv"
+        # The packed full-chroma body, compiled the same way.
+        glslangValidator -V --target-env vulkan1.1 -DTARGET_VULKAN -DPACKED_444 -o "$outpacked" "$source" > /dev/null
+        spirv-val "$outpacked"
+        echo "built $outpacked from $source"
+    fi
 done

@@ -35,11 +35,17 @@ layout(set = 0, binding = 0) uniform sampler2D source;
 layout(set = 0, binding = 1) uniform writeonly image2D luma;
 layout(set = 0, binding = 2) uniform writeonly image2D chroma;
 layout(set = 0, binding = 3) uniform writeonly image2D cr;
+// **A second declaration for the same picture, integer-typed.** The packed
+// body stores a composed word, which a formatless float image cannot carry;
+// this binding names the word format and the packed view is what fills it.
+// The name avoids `packed`, which the shading language reserves.
+layout(set = 0, binding = 5) uniform writeonly uimage2D packed_plane;
 #else
 layout(binding = 0) uniform sampler2D source;
 layout(binding = 1) uniform writeonly image2D luma;
 layout(binding = 2) uniform writeonly image2D chroma;
 layout(binding = 3) uniform writeonly image2D cr;
+layout(binding = 5) uniform writeonly uimage2D packed_plane;
 #endif
 
 // **What the picture came to, in eight bytes.** The loop needs to know whether
@@ -289,6 +295,75 @@ void store_cr(ivec2 at, float cr_sample) {
     imageStore(cr, at, vec4(cr_sample * store_scale(), 0.0, 0.0, 0.0));
 }
 
+// The same colour rules packed into one word per pixel, which is what the
+// open stack's 4:4:4 surfaces are: AYUV at eight bits, Y410 at ten. The
+// word is composed here rather than by a driver format, because the packed
+// ten-bit layouts cannot be written as storage images at all on the parts
+// seen here, and the byte orders differ between the two depths.
+//
+// **The orders are the ones the importer documents, not a choice.** AYUV is
+// alpha, luma, blue difference, red difference most significant byte first;
+// Y410 is luma, blue, red, then a two-bit alpha. Getting either backwards
+// still imports cleanly and decodes to a plausible wrong picture, so the
+// only honest check is the decoder comparison the gate runs.
+uint pack_ayuv(uint y, uint u, uint v) {
+    return (255u << 24) | (y << 16) | (u << 8) | v;
+}
+
+uint pack_y410(uint y, uint u, uint v) {
+    return (y << 22) | (u << 12) | (v << 2) | 3u;
+}
+
+// Full-resolution chroma, packed: one word per pixel in the luma binding.
+//
+// **A body beside the other two, sharing their rules and summary.** What
+// differs from the planar full-chroma body is only the store: one packed
+// word instead of three planes, so the same corrections land in the same
+// place.
+void body_444_packed() {
+    if (gl_LocalInvocationIndex == 0u) {
+        block_sum = 0u;
+        block_xor = 0u;
+    }
+    barrier();
+
+    ivec2 at = ivec2(gl_GlobalInvocationID.xy);
+    bool inside = at.x < EXTENT.x && at.y < EXTENT.y;
+    if (inside) {
+        vec3 colour = fetch(at);
+        float luma = luma_of(colour);
+        float u = (colour.b - luma) / (2.0 - 2.0 * KB);
+        float v = (colour.r - luma) / (2.0 - 2.0 * KR);
+        float y = luma * y_scale() + y_offset();
+        float cb = u * c_scale() + c_offset() + spread(at);
+        float cr_value = v * c_scale() + c_offset() + spread(at + ivec2(2, 0));
+
+        uint qy = quantise(y);
+        uint qu = quantise(cb);
+        uint qv = quantise(cr_value);
+        // **A branch rather than a select**: one GL front end here refuses
+        // the ternary with calls in it, and a uniform branch costs nothing.
+        uint word;
+        if (TEN_BIT) {
+            word = pack_y410(qy, qu, qv);
+        } else {
+            word = pack_ayuv(qy, qu, qv);
+        }
+        imageStore(packed_plane, at, uvec4(word, 0u, 0u, 0u));
+
+        uint colour_bits = qu | (qv << 16);
+        uint position = mix32(uint(at.y) * 65536u + uint(at.x));
+        atomicAdd(block_sum, mix32(qy ^ position));
+        atomicXor(block_xor, mix32(colour_bits + position));
+    }
+
+    barrier();
+    if (gl_LocalInvocationIndex == 0u) {
+        atomicAdd(digest.accumulated[0], block_sum);
+        atomicXor(digest.accumulated[1], block_xor);
+    }
+}
+
 // Full-resolution chroma: three planes, one sample each per pixel.
 //
 // **A body beside the subsampled one, not a copy of it.** The colour rules,
@@ -333,10 +408,12 @@ void body_444() {
 }
 
 // **The interface names every stage's entry point main**, so one source file
-// carries both bodies and a compile-time define picks which one the wrapper
-// runs. The other body is then dead and a compiler strips it, which is how
-// two pipelines are built from one file without a second copy of anything.
-#ifdef MAIN_444
+// carries every body and a compile-time define picks which one the wrapper
+// runs. The other bodies are then dead and a compiler strips them, which is
+// how several pipelines are built from one file without a copy of anything.
+#ifdef PACKED_444
+void main() { body_444_packed(); }
+#elif defined(MAIN_444)
 void main() { body_444(); }
 #else
 void main() { body_420(); }
