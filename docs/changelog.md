@@ -3,6 +3,14 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-08-30 - The conversion now has one body per 4:4:4 layout
+
+### Measured
+- **The packed full-chroma body landed beside the planar one**, still one shader file and one
+  set of colour rules: AYUV at eight bits, Y410 at ten, composed word by word through a
+  dedicated integer binding, with the byte orders pinned by a committed reference test at both
+  depths. The fallback tier compiles the same source untouched, so nothing drifted.
+
 ## 2026-08-30 - The vendor interface codes 4:4:4 on the live path
 
 ### Measured

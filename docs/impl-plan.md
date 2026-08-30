@@ -1439,13 +1439,14 @@ The conversion shapes are settled, asked of the devices rather than guessed:
   on another, and on the third the vendor interface is already the better encoder. Its 4:4:4
   answer is a capability-census refusal, not a build.
 
-- [ ] **The conversion gains one body per layout, not per depth.** The two 4:4:4 bodies write
+- [x] **The conversion gains one body per layout, not per depth.** The two 4:4:4 bodies write
   three planar planes and one packed plane; both keep the depth uniform and share the colour
   rules and summary with the shipped 4:2:0 body, so a depth known in one body and not another
   cannot return.
-  *Done in part 2026-08-30: the three-plane body is built as a second entry in the one shader
-  file, compiled to its own blob, and lands on the reference at both depths; the packed body
-  lands with the open backend.*
+  *Done 2026-08-30: the three-plane body and the packed body both live in the one shader file
+  as compiled variants of the same rules, both land on the reference at both depths, and the
+  packed word orders are pinned by a committed test so the decoder comparison has a still side
+  to hold.*
 - [x] **The vendor backend codes 4:4:4 at both depths on the live path.** The input formats
   and profile selection exist and are probe-verified; what remains is the pipeline wiring and
   the three-plane registration.
