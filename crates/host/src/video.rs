@@ -28,7 +28,7 @@ impl Packetiser {
     /// **The rotation is one-based**, so an unrotated display is
     /// [`Rotation::None`] and never [`Rotation::Unknown`]. Emitting zero says
     /// the orientation is unknown, which is a different claim.
-    pub fn new(width: u16, height: u16, rotation: Rotation) -> Self {
+    pub fn new(width: u16, height: u16, rotation: Rotation, ten_bit: bool) -> Self {
         Self {
             header: VideoHeader {
                 // **A generation, not a frame counter.** It stays constant for
@@ -38,11 +38,15 @@ impl Packetiser {
                 width,
                 height,
                 rotation,
-                // **Never set.** The bit next to the rotation names ten-bit
-                // colour, and a receiver builds its decoder for the depth it
-                // names before any bitstream is parsed. This stream is eight
-                // bit.
-                ten_bit: false,
+                // **What the pictures really are, and it must be exactly
+                // that.** The bit next to the rotation names ten-bit colour
+                // and a receiver builds its decoder for the depth it names
+                // before any bitstream is parsed, so a bit disagreeing with
+                // the stream fails every picture whichever way it disagrees:
+                // clear over ten-bit pictures and set over eight-bit ones are
+                // the same fault. It is told rather than decided here because
+                // the encoder settled the depth.
+                ten_bit,
                 // Not set: this stream is a desktop, not a fullscreen capture
                 // of one application, and the flag is the peer's cue to change
                 // how it presents.
@@ -135,7 +139,7 @@ mod tests {
 
     #[test]
     fn the_header_round_trips_through_the_parser_a_peer_would_use() {
-        let mut packetiser = Packetiser::new(1920, 1080, Rotation::None);
+        let mut packetiser = Packetiser::new(1920, 1080, Rotation::None, false);
         let unit = coded(64);
         let message = packetiser.frame(&unit, true).expect("framed");
 
@@ -143,7 +147,7 @@ mod tests {
         assert_eq!(header.width, 1920);
         assert_eq!(header.height, 1080);
         assert_eq!(header.rotation, Rotation::None);
-        // **Never set, whatever the picture is.** It names the colour depth.
+        // It names the colour depth, and this stream is eight-bit.
         assert!(
             !header.ten_bit,
             "an eight-bit stream claimed ten-bit colour"
@@ -152,11 +156,35 @@ mod tests {
         assert_eq!(header.frame_id, 1);
     }
 
+    /// **The depth bit describes the pictures, in both directions.**
+    ///
+    /// A receiver builds its decoder from this before it parses any bitstream,
+    /// so the two ways of getting it wrong cost the same thing: clear over
+    /// ten-bit pictures and set over eight-bit ones both produce a decoder
+    /// built for the wrong depth, which fails every picture and reports it as
+    /// a decode error rather than as a mismatch. An earlier version of this
+    /// host set the bit on keyframes, believing it meant something else, and
+    /// one decoder family failed every frame for it.
+    #[test]
+    fn the_depth_bit_says_what_the_stream_is() {
+        for ten_bit in [false, true] {
+            let mut packetiser = Packetiser::new(1920, 1080, Rotation::None, ten_bit);
+            let unit = coded(32);
+            let message = packetiser.frame(&unit, false).expect("framed");
+            let header = header_as_a_peer_sees_it(&message);
+            assert_eq!(
+                header.ten_bit, ten_bit,
+                "a ten_bit={ten_bit} stream described itself as {}",
+                header.ten_bit
+            );
+        }
+    }
+
     /// **Upright is one, not zero.** A stream that emitted zero would be
     /// telling every peer its orientation is unknown.
     #[test]
     fn an_unrotated_stream_says_upright_rather_than_unknown() {
-        let mut packetiser = Packetiser::new(1920, 1080, Rotation::None);
+        let mut packetiser = Packetiser::new(1920, 1080, Rotation::None, false);
         let unit = coded(32);
         let message = packetiser.frame(&unit, false).expect("framed");
         let header = header_as_a_peer_sees_it(&message);
@@ -172,7 +200,7 @@ mod tests {
     /// is that framing many frames does not move it.
     #[test]
     fn the_generation_holds_across_frames_and_moves_only_on_reconfiguration() {
-        let mut packetiser = Packetiser::new(1280, 720, Rotation::None);
+        let mut packetiser = Packetiser::new(1280, 720, Rotation::None, false);
         let unit = coded(48);
         for _ in 0..50 {
             let message = packetiser.frame(&unit, false).expect("framed");
@@ -187,7 +215,7 @@ mod tests {
     /// while the coded buffer stays landscape.
     #[test]
     fn a_quarter_turn_swaps_the_display_dimensions_and_not_the_coded_ones() {
-        let mut packetiser = Packetiser::new(1920, 1080, Rotation::Deg90);
+        let mut packetiser = Packetiser::new(1920, 1080, Rotation::Deg90, false);
         let unit = coded(32);
         let message = packetiser.frame(&unit, false).expect("framed");
         let header = header_as_a_peer_sees_it(&message);
@@ -200,7 +228,7 @@ mod tests {
     /// follows from it.
     #[test]
     fn the_length_prefix_covers_the_header_and_the_bitstream() {
-        let mut packetiser = Packetiser::new(1920, 1080, Rotation::None);
+        let mut packetiser = Packetiser::new(1920, 1080, Rotation::None, false);
         for len in [1usize, 100, 1179, 1180, 1181, 5000, 60000] {
             let unit = coded(len);
             let message = packetiser.frame(&unit, false).expect("framed");

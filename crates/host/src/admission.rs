@@ -1847,6 +1847,9 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             u16::try_from(width).unwrap_or(u16::MAX),
             u16::try_from(height).unwrap_or(u16::MAX),
             rotation,
+            // Eight bits until a seated guest asks otherwise and an encoder
+            // is rebuilt for it; the consensus is what will supply this.
+            false,
         )
     });
     // **Created here, at admission, rather than when the first key arrives.**
@@ -1959,7 +1962,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                     "guest: the stream is {width}x{height}, following it for the picture and for \
                      absolute input"
                 );
-                let mut framing = Packetiser::new(width, height, rotation);
+                let mut framing = Packetiser::new(width, height, rotation, false);
                 framing.reconfigured();
                 if let Some(negotiation) = negotiation.as_mut() {
                     negotiation.encoder_initialised(framing.generation());
@@ -4006,7 +4009,7 @@ mod geometry {
         // Big enough to fragment many times, with content that is a function
         // of its offset so a misplaced fragment cannot pass.
         let unit: Vec<u8> = (0..40_000u32).map(|at| (at % 251) as u8).collect();
-        let mut packetiser = Packetiser::new(1920, 1080, lowlat_core::video::Rotation::None);
+        let mut packetiser = Packetiser::new(1920, 1080, lowlat_core::video::Rotation::None, false);
         let header = packetiser.header(true).expect("header").to_vec();
         ours.send_message(VIDEO_CHANNEL, &header, &unit)
             .expect("queue");
@@ -4045,7 +4048,7 @@ mod geometry {
     /// does not exist. *Named regression test.*
     #[test]
     fn the_announced_generation_is_the_one_the_header_carries() {
-        let mut packetiser = Packetiser::new(1920, 1080, lowlat_core::video::Rotation::None);
+        let mut packetiser = Packetiser::new(1920, 1080, lowlat_core::video::Rotation::None, false);
         let mut negotiation = Negotiation::opened(0.0);
         let body = declaration();
         let raw = control_bytes(&Control {
