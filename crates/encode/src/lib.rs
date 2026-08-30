@@ -366,6 +366,7 @@ mod tests {
                     fps: 60,
                     bitrate_bps: 20_000_000,
                     min_qp: DEFAULT_MIN_QP,
+                    chroma: nvenc::Chroma::default(),
                 },
             )
             .expect("initialize");
@@ -479,6 +480,7 @@ mod tests {
                         fps: 60,
                         bitrate_bps: 20_000_000,
                         min_qp,
+                        chroma: nvenc::Chroma::default(),
                     },
                 )
                 .expect("initialize");
@@ -547,6 +549,7 @@ mod tests {
                     fps: 60,
                     bitrate_bps: 20_000_000,
                     min_qp: DEFAULT_MIN_QP,
+                    chroma: nvenc::Chroma::default(),
                 },
             )
             .expect("initialize");

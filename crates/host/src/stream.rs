@@ -2505,6 +2505,8 @@ fn run_vendor(
             fps: config.fps,
             bitrate_bps: start_bps(&config),
             min_qp: config.quality.min_qp(),
+            // The wire carries 4:2:0 only (00-overview.md D7).
+            chroma: lowlat_encode::nvenc::Chroma::Yuv420,
         },
     ) else {
         lowlat_common::log_error!("stream: encoder could not be configured");

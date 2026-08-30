@@ -287,6 +287,7 @@ mod tests {
                 fps: 60,
                 bitrate_bps: 20_000_000,
                 min_qp: crate::DEFAULT_MIN_QP,
+                chroma: Chroma::default(),
             };
             let mut encoder = session.initialize(&cuda, config).expect("initialize");
             assert_eq!(encoder.config().bitrate_bps, 20_000_000);
@@ -333,6 +334,7 @@ mod tests {
             fps: 60,
             bitrate_bps: 20_000_000,
             min_qp: crate::DEFAULT_MIN_QP,
+            chroma: Chroma::default(),
         };
         let mut encoder = session.initialize(&cuda, config).expect("initialize");
 
@@ -472,6 +474,42 @@ impl Codec {
     }
 }
 
+/// How much chroma a session codes.
+///
+/// **4:4:4 is measured here rather than offered.** It is not on the wire
+/// ([00-overview.md](../../../docs/00-overview.md) D7) and one of the three
+/// backends cannot produce it at all, so the only thing this exists for is
+/// `colour-cost-probe` answering what it costs before anybody decides. The
+/// default is what every session ships with.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Chroma {
+    #[default]
+    Yuv420,
+    Yuv444,
+}
+
+impl Chroma {
+    /// Rows one planar frame occupies at this chroma, luma included.
+    ///
+    /// Both layouts are one allocation at one pitch with the planes stacked,
+    /// which is why the registration takes a single address either way: 4:2:0
+    /// is luma then half as many rows of interleaved colour, 4:4:4 is three
+    /// full planes.
+    const fn rows_for(self, height: u32) -> u32 {
+        match self {
+            Self::Yuv420 => height + height.div_ceil(2),
+            Self::Yuv444 => height * 3,
+        }
+    }
+
+    const fn buffer_format(self) -> crate::ffi::nvenc::NV_ENC_BUFFER_FORMAT {
+        match self {
+            Self::Yuv420 => crate::ffi::nvenc::NV_ENC_BUFFER_FORMAT_NV12,
+            Self::Yuv444 => crate::ffi::nvenc::NV_ENC_BUFFER_FORMAT_YUV444,
+        }
+    }
+}
+
 /// What the hardware will actually do, asked rather than assumed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Caps {
@@ -489,6 +527,9 @@ pub struct Caps {
     /// to set to zero rather than one we want to be large.
     pub max_bframes: u32,
     pub ten_bit: bool,
+    /// Chroma at full resolution. Asked here because it is a capability, not
+    /// because anything ships it; see [`Chroma`].
+    pub yuv444: bool,
 }
 
 /// An open encode session.
@@ -583,6 +624,7 @@ impl Session<'_> {
                 .max(0)
                 .unsigned_abs(),
             ten_bit: self.cap(codec, f::NV_ENC_CAPS_SUPPORT_10BIT_ENCODE)? != 0,
+            yuv444: self.cap(codec, f::NV_ENC_CAPS_SUPPORT_YUV444_ENCODE)? != 0,
         })
     }
 
@@ -666,6 +708,9 @@ pub struct Config {
     /// quality one, and it is the default for a product whose first goal is
     /// latency. Raising it trades visible sharpness for smaller frames.
     pub min_qp: u32,
+    /// How much chroma to code. Every shipped path leaves this at its default;
+    /// see [`Chroma`] for why the other value exists.
+    pub chroma: Chroma,
 }
 
 /// Colour signalling, from [05 §3.1](../../../docs/05-host.md).
@@ -918,6 +963,30 @@ impl<'a> Session<'a> {
                     vui.colourPrimaries = colour::BT709;
                     vui.transferCharacteristics = colour::BT709;
                     vui.colourMatrix = colour::BT709;
+                }
+            }
+
+            // **Chroma is named in two places and both have to agree.** The
+            // codec configuration carries the format identifier that reaches
+            // the sequence set, and the profile has to be one that admits it;
+            // setting only the first produces a device that refuses to
+            // initialise, and setting only the second produces a stream whose
+            // syntax does not match its own description.
+            if config.chroma == Chroma::Yuv444 {
+                encode_config.profileGUID = match config.codec {
+                    Codec::H264 => crate::ffi::guids::NV_ENC_H264_PROFILE_HIGH_444_GUID,
+                    Codec::H265 => crate::ffi::guids::NV_ENC_HEVC_PROFILE_FREXT_GUID,
+                };
+                match config.codec {
+                    // A plain field on one codec and a bitfield on the other,
+                    // which is the header's shape, not a choice.
+                    Codec::H264 => {
+                        encode_config.encodeCodecConfig.h264Config.chromaFormatIDC = 3;
+                    }
+                    Codec::H265 => encode_config
+                        .encodeCodecConfig
+                        .hevcConfig
+                        .set_chromaFormatIDC(3),
                 }
             }
         }
@@ -1203,7 +1272,7 @@ impl Encoder<'_> {
         // of interleaved chroma, at the driver's preferred pitch.
         let width = usize::try_from(self.config.width).unwrap_or(0);
         let rows =
-            usize::try_from(self.config.height + self.config.height.div_ceil(2)).unwrap_or(0);
+            usize::try_from(self.config.chroma.rows_for(self.config.height)).unwrap_or(0);
         for _ in 0..IN_FLIGHT {
             let buffer = cuda
                 .alloc_pitch(width, rows)
@@ -1243,7 +1312,7 @@ impl Encoder<'_> {
         params.height = self.config.height;
         params.pitch = u32::try_from(pitch).map_err(|_| Error::MissingSymbol)?;
         params.resourceToRegister = ptr as *mut core::ffi::c_void;
-        params.bufferFormat = f::NV_ENC_BUFFER_FORMAT_NV12;
+        params.bufferFormat = self.config.chroma.buffer_format();
         params.bufferUsage = f::NV_ENC_INPUT_IMAGE;
 
         // SAFETY: the block is stamped and live for the call.
