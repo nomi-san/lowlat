@@ -21921,3 +21921,6 @@ pub struct VADRMPRIMESurfaceDescriptor {
 /// The four character code a two-plane eight-bit frame is named by, on the
 /// display interface rather than the runtime's own.
 pub const DRM_FORMAT_NV12: u32 = 0x3231_564E;
+/// Two planes, ten bits a sample in the high bits of sixteen. The same
+/// four-character code the colour interface uses for it.
+pub const DRM_FORMAT_P010: u32 = 0x3031_3050;

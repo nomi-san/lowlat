@@ -135,15 +135,22 @@ pub enum Depth {
 impl Depth {
     /// The layout one luma sample is stored in.
     ///
-    /// **Ten bits are stored in the high ten of sixteen**, which is what every
-    /// encoder here reads and what these formats mean by their name: the six
-    /// unused bits are the low ones. Storing through them rather than through a
-    /// plain sixteen-bit format is what keeps the alignment the driver's
-    /// problem instead of a shift written here that no test could check.
+    /// **Sixteen bits a sample, not the packed ten-bit formats, and the
+    /// devices decided that.** `R10X6_UNORM_PACK16` would have let the driver
+    /// place the samples in the high ten bits for us; one of the three parts
+    /// here does not offer it as a storage image at all, at either tiling,
+    /// with or without a transfer usage -- while offering `R16_UNORM`
+    /// everywhere. So the alignment is ours to do, in one multiply in the
+    /// shader, rather than a second allocation path for one vendor.
+    ///
+    /// **What leaves is the same bytes either way.** A descriptor names a
+    /// four-character code and a pitch; the layout this image was made with
+    /// never travels, so a sixteen-bit plane holding samples in its high ten
+    /// bits *is* the ten-bit two-plane format an encoder imports.
     const fn luma(self) -> vk::Format {
         match self {
             Self::Eight => vk::Format::R8_UNORM,
-            Self::Ten => vk::Format::R10X6_UNORM_PACK16,
+            Self::Ten => vk::Format::R16_UNORM,
         }
     }
 
@@ -151,12 +158,25 @@ impl Depth {
     const fn chroma(self) -> vk::Format {
         match self {
             Self::Eight => vk::Format::R8G8_UNORM,
-            Self::Ten => vk::Format::R10X6G10X6_UNORM_2PACK16,
+            Self::Ten => vk::Format::R16G16_UNORM,
         }
     }
 
     pub const fn ten_bit(self) -> bool {
         matches!(self, Self::Ten)
+    }
+
+    /// Bytes one luma sample occupies.
+    ///
+    /// **Ten bits cost two bytes, not one and a quarter.** They are stored one
+    /// to a sixteen-bit word with six bits unused, so anything sizing a plane
+    /// from width and height has to multiply by this or read back half a
+    /// picture and call it a whole one.
+    pub const fn bytes_per_sample(self) -> u32 {
+        match self {
+            Self::Eight => 1,
+            Self::Ten => 2,
+        }
     }
 }
 
@@ -173,6 +193,11 @@ pub struct Exported {
     /// one luma plane in, which is what an encoder assumes and what this
     /// allocation is built to guarantee.
     pub planes: [PlaneLayout; 2],
+    /// How many bits each sample carries. **An importer cannot work this out
+    /// from the offsets**: a ten-bit frame and an eight-bit one twice as wide
+    /// have the same pitch and the same plane split, and describing one as the
+    /// other is accepted by the driver and decodes to noise.
+    pub depth: Depth,
 }
 
 impl Exported {
@@ -184,9 +209,15 @@ impl Exported {
     /// hands a frame on has to produce this same arrangement; two of them
     /// computing it separately is how they come to disagree.
     pub fn packed(width: u32, height: u32, pitch: u32) -> Self {
+        Self::packed_at(width, height, pitch, Depth::Eight)
+    }
+
+    /// The same, for a frame whose samples are not eight bits.
+    pub fn packed_at(width: u32, height: u32, pitch: u32, depth: Depth) -> Self {
         Self {
             width,
             height,
+            depth,
             modifier: LINEAR,
             pitch,
             planes: [
@@ -925,9 +956,10 @@ impl Device {
             )
         };
         // An encoder is told one row length for both planes. Half the width at
-        // two bytes a sample comes to the same figure as the full width at one,
-        // so they agree unless a driver pads them differently -- and if one
-        // ever does, that is a refusal rather than something to paper over.
+        // twice the samples comes to the same figure as the full width, at
+        // either depth, so they agree unless a driver pads them differently --
+        // and if one ever does, that is a refusal rather than something to
+        // paper over.
         if luma_layout.row_pitch != chroma_layout.row_pitch {
             return Err(Error::PlanesDisagree);
         }
@@ -941,7 +973,11 @@ impl Device {
                 self.device.get_image_memory_requirements(chroma_image),
             )
         };
-        if colour_at % chroma_needs.alignment != 0 {
+        // **A driver's own number, checked before it is divided by.** Zero
+        // here is not a layout this code can place a plane in, and reaching
+        // the modulo with it kills the process rather than refusing the
+        // allocation.
+        if chroma_needs.alignment == 0 || colour_at % chroma_needs.alignment != 0 {
             return Err(Error::PlanesDisagree);
         }
         let index =
@@ -1093,7 +1129,10 @@ impl Device {
 
         // **Not queried back.** The layout is the one this allocation was built
         // to, so reporting anything else would mean the two had drifted.
-        Ok((fd, Exported::packed(nv12.width, nv12.height, nv12.pitch)))
+        Ok((
+            fd,
+            Exported::packed_at(nv12.width, nv12.height, nv12.pitch, nv12.depth),
+        ))
     }
 
     /// Release a conversion target.
@@ -1643,7 +1682,12 @@ impl Device {
     /// Returns the luma plane and the interleaved chroma plane, each tightly
     /// packed.
     pub fn read_nv12(&self, nv12: &Nv12) -> Result<(Vec<u8>, Vec<u8>), Error> {
-        let luma_bytes = u64::from(nv12.width) * u64::from(nv12.height);
+        // **Colour stays half of luma at either depth**, because the plane is
+        // a quarter the samples and twice the width each. Only the luma figure
+        // moves, which is why this is the one multiplication here.
+        let luma_bytes = u64::from(nv12.width)
+            * u64::from(nv12.height)
+            * u64::from(nv12.depth.bytes_per_sample());
         let chroma_bytes = luma_bytes / 2;
 
         let info = vk::BufferCreateInfo::default()
@@ -1850,17 +1894,33 @@ mod tests {
             let Ok(device) = crate::vulkan::Device::for_display(&node) else {
                 continue;
             };
-            let target = device.allocate_nv12(64, 64).expect("a target");
-            for display_interface in [true, false] {
-                let got = device.export_nv12(&target, display_interface);
-                assert!(
-                    got.is_ok(),
-                    "{node:?} refused a picture with display_interface={display_interface}: {:?}",
-                    got.err()
-                );
+            // **Both depths, because a ten-bit target is a different set of
+            // formats and a device may export one and refuse the other.** That
+            // is a refusal an encoder would meet at the handover, where the
+            // message names neither the depth nor the card.
+            for depth in [crate::convert::Depth::Eight, crate::convert::Depth::Ten] {
+                let target = device
+                    .allocate_planar(64, 64, depth)
+                    .unwrap_or_else(|error| panic!("{node:?} has no {depth:?} target: {error}"));
+                for display_interface in [true, false] {
+                    let got = device.export_nv12(&target, display_interface);
+                    assert!(
+                        got.is_ok(),
+                        "{node:?} refused a {depth:?} picture with \
+                         display_interface={display_interface}: {:?}",
+                        got.err()
+                    );
+                }
+                // The importer picks its layout from this and cannot work it
+                // out from the offsets, so a wrong answer here is a driver
+                // handed the other depth's four-character code.
+                let (_fd, exported) = device
+                    .export_nv12(&target, true)
+                    .expect("a descriptor to describe");
+                assert_eq!(exported.depth, depth, "{node:?} described the wrong depth");
+                device.release_nv12(target);
             }
-            device.release_nv12(target);
-            println!("{node:?}: exports both ways");
+            println!("{node:?}: exports both ways at both depths");
             seen += 1;
         }
         assert!(
@@ -2173,3 +2233,4 @@ mod tests {
         device.release_nv12(target);
     }
 }
+

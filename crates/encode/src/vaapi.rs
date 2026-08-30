@@ -1209,12 +1209,27 @@ impl Display<'_> {
     ) -> Result<VASurfaceID> {
         use std::os::fd::AsRawFd;
 
+        // Luma plus half as much colour, whatever the depth: the pitch the
+        // frame reports is already in bytes, so the sample size is inside it.
         let bytes = u64::from(frame.pitch)
             .checked_mul(u64::from(frame.height))
             .and_then(|luma| luma.checked_mul(3))
             .map(|both| both / 2)
             .and_then(|size| u32::try_from(size).ok())
             .ok_or(Error::UnsupportedLayout)?;
+
+        // **The depth is named, never inferred.** A ten-bit frame and an
+        // eight-bit one twice as wide describe identically here -- same pitch,
+        // same plane split -- so a driver handed the wrong code accepts the
+        // import and decodes noise.
+        let (fourcc, drm_format) = if frame.depth.ten_bit() {
+            (
+                crate::ffi::va::VA_FOURCC_P010,
+                crate::ffi::va::DRM_FORMAT_P010,
+            )
+        } else {
+            (VA_FOURCC_NV12, crate::ffi::va::DRM_FORMAT_NV12)
+        };
 
         let blank = crate::ffi::va::VADRMPRIMESurfaceDescriptorLayer {
             drm_format: 0,
@@ -1224,7 +1239,7 @@ impl Display<'_> {
             pitch: [0; crate::ffi::va::VA_DRM_PRIME_PLANES],
         };
         let mut descriptor = crate::ffi::va::VADRMPRIMESurfaceDescriptor {
-            fourcc: VA_FOURCC_NV12,
+            fourcc,
             width: frame.width,
             height: frame.height,
             num_objects: 1,
@@ -1241,7 +1256,7 @@ impl Display<'_> {
         // them as separate layers is how a driver is told they are separate
         // allocations, which they are not.
         descriptor.layers[0] = crate::ffi::va::VADRMPRIMESurfaceDescriptorLayer {
-            drm_format: crate::ffi::va::DRM_FORMAT_NV12,
+            drm_format,
             num_planes: 2,
             object_index: [0; crate::ffi::va::VA_DRM_PRIME_PLANES],
             offset: [frame.planes[0].offset, frame.planes[1].offset, 0, 0],

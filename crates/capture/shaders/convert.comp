@@ -110,6 +110,16 @@ float c_offset() { return TEN_BIT ? C_OFFSET_10 : C_OFFSET_8; }
 // store is quantised against.
 float top() { return TEN_BIT ? 1023.0 : 255.0; }
 
+// **Where a ten-bit sample sits inside its sixteen-bit word.** The planes are
+// sixteen bits a sample because one device here offers no packed ten-bit
+// storage image at all, so placing the samples is this shader's job rather
+// than the driver's: an encoder reads ten bits in the *high* ten of the word,
+// so a sample of 1023 has to store as 65472 and not as 65535. That is one
+// multiply, and getting it wrong is the failure with no symptom -- the picture
+// decodes, and every value is a fraction of a step dark.
+const float TEN_IN_SIXTEEN = 65472.0 / 65535.0;
+float store_scale() { return TEN_BIT ? TEN_IN_SIXTEEN : 1.0; }
+
 // Ordered dither. Ten bits into eight is a two-bit reduction, so sixteen levels
 // of spread is more than the error can use. Off unless asked for: whether the
 // banding it removes is visible after the encoder has quantised again is a
@@ -173,7 +183,7 @@ float luma_of(vec3 colour) {
 
 void store_luma(ivec2 at, vec3 colour) {
     float y = luma_of(colour) * y_scale() + y_offset() + spread(at);
-    imageStore(luma, at, vec4(y, 0.0, 0.0, 0.0));
+    imageStore(luma, at, vec4(y * store_scale(), 0.0, 0.0, 0.0));
 }
 
 void main() {
@@ -219,7 +229,7 @@ void main() {
     // Blue difference first, which is the order the two-plane format names.
     float cb = u * c_scale() + c_offset() + spread(block);
     float cr = v * c_scale() + c_offset() + spread(block + ivec2(2, 0));
-    imageStore(chroma, block, vec4(cb, cr, 0.0, 0.0));
+    imageStore(chroma, block, vec4(cb * store_scale(), cr * store_scale(), 0.0, 0.0));
 
     // **Position goes into the summary, so moving a pixel is a change.**
     // Without it a picture and the same picture with two blocks exchanged
