@@ -441,8 +441,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             // **Not a flag.** The depth is what the seated guests declare, so
             // the daemon starts eight-bit and the encoder is rebuilt if one
             // asks for ten; a switch here would choose for guests whose
-            // decoders nobody running the daemon can see.
+            // decoders nobody running the daemon can see. Full chroma is the
+            // same, and gated further by the census over every selectable
+            // encoder, so there is nothing to configure here either.
             ten_bit: false,
+            chroma_444: false,
             convert,
             // Prefer the encoder that shares the capture's device, where the
             // device can serve it; the environment (LOWLAT_VULKAN_ENCODE=1)

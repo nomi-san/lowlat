@@ -64,11 +64,12 @@ fn main() {
     let mut desktop = Display::open(
         4,
         lowlat_capture::convert::Depth::Eight,
+        false,
         wanted.as_deref(),
         backend,
         Register::Open(&display),
     )
-        .unwrap_or_else(|e| fail(&format!("display: {e}")));
+    .unwrap_or_else(|e| fail(&format!("display: {e}")));
     println!("{desktop:?}, encoding {frames} pictures");
 
     let mut file = std::fs::File::create(&out).unwrap_or_else(|e| fail(&format!("create: {e}")));

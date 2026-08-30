@@ -71,7 +71,7 @@ pub fn captured(listed: &[Selectable], checksum: u32) -> Option<&Selectable> {
 ///
 /// Read from the device's own link rather than inferred from anything about
 /// the node, which is only ever an ordering.
-fn driver_of(node: &std::path::Path) -> Option<String> {
+pub(crate) fn driver_of(node: &std::path::Path) -> Option<String> {
     let card = node.file_name()?.to_str()?;
     let link = std::fs::read_link(format!("/sys/class/drm/{card}/device/driver")).ok()?;
     Some(link.file_name()?.to_str()?.to_string())
@@ -234,6 +234,38 @@ struct Target<F> {
     registration: Registration,
 }
 
+/// One target of the primary interface, at whatever chroma the session is
+/// coding.
+///
+/// **An enum rather than a generic, because the layouts pick the target
+/// type.** The subsampled layout and the two full-chroma ones differ in
+/// type, not in role: each converts, exports, registers and releases, and
+/// the loop treats them identically.
+enum Slot {
+    Nv12(Target<Nv12>),
+    Planar444(Target<lowlat_capture::convert::Planar444>),
+    Packed444(Target<lowlat_capture::convert::Packed444>),
+}
+
+impl Slot {
+    /// The conversion's view of the target, whichever layout it is.
+    fn target(&self) -> lowlat_capture::convert::TargetRef {
+        match self {
+            Self::Nv12(slot) => slot.frame.target(),
+            Self::Planar444(slot) => slot.frame.target(),
+            Self::Packed444(slot) => slot.frame.target(),
+        }
+    }
+
+    fn registration(&self) -> &Registration {
+        match self {
+            Self::Nv12(slot) => &slot.registration,
+            Self::Planar444(slot) => &slot.registration,
+            Self::Packed444(slot) => &slot.registration,
+        }
+    }
+}
+
 /// Which encoder a conversion target is being registered with.
 ///
 /// **Named rather than passed as a closure**, because the four pairings of
@@ -290,7 +322,7 @@ struct Vulkan {
     device: vulkan::Device,
     converter: Converter,
     imports: HashMap<u64, vulkan::Imported>,
-    targets: Vec<Target<Nv12>>,
+    targets: Vec<Slot>,
 }
 
 /// The other interface's half.
@@ -424,7 +456,7 @@ impl Pipeline {
                 let source = vk.imports.get(&key).ok_or(Error::Register)?;
                 let target = vk.targets.get(slot).ok_or(Error::Register)?;
                 vk.converter
-                    .submit(&vk.device, source, &target.frame.target(), false)
+                    .submit(&vk.device, source, &target.target(), false)
                     .map_err(Error::Convert)
             }
             Self::VulkanRing(ring) => {
@@ -481,9 +513,16 @@ impl Pipeline {
             Self::Vulkan(vk) => {
                 let source = vk.imports.get(&key).ok_or(Error::Register)?;
                 let target = vk.targets.get(slot).ok_or(Error::Register)?;
+                // **The poke is the subsampled body into a subsampled slot.**
+                // The full-chroma layouts have no such body, and the wakeup it
+                // buys is not worth writing one for; the conversion that
+                // follows overwrites the whole target regardless.
+                if !matches!(target, Slot::Nv12(_)) {
+                    return Ok(());
+                }
                 let groups = lowlat_capture::convert::poke_groups(source.width, source.height);
                 vk.converter
-                    .poke(&vk.device, source, &target.frame.target(), groups)
+                    .poke(&vk.device, source, &target.target(), groups)
                     .map_err(Error::Convert)?;
                 // The wait is the point: the submission above woke the block,
                 // and the digest it produces is nobody's.
@@ -510,7 +549,7 @@ impl Pipeline {
     /// The registration for one target slot.
     fn registration(&self, slot: usize) -> Option<&Registration> {
         match self {
-            Self::Vulkan(vk) => vk.targets.get(slot).map(|target| &target.registration),
+            Self::Vulkan(vk) => vk.targets.get(slot).map(Slot::registration),
             Self::VulkanRing(ring) => ring.registrations.get(slot),
             Self::Gl(gl) => gl.targets.get(slot).map(|target| &target.registration),
         }
@@ -537,7 +576,11 @@ impl Pipeline {
                     vk.device.release(imported);
                 }
                 for target in vk.targets.drain(..) {
-                    vk.device.release_nv12(target.frame);
+                    match target {
+                        Slot::Nv12(target) => vk.device.release_nv12(target.frame),
+                        Slot::Planar444(target) => vk.device.release_planar_444(target.frame),
+                        Slot::Packed444(target) => vk.device.release_packed_444(target.frame),
+                    }
                 }
             }
             Self::VulkanRing(ring) => {
@@ -684,6 +727,7 @@ impl Display {
     pub fn open(
         depth: usize,
         colour: lowlat_capture::convert::Depth,
+        chroma_444: bool,
         wanted: Option<&str>,
         backend: Option<lowlat_capture::Backend>,
         register: Register<'_>,
@@ -710,6 +754,11 @@ impl Display {
                 // The ring is written by the compute interface by
                 // construction; a named GL override cannot be honoured.
                 Err(Error::NotTogether)
+            } else if chroma_444 {
+                // The third interface codes no full chroma on any measured
+                // part, so the pairing is refused here rather than silently
+                // built subsampled.
+                Err(Error::NotTogether)
             } else {
                 let count = targets.len();
                 Converter::new(&device)
@@ -729,10 +778,10 @@ impl Display {
         } else {
             match backend {
                 Some(lowlat_capture::Backend::Vulkan) => {
-                    Self::build_vulkan(&node, depth, colour, shape, &register)
+                    Self::build_vulkan(&node, depth, colour, chroma_444, shape, &register)
                 }
                 Some(lowlat_capture::Backend::Gl) => {
-                    Self::build_gl(&node, &card, depth, colour, shape, &register)
+                    Self::build_gl(&node, &card, depth, colour, chroma_444, shape, &register)
                 }
                 // **Nothing follows the device**: the compute interface where it
                 // exists, the fallback where it does not (docs/05-host.md
@@ -742,17 +791,21 @@ impl Display {
                 // refusal rather than being masked by a slower tier -- a machine
                 // quietly converting on the wrong interface is a measurement
                 // nobody can trust and a latency nobody asked for.
-                None => match Self::build_vulkan(&node, depth, colour, shape, &register) {
-                    Err(Error::Convert(
-                        vulkan::Error::NoLoader | vulkan::Error::NoDeviceForNode,
-                    )) => {
-                        lowlat_common::log_info!(
-                            "display: {on} has no compute interface, converting on the fallback"
-                        );
-                        Self::build_gl(&node, &card, depth, colour, shape, &register)
+                None => {
+                    match Self::build_vulkan(&node, depth, colour, chroma_444, shape, &register) {
+                        Err(Error::Convert(
+                            vulkan::Error::NoLoader | vulkan::Error::NoDeviceForNode,
+                        )) => {
+                            lowlat_common::log_info!(
+                                "display: {on} has no compute interface, converting on the fallback"
+                            );
+                            Self::build_gl(
+                                &node, &card, depth, colour, chroma_444, shape, &register,
+                            )
+                        }
+                        outcome => outcome,
                     }
-                    outcome => outcome,
-                },
+                }
             }
         };
         let pipeline = pipeline.inspect_err(|error| {
@@ -811,6 +864,7 @@ impl Display {
         node: &std::path::Path,
         depth: usize,
         colour: lowlat_capture::convert::Depth,
+        chroma_444: bool,
         shape: Shape,
         register: &Register<'_>,
     ) -> Result<Pipeline, Error> {
@@ -824,26 +878,63 @@ impl Display {
             // and the colour plane is found in the middle of it. Nothing
             // refuses it -- the pitch and the size are consistent with what
             // was allocated, just not with what is reading it.
-            let frame = device.allocate_planar(shape.width, shape.height, colour)?;
-            let registration = match register {
-                // Each encoder is handed the descriptor kind it has a name for;
-                // the allocation is built able to produce either.
-                Register::Vendor(encoder) => {
-                    let (fd, exported) = device.export_nv12(&frame, false)?;
-                    Self::register_vendor(encoder, fd, &exported)
+            let slot = match (chroma_444, register) {
+                (false, _) => {
+                    let frame = device.allocate_planar(shape.width, shape.height, colour)?;
+                    let registration = match register {
+                        // Each encoder is handed the descriptor kind it has a
+                        // name for; the allocation is built able to produce
+                        // either.
+                        Register::Vendor(encoder) => {
+                            let (fd, exported) = device.export_nv12(&frame, false)?;
+                            Self::register_vendor(encoder, fd, &exported)
+                        }
+                        Register::Open(display) => {
+                            let (fd, exported) = device.export_nv12(&frame, true)?;
+                            Self::register_open(display, std::os::fd::AsFd::as_fd(&fd), &exported)
+                        }
+                        // Routed before the backends are chosen; reaching it
+                        // here is a construction error, not a pairing.
+                        Register::VulkanRing { .. } => Err(Error::NotTogether),
+                    }?;
+                    Slot::Nv12(Target {
+                        frame,
+                        registration,
+                    })
                 }
-                Register::Open(display) => {
-                    let (fd, exported) = device.export_nv12(&frame, true)?;
-                    Self::register_open(display, std::os::fd::AsFd::as_fd(&fd), &exported)
+                // **The vendor encoder reads three full planes**, so the
+                // full-chroma conversion for it writes three and the
+                // descriptor leaves by the handle that runtime has a name
+                // for, which has none for the display interface's kind.
+                (true, Register::Vendor(encoder)) => {
+                    let frame = device.allocate_planar_444(shape.width, shape.height, colour)?;
+                    let (fd, exported) = device.export_planar_444(&frame, false)?;
+                    let registration = Self::register_vendor(encoder, fd, &exported)?;
+                    Slot::Planar444(Target {
+                        frame,
+                        registration,
+                    })
                 }
-                // Routed before the backends are chosen; reaching it here
-                // is a construction error, not a pairing.
-                Register::VulkanRing { .. } => Err(Error::NotTogether),
-            }?;
-            targets.push(Target {
-                frame,
-                registration,
-            });
+                // **The open encoder reads one packed plane**, which is the
+                // only full-chroma shape its low-power entry point takes, so
+                // the conversion writes AYUV or Y410 words and the descriptor
+                // travels over the display interface.
+                (true, Register::Open(display)) => {
+                    let frame = device.allocate_packed_444(shape.width, shape.height, colour)?;
+                    let (fd, exported) = device.export_packed_444(&frame, true)?;
+                    let registration =
+                        Self::register_open(display, std::os::fd::AsFd::as_fd(&fd), &exported)?;
+                    Slot::Packed444(Target {
+                        frame,
+                        registration,
+                    })
+                }
+                // The third interface codes no full chroma on any measured
+                // part, so the pairing is refused rather than silently built
+                // subsampled.
+                (true, Register::VulkanRing { .. }) => return Err(Error::NotTogether),
+            };
+            targets.push(slot);
         }
         Ok(Pipeline::Vulkan(Box::new(Vulkan {
             device,
@@ -865,19 +956,20 @@ impl Display {
         card: &Card,
         depth: usize,
         colour: lowlat_capture::convert::Depth,
+        chroma_444: bool,
         shape: Shape,
         register: &Register<'_>,
     ) -> Result<Pipeline, Error> {
         let Register::Open(display) = register else {
             return Err(Error::NotTogether);
         };
-        // **This tier codes eight bits and says so.** Its targets are named by
-        // the display interface as a two-plane eight-bit layout, and the parts
-        // old enough to need this tier encode no ten-bit stream anyway
-        // (09 section 3). Refusing is the honest answer; allocating eight and
-        // letting a ten-bit encoder read it is the fault this comment exists
-        // because of.
-        if colour.ten_bit() {
+        // **This tier codes eight bits at half-resolution chroma and says
+        // so.** Its targets are named by the display interface as a two-plane
+        // eight-bit layout, and the parts old enough to need this tier encode
+        // no ten-bit stream anyway (09 section 3). Refusing is the honest
+        // answer; allocating eight and letting a ten-bit encoder read it is
+        // the fault this comment exists because of.
+        if colour.ten_bit() || chroma_444 {
             return Err(Error::NotTogether);
         }
         let device = lowlat_capture::gl::Device::for_display(node).map_err(Error::Gl)?;
@@ -1126,7 +1218,23 @@ impl Display {
         fd: std::os::fd::OwnedFd,
         exported: &lowlat_capture::convert::Exported,
     ) -> Result<Registration, Error> {
-        let bytes = u64::from(exported.pitch) * u64::from(exported.height) * 3 / 2;
+        // **The layout names the byte count.** The subsampled frame is luma
+        // plus half as much colour, the full-chroma one is three full planes,
+        // and the packed one is a word per pixel, which the pitch already
+        // counts in bytes. The encoder is told the layout at registration,
+        // and this is the allocation the runtime takes, so the two must name
+        // the same shape.
+        let bytes = match exported.kind {
+            lowlat_capture::convert::Layout::SemiPlanar420 => {
+                u64::from(exported.pitch) * u64::from(exported.height) * 3 / 2
+            }
+            lowlat_capture::convert::Layout::Planar444 => {
+                u64::from(exported.pitch) * u64::from(exported.height) * 3
+            }
+            lowlat_capture::convert::Layout::Packed444 => {
+                u64::from(exported.pitch) * u64::from(exported.height)
+            }
+        };
         let cuda = lowlat_encode::cuda::Cuda::load().map_err(|_| Error::Register)?;
         // SAFETY: the encoder's context is current on this thread, the
         // descriptor was exported for the platform's opaque kind, and the size

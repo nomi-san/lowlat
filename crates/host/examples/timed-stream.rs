@@ -40,6 +40,7 @@ fn main() {
         // A live-run knob: the depth is otherwise the guests' to settle, and
         // this probe drives the loop without any.
         ten_bit: std::env::var("LOWLAT_TEN_BIT").is_ok_and(|v| v != "0"),
+        chroma_444: std::env::var("LOWLAT_CHROMA").is_ok_and(|v| v == "444"),
         audio: None,
         convert: None,
         prefer_vulkan: false,

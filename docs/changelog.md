@@ -3,6 +3,34 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-08-30 - Full chroma is negotiated, gated and live
+
+### Measured
+- **The whole phase gate is green.** The chroma axis rides beside the depth
+axis end to
+  end -- configuration, reinitialization, the status -- and the offer is gated
+on a census
+  over every encoder the host could select: a machine with one part that
+cannot code full
+  chroma refuses it with the part named, because a later output move onto that
+part would
+  end the session rather than degrade. The rig is that machine, and the
+refusal is verified
+  by forcing it; the preferred-third-encoder refusal is a committed test.
+- **The live overlapped loop reports the cost the serialized probe could
+not**: 2560x1440 at
+  full frame rate on the vendor encoder, twenty seconds a run, the host stage
+sum reads
+  4.489 ms against 4.116 at eight bits and 4.648 ms against 4.198 at ten --
+  full chroma costs about ten percent of the host path at either depth, with
+the
+  conversion's share under 0.1 ms.
+- **The live 4:4:4 stream decodes through two decoder families** at both
+depths: the
+  software family and the open stack's hardware one each read `Rext /
+yuv444p` and `Rext /
+  yuv444p10le` from the vendor encoder's output without an error.
+
 ## 2026-08-30 - The open backend codes Main444 and Main444_10
 
 ### Measured

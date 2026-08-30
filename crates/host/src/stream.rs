@@ -518,6 +518,12 @@ pub(crate) struct Shared {
     /// stamping the old depth after a rebuild describes the stream wrongly to
     /// every peer, in the one field where being wrong fails every picture.
     ten_bit: AtomicU32,
+    /// Whether the encoder behind that epoch codes full-resolution chroma.
+    ///
+    /// **Read on the status, not carried per frame.** The frame header has no
+    /// chroma bit; a peer reads this from the stream declaration and the
+    /// bitstream's own sets, so this is what a status reader is owed.
+    chroma_444: AtomicU32,
 }
 
 /// The pointer as a guest needs to report it, in the captured picture's own
@@ -1045,6 +1051,13 @@ pub struct Config {
     /// it ([05 §3](../../../docs/05-host.md)). What a host owes instead is the
     /// truth about what it is producing, which is on the status.
     pub ten_bit: bool,
+    /// Whether the stream codes chroma at full resolution.
+    ///
+    /// **Settled the same way as the depth, and gated harder.** Every encoder
+    /// this host could select has to be able to code it, or the offer is
+    /// refused with the gate named, because a later output move onto a part
+    /// that cannot would end the session rather than downgrade (D11).
+    pub chroma_444: bool,
     /// Which encoder to build, or **nothing to follow the display**.
     ///
     /// **Following is the right default and choosing is the override.** A
@@ -1231,6 +1244,7 @@ impl Stream {
             epoch: AtomicU32::new(0),
             colour: AtomicU32::new(0),
             ten_bit: AtomicU32::new(0),
+            chroma_444: AtomicU32::new(0),
         });
         let (joins, arrivals) = mpsc::channel();
         let (outputs, asked) = mpsc::channel();
@@ -1362,16 +1376,16 @@ impl Stream {
     /// What the running encoder codes, or nothing before one exists.
     ///
     /// **Read from the loop, not from the configuration.** A seated guest can
-    /// move both of these while the stream runs, so what was asked for at the
-    /// start stops being the answer as soon as one does.
-    pub fn colour(&self) -> Option<(Codec, bool)> {
+    /// move all three of these while the stream runs, so what was asked for
+    /// at the start stops being the answer as soon as one does.
+    pub fn colour(&self) -> Option<(Codec, bool, bool)> {
         let packed = self.shared.colour.load(Ordering::Acquire);
         let codec = match packed & 0xFF {
             1 => Codec::H264,
             2 => Codec::H265,
             _ => return None,
         };
-        Some((codec, packed & 0x100 != 0))
+        Some((codec, packed & 0x100 != 0, packed & 0x200 != 0))
     }
 
     /// The last stage report the loop published.
@@ -1701,6 +1715,11 @@ impl SeatHold {
     pub fn ten_bit(&self) -> bool {
         self.shared.ten_bit.load(Ordering::Acquire) != 0
     }
+
+    /// Whether the encoder behind the current epoch codes full chroma.
+    pub fn chroma_444(&self) -> bool {
+        self.shared.chroma_444.load(Ordering::Acquire) != 0
+    }
 }
 
 impl Drop for SeatHold {
@@ -1773,7 +1792,7 @@ fn run(
     let mut roster = Roster::default();
     // Codec and depth together: a reconfiguration settles both, so reverting
     // one and not the other leaves a configuration nobody asked for.
-    let mut previous: Option<(Codec, bool)> = None;
+    let mut previous: Option<(Codec, bool, bool)> = None;
     // **What the capture was on before a guest asked to move it.**
     //
     // Held for the same reason the codec above is: a request that turns out to
@@ -1859,7 +1878,8 @@ fn run(
         shared.colour.store(
             u32::from(config.codec == Codec::H265) << 1
                 | u32::from(config.codec == Codec::H264)
-                | u32::from(config.ten_bit) << 8,
+                | u32::from(config.ten_bit) << 8
+                | u32::from(config.chroma_444) << 9,
             Ordering::Release,
         );
         let vulkan_exit = if prefer_vulkan {
@@ -1926,15 +1946,16 @@ fn run(
                     continue;
                 };
                 lowlat_common::log_warn!(
-                    "stream: codec={:?} ten_bit={} could not be configured (reason={}), \
-                     staying on {:?}",
+                    "stream: codec={:?} ten_bit={} chroma_444={} could not be configured \
+                     (reason={}), staying on {:?}",
                     config.codec,
                     config.ten_bit,
+                    config.chroma_444,
                     reason,
                     back
                 );
                 kick_asked(shared, &roster.active, reason);
-                (config.codec, config.ten_bit) = back;
+                (config.codec, config.ten_bit, config.chroma_444) = back;
             }
             Exit::Rediscover(_) | Exit::Reconfigure(..) => {
                 // **Disarmed, because the output it was holding worked.** A
@@ -1943,17 +1964,21 @@ fn run(
                 // reverting the output then would move a guest off a screen
                 // that was serving it perfectly well.
                 previous_output = None;
-                if let Exit::Reconfigure(codec, ten_bit) = exit {
+                if let Exit::Reconfigure(codec, ten_bit, chroma_444) = exit {
                     lowlat_common::log_info!(
-                        "stream: reconfiguring codec={:?} -> {:?}, ten_bit={} -> {}",
+                        "stream: reconfiguring codec={:?} -> {:?}, ten_bit={} -> {}, \
+                         chroma_444={} -> {}",
                         config.codec,
                         codec,
                         config.ten_bit,
-                        ten_bit
+                        ten_bit,
+                        config.chroma_444,
+                        chroma_444
                     );
-                    previous = Some((config.codec, config.ten_bit));
+                    previous = Some((config.codec, config.ten_bit, config.chroma_444));
                     config.codec = codec;
                     config.ten_bit = ten_bit;
+                    config.chroma_444 = chroma_444;
                 } else if let Exit::Rediscover(why) = exit {
                     // What it changed to is not carried: the loop reads it
                     // from the display on the way back in, which is the one
@@ -1973,6 +1998,9 @@ fn run(
                 shared
                     .ten_bit
                     .store(u32::from(config.ten_bit), Ordering::Release);
+                shared
+                    .chroma_444
+                    .store(u32::from(config.chroma_444), Ordering::Release);
                 shared.epoch.fetch_add(1, Ordering::Release);
             }
         }
@@ -1987,9 +2015,10 @@ enum Exit {
     /// The encoder could not be built, or stopped working, and the guests are
     /// owed the reason.
     Failed(i32),
-    /// Every seated guest can decode this codec at this depth, and at least
-    /// one asked for a configuration the running encoder does not produce.
-    Reconfigure(Codec, bool),
+    /// Every seated guest can decode this codec at this depth and chroma, and
+    /// at least one asked for a configuration the running encoder does not
+    /// produce.
+    Reconfigure(Codec, bool, bool),
     /// What is being captured changed, and the pipeline has to be found again.
     ///
     /// **The encoder is built around one display and cannot follow one.** A
@@ -2173,17 +2202,143 @@ fn colour_of(config: &Config) -> lowlat_capture::convert::Depth {
     }
 }
 
+/// Capability bits a peer can declare that this pipeline cannot emit on the
+/// named codec, regardless of the machine.
+///
+/// **The base flag is not a capability and is not listed here.** It is set on
+/// every declaration and means nothing; testing it as one reports a refusal on
+/// every ordinary request, which is what it did.
 fn not_emitted(codec: Codec) -> u32 {
-    let mut refused = lowlat_core::init::FLAG_COLOR444;
-    // **Ten bits is HEVC only, and that is the hardware rather than a
-    // policy.** No encoder on any of the three interfaces offers an H.264
-    // profile above eight bits and one of them cannot express one at all, so a
-    // peer asking for depth without asking for the codec is asking for
-    // something nothing here can produce.
+    let mut refused = 0;
+    // **Ten bits is HEVC only, and full chroma is too**, and that is the
+    // hardware rather than a policy. No encoder on any of the three
+    // interfaces offers a first-codec profile above eight bits and one of
+    // them cannot express one at all, and the full-chroma profiles live on
+    // the second codec alone.
     if codec == Codec::H264 {
-        refused |= lowlat_core::init::FLAG_10BIT;
+        refused |= lowlat_core::init::FLAG_10BIT | lowlat_core::init::FLAG_COLOR444;
     }
     refused
+}
+
+/// Whether every encoder this host could select codes full chroma at the
+/// running depth, or which gate refused it.
+///
+/// **A census, not a capability list.** One encode serves every seat and the
+/// configuration is settled once (D11), so a part this host might later land
+/// on that cannot code full chroma would end the session rather than degrade.
+/// The offer is refused up front on such a machine, with the gate named, so a
+/// guest that asks is answered without an encoder being built for a promise
+/// the machine cannot keep. Checked once per run: the answers are device
+/// properties and nothing here changes them.
+fn chroma_census(config: &Config) -> Result<(), &'static str> {
+    let ten_bit = config.ten_bit;
+    // **A probe knob, loudly on purpose.** A mixed machine refuses the offer
+    // by design, which makes the granted path unexercisable there; this opens
+    // it for a measurement or a test and says so rather than pretending.
+    if std::env::var("LOWLAT_PROBE_CENSUS").is_ok_and(|value| value == "pass") {
+        lowlat_common::log_warn!("stream: the full-chroma census is forced open by a probe knob");
+        return Ok(());
+    }
+    match config.backend {
+        Some(Backend::Vendor) => vendor_census(ten_bit),
+        Some(Backend::Open) => open_census(ten_bit),
+        None => {
+            // **The third interface codes no full chroma on any part measured
+            // here**, so preferring it is a refusal and the preference is the
+            // gate. Asked before the device censuses, because it makes them
+            // moot and it is the one answer that needs no device.
+            if config.prefer_vulkan
+                || std::env::var("LOWLAT_VULKAN_ENCODE").is_ok_and(|value| value == "1")
+            {
+                return Err("the third encoder, which no measured part serves full chroma");
+            }
+            // **Both display-following backends are candidates wherever the
+            // output may move**, not just where it is now: a move onto a part
+            // that cannot code full chroma would end the session, which is
+            // the exact failure this census exists to keep unannounced.
+            open_census(ten_bit)?;
+            vendor_census(ten_bit)
+        }
+    }
+}
+
+/// The open backend, on every node an output could move onto.
+///
+/// **Only nodes that would serve the stream are asked about full chroma.** A
+/// node with no second-codec encoder at this depth cannot serve the stream at
+/// all, full chroma or not, which is a refusal the subsampled stream already
+/// owns; the census adds only what full chroma adds.
+fn open_census(ten_bit: bool) -> Result<(), &'static str> {
+    let Ok(runtime) = lowlat_encode::vaapi::Vaapi::load() else {
+        return Err("the open runtime, which could not be loaded");
+    };
+    let Ok(nodes) = std::fs::read_dir("/dev/dri") else {
+        return Err("the node directory, which could not be walked");
+    };
+    for entry in nodes.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with("renderD") {
+            continue;
+        }
+        let path = entry.path();
+        // **A node the vendor driver owns is served by the vendor encoder**,
+        // never the open one, so the open census does not ask it; the vendor
+        // census covers it.
+        if crate::display::driver_of(&path).as_deref() == Some("nvidia") {
+            continue;
+        }
+        let Ok(asked) = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) else {
+            continue;
+        };
+        let Ok(display) = runtime.open(&asked) else {
+            continue;
+        };
+        // **A node without the second codec at this depth cannot serve the
+        // stream at all**, so it is not asked about full chroma; the refusal
+        // there belongs to the subsampled stream it cannot code either.
+        if display
+            .caps_at(lowlat_encode::vaapi::Codec::H265, ten_bit)
+            .is_err()
+        {
+            continue;
+        }
+        if display.caps_444(ten_bit).is_err() {
+            return Err("the open encoder on a node the output could move onto");
+        }
+    }
+    Ok(())
+}
+
+/// The vendor backend, on the device it would encode with.
+fn vendor_census(ten_bit: bool) -> Result<(), &'static str> {
+    let Ok(cuda) = lowlat_encode::cuda::Cuda::load() else {
+        // **Absent is not a refusal.** A machine without the vendor runtime
+        // never selects that backend, so there is no part to fail the census.
+        return Ok(());
+    };
+    let Ok(device) = cuda.any_device() else {
+        return Ok(());
+    };
+    let Ok(compute) = cuda.retain_primary(&device) else {
+        return Ok(());
+    };
+    let Ok(api) = lowlat_encode::nvenc::Api::load() else {
+        return Ok(());
+    };
+    let Ok(session) = api.open_session(compute) else {
+        return Ok(());
+    };
+    let Ok(caps) = session.caps(lowlat_encode::nvenc::Codec::H265) else {
+        return Err("the vendor encoder, which would not report its capabilities");
+    };
+    if !caps.yuv444 || (ten_bit && !caps.ten_bit) {
+        return Err("the vendor encoder, which codes no full chroma at this depth");
+    }
+    Ok(())
 }
 
 /// How many pictures the third encoder's ring holds.
@@ -2326,6 +2481,7 @@ fn run_vulkan(
     let mut desktop = match crate::display::Display::open(
         VULKAN_SLOTS,
         colour_of(&config),
+        config.chroma_444,
         config.output.as_deref(),
         config.convert,
         crate::display::Register::VulkanRing {
@@ -2428,7 +2584,7 @@ fn run_open(
                 max_num_ref_frames: 1,
                 transform_depth: lowlat_encode::h265::TRANSFORM_HIERARCHY_DEPTH,
                 bit_depth_minus8: if config.ten_bit { 2 } else { 0 },
-                chroma_444: false,
+                chroma_444: config.chroma_444,
             }),
         ),
     };
@@ -2465,7 +2621,12 @@ fn run_open(
         lowlat_common::log_error!("stream: render node could not be opened");
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };
-    let Ok(caps) = display.caps_at(codec, config.ten_bit) else {
+    let caps = if config.chroma_444 {
+        display.caps_444(config.ten_bit)
+    } else {
+        display.caps_at(codec, config.ten_bit)
+    };
+    let Ok(caps) = caps else {
         lowlat_common::log_error!("stream: render node reports no encode for codec={codec:?}");
         return Exit::Failed(status::ENCODER_CAPABILITIES);
     };
@@ -2494,6 +2655,7 @@ fn run_open(
         match crate::display::Display::open(
             ENCODE_DEPTH,
             colour_of(&config),
+            config.chroma_444,
             config.output.as_deref(),
             config.convert,
             crate::display::Register::Open(&display),
@@ -2608,8 +2770,13 @@ fn run_vendor(
             fps: config.fps,
             bitrate_bps: start_bps(&config),
             min_qp: config.quality.min_qp(),
-            // The wire carries 4:2:0 only (00-overview.md D7).
-            chroma: lowlat_encode::nvenc::Chroma::Yuv420,
+            // Full chroma is granted per session, never configured; the
+            // census that gates it already ran before this encoder exists.
+            chroma: if config.chroma_444 {
+                lowlat_encode::nvenc::Chroma::Yuv444
+            } else {
+                lowlat_encode::nvenc::Chroma::Yuv420
+            },
             depth: if config.ten_bit {
                 lowlat_encode::nvenc::Depth::Ten
             } else {
@@ -2629,6 +2796,7 @@ fn run_vendor(
         match crate::display::Display::open(
             lowlat_encode::nvenc::IN_FLIGHT,
             colour_of(&config),
+            config.chroma_444,
             config.output.as_deref(),
             config.convert,
             crate::display::Register::Vendor(&encoder),
@@ -3176,6 +3344,11 @@ fn encode_loop<E: Encoder + FromDevice>(
     let mut hotspots = Hotspots::new();
     let mut presence = Presence::default();
     let mut attached_ms = 0.0f64;
+    // **Asked once, because the answer is a set of device properties.** The
+    // census opens devices, which is not frame-path work; it runs the first
+    // time a guest asks for full chroma and is remembered for the rest of the
+    // run.
+    let mut full_chroma_census: Option<Result<(), &'static str>> = None;
 
     loop {
         if shared.stopping.load(Ordering::Acquire) != 0 {
@@ -3236,10 +3409,25 @@ fn encode_loop<E: Encoder + FromDevice>(
         // **Granted only where the codec can carry it.** The depth is refused
         // rather than silently dropped on H.264, because a peer builds one
         // decoder from what it declared and does not switch on what arrives.
-        let wanted_ten_bit =
-            asked & lowlat_core::init::FLAG_10BIT != 0 && not_emitted(wanted) & lowlat_core::init::FLAG_10BIT == 0;
-        let disagrees =
-            asked != 0 && (wanted != config.codec || wanted_ten_bit != config.ten_bit);
+        let wanted_ten_bit = asked & lowlat_core::init::FLAG_10BIT != 0
+            && not_emitted(wanted) & lowlat_core::init::FLAG_10BIT == 0;
+        // **Full chroma is the census gate on top of the codec rule.** Every
+        // encoder this host could select has to be able to code it, asked once
+        // and remembered, and the refusal names the gate.
+        let mut wanted_chroma = false;
+        if asked & lowlat_core::init::FLAG_COLOR444 != 0 {
+            let gate = full_chroma_census.get_or_insert_with(|| chroma_census(&config));
+            match gate {
+                Ok(()) => wanted_chroma = true,
+                Err(why) => {
+                    lowlat_common::log_warn!("stream: full chroma asked and refused: {why}");
+                }
+            }
+        }
+        let disagrees = asked != 0
+            && (wanted != config.codec
+                || wanted_ten_bit != config.ten_bit
+                || wanted_chroma != config.chroma_444);
         if reconfigure_asked(shared, active) || disagrees {
             let refused = asked & not_emitted(wanted);
             if refused != 0 {
@@ -3258,17 +3446,22 @@ fn encode_loop<E: Encoder + FromDevice>(
             // asked about look identical from the outside otherwise.
             lowlat_common::log_info!(
                 "stream: reinit {}, consensus={:#x} over {} seat(s), codec={:?} -> {:?}, \
-                 ten_bit={} -> {}",
+                 ten_bit={} -> {}, chroma_444={} -> {}",
                 if disagrees { "by declaration" } else { "asked" },
                 asked,
                 active.len(),
                 config.codec,
                 wanted,
                 config.ten_bit,
-                wanted_ten_bit
+                wanted_ten_bit,
+                config.chroma_444,
+                wanted_chroma
             );
-            if wanted != config.codec || wanted_ten_bit != config.ten_bit {
-                return Exit::Reconfigure(wanted, wanted_ten_bit);
+            if wanted != config.codec
+                || wanted_ten_bit != config.ten_bit
+                || wanted_chroma != config.chroma_444
+            {
+                return Exit::Reconfigure(wanted, wanted_ten_bit, wanted_chroma);
             }
             // Nothing here this encoder does not already produce, so what the
             // request is owed is what a reinitialization would have given it:
@@ -4306,6 +4499,7 @@ mod tests {
         let stream = Stream::start(Config {
             quality: lowlat_encode::Quality::default(),
             ten_bit: false,
+            chroma_444: false,
             audio: None,
             convert: None,
             prefer_vulkan: false,
@@ -4445,6 +4639,7 @@ mod tests {
         fn with_pool(slots: usize) -> Self {
             let config = Config {
                 ten_bit: false,
+                chroma_444: false,
                 audio: None,
                 convert: None,
                 prefer_vulkan: false,
@@ -4494,6 +4689,7 @@ mod tests {
                 epoch: AtomicU32::new(0),
                 colour: AtomicU32::new(0),
                 ten_bit: AtomicU32::new(0),
+                chroma_444: AtomicU32::new(0),
             });
             let (joins, arrivals) = mpsc::channel();
             let forced = Arc::new(AtomicU32::new(0));
@@ -4565,6 +4761,7 @@ mod tests {
             epoch: AtomicU32::new(0),
             colour: AtomicU32::new(0),
             ten_bit: AtomicU32::new(0),
+            chroma_444: AtomicU32::new(0),
         });
         let (joins, arrivals) = mpsc::channel();
         let stream = Stream {
@@ -4580,6 +4777,7 @@ mod tests {
         Config {
             quality: lowlat_encode::Quality::default(),
             ten_bit: false,
+            chroma_444: false,
             audio: None,
             convert: None,
             prefer_vulkan: false,
@@ -4782,6 +4980,7 @@ mod tests {
             epoch: AtomicU32::new(0),
             colour: AtomicU32::new(0),
             ten_bit: AtomicU32::new(0),
+            chroma_444: AtomicU32::new(0),
         });
         let (outputs, asked) = mpsc::channel();
         let stream = Stream {
@@ -5588,28 +5787,67 @@ mod tests {
                 0,
                 "an ordinary request for the second codec reports something ungranted"
             );
-            // Full-resolution chroma is not emitted at all, on either codec.
-            assert_ne!(lowlat_core::init::FLAG_COLOR444 & not_emitted(codec), 0);
         }
     }
 
-    /// **Ten bits is refused on one codec and granted on the other**, and that
-    /// is the hardware rather than a policy: no encoder on any of the three
-    /// interfaces offers an H.264 profile above eight bits, and one of them
-    /// cannot describe one at all. Granting it there would leave a peer
-    /// building a decoder for a stream nothing can produce.
+    /// **Ten bits and full chroma are refused on one codec and granted on the
+    /// other**, and that is the hardware rather than a policy: no encoder on
+    /// any of the three interfaces offers a first-codec profile above eight
+    /// bits, and one of them cannot describe one at all. Granting either
+    /// there would leave a peer building a decoder for a stream nothing can
+    /// produce. On the second codec, full chroma has a further gate -- the
+    /// census over every selectable encoder -- which is not this function's
+    /// to decide.
     #[test]
-    fn ten_bits_is_refused_on_the_codec_that_cannot_carry_it() {
-        assert_ne!(
-            lowlat_core::init::FLAG_10BIT & not_emitted(Codec::H264),
-            0,
-            "ten bits was granted on a codec with no profile for it"
+    fn depth_and_full_chroma_are_refused_on_the_codec_that_cannot_carry_them() {
+        for flag in [
+            lowlat_core::init::FLAG_10BIT,
+            lowlat_core::init::FLAG_COLOR444,
+        ] {
+            assert_ne!(
+                flag & not_emitted(Codec::H264),
+                0,
+                "{flag:#x} was granted on a codec with no profile for it"
+            );
+            assert_eq!(
+                flag & not_emitted(Codec::H265),
+                0,
+                "{flag:#x} was refused by the codec rule on the codec that carries it"
+            );
+        }
+    }
+
+    /// **Preferring the third encoder refuses full chroma before any device is
+    /// asked**, which is the census gate a mixed selection ends at, forced
+    /// rather than read off the code.
+    #[test]
+    fn full_chroma_is_refused_when_the_third_encoder_is_preferred() {
+        let mut config = test_config(Codec::H265);
+        config.backend = None;
+        config.prefer_vulkan = true;
+        let Err(gate) = chroma_census(&config) else {
+            panic!("the third encoder passed a census it cannot pass");
+        };
+        assert!(
+            gate.contains("third encoder"),
+            "the gate named {gate:?}, not the preferred encoder"
         );
-        assert_eq!(
-            lowlat_core::init::FLAG_10BIT & not_emitted(Codec::H265),
-            0,
-            "ten bits was refused on the codec that carries it"
-        );
+    }
+
+    /// **A mixed selection refuses the offer, with the gate named**, which is
+    /// the D11 rule in action: one encode serves every seat and a later output
+    /// move onto a part that cannot code full chroma would end the session
+    /// rather than degrade. Off by default because the answer is the
+    /// machine's; on a machine whose census passes there is nothing to say.
+    #[test]
+    #[ignore = "the answer is the machine's"]
+    fn a_mixed_machine_refuses_full_chroma_with_the_gate_named() {
+        if let Err(gate) = chroma_census(&test_config(Codec::H265)) {
+            assert!(
+                gate.contains("open encoder") || gate.contains("vendor encoder"),
+                "the refusal named {gate:?}, which is not a part"
+            );
+        }
     }
 
     /// **A peer changes what it can decode with a message, not by
@@ -5656,7 +5894,7 @@ mod tests {
         shared.stopping.store(0, Ordering::Release);
         assert_eq!(
             exit,
-            Exit::Reconfigure(Codec::H265, false),
+            Exit::Reconfigure(Codec::H265, false, false),
             "the request for the other codec was not answered with one"
         );
 
@@ -6140,6 +6378,7 @@ mod tests {
         let stream = Stream::start(Config {
             quality: lowlat_encode::Quality::default(),
             ten_bit: false,
+            chroma_444: false,
             audio: None,
             convert: None,
             prefer_vulkan: false,
@@ -6237,6 +6476,7 @@ mod tests {
         let stream = Stream::start(Config {
             quality: lowlat_encode::Quality::default(),
             ten_bit: false,
+            chroma_444: false,
             audio: None,
             convert: None,
             prefer_vulkan: false,
@@ -6404,6 +6644,7 @@ mod tests {
     fn report_stream() -> Stream {
         Stream::start(Config {
             ten_bit: false,
+            chroma_444: false,
             audio: None,
             convert: None,
             prefer_vulkan: false,
@@ -6434,6 +6675,7 @@ mod tests {
         let stream = Stream::start(Config {
             quality: lowlat_encode::Quality::default(),
             ten_bit: false,
+            chroma_444: false,
             audio: None,
             convert: None,
             prefer_vulkan: false,

@@ -1151,7 +1151,7 @@ impl Admission {
     }
 
     /// What the running encoder codes, or nothing before one exists.
-    pub fn colour(&self) -> Option<(crate::stream::Codec, bool)> {
+    pub fn colour(&self) -> Option<(crate::stream::Codec, bool, bool)> {
         self.stream.as_ref().and_then(crate::stream::Stream::colour)
     }
 

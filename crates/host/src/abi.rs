@@ -1101,6 +1101,7 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
             // encode serves every seat, so a depth chosen here would be chosen
             // for guests whose decoders an application cannot see.
             ten_bit: false,
+            chroma_444: false,
             // **Not exposed at the boundary.** An application has no way to
             // know which interface a machine should use, so the stream
             // follows the device; naming one is the daemon's measurement
@@ -1919,21 +1920,29 @@ pub unsafe extern "C" fn lowlat_host_get_status(
             slot.audio_active = reading;
             // Zero and clear until an encoder exists, the same way a picture
             // of no size is reported before a display has been opened.
-            let (codec, ten_bit, chroma) = match seam.colour() {
-                Some((crate::stream::Codec::H264, ten_bit)) => (
+            let (codec, ten_bit, chroma_444) = match seam.colour() {
+                Some((crate::stream::Codec::H264, ten_bit, chroma_444)) => (
                     lowlat_codec::LOWLAT_CODEC_H264 as u32,
                     ten_bit,
-                    lowlat_chroma::LOWLAT_CHROMA_420 as u32,
+                    if chroma_444 {
+                        lowlat_chroma::LOWLAT_CHROMA_444 as u32
+                    } else {
+                        lowlat_chroma::LOWLAT_CHROMA_420 as u32
+                    },
                 ),
-                Some((crate::stream::Codec::H265, ten_bit)) => (
+                Some((crate::stream::Codec::H265, ten_bit, chroma_444)) => (
                     lowlat_codec::LOWLAT_CODEC_HEVC as u32,
                     ten_bit,
-                    lowlat_chroma::LOWLAT_CHROMA_420 as u32,
+                    if chroma_444 {
+                        lowlat_chroma::LOWLAT_CHROMA_444 as u32
+                    } else {
+                        lowlat_chroma::LOWLAT_CHROMA_420 as u32
+                    },
                 ),
                 None => (0, false, 0),
             };
             slot.codec = codec;
-            slot.chroma = chroma;
+            slot.chroma = chroma_444;
             slot.ten_bit = ten_bit;
             slot.reserved = [0; 1];
             put(

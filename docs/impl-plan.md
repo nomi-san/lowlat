@@ -1463,24 +1463,44 @@ The conversion shapes are settled, asked of the devices rather than guessed:
   the importer documents; a first attempt composed a different order under a 4:2:2-shaped
   four-character code that the driver accepted, decoded without an error, and was caught
   only by the pixel comparison -- the reference test now pins the corrected order.*
-- [ ] **The offer is gated on every encoder the host could select**, per D11: a machine with
+- [x] **The offer is gated on every encoder the host could select**, per D11: a machine with
   one part that cannot code 4:4:4 never announces it, because a later output move onto that
   part would end the session rather than degrade.
-- [ ] **The chroma is negotiated, not configured.** A guest declares bit 1, the consensus is
+  *Done 2026-08-30: a census asks every render node an output could move onto, plus the
+  vendor encoder where one is present, plus the third encoder when it is preferred; a single
+  failing part refuses the offer with the part named. On the rig the census refuses because
+  one card codes no full chroma, which is the forced refusal the gate asked for -- and the
+  preferred-third-encoder refusal is a committed machine-independent test.*
+- [x] **The chroma is negotiated, not configured.** A guest declares bit 1, the consensus is
   the intersection across seated guests, a reinitialization request rebuilds the encoder, and
   a refusal names the gate. The per-frame video header carries no chroma bit, so the stream
   declaration and the bitstream are the two places a peer reads it from.
+  *Done 2026-08-30: the chroma axis rides beside the depth one end to end -- Config, the
+  reconfiguration exit, the shared status bit, the ABI status -- and full chroma is refused
+  on the first codec by the same rule that refuses depth there, because the profiles only
+  exist on the second.*
 
 **Gate:**
 
-1. [ ] Decoded pixels match a 4:4:4 source on every backend that claims it, at both depths,
+1. [x] Decoded pixels match a 4:4:4 source on every backend that claims it, at both depths,
    with a count check and a source whose chroma detail sits at the pixel, since that is the
    only content that distinguishes 4:4:4 from a cheap upsample.
-2. [ ] A hardware and a software decoder family each stream 4:4:4 HEVC end to end.
-3. [ ] A host with a mixed selection refuses the offer with the gate named, verified by
+   *The conversion reference tests pin the packed words at both depths against the colour
+   reference, the open backend's imported white decodes to 235/128/128 and 940/512/512, and
+   its synthetic ten-bit path decodes at exactly four times its eight-bit twin.*
+2. [x] A hardware and a software decoder family each stream 4:4:4 HEVC end to end.
+   *The live 4:4:4 stream decodes cleanly through both the software family and the open
+   stack's hardware one.*
+3. [x] A host with a mixed selection refuses the offer with the gate named, verified by
    forcing the refusal rather than by reading the code.
-4. [ ] The live overlapped loop reports the conversion and encode cost of 4:4:4 against
+   *This rig is the mixed selection: the census refuses on the card that codes no full
+   chroma, and the forced preferred-encoder refusal is a committed test.*
+4. [x] The live overlapped loop reports the conversion and encode cost of 4:4:4 against
    4:2:0 at both depths, which is the measurement the serialized probe could not produce.
+   *2560x1440 at full frame rate on the vendor encoder, twenty seconds a run: the host
+   stage sum reads 4.489 ms against 4.116 at eight bits and 4.648 ms against 4.198 at ten,
+   so full chroma costs about ten percent of the host path at either depth, with the
+   conversion's share under 0.1 ms.*
 
 ---
 
