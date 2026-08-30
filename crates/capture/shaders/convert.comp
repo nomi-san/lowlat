@@ -12,6 +12,14 @@
 // Read through a sampler rather than as a storage image, which is what makes
 // the above true: a storage read needs the format written into the shader, and
 // packed ten-bit storage support is not universal.
+//
+// **The targets carry no format either, and that is what makes one shader
+// cover both output depths.** A format layout qualifier is required only for
+// image loads; a writeonly image may omit it, and then the store's float
+// converts to whatever format the view was made with. Naming `r8` here would
+// pin this file to eight-bit output and force a second compiled copy of it for
+// ten, which is how the same body comes to disagree with itself over time. The
+// device feature this needs is checked and enabled where the device is made.
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -22,12 +30,12 @@ layout(local_size_x = 8, local_size_y = 8) in;
 // compiled form is built and absent when this text is handed to a driver.
 #ifdef TARGET_VULKAN
 layout(set = 0, binding = 0) uniform sampler2D source;
-layout(set = 0, binding = 1, r8) uniform writeonly image2D luma;
-layout(set = 0, binding = 2, rg8) uniform writeonly image2D chroma;
+layout(set = 0, binding = 1) uniform writeonly image2D luma;
+layout(set = 0, binding = 2) uniform writeonly image2D chroma;
 #else
 layout(binding = 0) uniform sampler2D source;
-layout(binding = 1, r8) uniform writeonly image2D luma;
-layout(binding = 2, rg8) uniform writeonly image2D chroma;
+layout(binding = 1) uniform writeonly image2D luma;
+layout(binding = 2) uniform writeonly image2D chroma;
 #endif
 
 // **What the picture came to, in eight bytes.** The loop needs to know whether

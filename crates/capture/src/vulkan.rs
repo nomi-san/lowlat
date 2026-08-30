@@ -446,6 +446,9 @@ impl Device {
         if supported.features.shader_storage_image_extended_formats != vk::TRUE {
             return Err(Error::Unsupported("extended storage image formats"));
         }
+        if supported.features.shader_storage_image_write_without_format != vk::TRUE {
+            return Err(Error::Unsupported("storage image writes without a format"));
+        }
         if supported_ycbcr.sampler_ycbcr_conversion != vk::TRUE {
             return Err(Error::Unsupported("two-plane image layouts"));
         }
@@ -505,6 +508,11 @@ impl Device {
         // are not in the set every device must support unasked.
         let mut features = vk::PhysicalDeviceFeatures2::default();
         features.features.shader_storage_image_extended_formats = vk::TRUE;
+        // **What lets one shader write either depth.** The conversion's targets
+        // are declared without a format, so the store converts to whatever the
+        // view was made with; naming a format in the shader instead would pin
+        // it to one output depth and need a second compiled copy for the other.
+        features.features.shader_storage_image_write_without_format = vk::TRUE;
         // Creating an image in a two-plane layout needs this even though
         // nothing here samples one: the conversion reaches its planes through
         // views, because the two-plane format itself cannot be written to on
