@@ -2428,6 +2428,7 @@ fn run_open(
                 max_num_ref_frames: 1,
                 transform_depth: lowlat_encode::h265::TRANSFORM_HIERARCHY_DEPTH,
                 bit_depth_minus8: if config.ten_bit { 2 } else { 0 },
+                chroma_444: false,
             }),
         ),
     };

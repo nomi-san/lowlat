@@ -21926,3 +21926,9 @@ pub const DRM_FORMAT_NV12: u32 = 0x3231_564E;
 /// Two planes, ten bits a sample in the high bits of sixteen. The same
 /// four-character code the colour interface uses for it.
 pub const DRM_FORMAT_P010: u32 = 0x3031_3050;
+/// One packed word per pixel, alpha in the high byte: the open stack's
+/// eight-bit full-chroma surface.
+pub const DRM_FORMAT_AYUV: u32 = 0x5655_5941;
+/// The packed ten-bit full-chroma layout the driver reads Y410 as:
+/// X, red difference, luma, blue difference at 2:10:10:10.
+pub const DRM_FORMAT_XVYU2101010: u32 = 0x3033_5658;

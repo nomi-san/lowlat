@@ -1453,10 +1453,16 @@ The conversion shapes are settled, asked of the devices rather than guessed:
   *Done 2026-08-30: `pipeline-probe` takes a chroma knob and walks capture, conversion,
   export, registration and encode at 4:4:4; an outside decoder reads `Rext / yuv444p` and
   `Rext / yuv444p10le` from the 2560x1440 output, and the 4:2:0 run beside it still decodes.*
-- [ ] **The open backend codes Main444 and Main444_10 through the low-power entry point.**
+- [x] **The open backend codes Main444 and Main444_10 through the low-power entry point.**
   Packed surfaces, hand-written range-extension parameter sets, and the recorded low-power
   traps (the transform-tree depth and the driver-rewrites-the-set one) re-verified on this
   path.
+  *Done 2026-08-30: both depths encode through the low-power entry point and an outside
+  decoder reads `Rext` from each, with the decoded pixels checked against the reference at
+  235/128/128 and 940/512/512. The packed ten-bit word is the X, V, Y, U 2:10:10:10 order
+  the importer documents; a first attempt composed a different order under a 4:2:2-shaped
+  four-character code that the driver accepted, decoded without an error, and was caught
+  only by the pixel comparison -- the reference test now pins the corrected order.*
 - [ ] **The offer is gated on every encoder the host could select**, per D11: a machine with
   one part that cannot code 4:4:4 never announces it, because a later output move onto that
   part would end the session rather than degrade.

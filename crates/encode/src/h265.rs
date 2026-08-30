@@ -25,6 +25,12 @@ pub const PROFILE_MAIN: u32 = 1;
 /// Main covers eight bits only, so a stream that sets Main's bit as well is
 /// telling a decoder that cannot read it that it can.
 pub const PROFILE_MAIN10: u32 = 2;
+/// The range extensions profile, which full-resolution chroma codes under.
+///
+/// **Both Main 4:4:4 depths claim this number with only its own
+/// compatibility flag set**, which is what the device itself emits; the depth
+/// is carried by the bit-depth fields, not by a second compatibility flag.
+pub const PROFILE_REXT: u32 = 4;
 
 /// Unspecified, which is what a frame that never touched an analogue format is.
 const VIDEO_FORMAT_UNSPECIFIED: u32 = 5;
@@ -108,17 +114,31 @@ pub struct Params {
     /// stream whose set says eight over ten-bit surfaces decodes to noise and
     /// reports nothing.
     pub bit_depth_minus8: u32,
+    /// Full-resolution chroma, which moves the stream onto the range
+    /// extensions profile and changes the crop units and the coded layout.
+    pub chroma_444: bool,
 }
 
 impl Params {
     /// Which profile these parameters describe.
     #[must_use]
     pub const fn profile(&self) -> u32 {
-        if self.bit_depth_minus8 == 0 {
+        if self.chroma_444 {
+            PROFILE_REXT
+        } else if self.bit_depth_minus8 == 0 {
             PROFILE_MAIN
         } else {
             PROFILE_MAIN10
         }
+    }
+
+    /// The chroma subsampling divisor: two for 4:2:0, one for 4:4:4.
+    ///
+    /// **The conformance window is measured in these units**, so a crop of six
+    /// luma rows is written as three in the subsampled stream and as six in
+    /// the full-chroma one.
+    const fn sub_width_c(&self) -> u32 {
+        if self.chroma_444 { 1 } else { 2 }
     }
 
     /// The coded size, which is what the device actually encodes.
@@ -215,7 +235,11 @@ pub fn sequence_parameter_set(params: &Params, out: &mut [u8]) -> Option<usize> 
     w.bit(true); // sps_temporal_id_nesting_flag
     profile_tier_level(&mut w, params.level_idc, params.profile());
     w.ue(0); // sps_seq_parameter_set_id
-    w.ue(1); // chroma_format_idc: 4:2:0
+    w.ue(if params.chroma_444 { 3 } else { 1 }); // chroma_format_idc
+    if params.chroma_444 {
+        // One plane of samples per pixel, not three separate planes.
+        w.bit(false); // separate_colour_plane_flag
+    }
 
     let (coded_width, coded_height) = params.coded();
     w.ue(coded_width);
@@ -225,11 +249,12 @@ pub fn sequence_parameter_set(params: &Params, out: &mut [u8]) -> Option<usize> 
     w.bit(cropping);
     if cropping {
         // The window is in units of the chroma subsampling factor, which is
-        // two for 4:2:0, so a crop of six luma rows is written as three.
+        // two for 4:2:0 and one for 4:4:4.
+        let unit = params.sub_width_c();
         w.ue(0);
-        w.ue(right / 2);
+        w.ue(right / unit);
         w.ue(0);
-        w.ue(bottom / 2);
+        w.ue(bottom / unit);
     }
 
     w.ue(params.bit_depth_minus8); // bit_depth_luma_minus8
@@ -374,6 +399,7 @@ mod tests {
             max_num_ref_frames: 1,
             transform_depth: TRANSFORM_HIERARCHY_DEPTH,
             bit_depth_minus8: 0,
+            chroma_444: false,
         }
     }
 

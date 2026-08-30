@@ -3,6 +3,36 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-08-30 - The open backend codes Main444 and Main444_10
+
+### Measured
+- **Both depths encode and decode on the open backend, with the pixels checked,
+  not just the
+  headers.** An outside decoder reads `Rext / yuv444p` and `Rext / yuv444p10le`
+from both the
+  self-encode path and the packed-import path, and the decoded values land on th
+e reference:
+  the eight-bit import reads 235/128/128 from a white source, the ten-bit one 94
+0/512/512.
+  The synthetic ten-bit path decodes at exactly four times its eight-bit twin, s
+o the upload
+  scale and the surface depth agree.
+- **The packed ten-bit word is the one the importer documents**: X, red differen
+ce, luma, blue
+  difference at 2:10:10:10. The first composition used a different order and a
+  4:2:2-shaped four-character code that the driver accepted anyway, and the stre
+am decoded
+  without an error to a plausible wrong picture; the decoded-pixel comparison ca
+ught it, and
+  the reference test now pins the corrected composition at both depths.
+- **The two recorded low-power traps hold on the full-chroma path.** The set wri
+ter declares
+  the range-extensions profile only when full chroma is asked, the transform tre
+e the device
+  actually codes stays the declared one, and the re-run of the sets test passes
+at both
+  depths with the chroma knob on.
+
 ## 2026-08-30 - The conversion now has one body per 4:4:4 layout
 
 ### Measured

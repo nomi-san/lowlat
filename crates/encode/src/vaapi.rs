@@ -234,7 +234,6 @@ const fn runtime_format(ten_bit: bool) -> u32 {
 /// accident: a device offering 4:4:4 profiles that takes only 4:2:0 surfaces
 /// is a device this cannot serve, and folding the constants would read that
 /// as capable.
-#[cfg(test)]
 const fn runtime_format_444(ten_bit: bool) -> u32 {
     if ten_bit {
         crate::ffi::va::VA_RT_FORMAT_YUV444_10
@@ -573,8 +572,7 @@ impl Display<'_> {
     /// the 4:2:0 profiles only, because 4:4:4 is not emitted and the question
     /// is whether it ever could be. Asked by the surface probe; a device
     /// without the profile is a refusal, exactly as a missing depth is.
-    #[cfg(test)]
-    fn encode_target_444(&self, ten_bit: bool) -> Result<(VAProfile, VAEntrypoint)> {
+    pub fn encode_target_444(&self, ten_bit: bool) -> Result<(VAProfile, VAEntrypoint)> {
         let wanted: &[VAProfile] = if ten_bit {
             &[crate::ffi::va::VAProfileHEVCMain444_10]
         } else {
@@ -607,8 +605,7 @@ impl Display<'_> {
     /// path does not name. The runtime-format check is the 4:4:4 one, so a
     /// device that lists the profile but takes only 4:2:0 surfaces reports a
     /// refusal rather than a configuration that cannot be built.
-    #[cfg(test)]
-    fn caps_444(&self, ten_bit: bool) -> Result<Caps> {
+    pub fn caps_444(&self, ten_bit: bool) -> Result<Caps> {
         let (profile, entrypoint) = self.encode_target_444(ten_bit)?;
         let mut attribs = [
             VAConfigAttrib {
@@ -654,6 +651,7 @@ impl Display<'_> {
             profile,
             entrypoint,
             ten_bit,
+            chroma_444: true,
             rate_control: value(&attribs[1]),
             packed_headers: value(&attribs[2]),
             quality_range: value(&attribs[3]),
@@ -1010,12 +1008,28 @@ mod tests {
         // **A knob for the same reason the height is one**: the depth changes
         // the profile, the runtime layout and two fields of the sequence set
         // together, and the only way to know they agree is to encode at both
-        // and read what came out with something that is not this code.
+        // and read what came out with something that is not this code. The
+        // chroma knob does the same one level up: the full-chroma profile,
+        // the packed runtime layout and the range-extension sets all have to
+        // name the same thing.
         let ten_bit = std::env::var("LOWLAT_PROBE_TEN_BIT").is_ok_and(|v| v != "0");
-        let Ok(caps) = display.caps_at(Codec::H265, ten_bit) else {
-            // A device without the profile is not a failure of this test.
-            println!("this device offers no ten_bit={ten_bit} encoder for H.265");
-            return;
+        let chroma_444 = std::env::var("LOWLAT_PROBE_CHROMA").is_ok_and(|v| v == "444");
+        let caps = if chroma_444 {
+            match display.caps_444(ten_bit) {
+                Ok(caps) => caps,
+                Err(error) => {
+                    println!("this device offers no ten_bit={ten_bit} 4:4:4 encoder: {error}");
+                    return;
+                }
+            }
+        } else {
+            match display.caps_at(Codec::H265, ten_bit) {
+                Ok(caps) => caps,
+                Err(error) => {
+                    println!("this device offers no ten_bit={ten_bit} encoder for H.265: {error}");
+                    return;
+                }
+            }
         };
         // **The height is a knob because the rounding had to be measured.**
         // The device codes at its own alignment and corrects the size in the
@@ -1042,6 +1056,7 @@ mod tests {
             max_num_ref_frames: 1,
             transform_depth: crate::h265::TRANSFORM_HIERARCHY_DEPTH,
             bit_depth_minus8: if ten_bit { 2 } else { 0 },
+            chroma_444,
         };
         let mut encoder = context
             .encoder(Params::H265(params), 20_000_000)
@@ -1129,6 +1144,7 @@ mod tests {
             max_num_ref_frames: 1,
             transform_depth: crate::h265::TRANSFORM_HIERARCHY_DEPTH,
             bit_depth_minus8: 0,
+            chroma_444: false,
         };
         let encoder = context
             .encoder(Params::H265(asked), 10_000_000)
@@ -1145,6 +1161,106 @@ mod tests {
             "declared a tree {} deep against a device that codes {device}",
             got.transform_depth
         );
+    }
+
+    /// The packed full-chroma export imports into the display interface and
+    /// encodes, on the device where both interfaces are the same card.
+    ///
+    /// **The zero-copy question for the open backend.** The conversion writes
+    /// a packed AYUV or Y410 surface, the descriptor travels over the display
+    /// interface, and the driver must accept the four-character code and the
+    /// layout it names; a refusal here is the refusal the live path would
+    /// meet, and it is the one check nothing else in the suite makes.
+    #[test]
+    #[ignore = "requires the open-stack driver and its display interface"]
+    fn the_packed_444_export_imports_and_encodes() {
+        let va = Vaapi::load().expect("runtime");
+        let display = va.open(&node()).expect("render node");
+        let ten_bit = std::env::var("LOWLAT_PROBE_TEN_BIT").is_ok_and(|v| v != "0");
+        let Ok(caps) = display.caps_444(ten_bit) else {
+            println!("this device offers no 4:4:4 encoder; nothing to import into");
+            return;
+        };
+
+        // The conversion device has to be the card behind the display, so the
+        // descriptor stays on one device. The node is the display's own; on a
+        // machine where that card is not the open-stack one, the test skips
+        // rather than importing another vendor's descriptor.
+        let Ok(device) =
+            lowlat_capture::vulkan::Device::for_display(std::path::Path::new("/dev/dri/card0"))
+        else {
+            println!("the display's card does not open; nothing to import into");
+            return;
+        };
+        if !device.name().contains("Arc") {
+            println!(
+                "the display device is {}, not the card behind the node",
+                device.name()
+            );
+            return;
+        }
+
+        // **The driver's own minimum**, which the surface query reports at
+        // one hundred and twenty-eight a side; a smaller picture is refused
+        // at the create rather than being something this test learns later.
+        let width = 128;
+        let height = 128;
+        let depth = if ten_bit {
+            lowlat_capture::convert::Depth::Ten
+        } else {
+            lowlat_capture::convert::Depth::Eight
+        };
+        let pixels = vec![255u8; (width as usize) * (height as usize) * 4];
+        let source = device
+            .upload_rgba(width, height, &pixels)
+            .expect("upload a pattern");
+        let target = device
+            .allocate_packed_444(width, height, depth)
+            .expect("a packed target");
+        let mut converter = lowlat_capture::convert::Converter::new(&device).expect("a pipeline");
+        converter
+            .run(&device, &source, &target.target(), false)
+            .expect("convert");
+        let (fd, exported) = device
+            .export_packed_444(&target, true)
+            .expect("export the packed frame");
+        let surface = display
+            .import(std::os::fd::AsFd::as_fd(&fd), &exported)
+            .expect("import the packed frame");
+
+        let context = display.create_context(caps, 128, 128, 2).expect("context");
+        let mut encoder = context
+            .encoder(
+                Params::H265(crate::h265::Params {
+                    width: 128,
+                    height: 128,
+                    fps: 60,
+                    level_idc: 30,
+                    log2_max_poc_lsb_minus4: 4,
+                    max_num_ref_frames: 1,
+                    transform_depth: crate::h265::TRANSFORM_HIERARCHY_DEPTH,
+                    bit_depth_minus8: if ten_bit { 2 } else { 0 },
+                    chroma_444: true,
+                }),
+                10_000_000,
+            )
+            .expect("encoder");
+        encoder.submit_registered(surface, true).expect("submit");
+        let stream = loop {
+            match encoder.poll().expect("poll") {
+                Poll::Ready { bitstream, .. } => break bitstream.to_vec(),
+                Poll::Pending => std::hint::spin_loop(),
+            }
+        };
+        let path =
+            std::env::var("LOWLAT_DUMP").unwrap_or_else(|_| "/tmp/vaapi-444-import.h265".into());
+        std::fs::write(&path, &stream).expect("write");
+        println!(
+            "imported and encoded one {}-bit 4:4:4 picture, {} bytes, to {path}",
+            if ten_bit { 10 } else { 8 },
+            stream.len()
+        );
+        display.release(surface);
     }
 
     /// Needs the open-stack driver, so it is off by default. Run with
@@ -1380,6 +1496,10 @@ pub struct Caps {
     /// the parameter sets all have to name the same depth and this is the one
     /// value they can all read it from.
     pub ten_bit: bool,
+    /// Whether these answers are about a full-resolution-chroma stream. The
+    /// same reason: the surfaces, the runtime format and the parameter sets
+    /// all have to name the same layout.
+    pub chroma_444: bool,
     /// Which entry point answered, and the one every later call must name.
     ///
     /// **A device offers one or the other and not always both.** The slice
@@ -1548,6 +1668,7 @@ impl Display<'_> {
             profile,
             entrypoint,
             ten_bit,
+            chroma_444: false,
             rate_control: value(&attribs[1]),
             packed_headers: value(&attribs[2]),
             quality_range: value(&attribs[3]),
@@ -1568,7 +1689,11 @@ impl Display<'_> {
         let mut wanted = [
             VAConfigAttrib {
                 type_: VAConfigAttribRTFormat,
-                value: runtime_format(caps.ten_bit),
+                value: if caps.chroma_444 {
+                    runtime_format_444(caps.ten_bit)
+                } else {
+                    runtime_format(caps.ten_bit)
+                },
             },
             VAConfigAttrib {
                 type_: VAConfigAttribRateControl,
@@ -1605,7 +1730,7 @@ impl Display<'_> {
         // its reference store, and encodes from the freed pointer. The first
         // picture survives whenever the allocator hands the same block back,
         // so this presents as an intermittent fault several pictures in.
-        let mut pool = match self.surface_pool(width, height, surfaces, caps.ten_bit) {
+        let mut pool = match self.surface_pool(width, height, surfaces, caps) {
             Ok(pool) => pool,
             Err(error) => {
                 // SAFETY: the configuration was created above and nothing else
@@ -1614,7 +1739,7 @@ impl Display<'_> {
                 return Err(error);
             }
         };
-        let mut recon = match self.surface_pool(width, height, surfaces, caps.ten_bit) {
+        let mut recon = match self.surface_pool(width, height, surfaces, caps) {
             Ok(recon) => recon,
             Err(error) => {
                 self.destroy_pool(&mut pool);
@@ -1664,7 +1789,7 @@ impl Display<'_> {
         width: u32,
         height: u32,
         count: usize,
-        ten_bit: bool,
+        caps: Caps,
     ) -> Result<Vec<VASurfaceID>> {
         let mut pool = vec![0 as VASurfaceID; count];
         // SAFETY: the pool is writable for its own length. No surface
@@ -1674,7 +1799,11 @@ impl Display<'_> {
         let status = unsafe {
             (self.va.create_surfaces)(
                 self.raw,
-                runtime_format(ten_bit),
+                if caps.chroma_444 {
+                    runtime_format_444(caps.ten_bit)
+                } else {
+                    runtime_format(caps.ten_bit)
+                },
                 width,
                 height,
                 pool.as_mut_ptr(),
@@ -1701,28 +1830,55 @@ impl Display<'_> {
         fd: std::os::fd::BorrowedFd<'_>,
         frame: &lowlat_capture::convert::Exported,
     ) -> Result<VASurfaceID> {
+        use lowlat_capture::convert::Layout;
         use std::os::fd::AsRawFd;
 
-        // Luma plus half as much colour, whatever the depth: the pitch the
-        // frame reports is already in bytes, so the sample size is inside it.
-        let bytes = u64::from(frame.pitch)
-            .checked_mul(u64::from(frame.height))
-            .and_then(|luma| luma.checked_mul(3))
-            .map(|both| both / 2)
-            .and_then(|size| u32::try_from(size).ok())
-            .ok_or(Error::UnsupportedLayout)?;
-
-        // **The depth is named, never inferred.** A ten-bit frame and an
-        // eight-bit one twice as wide describe identically here -- same pitch,
-        // same plane split -- so a driver handed the wrong code accepts the
-        // import and decodes noise.
-        let (fourcc, drm_format) = if frame.depth.ten_bit() {
-            (
-                crate::ffi::va::VA_FOURCC_P010,
-                crate::ffi::va::DRM_FORMAT_P010,
-            )
-        } else {
-            (VA_FOURCC_NV12, crate::ffi::va::DRM_FORMAT_NV12)
+        // **The descriptor names the layout, and the layout names the size.**
+        // The subsampled frame is luma plus half as much colour; the packed
+        // full-chroma frame is one word per pixel; the planar full-chroma one
+        // has no shape this interface takes and is refused rather than
+        // silently copied.
+        let (bytes, fourcc, drm_format, num_planes) = match frame.kind {
+            Layout::SemiPlanar420 => {
+                let bytes = u64::from(frame.pitch)
+                    .checked_mul(u64::from(frame.height))
+                    .and_then(|luma| luma.checked_mul(3))
+                    .map(|both| both / 2)
+                    .and_then(|size| u32::try_from(size).ok())
+                    .ok_or(Error::UnsupportedLayout)?;
+                // **The depth is named, never inferred.** A ten-bit frame and
+                // an eight-bit one twice as wide describe identically here --
+                // same pitch, same plane split -- so a driver handed the wrong
+                // code accepts the import and decodes noise.
+                let (fourcc, drm_format) = if frame.depth.ten_bit() {
+                    (
+                        crate::ffi::va::VA_FOURCC_P010,
+                        crate::ffi::va::DRM_FORMAT_P010,
+                    )
+                } else {
+                    (VA_FOURCC_NV12, crate::ffi::va::DRM_FORMAT_NV12)
+                };
+                (bytes, fourcc, drm_format, 2)
+            }
+            Layout::Packed444 => {
+                let bytes = u64::from(frame.pitch)
+                    .checked_mul(u64::from(frame.height))
+                    .and_then(|size| u32::try_from(size).ok())
+                    .ok_or(Error::UnsupportedLayout)?;
+                let (fourcc, drm_format) = if frame.depth.ten_bit() {
+                    (
+                        crate::ffi::va::VA_FOURCC_Y410,
+                        crate::ffi::va::DRM_FORMAT_XVYU2101010,
+                    )
+                } else {
+                    (
+                        crate::ffi::va::VA_FOURCC_AYUV,
+                        crate::ffi::va::DRM_FORMAT_AYUV,
+                    )
+                };
+                (bytes, fourcc, drm_format, 1)
+            }
+            Layout::Planar444 => return Err(Error::UnsupportedLayout),
         };
 
         let blank = crate::ffi::va::VADRMPRIMESurfaceDescriptorLayer {
@@ -1745,13 +1901,13 @@ impl Display<'_> {
             num_layers: 1,
             layers: [blank; crate::ffi::va::VA_DRM_PRIME_LAYERS],
         };
-        // **One layer of two planes, not two layers of one.** Both planes live
-        // in the same allocation at offsets of our choosing, and describing
-        // them as separate layers is how a driver is told they are separate
-        // allocations, which they are not.
+        // **One layer of the frame's own plane count, not one layer per
+        // plane.** The planes live in one allocation at offsets of our
+        // choosing, and describing them as separate layers is how a driver is
+        // told they are separate allocations, which they are not.
         descriptor.layers[0] = crate::ffi::va::VADRMPRIMESurfaceDescriptorLayer {
             drm_format,
-            num_planes: 2,
+            num_planes,
             object_index: [0; crate::ffi::va::VA_DRM_PRIME_PLANES],
             offset: [frame.planes[0].offset, frame.planes[1].offset, 0, 0],
             pitch: [frame.planes[0].pitch, frame.planes[1].pitch, 0, 0],
@@ -1789,7 +1945,11 @@ impl Display<'_> {
         let status = unsafe {
             (self.va.create_surfaces)(
                 self.raw,
-                runtime_format(frame.depth.ten_bit()),
+                if frame.kind == Layout::Packed444 {
+                    runtime_format_444(frame.depth.ten_bit())
+                } else {
+                    runtime_format(frame.depth.ten_bit())
+                },
                 frame.width,
                 frame.height,
                 core::ptr::from_mut(&mut surface),
@@ -2215,8 +2375,32 @@ impl Encoder<'_> {
         frame: &lowlat_capture::Frame<'_>,
     ) -> Result<()> {
         // Two planes, luma then interleaved chroma, at one depth or the
-        // other. A driver offering some other layout is refused rather than
-        // filled in wrongly.
+        // other; or one packed plane for the full-chroma surfaces. A driver
+        // offering some other layout is refused rather than filled in
+        // wrongly.
+        match image.format.fourcc {
+            crate::ffi::va::VA_FOURCC_NV12 | crate::ffi::va::VA_FOURCC_P010 => {
+                self.write_planar(image, frame)
+            }
+            crate::ffi::va::VA_FOURCC_AYUV | crate::ffi::va::VA_FOURCC_Y410 => {
+                self.write_packed(image, frame)
+            }
+            crate::ffi::va::VA_FOURCC_444P => self.write_planar_444(image, frame),
+            other => {
+                lowlat_common::log_warn!(
+                    "vaapi: a surface derived as {other:#010x}, which the upload cannot write"
+                );
+                Err(Error::UnsupportedLayout)
+            }
+        }
+    }
+
+    /// The ordinary two-plane upload.
+    fn write_planar(
+        &self,
+        image: &crate::ffi::va::VAImage,
+        frame: &lowlat_capture::Frame<'_>,
+    ) -> Result<()> {
         let ten_bit = match image.format.fourcc {
             crate::ffi::va::VA_FOURCC_NV12 => false,
             crate::ffi::va::VA_FOURCC_P010 => true,
@@ -2278,6 +2462,161 @@ impl Encoder<'_> {
         // SAFETY: balances the map above.
         unsafe { (self.va().unmap_buffer)(self.display(), image.buf) };
         result
+    }
+
+    /// Three full-resolution planes, luma then blue difference then red
+    /// difference, with the colour nearest-upsampled from the frame's one
+    /// subsampled pair.
+    fn write_planar_444(
+        &self,
+        image: &crate::ffi::va::VAImage,
+        frame: &lowlat_capture::Frame<'_>,
+    ) -> Result<()> {
+        if image.num_planes < 3 {
+            return Err(Error::UnsupportedLayout);
+        }
+
+        let mut mapped: *mut core::ffi::c_void = core::ptr::null_mut();
+        // SAFETY: the image's buffer is live until the image is destroyed.
+        let status = unsafe { (self.va().map_buffer)(self.display(), image.buf, &raw mut mapped) };
+        self.va().check(status)?;
+        if mapped.is_null() {
+            return Err(Error::UnsupportedLayout);
+        }
+        // SAFETY: the interface reports `data_size` writable bytes at the
+        // mapped address, and nothing else aliases them while mapped.
+        let destination = unsafe {
+            core::slice::from_raw_parts_mut(
+                mapped.cast::<u8>(),
+                usize::try_from(image.data_size).unwrap_or(0),
+            )
+        };
+
+        let width = usize::try_from(frame.width).unwrap_or(0);
+        let rows = usize::try_from(frame.height).unwrap_or(0);
+
+        let outcome = (|| -> Result<()> {
+            let luma_at = |x: usize, y: usize| {
+                frame
+                    .luma
+                    .bytes
+                    .get(y * frame.luma.stride + x)
+                    .copied()
+                    .unwrap_or(0)
+            };
+            let chroma_at = |x: usize, y: usize| {
+                frame
+                    .chroma
+                    .bytes
+                    .get(y * frame.chroma.stride + x)
+                    .copied()
+                    .unwrap_or(0)
+            };
+            for y in 0..rows {
+                for x in 0..width {
+                    let luma = luma_at(x, y);
+                    let pair = x / 2 * 2;
+                    let u = chroma_at(pair, y / 2);
+                    let v = chroma_at(pair + 1, y / 2);
+                    for (plane, value) in [(0usize, luma), (1, u), (2, v)] {
+                        let offset = usize::try_from(image.offsets[plane]).unwrap_or(0);
+                        let pitch = usize::try_from(image.pitches[plane]).unwrap_or(0);
+                        let at = offset + y * pitch + x;
+                        let byte = destination.get_mut(at).ok_or(Error::UnsupportedLayout)?;
+                        *byte = value;
+                    }
+                }
+            }
+            Ok(())
+        })();
+
+        // SAFETY: balances the map above.
+        unsafe { (self.va().unmap_buffer)(self.display(), image.buf) };
+        outcome
+    }
+
+    /// One packed plane of words, composed here from the two-plane frame.
+    ///
+    /// **The chroma is a nearest upsample**, which is the content the
+    /// full-chroma conversion would have produced from a subsampled source:
+    /// each 2x2 block carries its one colour sample four times. The word
+    /// orders are the ones the conversion shader writes and the importer
+    /// documents.
+    fn write_packed(
+        &self,
+        image: &crate::ffi::va::VAImage,
+        frame: &lowlat_capture::Frame<'_>,
+    ) -> Result<()> {
+        let ten_bit = match image.format.fourcc {
+            crate::ffi::va::VA_FOURCC_AYUV => false,
+            crate::ffi::va::VA_FOURCC_Y410 => true,
+            _ => return Err(Error::UnsupportedLayout),
+        };
+        if image.num_planes < 1 {
+            return Err(Error::UnsupportedLayout);
+        }
+
+        let mut mapped: *mut core::ffi::c_void = core::ptr::null_mut();
+        // SAFETY: the image's buffer is live until the image is destroyed.
+        let status = unsafe { (self.va().map_buffer)(self.display(), image.buf, &raw mut mapped) };
+        self.va().check(status)?;
+        if mapped.is_null() {
+            return Err(Error::UnsupportedLayout);
+        }
+        // SAFETY: the interface reports `data_size` writable bytes at the
+        // mapped address, and nothing else aliases them while mapped.
+        let destination = unsafe {
+            core::slice::from_raw_parts_mut(
+                mapped.cast::<u8>(),
+                usize::try_from(image.data_size).unwrap_or(0),
+            )
+        };
+
+        let width = usize::try_from(frame.width).unwrap_or(0);
+        let rows = usize::try_from(frame.height).unwrap_or(0);
+        let pitch = usize::try_from(image.pitches[0]).unwrap_or(0);
+
+        let outcome = (|| -> Result<()> {
+            for y in 0..rows {
+                for x in 0..width {
+                    let luma = frame
+                        .luma
+                        .bytes
+                        .get(y * frame.luma.stride + x)
+                        .copied()
+                        .unwrap_or(0);
+                    let pair = x / 2 * 2;
+                    let u = frame
+                        .chroma
+                        .bytes
+                        .get((y / 2) * frame.chroma.stride + pair)
+                        .copied()
+                        .unwrap_or(0);
+                    let v = frame
+                        .chroma
+                        .bytes
+                        .get((y / 2) * frame.chroma.stride + pair + 1)
+                        .copied()
+                        .unwrap_or(0);
+                    let (luma, u, v) = (u32::from(luma), u32::from(u), u32::from(v));
+                    let word = if ten_bit {
+                        (3 << 30) | ((v * 4) << 20) | ((luma * 4) << 10) | (u * 4)
+                    } else {
+                        0xff00_0000 | (luma << 16) | (u << 8) | v
+                    };
+                    let start = y * pitch + x * 4;
+                    let bytes = destination
+                        .get_mut(start..start + 4)
+                        .ok_or(Error::UnsupportedLayout)?;
+                    bytes.copy_from_slice(&word.to_le_bytes());
+                }
+            }
+            Ok(())
+        })();
+
+        // SAFETY: balances the map above.
+        unsafe { (self.va().unmap_buffer)(self.display(), image.buf) };
+        outcome
     }
 
     /// The two buffers that carry the rate and the rate it is spent at.
@@ -2572,7 +2911,7 @@ impl Encoder<'_> {
 
         let mut seq =
             unsafe { core::mem::zeroed::<crate::ffi::va::VAEncSequenceParameterBufferHEVC>() };
-        seq.general_profile_idc = u8::try_from(crate::h265::PROFILE_MAIN).unwrap_or(1);
+        seq.general_profile_idc = u8::try_from(params.profile()).unwrap_or(1);
         seq.general_level_idc = u8::try_from(params.level_idc).unwrap_or(123);
         seq.general_tier_flag = 0;
         // As for the other codec: no period, and one picture between predicted
@@ -2600,7 +2939,12 @@ impl Encoder<'_> {
         // bitfield view is used.
         unsafe {
             let bits = &mut seq.seq_fields.bits;
-            bits.set_chroma_format_idc(1);
+            // **Told, never assumed, for the same reason the depth is.** A
+            // device that codes half-resolution colour into a stream whose
+            // set promises full resolution writes slices a decoder reads with
+            // the wrong syntax, and it reports a decode failure rather than a
+            // mismatch.
+            bits.set_chroma_format_idc(if params.chroma_444 { 3 } else { 1 });
             bits.set_bit_depth_luma_minus8(params.bit_depth_minus8);
             bits.set_bit_depth_chroma_minus8(params.bit_depth_minus8);
             // **Told, never left at zero.** Zero here is eight bits, and the

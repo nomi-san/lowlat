@@ -67,6 +67,7 @@ fn main() {
             max_num_ref_frames: 1,
             transform_depth: lowlat_encode::h265::TRANSFORM_HIERARCHY_DEPTH,
             bit_depth_minus8: if ten_bit { 2 } else { 0 },
+            chroma_444: false,
         })
     } else {
         vaapi::Params::H264(lowlat_encode::h264::Params {

@@ -303,15 +303,16 @@ void store_cr(ivec2 at, float cr_sample) {
 //
 // **The orders are the ones the importer documents, not a choice.** AYUV is
 // alpha, luma, blue difference, red difference most significant byte first;
-// Y410 is luma, blue, red, then a two-bit alpha. Getting either backwards
-// still imports cleanly and decodes to a plausible wrong picture, so the
-// only honest check is the decoder comparison the gate runs.
+// the ten-bit word the importer takes is X, red difference, luma, blue
+// difference at 2:10:10:10, least significant field first. Getting either
+// backwards still imports cleanly and decodes to a plausible wrong picture,
+// so the only honest check is the decoder comparison the gate runs.
 uint pack_ayuv(uint y, uint u, uint v) {
     return (255u << 24) | (y << 16) | (u << 8) | v;
 }
 
 uint pack_y410(uint y, uint u, uint v) {
-    return (y << 22) | (u << 12) | (v << 2) | 3u;
+    return (3u << 30) | (v << 20) | (y << 10) | u;
 }
 
 // Full-resolution chroma, packed: one word per pixel in the luma binding.

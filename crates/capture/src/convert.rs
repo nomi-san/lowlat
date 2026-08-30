@@ -2916,9 +2916,9 @@ mod tests {
                                 let (want_y, want_u, want_v) =
                                     reference_ten(colour[0], colour[1], colour[2]);
                                 (
-                                    (word >> 22) & 0x3ff,
-                                    (word >> 12) & 0x3ff,
-                                    (word >> 2) & 0x3ff,
+                                    (word >> 10) & 0x3ff,
+                                    word & 0x3ff,
+                                    (word >> 20) & 0x3ff,
                                     u32::from(want_y),
                                     u32::from(want_u),
                                     u32::from(want_v),
