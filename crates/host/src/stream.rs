@@ -2158,6 +2158,21 @@ fn occupied_seats(shared: &Shared) -> usize {
 /// **The base flag is not a capability and is not listed here.** It is set on
 /// every declaration and means nothing; testing it as one reports a refusal on
 /// every ordinary request, which is what it did.
+/// The depth the conversion targets are allocated at, which must be the depth
+/// the encoder was built for.
+///
+/// **One place, because the two are read separately and a disagreement is not
+/// refused anywhere.** A target allocated at one depth and read at the other
+/// has a consistent pitch and a consistent size; only the samples inside it
+/// are the wrong width.
+fn colour_of(config: &Config) -> lowlat_capture::convert::Depth {
+    if config.ten_bit {
+        lowlat_capture::convert::Depth::Ten
+    } else {
+        lowlat_capture::convert::Depth::Eight
+    }
+}
+
 fn not_emitted(codec: Codec) -> u32 {
     let mut refused = lowlat_core::init::FLAG_COLOR444;
     // **Ten bits is HEVC only, and that is the hardware rather than a
@@ -2310,6 +2325,7 @@ fn run_vulkan(
     }
     let mut desktop = match crate::display::Display::open(
         VULKAN_SLOTS,
+        colour_of(&config),
         config.output.as_deref(),
         config.convert,
         crate::display::Register::VulkanRing {
@@ -2476,6 +2492,7 @@ fn run_open(
     let mut desktop = if config.display {
         match crate::display::Display::open(
             ENCODE_DEPTH,
+            colour_of(&config),
             config.output.as_deref(),
             config.convert,
             crate::display::Register::Open(&display),
@@ -2610,6 +2627,7 @@ fn run_vendor(
     let mut desktop = if config.display {
         match crate::display::Display::open(
             lowlat_encode::nvenc::IN_FLIGHT,
+            colour_of(&config),
             config.output.as_deref(),
             config.convert,
             crate::display::Register::Vendor(&encoder),

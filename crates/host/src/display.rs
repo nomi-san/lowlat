@@ -683,6 +683,7 @@ impl Display {
 
     pub fn open(
         depth: usize,
+        colour: lowlat_capture::convert::Depth,
         wanted: Option<&str>,
         backend: Option<lowlat_capture::Backend>,
         register: Register<'_>,
@@ -728,10 +729,10 @@ impl Display {
         } else {
             match backend {
                 Some(lowlat_capture::Backend::Vulkan) => {
-                    Self::build_vulkan(&node, depth, shape, &register)
+                    Self::build_vulkan(&node, depth, colour, shape, &register)
                 }
                 Some(lowlat_capture::Backend::Gl) => {
-                    Self::build_gl(&node, &card, depth, shape, &register)
+                    Self::build_gl(&node, &card, depth, colour, shape, &register)
                 }
                 // **Nothing follows the device**: the compute interface where it
                 // exists, the fallback where it does not (docs/05-host.md
@@ -741,14 +742,14 @@ impl Display {
                 // refusal rather than being masked by a slower tier -- a machine
                 // quietly converting on the wrong interface is a measurement
                 // nobody can trust and a latency nobody asked for.
-                None => match Self::build_vulkan(&node, depth, shape, &register) {
+                None => match Self::build_vulkan(&node, depth, colour, shape, &register) {
                     Err(Error::Convert(
                         vulkan::Error::NoLoader | vulkan::Error::NoDeviceForNode,
                     )) => {
                         lowlat_common::log_info!(
                             "display: {on} has no compute interface, converting on the fallback"
                         );
-                        Self::build_gl(&node, &card, depth, shape, &register)
+                        Self::build_gl(&node, &card, depth, colour, shape, &register)
                     }
                     outcome => outcome,
                 },
@@ -809,6 +810,7 @@ impl Display {
     fn build_vulkan(
         node: &std::path::Path,
         depth: usize,
+        colour: lowlat_capture::convert::Depth,
         shape: Shape,
         register: &Register<'_>,
     ) -> Result<Pipeline, Error> {
@@ -816,7 +818,13 @@ impl Display {
         let converter = Converter::new(&device)?;
         let mut targets = Vec::with_capacity(depth);
         for _ in 0..depth {
-            let frame = device.allocate_nv12(shape.width, shape.height)?;
+            // **At the depth the encoder was built for.** A target allocated
+            // eight-bit and handed to a ten-bit encoder is read two bytes to
+            // the sample: the luma comes out at half the width it was written
+            // and the colour plane is found in the middle of it. Nothing
+            // refuses it -- the pitch and the size are consistent with what
+            // was allocated, just not with what is reading it.
+            let frame = device.allocate_planar(shape.width, shape.height, colour)?;
             let registration = match register {
                 // Each encoder is handed the descriptor kind it has a name for;
                 // the allocation is built able to produce either.
@@ -856,12 +864,22 @@ impl Display {
         node: &std::path::Path,
         card: &Card,
         depth: usize,
+        colour: lowlat_capture::convert::Depth,
         shape: Shape,
         register: &Register<'_>,
     ) -> Result<Pipeline, Error> {
         let Register::Open(display) = register else {
             return Err(Error::NotTogether);
         };
+        // **This tier codes eight bits and says so.** Its targets are named by
+        // the display interface as a two-plane eight-bit layout, and the parts
+        // old enough to need this tier encode no ten-bit stream anyway
+        // (09 section 3). Refusing is the honest answer; allocating eight and
+        // letting a ten-bit encoder read it is the fault this comment exists
+        // because of.
+        if colour.ten_bit() {
+            return Err(Error::NotTogether);
+        }
         let device = lowlat_capture::gl::Device::for_display(node).map_err(Error::Gl)?;
         let converter = lowlat_capture::gl::Converter::new(&device).map_err(Error::Gl)?;
 

@@ -61,7 +61,13 @@ fn main() {
         .encoder(params, 20_000_000)
         .unwrap_or_else(|e| fail(&format!("configure: {e}")));
 
-    let mut desktop = Display::open(4, wanted.as_deref(), backend, Register::Open(&display))
+    let mut desktop = Display::open(
+        4,
+        lowlat_capture::convert::Depth::Eight,
+        wanted.as_deref(),
+        backend,
+        Register::Open(&display),
+    )
         .unwrap_or_else(|e| fail(&format!("display: {e}")));
     println!("{desktop:?}, encoding {frames} pictures");
 

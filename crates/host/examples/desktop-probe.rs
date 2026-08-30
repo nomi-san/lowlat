@@ -73,6 +73,7 @@ fn main() {
     let wanted = std::env::args().nth(1);
     let mut desktop = Display::open(
         nvenc::IN_FLIGHT,
+        lowlat_capture::convert::Depth::Eight,
         wanted.as_deref(),
         Some(lowlat::capture::Backend::requested()),
         lowlat::display::Register::Vendor(&encoder),
