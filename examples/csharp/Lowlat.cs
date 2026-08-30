@@ -63,6 +63,10 @@ internal enum Outcome : uint
 
 internal enum Codec : uint { H264 = 1, Hevc = 2 }
 
+/// Where a host sits between delay and picture. **Zero is the low-latency
+/// end**, so a zeroed configuration gets the sensible default.
+internal enum Quality : uint { LowestLatency = 0, Balanced = 1, Highest = 2 }
+
 /// How much colour the stream carries, relative to its luma. Zero until
 /// something is being coded.
 internal enum Chroma : uint { Yuv420 = 1, Yuv444 = 2 }
@@ -203,6 +207,13 @@ internal struct HostConfig
     public uint Codec;
     public uint Encoder;
     public uint CgLevel;
+    /// Where this host sits between delay and picture, one of [`Quality`].
+    ///
+    /// **Missing from this mirror for a whole phase**, which put every field
+    /// after it at the wrong offset and made `size` four bytes short -- so the
+    /// boundary refused `host_start` outright and named nothing but the
+    /// argument. A mirror is only checked by being run.
+    public uint Quality;
     public uint ExclusiveHoldMs;
     public byte ExclusivePointerByte;
     private byte reserved0, reserved1, reserved2;
