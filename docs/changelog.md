@@ -3,6 +3,33 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-08-30 - Phase 11.6 is written, and 4:4:4 is measured at both depths
+
+### Measured
+- **The vendor interface at ten bits.** `colour-cost-probe` gained a depth knob: on identical
+  content, 4:4:4 reads **1.86x the bytes** against 4:2:0 at ten bits (1.39x at eight), with
+  the dumps verified by an outside decoder as `Rext / yuv444p10le` against
+  `Main 10 / yuv420p10le`. The serialized encode-time ratio at ten bits is not quotable --
+  two semantically identical probe shapes read 1.24x and 2.1x, each stable -- and the live
+  overlapped loop is the measurement that will settle it.
+- **What the open stack wants as a 4:4:4 surface**, asked of the driver with a new ignored
+  probe test rather than read off a matrix: packed **AYUV or XYUV at eight bits, Y410 at
+  ten**, through the low-power entry point only, importable over DRM prime. The 4:2:0 answers
+  come from the same call as a cross-check.
+- **The third interface has no device to serve 4:4:4**: it refuses on one vendor, offers no
+  encode queue on another, and on the third the vendor interface is already the better
+  encoder.
+- **The encoder-engine count is read, not remembered.** The vendor backend's capabilities now
+  report how many engines a part carries, and the probe prints it; the card here answers one,
+  which closes the split-encode question for this hardware.
+
+### Planned
+- **Phase 11.6** lands in the impl plan, unchecked, with the conversion shapes settled: one
+  body per layout -- three planar planes for the vendor interface, one packed plane for the
+  open stack -- each keeping the depth uniform and sharing the colour rules. The offer stays
+  gated on every encoder the host could select (D11), and 4:4:4 remains out of v1 on
+  coverage, not cost.
+
 ## 2026-08-30 - Ten-bit is v1 on HEVC, 4:4:4 is out, and both were measured first
 
 ### Decided

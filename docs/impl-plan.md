@@ -1418,6 +1418,59 @@ eight-bit targets are the only thing the shader can address.
 
 ---
 
+## Phase 11.6 - Full-resolution chroma (4:4:4)
+
+**Written 2026-08-30 so that when the coverage question opens, the work is sized and the
+unknowns are already settled. Nothing here is in v1; D7 still says out, and the reason is
+coverage, not cost.**
+
+The cost is measured at both depths on the vendor interface over identical content: **1.39x the
+bytes at eight bits and 1.86x at ten**, with encode time at 1.1x at eight bits. At ten bits the
+serialized probe's time ratio is not quotable -- two semantically identical probe shapes read
+1.24x and 2.1x, each stable -- so the ten-bit encode time is an open measurement that only the
+live overlapped loop can produce.
+
+The conversion shapes are settled, asked of the devices rather than guessed:
+
+- The vendor interface reads three planar planes, at either depth.
+- The open stack reads one packed plane: AYUV or XYUV at eight bits, Y410 at ten, through the
+  low-power entry point only, importable over DRM prime, so the zero-copy path survives.
+- The third interface has no device to serve: it refuses on one vendor, offers no encode queue
+  on another, and on the third the vendor interface is already the better encoder. Its 4:4:4
+  answer is a capability-census refusal, not a build.
+
+- [ ] **The conversion gains one body per layout, not per depth.** The two 4:4:4 bodies write
+  three planar planes and one packed plane; both keep the depth uniform and share the colour
+  rules and summary with the shipped 4:2:0 body, so a depth known in one body and not another
+  cannot return.
+- [ ] **The vendor backend codes 4:4:4 at both depths on the live path.** The input formats
+  and profile selection exist and are probe-verified; what remains is the pipeline wiring and
+  the three-plane registration.
+- [ ] **The open backend codes Main444 and Main444_10 through the low-power entry point.**
+  Packed surfaces, hand-written range-extension parameter sets, and the recorded low-power
+  traps (the transform-tree depth and the driver-rewrites-the-set one) re-verified on this
+  path.
+- [ ] **The offer is gated on every encoder the host could select**, per D11: a machine with
+  one part that cannot code 4:4:4 never announces it, because a later output move onto that
+  part would end the session rather than degrade.
+- [ ] **The chroma is negotiated, not configured.** A guest declares bit 1, the consensus is
+  the intersection across seated guests, a reinitialization request rebuilds the encoder, and
+  a refusal names the gate. The per-frame video header carries no chroma bit, so the stream
+  declaration and the bitstream are the two places a peer reads it from.
+
+**Gate:**
+
+1. [ ] Decoded pixels match a 4:4:4 source on every backend that claims it, at both depths,
+   with a count check and a source whose chroma detail sits at the pixel, since that is the
+   only content that distinguishes 4:4:4 from a cheap upsample.
+2. [ ] A hardware and a software decoder family each stream 4:4:4 HEVC end to end.
+3. [ ] A host with a mixed selection refuses the offer with the gate named, verified by
+   forcing the refusal rather than by reading the code.
+4. [ ] The live overlapped loop reports the conversion and encode cost of 4:4:4 against
+   4:2:0 at both depths, which is the measurement the serialized probe could not produce.
+
+---
+
 ## Phase 12 - Daemon and tray
 
 - [ ] `lowlatd` as a system service, with the unit file and device access rules.
@@ -1436,6 +1489,15 @@ eight-bit targets are the only thing the shader can address.
 
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
+
+- 2026-08-30: **Phase 11.6 is written, and the 4:4:4 question is re-opened with numbers.**
+  The investigation measured both depths on the vendor interface -- 1.39x the bytes at eight
+  bits, 1.86x at ten, with the ten-bit serialized time ratio instrument-sensitive and not
+  quoted -- settled the open stack's surface question with a probe (packed AYUV/XYUV/Y410,
+  low-power entry point, DRM prime), and found the third interface has no device where it
+  would serve. D7 is unchanged: 4:4:4 stays out of v1 on coverage. The phase now sizes the
+  work -- one conversion body per layout, the vendor wiring, the low-power range-extension
+  sets, the D11 offer gate, and the live measurement that closes the ten-bit time question.
 
 - 2026-08-30: **Ten-bit is v1 on HEVC and 4:4:4 is out, both decided from measurement.** D7 is
   rewritten and Phase 11.5 is added.

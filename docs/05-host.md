@@ -153,8 +153,13 @@ them cannot express one at all. A peer that asks for depth without asking for HE
 for something nothing can produce.
 
 **4:4:4 is out of v1 and the reason is coverage, not cost** (D7). It measures at 0.22 ms a
-picture and 1.39x the bytes, which is affordable; what is not is that one of the three
-encoders produces none of it at any depth, and the encoder follows the display.
+picture and 1.39x the bytes at eight bits, and 1.86x the bytes at ten on the same content:
+the encode time is nearly free and the bandwidth is not. What rules it out is that one of the
+three encoders produces none of it at any depth, and the encoder follows the display. **When
+it returns, the conversion is one body per layout, not per depth**: the vendor interface takes
+three planar planes and the open stack one packed plane (AYUV or XYUV at eight bits, Y410 at
+ten), each body keeping the depth uniform and the colour rules shared
+([the plan, Phase 11.6](impl-plan.md)).
 
 **Chroma is averaged over each 2x2 block on the way out.** This is worth stating because the
 reverse direction is free and invites the assumption that this one is too: a decoder samples

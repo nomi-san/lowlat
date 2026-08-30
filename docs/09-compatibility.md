@@ -39,8 +39,8 @@ what a chroma layout costs against another on the same content.
 | | HEVC 10-bit 4:2:0 | HEVC 4:4:4 | H.264 above 8-bit 4:2:0 |
 |---|---|---|---|
 | AMD, RDNA2 | **yes**, both interfaces | **none, at any depth** | no profile exists |
-| Intel, Arc | **yes** | encode-capable, low-power entry point only | no profile exists |
-| NVIDIA, Turing and newer | **yes** | encode-capable | **the driver refuses it** |
+| Intel, Arc | **yes** | encode-capable, low-power entry point only, packed AYUV/XYUV/Y410 surfaces | no profile exists |
+| NVIDIA, Turing and newer | **yes** | encode-capable, three planar planes as input | **the driver refuses it** |
 
 Three things follow, and each cost time to establish:
 
@@ -53,6 +53,14 @@ Three things follow, and each cost time to establish:
   outright refusal from the vendor encoder, and the third interface's own headers cannot name
   one. **Where a part will encode H.264 4:4:4 it will not decode it**, on the same chip, which
   makes it an encode-only format and therefore not a format.
+
+**What 4:4:4 wants as input is settled by probe, not by guess.** The open stack's 4:4:4
+surfaces are packed at both depths -- AYUV or XYUV at eight bits, Y410 at ten -- while the
+vendor interface reads three planar planes, so the conversion needs one body per layout, which
+is what [the plan, Phase 11.6](impl-plan.md) sizes. Both import over DRM prime, so the
+zero-copy path survives. The third interface has no device where it would serve: it refuses
+on one vendor, offers no encode queue on another, and on the third the vendor interface is
+already the better encoder.
 
 **A guest's decoder is the other half and is not in these tables**; see [§6](#6-guests).
 
