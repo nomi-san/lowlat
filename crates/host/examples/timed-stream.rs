@@ -53,7 +53,10 @@ fn main() {
         height: 1080,
         fps: 60,
         cg_level: 1,
-        full_fps: false,
+        // A static desktop suppresses almost every frame, which leaves the
+        // stage percentiles measured over a handful of samples. Asking for
+        // every picture is what makes a timing run comparable.
+        full_fps: std::env::var("LOWLAT_FULL_FPS").is_ok_and(|v| v != "0"),
         quality: lowlat::stream::Quality::default(),
         codec: match std::env::var("LOWLAT_CODEC").as_deref() {
             Ok("h265" | "hevc") => Codec::H265,
