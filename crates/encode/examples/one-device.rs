@@ -46,7 +46,15 @@ fn main() {
         Ok("h265" | "hevc") => vulkan::Codec::H265,
         _ => vulkan::Codec::H264,
     };
-    let caps = match encoder_device.caps(codec) {
+    // The depth is a knob for the same reason the codec is: it changes the
+    // profile, the picture layout and two fields of the sequence set together,
+    // and only encoding at both says whether they agree.
+    let depth = if std::env::var("LOWLAT_TEN_BIT").is_ok_and(|v| v != "0") {
+        vulkan::Depth::Ten
+    } else {
+        vulkan::Depth::Eight
+    };
+    let caps = match encoder_device.caps_at(codec, depth) {
         Ok(caps) => caps,
         Err(error) => {
             eprintln!("caps: {error}");

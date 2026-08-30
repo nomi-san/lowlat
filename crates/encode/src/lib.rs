@@ -367,6 +367,7 @@ mod tests {
                     bitrate_bps: 20_000_000,
                     min_qp: DEFAULT_MIN_QP,
                     chroma: nvenc::Chroma::default(),
+                    depth: nvenc::Depth::Eight,
                 },
             )
             .expect("initialize");
@@ -481,6 +482,7 @@ mod tests {
                         bitrate_bps: 20_000_000,
                         min_qp,
                         chroma: nvenc::Chroma::default(),
+                        depth: nvenc::Depth::Eight,
                     },
                 )
                 .expect("initialize");
@@ -550,6 +552,7 @@ mod tests {
                     bitrate_bps: 20_000_000,
                     min_qp: DEFAULT_MIN_QP,
                     chroma: nvenc::Chroma::default(),
+                    depth: nvenc::Depth::Eight,
                 },
             )
             .expect("initialize");

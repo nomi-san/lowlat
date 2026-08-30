@@ -65,6 +65,7 @@ fn main() {
                 bitrate_bps: 20_000_000,
                 min_qp: lowlat_encode::DEFAULT_MIN_QP,
                 chroma: nvenc::Chroma::Yuv420,
+                depth: nvenc::Depth::Eight,
             },
         )
         .unwrap_or_else(|e| fail(&format!("configure: {e}")));

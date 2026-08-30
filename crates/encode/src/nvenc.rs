@@ -185,6 +185,63 @@ impl Api {
 mod tests {
     use super::*;
 
+    /// **The depth is named in three places and the stream is the only proof
+    /// they agree.** A profile identifier, the codec's own bit-depth field and
+    /// the layout the input is registered as are set separately; any two of
+    /// them agreeing and the third not produces a session that initialises, an
+    /// encode that succeeds, and a picture nothing reads correctly. So this
+    /// encodes and writes the result out for a decoder that is not this code.
+    #[test]
+    #[ignore = "requires the vendor driver"]
+    fn it_encodes_ten_bit_and_the_stream_says_so() {
+        let cuda = crate::cuda::Cuda::load().expect("compute runtime");
+        let device = cuda.any_device().expect("a device");
+        let context = cuda.retain_primary(&device).expect("context");
+        let api = Api::load().expect("encoder runtime");
+        let session = api.open_session(context).expect("session");
+
+        // A device that will not code the depth is not a failure of this test.
+        if !session.caps(Codec::H265).expect("caps").ten_bit {
+            println!("this device codes no ten-bit HEVC");
+            return;
+        }
+
+        let config = Config {
+            codec: Codec::H265,
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            bitrate_bps: 20_000_000,
+            min_qp: crate::DEFAULT_MIN_QP,
+            chroma: Chroma::default(),
+            depth: Depth::Ten,
+        };
+        let mut encoder = session.initialize(&cuda, config).expect("initialize");
+        let mut source = lowlat_capture::synthetic::Synthetic::new(config.width, config.height);
+
+        let mut stream = Vec::new();
+        let mut collected = 0usize;
+        for index in 0..IN_FLIGHT {
+            encoder
+                .submit(&source.acquire(), index == 0)
+                .expect("submit");
+        }
+        while collected < IN_FLIGHT {
+            match encoder.poll().expect("poll") {
+                Poll::Ready { bitstream, .. } => {
+                    stream.extend_from_slice(bitstream);
+                    collected += 1;
+                }
+                Poll::Pending => {}
+            }
+        }
+        assert!(!stream.is_empty(), "the encoder produced no bytes");
+
+        let path = std::env::var("LOWLAT_DUMP").unwrap_or_else(|_| "/tmp/nvenc10.h265".into());
+        std::fs::write(&path, &stream).expect("write");
+        println!("wrote {path}");
+    }
+
     /// The packing here is four bits of minor, unlike the structure stamps,
     /// and confusing the two produces a comparison that is wrong only for
     /// some driver versions. Checked in both directions.
@@ -288,6 +345,7 @@ mod tests {
                 bitrate_bps: 20_000_000,
                 min_qp: crate::DEFAULT_MIN_QP,
                 chroma: Chroma::default(),
+                depth: Depth::Eight,
             };
             let mut encoder = session.initialize(&cuda, config).expect("initialize");
             assert_eq!(encoder.config().bitrate_bps, 20_000_000);
@@ -335,6 +393,7 @@ mod tests {
             bitrate_bps: 20_000_000,
             min_qp: crate::DEFAULT_MIN_QP,
             chroma: Chroma::default(),
+            depth: Depth::Eight,
         };
         let mut encoder = session.initialize(&cuda, config).expect("initialize");
 
@@ -502,10 +561,12 @@ impl Chroma {
         }
     }
 
-    const fn buffer_format(self) -> crate::ffi::nvenc::NV_ENC_BUFFER_FORMAT {
-        match self {
-            Self::Yuv420 => crate::ffi::nvenc::NV_ENC_BUFFER_FORMAT_NV12,
-            Self::Yuv444 => crate::ffi::nvenc::NV_ENC_BUFFER_FORMAT_YUV444,
+    const fn buffer_format(self, depth: Depth) -> crate::ffi::nvenc::NV_ENC_BUFFER_FORMAT {
+        match (self, depth) {
+            (Self::Yuv420, Depth::Eight) => crate::ffi::nvenc::NV_ENC_BUFFER_FORMAT_NV12,
+            (Self::Yuv420, Depth::Ten) => crate::ffi::nvenc::NV_ENC_BUFFER_FORMAT_YUV420_10BIT,
+            (Self::Yuv444, Depth::Eight) => crate::ffi::nvenc::NV_ENC_BUFFER_FORMAT_YUV444,
+            (Self::Yuv444, Depth::Ten) => crate::ffi::nvenc::NV_ENC_BUFFER_FORMAT_YUV444_10BIT,
         }
     }
 }
@@ -711,6 +772,35 @@ pub struct Config {
     /// How much chroma to code. Every shipped path leaves this at its default;
     /// see [`Chroma`] for why the other value exists.
     pub chroma: Chroma,
+    /// How many bits a sample carries.
+    ///
+    /// **Ten bits is HEVC only**, and not by policy: this interface offers no
+    /// H.264 profile above eight and refuses the input layout outright, so a
+    /// ten-bit H.264 session fails at its first registration with a status
+    /// naming neither the codec nor the depth.
+    pub depth: Depth,
+}
+
+/// How many bits a coded sample carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Depth {
+    #[default]
+    Eight,
+    Ten,
+}
+
+impl Depth {
+    const fn ten_bit(self) -> bool {
+        matches!(self, Self::Ten)
+    }
+
+    /// Bytes one sample occupies in the picture handed over.
+    const fn bytes_per_sample(self) -> usize {
+        match self {
+            Self::Eight => 1,
+            Self::Ten => 2,
+        }
+    }
 }
 
 /// Colour signalling, from [05 §3.1](../../../docs/05-host.md).
@@ -727,6 +817,30 @@ mod colour {
     pub(super) const BT709: u32 = 1;
     /// Limited range, measured from a recorded session rather than chosen.
     pub(super) const FULL_RANGE: u32 = 0;
+}
+
+/// One eight-bit plane as ten-bit samples, packed tightly.
+///
+/// **Two moves, and both matter.** Eight bits become ten by repeating the top
+/// two into the bottom, so 255 reaches 1023 rather than 1020 -- plain shifting
+/// leaves white a little short of white at every pixel. Then the ten sit in the
+/// *high* ten of the sixteen-bit word, which is where this interface reads
+/// them; low-aligned samples decode to a picture that is dark and reports
+/// nothing.
+fn widen(plane: &lowlat_capture::Plane<'_>, samples: usize, rows: usize) -> Vec<u8> {
+    let mut out = vec![0u8; samples * rows * 2];
+    for row in 0..rows {
+        let Some(from) = plane.row(row).and_then(|full| full.get(..samples)) else {
+            break;
+        };
+        let at = row * samples * 2;
+        for (sample, word) in from.iter().zip(out[at..].chunks_exact_mut(2)) {
+            let value = u16::from(*sample);
+            let ten = (value << 2) | (value >> 6);
+            word.copy_from_slice(&(ten << 6).to_le_bytes());
+        }
+    }
+    out
 }
 
 /// The picture kind the driver reported for a collected access unit.
@@ -972,6 +1086,18 @@ impl<'a> Session<'a> {
             // setting only the first produces a device that refuses to
             // initialise, and setting only the second produces a stream whose
             // syntax does not match its own description.
+            if config.depth.ten_bit() {
+                encode_config.profileGUID = crate::ffi::guids::NV_ENC_HEVC_PROFILE_MAIN10_GUID;
+                // The codec's own field as well as the profile: one names what
+                // the stream is, the other what the device codes at, and a
+                // device told only the profile codes eight bits into it.
+                if config.codec == Codec::H265 {
+                    encode_config
+                        .encodeCodecConfig
+                        .hevcConfig
+                        .set_pixelBitDepthMinus8(2);
+                }
+            }
             if config.chroma == Chroma::Yuv444 {
                 encode_config.profileGUID = match config.codec {
                     Codec::H264 => crate::ffi::guids::NV_ENC_H264_PROFILE_HIGH_444_GUID,
@@ -1250,6 +1376,25 @@ impl Encoder<'_> {
         let held = self.inputs.get(slot).ok_or(Error::NoContext)?;
         let width = usize::try_from(frame.width).unwrap_or(0);
         let rows = usize::try_from(frame.height).unwrap_or(0);
+        let chroma_width = width.div_ceil(2) * 2;
+        let chroma_rows = rows.div_ceil(2);
+
+        // **A frame from ordinary memory is eight bits and the pool may not
+        // be.** Widened here rather than refused, because this is the path a
+        // synthetic source and the device tests take; a picture converted on
+        // the device already arrives at the pool's depth and is handed over by
+        // reference without passing through this at all.
+        if self.config.depth.ten_bit() {
+            let luma = widen(&frame.luma, width, rows);
+            let chroma = widen(&frame.chroma, chroma_width, chroma_rows);
+            held.buffer
+                .write_rows(0, &luma, width * 2, width * 2, rows)
+                .map_err(|_| Error::NoContext)?;
+            return held
+                .buffer
+                .write_rows(rows, &chroma, chroma_width * 2, chroma_width * 2, chroma_rows)
+                .map_err(|_| Error::NoContext);
+        }
 
         held.buffer
             .write_rows(0, frame.luma.bytes, frame.luma.stride, width, rows)
@@ -1259,8 +1404,8 @@ impl Encoder<'_> {
                 rows,
                 frame.chroma.bytes,
                 frame.chroma.stride,
-                width.div_ceil(2) * 2,
-                rows.div_ceil(2),
+                chroma_width,
+                chroma_rows,
             )
             .map_err(|_| Error::NoContext)
     }
@@ -1270,7 +1415,13 @@ impl Encoder<'_> {
     fn allocate_inputs(&mut self, cuda: &crate::cuda::Cuda) -> Result<(), Error> {
         // One planar frame per allocation: luma rows, then half as many rows
         // of interleaved chroma, at the driver's preferred pitch.
-        let width = usize::try_from(self.config.width).unwrap_or(0);
+        //
+        // **The depth widens a row, it does not add rows.** Ten bits are one
+        // sample to a sixteen-bit word, so the picture is the same shape at
+        // twice the bytes across; sizing this by rows alone hands the encoder
+        // half the picture it was promised.
+        let width =
+            usize::try_from(self.config.width).unwrap_or(0) * self.config.depth.bytes_per_sample();
         let rows = usize::try_from(self.config.chroma.rows_for(self.config.height)).unwrap_or(0);
         for _ in 0..IN_FLIGHT {
             let buffer = cuda
@@ -1311,7 +1462,7 @@ impl Encoder<'_> {
         params.height = self.config.height;
         params.pitch = u32::try_from(pitch).map_err(|_| Error::MissingSymbol)?;
         params.resourceToRegister = ptr as *mut core::ffi::c_void;
-        params.bufferFormat = self.config.chroma.buffer_format();
+        params.bufferFormat = self.config.chroma.buffer_format(self.config.depth);
         params.bufferUsage = f::NV_ENC_INPUT_IMAGE;
 
         // SAFETY: the block is stamped and live for the call.

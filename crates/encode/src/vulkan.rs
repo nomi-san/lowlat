@@ -108,9 +108,49 @@ pub enum Codec {
     H265,
 }
 
+/// How many bits a coded sample carries.
+///
+/// **Ten bits is HEVC only, and here that is not a policy either.** The
+/// standard header this interface speaks names four H.264 profiles and none of
+/// them codes above eight bits, so a ten-bit H.264 profile cannot be described
+/// to a device, never mind refused by one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Depth {
+    #[default]
+    Eight,
+    Ten,
+}
+
+impl Depth {
+    const fn ten_bit(self) -> bool {
+        matches!(self, Self::Ten)
+    }
+
+    const fn component(self) -> vk::VideoComponentBitDepthFlagsKHR {
+        match self {
+            Self::Eight => vk::VideoComponentBitDepthFlagsKHR::TYPE_8,
+            Self::Ten => vk::VideoComponentBitDepthFlagsKHR::TYPE_10,
+        }
+    }
+
+    /// What the sequence set carries, which is the same number the other
+    /// backends write by hand.
+    const fn minus8(self) -> u8 {
+        match self {
+            Self::Eight => 0,
+            Self::Ten => 2,
+        }
+    }
+}
+
 /// What a device says it will do.
 #[derive(Debug, Clone, Copy)]
 pub struct Caps {
+    /// How many bits these answers are about. **Carried beside the codec for
+    /// the same reason**: every later call needs the profile these were
+    /// queried under, and a session built against one depth's answers under
+    /// the other's is a picture the device reads as the wrong layout.
+    pub depth: Depth,
     /// Which codec these answers are about. Every later call needs the same
     /// profile these were queried under, and carrying it here is what stops
     /// a session being built against one codec's answers under the other's.
@@ -154,11 +194,15 @@ fn node_numbers(path: &Path) -> Option<(u32, u32)> {
 /// **Built inside a call rather than returned.** Each structure borrows the one
 /// it is pushed onto for as long as that one lives, so the chain cannot outlive
 /// the frame that made it and is handed to a closure instead.
-fn with_profile<R>(codec: Codec, f: impl FnOnce(&vk::VideoProfileInfoKHR<'_>) -> R) -> R {
+fn with_profile<R>(
+    codec: Codec,
+    depth: Depth,
+    f: impl FnOnce(&vk::VideoProfileInfoKHR<'_>) -> R,
+) -> R {
     let base = vk::VideoProfileInfoKHR::default()
         .chroma_subsampling(vk::VideoChromaSubsamplingFlagsKHR::TYPE_420)
-        .luma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8)
-        .chroma_bit_depth(vk::VideoComponentBitDepthFlagsKHR::TYPE_8);
+        .luma_bit_depth(depth.component())
+        .chroma_bit_depth(depth.component());
     match codec {
         Codec::H264 => {
             let mut h264 = vk::VideoEncodeH264ProfileInfoKHR::default().std_profile_idc(
@@ -172,7 +216,11 @@ fn with_profile<R>(codec: Codec, f: impl FnOnce(&vk::VideoProfileInfoKHR<'_>) ->
         // Main, which is eight-bit 4:2:0 -- what the conversion produces.
         Codec::H265 => {
             let mut h265 = vk::VideoEncodeH265ProfileInfoKHR::default().std_profile_idc(
-                ash::vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN,
+                if depth.ten_bit() {
+                    ash::vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN_10
+                } else {
+                    ash::vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN
+                },
             );
             let profile = base
                 .video_codec_operation(vk::VideoCodecOperationFlagsKHR::ENCODE_H265)
@@ -476,6 +524,11 @@ impl Device {
 
     /// What this device will do for a codec.
     pub fn caps(&self, codec: Codec) -> Result<Caps> {
+        self.caps_at(codec, Depth::Eight)
+    }
+
+    /// The same, for a chosen depth.
+    pub fn caps_at(&self, codec: Codec, depth: Depth) -> Result<Caps> {
         let mut encode = vk::VideoEncodeCapabilitiesKHR::default();
         // **The codec's own capabilities have to be in the chain.** Asking
         // about an encode without them is invalid, and a driver answers anyway
@@ -487,7 +540,7 @@ impl Device {
             Codec::H264 => caps.push_next(&mut h264),
             Codec::H265 => caps.push_next(&mut h265),
         };
-        with_profile(codec, |profile| {
+        with_profile(codec, depth, |profile| {
             // SAFETY: the chain outlives the call and the device came from
             // this instance.
             checked(unsafe {
@@ -509,13 +562,14 @@ impl Device {
         let picture = self
             .formats(
                 codec,
+                depth,
                 vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR | vk::ImageUsageFlags::TRANSFER_DST,
             )?
             .first()
             .copied()
             .ok_or(Error::Unsupported("a layout for a picture it would encode"))?;
         let reference = self
-            .formats(codec, vk::ImageUsageFlags::VIDEO_ENCODE_DPB_KHR)?
+            .formats(codec, depth, vk::ImageUsageFlags::VIDEO_ENCODE_DPB_KHR)?
             .first()
             .copied()
             .ok_or(Error::Unsupported("a layout for a reference picture"))?;
@@ -526,12 +580,14 @@ impl Device {
         let shared_picture = self
             .formats(
                 codec,
+                depth,
                 vk::ImageUsageFlags::VIDEO_ENCODE_SRC_KHR | vk::ImageUsageFlags::STORAGE,
             )
             .is_ok_and(|formats| formats.contains(&picture));
 
         Ok(Caps {
             codec,
+            depth,
             rate_control,
             max_extent,
             picture_granularity,
@@ -563,7 +619,7 @@ impl Device {
         let mut caps = vk::VideoCapabilitiesKHR::default()
             .push_next(&mut encode)
             .push_next(&mut h265);
-        with_profile(Codec::H265, |profile| {
+        with_profile(Codec::H265, Depth::Eight, |profile| {
             // SAFETY: the chain outlives the call and the device came from
             // this instance.
             checked(unsafe {
@@ -599,8 +655,13 @@ impl Device {
     }
 
     /// Which layouts the device takes for one use of a video picture.
-    fn formats(&self, codec: Codec, usage: vk::ImageUsageFlags) -> Result<Vec<vk::Format>> {
-        with_profile(codec, |profile| {
+    fn formats(
+        &self,
+        codec: Codec,
+        depth: Depth,
+        usage: vk::ImageUsageFlags,
+    ) -> Result<Vec<vk::Format>> {
+        with_profile(codec, depth, |profile| {
             let profiles = [*profile];
             let mut list = vk::VideoProfileListInfoKHR::default().profiles(&profiles);
             let info = vk::PhysicalDeviceVideoFormatInfoKHR::default()
@@ -877,7 +938,7 @@ impl Device {
     }
 
     fn session(&self, caps: &Caps, extent: vk::Extent2D) -> Result<vk::VideoSessionKHR> {
-        with_profile(caps.codec, |profile| {
+        with_profile(caps.codec, caps.depth, |profile| {
             let create = vk::VideoSessionCreateInfoKHR::default()
                 .queue_family_index(self.family)
                 .video_profile(profile)
@@ -988,6 +1049,7 @@ impl Device {
             let shared_families = [self.writer_family, self.family];
             source_ring.push(self.picture(
                 caps.codec,
+                caps.depth,
                 caps.picture,
                 extent,
                 if caps.shared_picture {
@@ -1006,6 +1068,7 @@ impl Device {
         }
         let dpb = self.picture(
             caps.codec,
+            caps.depth,
             caps.reference,
             extent,
             vk::ImageUsageFlags::VIDEO_ENCODE_DPB_KHR,
@@ -1014,8 +1077,8 @@ impl Device {
             &[],
         )?;
 
-        let (bitstream, bitstream_memory) = self.bitstream(caps.codec)?;
-        let pool = self.feedback_pool(caps.codec)?;
+        let (bitstream, bitstream_memory) = self.bitstream(caps.codec, caps.depth)?;
+        let pool = self.feedback_pool(caps.codec, caps.depth)?;
         let create = vk::CommandPoolCreateInfo::default()
             .queue_family_index(self.family)
             .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
@@ -1226,8 +1289,15 @@ impl Device {
         // three that follow.
         let mut tier: ash::vk::native::StdVideoH265ProfileTierLevel =
             unsafe { core::mem::zeroed() };
-        tier.general_profile_idc =
-            ash::vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN;
+        // **The profile the set declares, matching the one the session was
+        // built against.** A set claiming Main over a Main 10 session is a
+        // stream whose syntax does not match its own description, and nothing
+        // between here and a decoder objects.
+        tier.general_profile_idc = if caps.depth.ten_bit() {
+            ash::vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN_10
+        } else {
+            ash::vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN
+        };
         tier.general_level_idc = level;
         // **A decoder matches on these as well as on the profile.** Left
         // clear, a main-profile stream looks like one no profile claims.
@@ -1279,6 +1349,10 @@ impl Device {
         sps.sps_max_sub_layers_minus1 = 0;
         sps.sps_seq_parameter_set_id = 0;
         sps.log2_max_pic_order_cnt_lsb_minus4 = LOG2_MAX_POC_LSB_MINUS4;
+        // Zeroed above means eight bits, which is right for Main and wrong for
+        // anything else, so it is written rather than left.
+        sps.bit_depth_luma_minus8 = caps.depth.minus8();
+        sps.bit_depth_chroma_minus8 = caps.depth.minus8();
         sps.log2_min_luma_coding_block_size_minus3 = small(LOG2_MIN_CODING_BLOCK - 3);
         sps.log2_diff_max_min_luma_coding_block_size = small(ctb_log2 - LOG2_MIN_CODING_BLOCK);
         sps.log2_min_luma_transform_block_size_minus2 = small(LOG2_MIN_TRANSFORM_BLOCK - 2);
@@ -1352,6 +1426,7 @@ impl Device {
     fn picture(
         &self,
         codec: Codec,
+        depth: Depth,
         format: vk::Format,
         extent: vk::Extent2D,
         usage: vk::ImageUsageFlags,
@@ -1359,7 +1434,7 @@ impl Device {
         layers: u32,
         families: &[u32],
     ) -> Result<Picture> {
-        let image = with_profile(codec, |profile| {
+        let image = with_profile(codec, depth, |profile| {
             let profiles = [*profile];
             let mut list = vk::VideoProfileListInfoKHR::default().profiles(&profiles);
             let mut create = vk::ImageCreateInfo::default()
@@ -1480,8 +1555,8 @@ impl Device {
     }
 
     /// Where a finished picture lands, in memory the processor can read.
-    fn bitstream(&self, codec: Codec) -> Result<(vk::Buffer, vk::DeviceMemory)> {
-        let buffer = with_profile(codec, |profile| {
+    fn bitstream(&self, codec: Codec, depth: Depth) -> Result<(vk::Buffer, vk::DeviceMemory)> {
+        let buffer = with_profile(codec, depth, |profile| {
             let profiles = [*profile];
             let mut list = vk::VideoProfileListInfoKHR::default().profiles(&profiles);
             let info = vk::BufferCreateInfo::default()
@@ -1507,13 +1582,13 @@ impl Device {
     }
 
     /// The pool a written length comes back through.
-    fn feedback_pool(&self, codec: Codec) -> Result<vk::QueryPool> {
+    fn feedback_pool(&self, codec: Codec, depth: Depth) -> Result<vk::QueryPool> {
         let mut feedback = vk::QueryPoolVideoEncodeFeedbackCreateInfoKHR::default()
             .encode_feedback_flags(
                 vk::VideoEncodeFeedbackFlagsKHR::BITSTREAM_BUFFER_OFFSET
                     | vk::VideoEncodeFeedbackFlagsKHR::BITSTREAM_BYTES_WRITTEN,
             );
-        with_profile(codec, |profile| {
+        with_profile(codec, depth, |profile| {
             let mut owned = *profile;
             let create = vk::QueryPoolCreateInfo::default()
                 .query_type(vk::QueryType::VIDEO_ENCODE_FEEDBACK_KHR)
