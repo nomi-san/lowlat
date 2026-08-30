@@ -313,3 +313,27 @@ fn the_header_declares_no_name_without_the_prefix() {
         "the header declares {stray:?} without the project prefix"
     );
 }
+
+/// **The C mirror's own arithmetic, so a field added on one side and not the
+/// other is caught here rather than at a caller's size check.**
+///
+/// A caller stamps `size` from its own `sizeof` and this library refuses
+/// anything smaller than its own, so a mirror that has drifted fails at every
+/// call with one invalid-argument status and names nothing. The number below
+/// is written out from the fields rather than taken from `size_of`, because
+/// taking it from `size_of` would agree with any layout at all.
+#[test]
+fn the_status_struct_is_the_size_its_fields_come_to() {
+    use lowlat::abi::{LOWLAT_OUTPUT_MAX, lowlat_host_status};
+    let fields = 4 * 4        // size, guests, width, height
+        + 1 + 1 + 1 + 1       // running, audio_active, ten_bit, reserved
+        + 4 + 4               // codec, chroma
+        + LOWLAT_OUTPUT_MAX;  // audio_device
+    assert_eq!(
+        core::mem::size_of::<lowlat_host_status>(),
+        fields,
+        "the status struct is not the size its fields come to; a mirror stamping its own \
+         sizeof will be refused"
+    );
+    assert_eq!(core::mem::align_of::<lowlat_host_status>(), 4);
+}

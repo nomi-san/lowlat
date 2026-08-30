@@ -84,6 +84,29 @@ var events = Task.Run(
 // **A dropped connection reconnects rather than exits.** The service's edge
 // closes an idle socket, a network moves, a service restarts; a host that
 // gives up on any of those is a host that is in the listing for two minutes.
+// **What the host is producing, once a second, read while it runs.** A guest
+// can move the codec and the depth mid-session, so the configuration this
+// program set at the start stops being the answer the moment one does; this is
+// the only place the two can be compared.
+_ = Task.Run(async () =>
+{
+    var last = "";
+    while (!cancel.IsCancellationRequested)
+    {
+        var now = host.State();
+        var line = now.Running
+            ? $"status: {now.Width}x{now.Height} guests={now.Guests} "
+                + $"codec={(Codec)now.Codec} chroma={(Chroma)now.Chroma} ten_bit={now.TenBit}"
+            : "status: not hosting";
+        if (line != last)
+        {
+            Console.WriteLine(line);
+            last = line;
+        }
+        await Task.Delay(1000, cancel.Token).ConfigureAwait(false);
+    }
+});
+
 var backoff = new Backoff();
 while (!cancel.IsCancellationRequested)
 {

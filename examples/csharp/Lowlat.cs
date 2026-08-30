@@ -63,6 +63,10 @@ internal enum Outcome : uint
 
 internal enum Codec : uint { H264 = 1, Hevc = 2 }
 
+/// How much colour the stream carries, relative to its luma. Zero until
+/// something is being coded.
+internal enum Chroma : uint { Yuv420 = 1, Yuv444 = 2 }
+
 internal enum Encoder : uint { FollowDisplay = 0, Open = 1, Vendor = 2 }
 
 internal enum CgLevel : uint { Legacy = 0, Sensitive = 1, Relaxed = 2 }
@@ -224,7 +228,16 @@ internal struct HostStatus
     public uint Height;
     public byte RunningByte;
     public byte AudioActiveByte;
-    private byte reserved0, reserved1;
+    public byte TenBitByte;
+    private byte reserved0;
+    /// One of [`Codec`], and zero until something is being coded.
+    ///
+    /// **What is coming out, not what was asked for.** A seated guest can move
+    /// the codec and the depth while the stream runs, so the configuration
+    /// stops being the answer as soon as one does.
+    public uint Codec;
+    /// One of [`Chroma`], and zero until something is being coded.
+    public uint Chroma;
     [InlineArray(Sizes.Output)] public struct DeviceName { private byte first; }
     /// The sound device being read, which is not the one that was asked for:
     /// an empty request means the default output and the server may move a
@@ -237,6 +250,9 @@ internal struct HostStatus
     /// is set to: nothing is read in an empty room, and a device that could
     /// not be opened is not read either.
     public bool AudioActive => AudioActiveByte != 0;
+
+    /// Whether the stream codes ten bits a sample.
+    public bool TenBit => TenBitByte != 0;
 }
 
 [StructLayout(LayoutKind.Sequential)]
