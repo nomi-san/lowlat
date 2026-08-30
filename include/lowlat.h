@@ -699,7 +699,19 @@ typedef struct lowlat_host_status {
     // way -- the settings still say enabled, because they are what was asked
     // for.
     bool audio_active;
-    uint8_t reserved[2];
+    // Whether the stream codes ten bits a sample. **A flag rather than a
+    // number, because the axis has nowhere to go**: no encoder on this
+    // platform offers a depth above ten and one of them cannot describe one.
+    bool ten_bit;
+    uint8_t reserved[1];
+    // One of [`lowlat_codec`], and **zero until something is being coded**.
+    //
+    // **What is coming out, not what was asked for.** A seated guest can move
+    // the codec and the depth while the stream runs, so the configuration
+    // stops being the answer as soon as one does.
+    uint32_t codec;
+    // One of [`lowlat_chroma`], and zero until something is being coded.
+    uint32_t chroma;
     // The sound device being read, empty when none is.
     //
     // **What it landed on, not what was asked for.** An empty request means

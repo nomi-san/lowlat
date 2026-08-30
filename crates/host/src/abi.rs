@@ -369,6 +369,23 @@ pub const LOWLAT_SERVERS_MAX: usize = 4;
 /// The longest textual `host:port` for one of them.
 pub const LOWLAT_SERVER_MAX: usize = 64;
 
+/// How much colour the stream carries, relative to its luma.
+///
+/// **Named by an enumeration and carried as an integer**, the same way
+/// [`lowlat_codec`] is, and an axis rather than a flag because it has
+/// somewhere to go: a third layout is in wide use elsewhere even though
+/// nothing here produces one.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_chroma {
+    /// Colour at half resolution in both directions, which is every stream
+    /// this produces.
+    LOWLAT_CHROMA_420 = 1,
+    /// Colour at full resolution. **Never reported**; it is here so the field
+    /// is an axis rather than a flag that would have to be replaced.
+    LOWLAT_CHROMA_444 = 2,
+}
+
 /// Which codec the stream is encoded with.
 ///
 /// **Named by an enumeration and carried as an integer**, for the reason
@@ -1835,7 +1852,19 @@ pub struct lowlat_host_status {
     /// way -- the settings still say enabled, because they are what was asked
     /// for.
     pub audio_active: bool,
-    pub reserved: [u8; 2],
+    /// Whether the stream codes ten bits a sample. **A flag rather than a
+    /// number, because the axis has nowhere to go**: no encoder on this
+    /// platform offers a depth above ten and one of them cannot describe one.
+    pub ten_bit: bool,
+    pub reserved: [u8; 1],
+    /// One of [`lowlat_codec`], and **zero until something is being coded**.
+    ///
+    /// **What is coming out, not what was asked for.** A seated guest can move
+    /// the codec and the depth while the stream runs, so the configuration
+    /// stops being the answer as soon as one does.
+    pub codec: u32,
+    /// One of [`lowlat_chroma`], and zero until something is being coded.
+    pub chroma: u32,
     /// The sound device being read, empty when none is.
     ///
     /// **What it landed on, not what was asked for.** An empty request means
@@ -1874,7 +1903,10 @@ pub unsafe extern "C" fn lowlat_host_get_status(
                 slot.height = 0;
                 slot.running = false;
                 slot.audio_active = false;
-                slot.reserved = [0; 2];
+                slot.ten_bit = false;
+                slot.codec = 0;
+                slot.chroma = 0;
+                slot.reserved = [0; 1];
                 put(&mut slot.audio_device, "");
                 return LOWLAT_OK;
             };
@@ -1885,7 +1917,25 @@ pub unsafe extern "C" fn lowlat_host_get_status(
             slot.height = height;
             slot.running = true;
             slot.audio_active = reading;
-            slot.reserved = [0; 2];
+            // Zero and clear until an encoder exists, the same way a picture
+            // of no size is reported before a display has been opened.
+            let (codec, ten_bit, chroma) = match seam.colour() {
+                Some((crate::stream::Codec::H264, ten_bit)) => (
+                    lowlat_codec::LOWLAT_CODEC_H264 as u32,
+                    ten_bit,
+                    lowlat_chroma::LOWLAT_CHROMA_420 as u32,
+                ),
+                Some((crate::stream::Codec::H265, ten_bit)) => (
+                    lowlat_codec::LOWLAT_CODEC_HEVC as u32,
+                    ten_bit,
+                    lowlat_chroma::LOWLAT_CHROMA_420 as u32,
+                ),
+                None => (0, false, 0),
+            };
+            slot.codec = codec;
+            slot.chroma = chroma;
+            slot.ten_bit = ten_bit;
+            slot.reserved = [0; 1];
             put(
                 &mut slot.audio_device,
                 device.as_deref().unwrap_or_default(),
@@ -3656,7 +3706,10 @@ mod status_tests {
             height: 0,
             running: false,
             audio_active: false,
-            reserved: [0; 2],
+            ten_bit: false,
+            reserved: [0; 1],
+            codec: 0,
+            chroma: 0,
             audio_device: [0; LOWLAT_OUTPUT_MAX],
         }
     }

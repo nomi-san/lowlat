@@ -503,6 +503,13 @@ pub(crate) struct Shared {
     /// from the generation in the video header; a guest that never noticed
     /// would keep announcing the old one.
     epoch: AtomicU32,
+    /// What the running encoder is coding: the codec in the low byte, as the
+    /// boundary numbers it, and the depth above it.
+    ///
+    /// **Zero until an encoder has been built**, which is the honest answer
+    /// the same way a picture of no size is: until then there is nothing being
+    /// coded and a configuration is only a request.
+    colour: AtomicU32,
     /// Whether the encoder behind that epoch codes ten bits a sample.
     ///
     /// **Published beside the epoch because it travels with it.** The depth
@@ -1222,6 +1229,7 @@ impl Stream {
                 full_fps: config.full_fps,
             }),
             epoch: AtomicU32::new(0),
+            colour: AtomicU32::new(0),
             ten_bit: AtomicU32::new(0),
         });
         let (joins, arrivals) = mpsc::channel();
@@ -1349,6 +1357,21 @@ impl Stream {
     /// Zero before a display has been opened. See [`Shared::captured`].
     pub fn captured(&self) -> u32 {
         self.shared.captured.load(Ordering::Acquire)
+    }
+
+    /// What the running encoder codes, or nothing before one exists.
+    ///
+    /// **Read from the loop, not from the configuration.** A seated guest can
+    /// move both of these while the stream runs, so what was asked for at the
+    /// start stops being the answer as soon as one does.
+    pub fn colour(&self) -> Option<(Codec, bool)> {
+        let packed = self.shared.colour.load(Ordering::Acquire);
+        let codec = match packed & 0xFF {
+            1 => Codec::H264,
+            2 => Codec::H265,
+            _ => return None,
+        };
+        Some((codec, packed & 0x100 != 0))
     }
 
     /// The last stage report the loop published.
@@ -1829,6 +1852,16 @@ fn run(
             || std::env::var("LOWLAT_VULKAN_ENCODE").is_ok_and(|value| value == "1"))
             && config.backend.is_none()
             && config.display;
+        // **What this run will produce, published before it produces it.** A
+        // status read from the configuration says what was asked for; a guest
+        // can move the codec and the depth underneath it, and only the loop
+        // knows which it is coding right now.
+        shared.colour.store(
+            u32::from(config.codec == Codec::H265) << 1
+                | u32::from(config.codec == Codec::H264)
+                | u32::from(config.ten_bit) << 8,
+            Ordering::Release,
+        );
         let vulkan_exit = if prefer_vulkan {
             run_vulkan(shared, arrivals, config.clone(), &mut roster)
         } else {
@@ -4440,6 +4473,7 @@ mod tests {
                 video_asked: AtomicU32::new(0),
                 video: std::sync::Mutex::new(LiveVideo::default()),
                 epoch: AtomicU32::new(0),
+                colour: AtomicU32::new(0),
                 ten_bit: AtomicU32::new(0),
             });
             let (joins, arrivals) = mpsc::channel();
@@ -4510,6 +4544,7 @@ mod tests {
             video_asked: AtomicU32::new(0),
             video: std::sync::Mutex::new(LiveVideo::default()),
             epoch: AtomicU32::new(0),
+            colour: AtomicU32::new(0),
             ten_bit: AtomicU32::new(0),
         });
         let (joins, arrivals) = mpsc::channel();
@@ -4726,6 +4761,7 @@ mod tests {
             video_asked: AtomicU32::new(0),
             video: std::sync::Mutex::new(LiveVideo::default()),
             epoch: AtomicU32::new(0),
+            colour: AtomicU32::new(0),
             ten_bit: AtomicU32::new(0),
         });
         let (outputs, asked) = mpsc::channel();

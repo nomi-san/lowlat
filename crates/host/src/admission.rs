@@ -1139,6 +1139,11 @@ impl Admission {
         self.stream.as_ref().map_or(0, Stream::captured)
     }
 
+    /// What the running encoder codes, or nothing before one exists.
+    pub fn colour(&self) -> Option<(crate::stream::Codec, bool)> {
+        self.stream.as_ref().and_then(crate::stream::Stream::colour)
+    }
+
     /// Capture a different output, or the first one lit.
     ///
     /// **The seam forwards it and judges nothing.** Which outputs exist is the
