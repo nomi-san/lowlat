@@ -1304,12 +1304,19 @@ other.
 through a sampler, which normalises any depth to float. The loss happens at the write, where
 eight-bit targets are the only thing the shader can address.
 
-- [ ] **The conversion writes ten-bit targets.** A second compiled variant of the one shader
-  rather than a second shader: a storage image's format qualifier is static, so `r8`/`rg8`
-  cannot become `r16`/`rg16` under a push constant. The build already selects variants by
-  definition for the two interfaces; depth is another. Limited-range constants move to the
-  ten-bit set in [05 §3](05-host.md), and the ordered dither that exists to hide a two-bit
-  reduction is compiled out rather than left computing zero.
+- [x] **The conversion's targets carry no format**, which is what lets one shader serve both
+  depths. *Done 2026-08-30. This item was written expecting a second compiled variant, on the
+  grounds that a storage image's format qualifier is static. It is -- but a qualifier is
+  required only for image **loads**, and these are writeonly, so omitting it lets the store
+  convert to whatever the view was made with. The body stays one file and only the view's
+  format moves. It costs a device feature, checked before it is requested; every device here
+  offers it, including the software one.*
+- [ ] **The conversion writes ten-bit targets.** The views become the ten-bit formats and the
+  depth reaches the shader beside the dispatch, because the parts that really do differ are
+  arithmetic rather than layout: **the limited-range constants are not the same numbers at the
+  two depths** -- 16 and 235 of 255 do not scale to 64 and 940 of 1023 -- and the summary
+  quantises against a different maximum. The ordered dither that exists to hide a two-bit
+  reduction is skipped rather than left computing zero.
   - **The picture is ten bits in the high bits of sixteen** on every interface here. A
     normalised store of `value / 1023` lands in the low bits, which is the opposite, and the
     result decodes cleanly and renders with a colour cast. This is the item's real risk and it
