@@ -220,11 +220,25 @@ mod tests {
         let mut source = lowlat_capture::synthetic::Synthetic::new(config.width, config.height);
 
         let mut stream = Vec::new();
+        // **Kept beside the stream, as the encoder was given them.** A stream
+        // that decodes is not a stream that carries the picture: this backend's
+        // sibling coded eight-bit residuals under ten-bit sets for a day, and
+        // every frame decoded without error the whole time. Only a comparison
+        // against what went in finds that, and only over a run -- the picture
+        // it spares is the first one.
+        let mut fed: Vec<u8> = Vec::new();
         let mut collected = 0usize;
         for index in 0..IN_FLIGHT {
-            encoder
-                .submit(&source.acquire(), index == 0)
-                .expect("submit");
+            let frame = source.acquire();
+            let width = usize::try_from(frame.width).unwrap_or(0);
+            let rows = usize::try_from(frame.height).unwrap_or(0);
+            fed.extend_from_slice(&widen(&frame.luma, width, rows));
+            fed.extend_from_slice(&widen(
+                &frame.chroma,
+                width.div_ceil(2) * 2,
+                rows.div_ceil(2),
+            ));
+            encoder.submit(&frame, index == 0).expect("submit");
         }
         while collected < IN_FLIGHT {
             match encoder.poll().expect("poll") {
@@ -239,7 +253,9 @@ mod tests {
 
         let path = std::env::var("LOWLAT_DUMP").unwrap_or_else(|_| "/tmp/nvenc10.h265".into());
         std::fs::write(&path, &stream).expect("write");
-        println!("wrote {path}");
+        let beside = format!("{path}.p010");
+        std::fs::write(&beside, &fed).expect("write");
+        println!("wrote {path} and {beside} ({IN_FLIGHT} pictures)");
     }
 
     /// The packing here is four bits of minor, unlike the structure stamps,
