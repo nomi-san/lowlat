@@ -127,6 +127,7 @@ fn main() {
             chroma_image: image,
             planes,
             final_layout: ash::vk::ImageLayout::VIDEO_ENCODE_SRC_KHR,
+            depth: lowlat_capture::convert::Depth::Eight,
         };
         if let Err(e) = converter.run(&capture, &source, &target, false) {
             fail(&format!("convert {at}: {e}"));

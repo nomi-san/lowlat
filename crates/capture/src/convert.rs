@@ -105,14 +105,59 @@ const COLLECT_BUDGET_NS: u64 = 100_000_000;
 
 /// What the shader is told, per dispatch.
 ///
-/// Laid out to match the shader's own block exactly. Two signed extents then a
-/// flag, which is twelve bytes and needs no padding on either side.
+/// Laid out to match the shader's own block exactly. Two signed extents then
+/// two flags, which is sixteen bytes and needs no padding on either side.
+///
+/// **A field added here without one added there reads whatever follows the
+/// range**, which is undefined rather than zero, so the two move together.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 struct Params {
     width: i32,
     height: i32,
     dither: u32,
+    ten_bit: u32,
+}
+
+/// How many bits a converted sample carries.
+///
+/// **The target's property, not the source's.** What the display hands us
+/// arrives through a sampler and is normalised whatever its depth
+/// ([07 §3.3](../../../docs/07-platforms.md)); this is what the encoder reads
+/// afterwards, and it is the only place the two can differ.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Depth {
+    #[default]
+    Eight,
+    Ten,
+}
+
+impl Depth {
+    /// The layout one luma sample is stored in.
+    ///
+    /// **Ten bits are stored in the high ten of sixteen**, which is what every
+    /// encoder here reads and what these formats mean by their name: the six
+    /// unused bits are the low ones. Storing through them rather than through a
+    /// plain sixteen-bit format is what keeps the alignment the driver's
+    /// problem instead of a shift written here that no test could check.
+    const fn luma(self) -> vk::Format {
+        match self {
+            Self::Eight => vk::Format::R8_UNORM,
+            Self::Ten => vk::Format::R10X6_UNORM_PACK16,
+        }
+    }
+
+    /// The layout one pair of colour samples is stored in.
+    const fn chroma(self) -> vk::Format {
+        match self {
+            Self::Eight => vk::Format::R8G8_UNORM,
+            Self::Ten => vk::Format::R10X6G10X6_UNORM_2PACK16,
+        }
+    }
+
+    pub const fn ten_bit(self) -> bool {
+        matches!(self, Self::Ten)
+    }
 }
 
 /// How a converted frame is laid out, for whatever imports it next.
@@ -177,6 +222,8 @@ pub struct Nv12 {
     pub height: u32,
     /// Bytes per row, the same for both planes. An encoder is told this once.
     pub pitch: u32,
+    /// How many bits each sample carries.
+    pub depth: Depth,
 }
 
 /// What a conversion writes into, named by handles rather than ownership.
@@ -197,6 +244,11 @@ pub struct TargetRef {
     /// The layout the pictures are left in. [`vk::ImageLayout::GENERAL`] for
     /// an owned target; a lent picture names what its reader expects.
     pub final_layout: vk::ImageLayout,
+    /// How many bits a sample in these planes carries. **Travels with the
+    /// handles rather than being configured**, because a lent picture's depth
+    /// belongs to the encoder that lent it and the conversion has to be told,
+    /// not to decide.
+    pub depth: Depth,
 }
 
 impl TargetRef {
@@ -205,11 +257,21 @@ impl TargetRef {
     /// One two-plane picture, written through its plane views and handed
     /// over in the layout the encoder reads.
     pub fn lent_to_encoder(image: vk::Image, planes: [vk::ImageView; 2]) -> Self {
+        Self::lent_to_encoder_at(image, planes, Depth::Eight)
+    }
+
+    /// The same, for an encoder whose picture is not eight-bit.
+    pub fn lent_to_encoder_at(
+        image: vk::Image,
+        planes: [vk::ImageView; 2],
+        depth: Depth,
+    ) -> Self {
         Self {
             luma_image: image,
             chroma_image: image,
             planes,
             final_layout: vk::ImageLayout::VIDEO_ENCODE_SRC_KHR,
+            depth,
         }
     }
 }
@@ -222,6 +284,7 @@ impl Nv12 {
             chroma_image: self.chroma_image,
             planes: self.planes,
             final_layout: vk::ImageLayout::GENERAL,
+            depth: self.depth,
         }
     }
 }
@@ -433,7 +496,7 @@ impl Converter {
         let ranges = [vk::PushConstantRange::default()
             .stage_flags(vk::ShaderStageFlags::COMPUTE)
             .offset(0)
-            .size(u32::try_from(size_of::<Params>()).unwrap_or(12))];
+            .size(u32::try_from(size_of::<Params>()).unwrap_or(16))];
         let layouts = [layout];
         let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default()
             .set_layouts(&layouts)
@@ -640,6 +703,11 @@ impl Device {
     /// write support anywhere, while the single-component formats its planes
     /// are addressed by report it everywhere.
     pub fn allocate_nv12(&self, width: u32, height: u32) -> Result<Nv12, Error> {
+        self.allocate_planar(width, height, Depth::Eight)
+    }
+
+    /// The same, at a chosen depth.
+    pub fn allocate_planar(&self, width: u32, height: u32, depth: Depth) -> Result<Nv12, Error> {
         // Both dimensions round up to even. A plane at half resolution has no
         // meaning for an odd one, and the shader's last block would write
         // outside the colour plane.
@@ -652,11 +720,11 @@ impl Device {
         // of a picture unexportable, so the narrower answer is what both are
         // built with.
         let usage = vk::ImageUsageFlags::STORAGE | vk::ImageUsageFlags::TRANSFER_SRC;
-        let handle_types = self.exportable(vk::Format::R8_UNORM, usage, vk::ImageTiling::LINEAR)
-            & self.exportable(vk::Format::R8G8_UNORM, usage, vk::ImageTiling::LINEAR);
-        let luma_image = self.plane_image(width, height, vk::Format::R8_UNORM, handle_types)?;
+        let handle_types = self.exportable(depth.luma(), usage, vk::ImageTiling::LINEAR)
+            & self.exportable(depth.chroma(), usage, vk::ImageTiling::LINEAR);
+        let luma_image = self.plane_image(width, height, depth.luma(), handle_types)?;
         let chroma_image =
-            match self.plane_image(width / 2, height / 2, vk::Format::R8G8_UNORM, handle_types) {
+            match self.plane_image(width / 2, height / 2, depth.chroma(), handle_types) {
                 Ok(image) => image,
                 Err(error) => {
                     // SAFETY: created just above and nothing refers to it.
@@ -665,7 +733,7 @@ impl Device {
                 }
             };
 
-        match self.bind_planes(luma_image, chroma_image, width, height) {
+        match self.bind_planes(luma_image, chroma_image, width, height, depth) {
             Ok(nv12) => Ok(nv12),
             Err(error) => {
                 // SAFETY: both created above; binding is what failed.
@@ -839,6 +907,7 @@ impl Device {
         chroma_image: vk::Image,
         width: u32,
         height: u32,
+        depth: Depth,
     ) -> Result<Nv12, Error> {
         let subresource = vk::ImageSubresource {
             aspect_mask: vk::ImageAspectFlags::COLOR,
@@ -948,6 +1017,7 @@ impl Device {
                 luma_image,
                 chroma_image,
                 memory,
+                depth,
                 planes,
                 width,
                 height,
@@ -1389,8 +1459,9 @@ impl Converter {
             width: i32::try_from(source.width).unwrap_or(i32::MAX),
             height: i32::try_from(source.height).unwrap_or(i32::MAX),
             dither: u32::from(dither),
+            ten_bit: u32::from(target.depth.ten_bit()),
         };
-        // SAFETY: `Params` is a plain repr(C) value of three four-byte fields
+        // SAFETY: `Params` is a plain repr(C) value of four four-byte fields
         // with no padding and no pointers, so its bytes are its representation.
         let bytes = unsafe {
             core::slice::from_raw_parts(

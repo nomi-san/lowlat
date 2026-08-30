@@ -60,14 +60,18 @@ layout(binding = 3) buffer Digest {
 layout(push_constant) uniform Params {
     ivec2 extent;
     uint dither;
+    uint ten_bit;
 } params;
 #define EXTENT params.extent
 #define DITHER params.dither
+#define TEN_BIT (params.ten_bit != 0u)
 #else
 layout(location = 0) uniform ivec2 given_extent;
 layout(location = 1) uniform uint given_dither;
+layout(location = 2) uniform uint given_ten_bit;
 #define EXTENT given_extent
 #define DITHER given_dither
+#define TEN_BIT (given_ten_bit != 0u)
 #endif
 
 // BT.709, and not selectable. A receiver applies the inverse unconditionally
@@ -78,13 +82,33 @@ const float KR = 0.2126;
 const float KB = 0.0722;
 const float KG = 1.0 - KR - KB;
 
-// Limited range: black sits at 16 and white at 235. Getting this wrong is
-// subtler than getting the matrix wrong, because it reads as a washed-out
-// picture rather than as a colour error.
-const float Y_SCALE = 219.0 / 255.0;
-const float Y_OFFSET = 16.0 / 255.0;
-const float C_SCALE = 224.0 / 255.0;
-const float C_OFFSET = 128.0 / 255.0;
+// Limited range: black sits at 16 and white at 235 of 255, or at 64 and 940 of
+// 1023. Getting this wrong is subtler than getting the matrix wrong, because it
+// reads as a washed-out picture rather than as a colour error.
+//
+// **The two sets are not one set rescaled, and that is the trap.** The offsets
+// are: 16 of 255 and 64 of 1023 agree to five decimal places. The scales do
+// not -- 235 of 255 is 0.92157 and 940 of 1023 is 0.91887 -- so carrying the
+// eight-bit numbers into a ten-bit target clips white by a fraction of a step
+// at every pixel, which no test comparing shapes would see.
+const float Y_SCALE_8 = 219.0 / 255.0;
+const float Y_OFFSET_8 = 16.0 / 255.0;
+const float C_SCALE_8 = 224.0 / 255.0;
+const float C_OFFSET_8 = 128.0 / 255.0;
+
+const float Y_SCALE_10 = 876.0 / 1023.0;
+const float Y_OFFSET_10 = 64.0 / 1023.0;
+const float C_SCALE_10 = 896.0 / 1023.0;
+const float C_OFFSET_10 = 512.0 / 1023.0;
+
+float y_scale() { return TEN_BIT ? Y_SCALE_10 : Y_SCALE_8; }
+float y_offset() { return TEN_BIT ? Y_OFFSET_10 : Y_OFFSET_8; }
+float c_scale() { return TEN_BIT ? C_SCALE_10 : C_SCALE_8; }
+float c_offset() { return TEN_BIT ? C_OFFSET_10 : C_OFFSET_8; }
+
+// The largest sample value the target holds, which is what a normalised
+// store is quantised against.
+float top() { return TEN_BIT ? 1023.0 : 255.0; }
 
 // Ordered dither. Ten bits into eight is a two-bit reduction, so sixteen levels
 // of spread is more than the error can use. Off unless asked for: whether the
@@ -120,16 +144,20 @@ uint mix32(uint x) {
 // lands in the image, so two pictures that round to the same bytes are the
 // same picture and comparing the floats would call them different.
 uint quantise(float v) {
-    return uint(clamp(v * 255.0 + 0.5, 0.0, 255.0));
+    float max_value = top();
+    return uint(clamp(v * max_value + 0.5, 0.0, max_value));
 }
 
 float spread(ivec2 at) {
     if (DITHER == 0u) {
         return 0.0;
     }
-    // Centred on zero and scaled to one eight-bit step, so it perturbs the
-    // rounding and nothing else.
-    return (BAYER[(at.y & 3) * 4 + (at.x & 3)] / 16.0 - 0.5) / 255.0;
+    // Centred on zero and scaled to one step of the target, so it perturbs
+    // the rounding and nothing else. **At ten bits there is nothing to hide**:
+    // the reduction this exists for is gone, so the caller leaves it off and
+    // this stays here only because the step size has to follow the depth if it
+    // is ever asked for anyway.
+    return (BAYER[(at.y & 3) * 4 + (at.x & 3)] / 16.0 - 0.5) / top();
 }
 
 vec3 fetch(ivec2 at) {
@@ -144,7 +172,7 @@ float luma_of(vec3 colour) {
 }
 
 void store_luma(ivec2 at, vec3 colour) {
-    float y = luma_of(colour) * Y_SCALE + Y_OFFSET + spread(at);
+    float y = luma_of(colour) * y_scale() + y_offset() + spread(at);
     imageStore(luma, at, vec4(y, 0.0, 0.0, 0.0));
 }
 
@@ -189,19 +217,35 @@ void main() {
     float v = (mean.r - y) / (2.0 - 2.0 * KR);
 
     // Blue difference first, which is the order the two-plane format names.
-    float cb = u * C_SCALE + C_OFFSET + spread(block);
-    float cr = v * C_SCALE + C_OFFSET + spread(block + ivec2(2, 0));
+    float cb = u * c_scale() + c_offset() + spread(block);
+    float cr = v * c_scale() + c_offset() + spread(block + ivec2(2, 0));
     imageStore(chroma, block, vec4(cb, cr, 0.0, 0.0));
 
     // **Position goes into the summary, so moving a pixel is a change.**
     // Without it a picture and the same picture with two blocks exchanged
     // reduce to the same value under a sum and an exclusive-or, both of
     // which ignore order.
-    uint luma_bits = quantise(luma_of(c00) * Y_SCALE + Y_OFFSET)
-        | (quantise(luma_of(c10) * Y_SCALE + Y_OFFSET) << 8)
-        | (quantise(luma_of(c01) * Y_SCALE + Y_OFFSET) << 16)
-        | (quantise(luma_of(c11) * Y_SCALE + Y_OFFSET) << 24);
-    uint colour = quantise(cb) | (quantise(cr) << 8);
+    uint q00 = quantise(luma_of(c00) * y_scale() + y_offset());
+    uint q10 = quantise(luma_of(c10) * y_scale() + y_offset());
+    uint q01 = quantise(luma_of(c01) * y_scale() + y_offset());
+    uint q11 = quantise(luma_of(c11) * y_scale() + y_offset());
+
+    // **Four samples do not pack into a word at ten bits.** Forty bits do not
+    // fit in thirty-two, and shifting them by eight anyway makes neighbours
+    // overlap: the summary still moves when the picture moves, but changes
+    // begin cancelling each other and this is a change detector, so a
+    // collision is a frame that never gets sent. Two samples to a word and
+    // two words folded together holds ten bits exactly, and the eight-bit
+    // packing is left as it was so no shipped stream's suppression changes.
+    uint luma_bits;
+    uint colour;
+    if (TEN_BIT) {
+        luma_bits = mix32(q00 | (q10 << 16)) ^ mix32(q01 | (q11 << 16));
+        colour = quantise(cb) | (quantise(cr) << 16);
+    } else {
+        luma_bits = q00 | (q10 << 8) | (q01 << 16) | (q11 << 24);
+        colour = quantise(cb) | (quantise(cr) << 8);
+    }
     uint position = mix32(uint(block.y) * 65536u + uint(block.x));
     atomicAdd(block_sum, mix32(luma_bits ^ position));
     atomicXor(block_xor, mix32(colour + position));

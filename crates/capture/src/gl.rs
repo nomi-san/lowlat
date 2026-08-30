@@ -749,6 +749,16 @@ pub struct Nv12 {
     pub height: u32,
     /// Bytes per row, the same for both planes. An encoder is told this once.
     pub pitch: u32,
+    /// How many bits each sample carries.
+    ///
+    /// **Eight, always, on this tier for now.** The field exists because the
+    /// shader is shared with the other interface and is told the depth per
+    /// dispatch: leaving it out would not make this tier eight-bit, it would
+    /// make it convert with whatever the uniform last held. This tier serves
+    /// devices old enough to need it ([09 §3](../../../docs/09-compatibility.md)),
+    /// none of which encode ten-bit anyway, so widening it waits for a device
+    /// that would use it.
+    pub depth: crate::convert::Depth,
 }
 
 impl core::fmt::Debug for Nv12 {
@@ -922,6 +932,7 @@ impl Device {
                 width,
                 height,
                 pitch: width,
+                depth: crate::convert::Depth::Eight,
             }),
             Err(error) => {
                 // SAFETY: created just above and bound to nothing else.
@@ -1028,6 +1039,7 @@ impl Device {
             width,
             height,
             pitch,
+            depth: crate::convert::Depth::Eight,
         })
     }
 
@@ -1204,6 +1216,11 @@ impl Converter {
                 i32::try_from(source.height).unwrap_or(i32::MAX),
             );
             (gl.Uniform1ui)(1, u32::from(dither));
+            // **The target's depth, not the source's.** Set every dispatch
+            // rather than at link time: one program serves both, and a stale
+            // uniform would convert with the other depth's range constants and
+            // produce a picture that is merely a little washed out.
+            (gl.Uniform1ui)(2, u32::from(target.depth.ten_bit()));
 
             (gl.DispatchCompute)(groups_x, groups_y, 1);
             (gl.MemoryBarrier)(raw::AFTER_DISPATCH);
