@@ -1007,9 +1007,13 @@ impl Device {
                     .map_err(driver)?;
             }
             let mut planes = [vk::ImageView::null(); 2];
+            // **The same formats the images were made with.** A view is what
+            // the shader stores through, so one narrower than its image writes
+            // a byte into every two-byte sample and leaves the other untouched
+            // -- which is not a refusal anywhere, just half a picture.
             for (at, (image, format)) in [
-                (luma_image, vk::Format::R8_UNORM),
-                (chroma_image, vk::Format::R8G8_UNORM),
+                (luma_image, depth.luma()),
+                (chroma_image, depth.chroma()),
             ]
             .into_iter()
             .enumerate()
@@ -1958,6 +1962,105 @@ mod tests {
         )
     }
 
+    /// The same transform at ten bits, and **not the eight-bit answer scaled**.
+    ///
+    /// The range constants are different numbers rather than one set
+    /// multiplied out -- 235 of 255 is 0.92157 and 940 of 1023 is 0.91887 --
+    /// so a reference that scaled would agree with a conversion that made the
+    /// same mistake and prove nothing.
+    fn reference_ten(r: u8, g: u8, b: u8) -> (u16, u16, u16) {
+        let (rf, gf, bf) = (
+            f64::from(r) / 255.0,
+            f64::from(g) / 255.0,
+            f64::from(b) / 255.0,
+        );
+        let kr = 0.2126_f64;
+        let kb = 0.0722_f64;
+        let kg = 1.0 - kr - kb;
+        let y = kr * rf + kg * gf + kb * bf;
+        let u = (bf - y) / (2.0 - 2.0 * kb);
+        let v = (rf - y) / (2.0 - 2.0 * kr);
+        let quantise = |value: f64| -> u16 {
+            let scaled = (value * 1023.0).round().clamp(0.0, 1023.0);
+            (0..=1023u16)
+                .find(|candidate| f64::from(*candidate) >= scaled)
+                .unwrap_or(1023)
+        };
+        (
+            quantise(y * (876.0 / 1023.0) + 64.0 / 1023.0),
+            quantise(u * (896.0 / 1023.0) + 512.0 / 1023.0),
+            quantise(v * (896.0 / 1023.0) + 512.0 / 1023.0),
+        )
+    }
+
+    /// **The ten-bit conversion lands on the ten-bit reference**, sample for
+    /// sample, with the samples read where an encoder reads them.
+    ///
+    /// This is the check the depth needed and did not have. Two faults it
+    /// catches, both of which shipped for a day and neither of which refuses
+    /// anywhere: a plane written through a view narrower than its image, which
+    /// fills one byte of every two-sample word and leaves half the picture
+    /// untouched; and samples placed in the low ten bits of the word instead of
+    /// the high ten, which decodes to a picture that is merely dark.
+    #[test]
+    fn the_ten_bit_conversion_matches_the_ten_bit_reference() {
+        let width = u32::try_from(PATTERN.len()).unwrap() * 2;
+        let height = 2;
+
+        let mut pixels = vec![0u8; (width as usize) * (height as usize) * 4];
+        for (block, colour) in PATTERN.iter().enumerate() {
+            for dy in 0..2usize {
+                for dx in 0..2usize {
+                    let at = (dy * (width as usize) + block * 2 + dx) * 4;
+                    pixels[at] = colour[0];
+                    pixels[at + 1] = colour[1];
+                    pixels[at + 2] = colour[2];
+                    pixels[at + 3] = 255;
+                }
+            }
+        }
+
+        let device = Device::any().expect("a device that can convert");
+        let source = device
+            .upload_rgba(width, height, &pixels)
+            .expect("upload the pattern");
+        let target = device
+            .allocate_planar(width, height, Depth::Ten)
+            .expect("a ten-bit target");
+        let mut converter = Converter::new(&device).expect("a pipeline");
+        converter
+            .run(&device, &source, &target.target(), false)
+            .expect("convert");
+        let (luma, chroma) = device.read_nv12(&target).expect("read the planes");
+
+        // **Read as an encoder reads them**: little-endian words with the
+        // sample in the high ten bits. Reading them any other way would agree
+        // with a conversion that wrote them any other way.
+        let sample = |plane: &[u8], at: usize| -> u16 {
+            u16::from_le_bytes([plane[at * 2], plane[at * 2 + 1]]) >> 6
+        };
+
+        for (block, colour) in PATTERN.iter().enumerate() {
+            let (want_y, want_u, want_v) = reference_ten(colour[0], colour[1], colour[2]);
+            for dy in 0..2usize {
+                for dx in 0..2usize {
+                    let at = dy * (width as usize) + block * 2 + dx;
+                    let got = sample(&luma, at);
+                    assert!(
+                        got.abs_diff(want_y) <= 2,
+                        "block {block} luma {got} wanted {want_y}"
+                    );
+                }
+            }
+            let at = block * 2;
+            let (got_u, got_v) = (sample(&chroma, at), sample(&chroma, at + 1));
+            assert!(
+                got_u.abs_diff(want_u) <= 2 && got_v.abs_diff(want_v) <= 2,
+                "block {block} chroma {got_u} {got_v} wanted {want_u} {want_v}"
+            );
+        }
+    }
+
     /// Saturated colours, each filling a whole 2x2 block so subsampling has
     /// nothing to average and the answer is exact.
     ///
@@ -2229,3 +2332,4 @@ mod tests {
         device.release_nv12(target);
     }
 }
+

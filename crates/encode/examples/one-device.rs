@@ -137,7 +137,15 @@ fn main() {
             chroma_image: image,
             planes,
             final_layout: ash::vk::ImageLayout::VIDEO_ENCODE_SRC_KHR,
-            depth: lowlat_capture::convert::Depth::Eight,
+            // **The picture's own depth, not a default.** The conversion is
+            // writing this encoder's picture in place, so being told the wrong
+            // depth converts with the other one's range constants into a
+            // layout that accepts them silently.
+            depth: if depth == vulkan::Depth::Ten {
+                lowlat_capture::convert::Depth::Ten
+            } else {
+                lowlat_capture::convert::Depth::Eight
+            },
         };
         if let Err(error) = converter.run(&capture, &source, &target, false) {
             eprintln!("convert {at}: {error}");

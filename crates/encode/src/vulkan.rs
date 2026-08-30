@@ -133,6 +133,23 @@ impl Depth {
         }
     }
 
+    /// The layout one luma sample of the encoder's own picture is addressed
+    /// through, which is the plane format of the two-plane picture format.
+    const fn plane_luma(self) -> vk::Format {
+        match self {
+            Self::Eight => vk::Format::R8_UNORM,
+            Self::Ten => vk::Format::R10X6_UNORM_PACK16,
+        }
+    }
+
+    /// The same for the pair of colour samples.
+    const fn plane_chroma(self) -> vk::Format {
+        match self {
+            Self::Eight => vk::Format::R8G8_UNORM,
+            Self::Ten => vk::Format::R10X6G10X6_UNORM_2PACK16,
+        }
+    }
+
     /// What the sequence set carries, which is the same number the other
     /// backends write by hand.
     const fn minus8(self) -> u8 {
@@ -1516,9 +1533,14 @@ impl Device {
 
         let plane_views = if planes {
             let mut built = [vk::ImageView::null(); 2];
+            // **The plane formats of the picture's own format, not of an
+            // eight-bit one.** These are what a shader stores through, so a
+            // view narrower than the plane it names writes one byte into every
+            // two-byte sample and leaves the other alone -- half a picture,
+            // refused by nothing.
             for (at, (aspect, plane_format)) in [
-                (vk::ImageAspectFlags::PLANE_0, vk::Format::R8_UNORM),
-                (vk::ImageAspectFlags::PLANE_1, vk::Format::R8G8_UNORM),
+                (vk::ImageAspectFlags::PLANE_0, depth.plane_luma()),
+                (vk::ImageAspectFlags::PLANE_1, depth.plane_chroma()),
             ]
             .into_iter()
             .enumerate()
