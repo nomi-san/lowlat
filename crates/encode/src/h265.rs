@@ -147,10 +147,7 @@ impl Params {
     /// chroma units for a 4:2:0 stream, so a crop counted here in luma samples
     /// is halved where it is written.
     pub fn coded(&self) -> (u32, u32) {
-        (
-            self.width.div_ceil(CODED_ALIGN) * CODED_ALIGN,
-            self.height.div_ceil(CODED_ALIGN) * CODED_ALIGN,
-        )
+        coded_size(self.width, self.height)
     }
 
     /// Coding tree blocks in a picture, which is what one slice covers.
@@ -168,6 +165,20 @@ impl Params {
         let (coded_width, coded_height) = self.coded();
         (coded_width - self.width, coded_height - self.height)
     }
+}
+
+/// What a picture of this size is really coded at.
+///
+/// **Public because a surface has to be allocated at it.** The conformance
+/// window crops the difference, so nothing downstream of the decoder sees the
+/// rounding -- but the encoder reads every coded row out of the surface it was
+/// handed, and one that stops at the visible height is one it reads past.
+#[must_use]
+pub const fn coded_size(width: u32, height: u32) -> (u32, u32) {
+    (
+        width.div_ceil(CODED_ALIGN) * CODED_ALIGN,
+        height.div_ceil(CODED_ALIGN) * CODED_ALIGN,
+    )
 }
 
 /// The profile, tier and level block, which all three sets share.

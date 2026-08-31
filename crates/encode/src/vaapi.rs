@@ -1216,32 +1216,63 @@ mod tests {
             lowlat_capture::convert::Depth::Eight
         };
 
-        let packed = full.then(|| {
-            device
-                .allocate_packed_444(width, height, depth)
-                .expect("a packed target")
-        });
-        let planar = (!full).then(|| {
-            device
-                .allocate_planar(width, height, depth)
-                .expect("a subsampled target")
-        });
-        let target = || {
-            packed.as_ref().map_or_else(
-                || planar.as_ref().expect("one target or the other").target(),
+        // **However many targets a stream keeps in flight, not one.** A live
+        // pipeline converts into a ring of them and hands the encoder a
+        // different surface every picture, so a fault that needs two
+        // allocations to show -- one read past its end into the next, a
+        // registration paired with the wrong slot -- cannot appear at all
+        // against a single target however long the run is.
+        let targets = sized("LOWLAT_PROBE_TARGETS", 1) as usize;
+        // **The surface is the coded size, not the visible one.** The device
+        // codes whole blocks and the sets crop the difference, so a picture
+        // whose height is not a multiple of the coding alignment is coded
+        // taller than it is shown -- and the surface it is coded out of has to
+        // carry those rows, or the encoder reads past the allocation for them.
+        // The knob is here to put the fault back: without the rows, the
+        // colour of the first ones doubles once a picture and saturates.
+        let (wide, tall) = if std::env::var("LOWLAT_PROBE_PAD").is_ok_and(|v| v == "0") {
+            (width, height)
+        } else {
+            crate::h265::coded_size(width, height)
+        };
+        let mut packed = Vec::new();
+        let mut planar = Vec::new();
+        for _ in 0..targets.max(1) {
+            if full {
+                packed.push(
+                    device
+                        .allocate_packed_444(wide, tall, depth)
+                        .expect("a packed target"),
+                );
+            } else {
+                planar.push(
+                    device
+                        .allocate_planar(wide, tall, depth)
+                        .expect("a subsampled target"),
+                );
+            }
+        }
+        let target = |slot: usize| {
+            packed.get(slot).map_or_else(
+                || planar.get(slot).expect("a target for the slot").target(),
                 lowlat_capture::convert::Packed444::target,
             )
         };
         let mut converter = lowlat_capture::convert::Converter::new(&device).expect("a pipeline");
-        let (fd, exported) = match (&packed, &planar) {
-            (Some(frame), _) => device.export_packed_444(frame, true),
-            (_, Some(frame)) => device.export_nv12(frame, true),
-            _ => unreachable!("one target or the other is allocated"),
+        let mut surfaces = Vec::with_capacity(targets.max(1));
+        for slot in 0..targets.max(1) {
+            let (fd, exported) = match (packed.get(slot), planar.get(slot)) {
+                (Some(frame), _) => device.export_packed_444(frame, true),
+                (_, Some(frame)) => device.export_nv12(frame, true),
+                _ => unreachable!("a target is allocated for every slot"),
+            }
+            .expect("export the frame");
+            surfaces.push(
+                display
+                    .import(std::os::fd::AsFd::as_fd(&fd), &exported)
+                    .expect("import the frame"),
+            );
         }
-        .expect("export the frame");
-        let surface = display
-            .import(std::os::fd::AsFd::as_fd(&fd), &exported)
-            .expect("import the frame");
 
         let context = display
             .create_context(caps, width, height, 2)
@@ -1271,14 +1302,15 @@ mod tests {
         let mut fed = Vec::new();
         let mut stream = Vec::new();
         for frame in 0..frames {
+            let slot = frame % targets.max(1);
             let pixels = detailed(width, height, block, frame, still);
             let source = device
                 .upload_rgba(width, height, &pixels)
                 .expect("upload a pattern");
             converter
-                .run(&device, &source, &target(), false)
+                .run(&device, &source, &target(slot), false)
                 .expect("convert");
-            match (&packed, &planar) {
+            match (packed.get(slot), planar.get(slot)) {
                 (Some(frame), _) => {
                     fed.extend_from_slice(
                         &device
@@ -1291,7 +1323,7 @@ mod tests {
                     fed.extend_from_slice(&luma);
                     fed.extend_from_slice(&chroma);
                 }
-                _ => unreachable!("one target or the other is allocated"),
+                _ => unreachable!("a target is allocated for every slot"),
             }
             device.release(source);
             // **Refreshing every picture is the discriminator.** With nothing
@@ -1299,7 +1331,7 @@ mod tests {
             // that decays anyway is decaying per picture, and one that goes
             // flat was decaying through its references.
             encoder
-                .submit_registered(surface, all_intra || frame == 0)
+                .submit_registered(surfaces[slot], all_intra || frame == 0)
                 .expect("submit");
             loop {
                 match encoder.poll().expect("poll") {
@@ -1323,7 +1355,9 @@ mod tests {
             if full { "4:4:4" } else { "4:2:0" },
             stream.len()
         );
-        display.release(surface);
+        for surface in surfaces {
+            display.release(surface);
+        }
     }
 
     /// A size or count from the environment, so one run can be widened without

@@ -6475,8 +6475,13 @@ mod tests {
             .unwrap_or(1080);
         let stream = Stream::start(Config {
             quality: lowlat_encode::Quality::default(),
-            ten_bit: false,
-            chroma_444: false,
+            ten_bit: std::env::var("LOWLAT_TEN_BIT").is_ok_and(|v| v != "0"),
+            // **The colour a guest negotiated, not the one a session starts
+            // at.** A fault that appears only at full chroma is not reproduced
+            // by a dump of the subsampled stream, and the negotiation cannot
+            // be driven from here; this is the configuration the loop would
+            // have been rebuilt into.
+            chroma_444: std::env::var("LOWLAT_CHROMA").is_ok_and(|v| v == "444"),
             audio: None,
             convert: None,
             prefer_vulkan: false,

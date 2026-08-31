@@ -920,7 +920,23 @@ impl Display {
                 // the conversion writes AYUV or Y410 words and the descriptor
                 // travels over the display interface.
                 (true, Register::Open(display)) => {
-                    let frame = device.allocate_packed_444(shape.width, shape.height, colour)?;
+                    // **The surface is the coded size, not the visible one.**
+                    // The device codes whole blocks and the parameter sets
+                    // crop the difference, so a picture whose height is not a
+                    // multiple of the coding alignment is coded taller than it
+                    // is shown -- and one packed word carries all three
+                    // components, so a surface that stops at the visible
+                    // height leaves the encoder reading the rows past it from
+                    // outside the allocation. It costs the colour and only the
+                    // colour: the luma of those rows is cropped away and never
+                    // seen, but the reference the next picture predicts from
+                    // is wrong at the top, so the error is added to itself
+                    // once a picture and the first rows saturate within
+                    // seconds. Nothing refuses it and the luma stays perfect
+                    // throughout, which is what makes it look like a decoder
+                    // fault rather than an allocation one.
+                    let (wide, tall) = lowlat_encode::h265::coded_size(shape.width, shape.height);
+                    let frame = device.allocate_packed_444(wide, tall, colour)?;
                     let (fd, exported) = device.export_packed_444(&frame, true)?;
                     let registration =
                         Self::register_open(display, std::os::fd::AsFd::as_fd(&fd), &exported)?;
