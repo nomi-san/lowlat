@@ -168,6 +168,18 @@ pub struct Caps {
     /// queried under, and a session built against one depth's answers under
     /// the other's is a picture the device reads as the wrong layout.
     pub depth: Depth,
+    /// Whether these answers cover full-resolution chroma. **Always false, and
+    /// it is a property of this interface rather than of a device.** Every
+    /// profile built here names half-resolution chroma, both parameter-set
+    /// writers name it again in the coded stream, and there is no part on
+    /// which building the other would be worth it: one vendor's driver refuses
+    /// every full-chroma profile outright, another offers no encode queue at
+    /// all, and on the third the profile exists but a shader may not write the
+    /// picture the encoder reads -- which is the entire reason this backend
+    /// exists. So the answer is stated here, where a caller asks the device
+    /// what it does, rather than left to be discovered when a pipeline refuses
+    /// to pair.
+    pub chroma_444: bool,
     /// Which codec these answers are about. Every later call needs the same
     /// profile these were queried under, and carrying it here is what stops
     /// a session being built against one codec's answers under the other's.
@@ -232,13 +244,12 @@ fn with_profile<R>(
         }
         // Main, which is eight-bit 4:2:0 -- what the conversion produces.
         Codec::H265 => {
-            let mut h265 = vk::VideoEncodeH265ProfileInfoKHR::default().std_profile_idc(
-                if depth.ten_bit() {
+            let mut h265 =
+                vk::VideoEncodeH265ProfileInfoKHR::default().std_profile_idc(if depth.ten_bit() {
                     ash::vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN_10
                 } else {
                     ash::vk::native::StdVideoH265ProfileIdc_STD_VIDEO_H265_PROFILE_IDC_MAIN
-                },
-            );
+                });
             let profile = base
                 .video_codec_operation(vk::VideoCodecOperationFlagsKHR::ENCODE_H265)
                 .push_next(&mut h265);
@@ -605,6 +616,9 @@ impl Device {
         Ok(Caps {
             codec,
             depth,
+            // Never, and the profile these answers were queried under is the
+            // proof: it named half-resolution chroma.
+            chroma_444: false,
             rate_control,
             max_extent,
             picture_granularity,

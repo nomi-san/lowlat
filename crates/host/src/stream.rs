@@ -2433,6 +2433,17 @@ fn run_vulkan(
             return None;
         }
     };
+    // **Asked of the interface rather than known here.** This backend codes no
+    // full chroma on any part, and the refusal belongs where the pairing is
+    // decided rather than three steps later where a target is allocated: left
+    // to be discovered there it ends every guest on the stream, where falling
+    // through to a backend that can code it costs nobody anything.
+    if config.chroma_444 && !caps.chroma_444 {
+        lowlat_common::log_info!(
+            "stream: this interface codes no full chroma, following the display"
+        );
+        return None;
+    }
     if !caps.shared_picture {
         // A copy stage between conversion and encode is not written, and
         // silently inserting one is exactly what this backend must not do.
