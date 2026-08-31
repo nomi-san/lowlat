@@ -97,6 +97,54 @@ fn main() {
         .run(&device, &imported, &target.target(), dither)
         .unwrap_or_else(|error| fail(&format!("convert: {error}")));
 
+    // **The packed full-chroma layout, on the same captured picture.**
+    // `LOWLAT_CHROMA=444` converts the frame a second time into the layout the
+    // open stack's full-chroma encoder reads and reports what landed in it,
+    // row by row at the edges. A row the conversion never wrote holds whatever
+    // the allocation came with, and the alpha byte is the tell: this shader
+    // writes 255 into every word it stores, so a row whose alpha is anything
+    // else was not converted.
+    if std::env::var("LOWLAT_CHROMA").is_ok_and(|v| v == "444") {
+        let packed = device
+            .allocate_packed_444(fb.width, fb.height, lowlat_capture::convert::Depth::Eight)
+            .unwrap_or_else(|error| fail(&format!("allocate packed: {error}")));
+        converter
+            .run(&device, &imported, &packed.target(), dither)
+            .unwrap_or_else(|error| fail(&format!("convert packed: {error}")));
+        let words = device
+            .read_packed_444(&packed)
+            .unwrap_or_else(|error| fail(&format!("read packed: {error}")));
+        let stride = packed.pitch as usize;
+        println!(
+            "packed 4:4:4: {}x{} pitch {stride} ({} bytes, {} rows of it)",
+            packed.width,
+            packed.height,
+            words.len(),
+            words.len() / stride.max(1)
+        );
+        let row = |y: usize| {
+            let mut unwritten = 0usize;
+            let (mut lo, mut hi) = (255u8, 0u8);
+            for x in 0..packed.width as usize {
+                let at = y * stride + x * 4;
+                let Some(word) = words.get(at..at + 4) else {
+                    break;
+                };
+                if word[3] != 255 {
+                    unwritten += 1;
+                }
+                lo = lo.min(word[2]);
+                hi = hi.max(word[2]);
+            }
+            (unwritten, lo, hi)
+        };
+        for y in [0, 1, 2, 3, 4, 8, 16, packed.height as usize - 1] {
+            let (unwritten, lo, hi) = row(y);
+            println!("  row {y:4}: {unwritten} word(s) the shader did not write, luma {lo}..{hi}");
+        }
+        device.release_packed_444(packed);
+    }
+
     // **What one conversion costs, repeated.** The stage this sits in is the
     // largest single item in a frame on one of the two drivers, and the figure
     // a stream reports covers the display reads and the export as well, so it

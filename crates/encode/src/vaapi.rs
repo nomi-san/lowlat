@@ -1259,7 +1259,7 @@ mod tests {
                     bit_depth_minus8: if ten_bit { 2 } else { 0 },
                     chroma_444: full,
                 }),
-                40_000_000,
+                sized("LOWLAT_PROBE_BPS", 40_000_000),
             )
             .expect("encoder");
 
