@@ -3,6 +3,80 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-08-31 - Full chroma, measured against its source rather than looked at
+
+### Fixed
+- **The reconstruction pool was allocated in a layout the runtime chose.** A runtime format
+  is a family and not a layout: at full chroma it covers a packed member and a planar one,
+  and which one a runtime picks for a pool it allocates is its own decision. The source
+  handed to the encoder is the packed one the conversion writes, so the device reconstructed
+  into one layout and predicted from it as another. Nothing refused it -- the surfaces were
+  created, the encode succeeded, the stream decoded without an error -- and it cost every
+  predicted picture while the intra picture, which references nothing, came out right.
+  Naming the layout on the pool fixes it: **86 dB on the refresh then 96, 96, 95, 93 and
+  flat**, against 86 then 14 and settling near 12.
+- **The packed surface is the coded size, not the visible one.** A picture whose height is
+  not a multiple of the coding alignment is coded taller than it is shown, and the encoder
+  reads every coded row out of the surface it was handed. It cost the colour and only the
+  colour: one packed word carries all three components, so the luma of the rows past the end
+  is cropped and never seen, while the reference the next picture predicts from is wrong at
+  the top and the error is added to itself once a picture -- the first row's colour doubling,
+  102 to 204 to saturated, spreading a few rows further with every predicted picture. Four
+  hundred live pictures of a still desktop read 255 at the top row from the first predicted
+  picture onward; after, 136 to 139 on every row of every picture. The stream is also
+  **510 KB where it was 7.0 MB**, because the bits were going on coding the colour as it
+  exploded. The coding alignment moves out of the parameter-set writer as `coded_size`,
+  because the surface has to be allocated at it and only that writer knew it.
+- **The range extensions profile names its constraint flags.** The forty-three bits after
+  the frame-only flag are reserved under Main and Main 10, where zero is the only legal
+  value, and are the constraint flags on the range extensions profile -- where the profile a
+  decoder resolves is the one they name rather than the number in the profile field. Left
+  clear, a full-chroma stream claimed a profile that does not exist in the table. A lenient
+  decoder reads the field instead and carries on, which is why an outside decoder reported
+  the right profile and the fault was invisible to it. Checked by parsing this encoder's own
+  output against a second encoder's on the same device, which now agree field for field at
+  both depths.
+- **The shared-picture ring is lent at the encoder's depth.** The third interface builds its
+  own pictures and lends them to the conversion, through a descriptor that was built with an
+  eight-bit shorthand whatever depth the session had settled on. Nothing downstream reads the
+  depth from anywhere else, so a granted ten-bit session converted with the eight-bit range
+  constants and quantised against 255 into the low eight bits of a sixteen-bit sample while
+  the encoder was built for ten. The shorthand is gone with it: naming the depth is now the
+  only way to build the descriptor.
+- **A two-plane frame is refused by a full-chroma session.** The vendor backend's upload is
+  shaped for half-resolution chroma whatever the session codes, so subsampled bytes landed in
+  the top of a pool allocated and registered for three full planes. Refused rather than
+  widened, because unlike the depth there is nothing to widen -- the frame type carries two
+  planes and full chroma needs three.
+- **The chroma enumeration reaches the generated header.** The status structure has carried
+  a chroma field since full chroma was negotiated, documented as one of `lowlat_chroma`, and
+  the header defined no such enumeration: nothing references it by type, deliberately, so the
+  generator has to be told to export it by name and was not. The drift gate could not see it,
+  because it regenerates and compares and both sides were missing the same thing.
+
+### Changed
+- **The third interface reports that it codes no full chroma.** It never did -- every profile
+  it builds names half-resolution chroma -- but the capability was implicit, and a stream that
+  had settled on full chroma found out three steps later where the pipeline refuses to pair.
+  A refusal that late is a display that fails to open, which ends every guest on the stream;
+  now the stream passes over the backend before a device is asked and continues on one that
+  can code it.
+
+### Learned
+- **The check that passed this path was one 128x128 picture of uniform white.** Flat colour
+  makes every row length describe the plane correctly, one workgroup covers the extent, and a
+  lone intra picture predicts nothing, so no size, layout or reference fault can show. The
+  import test now uses a real size over a run with chroma detail at the pixel, keeps every
+  fed surface beside the stream for a decoder comparison, and carries the knobs that
+  separate the causes: the subsampled layout through the identical path as the control, the
+  picture held still, and every picture refreshed. Held still is what named the second fault
+  -- a predicted picture identical to its reference carries neither motion nor residual, so
+  a decoder can only show its own reconstruction, and it still collapsed.
+- **Four faults of one shape in this phase, three of them here.** A size or a layout known in
+  one place and not another, refused nowhere, decoding without an error. The three found here
+  were the first where the wrong place was a surface this code allocated rather than a set it
+  wrote, and the last of them was invisible in luma while destroying the colour.
+
 ## 2026-08-30 - Full chroma is negotiated, gated and live
 
 ### Measured
