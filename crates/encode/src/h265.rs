@@ -176,7 +176,8 @@ impl Params {
 /// compatibility flags are not optional decoration**: a decoder matches the
 /// profile by them as well as by the profile field, and leaving them clear
 /// makes a main-profile stream look like one no profile claims.
-fn profile_tier_level(w: &mut BitWriter<'_>, level_idc: u32, profile: u32) {
+fn profile_tier_level(w: &mut BitWriter<'_>, params: &Params) {
+    let profile = params.profile();
     w.bits(0, 2); // general_profile_space
     w.bit(false); // general_tier_flag: main tier
     w.bits(profile, 5);
@@ -189,11 +190,35 @@ fn profile_tier_level(w: &mut BitWriter<'_>, level_idc: u32, profile: u32) {
     w.bit(false); // general_interlaced_source_flag
     w.bit(false); // general_non_packed_constraint_flag
     w.bit(true); // general_frame_only_constraint_flag
-    // general_reserved_zero_43bits, then the inbound-compatibility bit.
-    w.bits(0, 32);
-    w.bits(0, 11);
-    w.bit(false);
-    w.bits(level_idc, 8);
+    if profile == PROFILE_REXT {
+        // **On the range extensions profile these bits are the profile.**
+        // The forty-three that are reserved under Main and Main 10 carry the
+        // constraint flags here, and the profile a decoder resolves is the one
+        // they name rather than the number in the field above: left clear they
+        // name no profile in the table at all, which a strict decoder may
+        // refuse and a lenient one reads from the field instead. These are the
+        // two full-chroma rows -- twelve and ten bits allowed, eight allowed
+        // only where the samples are eight, neither chroma format constrained,
+        // every picture kind allowed, and the lower bit rate.
+        w.bit(true); // general_max_12bit_constraint_flag
+        w.bit(true); // general_max_10bit_constraint_flag
+        w.bit(params.bit_depth_minus8 == 0); // general_max_8bit_constraint_flag
+        w.bit(false); // general_max_422chroma_constraint_flag
+        w.bit(false); // general_max_420chroma_constraint_flag
+        w.bit(false); // general_max_monochrome_constraint_flag
+        w.bit(false); // general_intra_constraint_flag
+        w.bit(false); // general_one_picture_only_constraint_flag
+        w.bit(true); // general_lower_bit_rate_constraint_flag
+        w.bits(0, 32); // general_reserved_zero_34bits
+        w.bits(0, 2);
+    } else {
+        // Reserved on every other profile this writes, and zero is the only
+        // legal value.
+        w.bits(0, 32); // general_reserved_zero_43bits
+        w.bits(0, 11);
+    }
+    w.bit(false); // general_inbld_flag
+    w.bits(params.level_idc, 8);
 }
 
 /// Write the video parameter set, start code and escaping included.
@@ -208,7 +233,7 @@ pub fn video_parameter_set(params: &Params, out: &mut [u8]) -> Option<usize> {
     w.bits(0, 3); // vps_max_sub_layers_minus1
     w.bit(true); // vps_temporal_id_nesting_flag
     w.bits(0xFFFF, 16); // vps_reserved_0xffff_16bits
-    profile_tier_level(&mut w, params.level_idc, params.profile());
+    profile_tier_level(&mut w, params);
     w.bit(true); // vps_sub_layer_ordering_info_present_flag
     // One picture is reordered by nothing and held by one reference.
     w.ue(params.max_num_ref_frames); // vps_max_dec_pic_buffering_minus1[0]
@@ -233,7 +258,7 @@ pub fn sequence_parameter_set(params: &Params, out: &mut [u8]) -> Option<usize> 
     w.bits(0, 4); // sps_video_parameter_set_id
     w.bits(0, 3); // sps_max_sub_layers_minus1
     w.bit(true); // sps_temporal_id_nesting_flag
-    profile_tier_level(&mut w, params.level_idc, params.profile());
+    profile_tier_level(&mut w, params);
     w.ue(0); // sps_seq_parameter_set_id
     w.ue(if params.chroma_444 { 3 } else { 1 }); // chroma_format_idc
     if params.chroma_444 {
