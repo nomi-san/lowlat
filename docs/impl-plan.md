@@ -1485,12 +1485,39 @@ The conversion shapes are settled, asked of the devices rather than guessed:
 1. [x] Decoded pixels match a 4:4:4 source on every backend that claims it, at both depths,
    with a count check and a source whose chroma detail sits at the pixel, since that is the
    only content that distinguishes 4:4:4 from a cheap upsample.
-   *The conversion reference tests pin the packed words at both depths against the colour
-   reference, the open backend's imported white decodes to 235/128/128 and 940/512/512, and
-   its synthetic ten-bit path decodes at exactly four times its eight-bit twin.*
+   *Marked green 2026-08-30 on evidence that could not have failed, and re-earned 2026-08-31.*
+   The conversion reference tests do pin the packed words at both depths, but the open
+   backend's half of this was **one 128x128 picture of uniform white**: a flat colour makes
+   every row length describe the plane correctly, one workgroup covers the extent, and a lone
+   intra picture predicts nothing, so no size, layout or reference fault can show. It hid two.
+   Now a real size over a run, every fed surface kept beside the stream, count-checked, with
+   the subsampled layout through the identical path as the control: **86 dB on the refresh
+   then 96, 96, 95, 93 and flat to the end at eight bits, 94 to 88 flat at ten**, against
+   **86 then 14 and settling near 12** before the faults below were found. Held still, where
+   a predicted picture carries neither motion nor residual, it reads 86 flat where it read
+   17, 15, 13, 12, 11.
+   - **The reconstruction pool was allocated in a layout the runtime chose.** A runtime
+     format is a family and not a layout: at full chroma it covers a packed member and a
+     planar one, and the source handed to the encoder is the packed one. Nothing refused the
+     mismatch -- the surfaces were created, the encode succeeded, the stream decoded -- and
+     every predicted picture was built against a reference the device had reconstructed in
+     the other layout. The intra picture, which references nothing, came out right.
+   - **The surface was allocated at the visible height, not the coded one.** A picture whose
+     height is not a multiple of the coding alignment is coded taller than it is shown, and
+     the encoder reads every coded row out of the surface it was handed. It cost the colour
+     and only the colour: one packed word carries all three components, so the luma of the
+     rows past the end is cropped and never seen, while the reference the next picture
+     predicts from is wrong at the top and the error is added to itself once a picture --
+     the first row's colour doubling, 102 to 204 to saturated, spreading a few rows further
+     with every picture. Four hundred live pictures of a still desktop read 255 at the top
+     row from the first predicted picture; after, 136 to 139 on every row of every picture,
+     and the stream is 510 KB where it was 7.0 MB.
 2. [x] A hardware and a software decoder family each stream 4:4:4 HEVC end to end.
-   *The live 4:4:4 stream decodes cleanly through both the software family and the open
-   stack's hardware one.*
+   *Reworded 2026-08-31: as written on 2026-08-30 this claimed a live stream that had not
+   run.* What had been shown was a decoder outside this project reading the probe's output.
+   The live stream is met now, on both backends that code it: full chroma at both depths
+   through the vendor encoder and through the open stack's, decoded by a stock client on a
+   third machine.
 3. [x] A host with a mixed selection refuses the offer with the gate named, verified by
    forcing the refusal rather than by reading the code.
    *This rig is the mixed selection: the census refuses on the card that codes no full
