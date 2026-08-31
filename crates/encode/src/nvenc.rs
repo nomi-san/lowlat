@@ -52,6 +52,11 @@ pub enum Error {
     /// collects one before submitting another; it is back pressure, not a
     /// fault.
     QueueFull,
+    /// A frame from ordinary memory was offered to a session coding full
+    /// chroma. The frame type carries two planes and full chroma needs three,
+    /// so this is a picture that cannot be expressed rather than one that
+    /// could be converted.
+    ChromaMismatch,
 }
 
 impl core::fmt::Display for Error {
@@ -66,6 +71,9 @@ impl core::fmt::Display for Error {
             Self::Status(status) => write!(f, "encoder runtime returned status {status}"),
             Self::NoContext => f.write_str("compute context could not be made current"),
             Self::QueueFull => f.write_str("encoder queue is full"),
+            Self::ChromaMismatch => {
+                f.write_str("a two-plane frame cannot be uploaded to a full-chroma session")
+            }
         }
     }
 }
@@ -1398,6 +1406,18 @@ impl Encoder<'_> {
     /// registration means, and the encoder derives the chroma offset from the
     /// height it was given rather than being told separately.
     fn upload(&self, slot: usize, frame: &lowlat_capture::Frame<'_>) -> Result<(), Error> {
+        // **Refused rather than written into the top of a larger pool.** A
+        // frame from ordinary memory has two planes and full chroma needs
+        // three, so there is no widening to do here the way there is for the
+        // depth: the type cannot carry the picture. Written anyway, the
+        // subsampled bytes land in the top of a pool registered as full
+        // chroma, and what comes out is a picture with a third of its colour
+        // and two thirds of whatever the allocation held. Nothing else
+        // refuses it, because the address and the row length are both what the
+        // registration promised.
+        if self.config.chroma == Chroma::Yuv444 {
+            return Err(Error::ChromaMismatch);
+        }
         let held = self.inputs.get(slot).ok_or(Error::NoContext)?;
         let width = usize::try_from(frame.width).unwrap_or(0);
         let rows = usize::try_from(frame.height).unwrap_or(0);
@@ -1417,7 +1437,13 @@ impl Encoder<'_> {
                 .map_err(|_| Error::NoContext)?;
             return held
                 .buffer
-                .write_rows(rows, &chroma, chroma_width * 2, chroma_width * 2, chroma_rows)
+                .write_rows(
+                    rows,
+                    &chroma,
+                    chroma_width * 2,
+                    chroma_width * 2,
+                    chroma_rows,
+                )
                 .map_err(|_| Error::NoContext);
         }
 
