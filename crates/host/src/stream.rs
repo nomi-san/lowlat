@@ -2485,8 +2485,17 @@ fn run_vulkan(
             lowlat_common::log_error!("stream: the encoder lends no planes for slot {slot}");
             return Some(Exit::Failed(status::ENCODER_UNAVAILABLE));
         };
-        targets.push(lowlat_capture::convert::TargetRef::lent_to_encoder(
-            image, planes,
+        // **At the depth the encoder built its pictures for.** The target
+        // descriptor is what tells the conversion which range constants to
+        // use and what to quantise against, and nothing downstream re-reads
+        // the depth from anywhere else: handed the eight-bit shorthand, a
+        // ten-bit session converts against 255 and writes each result into the
+        // low eight bits of a sixteen-bit sample. The encode succeeds, the
+        // stream decodes, and every picture is dark and wrongly ranged.
+        targets.push(lowlat_capture::convert::TargetRef::lent_to_encoder_at(
+            image,
+            planes,
+            colour_of(&config),
         ));
     }
     let mut desktop = match crate::display::Display::open(

@@ -325,15 +325,21 @@ pub struct TargetRef {
 }
 
 impl TargetRef {
-    /// A target lent by an encoder on the same device.
+    /// A target lent by an encoder on the same device, at the depth that
+    /// encoder built its pictures for.
     ///
-    /// One two-plane picture, written through its plane views and handed
-    /// over in the layout the encoder reads.
-    pub fn lent_to_encoder(image: vk::Image, planes: [vk::ImageView; 2]) -> Self {
-        Self::lent_to_encoder_at(image, planes, Depth::Eight)
-    }
-
-    /// The same, for an encoder whose picture is not eight-bit.
+    /// One two-plane picture, written through its plane views and handed over
+    /// in the layout the encoder reads.
+    ///
+    /// **The depth is a parameter and there is deliberately no shorthand for
+    /// the common one.** There was: a two-argument form that filled in eight
+    /// bits, and the one caller in the tree used it for every session
+    /// including the ten-bit ones. Nothing downstream re-reads the depth from
+    /// anywhere else, so the conversion ran with the eight-bit range constants
+    /// and quantised against 255 into the low eight bits of a sixteen-bit
+    /// sample; the encode succeeded, the stream decoded, and every picture was
+    /// dark and wrongly ranged. A caller that has to name the depth cannot
+    /// forget that it has one.
     pub fn lent_to_encoder_at(image: vk::Image, planes: [vk::ImageView; 2], depth: Depth) -> Self {
         Self {
             luma_image: image,
