@@ -378,11 +378,12 @@ pub const LOWLAT_SERVER_MAX: usize = 64;
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_chroma {
-    /// Colour at half resolution in both directions, which is every stream
-    /// this produces.
+    /// Colour at half resolution in both directions, which is what a session
+    /// runs at until a guest asks otherwise.
     LOWLAT_CHROMA_420 = 1,
-    /// Colour at full resolution. **Never reported**; it is here so the field
-    /// is an axis rather than a flag that would have to be replaced.
+    /// Colour at full resolution. Reported once a guest has asked for it and
+    /// the offer has been granted, which needs the second codec and every
+    /// encoder this host could select to be able to code it.
     LOWLAT_CHROMA_444 = 2,
 }
 

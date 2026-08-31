@@ -252,6 +252,33 @@ typedef uint32_t lowlat_codec;
 #endif // __STDC_VERSION__ >= 202311L
 #endif // __cplusplus
 
+// How much colour the stream carries, relative to its luma.
+//
+// **Named by an enumeration and carried as an integer**, the same way
+// [`lowlat_codec`] is, and an axis rather than a flag because it has
+// somewhere to go: a third layout is in wide use elsewhere even though
+// nothing here produces one.
+enum lowlat_chroma
+#if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+  : uint32_t
+#endif // defined(__cplusplus) || __STDC_VERSION__ >= 202311L
+ {
+    // Colour at half resolution in both directions, which is what a session
+    // runs at until a guest asks otherwise.
+    LOWLAT_CHROMA_420 = 1,
+    // Colour at full resolution. Reported once a guest has asked for it and
+    // the offer has been granted, which needs the second codec and every
+    // encoder this host could select to be able to code it.
+    LOWLAT_CHROMA_444 = 2,
+};
+#ifndef __cplusplus
+#if __STDC_VERSION__ >= 202311L
+typedef enum lowlat_chroma lowlat_chroma;
+#else
+typedef uint32_t lowlat_chroma;
+#endif // __STDC_VERSION__ >= 202311L
+#endif // __cplusplus
+
 // Which encoder to build.
 enum lowlat_encoder
 #if defined(__cplusplus) || __STDC_VERSION__ >= 202311L
