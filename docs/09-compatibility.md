@@ -58,9 +58,13 @@ Three things follow, and each cost time to establish:
 surfaces are packed at both depths -- AYUV or XYUV at eight bits, Y410 at ten -- while the
 vendor interface reads three planar planes, so the conversion needs one body per layout, which
 is what [the plan, Phase 11.6](impl-plan.md) sizes. Both import over DRM prime, so the
-zero-copy path survives. The third interface has no device where it would serve: it refuses
-on one vendor, offers no encode queue on another, and on the third the vendor interface is
-already the better encoder.
+zero-copy path survives. **The third interface codes no full chroma at all, and that is now
+what it reports rather than what a pairing discovers.** It has no device where it would
+serve: it refuses every full-chroma profile on one vendor, offers no encode queue on another,
+and on the third the profile exists but a shader may not write the picture the encoder reads
+-- which is the whole reason that interface is offered. So its capabilities carry the answer,
+a stream that has settled on full chroma passes over it before a device is asked, and the
+session continues on a backend that can code it instead of ending on one that cannot.
 
 **A guest's decoder is the other half and is not in these tables**; see [§6](#6-guests).
 

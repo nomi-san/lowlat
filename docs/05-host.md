@@ -205,7 +205,7 @@ Backends:
 |---|---|---|
 | hardware, NVIDIA | shipped | H.264 and HEVC; low-latency preset, variable rate with a one-frame buffer, non-reference frames enabled |
 | hardware, open stack | shipped | AMD and Intel parts, reached through the display interface |
-| hardware, Vulkan Video | explicit choice | H.264 and HEVC; conversion and encode on one interface, where the conversion may write the encoder's picture |
+| hardware, Vulkan Video | explicit choice | H.264 and HEVC at either depth, half-resolution chroma only; conversion and encode on one interface, where the conversion may write the encoder's picture |
 | software | later | dynamically loaded, resolved by codec name; the path for machines without hardware encode, and the path continuous integration runs |
 
 **Selection policy, settled 2026-08-25.** The default follows the display: the encoder for
@@ -220,7 +220,11 @@ predicted pictures and a live session now, so what remains is the coverage quest
 than a missing piece. A device that cannot serve it -- no encode interface, or a device
 where a copy would have to stand between the conversion and the encode -- says so once and
 the stream follows the display exactly as before; a device that can serve it and then fails
-while building keeps its refusal rather than being quietly given something else. The conversion
+while building keeps its refusal rather than being quietly given something else. **Full
+chroma is one of the things it cannot serve, on any part**, so its capabilities say so and a
+stream that has settled on full chroma passes over it before a device is asked -- refused
+that late instead, the pairing fails where a target is allocated and ends every guest on the
+stream, where passing over costs nobody anything. The conversion
 runs on the compute interface by default and falls back to the GL interface on devices
 without it, which keeps old parts capturable; the GL interface cannot feed the NVIDIA
 encoder, and machines old enough to need it are served by the open stack anyway.
