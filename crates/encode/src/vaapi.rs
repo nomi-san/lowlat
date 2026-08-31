@@ -62,12 +62,8 @@ type GetConfigAttributes = unsafe extern "C" fn(
 /// **Probe-only for now**: the 4:4:4 path this answers for is not emitted
 /// (D7), so nothing in a shipped build calls it.
 #[cfg(test)]
-type QuerySurfaceAttributes = unsafe extern "C" fn(
-    VADisplay,
-    VAConfigID,
-    *mut VASurfaceAttrib,
-    *mut c_uint,
-) -> VAStatus;
+type QuerySurfaceAttributes =
+    unsafe extern "C" fn(VADisplay, VAConfigID, *mut VASurfaceAttrib, *mut c_uint) -> VAStatus;
 type CreateConfig = unsafe extern "C" fn(
     VADisplay,
     VAProfile,
@@ -672,11 +668,7 @@ impl Display<'_> {
     /// the 4:2:0 one the shipped path already uses, and the two must come
     /// from the same call.
     #[cfg(test)]
-    fn surface_attributes(
-        &self,
-        caps: Caps,
-        rt_format: u32,
-    ) -> Result<Vec<VASurfaceAttrib>> {
+    fn surface_attributes(&self, caps: Caps, rt_format: u32) -> Result<Vec<VASurfaceAttrib>> {
         let mut wanted = [
             VAConfigAttrib {
                 type_: VAConfigAttribRTFormat,
@@ -733,12 +725,7 @@ impl Display<'_> {
         // SAFETY: the list is writable for its length, which is the count the
         // driver reported for this configuration, and the count is read back.
         let status = unsafe {
-            (self.va.query_surface_attributes)(
-                self.raw,
-                config,
-                list.as_mut_ptr(),
-                &raw mut count,
-            )
+            (self.va.query_surface_attributes)(self.raw, config, list.as_mut_ptr(), &raw mut count)
         };
         let result = self.va.check(status);
         // SAFETY: created above; destroyed once, after the last query that
@@ -1177,8 +1164,19 @@ mod tests {
         let va = Vaapi::load().expect("runtime");
         let display = va.open(&node()).expect("render node");
         let ten_bit = std::env::var("LOWLAT_PROBE_TEN_BIT").is_ok_and(|v| v != "0");
-        let Ok(caps) = display.caps_444(ten_bit) else {
-            println!("this device offers no 4:4:4 encoder; nothing to import into");
+        // **The subsampled layout through this same path is the control.**
+        // Everything else -- the content, the conversion, the export, the
+        // import, the sets, the device -- is held still, so a run that is
+        // healthy here and sick at full chroma has named the chroma as the
+        // variable rather than the zero-copy path or the driver.
+        let full = !std::env::var("LOWLAT_PROBE_CHROMA").is_ok_and(|v| v == "420");
+        let caps = if full {
+            display.caps_444(ten_bit)
+        } else {
+            display.caps_at(Codec::H265, ten_bit)
+        };
+        let Ok(caps) = caps else {
+            println!("this device offers no such encoder; nothing to import into");
             return;
         };
 
@@ -1200,67 +1198,197 @@ mod tests {
             return;
         }
 
-        // **The driver's own minimum**, which the surface query reports at
-        // one hundred and twenty-eight a side; a smaller picture is refused
-        // at the create rather than being something this test learns later.
-        let width = 128;
-        let height = 128;
+        // **The size and the frame count are the stream's, not the driver's
+        // minimum.** One small picture of one colour cannot fail: every row
+        // length describes a uniform plane correctly, one workgroup covers the
+        // extent, and a lone intra picture predicts nothing. A wrong pitch, a
+        // dispatch that misses the edge and a broken reference all need a real
+        // size and more than one picture before they can show.
+        let width = sized("LOWLAT_PROBE_WIDTH", 1920);
+        let height = sized("LOWLAT_PROBE_HEIGHT", 1080);
+        let frames = sized("LOWLAT_PROBE_FRAMES", 8) as usize;
+        let all_intra = std::env::var("LOWLAT_ALL_INTRA").is_ok_and(|v| v != "0");
+        let block = sized("LOWLAT_PROBE_BLOCK", 64) as usize;
+        let still = std::env::var("LOWLAT_PROBE_STILL").is_ok_and(|v| v != "0");
         let depth = if ten_bit {
             lowlat_capture::convert::Depth::Ten
         } else {
             lowlat_capture::convert::Depth::Eight
         };
-        let pixels = vec![255u8; (width as usize) * (height as usize) * 4];
-        let source = device
-            .upload_rgba(width, height, &pixels)
-            .expect("upload a pattern");
-        let target = device
-            .allocate_packed_444(width, height, depth)
-            .expect("a packed target");
+
+        let packed = full.then(|| {
+            device
+                .allocate_packed_444(width, height, depth)
+                .expect("a packed target")
+        });
+        let planar = (!full).then(|| {
+            device
+                .allocate_planar(width, height, depth)
+                .expect("a subsampled target")
+        });
+        let target = || {
+            packed.as_ref().map_or_else(
+                || planar.as_ref().expect("one target or the other").target(),
+                lowlat_capture::convert::Packed444::target,
+            )
+        };
         let mut converter = lowlat_capture::convert::Converter::new(&device).expect("a pipeline");
-        converter
-            .run(&device, &source, &target.target(), false)
-            .expect("convert");
-        let (fd, exported) = device
-            .export_packed_444(&target, true)
-            .expect("export the packed frame");
+        let (fd, exported) = match (&packed, &planar) {
+            (Some(frame), _) => device.export_packed_444(frame, true),
+            (_, Some(frame)) => device.export_nv12(frame, true),
+            _ => unreachable!("one target or the other is allocated"),
+        }
+        .expect("export the frame");
         let surface = display
             .import(std::os::fd::AsFd::as_fd(&fd), &exported)
-            .expect("import the packed frame");
+            .expect("import the frame");
 
-        let context = display.create_context(caps, 128, 128, 2).expect("context");
+        let context = display
+            .create_context(caps, width, height, 2)
+            .expect("context");
         let mut encoder = context
             .encoder(
                 Params::H265(crate::h265::Params {
-                    width: 128,
-                    height: 128,
+                    width,
+                    height,
                     fps: 60,
-                    level_idc: 30,
+                    level_idc: 123,
                     log2_max_poc_lsb_minus4: 4,
                     max_num_ref_frames: 1,
                     transform_depth: crate::h265::TRANSFORM_HIERARCHY_DEPTH,
                     bit_depth_minus8: if ten_bit { 2 } else { 0 },
-                    chroma_444: true,
+                    chroma_444: full,
                 }),
-                10_000_000,
+                40_000_000,
             )
             .expect("encoder");
-        encoder.submit_registered(surface, true).expect("submit");
-        let stream = loop {
-            match encoder.poll().expect("poll") {
-                Poll::Ready { bitstream, .. } => break bitstream.to_vec(),
-                Poll::Pending => std::hint::spin_loop(),
+
+        // **What was fed is kept beside what came out, every picture of it.**
+        // A comparison against the first picture alone reads like a correct
+        // run whatever happens afterwards: the failure this is looking for
+        // starts right and walks away, so the trajectory across the run is the
+        // reading and an average over it is not.
+        let mut fed = Vec::new();
+        let mut stream = Vec::new();
+        for frame in 0..frames {
+            let pixels = detailed(width, height, block, frame, still);
+            let source = device
+                .upload_rgba(width, height, &pixels)
+                .expect("upload a pattern");
+            converter
+                .run(&device, &source, &target(), false)
+                .expect("convert");
+            match (&packed, &planar) {
+                (Some(frame), _) => {
+                    fed.extend_from_slice(
+                        &device
+                            .read_packed_444(frame)
+                            .expect("read back what was fed"),
+                    );
+                }
+                (_, Some(frame)) => {
+                    let (luma, chroma) = device.read_nv12(frame).expect("read back what was fed");
+                    fed.extend_from_slice(&luma);
+                    fed.extend_from_slice(&chroma);
+                }
+                _ => unreachable!("one target or the other is allocated"),
             }
-        };
+            device.release(source);
+            // **Refreshing every picture is the discriminator.** With nothing
+            // referencing anything, drift has nowhere to accumulate: a run
+            // that decays anyway is decaying per picture, and one that goes
+            // flat was decaying through its references.
+            encoder
+                .submit_registered(surface, all_intra || frame == 0)
+                .expect("submit");
+            loop {
+                match encoder.poll().expect("poll") {
+                    Poll::Ready { bitstream, .. } => {
+                        stream.extend_from_slice(bitstream);
+                        break;
+                    }
+                    Poll::Pending => std::hint::spin_loop(),
+                }
+            }
+        }
+
         let path =
             std::env::var("LOWLAT_DUMP").unwrap_or_else(|_| "/tmp/vaapi-444-import.h265".into());
         std::fs::write(&path, &stream).expect("write");
+        std::fs::write(format!("{path}.fed"), &fed).expect("write what was fed");
         println!(
-            "imported and encoded one {}-bit 4:4:4 picture, {} bytes, to {path}",
+            "imported and encoded {frames} {}-bit {} picture(s) of {width}x{height}, \
+             {} bytes, to {path}; every picture as fed is {path}.fed",
             if ten_bit { 10 } else { 8 },
+            if full { "4:4:4" } else { "4:2:0" },
             stream.len()
         );
         display.release(surface);
+    }
+
+    /// A size or count from the environment, so one run can be widened without
+    /// a rebuild.
+    fn sized(name: &str, fallback: u32) -> u32 {
+        std::env::var(name)
+            .ok()
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(fallback)
+    }
+
+    /// Saturated colour blocks that shift with the frame.
+    ///
+    /// **Flat inside, sharp at the edge, and that is deliberate.** The chroma
+    /// detail that distinguishes full chroma from an upsample lives at a
+    /// one-pixel colour transition, which a block edge is; the flat interiors
+    /// keep the picture codeable, so a healthy run reads near-lossless and any
+    /// drift stands clear of the quantiser instead of being buried in it. A
+    /// block size of one gives the per-pixel version, which no encoder can
+    /// carry and which therefore measures the quantiser rather than this path.
+    ///
+    /// **Grey is deliberately absent.** A grey pixel has equal channels, so
+    /// every luma matrix returns the same answer for it and it carries no
+    /// chroma at all.
+    fn detailed(width: u32, height: u32, block: usize, frame: usize, still: bool) -> Vec<u8> {
+        const COLOURS: [[u8; 3]; 8] = [
+            [255, 0, 0],
+            [0, 255, 0],
+            [0, 0, 255],
+            [255, 255, 0],
+            [0, 255, 255],
+            [255, 0, 255],
+            [255, 255, 255],
+            [0, 0, 0],
+        ];
+        let (w, h) = (width as usize, height as usize);
+        let block = block.max(1);
+        let mut pixels = vec![0u8; w * h * 4];
+        for y in 0..h {
+            for x in 0..w {
+                // The shift is one pixel a frame, so a predicted picture has
+                // motion to describe rather than a repeat of its reference.
+                //
+                // **Held still, it separates the reference from the coding.**
+                // A predicted picture identical to the one before it has no
+                // motion and no residual to carry, so what a decoder shows is
+                // its own reconstruction of the reference and nothing else: a
+                // run that is right here and wrong once the picture moves has
+                // a working reference and a coding fault, and one that is
+                // wrong here has neither.
+                let bx = if still {
+                    x / block
+                } else {
+                    (x + frame) / block
+                };
+                let by = y / block;
+                let colour = COLOURS[(bx + by * 3) % COLOURS.len()];
+                let at = (y * w + x) * 4;
+                pixels[at] = colour[0];
+                pixels[at + 1] = colour[1];
+                pixels[at + 2] = colour[2];
+                pixels[at + 3] = 255;
+            }
+        }
+        pixels
     }
 
     /// Needs the open-stack driver, so it is off by default. Run with
@@ -1792,10 +1920,37 @@ impl Display<'_> {
         caps: Caps,
     ) -> Result<Vec<VASurfaceID>> {
         let mut pool = vec![0 as VASurfaceID; count];
-        // SAFETY: the pool is writable for its own length. No surface
-        // attributes: the runtime format already fixes the layout, and an
-        // explicit attribute list is where a driver-specific refusal comes
-        // from.
+        // **A runtime format is a family, not a layout.** At full chroma it
+        // covers a packed member and a planar one, and which the runtime picks
+        // for a pool it allocates is its own choice; the source handed to the
+        // encoder is the packed one this conversion writes. Naming it here
+        // keeps the reconstruction in the layout the source is in. Left
+        // unnamed for the subsampled formats, where the family has one member
+        // and an explicit attribute list is only somewhere a driver can refuse.
+        let mut named = crate::ffi::va::VASurfaceAttrib {
+            type_: crate::ffi::va::VASurfaceAttribPixelFormat,
+            flags: crate::ffi::va::VA_SURFACE_ATTRIB_SETTABLE,
+            value: crate::ffi::va::VAGenericValue {
+                type_: crate::ffi::va::VAGenericValueTypeInteger,
+                value: crate::ffi::va::_VAGenericValue__bindgen_ty_1 {
+                    i: i32::from_ne_bytes(
+                        if caps.ten_bit {
+                            crate::ffi::va::VA_FOURCC_Y410
+                        } else {
+                            crate::ffi::va::VA_FOURCC_AYUV
+                        }
+                        .to_ne_bytes(),
+                    ),
+                },
+            },
+        };
+        let (attributes, count_of) = if caps.chroma_444 {
+            ((&raw mut named).cast::<core::ffi::c_void>(), 1)
+        } else {
+            (core::ptr::null_mut(), 0)
+        };
+        // SAFETY: the pool is writable for its own length, and the attribute
+        // outlives the call.
         let status = unsafe {
             (self.va.create_surfaces)(
                 self.raw,
@@ -1808,8 +1963,8 @@ impl Display<'_> {
                 height,
                 pool.as_mut_ptr(),
                 c_uint::try_from(pool.len()).unwrap_or(0),
-                core::ptr::null_mut(),
-                0,
+                attributes,
+                count_of,
             )
         };
         self.va.check(status)?;
