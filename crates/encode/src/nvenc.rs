@@ -559,11 +559,9 @@ impl Codec {
 
 /// How much chroma a session codes.
 ///
-/// **4:4:4 is measured here rather than offered.** It is not on the wire
-/// ([00-overview.md](../../../docs/00-overview.md) D7) and one of the three
-/// backends cannot produce it at all, so the only thing this exists for is
-/// `colour-cost-probe` answering what it costs before anybody decides. The
-/// default is what every session ships with.
+/// **Settled by what the guests declare, never configured.** Full chroma is
+/// granted only past the census over every encoder this host could select, so
+/// a session runs at the default until a guest asks and the offer is granted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Chroma {
     #[default]

@@ -189,13 +189,11 @@ impl Depth {
 }
 
 /// How a converted frame is laid out, for whatever imports it next.
-/// How a converted frame is laid out, for whatever imports it next.
 ///
-/// **Two layouts, one entry point each in the shader, and a third to come
-/// with the packed path.** An encoder that reads full-resolution chroma as
-/// three planes is not the same encoder that reads it packed into one, so the
-/// kind travels with every handover rather than being inferable from the
-/// offsets.
+/// **Three layouts, one entry point each in the shader.** An encoder that
+/// reads full-resolution chroma as three planes is not the same encoder that
+/// reads it packed into one, so the kind travels with every handover rather
+/// than being inferable from the offsets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Layout {
     /// Luma, then interleaved colour at half resolution in both directions.

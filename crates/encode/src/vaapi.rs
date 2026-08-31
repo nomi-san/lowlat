@@ -59,8 +59,10 @@ type GetConfigAttributes = unsafe extern "C" fn(
 /// makes the call report the number of entries, and the second call fills
 /// them.
 ///
-/// **Probe-only for now**: the 4:4:4 path this answers for is not emitted
-/// (D7), so nothing in a shipped build calls it.
+/// **Probe-only.** The live full-chroma path imports a descriptor rather than
+/// asking the driver to allocate, so the layouts it would report are settled
+/// by what the conversion writes; this is what established that, and nothing
+/// in a shipped build calls it.
 #[cfg(test)]
 type QuerySurfaceAttributes =
     unsafe extern "C" fn(VADisplay, VAConfigID, *mut VASurfaceAttrib, *mut c_uint) -> VAStatus;
@@ -564,10 +566,11 @@ impl Display<'_> {
 
     /// The profile this driver would code 4:4:4 with, if any.
     ///
-    /// **Not reachable through [`Display::encode_target_at`]**, which names
-    /// the 4:2:0 profiles only, because 4:4:4 is not emitted and the question
-    /// is whether it ever could be. Asked by the surface probe; a device
-    /// without the profile is a refusal, exactly as a missing depth is.
+    /// **Kept apart from [`Display::encode_target_at`]**, which names the
+    /// 4:2:0 profiles only. Folding the two would let a device that offers
+    /// full-chroma profiles but takes only subsampled surfaces read as capable
+    /// of both. A device without the profile is a refusal, exactly as a
+    /// missing depth is.
     pub fn encode_target_444(&self, ten_bit: bool) -> Result<(VAProfile, VAEntrypoint)> {
         let wanted: &[VAProfile] = if ten_bit {
             &[crate::ffi::va::VAProfileHEVCMain444_10]

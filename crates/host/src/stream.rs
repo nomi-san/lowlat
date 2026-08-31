@@ -2179,10 +2179,9 @@ fn occupied_seats(shared: &Shared) -> usize {
 
 /// Capability bits a peer can declare that this pipeline does not emit.
 ///
-/// Four-four-four chroma and ten-bit colour are reserved and unimplemented
-/// (docs/00-overview.md D7), so a request for either is read and reported
-/// rather than quietly treated as granted, which would leave the peer building
-/// a decoder for a stream it will never receive.
+/// A request for one is refused and reported rather than quietly treated as
+/// granted, which would leave the peer building a decoder for a stream it will
+/// never receive.
 ///
 /// **The base flag is not a capability and is not listed here.** It is set on
 /// every declaration and means nothing; testing it as one reports a refusal on
