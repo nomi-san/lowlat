@@ -23,11 +23,17 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   in C++ and to nothing in C, and it tests `_MSVC_LANG` first, because MSVC reports
   `__cplusplus` as 199711L unless it is asked not to and the annotation would have been
   silently dropped on the compiler that most wants it.
-- **The documentation is the C toolchain's dialect.** `///` rather than `//`, `@pre` for the
-  caller's obligations and `@ref` for the cross-references. The definitions keep `# Safety`
-  and rustdoc links, which is what clippy and rustdoc read; the translation happens on the
-  way out. The references to these documents also pointed three levels up from where the
-  header lands and now resolve from `include/`.
+- **The documentation is the C toolchain's dialect.** `///` rather than `//`, `@attention`
+  for the caller's obligations, and a name in backticks for the cross-references. The
+  definitions keep `# Safety` and rustdoc links, which is what clippy and rustdoc read; the
+  translation happens on the way out. The references to these documents also pointed three
+  levels up from where the header lands and now resolve from `include/`.
+- **Every parameter and every return is documented**, sixty-eight of the first and
+  twenty-six of the second, in the form an editor renders as a table beside the call. The
+  names are checked against the signatures mechanically rather than by eye, in order, and
+  the generation refuses to write a header where the two disagree. The returns were read out
+  of the implementations: the deliberate panic answers the internal error and poisons the
+  handle, and the code first written for it here did not exist.
 
 ### Measured
 - **`noexcept` is free at runtime and not free to go without.** The hot loop is identical
@@ -41,6 +47,14 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   side, which is why asserting it there costs nothing to give up.
 
 ### Learned
+- **Precision loses to what renders.** The editor tooling most applications read this
+  header with knows a fixed set of block commands and drops every other one silently, taking
+  the text under it along with it. `@pre` is the accurate word for a caller's obligation and
+  it vanished; `@return` is not in the set either, only `@returns`. A cross-reference is the
+  same trade the other way: `@ref` links in a generated site and reduces to undistinguished
+  prose in a tooltip, so a name keeps the backticks it already had and is code in both. None
+  of this is visible from the header, from the generator, or from a compiler -- only from
+  the thing that displays it.
 - **A documentation generator documents a file's members only when the file itself is
   documented.** Without a `@file` block the header indexed twenty-two structures and nothing
   else: every function, enumeration, constant and typedef was skipped however carefully it
