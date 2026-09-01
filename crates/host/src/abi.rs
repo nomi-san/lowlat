@@ -106,6 +106,8 @@ pub const LOWLAT_ABI_MINOR: u32 = 1;
 ///
 /// **The one function whose signature can never change**, because it is what a
 /// loader calls to decide whether it may call anything else.
+///
+/// @returns The major version in the high sixteen bits, the minor in the low.
 #[unsafe(no_mangle)]
 pub extern "C" fn lowlat_abi_version() -> u32 {
     (LOWLAT_ABI_MAJOR << 16) | LOWLAT_ABI_MINOR
@@ -162,6 +164,9 @@ const DESCRIPTIONS: [(lowlat_status, &CStr); 17] = [
 ///
 /// The pointer is to storage that outlives the library, so it is never freed
 /// and never copied out of.
+///
+/// @param[in] status Any status value, including one this version does not define.
+/// @returns A NUL-terminated description. Never null, never freed.
 #[unsafe(no_mangle)]
 pub extern "C" fn lowlat_status_string(status: i32) -> *const c_char {
     let text: &CStr = DESCRIPTIONS
@@ -850,11 +855,15 @@ fn to_application(level: lowlat_common::log::Level, message: &str) {
 /// installed once; what an application registers here sits behind it, so
 /// calling this again changes where lines go rather than being refused.
 ///
+/// @param[in] fn_ Where lines go, or `NULL` to return them to standard error.
+/// @param[in] opaque Handed back to `fn_` untouched.
+/// @returns [`LOWLAT_OK`].
+///
 /// # Safety
 ///
-/// `fn_` must remain callable, and `opaque` valid, until this is called again
-/// with something else or with `NULL`. It may fire on any thread, and it must
-/// not call back into this library.
+/// `fn_` must remain callable, and `opaque` valid, until this is called
+/// again with something else or with `NULL`. It may fire on any thread, and it must not
+/// call back into this library.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_set_log_callback(
     fn_: lowlat_log_fn,
@@ -875,6 +884,10 @@ pub unsafe extern "C" fn lowlat_set_log_callback(
 }
 
 /// Set how much is logged. Lines above this level are not formatted at all.
+///
+/// @param[in] level One of [`lowlat_log_level`].
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_INVALID_ARGUMENT`] for a level nothing
+/// defines.
 #[unsafe(no_mangle)]
 pub extern "C" fn lowlat_set_log_level(level: u32) -> lowlat_status {
     guard(LOWLAT_ERR_INTERNAL, || {
@@ -941,6 +954,11 @@ impl lowlat {
 
 /// Create a handle.
 ///
+/// @param[in] info One [`lowlat_create_info`] whose `size` says how much of it is set.
+/// May be null, which takes every default.
+/// @param[out] out Receives the handle.
+/// @returns [`LOWLAT_OK`], or an error and `out` left untouched.
+///
 /// # Safety
 ///
 /// `out` must point to storage for one pointer. `info` may be null, which
@@ -981,6 +999,9 @@ pub unsafe extern "C" fn lowlat_create(
 ///
 /// **Works on a poisoned handle**, which is the point of poisoning: everything
 /// else is refused and this still releases what was taken.
+///
+/// @param[in] ll The handle from [`lowlat_create`], not used again. Null is accepted
+/// and does nothing.
 ///
 /// # Safety
 ///
@@ -1220,6 +1241,11 @@ pub const LOWLAT_AUDIO_KBPS_MAX: u32 = 512;
 /// Guests are admitted through the signaling seam, which is the application's
 /// own; this starts what serves them once they arrive.
 ///
+/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] cfg One [`lowlat_host_config`] whose `size` says how much of it is set.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_ALREADY_STARTED`] when this handle is
+/// already hosting.
+///
 /// # Safety
 ///
 /// `ll` came from [`lowlat_create`], and `cfg` points to one
@@ -1284,6 +1310,11 @@ fn refused(error: crate::admission::Error) -> lowlat_status {
 /// left unanswered: nothing in the protocol reports a host that never replied,
 /// so a peer given silence sits connecting until its own deadline.
 ///
+/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] info One [`lowlat_attempt_info`] whose `size` says how much of it is set.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_AT_CAPACITY`] when the room is full -- which
+/// the application should decline over its own signaling rather than leave unanswered.
+///
 /// # Safety
 ///
 /// `ll` came from [`lowlat_create`], and `info` points to one
@@ -1343,10 +1374,15 @@ pub unsafe extern "C" fn lowlat_host_new_attempt(
 /// withdrawal can overtake them, so this is a race with teardown rather than a
 /// fault, and a status the caller would have to ignore is worse than no status.
 ///
+/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] attempt_id The attempt this address belongs to, NUL-terminated. One
+/// nothing registered is accepted silently.
+/// @param[in] cand One [`lowlat_candidate`].
+///
 /// # Safety
 ///
-/// `ll` came from [`lowlat_create`], `attempt_id` is a NUL-terminated string,
-/// and `cand` points to one [`lowlat_candidate`].
+/// `ll` came from [`lowlat_create`], `attempt_id` is a NUL-terminated
+/// string, and `cand` points to one [`lowlat_candidate`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_add_candidate(
     ll: *mut lowlat,
@@ -1398,10 +1434,19 @@ pub unsafe extern "C" fn lowlat_host_add_candidate(
 /// gateway, a rule on the firewall, a pool it allocates from -- and none of
 /// those survive this library choosing for it.
 ///
+/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] attempt_id The attempt to approve, NUL-terminated.
+/// @param[in] port Where the bind starts, not where it must land. Zero asks for the
+/// configured base port.
+/// @param[out] out Receives this host's credentials and the port the bind reached, in
+/// one [`lowlat_credentials`] whose `size` says how much of it is set.
+/// @returns [`LOWLAT_OK`], and the application sends `out` to the peer over its own
+/// signaling.
+///
 /// # Safety
 ///
-/// `ll` came from [`lowlat_create`], `attempt_id` is a NUL-terminated string,
-/// and `out` points to one [`lowlat_credentials`] whose `size` says how much of
+/// `ll` came from [`lowlat_create`], `attempt_id` is a NUL-terminated
+/// string, and `out` points to one [`lowlat_credentials`] whose `size` says how much of
 /// it is set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_begin_p2p(
@@ -1448,6 +1493,10 @@ pub unsafe extern "C" fn lowlat_host_begin_p2p(
 /// learns from its own liveness deadline rather than from a message, for the
 /// same reason [`lowlat_host_stop`] does.
 ///
+/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] attempt_id The attempt to end, NUL-terminated. One nothing registered is
+/// accepted silently and remembered.
+///
 /// # Safety
 ///
 /// `ll` came from [`lowlat_create`] and `attempt_id` is a NUL-terminated
@@ -1481,10 +1530,17 @@ pub unsafe extern "C" fn lowlat_host_end_connection(ll: *mut lowlat, attempt_id:
 /// the roster moves, and a caller that sized its array a moment ago must not
 /// be made to lose the call.
 ///
+/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[out] out An array of at least `*count` entries, or `NULL` to ask only how
+/// many there are.
+/// @param[in,out] count The array's capacity in, the number written out.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_TOO_SMALL`] with `count` set to what the
+/// roster would have taken.
+///
 /// # Safety
 ///
-/// `count` must be readable and writable, and `out`, when not null, must point
-/// to at least `*count` elements.
+/// `count` must be readable and writable, and `out`, when not null, must
+/// point to at least `*count` elements.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_get_guests(
     ll: *mut lowlat,
@@ -1544,6 +1600,15 @@ pub unsafe extern "C" fn lowlat_host_get_guests(
 /// `guest_id` of [`LOWLAT_GUEST_ALL`] reaches everyone seated. A body past
 /// what a peer will accept is refused here rather than sent and dropped in
 /// silence at the far end.
+///
+/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] guest_id Which guest, or [`LOWLAT_GUEST_ALL`] for everyone seated.
+/// @param[in] id The sub-identifier, which means whatever the application and its
+/// clients agreed it means.
+/// @param[in] data The body, copied before this returns and never retained.
+/// @param[in] len How long the body is. A body past what a peer will accept is refused
+/// here.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_UNKNOWN_GUEST`].
 ///
 /// # Safety
 ///
@@ -1605,6 +1670,12 @@ pub unsafe extern "C" fn lowlat_host_send_user_data(
 /// seat goes back. It does not disappear from the roster the instant this
 /// returns.
 ///
+/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] guest_id Which guest to end.
+/// @param[in] reason What the peer is told, in the protocol's own disconnect numbering
+/// rather than this API's. Zero tells it nothing and leaves it seated.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_UNKNOWN_GUEST`].
+///
 /// # Safety
 ///
 /// `ll` came from [`lowlat_create`].
@@ -1641,6 +1712,12 @@ pub unsafe extern "C" fn lowlat_host_kick_guest(
 ///
 /// The change reaches the roster immediately and the guest's own devices on its
 /// next pass.
+///
+/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] guest_id Which guest.
+/// @param[in] perms One [`lowlat_permissions`]. Every flag clear is how a guest's input
+/// is turned off.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_UNKNOWN_GUEST`].
 ///
 /// # Safety
 ///
@@ -1717,10 +1794,16 @@ pub struct lowlat_audio_output {
 /// A machine with no sound server answers with none rather than failing, which
 /// is the same thing an application does with it: offer what there is.
 ///
+/// @param[out] out An array of at least `*count` entries, or `NULL` to ask only how
+/// many there are.
+/// @param[in,out] count The array's capacity in, the number written out.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_TOO_SMALL`] with `count` set to what it
+/// would have taken.
+///
 /// # Safety
 ///
-/// `count` must be readable and writable, and `out`, when not null, must point
-/// to at least `*count` elements.
+/// `count` must be readable and writable, and `out`, when not null, must
+/// point to at least `*count` elements.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_get_audio_outputs(
     out: *mut lowlat_audio_output,
@@ -1762,10 +1845,16 @@ pub unsafe extern "C" fn lowlat_get_audio_outputs(
 /// before committing to one. Two calls and the caller's own buffer, like the
 /// roster: pass `NULL` to learn the count.
 ///
+/// @param[out] out An array of at least `*count` entries, or `NULL` to ask only how
+/// many there are.
+/// @param[in,out] count The array's capacity in, the number written out.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_TOO_SMALL`] with `count` set to what it
+/// would have taken.
+///
 /// # Safety
 ///
-/// `count` must be readable and writable, and `out`, when not null, must point
-/// to at least `*count` elements.
+/// `count` must be readable and writable, and `out`, when not null, must
+/// point to at least `*count` elements.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_get_outputs(
     out: *mut lowlat_output,
@@ -1819,6 +1908,10 @@ pub unsafe extern "C" fn lowlat_get_outputs(
 ///
 /// [`LOWLAT_OK`] means a display is lit and its framebuffer can be reached.
 /// It is a read: no encoder is built and no thread is started.
+///
+/// @returns [`LOWLAT_OK`] when a display is lit and its framebuffer can be reached,
+/// [`LOWLAT_ERR_NO_DISPLAY`] when there is none, and [`LOWLAT_ERR_DISPLAY_UNREACHABLE`]
+/// when this process may not read the one there is.
 #[unsafe(no_mangle)]
 pub extern "C" fn lowlat_can_host() -> lowlat_status {
     guard(LOWLAT_ERR_INTERNAL, || {
@@ -1890,10 +1983,14 @@ pub struct lowlat_host_status {
 /// application asking what state something is in should not have to know the
 /// answer first.
 ///
+/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[out] out One [`lowlat_host_status`] whose `size` says how much of it is set.
+/// @returns [`LOWLAT_OK`], on a handle that is not hosting too.
+///
 /// # Safety
 ///
-/// `out` points to one [`lowlat_host_status`] whose `size` says how much of it
-/// is set.
+/// `out` points to one [`lowlat_host_status`] whose `size` says how much of
+/// it is set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_get_status(
     ll: *mut lowlat,
@@ -1977,6 +2074,14 @@ pub unsafe extern "C" fn lowlat_host_get_status(
 ///
 /// Answers how many guests it reached, which is zero for an empty room and not
 /// an error.
+///
+/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] data The body, whose shape belongs to the clients the application serves.
+/// Copied before this returns and never retained.
+/// @param[in] len How long the body is.
+/// @param[out] reached How many guests it reached. Zero for an empty room, which is not
+/// an error.
+/// @returns [`LOWLAT_OK`].
 ///
 /// # Safety
 ///
@@ -2062,10 +2167,15 @@ pub struct lowlat_metrics {
 /// time and how many frames it has queued waiting to decode are the peer's to
 /// know; reporting either would be reporting a number this host made up.
 ///
+/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] guest_id Which guest.
+/// @param[out] out One [`lowlat_metrics`] whose `size` says how much of it is set.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_UNKNOWN_GUEST`].
+///
 /// # Safety
 ///
-/// `out` points to one [`lowlat_metrics`] whose `size` says how much of it is
-/// set.
+/// `out` points to one [`lowlat_metrics`] whose `size` says how much of it
+/// is set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_get_metrics(
     ll: *mut lowlat,
@@ -2123,6 +2233,12 @@ pub unsafe extern "C" fn lowlat_host_get_metrics(
 /// because there is nothing yet for the values to apply to and accepting them
 /// silently would report settings that never took.
 ///
+/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] cfg One [`lowlat_host_video_config`] whose `size` says how much of it is
+/// set.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_INVALID_ARGUMENT`] when the host is not
+/// running.
+///
 /// # Safety
 ///
 /// `ll` came from [`lowlat_create`], and `cfg` points to one
@@ -2160,6 +2276,12 @@ pub unsafe extern "C" fn lowlat_host_set_video_config(
 /// the device back and restores the speakers; switching it on takes it again.
 /// A device that does not resolve is refused rather than substituted, and the
 /// host keeps the one it has.
+///
+/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] cfg One [`lowlat_host_audio_config`] whose `size` says how much of it is
+/// set.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_INVALID_ARGUMENT`] for a device that does
+/// not resolve, the host keeping the one it has.
 ///
 /// # Safety
 ///
@@ -2220,6 +2342,11 @@ pub unsafe extern "C" fn lowlat_host_set_audio_config(
 /// actually being read, and whether anything is, is in
 /// [`lowlat_host_status`].
 ///
+/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[out] out One [`lowlat_host_audio_config`] whose `size` says how much of it is
+/// set.
+/// @returns [`LOWLAT_OK`].
+///
 /// # Safety
 ///
 /// `ll` came from [`lowlat_create`], and `out` points to one
@@ -2262,6 +2389,11 @@ pub unsafe extern "C" fn lowlat_host_get_audio_config(
 /// **Read back rather than remembered.** What a stream is doing is the
 /// stream's answer, and an application that kept its own copy would be
 /// describing settings another guest may have changed underneath it.
+///
+/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[out] out One [`lowlat_host_video_config`] whose `size` says how much of it is
+/// set.
+/// @returns [`LOWLAT_OK`].
 ///
 /// # Safety
 ///
@@ -2316,6 +2448,9 @@ pub unsafe extern "C" fn lowlat_host_get_video_config(
 /// stopping costs a peer the wait rather than being immediate to it. There is
 /// no reason parameter here because there is nothing yet that could carry one.
 ///
+/// @param[in] ll The handle from [`lowlat_create`]. It may be started again.
+/// @returns [`LOWLAT_OK`], once every guest is disconnected and every thread joined.
+///
 /// # Safety
 ///
 /// `ll` came from [`lowlat_create`].
@@ -2363,10 +2498,16 @@ pub const LOWLAT_MICROPHONE_CHANNELS: u32 = 1;
 /// [`lowlat_host_audio_config`] to take one; it is off by default, and until
 /// it is on a peer keeps its microphone muted and sends nothing.
 ///
-/// `count` carries the buffer's capacity in samples in, and how many were
-/// written out. `guest` receives which guest sent it, and `dropped` how many
-/// packets were lost to a queue nobody was draining -- reported with the next
-/// delivery, which is the only place it can be.
+/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] timeout_ms How long to wait for a packet. Zero polls without waiting.
+/// @param[out] samples Where the packet is written. Must hold
+/// [`LOWLAT_MICROPHONE_SAMPLES_MAX`].
+/// @param[in,out] count The buffer's capacity in samples in, how many were written out.
+/// @param[out] guest Which guest sent it. May be null.
+/// @param[out] dropped How many packets were lost to a queue nobody was draining,
+/// reported with the next delivery. May be null.
+/// @returns [`LOWLAT_OK`], [`LOWLAT_TIMEOUT`] when nothing arrived, or
+/// [`LOWLAT_ERR_NOT_STARTED`] when this host is not taking microphones.
 ///
 /// # Safety
 ///
@@ -2445,10 +2586,21 @@ pub unsafe extern "C" fn lowlat_host_poll_microphone(
 /// answered, `body_len` is set to what the body needs, and the same event is
 /// delivered by the next call with room for it.
 ///
+/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] timeout_ms How long to wait for an event. Zero polls without waiting.
+/// @param[out] out One [`lowlat_event`].
+/// @param[out] body Receives an application message's body, or `NULL` to be delivered
+/// events without their bodies.
+/// @param[in,out] body_len When `body` is not null, its capacity in and the bytes
+/// written out.
+/// @returns [`LOWLAT_OK`], [`LOWLAT_TIMEOUT`] when nothing arrived, or
+/// [`LOWLAT_ERR_TOO_SMALL`] with `body_len` set to what the body needs and the event
+/// kept for the next call.
+///
 /// # Safety
 ///
-/// `out` must point to one [`lowlat_event`]. `body`, when not null, must point
-/// to at least `*body_len` bytes, and `body_len` must then be readable and
+/// `out` must point to one [`lowlat_event`]. `body`, when not null, must
+/// point to at least `*body_len` bytes, and `body_len` must then be readable and
 /// writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_poll_events(
@@ -2513,6 +2665,11 @@ pub unsafe extern "C" fn lowlat_host_poll_events(
 /// **It takes the handle** so that what follows a contained panic is testable
 /// too: the handle is poisoned, every later call on it is refused, and
 /// destroying it still works.
+///
+/// @param[in] ll The handle from [`lowlat_create`]. It is poisoned afterwards: every
+/// later call on it is refused and destroying it still works.
+/// @returns [`LOWLAT_ERR_INTERNAL`], the panic having been caught. Every later call on
+/// `ll` answers [`LOWLAT_ERR_POISONED`].
 ///
 /// # Safety
 ///

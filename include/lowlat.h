@@ -218,7 +218,7 @@ typedef enum lowlat_outcome {
 /// Which codec the stream is encoded with.
 ///
 /// **Named by an enumeration and carried as an integer**, for the reason
-/// @ref lowlat_status is: the application writes this field, so the value
+/// `lowlat_status` is: the application writes this field, so the value
 /// arriving is whatever it wrote.
 typedef enum lowlat_codec {
     LOWLAT_CODEC_H264 = 1,
@@ -228,7 +228,7 @@ typedef enum lowlat_codec {
 /// How much colour the stream carries, relative to its luma.
 ///
 /// **Named by an enumeration and carried as an integer**, the same way
-/// @ref lowlat_codec is, and an axis rather than a flag because it has
+/// `lowlat_codec` is, and an axis rather than a flag because it has
 /// somewhere to go: a third layout is in wide use elsewhere even though
 /// nothing here produces one.
 typedef enum lowlat_chroma {
@@ -367,7 +367,7 @@ typedef struct lowlat_host_video_config {
 /// **Every field here is live.** Sound has no half that must be settled when
 /// hosting starts: the device and the mute cost a reconnect the loop performs,
 /// and the rest are read on the frame that uses them. So this is both what a
-/// host starts with and what @ref lowlat_host_set_audio_config takes.
+/// host starts with and what `lowlat_host_set_audio_config` takes.
 typedef struct lowlat_host_audio_config {
     /// Set by the caller to `sizeof(lowlat_host_audio_config)`.
     uint32_t size;
@@ -424,17 +424,17 @@ typedef struct lowlat_host_config {
     /// The base a guest's port bind walks from.
     uint16_t base_port;
     uint16_t reserved;
-    /// Advertised capacity. Above @ref LOWLAT_GUESTS_MAX is refused rather than
+    /// Advertised capacity. Above `LOWLAT_GUESTS_MAX` is refused rather than
     /// quietly reduced.
     uint32_t max_guests;
-    /// One of @ref lowlat_codec. Settled when hosting starts: one encode serves
+    /// One of `lowlat_codec`. Settled when hosting starts: one encode serves
     /// every seat and a session has one video configuration.
     uint32_t codec;
-    /// One of @ref lowlat_encoder.
+    /// One of `lowlat_encoder`.
     uint32_t encoder;
-    /// One of @ref lowlat_cg_level.
+    /// One of `lowlat_cg_level`.
     uint32_t cg_level;
-    /// One of @ref lowlat_quality. **Settled when hosting starts**: it is what
+    /// One of `lowlat_quality`. **Settled when hosting starts**: it is what
     /// the encoder is built with, and one encode serves every seat.
     ///
     /// **What a host reports back is what it asked for, not what a device
@@ -581,7 +581,7 @@ typedef struct lowlat_guest {
 
 /// One sound output a host could capture.
 typedef struct lowlat_audio_output {
-    /// What to put in @ref lowlat_host_audio_config::device.
+    /// What to put in `lowlat_host_audio_config::device`.
     ///
     /// **The monitor of the output, not the output**, because that is the
     /// device a host reads: it carries what the speakers are playing.
@@ -611,7 +611,7 @@ typedef struct lowlat_output {
 ///
 /// **What is happening, not what was asked for.** The picture's size is the
 /// display's answer and the guest count is the room's; the settings that
-/// produced them are read back through @ref lowlat_host_get_video_config.
+/// produced them are read back through `lowlat_host_get_video_config`.
 typedef struct lowlat_host_status {
     /// Set by the caller to `sizeof(lowlat_host_status)`.
     uint32_t size;
@@ -638,13 +638,13 @@ typedef struct lowlat_host_status {
     /// platform offers a depth above ten and one of them cannot describe one.
     bool ten_bit;
     uint8_t reserved[1];
-    /// One of @ref lowlat_codec, and **zero until something is being coded**.
+    /// One of `lowlat_codec`, and **zero until something is being coded**.
     ///
     /// **What is coming out, not what was asked for.** A seated guest can move
     /// the codec and the depth while the stream runs, so the configuration
     /// stops being the answer as soon as one does.
     uint32_t codec;
-    /// One of @ref lowlat_chroma, and zero until something is being coded.
+    /// One of `lowlat_chroma`, and zero until something is being coded.
     uint32_t chroma;
     /// The sound device being read, empty when none is.
     ///
@@ -658,7 +658,7 @@ typedef struct lowlat_host_status {
 ///
 /// **Its own structure behind its own call, and that is deliberate.** A guest
 /// is delivered as an array element and an array element cannot carry a `size`
-/// -- the caller walks it by stride -- so @ref lowlat_guest is fixed for the
+/// -- the caller walks it by stride -- so `lowlat_guest` is fixed for the
 /// major version. These are the numbers most likely to grow, so they live
 /// where growing them is free.
 ///
@@ -754,7 +754,7 @@ typedef struct lowlat_capture_changed_event {
 
 /// Who holds the pointer now.
 typedef struct lowlat_input_owner_event {
-    /// @ref LOWLAT_GUEST_ALL -- zero -- when nobody holds it.
+    /// `LOWLAT_GUEST_ALL` -- zero -- when nobody holds it.
     uint32_t guest;
 } lowlat_input_owner_event;
 
@@ -804,6 +804,8 @@ extern "C" {
 ///
 /// **The one function whose signature can never change**, because it is what a
 /// loader calls to decide whether it may call anything else.
+///
+/// @returns The major version in the high sixteen bits, the minor in the low.
 uint32_t lowlat_abi_version(void) LOWLAT_NOEXCEPT;
 
 /// Describe a status.
@@ -815,6 +817,9 @@ uint32_t lowlat_abi_version(void) LOWLAT_NOEXCEPT;
 ///
 /// The pointer is to storage that outlives the library, so it is never freed
 /// and never copied out of.
+///
+/// @param[in] status Any status value, including one this version does not define.
+/// @returns A NUL-terminated description. Never null, never freed.
 const char *lowlat_status_string(int32_t status) LOWLAT_NOEXCEPT;
 
 /// Receive log messages from every part of this library.
@@ -826,18 +831,31 @@ const char *lowlat_status_string(int32_t status) LOWLAT_NOEXCEPT;
 /// installed once; what an application registers here sits behind it, so
 /// calling this again changes where lines go rather than being refused.
 ///
-/// @pre `fn_` must remain callable, and `opaque` valid, until this is called again
-/// with something else or with `NULL`. It may fire on any thread, and it must
-/// not call back into this library.
+/// @param[in] fn_ Where lines go, or `NULL` to return them to standard error.
+/// @param[in] opaque Handed back to `fn_` untouched.
+/// @returns `LOWLAT_OK`.
+///
+/// @attention `fn_` must remain callable, and `opaque` valid, until this is called
+/// again with something else or with `NULL`. It may fire on any thread, and it must not
+/// call back into this library.
 lowlat_status lowlat_set_log_callback(lowlat_log_fn fn_,
                                       void *opaque) LOWLAT_NOEXCEPT;
 
 /// Set how much is logged. Lines above this level are not formatted at all.
+///
+/// @param[in] level One of `lowlat_log_level`.
+/// @returns `LOWLAT_OK`, or `LOWLAT_ERR_INVALID_ARGUMENT` for a level nothing
+/// defines.
 lowlat_status lowlat_set_log_level(uint32_t level) LOWLAT_NOEXCEPT;
 
 /// Create a handle.
 ///
-/// @pre `out` must point to storage for one pointer. `info` may be null, which
+/// @param[in] info One `lowlat_create_info` whose `size` says how much of it is set.
+/// May be null, which takes every default.
+/// @param[out] out Receives the handle.
+/// @returns `LOWLAT_OK`, or an error and `out` left untouched.
+///
+/// @attention `out` must point to storage for one pointer. `info` may be null, which
 /// takes every default.
 lowlat_status lowlat_create(const lowlat_create_info *info,
                             lowlat **out) LOWLAT_NOEXCEPT;
@@ -847,7 +865,10 @@ lowlat_status lowlat_create(const lowlat_create_info *info,
 /// **Works on a poisoned handle**, which is the point of poisoning: everything
 /// else is refused and this still releases what was taken.
 ///
-/// @pre `ll` came from @ref lowlat_create and is not used again. A null pointer is
+/// @param[in] ll The handle from `lowlat_create`, not used again. Null is accepted
+/// and does nothing.
+///
+/// @attention `ll` came from `lowlat_create` and is not used again. A null pointer is
 /// accepted and does nothing.
 void lowlat_destroy(lowlat *ll) LOWLAT_NOEXCEPT;
 
@@ -856,8 +877,13 @@ void lowlat_destroy(lowlat *ll) LOWLAT_NOEXCEPT;
 /// Guests are admitted through the signaling seam, which is the application's
 /// own; this starts what serves them once they arrive.
 ///
-/// @pre `ll` came from @ref lowlat_create, and `cfg` points to one
-/// @ref lowlat_host_config whose `size` says how much of it is set.
+/// @param[in] ll The handle from `lowlat_create`.
+/// @param[in] cfg One `lowlat_host_config` whose `size` says how much of it is set.
+/// @returns `LOWLAT_OK`, or `LOWLAT_ERR_ALREADY_STARTED` when this handle is
+/// already hosting.
+///
+/// @attention `ll` came from `lowlat_create`, and `cfg` points to one
+/// `lowlat_host_config` whose `size` says how much of it is set.
 lowlat_status lowlat_host_start(lowlat *ll,
                                 const lowlat_host_config *cfg) LOWLAT_NOEXCEPT;
 
@@ -865,15 +891,20 @@ lowlat_status lowlat_host_start(lowlat *ll,
 ///
 /// **Registering is not approving.** This takes a seat's worth of bookkeeping
 /// and nothing else; no socket is opened and no thread is started until
-/// @ref lowlat_host_begin_p2p. An application that decides to decline simply
+/// `lowlat_host_begin_p2p`. An application that decides to decline simply
 /// never calls that, and says so over its own signaling.
 ///
-/// @ref LOWLAT_ERR_AT_CAPACITY means the offer should be declined rather than
+/// `LOWLAT_ERR_AT_CAPACITY` means the offer should be declined rather than
 /// left unanswered: nothing in the protocol reports a host that never replied,
 /// so a peer given silence sits connecting until its own deadline.
 ///
-/// @pre `ll` came from @ref lowlat_create, and `info` points to one
-/// @ref lowlat_attempt_info whose `size` says how much of it is set.
+/// @param[in] ll The handle from `lowlat_create`.
+/// @param[in] info One `lowlat_attempt_info` whose `size` says how much of it is set.
+/// @returns `LOWLAT_OK`, or `LOWLAT_ERR_AT_CAPACITY` when the room is full -- which
+/// the application should decline over its own signaling rather than leave unanswered.
+///
+/// @attention `ll` came from `lowlat_create`, and `info` points to one
+/// `lowlat_attempt_info` whose `size` says how much of it is set.
 lowlat_status lowlat_host_new_attempt(lowlat *ll,
                                       const lowlat_attempt_info *info) LOWLAT_NOEXCEPT;
 
@@ -883,8 +914,13 @@ lowlat_status lowlat_host_new_attempt(lowlat *ll,
 /// withdrawal can overtake them, so this is a race with teardown rather than a
 /// fault, and a status the caller would have to ignore is worse than no status.
 ///
-/// @pre `ll` came from @ref lowlat_create, `attempt_id` is a NUL-terminated string,
-/// and `cand` points to one @ref lowlat_candidate.
+/// @param[in] ll The handle from `lowlat_create`.
+/// @param[in] attempt_id The attempt this address belongs to, NUL-terminated. One
+/// nothing registered is accepted silently.
+/// @param[in] cand One `lowlat_candidate`.
+///
+/// @attention `ll` came from `lowlat_create`, `attempt_id` is a NUL-terminated
+/// string, and `cand` points to one `lowlat_candidate`.
 void lowlat_host_add_candidate(lowlat *ll,
                                const char *attempt_id,
                                const lowlat_candidate *cand) LOWLAT_NOEXCEPT;
@@ -904,8 +940,17 @@ void lowlat_host_add_candidate(lowlat *ll,
 /// gateway, a rule on the firewall, a pool it allocates from -- and none of
 /// those survive this library choosing for it.
 ///
-/// @pre `ll` came from @ref lowlat_create, `attempt_id` is a NUL-terminated string,
-/// and `out` points to one @ref lowlat_credentials whose `size` says how much of
+/// @param[in] ll The handle from `lowlat_create`.
+/// @param[in] attempt_id The attempt to approve, NUL-terminated.
+/// @param[in] port Where the bind starts, not where it must land. Zero asks for the
+/// configured base port.
+/// @param[out] out Receives this host's credentials and the port the bind reached, in
+/// one `lowlat_credentials` whose `size` says how much of it is set.
+/// @returns `LOWLAT_OK`, and the application sends `out` to the peer over its own
+/// signaling.
+///
+/// @attention `ll` came from `lowlat_create`, `attempt_id` is a NUL-terminated
+/// string, and `out` points to one `lowlat_credentials` whose `size` says how much of
 /// it is set.
 lowlat_status lowlat_host_begin_p2p(lowlat *ll,
                                     const char *attempt_id,
@@ -921,9 +966,13 @@ lowlat_status lowlat_host_begin_p2p(lowlat *ll,
 ///
 /// **The peer is not told why.** Ending stops this guest's loop; the far side
 /// learns from its own liveness deadline rather than from a message, for the
-/// same reason @ref lowlat_host_stop does.
+/// same reason `lowlat_host_stop` does.
 ///
-/// @pre `ll` came from @ref lowlat_create and `attempt_id` is a NUL-terminated
+/// @param[in] ll The handle from `lowlat_create`.
+/// @param[in] attempt_id The attempt to end, NUL-terminated. One nothing registered is
+/// accepted silently and remembered.
+///
+/// @attention `ll` came from `lowlat_create` and `attempt_id` is a NUL-terminated
 /// string.
 void lowlat_host_end_connection(lowlat *ll,
                                 const char *attempt_id) LOWLAT_NOEXCEPT;
@@ -936,12 +985,19 @@ void lowlat_host_end_connection(lowlat *ll,
 ///
 /// `count` carries the array's capacity in and the number written out. A
 /// buffer smaller than the roster is filled as far as it goes and answered
-/// with @ref LOWLAT_ERR_TOO_SMALL, `count` set to what it would have taken --
+/// with `LOWLAT_ERR_TOO_SMALL`, `count` set to what it would have taken --
 /// the roster moves, and a caller that sized its array a moment ago must not
 /// be made to lose the call.
 ///
-/// @pre `count` must be readable and writable, and `out`, when not null, must point
-/// to at least `*count` elements.
+/// @param[in] ll The handle from `lowlat_create`.
+/// @param[out] out An array of at least `*count` entries, or `NULL` to ask only how
+/// many there are.
+/// @param[in,out] count The array's capacity in, the number written out.
+/// @returns `LOWLAT_OK`, or `LOWLAT_ERR_TOO_SMALL` with `count` set to what the
+/// roster would have taken.
+///
+/// @attention `count` must be readable and writable, and `out`, when not null, must
+/// point to at least `*count` elements.
 lowlat_status lowlat_host_get_guests(lowlat *ll,
                                      lowlat_guest *out,
                                      uint32_t *count) LOWLAT_NOEXCEPT;
@@ -953,11 +1009,20 @@ lowlat_status lowlat_host_get_guests(lowlat *ll,
 /// interpreted either would be inventing a protocol on its behalf
 /// ([05 §5](../docs/05-host.md)).
 ///
-/// `guest_id` of @ref LOWLAT_GUEST_ALL reaches everyone seated. A body past
+/// `guest_id` of `LOWLAT_GUEST_ALL` reaches everyone seated. A body past
 /// what a peer will accept is refused here rather than sent and dropped in
 /// silence at the far end.
 ///
-/// @pre `data` must point to at least `len` bytes when `len` is not zero. It is
+/// @param[in] ll The handle from `lowlat_create`.
+/// @param[in] guest_id Which guest, or `LOWLAT_GUEST_ALL` for everyone seated.
+/// @param[in] id The sub-identifier, which means whatever the application and its
+/// clients agreed it means.
+/// @param[in] data The body, copied before this returns and never retained.
+/// @param[in] len How long the body is. A body past what a peer will accept is refused
+/// here.
+/// @returns `LOWLAT_OK`, or `LOWLAT_ERR_UNKNOWN_GUEST`.
+///
+/// @attention `data` must point to at least `len` bytes when `len` is not zero. It is
 /// copied before the call returns and never retained.
 lowlat_status lowlat_host_send_user_data(lowlat *ll,
                                          uint32_t guest_id,
@@ -967,7 +1032,7 @@ lowlat_status lowlat_host_send_user_data(lowlat *ll,
 
 /// End one guest, telling it why.
 ///
-/// **`reason` is not a @ref lowlat_status.** It reaches the peer as the
+/// **`reason` is not a `lowlat_status`.** It reaches the peer as the
 /// protocol's own disconnect status, which is a different numbering that
 /// happens to share a width. **Zero is not a value to pass**: a peer carries on
 /// through it, so a guest kicked with zero is told nothing and stays.
@@ -976,7 +1041,13 @@ lowlat_status lowlat_host_send_user_data(lowlat *ll,
 /// seat goes back. It does not disappear from the roster the instant this
 /// returns.
 ///
-/// @pre `ll` came from @ref lowlat_create.
+/// @param[in] ll The handle from `lowlat_create`.
+/// @param[in] guest_id Which guest to end.
+/// @param[in] reason What the peer is told, in the protocol's own disconnect numbering
+/// rather than this API's. Zero tells it nothing and leaves it seated.
+/// @returns `LOWLAT_OK`, or `LOWLAT_ERR_UNKNOWN_GUEST`.
+///
+/// @attention `ll` came from `lowlat_create`.
 lowlat_status lowlat_host_kick_guest(lowlat *ll,
                                      uint32_t guest_id,
                                      int32_t reason) LOWLAT_NOEXCEPT;
@@ -991,8 +1062,14 @@ lowlat_status lowlat_host_kick_guest(lowlat *ll,
 /// The change reaches the roster immediately and the guest's own devices on its
 /// next pass.
 ///
-/// @pre `ll` came from @ref lowlat_create, and `perms` points to one
-/// @ref lowlat_permissions.
+/// @param[in] ll The handle from `lowlat_create`.
+/// @param[in] guest_id Which guest.
+/// @param[in] perms One `lowlat_permissions`. Every flag clear is how a guest's input
+/// is turned off.
+/// @returns `LOWLAT_OK`, or `LOWLAT_ERR_UNKNOWN_GUEST`.
+///
+/// @attention `ll` came from `lowlat_create`, and `perms` points to one
+/// `lowlat_permissions`.
 lowlat_status lowlat_host_set_permissions(lowlat *ll,
                                           uint32_t guest_id,
                                           const lowlat_permissions *perms) LOWLAT_NOEXCEPT;
@@ -1006,8 +1083,14 @@ lowlat_status lowlat_host_set_permissions(lowlat *ll,
 /// A machine with no sound server answers with none rather than failing, which
 /// is the same thing an application does with it: offer what there is.
 ///
-/// @pre `count` must be readable and writable, and `out`, when not null, must point
-/// to at least `*count` elements.
+/// @param[out] out An array of at least `*count` entries, or `NULL` to ask only how
+/// many there are.
+/// @param[in,out] count The array's capacity in, the number written out.
+/// @returns `LOWLAT_OK`, or `LOWLAT_ERR_TOO_SMALL` with `count` set to what it
+/// would have taken.
+///
+/// @attention `count` must be readable and writable, and `out`, when not null, must
+/// point to at least `*count` elements.
 lowlat_status lowlat_get_audio_outputs(lowlat_audio_output *out,
                                        uint32_t *count) LOWLAT_NOEXCEPT;
 
@@ -1017,8 +1100,14 @@ lowlat_status lowlat_get_audio_outputs(lowlat_audio_output *out,
 /// before committing to one. Two calls and the caller's own buffer, like the
 /// roster: pass `NULL` to learn the count.
 ///
-/// @pre `count` must be readable and writable, and `out`, when not null, must point
-/// to at least `*count` elements.
+/// @param[out] out An array of at least `*count` entries, or `NULL` to ask only how
+/// many there are.
+/// @param[in,out] count The array's capacity in, the number written out.
+/// @returns `LOWLAT_OK`, or `LOWLAT_ERR_TOO_SMALL` with `count` set to what it
+/// would have taken.
+///
+/// @attention `count` must be readable and writable, and `out`, when not null, must
+/// point to at least `*count` elements.
 lowlat_status lowlat_get_outputs(lowlat_output *out,
                                  uint32_t *count) LOWLAT_NOEXCEPT;
 
@@ -1030,8 +1119,12 @@ lowlat_status lowlat_get_outputs(lowlat_output *out,
 /// from "this process may not read one" only by reading a log. This answers
 /// which, before anything is started.
 ///
-/// @ref LOWLAT_OK means a display is lit and its framebuffer can be reached.
+/// `LOWLAT_OK` means a display is lit and its framebuffer can be reached.
 /// It is a read: no encoder is built and no thread is started.
+///
+/// @returns `LOWLAT_OK` when a display is lit and its framebuffer can be reached,
+/// `LOWLAT_ERR_NO_DISPLAY` when there is none, and `LOWLAT_ERR_DISPLAY_UNREACHABLE`
+/// when this process may not read the one there is.
 lowlat_status lowlat_can_host(void) LOWLAT_NOEXCEPT;
 
 /// Read what the host is doing.
@@ -1040,8 +1133,12 @@ lowlat_status lowlat_can_host(void) LOWLAT_NOEXCEPT;
 /// application asking what state something is in should not have to know the
 /// answer first.
 ///
-/// @pre `out` points to one @ref lowlat_host_status whose `size` says how much of it
-/// is set.
+/// @param[in] ll The handle from `lowlat_create`.
+/// @param[out] out One `lowlat_host_status` whose `size` says how much of it is set.
+/// @returns `LOWLAT_OK`, on a handle that is not hosting too.
+///
+/// @attention `out` points to one `lowlat_host_status` whose `size` says how much of
+/// it is set.
 lowlat_status lowlat_host_get_status(lowlat *ll,
                                      lowlat_host_status *out) LOWLAT_NOEXCEPT;
 
@@ -1059,7 +1156,15 @@ lowlat_status lowlat_host_get_status(lowlat *ll,
 /// Answers how many guests it reached, which is zero for an empty room and not
 /// an error.
 ///
-/// @pre `data` must point to at least `len` bytes when `len` is not zero. It is
+/// @param[in] ll The handle from `lowlat_create`.
+/// @param[in] data The body, whose shape belongs to the clients the application serves.
+/// Copied before this returns and never retained.
+/// @param[in] len How long the body is.
+/// @param[out] reached How many guests it reached. Zero for an empty room, which is not
+/// an error.
+/// @returns `LOWLAT_OK`.
+///
+/// @attention `data` must point to at least `len` bytes when `len` is not zero. It is
 /// copied before the call returns and never retained.
 lowlat_status lowlat_host_send_roster(lowlat *ll,
                                       const void *data,
@@ -1072,8 +1177,13 @@ lowlat_status lowlat_host_send_roster(lowlat *ll,
 /// time and how many frames it has queued waiting to decode are the peer's to
 /// know; reporting either would be reporting a number this host made up.
 ///
-/// @pre `out` points to one @ref lowlat_metrics whose `size` says how much of it is
-/// set.
+/// @param[in] ll The handle from `lowlat_create`.
+/// @param[in] guest_id Which guest.
+/// @param[out] out One `lowlat_metrics` whose `size` says how much of it is set.
+/// @returns `LOWLAT_OK`, or `LOWLAT_ERR_UNKNOWN_GUEST`.
+///
+/// @attention `out` points to one `lowlat_metrics` whose `size` says how much of it
+/// is set.
 lowlat_status lowlat_host_get_metrics(lowlat *ll,
                                       uint32_t guest_id,
                                       lowlat_metrics *out) LOWLAT_NOEXCEPT;
@@ -1089,12 +1199,18 @@ lowlat_status lowlat_host_get_metrics(lowlat *ll,
 /// around the new source and costs one coded refresh, keeping every guest on
 /// its seat and its channel.
 ///
-/// Refused with @ref LOWLAT_ERR_INVALID_ARGUMENT when the host is not running,
+/// Refused with `LOWLAT_ERR_INVALID_ARGUMENT` when the host is not running,
 /// because there is nothing yet for the values to apply to and accepting them
 /// silently would report settings that never took.
 ///
-/// @pre `ll` came from @ref lowlat_create, and `cfg` points to one
-/// @ref lowlat_host_video_config whose `size` says how much of it is set.
+/// @param[in] ll The handle from `lowlat_create`.
+/// @param[in] cfg One `lowlat_host_video_config` whose `size` says how much of it is
+/// set.
+/// @returns `LOWLAT_OK`, or `LOWLAT_ERR_INVALID_ARGUMENT` when the host is not
+/// running.
+///
+/// @attention `ll` came from `lowlat_create`, and `cfg` points to one
+/// `lowlat_host_video_config` whose `size` says how much of it is set.
 lowlat_status lowlat_host_set_video_config(lowlat *ll,
                                            const lowlat_host_video_config *cfg) LOWLAT_NOEXCEPT;
 
@@ -1105,8 +1221,14 @@ lowlat_status lowlat_host_set_video_config(lowlat *ll,
 /// A device that does not resolve is refused rather than substituted, and the
 /// host keeps the one it has.
 ///
-/// @pre `ll` came from @ref lowlat_create, and `cfg` points to one
-/// @ref lowlat_host_audio_config whose `size` says how much of it is set.
+/// @param[in] ll The handle from `lowlat_create`.
+/// @param[in] cfg One `lowlat_host_audio_config` whose `size` says how much of it is
+/// set.
+/// @returns `LOWLAT_OK`, or `LOWLAT_ERR_INVALID_ARGUMENT` for a device that does
+/// not resolve, the host keeping the one it has.
+///
+/// @attention `ll` came from `lowlat_create`, and `cfg` points to one
+/// `lowlat_host_audio_config` whose `size` says how much of it is set.
 lowlat_status lowlat_host_set_audio_config(lowlat *ll,
                                            const lowlat_host_audio_config *cfg) LOWLAT_NOEXCEPT;
 
@@ -1120,10 +1242,15 @@ lowlat_status lowlat_host_set_audio_config(lowlat *ll,
 /// an application that reads this, changes one field and writes it back does
 /// not accidentally pin a host that was following the default output. What is
 /// actually being read, and whether anything is, is in
-/// @ref lowlat_host_status.
+/// `lowlat_host_status`.
 ///
-/// @pre `ll` came from @ref lowlat_create, and `out` points to one
-/// @ref lowlat_host_audio_config whose `size` says how much of it is set.
+/// @param[in] ll The handle from `lowlat_create`.
+/// @param[out] out One `lowlat_host_audio_config` whose `size` says how much of it is
+/// set.
+/// @returns `LOWLAT_OK`.
+///
+/// @attention `ll` came from `lowlat_create`, and `out` points to one
+/// `lowlat_host_audio_config` whose `size` says how much of it is set.
 lowlat_status lowlat_host_get_audio_config(lowlat *ll,
                                            lowlat_host_audio_config *out) LOWLAT_NOEXCEPT;
 
@@ -1133,8 +1260,13 @@ lowlat_status lowlat_host_get_audio_config(lowlat *ll,
 /// stream's answer, and an application that kept its own copy would be
 /// describing settings another guest may have changed underneath it.
 ///
-/// @pre `ll` came from @ref lowlat_create, and `out` points to one
-/// @ref lowlat_host_video_config whose `size` says how much of it is set.
+/// @param[in] ll The handle from `lowlat_create`.
+/// @param[out] out One `lowlat_host_video_config` whose `size` says how much of it is
+/// set.
+/// @returns `LOWLAT_OK`.
+///
+/// @attention `ll` came from `lowlat_create`, and `out` points to one
+/// `lowlat_host_video_config` whose `size` says how much of it is set.
 lowlat_status lowlat_host_get_video_config(lowlat *ll,
                                            lowlat_host_video_config *out) LOWLAT_NOEXCEPT;
 
@@ -1149,7 +1281,10 @@ lowlat_status lowlat_host_get_video_config(lowlat *ll,
 /// stopping costs a peer the wait rather than being immediate to it. There is
 /// no reason parameter here because there is nothing yet that could carry one.
 ///
-/// @pre `ll` came from @ref lowlat_create.
+/// @param[in] ll The handle from `lowlat_create`. It may be started again.
+/// @returns `LOWLAT_OK`, once every guest is disconnected and every thread joined.
+///
+/// @attention `ll` came from `lowlat_create`.
 lowlat_status lowlat_host_stop(lowlat *ll) LOWLAT_NOEXCEPT;
 
 /// Take one packet of a guest's microphone, waiting up to `timeout_ms`.
@@ -1160,23 +1295,29 @@ lowlat_status lowlat_host_stop(lowlat *ll) LOWLAT_NOEXCEPT;
 ///
 /// **Always samples, never a codec.** A guest chooses how it encodes and this
 /// library decodes whichever it chose: sixteen-bit, mono, at
-/// @ref LOWLAT_MICROPHONE_SAMPLE_RATE. `samples` must hold
-/// @ref LOWLAT_MICROPHONE_SAMPLES_MAX of them; a packet cannot be larger, so
+/// `LOWLAT_MICROPHONE_SAMPLE_RATE`. `samples` must hold
+/// `LOWLAT_MICROPHONE_SAMPLES_MAX` of them; a packet cannot be larger, so
 /// there is no partial delivery and nothing to call back for.
 ///
-/// Answers @ref LOWLAT_TIMEOUT when nothing arrived, which is not an error, and
-/// @ref LOWLAT_ERR_NOT_STARTED when this host is not taking microphones: it
+/// Answers `LOWLAT_TIMEOUT` when nothing arrived, which is not an error, and
+/// `LOWLAT_ERR_NOT_STARTED` when this host is not taking microphones: it
 /// does nothing in that case rather than waiting out a timeout for sound that
 /// by construction cannot come. Set `accept_microphone` in
-/// @ref lowlat_host_audio_config to take one; it is off by default, and until
+/// `lowlat_host_audio_config` to take one; it is off by default, and until
 /// it is on a peer keeps its microphone muted and sends nothing.
 ///
-/// `count` carries the buffer's capacity in samples in, and how many were
-/// written out. `guest` receives which guest sent it, and `dropped` how many
-/// packets were lost to a queue nobody was draining -- reported with the next
-/// delivery, which is the only place it can be.
+/// @param[in] ll The handle from `lowlat_create`.
+/// @param[in] timeout_ms How long to wait for a packet. Zero polls without waiting.
+/// @param[out] samples Where the packet is written. Must hold
+/// `LOWLAT_MICROPHONE_SAMPLES_MAX`.
+/// @param[in,out] count The buffer's capacity in samples in, how many were written out.
+/// @param[out] guest Which guest sent it. May be null.
+/// @param[out] dropped How many packets were lost to a queue nobody was draining,
+/// reported with the next delivery. May be null.
+/// @returns `LOWLAT_OK`, `LOWLAT_TIMEOUT` when nothing arrived, or
+/// `LOWLAT_ERR_NOT_STARTED` when this host is not taking microphones.
 ///
-/// @pre `samples` points to at least `*count` samples, and `count`, `guest` and
+/// @attention `samples` points to at least `*count` samples, and `count`, `guest` and
 /// `dropped` are readable and writable. `guest` and `dropped` may be null.
 lowlat_status lowlat_host_poll_microphone(lowlat *ll,
                                           uint32_t timeout_ms,
@@ -1187,7 +1328,7 @@ lowlat_status lowlat_host_poll_microphone(lowlat *ll,
 
 /// Take one event, waiting up to `timeout_ms` for one to arrive.
 ///
-/// Answers @ref LOWLAT_TIMEOUT when nothing arrived, which is not an error. A
+/// Answers `LOWLAT_TIMEOUT` when nothing arrived, which is not an error. A
 /// `timeout_ms` of zero polls without waiting.
 ///
 /// `body` receives an application message's body and may be null, which means
@@ -1195,12 +1336,23 @@ lowlat_status lowlat_host_poll_microphone(lowlat *ll,
 /// it, and the event still says how long it was. When `body` is not null,
 /// `body_len` carries its capacity in and the bytes written out.
 ///
-/// **A body that does not fit consumes nothing.** @ref LOWLAT_ERR_TOO_SMALL is
+/// **A body that does not fit consumes nothing.** `LOWLAT_ERR_TOO_SMALL` is
 /// answered, `body_len` is set to what the body needs, and the same event is
 /// delivered by the next call with room for it.
 ///
-/// @pre `out` must point to one @ref lowlat_event. `body`, when not null, must point
-/// to at least `*body_len` bytes, and `body_len` must then be readable and
+/// @param[in] ll The handle from `lowlat_create`.
+/// @param[in] timeout_ms How long to wait for an event. Zero polls without waiting.
+/// @param[out] out One `lowlat_event`.
+/// @param[out] body Receives an application message's body, or `NULL` to be delivered
+/// events without their bodies.
+/// @param[in,out] body_len When `body` is not null, its capacity in and the bytes
+/// written out.
+/// @returns `LOWLAT_OK`, `LOWLAT_TIMEOUT` when nothing arrived, or
+/// `LOWLAT_ERR_TOO_SMALL` with `body_len` set to what the body needs and the event
+/// kept for the next call.
+///
+/// @attention `out` must point to one `lowlat_event`. `body`, when not null, must
+/// point to at least `*body_len` bytes, and `body_len` must then be readable and
 /// writable.
 lowlat_status lowlat_host_poll_events(lowlat *ll,
                                       uint32_t timeout_ms,
@@ -1219,7 +1371,12 @@ lowlat_status lowlat_host_poll_events(lowlat *ll,
 /// too: the handle is poisoned, every later call on it is refused, and
 /// destroying it still works.
 ///
-/// @pre `ll` came from @ref lowlat_create.
+/// @param[in] ll The handle from `lowlat_create`. It is poisoned afterwards: every
+/// later call on it is refused and destroying it still works.
+/// @returns `LOWLAT_ERR_INTERNAL`, the panic having been caught. Every later call on
+/// `ll` answers `LOWLAT_ERR_POISONED`.
+///
+/// @attention `ll` came from `lowlat_create`.
 lowlat_status lowlat_debug_panic(lowlat *ll) LOWLAT_NOEXCEPT;
 
 #ifdef __cplusplus

@@ -183,11 +183,17 @@ fn realign_wrapped_arguments(header: &str) -> String {
 ///
 /// **Both are load-bearing and neither side can hold both.** `# Safety` is
 /// what `clippy::missing_safety_doc` looks for on an unsafe function and
-/// ``[`name`]`` is how rustdoc links one, so the definitions keep them; a
-/// generator that reads this header wants `@pre` and `@ref` and understands
-/// neither of the others -- a heading renders as a title twice the size of the
-/// function above it, and a link renders as literal brackets. So the source
-/// stays Rust and the header is translated, which is what this file is for.
+/// ``[`name`]`` is how rustdoc links one, so the definitions keep them and the
+/// header is translated, which is what this file is for.
+///
+/// **What it translates to is decided by what renders, not by what is most
+/// precise.** The editor tooling most applications read this header with knows
+/// a fixed set of block commands and drops any other silently, taking the text
+/// under it with it: `@pre` is the accurate word for a caller's obligation and
+/// it disappears, so the safety section becomes `@attention`, which that set
+/// has. A cross-reference is the same trade the other way -- `@ref` links in a
+/// generated site and reduces to undistinguished prose in a tooltip, so a name
+/// keeps the backticks it already had and is code in both.
 fn to_doxygen(header: &str) -> String {
     let mut out = String::with_capacity(header.len());
     let mut rest = header;
@@ -197,8 +203,9 @@ fn to_doxygen(header: &str) -> String {
         match tail[2..].find("`]") {
             Some(end) => {
                 out.push_str(before);
-                out.push_str("@ref ");
+                out.push('`');
                 out.push_str(&tail[2..2 + end]);
+                out.push('`');
                 rest = &tail[2 + end + 2..];
             }
             // A bracket that opens nothing is text; keep it and move past it.
@@ -212,8 +219,11 @@ fn to_doxygen(header: &str) -> String {
     out.push_str(rest);
 
     // The heading and the blank line under it become the one command that says
-    // what they meant: everything under `# Safety` is a preconditon on the
-    // caller, and each is a single paragraph.
+    // what they meant. **`@pre` is the accurate one and it is not the one to
+    // use**: the editor tooling most applications read this header with drops
+    // any block command it does not know, silently and without rendering what
+    // was under it, and its set has no `@pre`. `@attention` is in it, and in
+    // every documentation generator going back twenty years.
     let mut folded = String::with_capacity(out.len());
     let mut lines = out.lines().peekable();
     while let Some(line) = lines.next() {
@@ -223,7 +233,7 @@ fn to_doxygen(header: &str) -> String {
         {
             lines.next();
             folded.push_str(indent);
-            folded.push_str("/// @pre ");
+            folded.push_str("/// @attention ");
             let body = lines.next().expect("a heading is followed by its section");
             folded.push_str(body.trim_start().trim_start_matches("/// "));
         } else {
