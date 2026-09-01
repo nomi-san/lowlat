@@ -1,6 +1,6 @@
 //! The public C ABI.
 //!
-//! The only public surface there is ([06-api.md](../../../docs/06-api.md)).
+//! The only public surface there is ([06-api.md](../docs/06-api.md)).
 //! Naming follows the header rather than Rust convention, which is permitted
 //! here and nowhere else.
 
@@ -39,7 +39,16 @@ use lowlat_status::*;
 ///
 /// A value is assigned once and never reused, including for a condition that
 /// is removed.
-#[repr(i32)]
+// **`repr(C)` rather than `repr(i32)`, and every enumeration here follows
+// it.** Naming the width makes cbindgen state it in C, which only C23 and C++
+// have syntax for, so the header grows a `__STDC_VERSION__` fork and the same
+// name means an enumeration under one standard and an integer under another.
+// `repr(C)` is whatever the platform's C compiler picks, which is what the
+// application is compiling with anyway; `alone.c` asserts it is four bytes.
+//
+// Not a doc comment, because it describes this side of the boundary and the
+// header is written for the other one (AGENTS.md 1a).
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_status {
     /// The call succeeded.
@@ -176,7 +185,7 @@ pub const LOWLAT_ATTEMPT_MAX: usize = 128;
 pub const LOWLAT_ADDRESS_MAX: usize = 46;
 
 /// Which member of an event is the valid one.
-#[repr(u32)]
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_event_type {
     /// A local candidate, to be sent to the peer as it is found.
@@ -200,7 +209,7 @@ pub enum lowlat_event_type {
 }
 
 /// Why an attempt finished.
-#[repr(u32)]
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_outcome {
     /// Negotiated, and no path was found.
@@ -375,7 +384,7 @@ pub const LOWLAT_SERVER_MAX: usize = 64;
 /// [`lowlat_codec`] is, and an axis rather than a flag because it has
 /// somewhere to go: a third layout is in wide use elsewhere even though
 /// nothing here produces one.
-#[repr(u32)]
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_chroma {
     /// Colour at half resolution in both directions, which is what a session
@@ -392,7 +401,7 @@ pub enum lowlat_chroma {
 /// **Named by an enumeration and carried as an integer**, for the reason
 /// [`lowlat_status`] is: the application writes this field, so the value
 /// arriving is whatever it wrote.
-#[repr(u32)]
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_codec {
     LOWLAT_CODEC_H264 = 1,
@@ -400,7 +409,7 @@ pub enum lowlat_codec {
 }
 
 /// Which encoder to build.
-#[repr(u32)]
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_encoder {
     /// **The default, and the right one.** A conversion target is allocated on
@@ -417,7 +426,7 @@ pub enum lowlat_encoder {
 ///
 /// **The coded picture never rotates.** This travels to the peer, which is what
 /// presents the picture and what maps pointer coordinates against it.
-#[repr(u32)]
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_rotation {
     LOWLAT_ROTATION_NONE = 1,
@@ -432,7 +441,7 @@ pub enum lowlat_rotation {
 /// congestion on any stale fragment once the send window passes its floor, and
 /// it exists only for compatibility with an older scheme. Sensitive is the
 /// default and the one to leave alone.
-#[repr(u32)]
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_cg_level {
     LOWLAT_CG_LEVEL_LEGACY = 0,
@@ -445,13 +454,13 @@ pub enum lowlat_cg_level {
 /// **The only encoder tuning this boundary exposes.** An encoder has a dozen
 /// knobs and almost none of them are an application's business; what an
 /// application wants to say is whether its guests would rather wait less or
-/// look at more. See [05 §4.1](../../../docs/05-host.md) for the levers this
-/// moves and [06 §quality](../../../docs/06-api.md).
+/// look at more. See [05 §4.1](../docs/05-host.md) for the levers this
+/// moves and [06 §quality](../docs/06-api.md).
 ///
 /// **Zero is the low-latency end, and that is deliberate**: a zeroed structure
 /// has to mean the sensible default, and for a product whose first goal is
 /// delay the sensible default is a bounded frame.
-#[repr(u32)]
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_quality {
     LOWLAT_QUALITY_LOWEST_LATENCY = 0,
@@ -471,7 +480,7 @@ pub enum lowlat_quality {
 /// **There is no resolution and no rotation.** The display decides its own size
 /// and orientation and this host follows; asking it to be something else is a
 /// request to whoever owns the display, which is not this library
-/// ([impl-plan](../../../docs/impl-plan.md), *Output selection*).
+/// ([impl-plan](../docs/impl-plan.md), *Output selection*).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct lowlat_host_video_config {
@@ -653,7 +662,7 @@ pub struct lowlat_permissions {
 ///
 /// **Signaling is the application's**, so everything here arrived over a
 /// transport this library does not have and does not want
-/// ([04 §1](../../../docs/04-signaling.md)).
+/// ([04 §1](../docs/04-signaling.md)).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct lowlat_attempt_info {
@@ -669,7 +678,7 @@ pub struct lowlat_attempt_info {
     ///
     /// **Empty selects the legacy path**, which is a decision rather than a
     /// degradation: the offer either carried one or it did not, and which
-    /// crypto a session uses follows from that ([00 §D2](../../../docs/00-overview.md)).
+    /// crypto a session uses follows from that ([00 §D2](../docs/00-overview.md)).
     pub aes256: [c_char; LOWLAT_ICE_MAX],
     /// What signaling says this peer may drive.
     pub permissions: lowlat_permissions,
@@ -773,7 +782,7 @@ pub struct lowlat_guest {
 }
 
 /// How severe a log line is.
-#[repr(u32)]
+#[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_log_level {
     LOWLAT_LOG_ERROR = 0,
@@ -915,7 +924,7 @@ pub struct lowlat {
     /// **A queue of its own, for the reason the events one is separate from
     /// everything else**: a hundred packets a second of sound sharing a bounded
     /// queue with control events would evict the events
-    /// ([06 §13](../../../docs/06-api.md)).
+    /// ([06 §13](../docs/06-api.md)).
     heard: crate::microphone::Receiver,
     /// The other end, handed to each host as it starts.
     hear: crate::microphone::Sender,
@@ -1530,7 +1539,7 @@ pub unsafe extern "C" fn lowlat_host_get_guests(
 /// **Nothing here reads the body.** The sub-identifier and the bytes are an
 /// agreement between an application and the clients it serves; a host that
 /// interpreted either would be inventing a protocol on its behalf
-/// ([05 §5](../../../docs/05-host.md)).
+/// ([05 §5](../docs/05-host.md)).
 ///
 /// `guest_id` of [`LOWLAT_GUEST_ALL`] reaches everyone seated. A body past
 /// what a peer will accept is refused here rather than sent and dropped in
@@ -2329,8 +2338,10 @@ pub unsafe extern "C" fn lowlat_host_stop(ll: *mut lowlat) -> lowlat_status {
 /// write and a receiver sizes its own work.
 pub const LOWLAT_MICROPHONE_SAMPLES_MAX: u32 = 960;
 
-/// Samples a second a microphone packet carries, and its channel count.
+/// Samples a second a microphone packet carries.
 pub const LOWLAT_MICROPHONE_SAMPLE_RATE: u32 = 48_000;
+
+/// How many channels it carries.
 pub const LOWLAT_MICROPHONE_CHANNELS: u32 = 1;
 
 /// Take one packet of a guest's microphone, waiting up to `timeout_ms`.

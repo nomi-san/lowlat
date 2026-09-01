@@ -88,7 +88,150 @@ fn generate() -> String {
         .expect("the definitions parse");
     let mut out = Vec::new();
     bindings.write(&mut out);
-    String::from_utf8(out).expect("the generated header is text")
+    let header = String::from_utf8(out).expect("the generated header is text");
+    to_doxygen(&realign_wrapped_arguments(&use_typedef_names(&header)))
+}
+
+/// Spell a type by the name its `typedef` gave it, everywhere it is used.
+///
+/// **The generator ties the tag to the keyword and cannot be asked for one
+/// without the other.** It writes `struct` or `enum` in front of every use of
+/// a type whose tag it emitted, so keeping the tags -- which is what lets an
+/// application forward-declare a handle -- also means `enum lowlat_status
+/// lowlat_create(const struct lowlat_create_info *)` at every signature and
+/// every field. Both spellings name the same type in C and neither is one in
+/// C++, so the tags stay and the keyword goes wherever the typedef already
+/// says it: everywhere except the `typedef` that introduces it.
+fn use_typedef_names(header: &str) -> String {
+    const REDUNDANT: [&str; 3] = ["struct ", "union ", "enum "];
+
+    let mut out = String::with_capacity(header.len());
+    let mut rest = header;
+    'text: while !rest.is_empty() {
+        for keyword in REDUNDANT {
+            if rest.starts_with(keyword)
+                && rest[keyword.len()..].starts_with("lowlat")
+                && !out.ends_with("typedef ")
+            {
+                rest = &rest[keyword.len()..];
+                continue 'text;
+            }
+        }
+        let ch = rest
+            .chars()
+            .next()
+            .expect("the loop stops when nothing is left");
+        out.push(ch);
+        rest = &rest[ch.len_utf8()..];
+    }
+    out
+}
+
+/// Hang the wrapped arguments under the parenthesis they belong to, and keep
+/// the trailing macro on the line that closes it.
+///
+/// **The generator wrapped them against the longer spelling.** Dropping
+/// `struct ` from a return type shortens the first line without moving the
+/// lines that were aligned to its open parenthesis, so every wrapped signature
+/// drifts right by exactly what came out of it. The macro is the generator's
+/// own doing: it puts a postfix on its own line whenever it wrapped, which
+/// reads as a stray statement rather than as part of the declaration.
+fn realign_wrapped_arguments(header: &str) -> String {
+    let mut out = String::with_capacity(header.len());
+    // Where arguments hang from, and how many parentheses are still open.
+    let mut column: Option<usize> = None;
+    let mut depth = 0usize;
+
+    for line in header.lines() {
+        let line = match column {
+            Some(column) if !line.is_empty() => {
+                format!("{}{}", " ".repeat(column), line.trim_start())
+            }
+            _ => line.to_owned(),
+        };
+
+        if line == "LOWLAT_NOEXCEPT;" && out.ends_with(")\n") {
+            out.truncate(out.len() - 1);
+            out.push(' ');
+        }
+        out.push_str(&line);
+        out.push('\n');
+
+        if line.trim_start().starts_with("//") {
+            continue;
+        }
+        for (at, ch) in line.char_indices() {
+            match ch {
+                '(' => {
+                    if depth == 0 {
+                        column = Some(at + 1);
+                    }
+                    depth += 1;
+                }
+                ')' => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+        }
+        if depth == 0 {
+            column = None;
+        }
+    }
+    out
+}
+
+/// Say the documentation in the C toolchain's dialect rather than in Rust's.
+///
+/// **Both are load-bearing and neither side can hold both.** `# Safety` is
+/// what `clippy::missing_safety_doc` looks for on an unsafe function and
+/// ``[`name`]`` is how rustdoc links one, so the definitions keep them; a
+/// generator that reads this header wants `@pre` and `@ref` and understands
+/// neither of the others -- a heading renders as a title twice the size of the
+/// function above it, and a link renders as literal brackets. So the source
+/// stays Rust and the header is translated, which is what this file is for.
+fn to_doxygen(header: &str) -> String {
+    let mut out = String::with_capacity(header.len());
+    let mut rest = header;
+
+    while let Some(at) = rest.find("[`") {
+        let (before, tail) = rest.split_at(at);
+        match tail[2..].find("`]") {
+            Some(end) => {
+                out.push_str(before);
+                out.push_str("@ref ");
+                out.push_str(&tail[2..2 + end]);
+                rest = &tail[2 + end + 2..];
+            }
+            // A bracket that opens nothing is text; keep it and move past it.
+            None => {
+                out.push_str(before);
+                out.push_str("[`");
+                rest = &tail[2..];
+            }
+        }
+    }
+    out.push_str(rest);
+
+    // The heading and the blank line under it become the one command that says
+    // what they meant: everything under `# Safety` is a preconditon on the
+    // caller, and each is a single paragraph.
+    let mut folded = String::with_capacity(out.len());
+    let mut lines = out.lines().peekable();
+    while let Some(line) = lines.next() {
+        let indent = &line[..line.len() - line.trim_start().len()];
+        if line.trim_start() == "/// # Safety"
+            && lines.peek().map(|next| next.trim_start()) == Some("///")
+        {
+            lines.next();
+            folded.push_str(indent);
+            folded.push_str("/// @pre ");
+            let body = lines.next().expect("a heading is followed by its section");
+            folded.push_str(body.trim_start().trim_start_matches("/// "));
+        } else {
+            folded.push_str(line);
+        }
+        folded.push('\n');
+    }
+    folded
 }
 
 /// Run a compiler and give back what it said, so a failure reports the

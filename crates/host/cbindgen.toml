@@ -13,14 +13,36 @@ pragma_once = true
 # One header that compiles as C and as C++, which is the gate. Without this the
 # C++ translation unit mangles every name and links against nothing.
 cpp_compat = true
-documentation_style = "c99"
+documentation_style = "cxx"
 no_includes = true
 sys_includes = ["stdint.h", "stdbool.h"]
+after_includes = """
+
+/// `noexcept` in C++ and nothing at all in C, so one header serves both.
+///
+/// **Every function here is nothrow by construction.** A panic is caught at
+/// the boundary and comes back as a status, so a C++ caller emitting landing
+/// pads around every call is paying for an exception that cannot arrive.
+///
+/// **MSVC is tested first**, because it reports `__cplusplus` as 199711L
+/// unless it is asked not to, and any version of it that defines `_MSVC_LANG`
+/// is a C++ compiler that has had `noexcept` for a decade.
+#if defined(_MSVC_LANG) || (defined(__cplusplus) && __cplusplus >= 201103L)
+#define LOWLAT_NOEXCEPT noexcept
+#else
+#define LOWLAT_NOEXCEPT
+#endif"""
 line_length = 88
 tab_width = 4
 
+# **`@file` is what makes the rest of the documentation visible.** A generator
+# documents members of a file only when the file itself is documented, so
+# without this block every function, enumeration and constant here is indexed
+# as undocumented however carefully it is commented -- which is what happens to
+# the header this API's shape follows.
 header = """
-/* lowlat - the public C ABI.
+/** @file
+ * lowlat - the public C ABI.
  *
  * Generated from the Rust definitions. Do not edit; see crates/host/cbindgen.toml.
  */"""
@@ -39,3 +61,8 @@ include = ["lowlat_codec", "lowlat_chroma", "lowlat_encoder", "lowlat_rotation",
 
 [enum]
 prefix_with_name = false
+
+[fn]
+# On every declaration, because a boundary where one call could throw and
+# another could not is a boundary nobody can wrap. Defined in `after_includes`.
+postfix = "LOWLAT_NOEXCEPT"
