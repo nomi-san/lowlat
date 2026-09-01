@@ -3,6 +3,52 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-01 - The public header is spelled and annotated like a C SDK
+
+### Changed
+- **Every type is `typedef enum X { ... } X;` and every use is the bare name.** The
+  enumerations were generated with their width named, which only C23 and C++ have syntax
+  for, so each carried a `__STDC_VERSION__` fork -- a macro left undefined by MSVC in its
+  own default C mode -- and the same name meant an enumeration under one standard and an
+  integer under another. The width that bought is now asserted at compile time in the
+  header's own translation unit, on the three enumerations that are used as types; the other
+  seven only name values of fields carried as plain integers, so their width reaches
+  nothing. The generator ties the tag to the keyword and offers neither alone, so keeping
+  the tags -- which is what lets an application forward-declare a handle -- would have meant
+  `enum lowlat_status` at every signature and every field. The header is post-processed
+  instead, in the same step that regenerates it and compares.
+- **`LOWLAT_NOEXCEPT` on all twenty-nine declarations.** Nothing here unwinds: a panic is
+  caught at the boundary and comes back as a status, so a C++ caller emitting landing pads
+  around every call is paying for an exception that cannot arrive. It expands to `noexcept`
+  in C++ and to nothing in C, and it tests `_MSVC_LANG` first, because MSVC reports
+  `__cplusplus` as 199711L unless it is asked not to and the annotation would have been
+  silently dropped on the compiler that most wants it.
+- **The documentation is the C toolchain's dialect.** `///` rather than `//`, `@pre` for the
+  caller's obligations and `@ref` for the cross-references. The definitions keep `# Safety`
+  and rustdoc links, which is what clippy and rustdoc read; the translation happens on the
+  way out. The references to these documents also pointed three levels up from where the
+  header lands and now resolve from `include/`.
+
+### Measured
+- **`noexcept` is free at runtime and not free to go without.** The hot loop is identical
+  instruction for instruction and the p50 is 0.901 ns against 0.902 -- the landing pad it
+  removes sits past the return, which is what zero-cost unwinding means. Compiling a
+  translation unit that calls all twenty-nine with something to unwind takes **26.1 ms
+  against 35.5 ms**, and the object is **8.8 KB against 18.0 KB**: no `.gcc_except_table`,
+  no cold unwind code, and a third of the `.eh_frame`.
+- **The width annotation never reached code.** The shared object's `.text` is identical in
+  size and hash with the enumerations generated either way. It only ever described the C
+  side, which is why asserting it there costs nothing to give up.
+
+### Learned
+- **A documentation generator documents a file's members only when the file itself is
+  documented.** Without a `@file` block the header indexed twenty-two structures and nothing
+  else: every function, enumeration, constant and typedef was skipped however carefully it
+  was commented, and every cross-reference into them failed to resolve. Adding one block
+  took the index from twenty-three entities to two hundred and forty-one. This is not
+  visible without running the generator, and it is a hole that outlives whoever wrote the
+  comments.
+
 ## 2026-08-31 - Full chroma, measured against its source rather than looked at
 
 ### Fixed
