@@ -63,6 +63,38 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   visible without running the generator, and it is a hole that outlives whoever wrote the
   comments.
 
+## 2026-09-01 - A declared capability is a preference, and preferences degrade
+
+### Changed
+- **What a guest declares is a preference, and one the host cannot meet ends nobody.** A client
+  offers the codec and both colour axes as "prefer this if the host has it" and follows what the
+  stream turns out to be, so none of them decides whether a guest can be served. Three behaviours
+  followed from reading them as requirements and all three are gone.
+- **The guest that asked is no longer ended when its request will not build.** The reasoning was
+  that a peer rebuilds its decoder the moment it asks and would be holding one for a stream that
+  never arrives; that is true of a peer which cannot decode what it is sent, and a refused
+  preference is not that. With the kick goes the whole mechanism that remembered whose request
+  was being tried. Ending a session over a preference is the one thing a preference must never
+  cost.
+- **A screen is kept and a preference is dropped, not the other way.** A guest that asked to look
+  at another output and landed on hardware that cannot code the running colour was silently put
+  back on the screen it asked to leave -- from its side, the request appeared to do nothing. The
+  axes now come off one at a time on whatever output is current: ten-bit colour, then full
+  chroma, then the second codec. Depth first because it costs the most bytes for the least
+  visible difference, the codec last because dropping it doubles the rate for the same picture.
+  Only a device that refuses the baseline reaches past that, where the screen goes back as the
+  last resort.
+- **What was dropped is remembered against the device.** The guests go on declaring what they
+  prefer, so without it the loop wants the dropped axis back on the very next pass, rebuilds,
+  fails the same way and drops it again -- a stream spending itself rebuilding. It clears when
+  the captured output moves, because what one card refused says nothing about the next.
+
+### Fixed
+- **A declared preference is no longer reported as a decode failure.** The line warning that a
+  guest declaring any of the three bits would decode nothing fired on every ordinary connection;
+  in one live session it warned about a guest that then streamed four hundred pictures without a
+  fault.
+
 ## 2026-08-31 - Full chroma, measured against its source rather than looked at
 
 ### Fixed

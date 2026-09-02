@@ -398,11 +398,36 @@ such a guest is sent a stream it cannot decode.
 so the seated set has to be owned above the encoder rather than rebuilt with it. A loop that
 rebuilt it would find no guests and publish to nobody while every seat still read as streaming.
 
-**A codec the device refuses is not the end of the stream, but it is the end for whoever asked.**
-The encoder that was running a moment ago worked, so the guests that were watching keep their
-picture. The guest that asked does not: a peer rebuilds its decoder the moment it asks rather
-than waiting to be told the request was granted, so it is now holding a decoder for a stream
-that will never arrive, and it is ended with a reason.
+**What a guest declares is a preference, and one the host cannot meet ends nobody.** A client
+offers the codec and both colour axes as "prefer this if the host has it" and follows what the
+stream turns out to be, so none of them decides whether a guest can be served. A configuration
+that will not build has its axes taken off one at a time and the stream carries on:
+
+```
+on a configuration that will not build:
+    drop the highest preference still set -- ten-bit colour, then full chroma,
+      then the second codec -- and try again on the same output
+    remember what was dropped, so the consensus stops asking for it
+    once nothing is left to drop:
+        put back the output, if a request for one is what brought us here
+        otherwise nothing encodes here at all, and every guest is told (6.2)
+```
+
+**Highest first, and the order is not arbitrary.** Depth costs the most bytes for the least
+visible difference, full chroma the next, and the codec is last because dropping it doubles the
+rate for the same picture.
+
+**What was dropped is remembered against the device, not against the guests.** They go on
+declaring what they prefer, so a preference the pipeline just dropped is wanted again on the
+very next pass: the encoder is rebuilt, fails the same way, drops it again, and the stream
+spends itself rebuilding. The memory clears when the captured output moves, because what one
+card refused says nothing about the next.
+
+**A preference is dropped before a screen is.** A guest that asks to look at another output and
+lands on hardware that cannot code the running colour keeps the output and loses the colour.
+Putting the output back instead leaves it on the screen it asked to leave, over a preference,
+and from the guest's side the request simply appears to have done nothing. The screen is what
+was asked for; the colour is what was preferred.
 
 ### §6.2 Ending a session, and saying why
 
