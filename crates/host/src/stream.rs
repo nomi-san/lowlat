@@ -311,12 +311,6 @@ struct Seat {
     /// in the stream that is already running; this asks for a different stream
     /// and is answered by building one.
     reconfigure: AtomicU32,
-    /// Whether this guest's request is the one currently being tried.
-    ///
-    /// Moved here out of [`Seat::reconfigure`] when the request is taken, so
-    /// that a build which then fails can be reported to the guests that asked
-    /// for it and to no others.
-    asked_last: AtomicU32,
     /// Audio packets, loop to guest, in the same shape as the picture ring
     /// beside it: single producer, single consumer, indices into the audio
     /// pool.
@@ -353,7 +347,6 @@ impl Seat {
             refresh: AtomicU32::new(0),
             flags: AtomicU32::new(0),
             reconfigure: AtomicU32::new(0),
-            asked_last: AtomicU32::new(0),
             kick: AtomicI32::new(0),
             audio: Ring::new(),
             wants_raw: AtomicU32::new(0),
@@ -1457,7 +1450,6 @@ impl Seats {
                 // its own initialization landed.
                 seat.flags.store(0, Ordering::Relaxed);
                 seat.reconfigure.store(0, Ordering::Relaxed);
-                seat.asked_last.store(0, Ordering::Relaxed);
                 seat.kick.store(0, Ordering::Relaxed);
                 // **Cleared with the rest of the declaration**, or an arriving
                 // guest is sent whatever encoding the last occupant asked for
@@ -1896,11 +1888,15 @@ fn run(
         };
         match exit {
             Exit::Stopped => return,
-            // **A codec the device refuses is not the end of the stream, but
-            // it is the end for whoever asked.** The encoder that was running
-            // a moment ago worked, so the guests that were watching keep their
-            // picture; the guest that asked has already rebuilt its decoder for
-            // a stream it is never going to receive, and is told so.
+            // **A configuration the device refuses ends nobody.** Every bit a
+            // peer declares is a preference -- the codec as much as the two
+            // colour axes -- so a guest asks for one and takes what the stream
+            // turns out to be. This used to end the guest that asked, on the
+            // reasoning that it had rebuilt its decoder for a stream it would
+            // never receive; that is true of a peer which cannot decode what it
+            // is sent, and none of these are that. What it did instead was end
+            // a session over a preference the host could not meet, which is the
+            // one thing a preference must never cost.
             Exit::Failed(reason) => {
                 // **The output is put back first, because it is the more
                 // recent cause.** A request to capture a different screen is
@@ -1916,7 +1912,6 @@ fn run(
                         back.as_deref().unwrap_or("the first output that is lit")
                     );
                     config.output = back;
-                    kick_asked(shared, &roster.active, reason);
                     continue;
                 }
                 let Some(back) = previous.take() else {
@@ -1954,7 +1949,6 @@ fn run(
                     reason,
                     back
                 );
-                kick_asked(shared, &roster.active, reason);
                 (config.codec, config.ten_bit, config.chroma_444) = back;
             }
             Exit::Rediscover(_) | Exit::Reconfigure(..) => {
@@ -2029,24 +2023,6 @@ enum Exit {
     /// two look identical from here: the loop hands the encoder back and the
     /// display is discovered again.
     Rediscover(&'static str),
-}
-
-/// End the guests that asked for the configuration that could not be built.
-///
-/// **Only they are owed this.** A peer rebuilds its decoder the moment it asks
-/// rather than waiting to be told the request was granted, so a guest whose
-/// request failed is holding a decoder for a stream that will never arrive.
-/// The guests that asked for nothing are still watching the encoder that
-/// worked a moment ago.
-fn kick_asked(shared: &Shared, active: &[Active], reason: i32) {
-    for entry in active {
-        if let Some(seat) = shared.seats.get(entry.seat)
-            && seat.asked_last.swap(0, Ordering::AcqRel) != 0
-        {
-            seat.kick.store(reason, Ordering::Release);
-            let _ = entry.wake.notify();
-        }
-    }
 }
 
 /// End every seated guest, with a reason.
@@ -3284,13 +3260,6 @@ fn encode_loop<E: Encoder + FromDevice>(
         gate,
     } = roster;
     let mut samples: Vec<Sample> = Vec::with_capacity(MAX_SEATS);
-    // Reaching here means an encoder exists, so whatever was asked for was
-    // granted and nobody is owed a refusal for it.
-    for entry in active.iter() {
-        if let Some(seat) = shared.seats.get(entry.seat) {
-            seat.asked_last.store(0, Ordering::Release);
-        }
-    }
     // **The budget is new and the guests are not.** It is rebound when a
     // guest joins or leaves, and a rebuilt encoder is neither, so it would
     // start again at a count of none and read as undivided. Nothing downstream
@@ -4084,13 +4053,7 @@ fn reconfigure_asked(shared: &Shared, active: &[Active]) -> bool {
     let mut asked = false;
     for entry in active {
         if let Some(seat) = shared.seats.get(entry.seat) {
-            let this = seat.reconfigure.swap(0, Ordering::AcqRel) != 0;
-            // Remembered rather than only counted, so a build that fails can
-            // be reported to whoever asked for it.
-            if this {
-                seat.asked_last.store(1, Ordering::Release);
-            }
-            asked |= this;
+            asked |= seat.reconfigure.swap(0, Ordering::AcqRel) != 0;
         }
     }
     asked
@@ -6141,12 +6104,14 @@ mod tests {
         assert_eq!(second.kicked(), Some(status::NO_ROOM));
     }
 
-    /// **Only the guests that asked.** A peer rebuilds its decoder the moment
-    /// it asks rather than waiting to be told, so a guest whose request failed
-    /// holds a decoder for a stream that will never arrive. The guests that
-    /// asked for nothing are still watching an encoder that works.
+    /// **A request that could not be granted ends nobody.**
+    ///
+    /// Every bit a peer declares is a preference, so a guest asks for a codec
+    /// or a colour and takes what the stream turns out to be. Ending it over
+    /// one the host could not meet is the one thing a preference must never
+    /// cost, and this host did exactly that until 2026-09-01.
     #[test]
-    fn a_failed_request_ends_only_whoever_asked_for_it() {
+    fn a_request_that_could_not_be_granted_ends_nobody() {
         let (shared, stream, _arrivals) = parked();
         let asker = stream
             .seats()
@@ -6160,13 +6125,12 @@ mod tests {
 
         asker.request_reconfigure();
         assert!(reconfigure_asked(&shared, &active), "the request was lost");
-        kick_asked(&shared, &active, status::ENCODER_UNAVAILABLE);
 
-        assert_eq!(asker.kicked(), Some(status::ENCODER_UNAVAILABLE));
+        assert_eq!(asker.kicked(), None, "the guest that asked was ended");
         assert_eq!(
             watcher.kicked(),
             None,
-            "a guest that asked for nothing lost its picture"
+            "a guest that asked for nothing was ended"
         );
     }
 
