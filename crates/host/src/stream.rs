@@ -517,6 +517,15 @@ pub(crate) struct Shared {
     /// chroma bit; a peer reads this from the stream declaration and the
     /// bitstream's own sets, so this is what a status reader is owed.
     chroma_444: AtomicU32,
+    /// Preference bits this pipeline tried and could not build.
+    ///
+    /// **A property of the device, so it is sticky until the device changes.**
+    /// Dropped after a failed build and masked out of the consensus from then
+    /// on: without that the guests still declare what they prefer, the loop
+    /// still wants it, and the encoder is rebuilt and fails again on every
+    /// pass. Cleared when the captured output moves, because the next device
+    /// is owed the question afresh.
+    refused: AtomicU32,
 }
 
 /// The pointer as a guest needs to report it, in the captured picture's own
@@ -1238,6 +1247,7 @@ impl Stream {
             colour: AtomicU32::new(0),
             ten_bit: AtomicU32::new(0),
             chroma_444: AtomicU32::new(0),
+            refused: AtomicU32::new(0),
         });
         let (joins, arrivals) = mpsc::channel();
         let (outputs, asked) = mpsc::channel();
@@ -1784,7 +1794,6 @@ fn run(
     let mut roster = Roster::default();
     // Codec and depth together: a reconfiguration settles both, so reverting
     // one and not the other leaves a configuration nobody asked for.
-    let mut previous: Option<(Codec, bool, bool)> = None;
     // **What the capture was on before a guest asked to move it.**
     //
     // Held for the same reason the codec above is: a request that turns out to
@@ -1828,6 +1837,10 @@ fn run(
         // Drained here, where the configuration is owned.
         if let Some(id) = requested(asked) {
             previous_output = Some(config.output.take());
+            // **A different device is owed the question afresh.** What the
+            // last one refused says nothing about this one, and a mask carried
+            // across the move would deny a preference on hardware that has it.
+            shared.refused.store(0, Ordering::Relaxed);
             config.output = id;
             lowlat_common::log_info!(
                 "stream: capturing {}",
@@ -1898,23 +1911,50 @@ fn run(
             // a session over a preference the host could not meet, which is the
             // one thing a preference must never cost.
             Exit::Failed(reason) => {
-                // **The output is put back first, because it is the more
-                // recent cause.** A request to capture a different screen is
-                // the last thing that changed, and unlike a codec it is not
-                // something the device can be asked about beforehand: whether
-                // it works is only known by trying, and the attempt is what
-                // just failed.
+                // **A preference is dropped before a screen is.** What a guest
+                // asked to look at is the thing it asked for; the colour and
+                // the codec are what it would prefer to see it in, and a
+                // device that cannot serve them can still serve the picture.
+                // Put the output back instead and the guest is silently left
+                // on the screen it asked to leave, over a preference -- which
+                // is the wrong one of the two to give up. So the axes come off
+                // one at a time, highest first, on whatever output is current,
+                // and only a device that cannot encode at all reaches past
+                // this. **Remembered as it goes**, because the guests keep
+                // declaring what they prefer and the loop would otherwise want
+                // it back, rebuild, and fail again on every pass.
+                if let Some((bit, dropped)) = degrade(&mut config) {
+                    shared.refused.fetch_or(bit, Ordering::Relaxed);
+                    lowlat_common::log_warn!(
+                        "stream: {} could not be configured here (reason={}), dropping {} and \
+                         staying on {}",
+                        dropped.asked,
+                        reason,
+                        dropped.name,
+                        config
+                            .output
+                            .as_deref()
+                            .unwrap_or("the first output that is lit")
+                    );
+                    continue;
+                }
+                // **Nothing left to drop.** This is the baseline every encoder
+                // in the plan carries, so a device refusing it is a device
+                // that cannot encode; the screen is what goes back now, if a
+                // request for one is what brought us here.
                 if let Some(back) = previous_output.take() {
                     lowlat_common::log_warn!(
-                        "stream: {} could not be captured (reason={}), staying on {}",
+                        "stream: {} encodes nothing (reason={}), staying on {}",
                         config.output.as_deref().unwrap_or("that output"),
                         reason,
                         back.as_deref().unwrap_or("the first output that is lit")
                     );
                     config.output = back;
+                    // A different device is owed the question afresh.
+                    shared.refused.store(0, Ordering::Relaxed);
                     continue;
                 }
-                let Some(back) = previous.take() else {
+                {
                     lowlat_common::log_error!(
                         "stream: no encoder for codec={:?}, ending {} guest(s), reason={}",
                         config.codec,
@@ -1939,17 +1979,7 @@ fn run(
                     roster = Roster::default();
                     std::thread::sleep(IDLE_WAIT);
                     continue;
-                };
-                lowlat_common::log_warn!(
-                    "stream: codec={:?} ten_bit={} chroma_444={} could not be configured \
-                     (reason={}), staying on {:?}",
-                    config.codec,
-                    config.ten_bit,
-                    config.chroma_444,
-                    reason,
-                    back
-                );
-                (config.codec, config.ten_bit, config.chroma_444) = back;
+                }
             }
             Exit::Rediscover(_) | Exit::Reconfigure(..) => {
                 // **Disarmed, because the output it was holding worked.** A
@@ -1969,7 +1999,6 @@ fn run(
                         config.chroma_444,
                         chroma_444
                     );
-                    previous = Some((config.codec, config.ten_bit, config.chroma_444));
                     config.codec = codec;
                     config.ten_bit = ten_bit;
                     config.chroma_444 = chroma_444;
@@ -2023,6 +2052,60 @@ enum Exit {
     /// two look identical from here: the loop hands the encoder back and the
     /// display is discovered again.
     Rediscover(&'static str),
+}
+
+/// What dropping one preference cost, for the line that reports it.
+struct Dropped {
+    /// The configuration as it was asked for, before the axis came off.
+    asked: String,
+    /// What came off, named the way a person reads it.
+    name: &'static str,
+}
+
+/// Take the highest preference this configuration still carries.
+///
+/// **Highest first, and the order is not arbitrary.** Depth costs the most
+/// bytes for the least visible difference, full chroma the next, and the codec
+/// is last because dropping it doubles the rate for the same picture. Answers
+/// the flag bit that came off and what to call it, or nothing once the
+/// configuration is the baseline every encoder in the plan carries: the first
+/// codec, eight bits, half-resolution chroma.
+fn degrade(config: &mut Config) -> Option<(u32, Dropped)> {
+    let asked = format!(
+        "codec={:?} ten_bit={} chroma_444={}",
+        config.codec, config.ten_bit, config.chroma_444
+    );
+    if config.ten_bit {
+        config.ten_bit = false;
+        return Some((
+            lowlat_core::init::FLAG_10BIT,
+            Dropped {
+                asked,
+                name: "ten-bit colour",
+            },
+        ));
+    }
+    if config.chroma_444 {
+        config.chroma_444 = false;
+        return Some((
+            lowlat_core::init::FLAG_COLOR444,
+            Dropped {
+                asked,
+                name: "full chroma",
+            },
+        ));
+    }
+    if config.codec == Codec::H265 {
+        config.codec = Codec::H264;
+        return Some((
+            lowlat_core::init::FLAG_HEVC,
+            Dropped {
+                asked,
+                name: "the second codec",
+            },
+        ));
+    }
+    None
 }
 
 /// End every seated guest, with a reason.
@@ -3388,7 +3471,13 @@ fn encode_loop<E: Encoder + FromDevice>(
         // codec being sent the other until it went away and came back. What
         // every seated guest can decode is the whole of the decision, so a
         // change in it is the trigger.
-        let asked = consensus(shared, active);
+        // **Less what this device already refused.** The guests go on
+        // declaring what they prefer, so without the mask a preference the
+        // pipeline dropped a moment ago is wanted again on the very next pass:
+        // the encoder is rebuilt, fails the same way, drops it again, and the
+        // stream spends itself rebuilding. Cleared when the output moves,
+        // because the refusal belonged to a device rather than to the guests.
+        let asked = consensus(shared, active) & !shared.refused.load(Ordering::Relaxed);
         let wanted = if asked & lowlat_core::init::FLAG_HEVC != 0 {
             Codec::H265
         } else {
@@ -4672,6 +4761,7 @@ mod tests {
                 colour: AtomicU32::new(0),
                 ten_bit: AtomicU32::new(0),
                 chroma_444: AtomicU32::new(0),
+                refused: AtomicU32::new(0),
             });
             let (joins, arrivals) = mpsc::channel();
             let forced = Arc::new(AtomicU32::new(0));
@@ -4744,6 +4834,7 @@ mod tests {
             colour: AtomicU32::new(0),
             ten_bit: AtomicU32::new(0),
             chroma_444: AtomicU32::new(0),
+            refused: AtomicU32::new(0),
         });
         let (joins, arrivals) = mpsc::channel();
         let stream = Stream {
@@ -4753,6 +4844,50 @@ mod tests {
             thread: None,
         };
         (shared, stream, arrivals)
+    }
+
+    /// **The order preferences come off, and that it bottoms out.**
+    ///
+    /// A device that cannot serve the whole configuration is asked for less
+    /// rather than refused, so this walk is what a guest ends up watching when
+    /// its screen is on hardware that codes none of what it asked for. Depth
+    /// goes first because it costs the most bytes for the least visible
+    /// difference and the codec goes last because dropping it doubles the rate
+    /// for the same picture; and it has to stop, or a build that fails at the
+    /// baseline degrades for ever instead of reporting that nothing encodes.
+    #[test]
+    fn preferences_come_off_one_at_a_time_and_stop_at_the_baseline() {
+        let mut config = Config {
+            ten_bit: true,
+            chroma_444: true,
+            ..test_config(Codec::H265)
+        };
+
+        let (bit, dropped) = degrade(&mut config).expect("ten-bit colour comes off first");
+        assert_eq!(bit, lowlat_core::init::FLAG_10BIT);
+        assert_eq!(dropped.name, "ten-bit colour");
+        assert!(!config.ten_bit);
+        assert!(config.chroma_444, "more than one axis came off at once");
+        assert_eq!(config.codec, Codec::H265);
+
+        let (bit, dropped) = degrade(&mut config).expect("full chroma comes off second");
+        assert_eq!(bit, lowlat_core::init::FLAG_COLOR444);
+        assert_eq!(dropped.name, "full chroma");
+        assert!(!config.chroma_444);
+        assert_eq!(config.codec, Codec::H265);
+
+        let (bit, dropped) = degrade(&mut config).expect("the codec comes off last");
+        assert_eq!(bit, lowlat_core::init::FLAG_HEVC);
+        assert_eq!(dropped.name, "the second codec");
+        assert_eq!(config.codec, Codec::H264);
+
+        assert!(
+            degrade(&mut config).is_none(),
+            "the baseline degraded further, so a failure there would never be reported"
+        );
+        assert_eq!(config.codec, Codec::H264);
+        assert!(!config.ten_bit);
+        assert!(!config.chroma_444);
     }
 
     fn test_config(codec: Codec) -> Config {
@@ -4963,6 +5098,7 @@ mod tests {
             colour: AtomicU32::new(0),
             ten_bit: AtomicU32::new(0),
             chroma_444: AtomicU32::new(0),
+            refused: AtomicU32::new(0),
         });
         let (outputs, asked) = mpsc::channel();
         let stream = Stream {
