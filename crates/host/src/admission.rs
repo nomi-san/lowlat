@@ -2236,16 +2236,18 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 asked.refresh_rate,
                 asked.flags
             );
-            // **A peer builds one decoder, from what it declared.** It does
-            // not switch on what arrives, so a guest that asked for a codec
-            // this stream does not produce will fail to decode every frame it
-            // is sent and report a decode error rather than a mismatch. Said
-            // plainly here, because from the wire alone it looks like a
-            // corrupt stream.
+            // **What a peer declares is a preference, not a requirement**, and
+            // every bit here is one: a client offers the codec and the two
+            // colour axes as "prefer this if the host has it" and follows what
+            // the stream turns out to be. So none of this decides whether a
+            // guest can be served, and a line saying it did was reporting a
+            // failure on every ordinary connection -- it fired for a guest that
+            // then streamed for four hundred pictures. Said at all only because
+            // it is what every colour decision downstream is computed from.
             if asked.hevc() || asked.color444() || asked.ten_bit() {
-                lowlat_common::log_warn!(
-                    "guest: attempt={} asked for hevc={} 444={} 10bit={}, and this stream is \
-                     h264 8-bit 4:2:0; nothing it is sent will decode",
+                lowlat_common::log_info!(
+                    "guest: attempt={} prefers hevc={} 444={} 10bit={}; the stream carries what \
+                     every seat can take",
                     args.attempt_id,
                     u8::from(asked.hevc()),
                     u8::from(asked.color444()),
