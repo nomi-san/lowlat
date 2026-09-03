@@ -554,8 +554,9 @@ thirty-two-bit argument, so it needs a narrowing cast and not a comparison again
 | 29 | encoder generation | stream, generation, 0 | v1 |
 | 34 | frame timing | 0, stream, 0, plus 16-byte body | diagnostic |
 
-Three of these have cadences rather than triggers, and the cadences are counted in frames:
-encode latency every 30th frame, the guest list every 120th and only from stream 0.
+Two of these have cadences rather than triggers. Encode latency goes out every 30th frame. The
+guest list is sent on a change of membership and repeated on an interval; see
+[§11.2b](#112b-the-guest-list) for why the interval is measured in time rather than in frames.
 
 **Opcode 10's argument is a status the peer already renders**, from the same enumeration its own
 API reports. Sending a value outside it shows as a blank reason rather than as an error, so a
@@ -620,6 +621,18 @@ number describes a room the reader is not in.
 **A peer cannot ask for this**, so it is sent whenever the room changes -- a guest joining or
 leaving -- and every guest is told, not only the one that moved.
 
+**And repeated on an interval, because what it carries moves.** Membership changes on an event;
+the per-guest telemetry in the body changes continuously and nothing announces it, so a reader
+watching a rate or a round trip needs the message again. **Two seconds, measured in time and not
+in frames.** A frame count is the obvious way to space this and it is wrong on an idle host: a
+still desktop is coded at a frame a second, so a count that means two seconds under load stretches
+to two minutes of stale numbers exactly when a reader is most likely watching. Nothing is sent
+while the room is empty.
+
+**Repeating it is only worth doing once the body is true.** A block of zeros repeated faster is a
+reader painting "no data" over a figure its own messages gave it, more often. The telemetry has to
+be filled first; the interval is what makes it useful afterwards.
+
 **It is load bearing beyond the obvious.** A peer that never receives one does not know what it
 is, and hides whatever depends on knowing, which can be far more than a list of names. Treating
 it as decoration because a stream renders without it is a mistake this project made and paid
@@ -629,6 +642,14 @@ The body is UTF-8 JSON, NUL-terminated and counted with the terminator, exactly 
 [§11.2a](#112a-application-messages) requires. Its shape is an application's, not this
 protocol's: what belongs here is that one exists per guest and carries at least that guest's
 number, its permissions and whether it owns the machine.
+
+**Where the body carries per-guest telemetry, the blocks are per channel and the readers in
+circulation expect a fixed count of them.** Each block describes one channel; the round trip is
+the session's and is repeated into every block that describes a live one. A host that runs fewer
+video streams than the shape allows still emits the full array, with the entries for streams that
+never ran left entirely zero -- the round trip included, since a stream that never opened had no
+path of its own to measure one on. Shortening the array is a shape no reader has a reason to
+expect.
 
 ### §11.3 Video framing
 

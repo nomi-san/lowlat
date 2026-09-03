@@ -122,16 +122,29 @@ rule 2.** A guest is delivered as an array element, an array element cannot usef
 `size` -- the caller walks it by stride -- so `lowlat_guest` is fixed for the major version.
 Metrics are the numbers most likely to grow, so they live where growing them is free.
 
-**One stream, not an array of them.** This host produces one and switches which display feeds
-it, so there is nothing to index.
+**Named channels, not an array of streams.** A number here would be a stream index, and this
+host produces one stream and switches which display feeds it, so there is nothing to index.
+What genuinely differs between these figures is the channel -- control, sound, video -- and
+each gets a `lowlat_channel_metrics` of its own: fragments sent, retransmissions by cause, the
+rate, what the payload cost to produce and what the peer says it costs to decode.
 
-**They report what this host can answer for and nothing else.** A peer's own decode time and how
-many frames it has queued waiting to decode are the peer's to know; reporting either would be
-reporting a number this host made up. What is here is what the congestion controller already
-reads -- outstanding fragments, how many are past due, the measured rate, encode time, the
-smoothed round trip -- plus when each kind of input last arrived, which is the one question an
-application kicking idle guests can ask nobody else. **Zero means never, which is not zero
-milliseconds ago.**
+**Shared figures appear once.** The smoothed round trip is the path's and there is one path
+under every channel, so it sits beside the channels rather than being repeated in each. So does
+the congestion count: video is the only channel a rate controller steers, and a count reported
+against sound or control would be a number with nothing behind it.
+
+**They report what this host can answer for, and one thing it cannot.** How many frames a peer
+has queued waiting to decode is the peer's to know and is not here. Decode time is the
+exception: a peer volunteers it, and this host stores what it was told rather than deriving
+anything, so the field is the peer's own figure and reads zero until one arrives. Everything
+else is what the congestion controller already reads -- outstanding fragments, how many are past
+due, the measured rate, encode time -- plus when each kind of input last arrived, which is the
+one question an application kicking idle guests can ask nobody else. **Zero means never, which
+is not zero milliseconds ago.**
+
+**Counters pin rather than wrap.** They are cumulative for the life of a guest and reported in
+thirty-two bits; a count that wrapped would read as a session that had just started, which is
+wrong by an unknowable amount where the ceiling is wrong by a knowable one.
 
 **There is no separate call to enable or disable a guest's input.** It was declared here and
 removed 2026-08-21 before anything was built against it: it is `lowlat_host_set_permissions`

@@ -3,6 +3,55 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-02 - The roster carries each channel's own numbers
+
+### Fixed
+- **The guest list reported zeros where a reader expected telemetry.** Every metric block in
+  the roster body was filled by a helper that returned a row of zeros, five times per guest,
+  while the numbers those blocks describe were already live one call away. A stock reader
+  paints the roster over the figures its own messages gave it, so the effect was not a
+  missing value but an alternating one: the encode figure flipped to "not reported" and back
+  once a second, because two sources disagreed and only one of them was telling the truth.
+- **Congestion events were counted and never published.** The counter existed in the rate
+  controller and the field existed at the boundary, and nothing joined them, so an
+  application reading what congestion had cost a guest read zero however hard the path was
+  working. The controller lives on the loop's thread and the guest that reports it does not,
+  so the count is published to the seat where the guest can reach it.
+- **A peer's decode time was parsed and dropped.** It is the one figure in a guest's
+  telemetry no host can measure, a stock client volunteers it unprompted, and it was being
+  read off the wire and discarded. It is now stored against the channel it names. **A report
+  that names no kind is taken as video**, which recovers the figure from an older peer that
+  predates the field; no peer sends a kind of zero meaning anything else.
+
+### Changed
+- **`lowlat_metrics` gained a channel dimension, and it is named rather than numbered.** A
+  number would be a stream index, and this host produces one stream and switches which
+  display feeds it. What genuinely differs is the channel, so `control`, `audio` and `video`
+  each carry a `lowlat_channel_metrics`: fragments sent, retransmissions by cause, the rate,
+  what the payload cost to produce, and what the peer says it costs to decode. The figures
+  that are the same across channels stay where they were -- one round trip, because there is
+  one path under all of them, and one congestion count, because video is the only channel a
+  rate controller steers.
+- **The roster is repeated every two seconds, in time rather than in frames.** Membership
+  changes on an event and the message was sent then; the telemetry inside it changes
+  continuously and nothing announced that. A frame count is the obvious spacing and it is
+  wrong here: a still desktop is coded at a frame a second, so a count meaning two seconds
+  under load stretches to two minutes of stale numbers exactly when a reader is watching.
+  Nothing is sent while the room is empty.
+- **The send ring counts fragments beside the bytes it already counted**, on the same terms:
+  a retransmission moves both, because what the counter answers is what the path was made to
+  carry. Reported counters pin at their width rather than wrapping -- a wrap reads as a
+  session that has just started, which is wrong by an unknowable amount.
+- **Sound is timed around its codec**, on the same terms as the picture's figure, so the
+  audio channel reports what its payload cost rather than a zero.
+
+### Verified
+- `cargo clippy --all-targets -- -D warnings` and the full suite green: eight new tests
+  covering the decode report landing on the channel it names, the kind-zero fallback, an
+  unknown kind landing nowhere, a counter pinning rather than wrapping, the fragment count
+  including retransmissions, and the roster body carrying each channel's numbers with the
+  stream array still three long and its unused entries entirely zero.
+
 ## 2026-09-01 - The public header is spelled and annotated like a C SDK
 
 ### Changed
