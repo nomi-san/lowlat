@@ -275,9 +275,20 @@ pub(crate) fn announce_capture(seam: &mut Admission, settings: &Settings, last: 
 /// back to its own idea of the world, and the failure is silence rather than
 /// an error.
 pub(crate) fn announce_guests(seam: &mut Admission) {
-    let guests: Vec<serde_json::Value> = seam
-        .guests()
-        .into_iter()
+    let body = roster(&seam.guests());
+    let reached = seam.send_roster(body.as_bytes());
+    lowlat_common::log_info!("lowlatd: told {reached} guest(s) the roster: {body}");
+}
+
+/// The roster body, built where it can be read back.
+///
+/// **Separate from the sending so the shape can be tested**, which is the
+/// whole reason it exists: what a reader does with one of these is invisible
+/// from here -- it parses it or falls back to its own defaults, and both look
+/// like silence.
+fn roster(guests: &[lowlat::admission::GuestInfo]) -> String {
+    let guests: Vec<serde_json::Value> = guests
+        .iter()
         .map(|guest| {
             serde_json::json!({
                 "_version": 2,
@@ -293,22 +304,60 @@ pub(crate) fn announce_guests(seam: &mut Admission) {
                     "keyboard": guest.permissions.keyboard,
                     "mouse": guest.permissions.pointer,
                 },
-                // **Reported as nothing rather than omitted.** What these
-                // carry is per-guest telemetry this host does not publish yet;
-                // leaving the fields out risks the whole roster being refused.
-                "audio": metrics(),
-                "control": metrics(),
-                "metrics": [metrics(), metrics(), metrics()],
+                // **One block per channel, in the slots the reader expects
+                // them.** The array is the video streams and this host runs
+                // one, so the second and third stay zeroed: a reader indexing
+                // them has no reason to expect a shorter array, and a zeroed
+                // entry is what a stream that never ran looks like.
+                "audio": block(&guest.metrics.audio, guest.metrics.network_ms, 0),
+                "control": block(&guest.metrics.control, guest.metrics.network_ms, 0),
+                "metrics": [
+                    block(
+                        &guest.metrics.video,
+                        guest.metrics.network_ms,
+                        guest.metrics.cg_events,
+                    ),
+                    empty(),
+                    empty(),
+                ],
             })
         })
         .collect();
-    let body = serde_json::Value::Array(guests).to_string();
-    let reached = seam.send_roster(body.as_bytes());
-    lowlat_common::log_info!("lowlatd: told {reached} guest(s) the roster: {body}");
+    serde_json::Value::Array(guests).to_string()
 }
 
-/// One block of per-guest telemetry, all of it zero.
-fn metrics() -> serde_json::Value {
+/// One channel's block of telemetry.
+///
+/// **The round trip is the session's and is repeated into every block**, which
+/// is the shape a reader expects: there is one path under all the channels, and
+/// a block that left the field out would be read as a round trip of zero.
+///
+/// **Congestion events are passed in rather than taken from the channel**,
+/// because only the video channel is rate controlled and a count reported
+/// against sound or control would be a number with no meaning behind it.
+fn block(
+    channel: &lowlat::admission::ChannelMetrics,
+    network_ms: f32,
+    cg_events: u32,
+) -> serde_json::Value {
+    serde_json::json!({
+        "packetsSent": channel.packets_sent,
+        "fastRTs": channel.fast_rts,
+        "slowRTs": channel.slow_rts,
+        "cgEvents": cg_events,
+        "encodeLatency": channel.encode_ms,
+        "decodeLatency": channel.decode_ms,
+        "networkLatency": network_ms,
+        "bitrate": channel.bitrate_mbps,
+    })
+}
+
+/// A stream that never ran, which is every field zero including the round trip.
+///
+/// **Not `block` with a zeroed channel.** A stream this host never opened has
+/// no path of its own to report a round trip for, and the reader it is written
+/// for zero-fills the whole entry rather than half of it.
+fn empty() -> serde_json::Value {
     serde_json::json!({
         "packetsSent": 0,
         "fastRTs": 0,
@@ -549,6 +598,114 @@ fn apply(seam: &mut Admission, body: &[u8], video: &Video) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn one_guest() -> lowlat::admission::GuestInfo {
+        lowlat::admission::GuestInfo {
+            number: 3,
+            attempt: "an-attempt".to_string(),
+            permissions: lowlat::inject::Permissions::default(),
+            owner: false,
+            metrics: lowlat::admission::Metrics {
+                cg_events: 7,
+                network_ms: 12.5,
+                video: lowlat::admission::ChannelMetrics {
+                    packets_sent: 900,
+                    fast_rts: 5,
+                    slow_rts: 2,
+                    bitrate_mbps: 18.5,
+                    encode_ms: 4.25,
+                    decode_ms: 1.75,
+                },
+                audio: lowlat::admission::ChannelMetrics {
+                    packets_sent: 120,
+                    fast_rts: 1,
+                    slow_rts: 0,
+                    bitrate_mbps: 0.125,
+                    encode_ms: 0.05,
+                    decode_ms: 0.5,
+                },
+                control: lowlat::admission::ChannelMetrics {
+                    packets_sent: 40,
+                    fast_rts: 0,
+                    slow_rts: 1,
+                    bitrate_mbps: 0.01,
+                    ..lowlat::admission::ChannelMetrics::default()
+                },
+                ..lowlat::admission::Metrics::default()
+            },
+        }
+    }
+
+    /// **Compared with a tolerance, because the fields are `f32`.** A rate
+    /// widened to `f64` for serialisation is not the decimal literal it was
+    /// written as, and a test that demanded it would fail on a correct value.
+    #[track_caller]
+    fn near(found: &serde_json::Value, want: f64) {
+        let got = found.as_f64().unwrap_or(f64::NAN);
+        assert!(
+            (got - want).abs() < 1e-6,
+            "expected about {want}, found {got}"
+        );
+    }
+
+    /// **The roster carries what the guest is doing, not a row of zeros.** A
+    /// reader paints these over the figures its own messages gave it, so a
+    /// zeroed block does not read as "not reported yet" -- it reads as a
+    /// stream that has stopped, and it alternates with the truth once a
+    /// second.
+    #[test]
+    fn the_roster_carries_each_channels_own_numbers() {
+        let body: serde_json::Value =
+            serde_json::from_str(&roster(&[one_guest()])).expect("valid JSON");
+        let guest = &body[0];
+
+        assert_eq!(guest["metrics"][0]["packetsSent"], 900);
+        near(&guest["metrics"][0]["encodeLatency"], 4.25);
+        near(&guest["metrics"][0]["decodeLatency"], 1.75);
+        near(&guest["metrics"][0]["bitrate"], 18.5);
+        assert_eq!(guest["audio"]["packetsSent"], 120);
+        near(&guest["audio"]["encodeLatency"], 0.05);
+        assert_eq!(guest["control"]["packetsSent"], 40);
+        assert_eq!(guest["control"]["slowRTs"], 1);
+
+        // The round trip is the session's, so every block that describes a
+        // live channel repeats it.
+        near(&guest["audio"]["networkLatency"], 12.5);
+        near(&guest["control"]["networkLatency"], 12.5);
+        near(&guest["metrics"][0]["networkLatency"], 12.5);
+
+        // Congestion is video's alone: nothing else is rate controlled, so a
+        // count against it would be a number with nothing behind it.
+        assert_eq!(guest["metrics"][0]["cgEvents"], 7);
+        assert_eq!(guest["audio"]["cgEvents"], 0);
+        assert_eq!(guest["control"]["cgEvents"], 0);
+    }
+
+    /// **Three entries whether or not there are three streams.** The reader
+    /// this shape is written for indexes the array and has no reason to expect
+    /// a shorter one; a stream that never ran is every field zero, the round
+    /// trip included, because it had no path of its own to measure one on.
+    #[test]
+    fn the_stream_array_stays_three_long_with_the_unused_entries_zeroed() {
+        let body: serde_json::Value =
+            serde_json::from_str(&roster(&[one_guest()])).expect("valid JSON");
+        let streams = body[0]["metrics"].as_array().expect("an array");
+        assert_eq!(streams.len(), 3);
+        for stream in &streams[1..] {
+            for key in [
+                "packetsSent",
+                "fastRTs",
+                "slowRTs",
+                "cgEvents",
+                "encodeLatency",
+                "decodeLatency",
+                "networkLatency",
+                "bitrate",
+            ] {
+                assert_eq!(stream[key].as_f64(), Some(0.0), "{key} on an unused stream");
+            }
+        }
+    }
 
     fn video() -> Video {
         Video {

@@ -66,6 +66,16 @@ const MIN_BITRATE_MBPS: f64 = 1.0;
 /// noticed this late is invisible against a wide-area round trip.
 const IDLE_MS: u64 = 50;
 
+/// How often the room is told what everyone's numbers are.
+///
+/// **A wall-clock interval rather than a frame count.** The reference this
+/// shape is written for re-sends every 120 frames, which is two seconds at
+/// sixty; this host sends one frame a second on a still desktop, where a frame
+/// count would stretch to two minutes of stale numbers exactly when a reader is
+/// most likely watching. The interval is what was meant, so the interval is
+/// what is used.
+const ROSTER_MS: f64 = 2000.0;
+
 /// The address on a readiness marker is ignored by the receiver, so this is a
 /// placeholder rather than anywhere we can be reached. A widely deployed peer
 /// sends this exact value, which is what establishes that it is ignored.
@@ -617,6 +627,9 @@ async fn session_loop(
         seam.occupancy()
     );
 
+    // When the room was last told what everyone's numbers are.
+    let mut rostered = lowlat_common::clock::Time::now();
+
     loop {
         tokio::select! {
             message = client.recv() => {
@@ -753,6 +766,16 @@ async fn session_loop(
         // being captured, and only the loop that rebuilt knows which happened;
         // this notices either, once it has actually landed.
         captured = app::announce_capture(seam, settings, captured);
+
+        // **Repeated, because what it carries moves.** The room's membership
+        // changes on an event and the roster is sent then; the telemetry inside
+        // it changes continuously and nothing announces that, so a reader
+        // watching a rate or a round trip needs the message again. Sent only
+        // while somebody is there to read it.
+        if lowlat_common::clock::elapsed_ms(rostered) >= ROSTER_MS && occupancy(seam) > 0 {
+            rostered = lowlat_common::clock::Time::now();
+            app::announce_guests(seam);
+        }
 
         while let Some(received) = seam.poll_event() {
             // **Said out loud, because the queue is bounded.** An application
