@@ -282,6 +282,12 @@ struct Seat {
     window: AtomicU32,
     /// How many of them the sender's scan called stale.
     stale: AtomicU32,
+    /// Times this guest's controller has cut its rate, since it sat down.
+    ///
+    /// **Published by the loop, because the controller lives there.** The
+    /// guest's own thread is what reports telemetry and has no other way to
+    /// reach the count of what congestion has cost it.
+    cg_events: AtomicU32,
     /// Throughput since the last increase, as `f32` bits. A float in an atomic
     /// rather than a scaled integer, because the controller takes a float and
     /// a fixed-point round trip would quietly change what it is given.
@@ -342,6 +348,7 @@ impl Seat {
             state: AtomicU32::new(seat_state::FREE),
             window: AtomicU32::new(0),
             stale: AtomicU32::new(0),
+            cg_events: AtomicU32::new(0),
             measured_bits: AtomicU32::new(0),
             missed: AtomicU32::new(0),
             refresh: AtomicU32::new(0),
@@ -409,6 +416,12 @@ pub(crate) struct Shared {
     /// its own smoothed figure, because the cadence that reports it is per
     /// guest.
     encode_us: AtomicU32,
+    /// The same for one sound packet, in microseconds.
+    ///
+    /// **One encode serves the whole room here too**, so this is a property of
+    /// the stream rather than of a guest, and every guest reports the same
+    /// figure for its audio channel.
+    audio_encode_us: AtomicU32,
     /// The last published stage report, so a caller can read the numbers
     /// without reaching into the thread that produces them.
     timing: TimingCells,
@@ -773,6 +786,19 @@ impl Shared {
     /// **A slot per encoding, not per guest**: the pool holds the bytes once
     /// and every guest is given the index. A seat whose ring is full keeps its
     /// place and loses this packet, which is what a late packet is worth.
+    /// What the last sound packet cost to encode.
+    pub(crate) fn note_audio_encode(&self, ms: f64) {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "clamped to the range before the conversion"
+        )]
+        self.audio_encode_us.store(
+            (ms * 1000.0).clamp(0.0, f64::from(u32::MAX)) as u32,
+            Ordering::Relaxed,
+        );
+    }
+
     pub(crate) fn publish_audio(&self, raw: bool, payload: &[u8]) {
         let Some(mut writer) = self.audio.acquire() else {
             // Every slot is still held, which means every guest is behind on
@@ -1224,6 +1250,7 @@ impl Stream {
             ),
             sound: SoundCells::new(&config),
             encode_us: AtomicU32::new(0),
+            audio_encode_us: AtomicU32::new(0),
             timing: TimingCells::default(),
             refreshes: RefreshCells::default(),
             suppressed: AtomicU32::new(0),
@@ -1645,6 +1672,25 @@ impl SeatHold {
     /// What the encode-latency message carries, once a guest has smoothed it.
     pub fn encode_latency_ms(&self) -> f64 {
         f64::from(self.shared.encode_us.load(Ordering::Relaxed)) / 1000.0
+    }
+
+    /// The same for the last sound packet, in milliseconds.
+    ///
+    /// **Not smoothed and not reported to the peer.** It is a roster figure
+    /// only; the peer is told about video alone.
+    pub fn audio_encode_latency_ms(&self) -> f64 {
+        f64::from(self.shared.audio_encode_us.load(Ordering::Relaxed)) / 1000.0
+    }
+
+    /// Times congestion has cut this guest's rate since it sat down.
+    ///
+    /// Zero before the loop has ticked once, which is the honest answer: a
+    /// guest that has not been rate controlled yet has lost nothing to it.
+    pub fn cg_events(&self) -> u32 {
+        self.shared
+            .seats
+            .get(self.index)
+            .map_or(0, |seat| seat.cg_events.load(Ordering::Relaxed))
     }
 
     /// This guest asked for a refresh.
@@ -4112,6 +4158,15 @@ fn tick_rate<E: Encoder>(
         // is what keeps the stream unbroken across a reconfigure.
         let _ = encoder.reconfigure(bps);
     }
+    // **Published after the tick, so the count includes this pass.** The
+    // controllers are parallel to `active`, and each one belongs to the seat
+    // at the same index.
+    for (entry, controller) in active.iter().zip(controllers.iter()) {
+        if let Some(seat) = shared.seats.get(entry.seat) {
+            seat.cg_events
+                .store(controller.total_decreases(), Ordering::Relaxed);
+        }
+    }
 }
 
 /// Take a live video change if one was asked for.
@@ -4743,6 +4798,7 @@ mod tests {
                 seats: core::array::from_fn(|_| Seat::new()),
                 pool: Pool::new(slots, max_frame_bytes()),
                 encode_us: AtomicU32::new(0),
+                audio_encode_us: AtomicU32::new(0),
                 timing: TimingCells::default(),
                 refreshes: RefreshCells::default(),
                 suppressed: AtomicU32::new(0),
@@ -4816,6 +4872,7 @@ mod tests {
             seats: core::array::from_fn(|_| Seat::new()),
             pool: Pool::new(POOL_SLOTS, max_frame_bytes()),
             encode_us: AtomicU32::new(0),
+            audio_encode_us: AtomicU32::new(0),
             timing: TimingCells::default(),
             refreshes: RefreshCells::default(),
             suppressed: AtomicU32::new(0),
@@ -5080,6 +5137,7 @@ mod tests {
             seats: core::array::from_fn(|_| Seat::new()),
             pool: Pool::new(2, 64),
             encode_us: AtomicU32::new(0),
+            audio_encode_us: AtomicU32::new(0),
             timing: TimingCells::default(),
             refreshes: RefreshCells::default(),
             suppressed: AtomicU32::new(0),

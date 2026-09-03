@@ -195,7 +195,12 @@ fn publish(shared: &Shared, encoder: &mut Encoder, silence: &mut Silence, frame:
         // **Silence is sent compressed.** The codec collapses it to about a
         // hundredth of the rate on its own, and a peer whose buffer drains pays
         // for it audibly when sound returns.
-        match encoder.encode(frame) {
+        let began = lowlat_common::clock::Time::now();
+        let encoded = encoder.encode(frame);
+        // Measured around the codec alone, on the same terms as the picture's
+        // figure, which is what makes the two comparable in a roster.
+        shared.note_audio_encode(lowlat_common::clock::elapsed_ms(began));
+        match encoded {
             Ok(packet) => shared.publish_audio(false, packet),
             Err(error) => lowlat_common::log_warn!("audio: frame not encoded, error={error}"),
         }
