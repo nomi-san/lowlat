@@ -654,6 +654,35 @@ typedef struct lowlat_host_status {
     char audio_device[LOWLAT_OUTPUT_MAX];
 } lowlat_host_status;
 
+/// What one of a guest's channels is doing.
+///
+/// **Named, not numbered.** A number here would be a stream index, and this
+/// host produces one stream and switches which display feeds it, so there is
+/// nothing to index. What genuinely differs between these figures is the
+/// channel, and there are three of them.
+typedef struct lowlat_channel_metrics {
+    /// Fragments put on the wire, retransmissions included.
+    ///
+    /// Pinned at the ceiling rather than wrapped, because a wrap reads as a
+    /// session that has just started.
+    uint32_t packets_sent;
+    /// Retransmissions the peer asked for, and retransmissions the timeout had
+    /// to find. **The two apart are the loss picture**: a path that reports its
+    /// losses and one that swallows them need different answers.
+    uint32_t fast_rts;
+    uint32_t slow_rts;
+    float bitrate_mbps;
+    /// What this channel's payload cost this host to produce. **Zero on
+    /// control**, which encodes nothing.
+    float encode_ms;
+    /// What the peer says this channel costs it to decode.
+    ///
+    /// **The peer's own figure.** It is the one number here this host cannot
+    /// measure, and it arrives only because a guest volunteers it: zero until
+    /// one has, and zero always on control.
+    float decode_ms;
+} lowlat_channel_metrics;
+
 /// What one guest is doing.
 ///
 /// **Its own structure behind its own call, and that is deliberate.** A guest
@@ -662,8 +691,10 @@ typedef struct lowlat_host_status {
 /// major version. These are the numbers most likely to grow, so they live
 /// where growing them is free.
 ///
-/// **One stream, not three.** This host produces one and switches which
-/// display feeds it, so there is nothing to index.
+/// **Shared figures once, per-channel figures per channel.** The round trip,
+/// the input stamps and the congestion count describe the guest and are here;
+/// the counters and the rates describe one channel and are in each of the
+/// three.
 typedef struct lowlat_metrics {
     /// Set by the caller to `sizeof(lowlat_metrics)`.
     uint32_t size;
@@ -684,11 +715,16 @@ typedef struct lowlat_metrics {
     uint32_t window;
     uint32_t stale;
     /// Times congestion cost this guest rate.
+    ///
+    /// **One count, not one per channel.** Video is the only channel a rate
+    /// controller steers, here and in every peer this talks to.
     uint32_t cg_events;
-    float bitrate_mbps;
-    float encode_ms;
-    /// The smoothed round trip to this peer.
+    /// The smoothed round trip to this peer. **One path, one figure**, which
+    /// is why it is here rather than repeated in each channel.
     float network_ms;
+    lowlat_channel_metrics control;
+    lowlat_channel_metrics audio;
+    lowlat_channel_metrics video;
 } lowlat_metrics;
 
 /// A local candidate for the application to forward.

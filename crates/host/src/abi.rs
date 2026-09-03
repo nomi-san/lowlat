@@ -2122,6 +2122,37 @@ pub unsafe extern "C" fn lowlat_host_send_roster(
     }
 }
 
+/// What one of a guest's channels is doing.
+///
+/// **Named, not numbered.** A number here would be a stream index, and this
+/// host produces one stream and switches which display feeds it, so there is
+/// nothing to index. What genuinely differs between these figures is the
+/// channel, and there are three of them.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct lowlat_channel_metrics {
+    /// Fragments put on the wire, retransmissions included.
+    ///
+    /// Pinned at the ceiling rather than wrapped, because a wrap reads as a
+    /// session that has just started.
+    pub packets_sent: u32,
+    /// Retransmissions the peer asked for, and retransmissions the timeout had
+    /// to find. **The two apart are the loss picture**: a path that reports its
+    /// losses and one that swallows them need different answers.
+    pub fast_rts: u32,
+    pub slow_rts: u32,
+    pub bitrate_mbps: f32,
+    /// What this channel's payload cost this host to produce. **Zero on
+    /// control**, which encodes nothing.
+    pub encode_ms: f32,
+    /// What the peer says this channel costs it to decode.
+    ///
+    /// **The peer's own figure.** It is the one number here this host cannot
+    /// measure, and it arrives only because a guest volunteers it: zero until
+    /// one has, and zero always on control.
+    pub decode_ms: f32,
+}
+
 /// What one guest is doing.
 ///
 /// **Its own structure behind its own call, and that is deliberate.** A guest
@@ -2130,8 +2161,10 @@ pub unsafe extern "C" fn lowlat_host_send_roster(
 /// major version. These are the numbers most likely to grow, so they live
 /// where growing them is free.
 ///
-/// **One stream, not three.** This host produces one and switches which
-/// display feeds it, so there is nothing to index.
+/// **Shared figures once, per-channel figures per channel.** The round trip,
+/// the input stamps and the congestion count describe the guest and are here;
+/// the counters and the rates describe one channel and are in each of the
+/// three.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct lowlat_metrics {
@@ -2154,11 +2187,28 @@ pub struct lowlat_metrics {
     pub window: u32,
     pub stale: u32,
     /// Times congestion cost this guest rate.
+    ///
+    /// **One count, not one per channel.** Video is the only channel a rate
+    /// controller steers, here and in every peer this talks to.
     pub cg_events: u32,
-    pub bitrate_mbps: f32,
-    pub encode_ms: f32,
-    /// The smoothed round trip to this peer.
+    /// The smoothed round trip to this peer. **One path, one figure**, which
+    /// is why it is here rather than repeated in each channel.
     pub network_ms: f32,
+    pub control: lowlat_channel_metrics,
+    pub audio: lowlat_channel_metrics,
+    pub video: lowlat_channel_metrics,
+}
+
+/// One channel's figures, as the boundary reports them.
+fn channel_metrics(from: crate::admission::ChannelMetrics) -> lowlat_channel_metrics {
+    lowlat_channel_metrics {
+        packets_sent: from.packets_sent,
+        fast_rts: from.fast_rts,
+        slow_rts: from.slow_rts,
+        bitrate_mbps: from.bitrate_mbps,
+        encode_ms: from.encode_ms,
+        decode_ms: from.decode_ms,
+    }
 }
 
 /// Read what one guest is doing.
@@ -2210,9 +2260,10 @@ pub unsafe extern "C" fn lowlat_host_get_metrics(
             slot.window = metrics.window;
             slot.stale = metrics.stale;
             slot.cg_events = metrics.cg_events;
-            slot.bitrate_mbps = metrics.bitrate_mbps;
-            slot.encode_ms = metrics.encode_ms;
             slot.network_ms = metrics.network_ms;
+            slot.control = channel_metrics(metrics.control);
+            slot.audio = channel_metrics(metrics.audio);
+            slot.video = channel_metrics(metrics.video);
             LOWLAT_OK
         })
     }
@@ -4045,9 +4096,10 @@ mod metrics_tests {
             window: 0,
             stale: 0,
             cg_events: 0,
-            bitrate_mbps: 0.0,
-            encode_ms: 0.0,
             network_ms: 0.0,
+            control: lowlat_channel_metrics::default(),
+            audio: lowlat_channel_metrics::default(),
+            video: lowlat_channel_metrics::default(),
         }
     }
 

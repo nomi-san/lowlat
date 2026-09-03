@@ -455,12 +455,64 @@ pub(crate) struct Telemetry {
     stale: AtomicU32,
     /// Times the rate this guest is allowed dropped, which is what congestion
     /// costs it.
+    ///
+    /// **One counter, not one per channel.** Only the video channel is rate
+    /// controlled, here and in every peer this talks to, so a per-channel
+    /// count would promise two numbers that can never be anything but zero.
     cg_events: AtomicU32,
-    /// The three rates, as `f32` bits: an atomic float is not portable and the
-    /// bits are.
+    /// The smoothed round trip, as `f32` bits: an atomic float is not portable
+    /// and the bits are.
+    ///
+    /// **One figure for the whole session, not one per channel.** There is one
+    /// path under all of them and one round trip along it.
+    network_bits: AtomicU32,
+    control: ChannelTelemetry,
+    audio: ChannelTelemetry,
+    video: ChannelTelemetry,
+}
+
+/// One channel's share of a guest's telemetry.
+///
+/// **The fields that genuinely differ between channels, and only those.** What
+/// is the same across all of them -- the round trip, the input stamps, the
+/// congestion count -- is held once by [`Telemetry`] rather than repeated
+/// here, so a reader is never left deciding which copy is authoritative.
+#[derive(Debug, Default)]
+pub(crate) struct ChannelTelemetry {
+    packets_sent: AtomicU32,
+    fast_rts: AtomicU32,
+    slow_rts: AtomicU32,
+    /// Rates, as `f32` bits.
     bitrate_bits: AtomicU32,
     encode_bits: AtomicU32,
-    network_bits: AtomicU32,
+    decode_bits: AtomicU32,
+}
+
+/// Which of a guest's channels a figure belongs to.
+///
+/// **Three, because this host runs three.** Control, one video stream and
+/// sound; there is no fourth to name and nothing indexes these by number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Channel {
+    Control,
+    Audio,
+    Video,
+}
+
+/// What one channel measured on a pass.
+///
+/// **A structure rather than five positional arguments**, because four of them
+/// are counts of similar things and a transposition between two of them would
+/// read correctly and report the wrong number forever.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ChannelSample {
+    pub(crate) packets_sent: u64,
+    pub(crate) fast_rts: u64,
+    pub(crate) slow_rts: u64,
+    pub(crate) mbps: f64,
+    /// What this channel's payload cost to produce. Zero on control, which
+    /// encodes nothing.
+    pub(crate) encode_ms: f64,
 }
 
 impl Telemetry {
@@ -476,14 +528,50 @@ impl Telemetry {
         f32::from_bits(cell.load(Ordering::Relaxed))
     }
 
-    /// What the loop measured this pass. `mbps` arrives in the control path's
-    /// mebibits and is stored as the decimal megabits the boundary reports.
-    pub(crate) fn measured(&self, window: u32, stale: u32, mbps: f64, encode_ms: f64, srtt: f64) {
+    /// What the loop measured this pass, for the session as a whole.
+    ///
+    /// The window and the stale count are the video channel's, because that is
+    /// the channel the controller steers; `cg_events` is what that steering
+    /// has cost so far.
+    pub(crate) fn measured(&self, window: u32, stale: u32, cg_events: u32, srtt: f64) {
         self.window.store(window, Ordering::Relaxed);
         self.stale.store(stale, Ordering::Relaxed);
-        Self::store(&self.bitrate_bits, crate::rate::to_decimal_mbps(mbps));
-        Self::store(&self.encode_bits, encode_ms);
+        self.cg_events.store(cg_events, Ordering::Relaxed);
         Self::store(&self.network_bits, srtt);
+    }
+
+    /// The same, for one channel. `mbps` arrives in the control path's
+    /// mebibits and is stored as the decimal megabits the boundary reports.
+    pub(crate) fn channel_measured(&self, at: Channel, sample: ChannelSample) {
+        let cell = self.cell(at);
+        cell.packets_sent
+            .store(saturating(sample.packets_sent), Ordering::Relaxed);
+        cell.fast_rts
+            .store(saturating(sample.fast_rts), Ordering::Relaxed);
+        cell.slow_rts
+            .store(saturating(sample.slow_rts), Ordering::Relaxed);
+        Self::store(
+            &cell.bitrate_bits,
+            crate::rate::to_decimal_mbps(sample.mbps),
+        );
+        Self::store(&cell.encode_bits, sample.encode_ms);
+    }
+
+    /// What the peer said one of its decoders costs it.
+    ///
+    /// **The peer's own number, stored rather than derived.** It is the one
+    /// figure in a guest's telemetry this host cannot measure, and the only
+    /// reason it can be reported at all is that the guest volunteers it.
+    pub(crate) fn decoded(&self, at: Channel, ms: f64) {
+        Self::store(&self.cell(at).decode_bits, ms);
+    }
+
+    fn cell(&self, at: Channel) -> &ChannelTelemetry {
+        match at {
+            Channel::Control => &self.control,
+            Channel::Audio => &self.audio,
+            Channel::Video => &self.video,
+        }
     }
 
     /// Note that this guest's loop has begun, and when.
@@ -546,18 +634,63 @@ impl Telemetry {
             window: self.window.load(Ordering::Relaxed),
             stale: self.stale.load(Ordering::Relaxed),
             cg_events: self.cg_events.load(Ordering::Relaxed),
-            bitrate_mbps: Self::load(&self.bitrate_bits),
-            encode_ms: Self::load(&self.encode_bits),
             network_ms: Self::load(&self.network_bits),
+            control: Self::read_channel(&self.control),
+            audio: Self::read_channel(&self.audio),
+            video: Self::read_channel(&self.video),
+        }
+    }
+
+    fn read_channel(cell: &ChannelTelemetry) -> ChannelMetrics {
+        ChannelMetrics {
+            packets_sent: cell.packets_sent.load(Ordering::Relaxed),
+            fast_rts: cell.fast_rts.load(Ordering::Relaxed),
+            slow_rts: cell.slow_rts.load(Ordering::Relaxed),
+            bitrate_mbps: Self::load(&cell.bitrate_bits),
+            encode_ms: Self::load(&cell.encode_bits),
+            decode_ms: Self::load(&cell.decode_bits),
         }
     }
 }
 
+/// A cumulative counter, narrowed to what a reader reports it in.
+///
+/// **Saturating rather than wrapping.** A count that wraps reads as a session
+/// that just started, and the counts here climb for as long as a guest is
+/// connected; pinning at the ceiling is wrong by a knowable amount, where a
+/// wrap is wrong by an unknowable one.
+fn saturating(count: u64) -> u32 {
+    u32::try_from(count).unwrap_or(u32::MAX)
+}
+
+/// One channel's telemetry, as a reader sees it.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ChannelMetrics {
+    /// Fragments put on the wire, retransmissions included.
+    pub packets_sent: u32,
+    /// Retransmissions the peer asked for, and retransmissions the timeout had
+    /// to find. The two apart are the difference between a path that reports
+    /// its losses and one that swallows them.
+    pub fast_rts: u32,
+    pub slow_rts: u32,
+    pub bitrate_mbps: f32,
+    /// What this channel's payload cost this host to produce. **Zero on
+    /// control**, which encodes nothing.
+    pub encode_ms: f32,
+    /// What the peer says this channel costs it to decode.
+    ///
+    /// **The peer's figure, not ours.** Zero until it has volunteered one, and
+    /// zero forever on control, which is not decoded.
+    pub decode_ms: f32,
+}
+
 /// One guest's telemetry, as a reader sees it.
 ///
-/// **What this host can answer for, and nothing else.** A peer's own decode
-/// time and how many frames it has queued are the peer's to know; a host that
-/// reported either would be reporting a number it made up.
+/// **Shared figures once, per-channel figures per channel.** The round trip,
+/// the input stamps and the congestion count describe the guest; the counters
+/// and rates describe one channel of it, and this host runs three. Nothing
+/// here is indexed by number, because a number would be a stream index this
+/// host does not have.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct Metrics {
     pub connected_ms: u32,
@@ -573,11 +706,15 @@ pub struct Metrics {
     /// "chronically behind" means.
     pub window: u32,
     pub stale: u32,
+    /// Times congestion cost this guest rate. **Video only**: it is the one
+    /// channel a rate controller steers.
     pub cg_events: u32,
-    pub bitrate_mbps: f32,
-    pub encode_ms: f32,
-    /// The smoothed round trip to this peer.
+    /// The smoothed round trip to this peer. **One path, one figure**, which
+    /// is why it is here rather than repeated in each channel.
     pub network_ms: f32,
+    pub control: ChannelMetrics,
+    pub audio: ChannelMetrics,
+    pub video: ChannelMetrics,
 }
 
 /// Something the application asked of one running guest.
@@ -1372,6 +1509,8 @@ struct Consumers<'a> {
     /// nothing" from "the peer sent something we ignored", and those two have
     /// completely different causes.
     census: &'a mut [bool; 256],
+    /// Where a figure only the peer can measure is recorded.
+    telemetry: &'a Telemetry,
 }
 
 fn drain_control<S: lowlat_inject::event::Sink>(
@@ -1387,6 +1526,7 @@ fn drain_control<S: lowlat_inject::event::Sink>(
         said,
         mut ear,
         census,
+        telemetry,
     } = consumers;
     loop {
         let Some(taken) = session.take_message(CONTROL_CHANNEL, inbound) else {
@@ -1421,6 +1561,23 @@ fn drain_control<S: lowlat_inject::event::Sink>(
         // to the application and to nothing else here.
         if let Some((id, text)) = control::user_data(&message) {
             said((id, text.to_vec()));
+        }
+        // **What the peer says its decoder costs it**, which is the one number
+        // in a guest's telemetry no host can measure. The arguments are
+        // transposed against the outbound form -- microseconds first, then the
+        // kind -- and reading it with the outbound layout yields a latency of
+        // nothing.
+        //
+        // **Kind zero is taken as video.** An older peer reports one and names
+        // no kind at all; accepting it recovers a figure that would otherwise
+        // be discarded, and no peer sends a zero meaning anything else.
+        if message.opcode == control::op::ENCODE_LATENCY {
+            let ms = f64::from(message.a0) / 1000.0;
+            match message.a1 {
+                0 | 1 => telemetry.decoded(Channel::Video, ms),
+                2 => telemetry.decoded(Channel::Audio, ms),
+                _ => {}
+            }
         }
         // **Said once per opcode, not once per message.** A peer sends tens of
         // thousands of these; what is worth a line is the first of each kind.
@@ -1940,6 +2097,9 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     // What sound has cost this guest, and what its channel is carrying.
     let mut sound = AudioSent::default();
     let mut sound_rate = Throughput::default();
+    // What this guest's control channel is carrying. Small and bursty, and the
+    // roster reports it because a stock reader has a field for it.
+    let mut control_rate = Throughput::default();
     let mut reported_ms = 0.0f64;
     // The resend counters at the last report, so the line carries per-window
     // deltas, and the widest acknowledgement silence seen since it.
@@ -2132,6 +2292,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                     },
                     ear: ear.as_mut(),
                     census: &mut census,
+                    telemetry: &args.telemetry,
                 },
             )
         {
@@ -2469,10 +2630,52 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             args.telemetry.measured(
                 window,
                 stale,
-                measured,
-                seat.encode_latency_ms(),
+                seat.cg_events(),
                 shell.endpoint().session().srtt_ms(),
             );
+            args.telemetry.channel_measured(
+                Channel::Video,
+                ChannelSample {
+                    packets_sent: pressure.packets_sent,
+                    fast_rts: pressure.nack_resends,
+                    slow_rts: pressure.timeout_resends,
+                    mbps: measured,
+                    encode_ms: seat.encode_latency_ms(),
+                },
+            );
+            // **The other two channels on the same pass**, from the rings that
+            // already carry the counters. A roster that describes only the
+            // video channel says nothing about a peer whose sound has stopped
+            // or whose control traffic is backing up, and those are different
+            // faults with different causes.
+            let session = shell.endpoint().session();
+            if let Some(pressure) = session.send_pressure(AUDIO_CHANNEL) {
+                args.telemetry.channel_measured(
+                    Channel::Audio,
+                    ChannelSample {
+                        packets_sent: pressure.packets_sent,
+                        fast_rts: pressure.nack_resends,
+                        slow_rts: pressure.timeout_resends,
+                        mbps: sound_rate.sample(pressure.bytes_sent, now),
+                        encode_ms: seat.audio_encode_latency_ms(),
+                    },
+                );
+            }
+            if let Some(pressure) = session.send_pressure(CONTROL_CHANNEL) {
+                args.telemetry.channel_measured(
+                    Channel::Control,
+                    ChannelSample {
+                        packets_sent: pressure.packets_sent,
+                        fast_rts: pressure.nack_resends,
+                        slow_rts: pressure.timeout_resends,
+                        mbps: control_rate.sample(pressure.bytes_sent, now),
+                        // Nothing encodes control traffic and nothing decodes
+                        // it into a picture, so both figures stay zero here as
+                        // they do in every peer this talks to.
+                        encode_ms: 0.0,
+                    },
+                );
+            }
 
             // **The line a live run is read from.** Frames leaving, the window
             // the gate is judging, and what the path is actually carrying: a
@@ -3561,10 +3764,144 @@ mod geometry {
                 said: &mut |_| {},
                 ear: None,
                 census: &mut [false; 256],
+                telemetry: &Telemetry::default(),
             },
         )
         .expect("drained");
         negotiation
+    }
+
+    /// The same, reporting what the peer's messages left in a guest's
+    /// telemetry rather than what they left in the negotiation.
+    fn telemetry_from_peer(messages: &[Control<'_>]) -> Metrics {
+        let mut ours = Arena::new();
+        let mut ours = ours.session();
+        let mut theirs = Arena::new();
+        let mut theirs = theirs.session();
+        for message in messages {
+            theirs
+                .send_message(CONTROL_CHANNEL, &[], &control_bytes(message))
+                .expect("queue");
+        }
+        pump(&mut theirs, &mut ours, 1.0);
+
+        let telemetry = Telemetry::default();
+        let mut negotiation = Negotiation::opened(0.0);
+        let mut inbound = vec![0u8; MAX_INBOUND];
+        drain_control(
+            &mut ours,
+            &mut negotiation,
+            NO_INPUT,
+            no_pointer(),
+            &mut inbound,
+            Consumers {
+                count: &mut 0,
+                said: &mut |_| {},
+                ear: None,
+                census: &mut [false; 256],
+                telemetry: &telemetry,
+            },
+        )
+        .expect("drained");
+        telemetry.read()
+    }
+
+    /// **The one figure a host cannot measure, kept rather than dropped.** A
+    /// peer volunteers what its decoder costs it, and the arguments are
+    /// transposed against the outbound form: microseconds first, then the kind.
+    /// Reading it with the outbound layout yields a latency of nothing, which
+    /// is exactly what it looked like before.
+    #[test]
+    fn a_peers_decode_report_lands_on_the_channel_it_names() {
+        let read = telemetry_from_peer(&[
+            Control {
+                a0: 1922,
+                a1: 1,
+                a2: 0,
+                opcode: op::ENCODE_LATENCY,
+                body: &[],
+            },
+            Control {
+                a0: 4000,
+                a1: 2,
+                a2: 0,
+                opcode: op::ENCODE_LATENCY,
+                body: &[],
+            },
+        ]);
+        assert!(
+            (read.video.decode_ms - 1.922).abs() < 1e-4,
+            "video decode was {}",
+            read.video.decode_ms
+        );
+        assert!(
+            (read.audio.decode_ms - 4.0).abs() < 1e-4,
+            "audio decode was {}",
+            read.audio.decode_ms
+        );
+        assert!(
+            read.control.decode_ms.abs() < f32::EPSILON,
+            "control is not decoded and must not carry a figure"
+        );
+    }
+
+    /// An older peer reports a decode time and names no kind at all. Taking
+    /// the zero as video recovers a figure that would otherwise be discarded,
+    /// and no peer sends a zero meaning anything else.
+    #[test]
+    fn a_decode_report_with_no_kind_is_taken_as_video() {
+        let read = telemetry_from_peer(&[Control {
+            a0: 2500,
+            a1: 0,
+            a2: 0,
+            opcode: op::ENCODE_LATENCY,
+            body: &[],
+        }]);
+        assert!(
+            (read.video.decode_ms - 2.5).abs() < 1e-4,
+            "video decode was {}",
+            read.video.decode_ms
+        );
+    }
+
+    /// A kind this host does not know is passed over rather than landing
+    /// somewhere. The protocol is additive, and guessing which channel a new
+    /// kind belongs to would report a number against the wrong one.
+    #[test]
+    fn a_decode_report_of_an_unknown_kind_lands_nowhere() {
+        let read = telemetry_from_peer(&[Control {
+            a0: 9000,
+            a1: 7,
+            a2: 0,
+            opcode: op::ENCODE_LATENCY,
+            body: &[],
+        }]);
+        assert!(read.video.decode_ms.abs() < f32::EPSILON);
+        assert!(read.audio.decode_ms.abs() < f32::EPSILON);
+        assert!(read.control.decode_ms.abs() < f32::EPSILON);
+    }
+
+    /// **A count that wraps reads as a session that just started.** The
+    /// transport counters are cumulative and sixty-four bit; what a reader is
+    /// given is thirty-two, and pinning it at the ceiling is wrong by a
+    /// knowable amount where a wrap is wrong by an unknowable one.
+    #[test]
+    fn a_counter_past_the_reported_width_pins_rather_than_wraps() {
+        let telemetry = Telemetry::default();
+        telemetry.channel_measured(
+            Channel::Video,
+            ChannelSample {
+                packets_sent: u64::from(u32::MAX) + 1,
+                fast_rts: 3,
+                slow_rts: 4,
+                mbps: 0.0,
+                encode_ms: 0.0,
+            },
+        );
+        let read = telemetry.read();
+        assert_eq!(read.video.packets_sent, u32::MAX);
+        assert_eq!(read.video.fast_rts, 3);
+        assert_eq!(read.video.slow_rts, 4);
     }
 
     /// A control message longer than the old 64 KiB take buffer but inside
@@ -3610,6 +3947,7 @@ mod geometry {
                 said: &mut |said| heard = Some(said),
                 ear: None,
                 census: &mut [false; 256],
+                telemetry: &Telemetry::default(),
             },
         )
         .expect("a message inside the protocol ceiling ended the attempt");
@@ -3712,6 +4050,7 @@ mod geometry {
                 said: &mut |_| {},
                 ear: None,
                 census: &mut [false; 256],
+                telemetry: &Telemetry::default(),
             },
         )
         .expect("drained");
@@ -3998,6 +4337,7 @@ mod geometry {
                 said: &mut |_| {},
                 ear: None,
                 census: &mut [false; 256],
+                telemetry: &Telemetry::default(),
             },
         )
         .expect("drained");
@@ -4136,6 +4476,7 @@ mod geometry {
                     said: &mut |_| {},
                     ear: None,
                     census: &mut [false; 256],
+                    telemetry: &Telemetry::default(),
                 }
             ),
             Err(Outcome::ControlStalled),
