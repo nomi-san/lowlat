@@ -91,6 +91,8 @@ pub struct SendRing<'a> {
     /// to carry rather than what was usefully delivered, and the rate
     /// controller is deciding how much more the path can take.
     bytes_sent: u64,
+    /// Fragments handed to the wire, on the same terms as `bytes_sent`.
+    packets_sent: u64,
     /// Fragments the peer has acknowledged since the ring was created.
     acked: u64,
     /// Payload bytes the peer's cumulative acknowledgements have covered.
@@ -133,6 +135,7 @@ impl<'a> SendRing<'a> {
             stale: 0,
             peer_depth: depth,
             bytes_sent: 0,
+            packets_sent: 0,
             acked: 0,
             acked_bytes: 0,
             nack_resends: 0,
@@ -214,6 +217,14 @@ impl<'a> SendRing<'a> {
     /// between the read and the clear.
     pub fn bytes_sent(&self) -> u64 {
         self.bytes_sent
+    }
+
+    /// Fragments sent on this channel since the ring was created.
+    ///
+    /// **Counted where the bytes are**, so the two describe the same traffic:
+    /// a retransmission moves both, and neither is reset.
+    pub fn packets_sent(&self) -> u64 {
+        self.packets_sent
     }
 
     /// Next sequence that will be assigned.
@@ -465,6 +476,7 @@ impl<'a> SendRing<'a> {
             }
             self.outstanding = self.outstanding.saturating_add(1);
             self.bytes_sent = self.bytes_sent.saturating_add(u64::from(slot.len));
+            self.packets_sent = self.packets_sent.saturating_add(1);
 
             self.classify(index, now_ms, srtt_ms, level);
             self.cursor = self.cursor.wrapping_add(1);
@@ -908,6 +920,24 @@ mod tests {
         );
         ring.on_ack(&ack_with(4, false, 3), 250.0);
         assert_eq!(ring.acked_bytes(), 20);
+    }
+
+    /// The fragment count and the byte count describe the same traffic, so a
+    /// retransmission moves both. A counter that skipped resends would report
+    /// fewer packets than the path was actually made to carry.
+    #[test]
+    fn sent_fragments_are_counted_beside_the_bytes() {
+        let mut storage = Storage::new();
+        let mut ring = storage.ring();
+        for _ in 0..4 {
+            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+        }
+        drain(&mut ring, 0.0, 10.0);
+        assert_eq!(ring.packets_sent(), 4);
+
+        ring.on_ack(&ack_with(2, false, 1), 5.0);
+        assert_eq!(drain(&mut ring, 200.0, 10.0), std::vec![2, 3]);
+        assert_eq!(ring.packets_sent(), 6, "the two retransmissions count");
     }
 
     /// Resends are counted by cause: a negative acknowledgement's fast
