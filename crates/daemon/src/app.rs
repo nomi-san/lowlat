@@ -345,11 +345,23 @@ fn block(
         "fastRTs": channel.fast_rts,
         "slowRTs": channel.slow_rts,
         "cgEvents": cg_events,
-        "encodeLatency": channel.encode_ms,
-        "decodeLatency": channel.decode_ms,
-        "networkLatency": network_ms,
-        "bitrate": channel.bitrate_mbps,
+        "encodeLatency": number(channel.encode_ms),
+        "decodeLatency": number(channel.decode_ms),
+        "networkLatency": number(network_ms),
+        "bitrate": number(channel.bitrate_mbps),
     })
+}
+
+/// A figure a reader can parse, whatever arrived here.
+///
+/// **A number that is not finite is written as a null, and a null costs the
+/// whole roster.** The readers this body is written for require every one of
+/// these keys to be a JSON number and abandon the entire guest list -- every
+/// guest, not the one bad block -- when one is not, taking with it everything
+/// the roster gates. Nothing upstream produces a NaN or an infinity today, and
+/// this is what keeps that from being load bearing.
+fn number(value: f32) -> f32 {
+    if value.is_finite() { value } else { 0.0 }
 }
 
 /// A stream that never ran, which is every field zero including the round trip.
@@ -679,6 +691,40 @@ mod tests {
         assert_eq!(guest["metrics"][0]["cgEvents"], 7);
         assert_eq!(guest["audio"]["cgEvents"], 0);
         assert_eq!(guest["control"]["cgEvents"], 0);
+    }
+
+    /// **A number the reader cannot parse costs the whole roster, not one
+    /// field.** Its parser requires seven of the eight keys to be JSON
+    /// numbers and abandons the entire guest list -- every guest, not just the
+    /// bad block -- when one is not. A non-finite float serialises as `null`,
+    /// which is a token and not a number, so one NaN anywhere would delete the
+    /// room from the reader's view and take the panels the roster gates with
+    /// it. Nothing upstream produces one today; this is here so that nothing
+    /// upstream ever can.
+    #[test]
+    fn a_figure_that_is_not_a_number_never_reaches_the_body() {
+        let mut guest = one_guest();
+        guest.metrics.network_ms = f32::NAN;
+        guest.metrics.video.bitrate_mbps = f32::INFINITY;
+        guest.metrics.audio.encode_ms = f32::NEG_INFINITY;
+        guest.metrics.control.decode_ms = f32::NAN;
+
+        let body: serde_json::Value = serde_json::from_str(&roster(&[guest])).expect("valid JSON");
+        let g = &body[0];
+        let mut checked = 0;
+        for block in [&g["audio"], &g["control"]]
+            .into_iter()
+            .chain(g["metrics"].as_array().expect("an array"))
+        {
+            for (key, value) in block.as_object().expect("an object") {
+                assert!(value.is_number(), "{key} is {value}, which is not a number");
+                checked += 1;
+            }
+        }
+        assert_eq!(
+            checked, 40,
+            "five blocks of eight keys were not all checked"
+        );
     }
 
     /// **Three entries whether or not there are three streams.** The reader
