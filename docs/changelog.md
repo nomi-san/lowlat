@@ -3,6 +3,26 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-03 - A fragment is counted once, and the congestion count is proven to arrive
+
+### Changed
+- **The published fragment count takes first transmissions only.** It counted every write,
+  retransmissions included, which made it grow with the very counters a reader divides it by:
+  a loss rate computed from it read low, and read lower the worse the loss got. The byte
+  counter still takes both, because that one answers what the path was made to carry and is
+  what the rate controller steers on. The two now mean different things deliberately, and
+  both say so.
+
+### Verified
+- **The congestion count is published, and the check has been shown to fail.** The
+  controllers live on the encode loop's thread and the guest that reports telemetry does not,
+  so the seat is the only path between them -- and every live run so far read zero, because
+  nothing congested. A count that has never moved is indistinguishable from a publish that
+  never happens. The test drives a congested window through the real tick and reads the count
+  back through the handle a guest holds; removing the publish makes it fail, and it holds the
+  total across a clean pass, because what a guest reports is what congestion has cost it for
+  the whole session rather than on the last frame.
+
 ## 2026-09-03 - A roster figure is always a number, and per-frame timing is deferred
 
 ### Fixed
