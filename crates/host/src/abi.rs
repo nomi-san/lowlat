@@ -2131,8 +2131,10 @@ pub unsafe extern "C" fn lowlat_host_send_roster(
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct lowlat_channel_metrics {
-    /// Fragments put on the wire, retransmissions included.
+    /// Distinct fragments put on the wire.
     ///
+    /// **First transmissions only**, so the resend counters below divide into
+    /// this as a loss rate rather than as a ratio of two overlapping counts.
     /// Pinned at the ceiling rather than wrapped, because a wrap reads as a
     /// session that has just started.
     pub packets_sent: u32,

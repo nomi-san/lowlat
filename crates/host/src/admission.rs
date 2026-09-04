@@ -666,7 +666,8 @@ fn saturating(count: u64) -> u32 {
 /// One channel's telemetry, as a reader sees it.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub struct ChannelMetrics {
-    /// Fragments put on the wire, retransmissions included.
+    /// Distinct fragments put on the wire. **First transmissions only**, so
+    /// the resend counters below divide into it as a loss rate.
     pub packets_sent: u32,
     /// Retransmissions the peer asked for, and retransmissions the timeout had
     /// to find. The two apart are the difference between a path that reports

@@ -661,8 +661,10 @@ typedef struct lowlat_host_status {
 /// nothing to index. What genuinely differs between these figures is the
 /// channel, and there are three of them.
 typedef struct lowlat_channel_metrics {
-    /// Fragments put on the wire, retransmissions included.
+    /// Distinct fragments put on the wire.
     ///
+    /// **First transmissions only**, so the resend counters below divide into
+    /// this as a loss rate rather than as a ratio of two overlapping counts.
     /// Pinned at the ceiling rather than wrapped, because a wrap reads as a
     /// session that has just started.
     uint32_t packets_sent;
