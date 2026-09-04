@@ -3,6 +3,32 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-03 - A roster figure is always a number, and per-frame timing is deferred
+
+### Fixed
+- **A figure that is not a number would have cost the whole roster, not one field.** The
+  readers this body is written for require every metric key to be a JSON number and abandon
+  the entire guest list -- every guest, not the one bad block -- when one is not, taking with
+  it everything the roster gates. A non-finite float serialises as a null, which is a token
+  and not a number, so a single NaN anywhere would have deleted the room from a reader's view.
+  Nothing upstream produces one; a non-finite figure is now written as zero at the boundary so
+  that this can never become load bearing, and the test feeds one through five blocks and
+  asserts all forty values survive as numbers.
+
+### Deferred
+- **Per-frame timing telemetry ([01 §11.2](01-protocol.md)) is not implemented, deliberately.**
+  It is the only source for six of the series a reader's performance graph draws -- video
+  total, capture and frame time, and the three audio equivalents -- and those read zero
+  against this host. It is diagnostic only: nothing renders, decodes or steers on it, the
+  ordinary stats a reader shows come from the roster and the encode-latency message, and both
+  are now correct. Two things must be settled before it is written, and neither is settled:
+  the flag that gates emission is received and ignored, so a reader asking for the telemetry
+  currently gets no answer either way; and **the order of the four video values is not
+  established** -- the order recorded in §11.2 and the order a reader's own structure holds
+  them in disagree on the last two, so implementing from either today would ship three correct
+  series and one silently transposed. The audio form carries three values and has the same
+  question.
+
 ## 2026-09-02 - The roster carries each channel's own numbers
 
 ### Fixed
