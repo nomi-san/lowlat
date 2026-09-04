@@ -4985,6 +4985,75 @@ mod tests {
         }
     }
 
+    /// **A count nothing publishes is a count nobody can read, and a healthy
+    /// session cannot tell the two apart.** The controllers live on the loop's
+    /// thread and the guest that reports telemetry does not, so the seat is
+    /// the only path between them. Every live run so far read zero here
+    /// because nothing congested -- which is exactly the state in which a
+    /// publish that never happens looks correct.
+    ///
+    /// Both links in one test: the loop stores what the controller counted,
+    /// and the handle a guest holds reads it back.
+    #[test]
+    fn congestion_events_reach_the_seat_a_guest_reads() {
+        let (shared, stream, _joins) = parked();
+        let wake = lowlat_net::Wake::new().expect("wake");
+        let hold = stream
+            .seats()
+            .take(
+                wake.handle().expect("handle"),
+                wake.handle().expect("a second handle"),
+            )
+            .expect("a free seat");
+        let active = [seat_of(0)];
+        let mut guests = std::vec![gate::Guest::joining(10.0)];
+        let mut controllers = std::vec![Controller::new(1, 1.0, 10.0)];
+        let mut samples = Vec::new();
+        let mut budget = Budget::new(10.0, 1.0);
+        let mut encoder = fake_encoder();
+
+        assert_eq!(hold.cg_events(), 0, "nothing has been rate controlled yet");
+
+        // Past the window floor and well over the stale ratio, which together
+        // are what "chronically behind" means to the controller. A window
+        // inside the floor is never congested however stale it is, so a test
+        // that used one would pass on a controller that had stopped working.
+        let seat = shared.seats.first().expect("a seat");
+        seat.window.store(200, Ordering::Relaxed);
+        seat.stale.store(100, Ordering::Relaxed);
+        tick_rate(
+            &shared,
+            &active,
+            &mut guests,
+            &mut controllers,
+            &mut samples,
+            &mut budget,
+            &mut encoder,
+        );
+
+        assert_eq!(
+            controllers[0].total_decreases(),
+            1,
+            "the first congested tick did not cut"
+        );
+        assert_eq!(hold.cg_events(), 1, "the cut never reached the seat");
+
+        // And a clean pass publishes the same total rather than clearing it:
+        // what a guest reports is what congestion has cost it for the whole
+        // session, not what it cost on the last frame.
+        seat.stale.store(0, Ordering::Relaxed);
+        tick_rate(
+            &shared,
+            &active,
+            &mut guests,
+            &mut controllers,
+            &mut samples,
+            &mut budget,
+            &mut encoder,
+        );
+        assert_eq!(hold.cg_events(), 1, "a clean pass reset the count");
+    }
+
     fn seat_of(index: usize) -> Active {
         let wake = lowlat_net::Wake::new().expect("wake");
         Active {
