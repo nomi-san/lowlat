@@ -114,7 +114,8 @@ pub struct Pressure {
     pub stale: u32,
     /// Payload bytes handed to the wire, retransmissions included.
     pub bytes_sent: u64,
-    /// Fragments handed to the wire, on the same terms as `bytes_sent`.
+    /// Distinct fragments put on the wire. **First transmissions only**,
+    /// unlike `bytes_sent`.
     pub packets_sent: u64,
     /// Payload bytes the peer's cumulative acknowledgements have covered.
     pub acked_bytes: u64,

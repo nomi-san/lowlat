@@ -91,7 +91,12 @@ pub struct SendRing<'a> {
     /// to carry rather than what was usefully delivered, and the rate
     /// controller is deciding how much more the path can take.
     bytes_sent: u64,
-    /// Fragments handed to the wire, on the same terms as `bytes_sent`.
+    /// Fragments put on the wire for the first time.
+    ///
+    /// **Retransmissions do not count**, which is the opposite of
+    /// `bytes_sent` and is deliberate: this is the denominator a reader
+    /// divides the resend counters by, and a denominator that grows with its
+    /// own numerator understates every loss rate it is used for.
     packets_sent: u64,
     /// Fragments the peer has acknowledged since the ring was created.
     acked: u64,
@@ -219,10 +224,12 @@ impl<'a> SendRing<'a> {
         self.bytes_sent
     }
 
-    /// Fragments sent on this channel since the ring was created.
+    /// Distinct fragments sent on this channel since the ring was created.
     ///
-    /// **Counted where the bytes are**, so the two describe the same traffic:
-    /// a retransmission moves both, and neither is reset.
+    /// **First transmissions only.** A retransmission moves `bytes_sent` and
+    /// one of the resend counters and adds nothing here, so `nack_resends`
+    /// over this is a loss rate rather than a ratio of two counts that
+    /// overlap.
     pub fn packets_sent(&self) -> u64 {
         self.packets_sent
     }
@@ -476,7 +483,9 @@ impl<'a> SendRing<'a> {
             }
             self.outstanding = self.outstanding.saturating_add(1);
             self.bytes_sent = self.bytes_sent.saturating_add(u64::from(slot.len));
-            self.packets_sent = self.packets_sent.saturating_add(1);
+            if !resent {
+                self.packets_sent = self.packets_sent.saturating_add(1);
+            }
 
             self.classify(index, now_ms, srtt_ms, level);
             self.cursor = self.cursor.wrapping_add(1);
@@ -922,11 +931,13 @@ mod tests {
         assert_eq!(ring.acked_bytes(), 20);
     }
 
-    /// The fragment count and the byte count describe the same traffic, so a
-    /// retransmission moves both. A counter that skipped resends would report
-    /// fewer packets than the path was actually made to carry.
+    /// **First transmissions only, where the byte count takes both.** The two
+    /// answer different questions: the bytes are what the path was made to
+    /// carry, and the fragments are the denominator a reader divides the
+    /// resend counters by. Counting a resend in both would make every loss
+    /// rate derived from them read low, and read lower the worse the loss got.
     #[test]
-    fn sent_fragments_are_counted_beside_the_bytes() {
+    fn sent_fragments_count_first_transmissions_only() {
         let mut storage = Storage::new();
         let mut ring = storage.ring();
         for _ in 0..4 {
@@ -934,10 +945,21 @@ mod tests {
         }
         drain(&mut ring, 0.0, 10.0);
         assert_eq!(ring.packets_sent(), 4);
+        assert_eq!(ring.bytes_sent(), 20);
 
         ring.on_ack(&ack_with(2, false, 1), 5.0);
         assert_eq!(drain(&mut ring, 200.0, 10.0), std::vec![2, 3]);
-        assert_eq!(ring.packets_sent(), 6, "the two retransmissions count");
+        assert_eq!(
+            ring.packets_sent(),
+            4,
+            "a retransmission was counted as a fragment sent"
+        );
+        assert_eq!(ring.bytes_sent(), 30, "the bytes take both");
+        assert_eq!(
+            ring.timeout_resends(),
+            2,
+            "and the resends are counted once"
+        );
     }
 
     /// Resends are counted by cause: a negative acknowledgement's fast
