@@ -140,12 +140,36 @@ struct Outcome {
     decreases: u32,
 }
 
-/// The path for a run: a loss rate and, where the profile wants it, a
-/// capacity cap in mebibits per second.
-#[derive(Debug, Clone, Copy, Default)]
+/// The jitter every loss and capacity profile has always run at, kept as the
+/// default so those trajectories mean what they did before the field existed.
+const JITTER_MS: f64 = 2.0;
+
+/// The path for a run: a loss rate, the delay spread, an optional reorder,
+/// and where the profile wants it a capacity cap in mebibits per second.
+#[derive(Debug, Clone, Copy)]
 struct Profile {
     loss: f64,
     capacity_mibps: f64,
+    /// Uniform delay spread. **Reorders fragments on its own** once it exceeds
+    /// one fragment interval, which at these rates it does easily.
+    jitter_ms: f64,
+    /// Probability a datagram is held back behind later ones, and for how
+    /// long: reorder without any delay spread, so the two causes can be told
+    /// apart.
+    reorder: f64,
+    reorder_ms: f64,
+}
+
+impl Default for Profile {
+    fn default() -> Self {
+        Self {
+            loss: 0.0,
+            capacity_mibps: 0.0,
+            jitter_ms: JITTER_MS,
+            reorder: 0.0,
+            reorder_ms: 0.0,
+        }
+    }
 }
 
 /// Run `duration_ms` of stream at `profile`, ticking `mode`, and report it.
@@ -158,7 +182,9 @@ fn run(seed: u64, profile: Profile, duration_ms: f64, mode: Mode) -> Outcome {
     let link = Link {
         loss: profile.loss,
         one_way_ms: 10.0,
-        jitter_ms: 2.0,
+        jitter_ms: profile.jitter_ms,
+        reorder: profile.reorder,
+        reorder_ms: profile.reorder_ms,
         // Mibit/s to bytes per millisecond.
         capacity_bytes_per_ms: profile.capacity_mibps * 1_048_576.0 / 8.0 / 1000.0,
         ..Link::default()
@@ -362,8 +388,8 @@ fn trajectories_under_a_capacity_cap() {
             let outcome = run(
                 0xCA90,
                 Profile {
-                    loss: 0.0,
                     capacity_mibps: capacity,
+                    ..Profile::default()
                 },
                 60_000.0,
                 mode,
@@ -379,6 +405,112 @@ fn trajectories_under_a_capacity_cap() {
             );
         }
     }
+}
+
+/// **The control every loss predicate has to survive: a path that loses
+/// nothing.**
+///
+/// Jitter reorders fragments once it exceeds one fragment interval, which at
+/// these rates it does easily -- at 30 Mibit/s and 1193-byte fragments the
+/// sender emits roughly three thousand a second, so two milliseconds spans
+/// several. A receiver names a stored fragment more than two past its
+/// frontier as a negative acknowledgement, so reorder alone produces
+/// retransmissions, and any predicate reading a raw resend rate cannot tell
+/// them from loss.
+///
+/// Three paths, all delivering everything: still, jittered, and explicitly
+/// reordered without any delay spread so the two causes are separable.
+///
+/// **The incumbent is the control on the first two and is asserted to hold.**
+/// On the third it does not, and that is its own finding rather than the
+/// predicate's fault: two percent of datagrams held five milliseconds behind
+/// later ones blocks the receiver's frontier for that long each time, the
+/// send window fills behind the gap, and the stale ratio trips. Delivery is
+/// genuinely stalled there, so backing off is defensible -- but a lossless
+/// path cut to a fifth is worth knowing about before anything else is judged
+/// against this profile. Printed, not asserted.
+#[test]
+fn trajectories_under_jitter_and_reorder() {
+    // The third member says whether the incumbent is expected to hold: a
+    // profile it cannot is still worth printing, but it is not a control.
+    let profiles = [
+        (
+            "still     ",
+            Profile {
+                jitter_ms: 0.0,
+                ..Profile::default()
+            },
+            true,
+        ),
+        ("jitter 2ms", Profile::default(), true),
+        (
+            "reorder 2%",
+            Profile {
+                jitter_ms: 0.0,
+                reorder: 0.02,
+                reorder_ms: 5.0,
+                ..Profile::default()
+            },
+            false,
+        ),
+    ];
+    for (name, profile, incumbent_holds) in profiles {
+        for mode in [Mode::Incumbent, Mode::LossRate, Mode::GoodputPeak] {
+            let outcome = run(0x1177, profile, 30_000.0, mode);
+            println!(
+                "{name} {mode:?}: final={:.2} Mibit/s offered={:.2} delivered={:.2}                  decreases={} below_mean={:.0} ms",
+                outcome.final_mbps,
+                outcome.offered_mbps,
+                outcome.delivered_mbps,
+                outcome.decreases,
+                outcome.below_mean_ms
+            );
+            if mode == Mode::Incumbent && incumbent_holds {
+                assert_eq!(
+                    outcome.decreases, 0,
+                    "{name}: the incumbent cut on a path that lost nothing, so the rows \
+                     beside it are measuring the harness rather than a predicate"
+                );
+            }
+        }
+    }
+}
+
+/// **The finding this profile exists to hold: the loss-rate predicate as
+/// shaped in the improvements plan throttles a path that loses nothing.**
+///
+/// Two milliseconds of delay spread, no loss, no cap. That spread exceeds one
+/// fragment interval at this rate, so fragments arrive out of order, a
+/// receiver names one more than two past its frontier as a negative
+/// acknowledgement, and a predicate reading a raw resend rate counts it as
+/// loss. The incumbent holds at the ceiling on the same traffic.
+///
+/// **This test fails when the predicate is reshaped, and that is the point.**
+/// Hysteresis, an average over more than one window, or excluding
+/// reorder-driven negative acknowledgements would each stop the false cut;
+/// when one of them lands, this assertion is what says so, and it wants
+/// rewriting into the new expectation rather than deleting.
+#[test]
+fn the_loss_rate_candidate_false_cuts_on_jitter_alone() {
+    let profile = Profile::default();
+    let incumbent = run(0x1177, profile, 30_000.0, Mode::Incumbent);
+    let candidate = run(0x1177, profile, 30_000.0, Mode::LossRate);
+
+    assert_eq!(
+        incumbent.decreases, 0,
+        "the control moved: this profile is not clean and proves nothing"
+    );
+    assert!(
+        candidate.decreases > 0,
+        "the loss-rate predicate no longer false-cuts on jitter; rewrite this test \
+         and revisit the improvements plan's loss-rate item"
+    );
+    assert!(
+        candidate.final_mbps < incumbent.final_mbps / 2.0,
+        "the false cut is no longer severe: incumbent={:.2} candidate={:.2}",
+        incumbent.final_mbps,
+        candidate.final_mbps
+    );
 }
 
 /// The incumbent's cut under pure loss is the timeout's doing, not the
