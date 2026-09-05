@@ -355,6 +355,11 @@ silently discards whole datagrams and presents as "control works, video does not
 immediate answer to any accepted receive -- was wrong. There are two floors sharing one
 timestamp, and the cadence bullet below is the rewrite.
 
+**Correction (2026-09-06).** This section called the retransmission timeout exponential in the
+retry count. It is linear. The formula was always stated correctly; only the description of it
+was wrong, so no implementation changed -- but "exponential" implies a backoff that
+self-limits, and this one does not.
+
 - **Sequence arithmetic is RFC 1982 everywhere.** A naive 32-bit comparison inverts at wrap,
   which arrives in roughly 15 days of continuous high-rate video. Every comparison of
   sequence, base, and cumulative acknowledgement uses signed difference.
@@ -367,7 +372,7 @@ timestamp, and the cadence bullet below is the rewrite.
   acknowledgement sent resets the one clock both floors read.
 - **Round trip estimate** is an exponentially weighted moving average, `rtt = rtt * 0.9 +
   sample * 0.1`, sampled when an acknowledgement clears a slot carrying a send timestamp.
-- **Retransmission timeout** is per fragment and exponential in its retry count:
+- **Retransmission timeout** is per fragment and linear in its retry count:
 
   ```
   rto = clamp(2 * (retransmissions + 1) * srtt, 50 ms, 1000 ms)
@@ -376,6 +381,11 @@ timestamp, and the cadence bullet below is the rewrite.
 
   The 30 ms is a flat grace on top of the clamp, not part of it. Note this is **not** derived
   from the congestion level table; that table serves a different purpose (§10).
+
+  **Each retry adds one `2 * srtt`, so the series is 2, 4, 6, 8 times the round trip and not a
+  doubling.** On a fast path the 50 ms floor swallows the multiply until `(n + 1) * srtt`
+  passes 25 ms, so the timeout barely backs off at all and the outstanding cap above is what
+  actually bounds retransmission.
 - **Negative acknowledgement** (`0x10` with `0x02`) triggers fast retransmission of everything
   below the named sequence, without waiting for the timeout. **Once per fragment per
   acknowledgement**, tracked by a latch on the fragment, so a burst of nacks cannot turn into a

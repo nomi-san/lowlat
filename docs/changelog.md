@@ -3,6 +3,25 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-06 - The retransmission timeout is linear, and the spec called it exponential
+
+### Fixed
+- **The retransmission timeout was described as exponential in the retry count. It is linear.**
+  The formula in §9 was always stated correctly and always implemented correctly, so no
+  behaviour changes; only the description of it was wrong. Each retry adds one `2 * srtt`, so
+  the series runs 2, 4, 6, 8 times the round trip rather than doubling. §9 now says so, names
+  the series, and points at the outstanding fragment cap as what actually bounds
+  retransmission -- on a fast path the 50 ms floor swallows the multiply until
+  `(n + 1) * srtt` passes 25 ms, so the timeout barely backs off at all.
+- **The word was load-bearing, which is why it is worth an entry.** "Exponential" implies a
+  backoff that self-limits. This one does not, and any future change that filters round-trip
+  samples would be relying on exactly that property to carry the timer while samples are dry.
+
+### Testing
+- **The regression test asserted only that the timeout grows, which an exponential
+  implementation also satisfies.** It now pins the constant step between successive retries,
+  and was confirmed to fail against a doubling `rto_ms` before being taken.
+
 ## 2026-09-04 - Staleness asks whether the path got slower, not whether it is slow
 
 ### Changed
