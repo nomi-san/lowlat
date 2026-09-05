@@ -440,9 +440,25 @@ Levels:
 | 2 | 0.35 | `srtt * 1.5 + 50 ms` | Tolerates more delay before counting a fragment stale. |
 
 **The staleness threshold is not a retransmission timer** (§9). It classifies an outstanding
-fragment as stale for the purpose of the ratio above. A fragment counts as stale if it is older
-than the threshold, or if the smoothed round trip has grown past its own budget scaled the same
-way, or if it has already been retransmitted, fast-retransmitted, or deferred.
+fragment as stale for the purpose of the ratio above. A fragment counts as stale on any of:
+
+- it is older than the threshold, measured from its most recent send;
+- **the smoothed round trip has grown past the round trip that held when this fragment was
+  queued**, scaled by the same multiplier and constant;
+- it has already been retransmitted, fast-retransmitted, or deferred.
+
+**The second clause asks whether the path got slower, not whether it is slow.** Each fragment
+carries the round trip as it stood at the moment it was queued, and is judged against that.
+The baseline is stamped once and never restamped, so a fragment the outstanding cap held back
+is compared against the path from before the queue built -- which is the comparison worth
+making about it. A fixed budget in that place answers a different question, one that is true
+of a bad path from its first frame and never true of a good path going bad; the second is the
+case this clause exists for.
+
+It also carries a counterweight the first clause needs. Round-trip samples are taken from a
+fragment's first send and are not filtered, so retransmissions inflate the smoothed figure
+during congestion, which loosens the first clause exactly when it should tighten. An inflating
+round trip tightens this one by the same motion, because it is measured against its own past.
 
 **Where `stale` comes from.** The retransmission scan produces it as a side effect of walking
 the outstanding fragments, and writes it where the controller reads it. The two are one loop
