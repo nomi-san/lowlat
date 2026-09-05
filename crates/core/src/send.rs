@@ -874,8 +874,15 @@ mod tests {
         // Floor and ceiling both apply before the grace is added.
         assert!((SendRing::rto_ms(0, 0.1) - (RTO_FLOOR_MS + RTO_GRACE_MS)).abs() < 1e-9);
         assert!((SendRing::rto_ms(200, 100.0) - (RTO_CEILING_MS + RTO_GRACE_MS)).abs() < 1e-9);
-        // Exponential in the retry count between the bounds.
-        assert!(SendRing::rto_ms(3, 40.0) > SendRing::rto_ms(1, 40.0));
+        // **Linear in the retry count between the bounds, not exponential.**
+        // Each retry adds one `2 * srtt`, so successive timeouts differ by a
+        // constant; a doubling would pass a bare `grows` check and fail this.
+        let step = SendRing::rto_ms(1, 40.0) - SendRing::rto_ms(0, 40.0);
+        assert!((step - 80.0).abs() < 1e-9);
+        for n in 1..5u16 {
+            let delta = SendRing::rto_ms(n + 1, 40.0) - SendRing::rto_ms(n, 40.0);
+            assert!((delta - step).abs() < 1e-9);
+        }
     }
 
     #[test]
