@@ -22,6 +22,23 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   implementation also satisfies.** It now pins the constant step between successive retries,
   and was confirmed to fail against a doubling `rto_ms` before being taken.
 
+## 2026-09-06 - A guest's line says what it was allowed and what it was coded in
+
+### Changed
+- **The rate allowance and the codec are on each guest's progress line.** A guest's picture is
+  decided by the two together, and a room that gains a less capable guest changes both at
+  once: the rate divides by the room, and the codec drops to whatever every seated guest can
+  decode. Neither was visible from the rate a guest actually used, so a session where one
+  guest's picture got worse because a *different* guest arrived read as a mystery. The
+  allowance is published where it is decided, beside the congestion count.
+
+### Not changed, deliberately
+- **The rate reported to a guest is still the undivided one.** That key is also how a guest
+  asks for a change, and the request is applied as given. Reporting the divided figure would
+  have a client's panel echo it back as the new configured rate, so every guest that joined
+  would ratchet the room down toward the floor. The wire figure means "the rate you may ask
+  for"; the log line is where what a guest gets is stated.
+
 ## 2026-09-04 - Staleness asks whether the path got slower, not whether it is slow
 
 ### Changed
