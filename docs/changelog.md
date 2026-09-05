@@ -3,6 +3,20 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-04 - A fragment delivered out of order is counted as delivered
+
+### Fixed
+- **The delivered-bytes figure dropped a fragment every time the peer named one ahead of its
+  cumulative count.** A receiver may name a fragment it stored out of order while still
+  missing something below it; the sender clears that fragment there, which took it out of the
+  walk that sums what the cumulative advance covered, so its payload never reached the figure
+  at all. One fragment per such acknowledgement -- and they happen precisely under the loss
+  and reorder that the delivered figure is read for, so the offered-against-delivered picture
+  read worse than the path actually was. On a clean in-order path nothing names a fragment
+  ahead of the cumulative, delivered tracked offered exactly, and the defect was invisible.
+  The bytes are now counted where the fragment leaves the outstanding set; the two regions are
+  disjoint, so nothing is counted twice.
+
 ## 2026-09-03 - A fragment is counted once, and the congestion count is proven to arrive
 
 ### Changed
