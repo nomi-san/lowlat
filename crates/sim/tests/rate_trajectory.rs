@@ -93,8 +93,15 @@ struct LossMeter {
 
 impl LossMeter {
     /// The window's loss as a ratio of resends to first sends, then reset.
+    ///
+    /// **The denominator is the fragment counter, not bytes divided by a slot
+    /// size.** That derivation carried two errors pulling opposite ways: it
+    /// counted retransmitted bytes, which grows the denominator with the
+    /// numerator, and it charged a short tail fragment as a fraction of one,
+    /// which shrinks it. Which error dominates depends on the rate the
+    /// controller has landed on, so the sign of the bias was not even fixed.
     fn take(&mut self, pressure: &lowlat_core::session::Pressure) -> f64 {
-        let first = pressure.bytes_sent / SLOT as u64;
+        let first = pressure.packets_sent;
         let new_first = first.saturating_sub(self.first_sends);
         let resends = pressure
             .nack_resends
