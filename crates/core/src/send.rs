@@ -297,10 +297,11 @@ impl<'a> SendRing<'a> {
         if seq::gt(cumulative, self.base) && seq::le(cumulative, self.next) {
             // **Delivered payload bytes: what the advance covers and still
             // holds.** A slot the trigger path already cleared is not counted
-            // twice, and one the receiver abandoned by escaping a stall
-            // counts anyway -- this side cannot tell it apart from
-            // delivered. The walk is bounded by the advance and each step is
-            // a read.
+            // twice -- it was counted there, at the moment it left the
+            // occupied set ahead of the base -- and one the receiver
+            // abandoned by escaping a stall counts anyway, which this side
+            // cannot tell apart from delivered. The walk is bounded by the
+            // advance and each step is a read.
             let mut covered = 0u64;
             let mut sequence = self.base;
             while seq::lt(sequence, cumulative) {
@@ -351,12 +352,23 @@ impl<'a> SendRing<'a> {
             return None;
         }
         let index = self.index(ack.trigger_seq);
+        // **Whether the advance above has already counted this fragment.**
+        // The cumulative walk covers everything below the new base and skips
+        // whatever is no longer occupied, so a fragment cleared here at or
+        // past the base would never be counted by anything. Read before the
+        // slot is borrowed, and the two regions are disjoint: below the base
+        // the walk had it, at or above the base only this does.
+        let ahead = seq::ge(ack.trigger_seq, self.base);
         let slot = self.meta.get_mut(index)?;
         if !slot.occupied || !slot.sent {
             return None;
         }
         let sample = now_ms - slot.first_sent_ms;
+        let delivered = u64::from(slot.len);
         slot.occupied = false;
+        if ahead {
+            self.acked_bytes = self.acked_bytes.saturating_add(delivered);
+        }
         if sample.is_finite() && sample >= 0.0 {
             Some(sample)
         } else {
@@ -929,6 +941,62 @@ mod tests {
         );
         ring.on_ack(&ack_with(4, false, 3), 250.0);
         assert_eq!(ring.acked_bytes(), 20);
+    }
+
+    /// **A fragment the trigger names ahead of the cumulative is delivered,
+    /// and its bytes must be counted where they leave the occupied set.**
+    ///
+    /// The trigger may name a fragment past the cumulative -- the peer stored
+    /// it out of order while still missing something below it, and `cumack + 2`
+    /// is the threshold for calling that a loss, never a bound on what may be
+    /// named. Clearing the slot there takes it out of the walk that counts
+    /// delivery, so without the trigger-path add its payload is lost from the
+    /// figure for good: one fragment per such acknowledgement, and they happen
+    /// precisely under the loss and reorder the delivered figure is read for.
+    #[test]
+    fn a_fragment_named_ahead_of_the_cumulative_still_counts_as_delivered() {
+        let mut storage = Storage::new();
+        let mut ring = storage.ring();
+        for _ in 0..4 {
+            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+        }
+        drain(&mut ring, 0.0, 10.0);
+        assert_eq!(ring.bytes_sent(), 20, "four fragments of five bytes");
+
+        // Names 2 while the cumulative has only reached 1: delivered out of
+        // order, and the slot is cleared here rather than by the walk.
+        ring.on_ack(&ack_with(1, false, 2), 5.0);
+        // Then the cumulative passes it. The walk finds the slot already
+        // clear and steps over it.
+        ring.on_ack(&ack_with(4, false, 3), 10.0);
+
+        assert_eq!(
+            ring.acked_bytes(),
+            20,
+            "a fragment named ahead of the cumulative was dropped from the delivered bytes"
+        );
+    }
+
+    /// The other half of the same discriminator: a trigger the walk has
+    /// already covered is counted once, not twice. Without this the fix for
+    /// the far-ahead case reads long instead of short, which is the same
+    /// defect with the sign flipped.
+    #[test]
+    fn a_fragment_named_below_the_cumulative_counts_once() {
+        let mut storage = Storage::new();
+        let mut ring = storage.ring();
+        for _ in 0..4 {
+            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+        }
+        drain(&mut ring, 0.0, 10.0);
+
+        // The advance covers 0 and 1; the trigger names 1, inside it.
+        ring.on_ack(&ack_with(2, false, 1), 5.0);
+        assert_eq!(
+            ring.acked_bytes(),
+            10,
+            "the covered trigger was counted twice"
+        );
     }
 
     /// **First transmissions only, where the byte count takes both.** The two
