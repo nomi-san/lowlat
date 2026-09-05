@@ -117,7 +117,7 @@ fn send_ring_enqueue_and_drain_do_not_allocate() {
 
     alloc_counter::assert_no_alloc(|| {
         let message = Message::new(&[], &payload).unwrap();
-        ring.enqueue(&message).unwrap();
+        ring.enqueue(&message, 0.0).unwrap();
         ring.begin_pass();
         while let Some(result) = ring.poll_send(0.0, 10.0, 1, &mut out) {
             std::hint::black_box(result.unwrap());

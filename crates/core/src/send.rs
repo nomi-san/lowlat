@@ -26,8 +26,6 @@ const RTO_FLOOR_MS: f64 = 50.0;
 const RTO_CEILING_MS: f64 = 1000.0;
 /// Flat grace added after the clamp, not part of it.
 const RTO_GRACE_MS: f64 = 30.0;
-/// Per-fragment budget used by the second staleness clause.
-const SLOT_BUDGET_MS: f64 = 100.0;
 
 /// Bookkeeping for one outstanding fragment.
 ///
@@ -45,6 +43,15 @@ pub struct SendSlot {
     retransmits: u16,
     first_sent_ms: f64,
     last_sent_ms: f64,
+    /// The smoothed round trip at the moment this fragment was queued.
+    ///
+    /// **The baseline the second staleness clause is judged against**, so the
+    /// question that clause asks is whether the path has got slower since
+    /// this fragment went out rather than whether it is slow in absolute
+    /// terms. It is stamped once and never restamped: a fragment the
+    /// outstanding cap holds back carries the round trip from before the
+    /// queue built, which is exactly the comparison worth making about it.
+    srtt_at_enqueue_ms: f64,
 }
 
 impl Default for SendSlot {
@@ -58,6 +65,7 @@ impl Default for SendSlot {
             retransmits: 0,
             first_sent_ms: 0.0,
             last_sent_ms: 0.0,
+            srtt_at_enqueue_ms: 0.0,
         }
     }
 }
@@ -247,7 +255,7 @@ impl<'a> SendRing<'a> {
     ///
     /// Nothing is emitted here. The fragments become pending, and the scan
     /// releases them subject to the outstanding cap.
-    pub fn enqueue(&mut self, message: &Message<'_>) -> Result<u32> {
+    pub fn enqueue(&mut self, message: &Message<'_>, srtt_ms: f64) -> Result<u32> {
         let capacity = self.slot_len;
         let fragments = message.fragment_count(capacity);
         if fragments > self.window_free() {
@@ -272,6 +280,7 @@ impl<'a> SendRing<'a> {
                 len: u16::try_from(fragment.len).map_err(|_| Error::BadLength)?,
                 occupied: true,
                 last: fragment.last,
+                srtt_at_enqueue_ms: srtt_ms,
                 ..SendSlot::default()
             };
         }
@@ -521,7 +530,7 @@ impl<'a> SendRing<'a> {
         let age = now_ms - slot.last_sent_ms;
         let threshold = level.rtt_mult * srtt_ms + level.base_ms;
         let is_stale = age > threshold
-            || srtt_ms > level.rtt_mult * SLOT_BUDGET_MS + level.base_ms
+            || srtt_ms > level.rtt_mult * slot.srtt_at_enqueue_ms + level.base_ms
             || slot.retransmits > 0
             || slot.nack_resent
             || !slot.sent;
@@ -605,7 +614,8 @@ mod tests {
         let mut storage = Storage::new();
         let mut ring = storage.ring();
         for _ in 0..8 {
-            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+            ring.enqueue(&Message::new(&[], b"x").unwrap(), 0.0)
+                .unwrap();
         }
         drain(&mut ring, 0.0, 10.0);
         assert_eq!(ring.in_flight(), 8, "nothing has been acknowledged yet");
@@ -628,7 +638,8 @@ mod tests {
         let mut storage = Storage::new();
         let mut ring = storage.ring();
         for _ in 0..4 {
-            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+            ring.enqueue(&Message::new(&[], b"x").unwrap(), 0.0)
+                .unwrap();
         }
         drain(&mut ring, 0.0, 10.0);
         let before = ring.in_flight();
@@ -666,7 +677,7 @@ mod tests {
         let mut ring = storage.ring();
         let payload = [7u8; 100];
         let message = Message::new(&[], &payload).unwrap();
-        assert_eq!(ring.enqueue(&message).unwrap(), 4);
+        assert_eq!(ring.enqueue(&message, 0.0).unwrap(), 4);
         assert_eq!(ring.in_flight(), 4);
         assert_eq!(drain(&mut ring, 0.0, 10.0), std::vec![0, 1, 2, 3]);
         // Already sent and not yet due: a second pass emits nothing.
@@ -679,7 +690,7 @@ mod tests {
         let mut ring = storage.ring();
         let payload = [1u8; 100];
         let message = Message::new(&[], &payload).unwrap();
-        ring.enqueue(&message).unwrap();
+        ring.enqueue(&message, 0.0).unwrap();
 
         let mut out = [0u8; 128];
         let mut flags = Vec::new();
@@ -701,7 +712,7 @@ mod tests {
         // One fragment per message keeps the arithmetic obvious.
         for _ in 0..SLOTS {
             let message = Message::new(&[], b"x").unwrap();
-            ring.enqueue(&message).unwrap();
+            ring.enqueue(&message, 0.0).unwrap();
         }
         assert_eq!(ring.in_flight(), SLOTS as u32);
 
@@ -724,11 +735,13 @@ mod tests {
         let mut ring = storage.ring();
 
         for _ in 0..FLOOR {
-            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+            ring.enqueue(&Message::new(&[], b"x").unwrap(), 0.0)
+                .unwrap();
         }
         assert_eq!(ring.window_free(), 0, "the floor did not bound the window");
         assert!(
-            ring.enqueue(&Message::new(&[], b"y").unwrap()).is_err(),
+            ring.enqueue(&Message::new(&[], b"y").unwrap(), 0.0)
+                .is_err(),
             "ran past the floor against an unidentified peer"
         );
 
@@ -736,7 +749,7 @@ mod tests {
         // window opens to our own storage.
         ring.raise_peer_depth(u32::try_from(crate::channel::RING_SLOTS).unwrap_or(u32::MAX));
         assert_eq!(ring.window_free(), DEEP - FLOOR);
-        assert!(ring.enqueue(&Message::new(&[], b"y").unwrap()).is_ok());
+        assert!(ring.enqueue(&Message::new(&[], b"y").unwrap(), 0.0).is_ok());
     }
 
     /// **The only ceiling on retransmission there is.** A window of stale
@@ -749,7 +762,8 @@ mod tests {
         let mut storage = Storage::wide(WIDE);
         let mut ring = storage.ring();
         for _ in 0..WIDE {
-            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+            ring.enqueue(&Message::new(&[], b"x").unwrap(), 0.0)
+                .unwrap();
         }
 
         // Every fragment gets a first send, a capful per pass, and nothing is
@@ -794,7 +808,8 @@ mod tests {
         let mut storage = Storage::new();
         let mut ring = storage.ring();
         for _ in 0..4 {
-            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+            ring.enqueue(&Message::new(&[], b"x").unwrap(), 0.0)
+                .unwrap();
         }
         drain(&mut ring, 0.0, 10.0);
 
@@ -813,22 +828,27 @@ mod tests {
         let mut storage = Storage::new();
         let mut ring = storage.ring();
         for _ in 0..SLOTS {
-            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+            ring.enqueue(&Message::new(&[], b"x").unwrap(), 0.0)
+                .unwrap();
         }
         assert_eq!(ring.window_free(), 0);
-        assert!(ring.enqueue(&Message::new(&[], b"y").unwrap()).is_err());
+        assert!(
+            ring.enqueue(&Message::new(&[], b"y").unwrap(), 0.0)
+                .is_err()
+        );
 
         drain(&mut ring, 0.0, 10.0);
         ring.on_ack(&ack_with(8, false, u32::MAX - 1), 5.0);
         assert_eq!(ring.window_free(), 8);
-        assert!(ring.enqueue(&Message::new(&[], b"y").unwrap()).is_ok());
+        assert!(ring.enqueue(&Message::new(&[], b"y").unwrap(), 0.0).is_ok());
     }
 
     #[test]
     fn a_round_trip_sample_comes_from_the_first_send() {
         let mut storage = Storage::new();
         let mut ring = storage.ring();
-        ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+        ring.enqueue(&Message::new(&[], b"x").unwrap(), 0.0)
+            .unwrap();
         drain(&mut ring, 100.0, 10.0);
         let sample = ring.on_ack(&ack_with(1, false, 0), 137.5).unwrap();
         assert!((sample - 37.5).abs() < 1e-9);
@@ -838,7 +858,8 @@ mod tests {
     fn retransmission_waits_for_the_timeout_then_fires() {
         let mut storage = Storage::new();
         let mut ring = storage.ring();
-        ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+        ring.enqueue(&Message::new(&[], b"x").unwrap(), 0.0)
+            .unwrap();
         drain(&mut ring, 0.0, 10.0);
 
         // Floor is 50 ms plus 30 ms of grace, so 79 is early and 81 is due.
@@ -862,7 +883,8 @@ mod tests {
         let mut storage = Storage::new();
         let mut ring = storage.ring();
         for _ in 0..4 {
-            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+            ring.enqueue(&Message::new(&[], b"x").unwrap(), 0.0)
+                .unwrap();
         }
         drain(&mut ring, 0.0, 10.0);
 
@@ -885,7 +907,8 @@ mod tests {
         let mut storage = Storage::new();
         let mut ring = storage.ring();
         for _ in 0..3 {
-            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+            ring.enqueue(&Message::new(&[], b"x").unwrap(), 0.0)
+                .unwrap();
         }
         assert_eq!(drain(&mut ring, 0.0, 5.0).len(), 3);
         assert_eq!(ring.stale(), 0, "freshly sent fragments are not stale");
@@ -902,7 +925,8 @@ mod tests {
     fn age_past_the_threshold_makes_a_fragment_stale() {
         let mut storage = Storage::new();
         let mut ring = storage.ring();
-        ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+        ring.enqueue(&Message::new(&[], b"x").unwrap(), 0.0)
+            .unwrap();
         drain(&mut ring, 0.0, 5.0);
         // Under the retransmission timeout, so nothing is sent, but the
         // fragment is older than the staleness threshold.
@@ -921,7 +945,8 @@ mod tests {
         // Four single-fragment one-byte messages: five bytes of body each,
         // the four-byte length prefix and the byte.
         for _ in 0..4 {
-            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+            ring.enqueue(&Message::new(&[], b"x").unwrap(), 0.0)
+                .unwrap();
         }
         drain(&mut ring, 0.0, 10.0);
         assert_eq!(ring.bytes_sent(), 20);
@@ -943,6 +968,51 @@ mod tests {
         assert_eq!(ring.acked_bytes(), 20);
     }
 
+    /// **The second staleness clause asks whether the path got slower, not
+    /// whether it is slow.**
+    ///
+    /// Each fragment carries the round trip as it stood when it was queued, so
+    /// a path that has always been slow is not congestion and a path that has
+    /// just doubled is. A fixed budget in place of that baseline answers a
+    /// different question -- is the round trip past some absolute figure --
+    /// which is true of a bad path from its first frame and never true of a
+    /// good one going bad, and the second is the case the clause exists for.
+    #[test]
+    fn a_round_trip_that_grew_since_the_fragment_was_queued_is_stale() {
+        // Level 1: threshold is 1.1 * srtt + 20 ms.
+        let fast = 5.0;
+        let now_slow = 30.0;
+
+        let mut storage = Storage::new();
+        let mut ring = storage.ring();
+        ring.enqueue(&Message::new(&[], b"x").unwrap(), fast)
+            .unwrap();
+        drain(&mut ring, 0.0, fast);
+
+        // 30 > 1.1 * 5 + 20, and the fragment is far too young for the first
+        // clause (1.1 * 30 + 20 = 53 ms).
+        drain(&mut ring, 1.0, now_slow);
+        assert_eq!(
+            ring.stale(),
+            1,
+            "a round trip six times what it was when the fragment was queued read as healthy"
+        );
+
+        // The control: queued on a path already this slow, nothing has
+        // changed and nothing is stale. 30 is not past 1.1 * 30 + 20.
+        let mut storage = Storage::new();
+        let mut ring = storage.ring();
+        ring.enqueue(&Message::new(&[], b"x").unwrap(), now_slow)
+            .unwrap();
+        drain(&mut ring, 0.0, now_slow);
+        drain(&mut ring, 1.0, now_slow);
+        assert_eq!(
+            ring.stale(),
+            0,
+            "a uniformly slow path was read as congestion"
+        );
+    }
+
     /// **A fragment the trigger names ahead of the cumulative is delivered,
     /// and its bytes must be counted where they leave the occupied set.**
     ///
@@ -958,7 +1028,8 @@ mod tests {
         let mut storage = Storage::new();
         let mut ring = storage.ring();
         for _ in 0..4 {
-            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+            ring.enqueue(&Message::new(&[], b"x").unwrap(), 0.0)
+                .unwrap();
         }
         drain(&mut ring, 0.0, 10.0);
         assert_eq!(ring.bytes_sent(), 20, "four fragments of five bytes");
@@ -986,7 +1057,8 @@ mod tests {
         let mut storage = Storage::new();
         let mut ring = storage.ring();
         for _ in 0..4 {
-            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+            ring.enqueue(&Message::new(&[], b"x").unwrap(), 0.0)
+                .unwrap();
         }
         drain(&mut ring, 0.0, 10.0);
 
@@ -1009,7 +1081,8 @@ mod tests {
         let mut storage = Storage::new();
         let mut ring = storage.ring();
         for _ in 0..4 {
-            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+            ring.enqueue(&Message::new(&[], b"x").unwrap(), 0.0)
+                .unwrap();
         }
         drain(&mut ring, 0.0, 10.0);
         assert_eq!(ring.packets_sent(), 4);
@@ -1038,7 +1111,8 @@ mod tests {
         let mut storage = Storage::new();
         let mut ring = storage.ring();
         for _ in 0..4 {
-            ring.enqueue(&Message::new(&[], b"x").unwrap()).unwrap();
+            ring.enqueue(&Message::new(&[], b"x").unwrap(), 0.0)
+                .unwrap();
         }
         drain(&mut ring, 0.0, 10.0);
         assert_eq!(ring.nack_resends(), 0);

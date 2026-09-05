@@ -314,13 +314,17 @@ impl<'a> Session<'a> {
     /// [`Session::get_output`] releases them, so backpressure is visible as a
     /// refusal rather than as unbounded buffering.
     pub fn send_message(&mut self, channel: u8, header: &[u8], payload: &[u8]) -> Result<u32> {
+        // **Read before the ring borrows.** Every fragment of this message
+        // carries the round trip as it stands now, which is what its
+        // staleness is later judged against.
+        let srtt_ms = self.srtt_ms;
         let ring = self
             .send
             .get_mut(channel as usize)
             .and_then(Option::as_mut)
             .ok_or(Error::Malformed)?;
         let message = Message::new(header, payload)?;
-        ring.enqueue(&message)
+        ring.enqueue(&message, srtt_ms)
     }
 
     /// Take the next complete message from `channel`, if one has arrived.
