@@ -3,6 +3,35 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-04 - Staleness asks whether the path got slower, not whether it is slow
+
+### Changed
+- **A fragment's staleness is judged against the round trip that held when it was queued.**
+  The second staleness clause compared the smoothed round trip against a fixed
+  hundred-millisecond budget, so it asked whether the path is slow rather than whether it got
+  slower: true of a bad path from its first frame, never true of a good path going bad, and
+  the second is the case the clause exists for. On a link whose queue was building it said
+  nothing until the round trip passed an absolute figure the level sets at 130 or 200 ms. Each
+  fragment now carries the round trip as it stood when it was queued, stamped once and never
+  restamped, so a fragment the outstanding cap held back is compared against the path from
+  before the queue built.
+- **It restores a counterweight the fixed budget had removed.** Round-trip samples come from a
+  fragment's first send and are not filtered, so retransmissions inflate the smoothed figure
+  during congestion, which loosens the first staleness clause exactly when it should tighten.
+  An inflating round trip tightens this one by the same motion, because it is measured against
+  its own past.
+
+### Measured
+- **Clean paths are untouched, which is the result that mattered.** The trajectory harness's
+  three lossless profiles -- still, 2 ms jitter, and 2 percent reorder -- are bit-identical
+  before and after, for all three controller shapes. A staleness rule that fired on a healthy
+  path would have shown up here.
+- **Under genuine stress it stops overshooting.** At an 8 Mibit/s cap the rate settles at 6.56
+  where it settled at 8.31, with **delivered throughput unchanged** at 5.13: the old figure was
+  a ceiling the path could not carry. At 5 percent loss the rate settles at 4.63 against 5.67,
+  with delivered 4.38 against 4.47 -- two percent less carried for a rate a fifth lower. One
+  more decrease at the cap, two fewer under loss.
+
 ## 2026-09-04 - A fragment delivered out of order is counted as delivered
 
 ### Fixed
