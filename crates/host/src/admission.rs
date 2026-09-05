@@ -2755,8 +2755,17 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 });
                 args.telemetry
                     .progressed(now, u32::try_from(sent).unwrap_or(u32::MAX));
+                // **What this guest was allowed and what it was coded in.**
+                // A picture is decided by the two together, and a room that
+                // gains a less capable guest changes both at once: the rate
+                // divides and the codec drops to what every seat can decode.
+                // Neither is visible from the rate a guest actually used.
+                let allowed = seat.allowed_mbps();
+                let codec = seat
+                    .colour()
+                    .map_or("none", |(codec, _, _)| crate::stream::codec_name(codec));
                 lowlat_common::log_info!(
-                    "guest: attempt={} frames={sent} window={window} stale={stale} mbps={measured:.2} delivered={got:.2} nacks={nacks} rtos={rtos} encode_ms={:.2} rx_frag={rx} rx_msg={inbound_messages} rx_dup={} rx_oow={} rx_big={} dg_in={} dg_out={} rej={} srtt={:.1} rtt_min={rtt_min:.1} ack_gap={ack_gap:.0} keys={} btn={} wheel={} motion={} pad={} snd={} snd_drop={} snd_mbps={sound_mbps:.3} mic={} mic_refused={} mic_panicked={}",
+                    "guest: attempt={} frames={sent} window={window} stale={stale} allowed={allowed:.1} codec={codec} mbps={measured:.2} delivered={got:.2} nacks={nacks} rtos={rtos} encode_ms={:.2} rx_frag={rx} rx_msg={inbound_messages} rx_dup={} rx_oow={} rx_big={} dg_in={} dg_out={} rej={} srtt={:.1} rtt_min={rtt_min:.1} ack_gap={ack_gap:.0} keys={} btn={} wheel={} motion={} pad={} snd={} snd_drop={} snd_mbps={sound_mbps:.3} mic={} mic_refused={} mic_panicked={}",
                     args.attempt_id,
                     seat.encode_latency_ms(),
                     rx_drops.duplicate,

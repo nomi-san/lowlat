@@ -416,6 +416,14 @@ pub(crate) struct Shared {
     /// its own smoothed figure, because the cadence that reports it is per
     /// guest.
     encode_us: AtomicU32,
+    /// What one guest is allowed to send, in the decimal megabits the
+    /// boundary reports, as `f32` bits.
+    ///
+    /// **The configured rate divided by the room, not the configured rate.**
+    /// A guest is told the undivided figure on the wire because that key is
+    /// also how it asks for a change; this is the only place the number it
+    /// actually gets is stated.
+    allowed_bits: AtomicU32,
     /// The same for one sound packet, in microseconds.
     ///
     /// **One encode serves the whole room here too**, so this is a property of
@@ -1251,6 +1259,7 @@ impl Stream {
             sound: SoundCells::new(&config),
             encode_us: AtomicU32::new(0),
             audio_encode_us: AtomicU32::new(0),
+            allowed_bits: AtomicU32::new(0),
             timing: TimingCells::default(),
             refreshes: RefreshCells::default(),
             suppressed: AtomicU32::new(0),
@@ -1680,6 +1689,29 @@ impl SeatHold {
     /// only; the peer is told about video alone.
     pub fn audio_encode_latency_ms(&self) -> f64 {
         f64::from(self.shared.audio_encode_us.load(Ordering::Relaxed)) / 1000.0
+    }
+
+    /// What this guest is allowed to send, in decimal megabits.
+    ///
+    /// **The configured rate divided by the room.** Zero before the rate loop
+    /// has ticked once. A guest is told the undivided figure on the wire
+    /// because that key is also how it asks for a change, so this is the only
+    /// statement of what it actually gets.
+    pub fn allowed_mbps(&self) -> f64 {
+        f64::from(f32::from_bits(
+            self.shared.allowed_bits.load(Ordering::Relaxed),
+        ))
+    }
+
+    /// What the running encoder codes, or nothing before one exists.
+    pub fn colour(&self) -> Option<(Codec, bool, bool)> {
+        let packed = self.shared.colour.load(Ordering::Acquire);
+        let codec = match packed & 0xFF {
+            1 => Codec::H264,
+            2 => Codec::H265,
+            _ => return None,
+        };
+        Some((codec, packed & 0x100 != 0, packed & 0x200 != 0))
     }
 
     /// Times congestion has cut this guest's rate since it sat down.
@@ -2258,6 +2290,17 @@ fn reconcile_sound(shared: &Arc<Shared>, listeners: usize, config: &Config) {
         // and this pass is the only thing that can notice.
         Some(sound) => sound.regain(shared, audio),
         None => *held = Some(crate::audio::Sound::start(shared, audio)),
+    }
+}
+
+/// What a codec is called on a log line.
+///
+/// **Named rather than derived**, so the string a live run is read by does not
+/// move when a variant is renamed.
+pub(crate) fn codec_name(codec: Codec) -> &'static str {
+    match codec {
+        Codec::H264 => "h264",
+        Codec::H265 => "h265",
     }
 }
 
@@ -4158,6 +4201,13 @@ fn tick_rate<E: Encoder>(
         // is what keeps the stream unbroken across a reconfigure.
         let _ = encoder.reconfigure(bps);
     }
+    // **What each guest may send, published where it is decided.** It is the
+    // same for every seat by construction -- the budget divides by the room --
+    // so it lives beside the stream's other per-pass figures rather than on a
+    // seat.
+    shared
+        .allowed_bits
+        .store(ceiling_step(budget).to_bits(), Ordering::Relaxed);
     // **Published after the tick, so the count includes this pass.** The
     // controllers are parallel to `active`, and each one belongs to the seat
     // at the same index.
@@ -4799,6 +4849,7 @@ mod tests {
                 pool: Pool::new(slots, max_frame_bytes()),
                 encode_us: AtomicU32::new(0),
                 audio_encode_us: AtomicU32::new(0),
+                allowed_bits: AtomicU32::new(0),
                 timing: TimingCells::default(),
                 refreshes: RefreshCells::default(),
                 suppressed: AtomicU32::new(0),
@@ -4873,6 +4924,7 @@ mod tests {
             pool: Pool::new(POOL_SLOTS, max_frame_bytes()),
             encode_us: AtomicU32::new(0),
             audio_encode_us: AtomicU32::new(0),
+            allowed_bits: AtomicU32::new(0),
             timing: TimingCells::default(),
             refreshes: RefreshCells::default(),
             suppressed: AtomicU32::new(0),
@@ -5207,6 +5259,7 @@ mod tests {
             pool: Pool::new(2, 64),
             encode_us: AtomicU32::new(0),
             audio_encode_us: AtomicU32::new(0),
+            allowed_bits: AtomicU32::new(0),
             timing: TimingCells::default(),
             refreshes: RefreshCells::default(),
             suppressed: AtomicU32::new(0),
