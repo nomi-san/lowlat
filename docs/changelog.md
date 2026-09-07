@@ -3,7 +3,7 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
-## 2026-09-06 - An adaptive congestion setting, and a configuration that is not zero
+## 2026-09-07 - An adaptive congestion setting, and a configuration that is not zero
 
 ### Added
 - **A fourth congestion setting, `adaptive`, with nothing behind it yet.** The three levels are
@@ -34,7 +34,7 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   level, a null configuration refused instead of taken as the defaults, and the pointer hold
   drifting from the one figure the arbitration was tuned to.
 
-## 2026-09-06 - The retransmission timeout is linear, and the spec called it exponential
+## 2026-09-07 - The retransmission timeout is linear, and the spec called it exponential
 
 ### Fixed
 - **The retransmission timeout was described as exponential in the retry count. It is linear.**

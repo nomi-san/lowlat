@@ -223,7 +223,7 @@ impl Controller {
     /// clearing moves into [`Controller::tick`] and this goes**, exactly as
     /// [`Controller::cut`] says of itself.
     ///
-    /// **Measured 2026-09-06 and it earns nothing.** Over a bursty path the
+    /// **Measured 2026-09-07 and it earns nothing.** Over a bursty path the
     /// clean run between congested episodes is hundreds of frames, so the
     /// counter is already cleared when the next episode arrives and clearing
     /// it sooner changes no trajectory. The band where the carry-over bites

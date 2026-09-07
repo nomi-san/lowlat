@@ -355,7 +355,7 @@ silently discards whole datagrams and presents as "control works, video does not
 immediate answer to any accepted receive -- was wrong. There are two floors sharing one
 timestamp, and the cadence bullet below is the rewrite.
 
-**Correction (2026-09-06).** This section called the retransmission timeout exponential in the
+**Correction (2026-09-07).** This section called the retransmission timeout exponential in the
 retry count. It is linear. The formula was always stated correctly; only the description of it
 was wrong, so no implementation changed -- but "exponential" implies a backoff that
 self-limits, and this one does not.

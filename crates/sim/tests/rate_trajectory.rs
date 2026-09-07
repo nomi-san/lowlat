@@ -153,7 +153,7 @@ enum Mode {
     /// answerable at once, which is what "intermittent congestion is
     /// under-reacted to" means in the improvements plan.
     ///
-    /// **Measured 2026-09-06: the carry-over is real and unreachable.** Over
+    /// **Measured 2026-09-07: the carry-over is real and unreachable.** Over
     /// a bursty profile -- fifty milliseconds out in every four hundred --
     /// the run has 17 congested episodes and takes **17 cuts**, and the clean
     /// gaps between episodes are never shorter than thirty frames. The
@@ -178,7 +178,7 @@ enum Mode {
     /// link's byte budget is one budget for both directions, so a forward
     /// stream that exceeds it starves the return path and the silence is real.
     ///
-    /// **Measured 2026-09-06 and not adoptable, for a structural reason.** It
+    /// **Measured 2026-09-07 and not adoptable, for a structural reason.** It
     /// fires: on a half-second total outage the gap reaches 525 ms and the
     /// predicate is true on 131 ticks, 19 of which the window rule calls
     /// clean. How far into each outage each one first answers:
@@ -209,7 +209,7 @@ enum Mode {
     /// hold the rate where it is, which is why it is the first shape worth
     /// trying below the window floor.
     ///
-    /// **Measured 2026-09-06 and not adoptable as shaped.** It passes the
+    /// **Measured 2026-09-07 and not adoptable as shaped.** It passes the
     /// control the loss-rate predicate failed -- bit-identical to the
     /// incumbent on all three clean paths -- and it is inert where it was
     /// most wanted: at a 4 Mibit/s cap it changes nothing at all. At 8 it
@@ -704,7 +704,7 @@ fn trajectories_under_jitter_and_reorder() {
 /// path down to 4.82 in eleven cuts** while the incumbent held at the
 /// ceiling.
 ///
-/// **Reshaped 2026-09-06: the numerator is timeouts alone.** A reorder fires
+/// **Reshaped 2026-09-07: the numerator is timeouts alone.** A reorder fires
 /// a negative acknowledgement and no timeout, because the gap fills on its
 /// own; a loss fires both. The two causes were already separated in the ring
 /// and the predicate was summing them. With the reshape this path is
@@ -813,7 +813,7 @@ fn trajectories_at_a_low_frame_rate() {
 /// scarce the controller climbs slowly, and while frames are scarce almost no
 /// bitrate is being asked for; the moment something needs the bitrate there
 /// are frames again and the periods are back to half a second. Measured
-/// 2026-09-06: **3.10 all-slow, 19.60 woken, 30.00 all-fast.** Fifteen
+/// 2026-09-07: **3.10 all-slow, 19.60 woken, 30.00 all-fast.** Fifteen
 /// seconds of frames recovers most of the distance, so the fps-dependence is
 /// real and self-limiting, and it is not worth a divergence.
 #[test]
