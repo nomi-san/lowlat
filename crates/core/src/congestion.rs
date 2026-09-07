@@ -209,6 +209,31 @@ impl Controller {
         self.rate_mbps()
     }
 
+    /// Forget the congested ticks accumulated so far, as the thirtieth clean
+    /// tick does.
+    ///
+    /// **For the experiment in the improvements issue, not for the shipped
+    /// path.** The counter persisting across separated episodes is
+    /// reference-faithful and deliberate here: a short episode followed by
+    /// fewer than thirty clean ticks leaves the next one waiting up to
+    /// fifty-five congested ticks before it may cut, so intermittent
+    /// congestion is answered once where continuous congestion is answered
+    /// every second. This exists so that shape can be measured beside the
+    /// incumbent over the same traffic. **If the variant earns adoption the
+    /// clearing moves into [`Controller::tick`] and this goes**, exactly as
+    /// [`Controller::cut`] says of itself.
+    ///
+    /// **Measured 2026-09-06 and it earns nothing.** Over a bursty path the
+    /// clean run between congested episodes is hundreds of frames, so the
+    /// counter is already cleared when the next episode arrives and clearing
+    /// it sooner changes no trajectory. The band where the carry-over bites
+    /// -- a clean run of one to twenty-nine frames -- did not occur in any
+    /// profile. Kept because the harness mode that records that result uses
+    /// it, not because a caller should.
+    pub fn forget_congested_ticks(&mut self) {
+        self.decrease_ticks = 0;
+    }
+
     /// One congested tick, for a predicate this controller does not compute.
     ///
     /// The same arithmetic the congested half of [`Controller::tick`] runs:
@@ -270,6 +295,31 @@ mod tests {
         }
         // An index past the strategy is still out of range, not the strategy.
         assert!(!Controller::new(ADAPTIVE + 1, 1.0, 100.0).adaptive());
+    }
+
+    /// **The counter that makes a second episode cheaper than a first.**
+    #[test]
+    fn a_congested_run_is_answered_once_until_its_ticks_are_forgotten() {
+        let mut controller = Controller::new(DEFAULT_LEVEL, 1.0, 100.0);
+        let (window, stale) = (WINDOW_FLOOR + 1, WINDOW_FLOOR + 1);
+        // The first congested tick of a run cuts; the next fifty-nine do not.
+        controller.tick(window, stale, 0.0);
+        assert_eq!(controller.total_decreases(), 1);
+        for _ in 0..5 {
+            controller.tick(window, stale, 0.0);
+        }
+        assert_eq!(controller.total_decreases(), 1, "a run cuts once per period");
+
+        // A separated episode is not a fresh one: the ticks carry over, so
+        // this one is still inside the same period and still does not cut.
+        controller.tick(1, 0, 0.0);
+        controller.tick(window, stale, 0.0);
+        assert_eq!(controller.total_decreases(), 1);
+
+        // Forgetting them is what makes the next episode answerable at once.
+        controller.forget_congested_ticks();
+        controller.tick(window, stale, 0.0);
+        assert_eq!(controller.total_decreases(), 2);
     }
 
     #[test]

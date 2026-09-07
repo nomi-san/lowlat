@@ -136,6 +136,32 @@ enum Mode {
     LossRate,
     /// The incumbent, with its peak tracker fed delivered bytes.
     GoodputPeak,
+    /// The incumbent's own predicate, with the congested-tick counter cleared
+    /// on every clean tick instead of every thirtieth.
+    ///
+    /// **Not a predicate at all: the same signal, answered differently.** The
+    /// counter carrying across separated episodes means a second burst
+    /// arriving before thirty clean ticks have passed is inside the first
+    /// one's period and cannot cut. Clearing it makes every episode
+    /// answerable at once, which is what "intermittent congestion is
+    /// under-reacted to" means in the improvements plan.
+    ///
+    /// **Measured 2026-09-06: the carry-over is real and unreachable.** Over
+    /// a bursty profile -- fifty milliseconds out in every four hundred --
+    /// the run has 17 congested episodes and takes **17 cuts**, and the clean
+    /// gaps between episodes are never shorter than thirty frames. The
+    /// counter is therefore already cleared by the time each episode arrives,
+    /// so clearing it sooner changes nothing, and every profile in this file
+    /// is bit-identical between the two.
+    ///
+    /// Either congestion is continuous, and the sixty-tick period is the
+    /// throttle it is meant to be, or it is isolated, and the clean run
+    /// between episodes is hundreds of frames long. **The band where the
+    /// carry-over bites -- a clean run of one to twenty-nine frames -- did
+    /// not occur once.** The behaviour is pinned by
+    /// `a_congested_run_is_answered_once_until_its_ticks_are_forgotten` in
+    /// the controller's own tests; the concern is theoretical.
+    EpisodeReset,
     /// The incumbent, plus a gap in acknowledgements read as congestion.
     ///
     /// **The one sub-floor signal that is unambiguous by construction.** A
@@ -416,6 +442,13 @@ fn run(seed: u64, profile: Profile, duration_ms: f64, mode: Mode) -> Outcome {
                     && !congested
                     && rtt_min_ms > 0.0
                     && srtt_ms > rtt_min_ms * GRADIENT_MULT;
+                // **Clearing on every clean tick, not only the first.** The
+                // two are the same thing: what matters is that a clean tick
+                // leaves no congested ticks behind for the next episode to
+                // inherit, and clearing an already-empty counter is free.
+                if mode == Mode::EpisodeReset && !congested {
+                    controller.forget_congested_ticks();
+                }
                 let rate = if holding {
                     controller.rate_mbps()
                 } else {
@@ -708,6 +741,47 @@ fn the_gradient_gate_leaves_a_clean_path_exactly_where_it_found_it() {
         incumbent.final_mbps,
         candidate.final_mbps
     );
+}
+
+/// **Intermittent congestion, which the cut arithmetic answers once.**
+///
+/// A hundred milliseconds out in every four hundred: the episodes are
+/// separated, but by eighteen clean frames rather than thirty, so the
+/// congested ticks from one are still on the counter when the next arrives
+/// and the second episode is inside the first one's period. The incumbent
+/// therefore answers a burst pattern roughly as often as it answers one long
+/// outage, however many bursts there are.
+///
+/// `EpisodeReset` clears the counter on every clean tick, so each burst is
+/// answerable at once.
+///
+/// **They print the same numbers, and the reason is the finding.** The clean
+/// runs between episodes here are hundreds of frames, far past the thirty
+/// that clear the counter anyway, so there is nothing left to carry. See
+/// [`Mode::EpisodeReset`].
+#[test]
+fn trajectories_under_intermittent_congestion() {
+    for mode in [Mode::Incumbent, Mode::EpisodeReset] {
+        let outcome = run(
+            0xB025,
+            Profile {
+                outage_ms: 100.0,
+                outage_every_ms: 400.0,
+                ..Profile::default()
+            },
+            30_000.0,
+            mode,
+        );
+        println!(
+            "bursty {mode:?}: final={:.2} Mibit/s offered={:.2} delivered={:.2} \
+             decreases={} below_mean={:.0} ms",
+            outcome.final_mbps,
+            outcome.offered_mbps,
+            outcome.delivered_mbps,
+            outcome.decreases,
+            outcome.below_mean_ms
+        );
+    }
 }
 
 /// **The profile the acknowledgement-silence signal exists for**, and the one
