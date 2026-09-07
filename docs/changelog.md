@@ -3,6 +3,26 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-08 - The video buffer is three frames, not one
+
+### Fixed
+- **A frame could not exceed `bitrate / fps`, so a scene change was quantised until it fit.**
+  The buffer was exactly one frame's budget, which forbids any frame from spending more than
+  its share however little the frames around it cost. A scroll or a window switch is precisely
+  the frame that needs more, and a still picture then keeps whatever quality the motion that
+  drew it could afford, because nothing re-codes it afterwards. Measured on a live 2K stream
+  where the transport was idle throughout: the send window peaked at 18 of a hundred, nothing
+  went stale, and no congestion event was declared, so none of it was the rate controller.
+- **The buffer is now `min(768 kbit, one frame x 3.1)`.** The argument the single frame was
+  chosen on -- that a larger buffer smooths bitrate across frames, which is queueing, and those
+  bits arrive late rather than not at all -- is sound, and the number was still wrong. Bounding
+  the buffer is what keeps the smoothing from becoming an unbounded delay; refusing to smooth at
+  all is a different and stricter thing than it was reasoned to be.
+
+### Testing
+- The arithmetic is pinned at three rates and two frame rates, including the point where the
+  ceiling starts to bind, and **was confirmed to fail** with the multiple returned to one frame.
+
 ## 2026-09-07 - An adaptive congestion setting, and a configuration that is not zero
 
 ### Added
