@@ -130,6 +130,41 @@ enum Mode {
     LossRate,
     /// The incumbent, with its peak tracker fed delivered bytes.
     GoodputPeak,
+    /// The incumbent, plus a gap in acknowledgements read as congestion.
+    ///
+    /// **The one sub-floor signal that is unambiguous by construction.** A
+    /// peer answers accepted data inside a ten-millisecond floor, so a gap an
+    /// order of magnitude past that, with data outstanding, is not reorder and
+    /// not jitter. Unlike the gradient this harness can exercise it: the
+    /// link's byte budget is one budget for both directions, so a forward
+    /// stream that exceeds it starves the return path and the silence is real.
+    ///
+    /// **Measured 2026-09-06 and not adoptable, for a structural reason.** It
+    /// fires: on a half-second total outage the gap reaches 525 ms and the
+    /// predicate is true on 131 ticks, 19 of which the window rule calls
+    /// clean. How far into each outage each one first answers:
+    ///
+    /// | ceiling | window rule | silence |
+    /// |---|---|---|
+    /// | 30 Mibit/s | 40 to 100 ms | 100 to 120 ms |
+    /// | 2 Mibit/s | 220 to 240 ms | 100 to 120 ms |
+    ///
+    /// At the high rate **the window rule is the faster of the two** and the
+    /// signal is redundant. At the low rate silence answers 120 ms sooner --
+    /// and buys a tenth of a percent of delivered throughput for it, which is
+    /// nothing. The reason is
+    /// [`Controller::cut`]: the first congested tick of a run cuts and then
+    /// every sixtieth does, so an earlier signal moves *when* the single cut
+    /// lands and not how many land or how deep they go. Nothing crosses the
+    /// path during the outage either way, so 120 ms of earlier cutting is
+    /// 120 ms of a rate nobody was using.
+    ///
+    /// **The general result, which constrains every remaining candidate:** a
+    /// sub-floor signal that merely fires *sooner* than the window rule buys
+    /// nothing. It has to fire where the window rule fires **never**, and a
+    /// total outage is not that case, because the window fills eventually at
+    /// any rate this harness can produce.
+    AckSilence,
     /// The incumbent, plus a round-trip gradient that **declines to climb**
     /// while the queue is building. It never cuts: the worst it can do is
     /// hold the rate where it is, which is why it is the first shape worth
@@ -145,6 +180,17 @@ enum Mode {
     /// two percent and **loses eleven percent of delivered throughput at
     /// five**. A sixteenfold longer minimum-RTT window was tried and moved
     /// none of it, so the window length is not the reason.
+    ///
+    /// **Corrected the same day: this harness cannot exercise the signal.**
+    /// [`lowlat_sim::Link`]'s capacity is a policer, not a queue -- an
+    /// affordable datagram leaves at the link's own delay and an unaffordable
+    /// one drops -- so **standing queuing delay is deliberately not modelled**
+    /// and there is no queue here for a gradient to see. The rows above are
+    /// therefore not a verdict on the signal. Whatever srtt rise it reacted to
+    /// at cap=8 comes from retransmissions inflating an unfiltered first-send
+    /// sample, which is a different quantity wearing the gradient's clothes.
+    /// The clean-path result stands on its own: whatever it reads, it does not
+    /// disturb a path that is climbing correctly.
     Gradient,
 }
 
@@ -156,6 +202,15 @@ enum Mode {
 /// whether *this* path is worse than it was rather than whether it is worse
 /// than some other path would be.
 const GRADIENT_MULT: f64 = 1.5;
+
+/// How long the peer may say nothing, with data outstanding, before the
+/// silence is read as congestion.
+///
+/// **An order of magnitude past the cadence the peer guarantees.** It answers
+/// accepted data once ten milliseconds have passed since its last
+/// acknowledgement of either kind, so ten times that is not a peer being
+/// quiet, and reacting to it does not wait for the retransmission scan.
+const ACK_SILENCE_MS: f64 = 100.0;
 
 /// One run's outcome, in the units the trajectory is read in.
 #[derive(Debug)]
@@ -190,6 +245,20 @@ struct Profile {
     /// apart.
     reorder: f64,
     reorder_ms: f64,
+    /// How long the path is out, and how often it goes out. Zero is never.
+    ///
+    /// **Nothing crosses in either direction while it is out**, which is the
+    /// one profile an acknowledgement-silence signal exists for and the one
+    /// the loss and capacity profiles cannot stand in for: a policer drops the
+    /// datagrams it cannot afford and lets the small ones through, so
+    /// acknowledgements keep arriving however saturated the path is.
+    outage_ms: f64,
+    outage_every_ms: f64,
+    /// The controller's ceiling. **The multi-guest shape**: one encode is
+    /// divided by the seats sharing it, so each guest's ceiling is a fraction
+    /// of the configured rate and its window is a fraction of the fragments.
+    /// Low enough, and the window never reaches its floor at all.
+    max_mbps: f64,
 }
 
 impl Default for Profile {
@@ -200,6 +269,9 @@ impl Default for Profile {
             jitter_ms: JITTER_MS,
             reorder: 0.0,
             reorder_ms: 0.0,
+            outage_ms: 0.0,
+            outage_every_ms: 0.0,
+            max_mbps: 30.0,
         }
     }
 }
@@ -231,7 +303,7 @@ fn run(seed: u64, profile: Profile, duration_ms: f64, mode: Mode) -> Outcome {
     let mut rx = endpoint(&mut rx_arena);
 
     // The controller, as the host builds one: default level, 1 to 30 Mibit/s.
-    let mut controller = Controller::new(congestion::DEFAULT_LEVEL, 1.0, 30.0);
+    let mut controller = Controller::new(congestion::DEFAULT_LEVEL, 1.0, profile.max_mbps);
     let mut applied_mbps = controller.rate_mbps();
     let mut meter = LossMeter {
         first_sends: 0,
@@ -275,13 +347,23 @@ fn run(seed: u64, profile: Profile, duration_ms: f64, mode: Mode) -> Outcome {
             }
         }
 
+        // **The path, while it is out, carries nothing either way.** The
+        // sender keeps offering and keeps emitting; the datagrams are simply
+        // never handed to the link, which is what an outage looks like from
+        // both ends.
+        let out = profile.outage_every_ms > 0.0
+            && (now % profile.outage_every_ms) < profile.outage_ms;
         while let Some(result) = tx.get_output(now, &mut wire) {
             let len = result.expect("sender emitted a malformed datagram");
-            sim.send(tx_host, addr(20), 64, &wire[..len]);
+            if !out {
+                sim.send(tx_host, addr(20), 64, &wire[..len]);
+            }
         }
         while let Some(result) = rx.get_output(now, &mut wire) {
             let len = result.expect("receiver emitted a malformed datagram");
-            sim.send(rx_host, addr(10), 64, &wire[..len]);
+            if !out {
+                sim.send(rx_host, addr(10), 64, &wire[..len]);
+            }
         }
 
         while let Some(arrival) = sim.next_arrival() {
@@ -302,10 +384,18 @@ fn run(seed: u64, profile: Profile, duration_ms: f64, mode: Mode) -> Outcome {
         if frame {
             let srtt_ms = tx.srtt_ms();
             let rtt_min_ms = tx.rtt_min_ms();
+            let last_ack_ms = tx.last_ack_in_ms();
             if let Some(pressure) = tx.send_pressure(CHANNEL) {
                 let loss_ratio = meter.take(&pressure);
+                // **With data outstanding**, or an idle channel reads as an
+                // outage: a peer with nothing to acknowledge answers on the
+                // keepalive cadence, which is slower than this threshold.
+                let silent = mode == Mode::AckSilence
+                    && pressure.window > 0
+                    && now - last_ack_ms > ACK_SILENCE_MS;
                 let congested = controller.is_congested(pressure.window, pressure.stale)
-                    || (mode == Mode::LossRate && loss_ratio > 0.05);
+                    || (mode == Mode::LossRate && loss_ratio > 0.05)
+                    || silent;
                 let feed = if mode == Mode::GoodputPeak {
                     measured_delivered
                 } else {
@@ -404,6 +494,7 @@ fn trajectories_under_loss() {
             Mode::LossRate,
             Mode::GoodputPeak,
             Mode::Gradient,
+            Mode::AckSilence,
         ] {
             let outcome = run(
                 0x5EED,
@@ -441,6 +532,7 @@ fn trajectories_under_a_capacity_cap() {
             Mode::LossRate,
             Mode::GoodputPeak,
             Mode::Gradient,
+            Mode::AckSilence,
         ] {
             let outcome = run(
                 0xCA90,
@@ -517,6 +609,7 @@ fn trajectories_under_jitter_and_reorder() {
             Mode::LossRate,
             Mode::GoodputPeak,
             Mode::Gradient,
+            Mode::AckSilence,
         ] {
             let outcome = run(0x1177, profile, 30_000.0, mode);
             println!(
@@ -606,6 +699,123 @@ fn the_gradient_gate_leaves_a_clean_path_exactly_where_it_found_it() {
         "the gradient held a climb it had no reason to: incumbent={:.2} candidate={:.2}",
         incumbent.final_mbps,
         candidate.final_mbps
+    );
+}
+
+/// **The profile the acknowledgement-silence signal exists for**, and the one
+/// no other profile stands in for.
+///
+/// Half a second of total outage every five seconds. Loss cannot produce this
+/// and neither can the capacity cap: a policer drops what it cannot afford
+/// and the small return datagrams keep fitting, so acknowledgements arrive
+/// throughout however saturated the path is. Only a path that carries nothing
+/// makes the peer go quiet.
+///
+/// What the line carries is **how long each shape takes to answer**. The
+/// incumbent cannot react until the send window fills and the scan calls the
+/// fragments stale; the silence reads the same outage a tenth of a second in,
+/// without waiting for either.
+#[test]
+fn trajectories_under_an_outage() {
+    // **Two rate regimes, because the signal is only interesting in one.**
+    // Uncapped, the stream reaches fifteen megabits and the send window
+    // passes its floor within a few frames of the path going quiet, so the
+    // incumbent has already declared congestion before a tenth of a second of
+    // silence has accrued. Capped low, a frame is two fragments and the whole
+    // outage does not fill a hundred, so the window rule is blind for the
+    // entire gap and this is the only signal that sees it.
+    // **Two rate regimes.** The second is the multi-guest shape: a clean path
+    // whose ceiling is a share of one encode, small enough that the window
+    // never reaches its floor, which is where the incumbent is blind by
+    // construction and not merely slow.
+    for (name, capacity, ceiling) in [("uncapped ", 0.0, 30.0), ("sub-floor", 0.0, 2.0)] {
+        for mode in [
+            Mode::Incumbent,
+            Mode::LossRate,
+            Mode::GoodputPeak,
+            Mode::Gradient,
+            Mode::AckSilence,
+        ] {
+            let outcome = run(
+                0x0FF0,
+                Profile {
+                    capacity_mibps: capacity,
+                    max_mbps: ceiling,
+                    outage_ms: 500.0,
+                    outage_every_ms: 5_000.0,
+                    ..Profile::default()
+                },
+                30_000.0,
+                mode,
+            );
+            println!(
+                "outage {name} {mode:?}: final={:.2} Mibit/s offered={:.2} delivered={:.2} \
+                 decreases={} below_mean={:.0} ms",
+                outcome.final_mbps,
+                outcome.offered_mbps,
+                outcome.delivered_mbps,
+                outcome.decreases,
+                outcome.below_mean_ms
+            );
+        }
+    }
+}
+
+/// **The finding: the silence is earlier and it does not matter.**
+///
+/// A clean path whose ceiling is a share of one encode, with the path out for
+/// half a second in every five. The window rule is not blind here -- it
+/// answers each outage 220 ms in -- and the silence answers at 100. Both
+/// produce one cut per outage, and delivered throughput moves by under a
+/// tenth of a percent, because the cut arithmetic acts on the first congested
+/// tick of a run and then only every sixtieth.
+///
+/// **This test fails if a reshape makes the silence change the outcome**,
+/// which is what it would have to do to earn adoption. Rewrite it into the
+/// new expectation rather than deleting it.
+#[test]
+fn ack_silence_answers_an_outage_sooner_and_the_outcome_is_the_same() {
+    let profile = Profile {
+        max_mbps: 2.0,
+        outage_ms: 500.0,
+        outage_every_ms: 5_000.0,
+        ..Profile::default()
+    };
+    let incumbent = run(0x0FF0, profile, 30_000.0, Mode::Incumbent);
+    let candidate = run(0x0FF0, profile, 30_000.0, Mode::AckSilence);
+
+    assert!(
+        incumbent.decreases > 0,
+        "the window rule answered nothing, so this profile shows a blind spot rather \
+         than the redundancy it is here to show"
+    );
+    // **The denominator this finding needs.** "Nothing moved" is worth
+    // nothing unless something can move, and lowering the silence threshold
+    // as far as the acknowledgement cadence itself still moves nothing here:
+    // the cut arithmetic absorbs any amount of extra declaring. A predicate
+    // that reaches a different answer on the same traffic is what says the
+    // profile is sensitive at all, and the loss rate is one.
+    let sensitive = run(0x0FF0, profile, 30_000.0, Mode::LossRate);
+    assert_ne!(
+        sensitive.decreases, incumbent.decreases,
+        "no predicate moves this profile, so it cannot show that one does not"
+    );
+    assert_eq!(
+        candidate.decreases, incumbent.decreases,
+        "the silence changed how often the rate was cut; the finding has moved"
+    );
+    // **Half a percent, not equality.** Cutting 120 ms earlier does shift the
+    // recovery's phase, so the two runs are not bit-identical; what the
+    // finding says is that the shift is not worth having, and a candidate
+    // that earned adoption would move this by far more than the margin.
+    let moved = (candidate.delivered_mbps - incumbent.delivered_mbps).abs()
+        / incumbent.delivered_mbps;
+    assert!(
+        moved < 0.005,
+        "the silence moved delivered throughput by {:.2}%: incumbent={:.4} candidate={:.4}",
+        moved * 100.0,
+        incumbent.delivered_mbps,
+        candidate.delivered_mbps
     );
 }
 
