@@ -266,14 +266,22 @@ typedef enum lowlat_rotation {
 
 /// Which congestion control level a session runs at.
 ///
-/// **Zero is the most aggressive, not "off".** Its threshold declares
-/// congestion on any stale fragment once the send window passes its floor, and
-/// it exists only for compatibility with an older scheme. Sensitive is the
-/// default and the one to leave alone.
+/// **Zero is the most aggressive, not "off".** Its thresholds are all zero, so
+/// every outstanding fragment classifies stale and congestion is declared on
+/// every pass once the send window passes its floor. Sensitive is the default
+/// and the one to leave alone.
+///
+/// **Adaptive is not a fourth tolerance.** The first three are tunings of one
+/// detector and describe the whole of what a host does about congestion.
+/// Adaptive runs the sensitive tuning and adds host-local signals that see
+/// what the window floor hides. **Nothing is behind it yet**, so it behaves
+/// exactly as sensitive today; it is named here so that a signal which earns
+/// its measurement becomes a setting rather than a rebuild.
 typedef enum lowlat_cg_level {
-    LOWLAT_CG_LEVEL_LEGACY = 0,
+    LOWLAT_CG_LEVEL_AGGRESSIVE = 0,
     LOWLAT_CG_LEVEL_SENSITIVE = 1,
     LOWLAT_CG_LEVEL_RELAXED = 2,
+    LOWLAT_CG_LEVEL_ADAPTIVE = 3,
 } lowlat_cg_level;
 
 /// How severe a log line is.
@@ -308,22 +316,6 @@ typedef enum lowlat_quality {
 /// in here changes freely.
 typedef struct lowlat lowlat;
 
-/// Where log lines go.
-///
-/// **The one place this library calls into an application**, and the single
-/// exception to being poll-based. It is cold, it fires on whichever thread
-/// logged, and it must not call back in.
-typedef void (*lowlat_log_fn)(uint32_t level, const char *message, void *opaque);
-
-/// What a handle is created with.
-///
-/// **The caller sets `size`.** It is read rather than assumed, so this can grow
-/// without breaking an application compiled against an older header
-/// (docs/06-api.md 1).
-typedef struct lowlat_create_info {
-    uint32_t size;
-} lowlat_create_info;
-
 /// The video settings that can change while a host is running.
 ///
 /// **Split out because the split is real.** Everything here is applied without
@@ -341,12 +333,13 @@ typedef struct lowlat_host_video_config {
     /// Set by the caller to `sizeof(lowlat_host_video_config)`.
     uint32_t size;
     /// **A ceiling, not a target.** Capture runs at the display's own rate and
-    /// this is the most that is encoded from it.
+    /// this is the most that is encoded from it. **Default: 60.**
     uint32_t fps;
     /// What the operator asked for, before it is divided among guests.
+    /// **Default: 10.0.**
     double bitrate_mbps;
     /// The floor congestion control may not descend below. Lowered with the
-    /// ceiling when it would otherwise sit above it.
+    /// ceiling when it would otherwise sit above it. **Default: 1.0.**
     double min_bitrate_mbps;
     /// Emit at `fps` even when the picture has not changed.
     ///
@@ -372,9 +365,11 @@ typedef struct lowlat_host_audio_config {
     /// Set by the caller to `sizeof(lowlat_host_audio_config)`.
     uint32_t size;
     /// What the compressed form is encoded at, in kilobits a second.
+    /// **Default: `lowlat_audio::encode::DEFAULT_BITRATE_KBPS`.**
     uint32_t bitrate_kbps;
     /// Whether sound is captured at all. Off gives the device back and puts
-    /// the speakers at the desk back with it.
+    /// the speakers at the desk back with it. **Default: on** -- a host that
+    /// streams a desktop streams its sound.
     bool enabled;
     /// Whether a guest that asked for the uncompressed form may have it.
     ///
@@ -421,18 +416,22 @@ typedef struct lowlat_host_audio_config {
 typedef struct lowlat_host_config {
     /// Set by the caller to `sizeof(lowlat_host_config)`.
     uint32_t size;
-    /// The base a guest's port bind walks from.
+    /// The base a guest's port bind walks from. **Default: 9000.**
     uint16_t base_port;
     uint16_t reserved;
     /// Advertised capacity. Above `LOWLAT_GUESTS_MAX` is refused rather than
-    /// quietly reduced.
+    /// quietly reduced. **Default: 4.**
     uint32_t max_guests;
     /// One of `lowlat_codec`. Settled when hosting starts: one encode serves
-    /// every seat and a session has one video configuration.
+    /// every seat and a session has one video configuration. **Default: H.264**,
+    /// the one every peer decodes.
     uint32_t codec;
-    /// One of `lowlat_encoder`.
+    /// One of `lowlat_encoder`. **Default: follow display.**
     uint32_t encoder;
-    /// One of `lowlat_cg_level`.
+    /// One of `lowlat_cg_level`. **Default: sensitive**, which is the tuning
+    /// every other one is judged against. **Zero is not the default**, and a
+    /// structure zeroed by its caller asks for the most aggressive setting
+    /// rather than this one -- start from `lowlat_host_config_default`.
     uint32_t cg_level;
     /// One of `lowlat_quality`. **Settled when hosting starts**: it is what
     /// the encoder is built with, and one encode serves every seat.
@@ -441,17 +440,20 @@ typedef struct lowlat_host_config {
     /// did.** No interface here says whether a driver honoured a quantiser
     /// floor or an effort level, and one measured takes the floor on one codec
     /// and ignores it on the other, so a host logs its request once per stream
-    /// and does not claim more than that.
+    /// and does not claim more than that. **Default: lowest latency.**
     uint32_t quality;
     /// How long a guest keeps the pointer after its last movement, when
     /// `exclusive_pointer` is set. Clamped rather than refused: this is a
     /// comfort setting and the nearest usable value beats refusing to start.
+    /// **Default: `crate::floor::HOLD_MS`**, the figure the arbitration was
+    /// tuned to.
     uint32_t exclusive_hold_ms;
     /// Whether one guest at a time may drive the pointer. Off means everybody
-    /// drives it, which is a configuration rather than a fault.
+    /// drives it, which is a configuration rather than a fault. **Default: off.**
     bool exclusive_pointer;
     uint8_t reserved2[3];
-    /// How many of `servers` are set.
+    /// How many of `servers` are set. **Default: 0**, so a host consults
+    /// nothing for its own address until an application names a server.
     uint32_t server_count;
     /// Reflexive servers, consulted for this host's own mapped address, each
     /// `host:port`.
@@ -461,6 +463,22 @@ typedef struct lowlat_host_config {
     /// Sound, every field of which can also be set while the host runs.
     lowlat_host_audio_config audio;
 } lowlat_host_config;
+
+/// Where log lines go.
+///
+/// **The one place this library calls into an application**, and the single
+/// exception to being poll-based. It is cold, it fires on whichever thread
+/// logged, and it must not call back in.
+typedef void (*lowlat_log_fn)(uint32_t level, const char *message, void *opaque);
+
+/// What a handle is created with.
+///
+/// **The caller sets `size`.** It is read rather than assumed, so this can grow
+/// without breaking an application compiled against an older header
+/// (docs/06-api.md 1).
+typedef struct lowlat_create_info {
+    uint32_t size;
+} lowlat_create_info;
 
 /// What a guest may drive.
 typedef struct lowlat_permissions {
@@ -859,6 +877,20 @@ uint32_t lowlat_abi_version(void) LOWLAT_NOEXCEPT;
 /// @param[in] status Any status value, including one this version does not define.
 /// @returns A NUL-terminated description. Never null, never freed.
 const char *lowlat_status_string(int32_t status) LOWLAT_NOEXCEPT;
+
+/// A configuration filled with what a host would choose for itself.
+///
+/// **Zero is not a configuration.** Every enumerated field here is validated
+/// rather than clamped, so a structure the caller zeroed is a *valid* request
+/// for the first variant of everything -- H.264, the most aggressive
+/// congestion level -- and the boundary cannot tell that apart from an
+/// application that meant it. Starting from this, and overwriting what the
+/// application actually has an opinion about, is what keeps an unset field
+/// unset rather than accidentally set to zero.
+///
+/// `size` is filled in, so a caller that starts here does not have to know it
+/// exists. Each field's own default is on the field.
+lowlat_host_config lowlat_host_config_default(void) LOWLAT_NOEXCEPT;
 
 /// Receive log messages from every part of this library.
 ///

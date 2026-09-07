@@ -73,7 +73,7 @@ internal enum Chroma : uint { Yuv420 = 1, Yuv444 = 2 }
 
 internal enum Encoder : uint { FollowDisplay = 0, Open = 1, Vendor = 2 }
 
-internal enum CgLevel : uint { Legacy = 0, Sensitive = 1, Relaxed = 2 }
+internal enum CgLevel : uint { Aggressive = 0, Sensitive = 1, Relaxed = 2, Adaptive = 3 }
 
 internal enum LogLevel : uint { Error = 0, Warn = 1, Info = 2, Debug = 3, Trace = 4 }
 

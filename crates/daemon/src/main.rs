@@ -421,7 +421,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     };
     let cg_level = flag("--cg-level")
         .and_then(|text| text.parse().ok())
-        .filter(|level| *level < 3)
+        // 3 is adaptive, which runs the sensitive tuning until a host-local
+        // signal lands behind it. See `lowlat_cg_level`.
+        .filter(|level| *level <= 3)
         .unwrap_or(1);
     // **Drained by a thread of its own, which is what an application does with
     // it.** The daemon has nothing to play a guest's microphone into, so it

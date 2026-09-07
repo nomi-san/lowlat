@@ -63,8 +63,32 @@ pub const LEVELS: [Level; 3] = [
 /// The default. Not level 0; see [`LEVELS`].
 pub const DEFAULT_LEVEL: usize = 1;
 
+/// The host-local strategy, selected in place of a level.
+///
+/// **It is not a fourth tuning of the staleness detector.** [`LEVELS`] is a
+/// tolerance triple and its three entries reproduce the reference exactly;
+/// this selects the same detector as [`DEFAULT_LEVEL`] *plus* host-local
+/// signals that see what the window floor hides.
+///
+/// **Nothing is behind it yet.** Every candidate is still telemetry with
+/// nothing reading it, so today this behaves exactly as level 1. It exists so
+/// that a candidate which earns adoption becomes a setting rather than a
+/// branch, and so the comparison against the reference stays available at run
+/// time instead of at build time.
+///
+/// **Corrections toward the reference never sit behind this**, only additions
+/// beyond it. A correction that has to be asked for is a defect left on by
+/// default.
+pub const ADAPTIVE: usize = 3;
+
 /// Resolve a level index, clamping to the default rather than to zero.
 pub fn level(index: usize) -> Level {
+    if index == ADAPTIVE {
+        // **Deliberate, not the clamp below.** The strategy runs the default
+        // tolerance; letting it arrive there through the out-of-range arm
+        // would make its tuning a fallback that nothing states.
+        return LEVELS[DEFAULT_LEVEL];
+    }
     *LEVELS.get(index).unwrap_or(&LEVELS[DEFAULT_LEVEL])
 }
 
@@ -124,6 +148,15 @@ impl Controller {
     /// The ceiling currently in force.
     pub fn max_mbps(&self) -> f64 {
         self.max_mbps
+    }
+
+    /// Whether the host-local strategy is selected; see [`ADAPTIVE`].
+    ///
+    /// **The gate for deferred work.** It is false for every level that
+    /// reproduces the reference, so a reader can tell the two apart without
+    /// knowing the numbering.
+    pub fn adaptive(&self) -> bool {
+        self.level == ADAPTIVE
     }
 
     /// How many times the rate has been cut. Surfaced for diagnostics.
@@ -222,6 +255,21 @@ mod tests {
     fn an_out_of_range_level_falls_back_to_the_default_not_to_zero() {
         assert_eq!(level(99), LEVELS[DEFAULT_LEVEL]);
         assert_ne!(level(99), LEVELS[0]);
+    }
+
+    /// **The strategy is not a level, and no level is the strategy.**
+    #[test]
+    fn the_host_local_strategy_runs_the_default_tuning_and_no_level_claims_it() {
+        assert_eq!(level(ADAPTIVE), LEVELS[DEFAULT_LEVEL]);
+        assert!(Controller::new(ADAPTIVE, 1.0, 100.0).adaptive());
+        for index in 0..LEVELS.len() {
+            assert!(
+                !Controller::new(index, 1.0, 100.0).adaptive(),
+                "level {index} reproduces the reference and must not gate additions"
+            );
+        }
+        // An index past the strategy is still out of range, not the strategy.
+        assert!(!Controller::new(ADAPTIVE + 1, 1.0, 100.0).adaptive());
     }
 
     #[test]

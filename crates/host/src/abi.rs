@@ -442,16 +442,24 @@ pub enum lowlat_rotation {
 
 /// Which congestion control level a session runs at.
 ///
-/// **Zero is the most aggressive, not "off".** Its threshold declares
-/// congestion on any stale fragment once the send window passes its floor, and
-/// it exists only for compatibility with an older scheme. Sensitive is the
-/// default and the one to leave alone.
+/// **Zero is the most aggressive, not "off".** Its thresholds are all zero, so
+/// every outstanding fragment classifies stale and congestion is declared on
+/// every pass once the send window passes its floor. Sensitive is the default
+/// and the one to leave alone.
+///
+/// **Adaptive is not a fourth tolerance.** The first three are tunings of one
+/// detector and describe the whole of what a host does about congestion.
+/// Adaptive runs the sensitive tuning and adds host-local signals that see
+/// what the window floor hides. **Nothing is behind it yet**, so it behaves
+/// exactly as sensitive today; it is named here so that a signal which earns
+/// its measurement becomes a setting rather than a rebuild.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_cg_level {
-    LOWLAT_CG_LEVEL_LEGACY = 0,
+    LOWLAT_CG_LEVEL_AGGRESSIVE = 0,
     LOWLAT_CG_LEVEL_SENSITIVE = 1,
     LOWLAT_CG_LEVEL_RELAXED = 2,
+    LOWLAT_CG_LEVEL_ADAPTIVE = 3,
 }
 
 /// Where a host sits between delay and picture.
@@ -492,12 +500,13 @@ pub struct lowlat_host_video_config {
     /// Set by the caller to `sizeof(lowlat_host_video_config)`.
     pub size: u32,
     /// **A ceiling, not a target.** Capture runs at the display's own rate and
-    /// this is the most that is encoded from it.
+    /// this is the most that is encoded from it. **Default: 60.**
     pub fps: u32,
     /// What the operator asked for, before it is divided among guests.
+    /// **Default: 10.0.**
     pub bitrate_mbps: f64,
     /// The floor congestion control may not descend below. Lowered with the
-    /// ceiling when it would otherwise sit above it.
+    /// ceiling when it would otherwise sit above it. **Default: 1.0.**
     pub min_bitrate_mbps: f64,
     /// Emit at `fps` even when the picture has not changed.
     ///
@@ -526,9 +535,11 @@ pub struct lowlat_host_audio_config {
     /// Set by the caller to `sizeof(lowlat_host_audio_config)`.
     pub size: u32,
     /// What the compressed form is encoded at, in kilobits a second.
+    /// **Default: [`lowlat_audio::encode::DEFAULT_BITRATE_KBPS`].**
     pub bitrate_kbps: u32,
     /// Whether sound is captured at all. Off gives the device back and puts
-    /// the speakers at the desk back with it.
+    /// the speakers at the desk back with it. **Default: on** -- a host that
+    /// streams a desktop streams its sound.
     pub enabled: bool,
     /// Whether a guest that asked for the uncompressed form may have it.
     ///
@@ -577,18 +588,22 @@ pub struct lowlat_host_audio_config {
 pub struct lowlat_host_config {
     /// Set by the caller to `sizeof(lowlat_host_config)`.
     pub size: u32,
-    /// The base a guest's port bind walks from.
+    /// The base a guest's port bind walks from. **Default: 9000.**
     pub base_port: u16,
     pub reserved: u16,
     /// Advertised capacity. Above [`LOWLAT_GUESTS_MAX`] is refused rather than
-    /// quietly reduced.
+    /// quietly reduced. **Default: 4.**
     pub max_guests: u32,
     /// One of [`lowlat_codec`]. Settled when hosting starts: one encode serves
-    /// every seat and a session has one video configuration.
+    /// every seat and a session has one video configuration. **Default: H.264**,
+    /// the one every peer decodes.
     pub codec: u32,
-    /// One of [`lowlat_encoder`].
+    /// One of [`lowlat_encoder`]. **Default: follow display.**
     pub encoder: u32,
-    /// One of [`lowlat_cg_level`].
+    /// One of [`lowlat_cg_level`]. **Default: sensitive**, which is the tuning
+    /// every other one is judged against. **Zero is not the default**, and a
+    /// structure zeroed by its caller asks for the most aggressive setting
+    /// rather than this one -- start from [`lowlat_host_config_default`].
     pub cg_level: u32,
     /// One of [`lowlat_quality`]. **Settled when hosting starts**: it is what
     /// the encoder is built with, and one encode serves every seat.
@@ -597,17 +612,20 @@ pub struct lowlat_host_config {
     /// did.** No interface here says whether a driver honoured a quantiser
     /// floor or an effort level, and one measured takes the floor on one codec
     /// and ignores it on the other, so a host logs its request once per stream
-    /// and does not claim more than that.
+    /// and does not claim more than that. **Default: lowest latency.**
     pub quality: u32,
     /// How long a guest keeps the pointer after its last movement, when
     /// `exclusive_pointer` is set. Clamped rather than refused: this is a
     /// comfort setting and the nearest usable value beats refusing to start.
+    /// **Default: [`crate::floor::HOLD_MS`]**, the figure the arbitration was
+    /// tuned to.
     pub exclusive_hold_ms: u32,
     /// Whether one guest at a time may drive the pointer. Off means everybody
-    /// drives it, which is a configuration rather than a fault.
+    /// drives it, which is a configuration rather than a fault. **Default: off.**
     pub exclusive_pointer: bool,
     pub reserved2: [u8; 3],
-    /// How many of `servers` are set.
+    /// How many of `servers` are set. **Default: 0**, so a host consults
+    /// nothing for its own address until an application names a server.
     pub server_count: u32,
     /// Reflexive servers, consulted for this host's own mapped address, each
     /// `host:port`.
@@ -621,6 +639,61 @@ pub struct lowlat_host_config {
 /// The most guests a host may advertise, which is what the ring memory per
 /// guest is sized against.
 pub const LOWLAT_GUESTS_MAX: u32 = 16;
+
+/// A configuration filled with what a host would choose for itself.
+///
+/// **Zero is not a configuration.** Every enumerated field here is validated
+/// rather than clamped, so a structure the caller zeroed is a *valid* request
+/// for the first variant of everything -- H.264, the most aggressive
+/// congestion level -- and the boundary cannot tell that apart from an
+/// application that meant it. Starting from this, and overwriting what the
+/// application actually has an opinion about, is what keeps an unset field
+/// unset rather than accidentally set to zero.
+///
+/// `size` is filled in, so a caller that starts here does not have to know it
+/// exists. Each field's own default is on the field.
+#[unsafe(no_mangle)]
+pub extern "C" fn lowlat_host_config_default() -> lowlat_host_config {
+    lowlat_host_config {
+        size: u32::try_from(core::mem::size_of::<lowlat_host_config>()).unwrap_or(u32::MAX),
+        base_port: 9000,
+        reserved: 0,
+        max_guests: 4,
+        codec: lowlat_codec::LOWLAT_CODEC_H264 as u32,
+        encoder: lowlat_encoder::LOWLAT_ENCODER_FOLLOW_DISPLAY as u32,
+        cg_level: lowlat_cg_level::LOWLAT_CG_LEVEL_SENSITIVE as u32,
+        quality: lowlat_quality::LOWLAT_QUALITY_LOWEST_LATENCY as u32,
+        // The figure the pointer arbitration was tuned to. Held as a literal
+        // because the field is whole milliseconds and `floor`'s is not; the
+        // test below is what keeps the two the same number.
+        exclusive_hold_ms: 500,
+        exclusive_pointer: false,
+        reserved2: [0; 3],
+        server_count: 0,
+        servers: [[0; LOWLAT_SERVER_MAX]; LOWLAT_SERVERS_MAX],
+        video: lowlat_host_video_config {
+            size: u32::try_from(core::mem::size_of::<lowlat_host_video_config>())
+                .unwrap_or(u32::MAX),
+            fps: 60,
+            bitrate_mbps: 10.0,
+            min_bitrate_mbps: 1.0,
+            full_fps: false,
+            reserved: [0; 3],
+            output: [0; LOWLAT_OUTPUT_MAX],
+        },
+        audio: lowlat_host_audio_config {
+            size: u32::try_from(core::mem::size_of::<lowlat_host_audio_config>())
+                .unwrap_or(u32::MAX),
+            bitrate_kbps: lowlat_audio::encode::DEFAULT_BITRATE_KBPS,
+            enabled: true,
+            allow_uncompressed: false,
+            mute_local: false,
+            accept_microphone: false,
+            reserved: [0; 1],
+            device: [0; LOWLAT_OUTPUT_MAX],
+        },
+    }
+}
 
 /// What a handle is created with.
 ///
@@ -1053,9 +1126,12 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
         _ => return None,
     };
     let cg_level = match cfg.cg_level {
-        code if code == lowlat_cg_level::LOWLAT_CG_LEVEL_LEGACY as u32 => 0,
+        code if code == lowlat_cg_level::LOWLAT_CG_LEVEL_AGGRESSIVE as u32 => 0,
         code if code == lowlat_cg_level::LOWLAT_CG_LEVEL_SENSITIVE as u32 => 1,
         code if code == lowlat_cg_level::LOWLAT_CG_LEVEL_RELAXED as u32 => 2,
+        code if code == lowlat_cg_level::LOWLAT_CG_LEVEL_ADAPTIVE as u32 => {
+            lowlat_core::congestion::ADAPTIVE
+        }
         _ => return None,
     };
     // **An unknown value is refused rather than rounded to something.** A
@@ -1257,8 +1333,14 @@ pub unsafe extern "C" fn lowlat_host_start(
 ) -> lowlat_status {
     unsafe {
         entered(ll, |handle| {
-            let Some(cfg) = cfg.as_ref() else {
-                return LOWLAT_ERR_INVALID_ARGUMENT;
+            // **Null means the defaults**, which is the one reading of a null
+            // configuration that cannot be a mistake. An application with no
+            // opinion should not have to build a structure to say so, and
+            // building one by zeroing it asks for something else entirely.
+            let defaults = lowlat_host_config_default();
+            let cfg = match cfg.as_ref() {
+                Some(cfg) => cfg,
+                None => &defaults,
             };
             if (cfg.size as usize) < core::mem::size_of::<lowlat_host_config>() {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
@@ -3177,6 +3259,60 @@ mod start_tests {
         );
         assert!(back.full_fps, "a permission set at start was dropped");
         assert_eq!(back.fps, 45);
+        unsafe { lowlat_destroy(handle) };
+    }
+
+    /// **A configuration nobody filled in is not a zeroed one.**
+    ///
+    /// Every enumerated field is validated rather than clamped, so zero is a
+    /// valid request for the first variant of each -- including the most
+    /// aggressive congestion level. These are what a host would choose.
+    #[test]
+    fn the_defaults_are_what_a_host_would_choose_and_zero_is_not_them() {
+        let cfg = lowlat_host_config_default();
+        assert_eq!(
+            cfg.cg_level,
+            lowlat_cg_level::LOWLAT_CG_LEVEL_SENSITIVE as u32
+        );
+        assert_ne!(
+            cfg.cg_level,
+            lowlat_cg_level::LOWLAT_CG_LEVEL_AGGRESSIVE as u32,
+            "a zeroed structure already asks for the aggressive level; the defaults must not"
+        );
+        // The sizes are filled in, so a caller starting here never sets them.
+        assert_eq!(cfg.size as usize, core::mem::size_of::<lowlat_host_config>());
+        assert_eq!(
+            cfg.video.size as usize,
+            core::mem::size_of::<lowlat_host_video_config>()
+        );
+        assert_eq!(
+            cfg.audio.size as usize,
+            core::mem::size_of::<lowlat_host_audio_config>()
+        );
+        // **One figure, two types.** The field is whole milliseconds and the
+        // arbitration's constant is not, so this is what catches a drift.
+        assert!((f64::from(cfg.exclusive_hold_ms) - crate::floor::HOLD_MS).abs() < f64::EPSILON);
+        // And the whole of it survives the validation an application's own
+        // structure would face.
+        assert!(
+            configured(&cfg).is_some(),
+            "the defaults are not a configuration this boundary accepts"
+        );
+    }
+
+    /// **A null configuration means the defaults, not a refusal.**
+    ///
+    /// An application with no opinion should not have to build a structure to
+    /// say so, and the obvious way to build one -- zeroing it -- asks for
+    /// something else.
+    #[test]
+    fn a_null_configuration_is_taken_as_the_defaults() {
+        let handle = handle();
+        assert_ne!(
+            unsafe { lowlat_host_start(handle, core::ptr::null()) },
+            LOWLAT_ERR_INVALID_ARGUMENT,
+            "a null configuration was refused instead of meaning the defaults"
+        );
         unsafe { lowlat_destroy(handle) };
     }
 
