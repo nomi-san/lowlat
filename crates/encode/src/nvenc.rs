@@ -191,6 +191,30 @@ impl Api {
 
 #[cfg(test)]
 mod tests {
+
+    /// **The buffer is 3.1 frames, bounded, not one frame.**
+    ///
+    /// One frame forbids any frame from exceeding its own budget, which is
+    /// what quantises a scene change until it fits.
+    #[test]
+    fn the_video_buffer_is_three_point_one_frames_until_it_is_capped() {
+        // 10 Mbps at 60 fps: 166_666 bits a frame, times 3.1.
+        assert_eq!(super::vbv_bits(10_000_000, 60), 516_664);
+        // Doubling the frame rate halves the frame and halves the buffer.
+        assert_eq!(super::vbv_bits(10_000_000, 120), 258_332);
+        // **The cap binds above roughly fifteen megabits at sixty frames**, and
+        // the buffer stops growing with the rate.
+        assert_eq!(super::vbv_bits(30_000_000, 60), super::VBV_MAX_BITS);
+        // A zero frame rate divides by one rather than panicking.
+        assert_eq!(super::vbv_bits(1_000_000, 0), super::VBV_MAX_BITS.min(3_100_000));
+        // And it is strictly more than the one frame this used to be.
+        for (bps, fps) in [(4_900_000u32, 120u32), (10_000_000, 60), (2_000_000, 30)] {
+            assert!(
+                super::vbv_bits(bps, fps) > bps / fps,
+                "the buffer is not larger than one frame at {bps} over {fps}"
+            );
+        }
+    }
     use super::*;
 
     /// **The depth is named in three places and the stream is the only proof
@@ -979,6 +1003,42 @@ pub struct Encoder<'a> {
     session: Session<'a>,
 }
 
+/// The video buffer's size, in tenths of one frame's budget.
+///
+/// **Three point one frames, not one.** A buffer of exactly one frame forbids
+/// any frame from exceeding `bitrate / fps`, so a scene change -- a scroll, a
+/// window switch -- is quantised until it fits, and a still picture keeps
+/// whatever quality the motion that drew it could afford. That was measured on
+/// a live 2K stream where the transport was demonstrably idle: the send window
+/// peaked at 18 of a hundred with nothing stale and no congestion event.
+///
+/// The one-frame rule was chosen here on the argument that a larger buffer
+/// smooths bitrate across frames, which is queueing, and those bits arrive late
+/// rather than not at all. That argument is sound and the number was still
+/// wrong: the reference smooths across **3.1** frames and bounds the result
+/// instead, which buys the scene change its bits without unbounding the delay.
+const VBV_FRAME_TENTHS: u32 = 31;
+
+/// The ceiling on that buffer, in bits.
+///
+/// **What keeps the multiple from becoming an unbounded delay.** Above roughly
+/// fifteen megabits at sixty frames the multiple would exceed this, and the
+/// buffer stops growing with the rate.
+const VBV_MAX_BITS: u32 = 768_000;
+
+/// `min(768 kbit, one frame's budget x 3.1)`, in bits.
+///
+/// Reference-faithful; see [`VBV_FRAME_TENTHS`]. The initial delay is set to
+/// the whole buffer, which is what the reference's hundred-percent default
+/// comes to.
+fn vbv_bits(bitrate_bps: u32, fps: u32) -> u32 {
+    let per_frame = bitrate_bps / fps.max(1);
+    let scaled = u64::from(per_frame) * u64::from(VBV_FRAME_TENTHS) / 10;
+    u32::try_from(scaled)
+        .unwrap_or(u32::MAX)
+        .min(VBV_MAX_BITS)
+}
+
 impl<'a> Session<'a> {
     /// Configure the encoder for low latency and initialise it.
     pub fn initialize(
@@ -1044,12 +1104,9 @@ impl<'a> Session<'a> {
         rc.rateControlMode = f::NV_ENC_PARAMS_RC_VBR;
         rc.averageBitRate = config.bitrate_bps;
         rc.maxBitRate = config.bitrate_bps;
-        // One frame of buffer. A larger one lets the encoder smooth bitrate
-        // across frames, which is exactly the queueing this pipeline exists to
-        // avoid: those bits arrive late rather than not at all.
-        let per_frame = config.bitrate_bps / config.fps.max(1);
-        rc.vbvBufferSize = per_frame;
-        rc.vbvInitialDelay = per_frame;
+        let vbv = vbv_bits(config.bitrate_bps, config.fps);
+        rc.vbvBufferSize = vbv;
+        rc.vbvInitialDelay = vbv;
         // **The quantiser floor, which is a latency control and reads
         // backwards.** Left unset the encoder is free to descend to a
         // near-lossless quantiser on content it finds easy, and it does: a
@@ -1286,11 +1343,11 @@ impl Encoder<'_> {
         use crate::ffi::nvenc as f;
 
         self.config.bitrate_bps = bitrate_bps;
-        let per_frame = bitrate_bps / self.config.fps.max(1);
+        let vbv = vbv_bits(bitrate_bps, self.config.fps);
         self.encode_config.rcParams.averageBitRate = bitrate_bps;
         self.encode_config.rcParams.maxBitRate = bitrate_bps;
-        self.encode_config.rcParams.vbvBufferSize = per_frame;
-        self.encode_config.rcParams.vbvInitialDelay = per_frame;
+        self.encode_config.rcParams.vbvBufferSize = vbv;
+        self.encode_config.rcParams.vbvInitialDelay = vbv;
 
         let mut params = unsafe { core::mem::zeroed::<f::NV_ENC_RECONFIGURE_PARAMS>() };
         params.version = crate::ffi::versions::NV_ENC_RECONFIGURE_PARAMS_VER;
