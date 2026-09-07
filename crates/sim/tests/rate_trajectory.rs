@@ -88,7 +88,7 @@ fn fragment_count(needed: usize) -> usize {
 /// Resend counts since the last sample, over first sends, as a percentage.
 struct LossMeter {
     first_sends: u64,
-    resends: u64,
+    timeouts: u64,
 }
 
 impl LossMeter {
@@ -100,15 +100,21 @@ impl LossMeter {
     /// numerator, and it charged a short tail fragment as a fraction of one,
     /// which shrinks it. Which error dominates depends on the rate the
     /// controller has landed on, so the sign of the bias was not even fixed.
+    ///
+    /// **The numerator is timeouts alone, not every resend.** The two causes
+    /// mean different things and the ring already separates them. A reorder
+    /// fires a negative acknowledgement -- the receiver names a fragment more
+    /// than two past its frontier -- and no timeout follows, because the gap
+    /// fills on its own. A loss fires both: the report if the receiver
+    /// notices, and the timeout when nothing arrives. Summing them made the
+    /// predicate count reorder as loss, which is what threw away a clean
+    /// thirty-megabit path on two milliseconds of delay spread.
     fn take(&mut self, pressure: &lowlat_core::session::Pressure) -> f64 {
         let first = pressure.packets_sent;
         let new_first = first.saturating_sub(self.first_sends);
-        let resends = pressure
-            .nack_resends
-            .saturating_add(pressure.timeout_resends)
-            .saturating_sub(self.resends);
+        let resends = pressure.timeout_resends.saturating_sub(self.timeouts);
         self.first_sends = first;
-        self.resends = pressure.nack_resends + pressure.timeout_resends;
+        self.timeouts = pressure.timeout_resends;
         if new_first == 0 {
             return 0.0;
         }
@@ -307,7 +313,7 @@ fn run(seed: u64, profile: Profile, duration_ms: f64, mode: Mode) -> Outcome {
     let mut applied_mbps = controller.rate_mbps();
     let mut meter = LossMeter {
         first_sends: 0,
-        resends: 0,
+        timeouts: 0,
     };
 
     let mut wire = [0u8; SLOT + 64];
@@ -631,22 +637,24 @@ fn trajectories_under_jitter_and_reorder() {
     }
 }
 
-/// **The finding this profile exists to hold: the loss-rate predicate as
-/// shaped in the improvements plan throttles a path that loses nothing.**
+/// **The false cut this profile was built to hold, and the reshape that
+/// removed it.**
 ///
 /// Two milliseconds of delay spread, no loss, no cap. That spread exceeds one
-/// fragment interval at this rate, so fragments arrive out of order, a
+/// fragment interval at this rate, so fragments arrive out of order and a
 /// receiver names one more than two past its frontier as a negative
-/// acknowledgement, and a predicate reading a raw resend rate counts it as
-/// loss. The incumbent holds at the ceiling on the same traffic.
+/// acknowledgement. **Counting those as loss threw a clean thirty-megabit
+/// path down to 4.82 in eleven cuts** while the incumbent held at the
+/// ceiling.
 ///
-/// **This test fails when the predicate is reshaped, and that is the point.**
-/// Hysteresis, an average over more than one window, or excluding
-/// reorder-driven negative acknowledgements would each stop the false cut;
-/// when one of them lands, this assertion is what says so, and it wants
-/// rewriting into the new expectation rather than deleting.
+/// **Reshaped 2026-09-06: the numerator is timeouts alone.** A reorder fires
+/// a negative acknowledgement and no timeout, because the gap fills on its
+/// own; a loss fires both. The two causes were already separated in the ring
+/// and the predicate was summing them. With the reshape this path is
+/// bit-identical to the incumbent again, which is what the assertion now
+/// says.
 #[test]
-fn the_loss_rate_candidate_false_cuts_on_jitter_alone() {
+fn the_loss_rate_candidate_no_longer_false_cuts_on_jitter() {
     let profile = Profile::default();
     let incumbent = run(0x1177, profile, 30_000.0, Mode::Incumbent);
     let candidate = run(0x1177, profile, 30_000.0, Mode::LossRate);
@@ -655,14 +663,14 @@ fn the_loss_rate_candidate_false_cuts_on_jitter_alone() {
         incumbent.decreases, 0,
         "the control moved: this profile is not clean and proves nothing"
     );
-    assert!(
-        candidate.decreases > 0,
-        "the loss-rate predicate no longer false-cuts on jitter; rewrite this test \
-         and revisit the improvements plan's loss-rate item"
+    assert_eq!(
+        candidate.decreases, 0,
+        "the loss-rate predicate cut a path that lost nothing; the reorder-driven \
+         negative acknowledgements are reaching the numerator again"
     );
     assert!(
-        candidate.final_mbps < incumbent.final_mbps / 2.0,
-        "the false cut is no longer severe: incumbent={:.2} candidate={:.2}",
+        (candidate.final_mbps - incumbent.final_mbps).abs() < 1e-9,
+        "the predicate moved a clean path: incumbent={:.2} candidate={:.2}",
         incumbent.final_mbps,
         candidate.final_mbps
     );
@@ -775,8 +783,13 @@ fn trajectories_under_an_outage() {
 /// new expectation rather than deleting it.
 #[test]
 fn ack_silence_answers_an_outage_sooner_and_the_outcome_is_the_same() {
+    // **The uncapped regime, because it is the one that can be shown.** At a
+    // two-megabit ceiling the silence answers each outage 120 ms sooner than
+    // the window rule and the outcome still does not move -- but after the
+    // loss predicate was reshaped, *nothing* moves that profile, so it cannot
+    // carry its own denominator. That observation is printed by
+    // `trajectories_under_an_outage` rather than asserted here.
     let profile = Profile {
-        max_mbps: 2.0,
         outage_ms: 500.0,
         outage_every_ms: 5_000.0,
         ..Profile::default()
@@ -790,14 +803,16 @@ fn ack_silence_answers_an_outage_sooner_and_the_outcome_is_the_same() {
          than the redundancy it is here to show"
     );
     // **The denominator this finding needs.** "Nothing moved" is worth
-    // nothing unless something can move, and lowering the silence threshold
-    // as far as the acknowledgement cadence itself still moves nothing here:
-    // the cut arithmetic absorbs any amount of extra declaring. A predicate
-    // that reaches a different answer on the same traffic is what says the
-    // profile is sensitive at all, and the loss rate is one.
-    let sensitive = run(0x0FF0, profile, 30_000.0, Mode::LossRate);
-    assert_ne!(
-        sensitive.decreases, incumbent.decreases,
+    // nothing unless something can move. Lowering the silence threshold as
+    // far as the acknowledgement cadence itself still moves nothing, so the
+    // absence is not a matter of sensitivity in the signal; a different
+    // predicate reaching a different answer on the same traffic is what says
+    // the profile can register one at all.
+    let sensitive = run(0x0FF0, profile, 30_000.0, Mode::Gradient);
+    assert!(
+        (sensitive.delivered_mbps - incumbent.delivered_mbps).abs()
+            / incumbent.delivered_mbps
+            > 0.05,
         "no predicate moves this profile, so it cannot show that one does not"
     );
     assert_eq!(
