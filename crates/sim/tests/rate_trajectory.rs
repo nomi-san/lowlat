@@ -320,6 +320,12 @@ struct Profile {
     /// and then something changes. Zero never switches.
     fps_after: f64,
     fps_at_ms: f64,
+    /// Which congestion level the controller is built with.
+    ///
+    /// **Every trajectory in this file ran at level 1 until this existed.**
+    /// Zero and two are reachable through the boundary and the daemon's
+    /// `--cg-level`, and nothing had ever driven them through a session.
+    level: usize,
     /// The controller's ceiling. **The multi-guest shape**: one encode is
     /// divided by the seats sharing it, so each guest's ceiling is a fraction
     /// of the configured rate and its window is a fraction of the fragments.
@@ -338,6 +344,7 @@ impl Default for Profile {
             outage_ms: 0.0,
             outage_every_ms: 0.0,
             fps: FRAME_FPS,
+            level: congestion::DEFAULT_LEVEL,
             fps_after: 0.0,
             fps_at_ms: 0.0,
             max_mbps: 30.0,
@@ -372,7 +379,7 @@ fn run(seed: u64, profile: Profile, duration_ms: f64, mode: Mode) -> Outcome {
     let mut rx = endpoint(&mut rx_arena);
 
     // The controller, as the host builds one: default level, 1 to 30 Mibit/s.
-    let mut controller = Controller::new(congestion::DEFAULT_LEVEL, 1.0, profile.max_mbps);
+    let mut controller = Controller::new(profile.level, 1.0, profile.max_mbps);
     let mut applied_mbps = controller.rate_mbps();
     let mut meter = LossMeter {
         first_sends: 0,
@@ -806,6 +813,95 @@ fn the_gradient_gate_leaves_a_clean_path_exactly_where_it_found_it() {
         "the gradient held a climb it had no reason to: incumbent={:.2} candidate={:.2}",
         incumbent.final_mbps,
         candidate.final_mbps
+    );
+}
+
+/// **The three shipped levels, driven rather than unit-tested.**
+///
+/// Level 0's multiplier and constant are both zero, so its first staleness
+/// clause is `age > 0` and its second is `srtt > 0`: **every occupied
+/// fragment classifies stale by construction**, and its ratio threshold is
+/// zero too. That makes it the most aggressive setting rather than a disabled
+/// one, which the boundary and the level table both say -- and which nothing
+/// had ever driven.
+///
+/// Level 2 tolerates more delay before counting a fragment stale and wants a
+/// third of the window stale before it declares.
+///
+/// **The window floor is what stands between level 0 and a permanently cut
+/// stream**: stale-by-construction only matters once the window passes a
+/// hundred, and on a path that never fills the window the three levels cannot
+/// differ at all.
+#[test]
+fn trajectories_at_each_congestion_level() {
+    let profiles = [
+        ("clean     ", Profile::default()),
+        (
+            "loss 2%   ",
+            Profile {
+                loss: 0.02,
+                ..Profile::default()
+            },
+        ),
+        (
+            "cap=8     ",
+            Profile {
+                capacity_mibps: 8.0,
+                ..Profile::default()
+            },
+        ),
+    ];
+    for (name, base) in profiles {
+        for level in 0..congestion::LEVELS.len() {
+            let outcome = run(
+                0x1EA1,
+                Profile { level, ..base },
+                30_000.0,
+                Mode::Incumbent,
+            );
+            println!(
+                "{name} level={level}: final={:.2} Mibit/s offered={:.2} delivered={:.2} \
+                 decreases={}",
+                outcome.final_mbps, outcome.offered_mbps, outcome.delivered_mbps, outcome.decreases
+            );
+        }
+    }
+}
+
+/// **Level 0 throws away a path with nothing wrong with it, and that is the
+/// setting behaving correctly.**
+///
+/// Both of its tuning figures are zero, so every occupied fragment is stale
+/// and its ratio threshold is met by any of them. Once the climb takes the
+/// window past its floor the whole window is stale and the rate is cut, on a
+/// link that lost nothing. Levels 1 and 2 hold at the ceiling on the same
+/// traffic.
+///
+/// **This is the check that catches level 0 being "fixed" into a disabled
+/// setting**, which is how the predecessor's own notes described it and how
+/// the vendor's header still names it. It is the most aggressive level there
+/// is, and the number here is what says so.
+#[test]
+fn level_zero_cuts_a_clean_path_that_the_other_levels_hold() {
+    let base = Profile::default();
+    let zero = run(0x1EA1, Profile { level: 0, ..base }, 30_000.0, Mode::Incumbent);
+    let one = run(0x1EA1, Profile { level: 1, ..base }, 30_000.0, Mode::Incumbent);
+    let two = run(0x1EA1, Profile { level: 2, ..base }, 30_000.0, Mode::Incumbent);
+
+    assert_eq!(
+        one.decreases, 0,
+        "the default cut a clean path, so this profile proves nothing"
+    );
+    assert_eq!(two.decreases, 0, "the tolerant level cut a clean path");
+    assert!(
+        zero.decreases > 0,
+        "level 0 held a clean path, so it is behaving like a disabled setting"
+    );
+    assert!(
+        zero.delivered_mbps < one.delivered_mbps,
+        "level 0 cost nothing: zero={:.2} one={:.2}",
+        zero.delivered_mbps,
+        one.delivered_mbps
     );
 }
 
