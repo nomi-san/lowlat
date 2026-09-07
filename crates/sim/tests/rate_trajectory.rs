@@ -143,6 +143,18 @@ enum Mode {
     LossRate,
     /// The incumbent, with its peak tracker fed delivered bytes.
     GoodputPeak,
+    /// The timeout-only loss rate, answered gently instead of with a cut.
+    ///
+    /// **The response, not the detector.** The predicate is exactly
+    /// [`Mode::LossRate`]'s and fires in the same places; what changes is what
+    /// happens when it does. A cut advances the sixty-tick lockout, so a cut
+    /// spent on a sub-floor signal is one the window rule cannot spend when
+    /// the window actually fills -- which is what the measurement showed: at
+    /// two percent loss the predicate produced *fewer* decreases than the
+    /// incumbent, a *higher* final rate and *less* delivered throughput.
+    /// [`Controller::ease`] lowers the rate by a tenth and touches neither
+    /// counter, and this mode owns the cadence.
+    LossEase,
     /// The incumbent's own predicate, with the congested-tick counter cleared
     /// on every clean tick instead of every thirtieth.
     ///
@@ -250,6 +262,14 @@ const GRADIENT_MULT: f64 = 1.5;
 /// acknowledgement of either kind, so ten times that is not a peer being
 /// quiet, and reacting to it does not wait for the retransmission scan.
 const ACK_SILENCE_MS: f64 = 100.0;
+
+/// Frames between one gentle reduction and the next.
+///
+/// **The cadence belongs to the caller**, because easing has no lockout of
+/// its own and would otherwise compound on every tick the predicate is true.
+/// Half a second at sixty frames, which is the period the increase already
+/// runs at.
+const EASE_PERIOD: u64 = 30;
 
 /// One run's outcome, in the units the trajectory is read in.
 #[derive(Debug)]
@@ -371,6 +391,9 @@ fn run(seed: u64, profile: Profile, duration_ms: f64, mode: Mode) -> Outcome {
     let mut measured_offered = 0.0;
     let mut measured_delivered = 0.0;
     let mut below_mean_ms = 0.0;
+    let mut eased_at_tick = 0u64;
+    let mut tick_index = 0u64;
+    let mut eases = 0u64;
     let mut rate_sum = 0.0;
     let mut ticks = 0u64;
 
@@ -473,6 +496,19 @@ fn run(seed: u64, profile: Profile, duration_ms: f64, mode: Mode) -> Outcome {
                 if mode == Mode::EpisodeReset && !congested {
                     controller.forget_congested_ticks();
                 }
+                // **The gentle answer, on its own cadence.** The window rule
+                // still answers for itself through `tick_as` below; this only
+                // adds a reduction where the window rule sees nothing.
+                tick_index += 1;
+                if mode == Mode::LossEase
+                    && loss_ratio > 0.05
+                    && !controller.is_congested(pressure.window, pressure.stale)
+                    && tick_index.saturating_sub(eased_at_tick) >= EASE_PERIOD
+                {
+                    controller.ease();
+                    eased_at_tick = tick_index;
+                    eases += 1;
+                }
                 let rate = if holding {
                     controller.rate_mbps()
                 } else {
@@ -515,6 +551,9 @@ fn run(seed: u64, profile: Profile, duration_ms: f64, mode: Mode) -> Outcome {
         rx.poll(sim.now_ms());
     }
 
+    if mode == Mode::LossEase {
+        eprintln!("    [eases] {eases}");
+    }
     let seconds = duration_ms / 1000.0;
     Outcome {
         below_mean_ms,
@@ -558,6 +597,7 @@ fn trajectories_under_loss() {
             Mode::GoodputPeak,
             Mode::Gradient,
             Mode::AckSilence,
+            Mode::LossEase,
         ] {
             let outcome = run(
                 0x5EED,
@@ -596,6 +636,7 @@ fn trajectories_under_a_capacity_cap() {
             Mode::GoodputPeak,
             Mode::Gradient,
             Mode::AckSilence,
+            Mode::LossEase,
         ] {
             let outcome = run(
                 0xCA90,
@@ -673,6 +714,7 @@ fn trajectories_under_jitter_and_reorder() {
             Mode::GoodputPeak,
             Mode::Gradient,
             Mode::AckSilence,
+            Mode::LossEase,
         ] {
             let outcome = run(0x1177, profile, 30_000.0, mode);
             println!(
@@ -950,6 +992,7 @@ fn trajectories_under_an_outage() {
             Mode::GoodputPeak,
             Mode::Gradient,
             Mode::AckSilence,
+            Mode::LossEase,
         ] {
             let outcome = run(
                 0x0FF0,

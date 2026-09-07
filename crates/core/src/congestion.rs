@@ -19,6 +19,9 @@ pub const INCREASE_PERIOD: u32 = 30;
 pub const DECREASE_PERIOD: u32 = 60;
 /// Multiplicative decrease.
 const DECREASE_FACTOR: f64 = 0.7;
+/// The gentler decrease [`Controller::ease`] applies. Not the reference's; it
+/// exists only for a signal the reference has no equivalent of.
+const EASE_FACTOR: f64 = 0.9;
 /// Additive increase per step unit.
 const INCREASE_STEP_MBPS: f64 = 0.15;
 /// Step growth per increase, and the value it is capped at when applied.
@@ -234,6 +237,35 @@ impl Controller {
         self.decrease_ticks = 0;
     }
 
+    /// A gentler answer than [`Controller::cut`], for a signal the window rule
+    /// cannot see.
+    ///
+    /// **It spends nothing the window rule was saving.** `cut` advances the
+    /// congested-tick counter, and that counter is a sixty-tick lockout: a cut
+    /// taken for a sub-floor signal is a cut the window rule cannot take when
+    /// the window actually fills. Measured, that is what a sub-floor predicate
+    /// costs -- at two percent loss it produced *fewer* decreases than the
+    /// incumbent, a *higher* final rate, and *less* delivered throughput,
+    /// which is the signature of answering early and then being unable to
+    /// answer at all.
+    ///
+    /// So this touches neither counter and does not count as a decrease. It
+    /// scales the applied rate and the peak by the same gentler factor --
+    /// **the applied rate, not only the peak**, because the peak tracks
+    /// measured throughput and can sit well above the target, and easing a
+    /// memory nobody is reading changes nothing. **The caller owns the
+    /// cadence**, because a reduction with no lockout of its own would
+    /// compound on every tick.
+    ///
+    /// For the experiment in the improvements issue. **If it earns adoption
+    /// the predicate and this move into [`Controller::tick`] behind
+    /// [`ADAPTIVE`] and this goes**, as [`Controller::cut`] says of itself.
+    pub fn ease(&mut self) -> f64 {
+        self.peak_mbps *= EASE_FACTOR;
+        self.current_mbps *= EASE_FACTOR;
+        self.rate_mbps()
+    }
+
     /// One congested tick, for a predicate this controller does not compute.
     ///
     /// The same arithmetic the congested half of [`Controller::tick`] runs:
@@ -295,6 +327,42 @@ mod tests {
         }
         // An index past the strategy is still out of range, not the strategy.
         assert!(!Controller::new(ADAPTIVE + 1, 1.0, 100.0).adaptive());
+    }
+
+    /// **A gentler answer leaves the window rule's own answer available.**
+    #[test]
+    fn easing_lowers_the_rate_without_spending_the_window_rule_s_lockout() {
+        let mut controller = Controller::new(ADAPTIVE, 1.0, 100.0);
+        // Climb to a rate worth reducing, with the peak tracking a
+        // throughput near it rather than far above it.
+        for _ in 0..(INCREASE_PERIOD * 8) {
+            controller.tick(1, 0, controller.rate_mbps());
+        }
+        let before = controller.rate_mbps();
+        assert!(before > 1.0, "nothing climbed, so nothing can be eased");
+
+        let eased = controller.ease();
+        assert!(eased < before, "easing did not lower the rate");
+        assert!(
+            eased > before * DECREASE_FACTOR,
+            "easing spent as much as a cut: {eased} against {before}"
+        );
+        assert_eq!(
+            controller.total_decreases(),
+            0,
+            "easing counted as a congestion event"
+        );
+
+        // **The point of it**: the window rule can still answer at once,
+        // which it could not if easing had advanced the congested-tick
+        // counter.
+        let (window, stale) = (WINDOW_FLOOR + 1, WINDOW_FLOOR + 1);
+        controller.tick(window, stale, 0.0);
+        assert_eq!(
+            controller.total_decreases(),
+            1,
+            "the window rule's first cut was swallowed by the easing"
+        );
     }
 
     /// **The counter that makes a second episode cheaper than a first.**
