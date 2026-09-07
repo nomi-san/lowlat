@@ -3,6 +3,37 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-06 - An adaptive congestion setting, and a configuration that is not zero
+
+### Added
+- **A fourth congestion setting, `adaptive`, with nothing behind it yet.** The three levels are
+  the whole of the detector and each is a tuning of it; adaptive runs level 1's tuning and
+  reserves a place for host-local signals that see what the window floor hides. It is a seam,
+  not a feature: it exists so a signal which earns its measurement becomes a setting rather than
+  a rebuild, and it draws the line that matters -- **an addition beyond the three levels sits
+  behind it, a correction found in them is fixed in them**, because a correction that has to be
+  asked for is a defect left on by default. Recorded as deferred in the plan so that an empty
+  setting is a decision rather than an oversight.
+- **`lowlat_host_config_default`, and a null configuration means it.** Every enumerated field is
+  validated rather than clamped, so a structure the caller zeroed is a *valid* request for the
+  first variant of each -- including the most aggressive congestion level -- and the boundary
+  cannot tell that apart from an application that meant it. There was no way to ask for the
+  defaults, and the obvious way to build a configuration asked for something else.
+
+### Changed
+- **`LOWLAT_CG_LEVEL_LEGACY` is now `LOWLAT_CG_LEVEL_AGGRESSIVE`.** The value never selected an
+  older scheme; its thresholds are all zero, so every outstanding fragment classifies stale and
+  congestion is declared on every pass once the window passes its floor. The value did not move
+  and the behaviour did not change; the name stopped misdescribing it. This surface is ours and
+  carries no inherited compatibility, which is what makes correcting a name cheaper than keeping
+  a wrong one ([06 §11](06-api.md)).
+- Every settable configuration field now states its default beside it.
+
+### Testing
+- Three checks added and **each broken on purpose first**: defaults that pick the aggressive
+  level, a null configuration refused instead of taken as the defaults, and the pointer hold
+  drifting from the one figure the arbitration was tuned to.
+
 ## 2026-09-06 - The retransmission timeout is linear, and the spec called it exponential
 
 ### Fixed

@@ -222,6 +222,14 @@ whole:
 | `min_bitrate_mbps` | yes | The floor congestion control may not descend below, and it **moves down with the ceiling**: a ceiling lowered under a floor that stayed leaves every controller pinned at a rate the operator just asked not to exceed. |
 | `full_fps` | yes | Emit at `fps` even when the picture has not changed. **Clearing it is a permission, not an instruction** -- there is no damage signal here, so nothing yet skips a repeated picture, and continuing to send costs bitrate rather than being wrong. |
 | `output` | yes | The exception in cost rather than in kind: a picture from another output cannot be absorbed into a stream built for one, so it rebuilds around the new source for **one coded refresh** and every guest keeps its seat and its channel. |
+**A configuration nobody filled in is not a zeroed one.** Every enumerated field here is
+validated rather than clamped, so a structure the caller zeroed is a *valid* request for the
+first variant of each -- including the most aggressive congestion level -- and the boundary
+cannot tell that apart from an application that meant it. `lowlat_host_config_default` returns
+what a host would choose for itself, `size` fields included, and is the thing to start from and
+overwrite. **A null configuration to `lowlat_host_start` means exactly those defaults**, which
+is the one reading of a null pointer there that cannot be a mistake.
+
 Everything in `lowlat_host_config` outside that structure is settled at `lowlat_host_start`:
 
 | Field | Why not live |
@@ -229,7 +237,7 @@ Everything in `lowlat_host_config` outside that structure is settled at `lowlat_
 | `codec` | One encode serves every seat and a session has one video configuration ([00 §D11](00-overview.md)). |
 | `encoder` | A consequence of where the display is rather than a preference, and changing it rebuilds the pipeline. Absent means **follow the display**, which is the right default; choosing one is an override. |
 | `quality` | One of [`lowlat_quality`](#quality). It is what the encoder is built with, and one encode serves every seat, so moving it under a running session would change the picture every guest is watching on one guest's behalf. |
-| `cg_level` | Every guest's controller is built with it. **Zero is the most aggressive, not "off"**: its threshold declares congestion on any stale fragment once the send window passes its floor, and it exists only for compatibility with an older scheme. |
+| `cg_level` | Every guest's controller is built with it. **Zero is the most aggressive, not "off"**: its thresholds are all zero, so every outstanding fragment classifies stale and congestion is declared on every pass once the send window passes its floor. The default is *sensitive*, and *adaptive* runs the same tuning while reserving a place for host-local signals (§10). |
 | `base_port`, `servers` | Bound and consulted per attempt; moving them under running guests moves nothing that is already connected. |
 | `max_guests` | Advertised capacity, read when a guest asks for a seat. |
 | `exclusive_pointer`, `exclusive_hold_ms` | The pointer arbiter is built once with them. The hold is **clamped rather than refused**: it is a comfort setting, and the nearest usable value beats a host that will not start.
@@ -569,6 +577,12 @@ changing a signature, or changing the meaning of an existing field.
 
 `lowlat_abi_version` returns major and minor packed. A loader refusing a mismatched major is
 correct; refusing a newer minor is not.
+
+**This surface is ours and carries no inherited compatibility.** It was designed here rather
+than adopted, so before the first major version a name that turns out to be wrong is corrected
+rather than kept: `LOWLAT_CG_LEVEL_LEGACY` became `LOWLAT_CG_LEVEL_AGGRESSIVE` because the
+value never selected an older scheme and the name said it did. The value did not move and the
+behaviour did not change; only the name stopped misdescribing it.
 
 ## §12 Bindings
 

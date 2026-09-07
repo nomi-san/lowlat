@@ -777,6 +777,13 @@ wrapper over something live, and most of it is; these are the exceptions, found 
   follows the display, so today the answer is a consequence rather than a menu and the call would
   report nothing worth reading. Adding a function later is additive; a stub that always answers
   none is a worse answer than no call.
+- [ ] **The adaptive congestion setting has nothing behind it.** The fourth
+  `lowlat_cg_level` value is named and reaches the controller, and it runs level 1's tuning
+  because no host-local signal has earned adoption yet. Every candidate is instrumented and
+  measured but none survives a clean path unchanged, so the setting is a seam rather than a
+  feature. **It is listed here so that an empty setting is a recorded decision rather than an
+  oversight**; each signal joins it as its own measurement passes, and the setting is removed
+  rather than kept if none ever does.
 
 **Gate:**
 

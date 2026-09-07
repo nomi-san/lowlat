@@ -445,9 +445,19 @@ Levels:
 
 | Level | Stale ratio | Staleness threshold | Notes |
 |---|---|---|---|
-| 0 | 0.0 | none | Fires on any stale fragment once the window exceeds 100. This is the most aggressive setting, not a disabled one. Do not use it as a fallback for an out-of-range value. |
+| 0 | 0.0 | none | **Stale by construction.** Both its multiplier and its constant are zero, so every occupied fragment classifies stale and congestion is declared on every pass once the window exceeds 100. The most aggressive setting, not a disabled one. Do not use it as a fallback for an out-of-range value. |
 | 1 | 0.15 | `srtt * 1.1 + 20 ms` | Default. |
 | 2 | 0.35 | `srtt * 1.5 + 50 ms` | Tolerates more delay before counting a fragment stale. |
+
+**The three levels above are the whole of the detector**, and a host that runs one of them
+behaves the same way a peer of the same generation does. A fourth setting, *adaptive*, selects
+level 1's tuning and reserves a place for host-local signals that see what the window floor
+hides. **Nothing is behind it yet**, so it behaves exactly as level 1; it exists so that a
+signal which earns its measurement becomes a setting rather than a rebuild.
+
+**The distinction it draws is between an addition and a correction.** A signal that goes beyond
+the three levels sits behind *adaptive*. A defect found in the three levels is fixed in them,
+because a correction that has to be asked for is a defect left on by default.
 
 **The staleness threshold is not a retransmission timer** (§9). It classifies an outstanding
 fragment as stale for the purpose of the ratio above. A fragment counts as stale on any of:
