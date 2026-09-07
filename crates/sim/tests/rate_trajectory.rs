@@ -30,8 +30,15 @@ const SLOT: usize = 1193;
 const SLOTS: usize = 4000;
 const KEY: [u8; 32] = [0x7A; 32];
 
-/// Sixty frames a second.
-const FRAME_MS: f64 = 1000.0 / 60.0;
+/// Sixty frames a second, which is what every profile runs at unless it says
+/// otherwise.
+///
+/// **The controller's periods are counted in frames, not in time**, so this is
+/// also what turns thirty clean ticks into half a second and sixty congested
+/// ticks into one. A stream running at another rate keeps the tick counts and
+/// gets different durations, which is the thing
+/// `trajectories_at_a_low_frame_rate` measures.
+const FRAME_FPS: f64 = 60.0;
 /// How often the loop wakes, as in the recovery rig.
 const TICK_MS: f64 = 5.0;
 /// Throughput intervals, as the host's sampler has it.
@@ -286,6 +293,13 @@ struct Profile {
     /// acknowledgements keep arriving however saturated the path is.
     outage_ms: f64,
     outage_every_ms: f64,
+    /// Frames a second, which is also the controller's tick rate.
+    fps: f64,
+    /// The rate to switch to, and when. **The idle desktop waking up**: a
+    /// stream encoded at a few frames a second because nothing is changing,
+    /// and then something changes. Zero never switches.
+    fps_after: f64,
+    fps_at_ms: f64,
     /// The controller's ceiling. **The multi-guest shape**: one encode is
     /// divided by the seats sharing it, so each guest's ceiling is a fraction
     /// of the configured rate and its window is a fraction of the fragments.
@@ -303,6 +317,9 @@ impl Default for Profile {
             reorder_ms: 0.0,
             outage_ms: 0.0,
             outage_every_ms: 0.0,
+            fps: FRAME_FPS,
+            fps_after: 0.0,
+            fps_at_ms: 0.0,
             max_mbps: 30.0,
         }
     }
@@ -346,6 +363,7 @@ fn run(seed: u64, profile: Profile, duration_ms: f64, mode: Mode) -> Outcome {
     let mut scratch = [0u8; SLOT + 64];
     let mut body = [0u8; SLOT];
 
+    let mut frame_ms = 1000.0 / profile.fps;
     let mut next_frame_ms = 0.0;
     let mut measure_at_ms = 0.0;
     let mut offered_bytes_at_mark = 0u64;
@@ -361,15 +379,21 @@ fn run(seed: u64, profile: Profile, duration_ms: f64, mode: Mode) -> Outcome {
 
         // The frame offer: as many whole fragments as the applied rate buys
         // in one interval, and a partial one for the rest.
+        // **The desktop waking up.** Frames arrive faster, and because the
+        // controller's periods are counted in frames rather than in time,
+        // its clock speeds up with them.
+        if profile.fps_after > 0.0 && now >= profile.fps_at_ms {
+            frame_ms = 1000.0 / profile.fps_after;
+        }
         let frame = now >= next_frame_ms;
         if frame {
-            next_frame_ms = now + FRAME_MS;
+            next_frame_ms = now + frame_ms;
             #[allow(
                 clippy::cast_possible_truncation,
                 clippy::cast_sign_loss,
                 reason = "a positive rate over a frame interval"
             )]
-            let frame_bits = (applied_mbps * 1_048_576.0 * (FRAME_MS / 1000.0)) as usize;
+            let frame_bits = (applied_mbps * 1_048_576.0 * (frame_ms / 1000.0)) as usize;
             let mut needed = fragment_count(frame_bits / 8).max(1);
             while needed > 0 {
                 if tx.send_message(CHANNEL, &[], &body).is_err() {
@@ -464,7 +488,7 @@ fn run(seed: u64, profile: Profile, duration_ms: f64, mode: Mode) -> Outcome {
                 ticks += 1;
                 let mean_so_far = rate_sum / ticks as f64;
                 if rate < mean_so_far {
-                    below_mean_ms += FRAME_MS;
+                    below_mean_ms += frame_ms;
                 }
                 applied_mbps = rate;
             }
@@ -740,6 +764,115 @@ fn the_gradient_gate_leaves_a_clean_path_exactly_where_it_found_it() {
         "the gradient held a climb it had no reason to: incumbent={:.2} candidate={:.2}",
         incumbent.final_mbps,
         candidate.final_mbps
+    );
+}
+
+/// **A tick is a frame, so the periods are wall-clock only at sixty of them.**
+///
+/// Thirty clean ticks between increases is half a second at 60 fps and six
+/// seconds at 5. The same clean path is climbed at both, from the same floor
+/// to the same ceiling, and what the line carries is how far each one gets in
+/// the same thirty seconds of wall clock.
+///
+/// **This is the idle path's shape.** A desktop that is not changing is
+/// encoded at a few frames a second, and a stream that was cut while busy
+/// recovers at whatever rate it is now running at -- so the recovery a
+/// sixty-frame design intends in half a second takes the better part of a
+/// minute.
+#[test]
+fn trajectories_at_a_low_frame_rate() {
+    for fps in [60.0, 5.0] {
+        let outcome = run(
+            0x3EED,
+            Profile {
+                fps,
+                ..Profile::default()
+            },
+            30_000.0,
+            Mode::Incumbent,
+        );
+        println!(
+            "fps={fps:.0} Incumbent: final={:.2} Mibit/s offered={:.2} delivered={:.2} \
+             decreases={} below_mean={:.0} ms",
+            outcome.final_mbps,
+            outcome.offered_mbps,
+            outcome.delivered_mbps,
+            outcome.decreases,
+            outcome.below_mean_ms
+        );
+    }
+}
+
+/// **The mitigation the frame-counted period has, measured.**
+///
+/// Fifteen seconds at five frames a second and then fifteen at sixty, against
+/// a run that spent all thirty at five and one that spent all thirty at
+/// sixty. The middle one is the idle desktop that wakes up.
+///
+/// **The tick rate scales with the thing the rate is for.** While frames are
+/// scarce the controller climbs slowly, and while frames are scarce almost no
+/// bitrate is being asked for; the moment something needs the bitrate there
+/// are frames again and the periods are back to half a second. Measured
+/// 2026-09-06: **3.10 all-slow, 19.60 woken, 30.00 all-fast.** Fifteen
+/// seconds of frames recovers most of the distance, so the fps-dependence is
+/// real and self-limiting, and it is not worth a divergence.
+#[test]
+fn trajectories_when_the_frame_rate_recovers() {
+    let slow = run(
+        0x3EED,
+        Profile {
+            fps: 5.0,
+            ..Profile::default()
+        },
+        30_000.0,
+        Mode::Incumbent,
+    );
+    let woken = run(
+        0x3EED,
+        Profile {
+            fps: 5.0,
+            fps_after: 60.0,
+            fps_at_ms: 15_000.0,
+            ..Profile::default()
+        },
+        30_000.0,
+        Mode::Incumbent,
+    );
+    let fast = run(0x3EED, Profile::default(), 30_000.0, Mode::Incumbent);
+
+    for (name, outcome) in [("slow", &slow), ("woken", &woken), ("fast", &fast)] {
+        println!(
+            "{name}: final={:.2} Mibit/s offered={:.2} delivered={:.2} decreases={}",
+            outcome.final_mbps, outcome.offered_mbps, outcome.delivered_mbps, outcome.decreases
+        );
+        assert_eq!(
+            outcome.decreases, 0,
+            "{name}: the path lost nothing, so a cut means this measures something else"
+        );
+    }
+
+    // **The frame count is the clock**, so a run that never gets frames never
+    // gets the increases either.
+    assert!(
+        slow.final_mbps < fast.final_mbps / 5.0,
+        "the frame rate stopped mattering: slow={:.2} fast={:.2}",
+        slow.final_mbps,
+        fast.final_mbps
+    );
+    // **And the recovery is prompt when they arrive.** Half the run at sixty
+    // recovers most of the distance the slow run never travelled.
+    assert!(
+        woken.final_mbps > slow.final_mbps * 3.0,
+        "waking up did not recover the rate: slow={:.2} woken={:.2}",
+        slow.final_mbps,
+        woken.final_mbps
+    );
+    // It does not catch up completely, which is the cost that remains.
+    assert!(
+        woken.final_mbps < fast.final_mbps,
+        "waking up cost nothing at all: woken={:.2} fast={:.2}",
+        woken.final_mbps,
+        fast.final_mbps
     );
 }
 
