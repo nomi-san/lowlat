@@ -130,7 +130,32 @@ enum Mode {
     LossRate,
     /// The incumbent, with its peak tracker fed delivered bytes.
     GoodputPeak,
+    /// The incumbent, plus a round-trip gradient that **declines to climb**
+    /// while the queue is building. It never cuts: the worst it can do is
+    /// hold the rate where it is, which is why it is the first shape worth
+    /// trying below the window floor.
+    ///
+    /// **Measured 2026-09-06 and not adoptable as shaped.** It passes the
+    /// control the loss-rate predicate failed -- bit-identical to the
+    /// incumbent on all three clean paths -- and it is inert where it was
+    /// most wanted: at a 4 Mibit/s cap it changes nothing at all. At 8 it
+    /// delivers 5.70 against 5.13 for four fewer cuts, but its nominal rate
+    /// settles at 9.56 on a path that carries 8, which is worse overshoot
+    /// than the incumbent it replaces. Under loss it is neutral at one and
+    /// two percent and **loses eleven percent of delivered throughput at
+    /// five**. A sixteenfold longer minimum-RTT window was tried and moved
+    /// none of it, so the window length is not the reason.
+    Gradient,
 }
+
+/// How far the smoothed round trip may sit above the windowed minimum before
+/// the gradient reads it as a queue rather than a path.
+///
+/// **Against the minimum, not against a constant.** The minimum is this
+/// path's own propagation delay as recently observed, so the ratio asks
+/// whether *this* path is worse than it was rather than whether it is worse
+/// than some other path would be.
+const GRADIENT_MULT: f64 = 1.5;
 
 /// One run's outcome, in the units the trajectory is read in.
 #[derive(Debug)]
@@ -275,6 +300,8 @@ fn run(seed: u64, profile: Profile, duration_ms: f64, mode: Mode) -> Outcome {
 
         // The controller ticks once per frame, as the encode loop ticks it.
         if frame {
+            let srtt_ms = tx.srtt_ms();
+            let rtt_min_ms = tx.rtt_min_ms();
             if let Some(pressure) = tx.send_pressure(CHANNEL) {
                 let loss_ratio = meter.take(&pressure);
                 let congested = controller.is_congested(pressure.window, pressure.stale)
@@ -284,13 +311,26 @@ fn run(seed: u64, profile: Profile, duration_ms: f64, mode: Mode) -> Outcome {
                 } else {
                     measured_offered
                 };
-                let rate = tick_as(
-                    &mut controller,
-                    pressure.window,
-                    pressure.stale,
-                    feed,
-                    congested,
-                );
+                // **The gradient gates the increase; it does not cut.** A
+                // congested tick is still the incumbent's to answer, so this
+                // only ever suppresses a climb. Holding means not ticking at
+                // all, so the clean-tick counter does not advance either and
+                // the climb resumes where it paused rather than restarting.
+                let holding = mode == Mode::Gradient
+                    && !congested
+                    && rtt_min_ms > 0.0
+                    && srtt_ms > rtt_min_ms * GRADIENT_MULT;
+                let rate = if holding {
+                    controller.rate_mbps()
+                } else {
+                    tick_as(
+                        &mut controller,
+                        pressure.window,
+                        pressure.stale,
+                        feed,
+                        congested,
+                    )
+                };
                 rate_sum += rate;
                 ticks += 1;
                 let mean_so_far = rate_sum / ticks as f64;
@@ -359,7 +399,12 @@ fn tick_as(
 #[test]
 fn trajectories_under_loss() {
     for loss in LOSS_STEPS {
-        for mode in [Mode::Incumbent, Mode::LossRate, Mode::GoodputPeak] {
+        for mode in [
+            Mode::Incumbent,
+            Mode::LossRate,
+            Mode::GoodputPeak,
+            Mode::Gradient,
+        ] {
             let outcome = run(
                 0x5EED,
                 Profile {
@@ -391,7 +436,12 @@ fn trajectories_under_loss() {
 #[test]
 fn trajectories_under_a_capacity_cap() {
     for capacity in [4.0, 8.0] {
-        for mode in [Mode::Incumbent, Mode::LossRate, Mode::GoodputPeak] {
+        for mode in [
+            Mode::Incumbent,
+            Mode::LossRate,
+            Mode::GoodputPeak,
+            Mode::Gradient,
+        ] {
             let outcome = run(
                 0xCA90,
                 Profile {
@@ -462,7 +512,12 @@ fn trajectories_under_jitter_and_reorder() {
         ),
     ];
     for (name, profile, incumbent_holds) in profiles {
-        for mode in [Mode::Incumbent, Mode::LossRate, Mode::GoodputPeak] {
+        for mode in [
+            Mode::Incumbent,
+            Mode::LossRate,
+            Mode::GoodputPeak,
+            Mode::Gradient,
+        ] {
             let outcome = run(0x1177, profile, 30_000.0, mode);
             println!(
                 "{name} {mode:?}: final={:.2} Mibit/s offered={:.2} delivered={:.2}                  decreases={} below_mean={:.0} ms",
@@ -515,6 +570,40 @@ fn the_loss_rate_candidate_false_cuts_on_jitter_alone() {
     assert!(
         candidate.final_mbps < incumbent.final_mbps / 2.0,
         "the false cut is no longer severe: incumbent={:.2} candidate={:.2}",
+        incumbent.final_mbps,
+        candidate.final_mbps
+    );
+}
+
+/// **The control the loss-rate predicate failed, and the gradient passes.**
+///
+/// Two milliseconds of delay spread and no loss at all. The gradient gate is
+/// asserted to leave this path exactly where the incumbent leaves it -- not
+/// merely uncut, but the same number -- because a gate that only ever
+/// declines to climb has no business moving a path that is climbing
+/// correctly.
+///
+/// **This is the check that would catch a reshape going wrong.** Raising the
+/// gate's sensitivity until it fires on ordinary jitter is the obvious way to
+/// make it do something under load, and it is the same mistake the loss-rate
+/// predicate made; this fails when that happens.
+#[test]
+fn the_gradient_gate_leaves_a_clean_path_exactly_where_it_found_it() {
+    let profile = Profile::default();
+    let incumbent = run(0x1177, profile, 30_000.0, Mode::Incumbent);
+    let candidate = run(0x1177, profile, 30_000.0, Mode::Gradient);
+
+    assert_eq!(
+        incumbent.decreases, 0,
+        "the control moved: this profile is not clean and proves nothing"
+    );
+    assert_eq!(
+        candidate.decreases, 0,
+        "the gradient gate cut a path that lost nothing"
+    );
+    assert!(
+        (candidate.final_mbps - incumbent.final_mbps).abs() < 1e-9,
+        "the gradient held a climb it had no reason to: incumbent={:.2} candidate={:.2}",
         incumbent.final_mbps,
         candidate.final_mbps
     );
