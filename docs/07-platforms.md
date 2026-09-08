@@ -483,16 +483,23 @@ the ceiling those carry.
 
 #### Who may connect, and where
 
-**Being local is not enough to be authorised.** A local socket carries the peer's credentials
-and the channel acts on them: what a connection may do follows from who is on the other end,
-not from the fact that it reached the socket. Without that, any account on the machine speaks
-as the tray -- by hand, from a script, from anything that can open a path -- and kicking a
-guest or changing a stream's settings is not something a bystander with a login may do.
+**Any local user may connect, and that is a deferral rather than a position.** The cost is
+worth naming rather than discovering: on a machine with more than one person logged in at once,
+any of them can read the guest list, kick a guest and change the stream's settings -- by hand or
+from a script, without being the person the session belongs to. On the machine this is for there
+is one human and the cost is nil, which is why it waits rather than why it is right.
 
-**The two roles are not authorised alike**, which is the difference this section opened with.
-A helper makes statements about its own session and is trusted with exactly that, so its
-credentials already bound what its claims can mean: rule 4 below. A tray acts on the host, and
-acting on the host is the part that needs a criterion beyond being connected.
+**Three things keep it a deferral.** The peer's credentials are read and recorded on every
+connection, so a host action always says who asked for it. Authorisation has one place to
+happen, where a connection announces its role, so a criterion is a comparison rather than new
+plumbing. And the requirement is written here rather than left in somebody's memory: **being
+local is not a criterion**, and the two candidates are the user who owns the session being
+streamed and a group an administrator puts people in.
+
+**The helper needs none of this**, which is the difference this section opened with. A helper
+makes statements about its own session and is trusted with exactly that, so its credentials
+already bound what its claims can mean: rule 4 below. Only the acting role -- kicking a guest,
+changing a stream -- wants a criterion beyond being connected.
 
 **None of this is the guest permission model and it must not grow into one.** What a *guest*
 may drive, whether it owns the machine, and whether it needed approval at all are decided by
@@ -507,8 +514,8 @@ tray started by hand -- which is how a person gets one back after closing it -- 
 by the service and has nothing to be handed. A path it cannot find is a tray that cannot
 connect, and asking the service to start another one needs the channel it is missing. So the
 path is known, a tray started by hand simply connects and is the tray, and no protocol for
-asking to be restarted has to exist at all. A private path would put secrecy where the check
-above belongs, and would cost exactly the tray somebody starts by hand.
+asking to be restarted has to exist at all. A private path would put secrecy where a credential
+belongs, and would cost exactly the tray somebody starts by hand.
 
 **A session-side program exiting means nothing to the stream.** The service starts them and
 does not depend on them: a tray that is closed is not a tray that is missed, and a session
@@ -724,7 +731,7 @@ None of this reaches the protocol core, the IO shell's logic, or the public API.
 | framebuffer export, classic module of the second vendor | open, not run here, off the path |
 | virtual display | open: the software virtual driver is absent from this kernel |
 | audio capture surface | **closed**: the session's sound server, reached over its own socket, no helper (§7) |
-| local channel authorisation | **open**: being local does not authorise anything (§5.1), and which credential may act on the host is undecided |
+| local channel authorisation | **deferred**: any local user may act, credentials are recorded, and the criterion is one comparison when it is wanted (§5.1) |
 
 Six of the ten were closed by one probe, run before Phase 0 rather than at Phase 9. A second
 run of the same probe on different hardware closed the seventh (§3.2), and the first run of the

@@ -1560,8 +1560,9 @@ and deciding its shape without one of its two customers in front of it.
   there to ask.
 - [ ] **The clipboard, both directions, behind `guest_clipboard`** ([07 §5.1](07-platforms.md)):
   an ownership held for as long as the selection is, not a value written once.
-- [ ] **Which credential authorises a host action.** Being local is not it, and the criterion is
-  the one part of [07 §5.1](07-platforms.md) still open.
+- [ ] **The peer's credentials read and recorded on every connection**, and one place where a
+  criterion would go. **Which credential authorises a host action is deferred**: any local user
+  may act, and [07 §5.1](07-platforms.md) names what that costs.
 - [ ] `lowlat-tray` over the same socket, announcing the other role.
 
 **Gate:**
@@ -1570,7 +1571,9 @@ and deciding its shape without one of its two customers in front of it.
 2. **A stream survives the tray exiting and the user logging out**, and survives the helper
    exiting mid-session with nothing disturbed. *Named regression test.*
 3. The tray attaches and detaches repeatedly against a running stream.
-4. Peer-credential authentication rejects an unauthorized local user.
+4. **A host action names who asked for it.** The connection's credentials appear on the line
+   that records a kick or a settings change, so it can be attributed. Authorising on them is
+   deferred and the criterion is not built ([07 §5.1](07-platforms.md)).
 5. **The session role cannot be selected by a flag** appearing anywhere in the command line,
    only by the first argument. *Named regression test: it is a privilege boundary, not a parsing
    preference.*
@@ -1681,15 +1684,21 @@ Newest first. Record approach changes and gate revisions here; per-commit detail
   asymmetry the values carry is that the milder direction is available on its own and the
   dangerous one is not.
 
-- 2026-09-08: **Being local does not authorise anything, and the helper joins Phase 12.** The
-  rule that any local user may connect is withdrawn: a local socket carries credentials and the
-  channel has to act on them, or any account on the machine speaks as the tray -- by hand or
-  from a script -- and kicks a guest. Approval and ownership belong to signaling and to the
-  application above it, and nothing on this channel adds to them; what is left for the channel
-  to decide is which credential may act *on the host*, which is the one part of
-  [07 §5.1](07-platforms.md) still open. The helper is appended to **Phase 12** rather than
-  given a phase, because it is the same socket, the same framing and the same binary as the
-  tray and the two differ only in authorisation.
+- 2026-09-08: **Local authorisation is deferred with its cost written down, and the helper joins
+  Phase 12.** Approval and ownership belong to signaling and to the application above it --
+  whether a peer was pre-approved, whether it owns the machine -- and nothing on this channel
+  adds to them or argues with them. What is left is narrower than the old wording suggested: not
+  who may connect, but which credential may act *on the host*, and only for the tray's role,
+  since a helper's claims are already bound to its own session. **That criterion is deferred**:
+  any local user may act, which is the same behaviour the section had before and is now stated
+  as a deferral rather than as a design, because "the person at the keyboard is the person the
+  session belongs to" is a property of one machine and not of the arrangement. Three things keep
+  it recoverable and all are free before anything is built: credentials recorded on every
+  connection so a kick can be attributed, one place where authorisation happens so the criterion
+  is a comparison rather than new plumbing, and the two candidates named -- the user owning the
+  streamed session, or a group an administrator fills. The helper is appended to **Phase 12**
+  rather than given a phase, because it is the same socket, the same framing and the same binary
+  as the tray and the two differ only in authorisation.
 
 - 2026-09-08: **The clipboard gate's four values are the guest's point of view, not the host's.**
   The setting is named `guest_clipboard` and names what a guest may do, so `send` is a guest
