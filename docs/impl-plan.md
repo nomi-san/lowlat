@@ -1640,6 +1640,19 @@ Newest first. Record approach changes and gate revisions here; per-commit detail
   stream has run. The hardware matrix this argument rests on is
   [09-compatibility.md](09-compatibility.md).
 
+- 2026-09-08: **The clipboard gate's four values are the guest's point of view, not the host's.**
+  The setting is named `guest_clipboard` and names what a guest may do, so `send` is a guest
+  sending its clipboard to this desktop and `recv` is a guest receiving this desktop's. The entry
+  below had them the other way round and read the direction out of the host's mouth, which made
+  the setting's own name argue against it. **An owner is `both` by default**, and the four values
+  are about guests. The same pass corrected a second sentence there: it said an owner was merely
+  exempt from a restriction the rest were subject to, and cited the arrangement this host is
+  compatible with as doing the same. It does not -- there the desktop's clipboard reaches owners
+  and nobody else, so our four values are a deliberate divergence rather than a restatement.
+  [07 §5.1](07-platforms.md) also gains the 50 ms floor between reads of the desktop's
+  clipboard, since a selection settles in bursts and one copy would otherwise be several
+  messages.
+
 - 2026-08-25: **Copied text is the helper's fifth customer, and its gate has four values.** A
   clipboard is an ownership rather than a value: setting one announces that you own the
   selection and the bytes are asked for later, when somebody pastes, so a program that writes

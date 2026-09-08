@@ -446,27 +446,33 @@ selection there -- which is the same reason the rest of this section exists.
 opaque application message ([01 §11.1](01-protocol.md)), so the library never sees it and the
 service decides who may have it.
 
-| `guest_clipboard` | the desktop's clipboard reaches a guest | a guest's clipboard reaches the desktop |
+| `guest_clipboard` | a guest's clipboard reaches the desktop | the desktop's clipboard reaches a guest |
 |---|---|---|
 | `off` | no | no |
 | `send` | yes | no |
 | `recv` | no | yes |
 | `both` | yes | yes |
 
-**The names are the host's point of view**, and which way round they read is load bearing:
-`send` is this machine sending its own clipboard out. **Anything else is `off`** -- absent,
-empty, misspelled, or a value from a newer version -- so that a typo cannot open a clipboard
-and a configuration this build does not understand fails closed.
+**The names are the guest's point of view**, which is the point of view the setting is named
+for, and which way round they read is load bearing: `send` is a guest sending its clipboard
+here. **Anything else is `off`** -- absent, empty, misspelled, or a value from a newer version
+-- so that a typo cannot open a clipboard and a configuration this build does not understand
+fails closed.
 
 **The two directions are not equally dangerous, which is the whole reason there are four
-values and not two.** `send` ships whatever the person at the machine copied, and that includes
-what a password manager put there. `recv` puts a guest's text on the desktop's clipboard, where
-a person still has to choose to paste it. One switch would mean letting a guest paste a link
-into your machine also hands them everything you copy.
+values and not two.** The half a guest receives ships whatever the person at the machine
+copied, and that includes what a password manager put there. The half a guest sends puts its
+text on the desktop's clipboard, where a person still has to choose to paste it. One switch
+would mean letting a guest paste a link into your machine also hands them everything you copy.
 
-**A peer that owns the machine is not a guest** and is not subject to this: ownership arrives
-relayed from signaling and is never read from the peer ([04 §3](04-signaling.md)). The setting
-is about guests, which is also what the stock arrangement does.
+**An owner is `both` by default.** Ownership arrives relayed from signaling and is never read
+from the peer ([04 §3](04-signaling.md)); the four values above name what a *guest* may do,
+and a peer that owns the machine is not one.
+
+**The desktop's clipboard is read on change and no more often than every 50 ms.** A selection
+changes in bursts -- an editor rewrites it several times while one copy settles -- and a host
+that sent each one would put a burst of application messages on the wire to describe a single
+copy.
 
 Nothing new bounds the size: copied text is an application message and is already refused above
 the ceiling those carry.
