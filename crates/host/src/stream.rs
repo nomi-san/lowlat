@@ -186,9 +186,33 @@ fn must_send(
     refresh: bool,
     seats_moved: bool,
     since_forced_ms: f64,
+    refining: bool,
 ) -> bool {
-    full_fps || changed || refresh || seats_moved || since_forced_ms >= HEARTBEAT_MS
+    full_fps || changed || refresh || seats_moved || refining || since_forced_ms >= HEARTBEAT_MS
 }
+
+/// How many pictures are still submitted after one stops changing.
+///
+/// **Suppression had no exit, and that is what made still text soft.** A
+/// settled picture keeps whatever quality the motion that drew it could
+/// afford: the frame carrying the scroll or the window switch was coded
+/// against that instant's budget, and nothing re-codes it afterwards. The
+/// heartbeat does not help -- it submits the same picture once a second, which
+/// codes as almost all skip and refines nothing.
+///
+/// **Re-coding a settled picture is what refines it.** The encoder runs a
+/// variable rate against an average far above what a still scene costs, so
+/// each unchanged frame is cheap, the budget goes unspent, and the quantiser
+/// walks down. That is why asking for every picture clears the blur, and this
+/// is the bounded form of the same thing: spend a fixed handful of frames on
+/// the settle, then stop, rather than a permanent stream or nothing at all.
+///
+/// **A starting figure, to be replaced by a measurement.** A quarter of a
+/// second at sixty frames is enough for a quantiser to move several steps and
+/// small enough that a desk left alone costs nothing once the burst is out.
+/// What it should be is whatever approaches `full_fps`'s picture at a fraction
+/// of its frames, and the rig reproduces that comparison directly.
+const REFINE_FRAMES: u32 = 15;
 
 /// How long a picture may be suppressed before one is sent anyway.
 ///
@@ -3463,6 +3487,7 @@ fn encode_loop<E: Encoder + FromDevice>(
     // When a picture was last actually submitted, which is what the heartbeat
     // measures from. Starts long ago, so the first frame is never suppressed.
     let mut forced_ms = f64::MIN;
+    let mut refine_left = 0u32;
     let mut suppressed = 0u32;
     let mut refreshes = Refreshes::default();
     let mut since_report = 0u32;
@@ -3918,12 +3943,27 @@ fn encode_loop<E: Encoder + FromDevice>(
             //   the next frame is for, and an arrival has received nothing.
             // - **the heartbeat is due.** See `HEARTBEAT_MS`: it bounds how
             //   long any mistake in this reasoning can leave a screen frozen.
+            // **The settle, not a timer.** A picture that changed re-arms the
+            // burst; one that did not spends a frame of it. So the frames land
+            // where the blur is -- just after the motion that drew the picture
+            // -- and a desk nobody is touching stops costing anything once the
+            // burst is out.
+            let refining = if changed {
+                refine_left = REFINE_FRAMES;
+                false
+            } else if refine_left > 0 {
+                refine_left -= 1;
+                true
+            } else {
+                false
+            };
             let send = must_send(
                 live.full_fps,
                 changed,
                 force_keyframe,
                 moved,
                 now_ms - forced_ms,
+                refining,
             );
             if send {
                 forced_ms = now_ms;
@@ -6479,13 +6519,13 @@ mod tests {
     fn a_duplicate_is_still_sent_when_somebody_needs_it() {
         // The whole point: an unchanged picture nobody is waiting for.
         assert!(
-            !must_send(false, false, false, false, 0.0),
+            !must_send(false, false, false, false, 0.0, false),
             "an unchanged picture was sent with nothing owed, so nothing is ever suppressed"
         );
 
         // A changed picture always goes, whatever else is true.
         assert!(
-            must_send(false, true, false, false, 0.0),
+            must_send(false, true, false, false, 0.0, false),
             "a changed picture was held"
         );
 
@@ -6493,27 +6533,27 @@ mod tests {
         // has just joined, and a still screen is exactly when it would wait
         // forever.
         assert!(
-            must_send(false, false, true, false, 0.0),
+            must_send(false, false, true, false, 0.0, false),
             "a guest waiting for a keyframe was made to wait for the screen to move"
         );
 
         // The seats moved: an arrival has received nothing at all.
         assert!(
-            must_send(false, false, false, true, 0.0),
+            must_send(false, false, false, true, 0.0, false),
             "a guest that just took a seat was sent nothing because the screen was still"
         );
 
         // The heartbeat bounds how long any mistake above can freeze a screen.
         assert!(
-            !must_send(false, false, false, false, HEARTBEAT_MS - 1.0),
+            !must_send(false, false, false, false, HEARTBEAT_MS - 1.0, false),
             "the heartbeat fired early, which costs a picture a second for nothing"
         );
         assert!(
-            must_send(false, false, false, false, HEARTBEAT_MS),
+            must_send(false, false, false, false, HEARTBEAT_MS, false),
             "the heartbeat did not fire on its own boundary"
         );
         assert!(
-            must_send(false, false, false, false, HEARTBEAT_MS * 10.0),
+            must_send(false, false, false, false, HEARTBEAT_MS * 10.0, false),
             "a screen suppressed for ten heartbeats stayed suppressed"
         );
     }
@@ -6527,13 +6567,28 @@ mod tests {
     #[test]
     fn asking_for_every_picture_defeats_suppression() {
         assert!(
-            must_send(true, false, false, false, 0.0),
+            must_send(true, false, false, false, 0.0, false),
             "an unchanged picture was suppressed for an application that asked for all of them"
+        );
+
+        // **A picture that settles is still sent, for a bounded run.** The
+        // frame that carried the motion was coded against that instant's
+        // budget; re-coding the settled picture is what walks the quantiser
+        // down, and nothing else in this rule ever asks for it.
+        assert!(
+            must_send(false, false, false, false, 0.0, true),
+            "a settling picture was suppressed, so nothing refines it"
+        );
+        // And the burst is the only new reason: with it spent, an unchanged
+        // picture inside the heartbeat is suppressed exactly as before.
+        assert!(
+            !must_send(false, false, false, false, HEARTBEAT_MS - 1.0, false),
+            "a still desk kept costing frames after the burst was out"
         );
         // And it is only a permission: it does not make an unasked-for stream
         // spend the bitrate.
         assert!(
-            !must_send(false, false, false, false, 0.0),
+            !must_send(false, false, false, false, 0.0, false),
             "suppression stopped working for everyone else"
         );
     }
