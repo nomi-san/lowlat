@@ -240,6 +240,13 @@ fn candex<'a>(
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    // **Off by default and worth having at all only for input.** Nothing else
+    // in this program says anything at this level, so the switch is in
+    // practice "log every key as it is expanded", which is the one fault that
+    // cannot be read off a stream of injected events afterwards.
+    if flag_set("--verbose") {
+        lowlat_common::log::set_level(lowlat_common::log::Level::Debug);
+    }
     // **Before anything else is set up.** It answers the one question that has
     // to be answered before --output can be used at all, and a machine being
     // asked what it has is not a machine about to host.

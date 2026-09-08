@@ -628,12 +628,15 @@ impl Injector {
 
     fn keyboard(&mut self, code: u32, modifiers: u32, pressed: bool, out: &mut impl Sink) {
         let Ok(peer_code) = u16::try_from(code) else {
+            traced(code, modifiers, pressed, 0, "no-key");
             return;
         };
         let Some(key) = usage::key_code(peer_code) else {
+            traced(code, modifiers, pressed, 0, "no-key");
             return;
         };
         let Some(held) = self.keys.get_mut(usize::from(key)) else {
+            traced(code, modifiers, pressed, key, "no-slot");
             return;
         };
         // **A release for a key that was never pressed is dropped.** A peer
@@ -641,6 +644,7 @@ impl Injector {
         // and restored, sends releases for keys this host never saw down, and
         // passing those on interrupts whatever a local user is holding.
         if !pressed && !*held {
+            traced(code, modifiers, pressed, key, "not-held");
             return;
         }
         *held = pressed;
@@ -649,6 +653,7 @@ impl Injector {
         self.lock_sync(modifiers, key);
         self.key_events(peer_code, key, pressed);
         self.flush(Device::Keyboard, out);
+        traced(code, modifiers, pressed, key, "sent");
     }
 
     /// Bring the local locks into step with what the peer reports.
@@ -682,6 +687,7 @@ impl Injector {
     }
 
     fn tap(&mut self, usage: u16, key: u16) {
+        lowlat_common::log_debug!("inject: lock tapped, key={key}");
         self.key_events(usage, key, true);
         self.key_events(usage, key, false);
     }
@@ -952,6 +958,24 @@ struct Pad {
     /// What it is holding, in the whole-pad message's bits whichever message
     /// set them.
     buttons: u16,
+}
+
+/// One line per keyboard message, at the debug level.
+///
+/// **The decision, not just what arrived.** A key that will not release is
+/// either a release the peer never sent or one this dropped for want of a
+/// matching press, and those have different fixes and look identical from
+/// outside: `took` names which happened. A line taken at the wire could not
+/// tell them apart.
+///
+/// Not on the trace level, because that one is compiled out of the build a
+/// live run uses. It costs a comparison while the level is below it, and keys
+/// arrive at the rate a person types.
+fn traced(usage: u32, modifiers: u32, pressed: bool, key: u16, took: &str) {
+    lowlat_common::log_debug!(
+        "inject: key seen, usage={usage} mod={modifiers:#06x} pressed={} key={key} took={took}",
+        u8::from(pressed)
+    );
 }
 
 fn button_code(button: u32) -> Option<u16> {
