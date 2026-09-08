@@ -730,6 +730,8 @@ enum Ask {
     Kick(i32),
     /// Change what it may drive, from now on.
     Permissions(lowlat_inject::event::Permissions),
+    /// Type the attention chord on this guest's own keyboard.
+    SecureAttention,
 }
 
 /// One message on its way to a guest, built where the caller is.
@@ -1249,6 +1251,28 @@ impl Admission {
             .ask
             .as_ref()
             .is_some_and(|ask| ask.send(Ask::Permissions(permissions)).is_ok())
+    }
+
+    /// Type the attention chord on one guest's own keyboard.
+    ///
+    /// **Asked rather than reached into**, like every other thing that touches
+    /// a guest's devices: the injector belongs to that guest's thread.
+    ///
+    /// Answers whether there was a guest of that number to ask. Whether it was
+    /// typed is that thread's answer and is said on its log line, because the
+    /// keyboard permission is read there.
+    pub fn secure_attention(&mut self, guest: u32) -> bool {
+        let Some(attempt) = self
+            .attempts
+            .values()
+            .find(|attempt| attempt.number == Some(guest))
+        else {
+            return false;
+        };
+        attempt
+            .ask
+            .as_ref()
+            .is_some_and(|ask| ask.send(Ask::SecureAttention).is_ok())
     }
 
     pub fn guests(&self) -> Vec<GuestInfo> {
@@ -2592,6 +2616,28 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                     if let Some(input) = input.as_mut() {
                         input.injector.set_permissions(permissions, &mut input.sink);
                     }
+                }
+                Ask::SecureAttention => {
+                    // **Refused where it is typed, not where it is asked**, so
+                    // the one path that produces the chord is the one that
+                    // decides against it. Two reasons to refuse and they are
+                    // told apart: a guest that may not type, and a console
+                    // that would restart the machine rather than show a
+                    // dialog.
+                    let took = if lowlat_inject::uinput::console_takes_the_chord() {
+                        "console"
+                    } else if input
+                        .as_mut()
+                        .is_some_and(|input| input.injector.secure_attention(&mut input.sink))
+                    {
+                        "typed"
+                    } else {
+                        "refused"
+                    };
+                    lowlat_common::log_info!(
+                        "guest: number={} asked for the attention chord, took={took}",
+                        args.guest
+                    );
                 }
             }
         }

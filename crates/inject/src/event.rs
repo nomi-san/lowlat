@@ -48,6 +48,12 @@ const USAGE_NUM_LOCK: u16 = 83;
 const MOD_NUM: u32 = 0x1000;
 const MOD_CAPS: u32 = 0x2000;
 
+/// The peer's codes for the attention chord, in the order it is pressed.
+///
+/// **The peer's codes rather than the kernel's**, so the chord travels the
+/// same mapping every other key does and there is one table to be wrong.
+const ATTENTION: [u16; 3] = [224, 226, 76];
+
 /// The wheel units one detent is worth.
 ///
 /// A peer counts wheel movement in these rather than in detents, so the
@@ -463,6 +469,44 @@ impl Injector {
         self.release_keys(out);
         self.release_buttons(out);
         self.centre_pads(out);
+    }
+
+    /// Type the attention chord, and leave nothing of it held.
+    ///
+    /// **A chord this host decides on, not a key a guest pressed**, so it is
+    /// injected the way a person would type it -- both modifiers down, the
+    /// third key down, then all three up in reverse -- and the guest's own
+    /// held state is brought into line with the result rather than consulted
+    /// first. A guest holding one of the three when it asks gets it released,
+    /// which is what pressing the chord on a real keyboard would leave behind
+    /// too.
+    ///
+    /// **Refused without the keyboard**, because the chord is keystrokes and a
+    /// guest that may not type may not type these either.
+    ///
+    /// Answers whether it was typed.
+    pub fn secure_attention(&mut self, out: &mut impl Sink) -> bool {
+        if !self.permissions.keyboard {
+            return false;
+        }
+        self.used = 0;
+        for usage in ATTENTION {
+            let Some(key) = usage::key_code(usage) else {
+                continue;
+            };
+            self.key_events(usage, key, true);
+        }
+        for usage in ATTENTION.iter().rev() {
+            let Some(key) = usage::key_code(*usage) else {
+                continue;
+            };
+            self.key_events(*usage, key, false);
+            if let Some(held) = self.keys.get_mut(usize::from(key)) {
+                *held = false;
+            }
+        }
+        self.flush(Device::Keyboard, out);
+        true
     }
 
     /// The slot a peer's pad identifier occupies, taking one if it is new.
@@ -1281,6 +1325,83 @@ mod tests {
         out.batches.clear();
         inject.on_control(&control(op::KEYBOARD, 57, MOD_CAPS, 1), &mut out);
         assert_eq!(out.keys_at(1), vec![KEY_CAPSLOCK]);
+    }
+
+    /// **A modified keystroke leaves nothing behind**, which is the shape a
+    /// key that would not release was reported in: a modifier held, a letter
+    /// tapped under it, then both let go. Nothing about a held modifier
+    /// reaches the expansion -- the mask is read for the locks alone -- so the
+    /// four messages are four independent keys, and this says so.
+    #[test]
+    fn a_letter_typed_under_a_modifier_leaves_nothing_held() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        // Left control down, t down, t up, left control up, with the mask
+        // reporting control the way a peer does while it is held.
+        const CTRL: u32 = 0x40;
+        inject.on_control(&control(op::KEYBOARD, 224, CTRL, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 23, CTRL, 1), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 23, CTRL, 0), &mut out);
+        inject.on_control(&control(op::KEYBOARD, 224, 0, 0), &mut out);
+        assert_eq!(out.keys_at(1), vec![29, 20]);
+        assert_eq!(out.keys_at(0), vec![20, 29]);
+
+        out.batches.clear();
+        inject.release_all(&mut out);
+        assert!(out.batches.is_empty(), "something was still tracked as held");
+    }
+
+    /// **A mask that reports the modifier on some messages and not others is
+    /// still only about the locks.** A peer's mask is its platform reporting
+    /// itself at that keystroke, and one sighting of a left control press
+    /// carrying only the meta bit is on the record, so a modifier missing from
+    /// the mask must not release anything.
+    #[test]
+    fn a_modifier_absent_from_the_mask_is_not_released() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        inject.on_control(&control(op::KEYBOARD, 224, 0x400, 1), &mut out);
+        out.batches.clear();
+        inject.on_control(&control(op::KEYBOARD, 23, 0, 1), &mut out);
+        assert_eq!(out.keys_at(0), Vec::<u16>::new());
+        assert_eq!(out.keys_at(1), vec![20]);
+    }
+
+    /// The chord is typed as a person types it and leaves nothing of itself
+    /// held, including the parts a guest was already holding.
+    #[test]
+    fn the_attention_chord_is_typed_and_fully_released() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        // The guest is already holding one of the three when it asks.
+        inject.on_control(&key(224, true), &mut out);
+        out.batches.clear();
+
+        assert!(inject.secure_attention(&mut out));
+        assert_eq!(out.keys_at(1), vec![29, 56, 111]);
+        assert_eq!(out.keys_at(0), vec![111, 56, 29]);
+        assert_eq!(out.devices(), vec![Device::Keyboard]);
+
+        out.batches.clear();
+        inject.release_all(&mut out);
+        assert!(
+            out.batches.is_empty(),
+            "the chord left one of its own keys tracked as held"
+        );
+    }
+
+    /// The chord is keystrokes, so a guest that may not type may not ask for
+    /// it either.
+    #[test]
+    fn the_attention_chord_needs_the_keyboard() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        inject.set_permissions(
+            Permissions {
+                keyboard: false,
+                ..Permissions::default()
+            },
+            &mut out,
+        );
+        out.batches.clear();
+        assert!(!inject.secure_attention(&mut out));
+        assert!(out.batches.is_empty());
     }
 
     /// An unchanged lock state on every keystroke must not toggle anything.

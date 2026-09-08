@@ -32,6 +32,36 @@ mod ioctl {
     pub(super) const END_FF_UPLOAD: libc::c_ulong = 0x4068_55c9;
     pub(super) const BEGIN_FF_ERASE: libc::c_ulong = 0xc00c_55ca;
     pub(super) const END_FF_ERASE: libc::c_ulong = 0x400c_55cb;
+    /// The foreground terminal's keyboard mode.
+    pub(super) const GET_KB_MODE: libc::c_ulong = 0x0000_4b44;
+}
+
+/// Whether the kernel's own console would act on the attention chord.
+///
+/// **The one case where typing it is dangerous.** A graphical session takes
+/// the console keyboard off the kernel, so the combination reaches the
+/// compositor and produces the leave dialog a guest asking for it wants. A
+/// text console does not: the terminal translates the combination itself and
+/// the machine restarts. The foreground terminal's keyboard mode is what
+/// separates the two, and reading it is one request.
+///
+/// **No terminal at all answers false**, which is right rather than cautious:
+/// a system without the virtual terminal subsystem has nothing that could run
+/// the combination.
+#[must_use]
+pub fn console_takes_the_chord() -> bool {
+    /// The two modes in which the terminal translates keys through its own
+    /// map, which is what runs the combination. The others hand the codes on
+    /// untranslated or deliver nothing.
+    const TRANSLATING: [libc::c_int; 2] = [0x01, 0x03];
+    let Ok(tty) = std::fs::File::open("/dev/tty0") else {
+        return false;
+    };
+    let mut mode: libc::c_int = 0;
+    // SAFETY: the request writes one int, which is what is passed, and the
+    // descriptor lives until the call returns.
+    let rc = unsafe { libc::ioctl(tty.as_raw_fd(), ioctl::GET_KB_MODE, &raw mut mode) };
+    rc == 0 && TRANSLATING.contains(&mode)
 }
 
 const EV_SYN: libc::c_int = 0x00;

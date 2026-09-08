@@ -34,6 +34,13 @@ mod id {
     pub(crate) const CONFIG: u32 = 11;
     /// The outputs, host to client only.
     pub(crate) const OUTPUTS: u32 = 12;
+    /// The attention chord, client to host, with an empty body.
+    ///
+    /// **A message exists for it because a client cannot type it.** The
+    /// combination is taken by the operating system the client is running on
+    /// before any application sees it, so a remote user physically cannot send
+    /// it as keystrokes and asks the host to produce it instead.
+    pub(crate) const SECURE_ATTENTION: u32 = 14;
 }
 
 /// The settings this host was started with.
@@ -215,6 +222,14 @@ pub(crate) fn on_message(
             // **Not answered.** The client asks again with 9 the moment it has
             // sent one of these, so an answer here would arrive beside the one
             // it is about to ask for.
+            true
+        }
+        // **Not answered either**, and there is nothing to answer with: what a
+        // guest asked for is a keystroke, and it either happened on this
+        // machine or it did not. The guest's own thread says which on its log
+        // line, because that is where the keyboard permission is read.
+        id::SECURE_ATTENTION => {
+            seam.secure_attention(guest);
             true
         }
         _ => false,
@@ -1055,5 +1070,9 @@ mod tests {
         assert!(!on_message(&mut seam, 1, 0, b"Hello host", &settings()));
         assert!(!on_message(&mut seam, 1, 7, b"clipboard", &settings()));
         assert!(on_message(&mut seam, 1, 9, b"", &settings()));
+        // **Claimed with no guest of that number to ask.** The identifier is
+        // one this host speaks; whether there was anybody to type it for is a
+        // different question and not what this answer means.
+        assert!(on_message(&mut seam, 1, 14, b"", &settings()));
     }
 }
