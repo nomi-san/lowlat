@@ -3,6 +3,25 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-08 - A settled picture is re-coded, so still text sharpens
+
+### Fixed
+- **Duplicate suppression had no exit, and still text kept whatever quality the motion that drew
+  it could afford.** The frame carrying a scroll or a window switch is coded against that
+  instant's budget; once the picture stops changing nothing re-codes it, so the softness stays
+  for as long as the desk is left alone. The heartbeat does not help: it submits the same picture
+  once a second, which codes as almost all skip and refines nothing.
+- **A settled picture is now submitted for a bounded run.** A picture that changed re-arms the
+  run; one that did not spends a frame of it. Re-coding a still scene is what refines it -- the
+  encoder runs a variable rate against an average far above what a still scene costs, so each
+  unchanged frame is cheap, the budget goes unspent, and the quantiser walks down. This is the
+  bounded form of what asking for every picture already does, and a desk nobody is touching stops
+  costing frames once the run is out.
+
+### Testing
+- The rule gains two assertions -- a settling picture is sent, and an unchanged one is suppressed
+  again once the run is spent -- and **the first was confirmed to fail** with the exit removed.
+
 ## 2026-09-08 - The video buffer is three frames, not one
 
 ### Fixed
