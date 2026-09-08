@@ -450,7 +450,6 @@ service decides who may have it.
 |---|---|---|
 | `off` | no | no |
 | `send` | yes | no |
-| `recv` | no | yes |
 | `both` | yes | yes |
 
 **The names are the guest's point of view**, which is the point of view the setting is named
@@ -459,11 +458,16 @@ here. **Anything else is `off`** -- absent, empty, misspelled, or a value from a
 -- so that a typo cannot open a clipboard and a configuration this build does not understand
 fails closed.
 
-**The two directions are not equally dangerous, which is the whole reason there are four
-values and not two.** The half a guest receives ships whatever the person at the machine
-copied, and that includes what a password manager put there. The half a guest sends puts its
-text on the desktop's clipboard, where a person still has to choose to paste it. One switch
-would mean letting a guest paste a link into your machine also hands them everything you copy.
+**The two directions are not equally dangerous, which is why there are three values and not
+two.** The half a guest receives ships whatever the person at the machine copied, and that
+includes what a password manager put there. The half a guest sends puts its text on the
+desktop's clipboard, where a person still has to choose to paste it. One switch would mean
+letting a guest paste a link into your machine also hands them everything you copy, so the
+milder direction is available on its own.
+
+**The dangerous direction is not available on its own**, which is the asymmetry the values
+carry: a guest that is shown this desktop's clipboard can already be given text, so a value
+between `send` and `both` would name a stricter arrangement than it delivers.
 
 **An owner is `both` by default.** Ownership arrives relayed from signaling and is never read
 from the peer ([04 §3](04-signaling.md)); the four values above name what a *guest* may do,
@@ -479,18 +483,23 @@ the ceiling those carry.
 
 #### Who may connect, and where
 
-**Any local user may connect.** The check is that the peer is local, and there is no second
-one. On the machine this is for, the person at the keyboard is the person the session belongs
-to, and inventing an authorisation scheme for a case that does not arise buys nothing and adds
-a thing to get wrong. The consequence is worth naming rather than discovering: on a machine
-with several people logged in at once, any of them can read the guest list, kick a guest and
-change the stream's settings.
+**Being local is not enough to be authorised.** A local socket carries the peer's credentials
+and the channel acts on them: what a connection may do follows from who is on the other end,
+not from the fact that it reached the socket. Without that, any account on the machine speaks
+as the tray -- by hand, from a script, from anything that can open a path -- and kicking a
+guest or changing a stream's settings is not something a bystander with a login may do.
 
-**This is not the guest permission model and must not grow into one.** What a *guest* may
-drive, whether it owns the machine, and whether it needed approval at all are decided by
+**The two roles are not authorised alike**, which is the difference this section opened with.
+A helper makes statements about its own session and is trusted with exactly that, so its
+credentials already bound what its claims can mean: rule 4 below. A tray acts on the host, and
+acting on the host is the part that needs a criterion beyond being connected.
+
+**None of this is the guest permission model and it must not grow into one.** What a *guest*
+may drive, whether it owns the machine, and whether it needed approval at all are decided by
 signaling and arrive relayed -- never from the peer itself, which is the whole reason they are
-relayed ([04 §3](04-signaling.md)). A local client on this channel is a different question with
-a different answer, and the two must not be made to look alike.
+relayed ([04 §3](04-signaling.md)). Approval and ownership are settled there, above this
+program, and nothing on this channel adds to them or argues with them. A local client is a
+different question with a different answer, and the two must not be made to look alike.
 
 **The socket is at a known path**, and the reason is a consequence rather than a preference.
 The service starts both session-side programs itself and could hand each a private path, but a
@@ -498,8 +507,8 @@ tray started by hand -- which is how a person gets one back after closing it -- 
 by the service and has nothing to be handed. A path it cannot find is a tray that cannot
 connect, and asking the service to start another one needs the channel it is missing. So the
 path is known, a tray started by hand simply connects and is the tray, and no protocol for
-asking to be restarted has to exist at all. A private path would buy secrecy that the rule
-above already gives away.
+asking to be restarted has to exist at all. A private path would put secrecy where the check
+above belongs, and would cost exactly the tray somebody starts by hand.
 
 **A session-side program exiting means nothing to the stream.** The service starts them and
 does not depend on them: a tray that is closed is not a tray that is missed, and a session
@@ -715,6 +724,7 @@ None of this reaches the protocol core, the IO shell's logic, or the public API.
 | framebuffer export, classic module of the second vendor | open, not run here, off the path |
 | virtual display | open: the software virtual driver is absent from this kernel |
 | audio capture surface | **closed**: the session's sound server, reached over its own socket, no helper (§7) |
+| local channel authorisation | **open**: being local does not authorise anything (§5.1), and which credential may act on the host is undecided |
 
 Six of the ten were closed by one probe, run before Phase 0 rather than at Phase 9. A second
 run of the same probe on different hardware closed the seventh (§3.2), and the first run of the

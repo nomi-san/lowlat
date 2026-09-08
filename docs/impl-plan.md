@@ -1538,17 +1538,52 @@ The conversion shapes are settled, asked of the devices rather than guessed:
 
 ---
 
-## Phase 12 - Daemon and tray
+## Phase 12 - Daemon, session helper and tray
+
+**The helper belongs here rather than in a phase of its own.** It is the same socket, the same
+framing and the same binary as the tray, and the two differ in authorisation rather than in
+transport ([07 §5.1](07-platforms.md)). Splitting them would mean building the channel twice
+and deciding its shape without one of its two customers in front of it.
 
 - [ ] `lowlatd` as a system service, with the unit file and device access rules.
-- [ ] `lowlat-tray` over a Unix socket with peer-credential authentication.
+- [ ] **The session channel**: length-prefixed frames on a Unix stream socket at a known path,
+  JSON bodies, a first frame carrying version, role and capability, peer credentials as the
+  identity, a deadline on every request, and one helper to a session with the newest winning.
+- [ ] **`lowlatd` in its session role**, selected by the first argument and never by a flag that
+  may appear anywhere in a command line.
+- [ ] **The relative-pointer signal**, pushed on change. The customer the channel is built
+  around, because its shape is continuous and a request-and-reply channel bent to carry it later
+  would be the wrong shape ([07 §2.1](07-platforms.md)). The injector's hook already exists.
+- [ ] The idle inhibitor, held as a lease while it is asked for.
+- [ ] The display layout answered by the session, in place of the backend's own reading.
+- [ ] Display mode and rotation, requested rarely and refused with a reason when nothing is
+  there to ask.
+- [ ] **The clipboard, both directions, behind `guest_clipboard`** ([07 §5.1](07-platforms.md)):
+  an ownership held for as long as the selection is, not a value written once.
+- [ ] **Which credential authorises a host action.** Being local is not it, and the criterion is
+  the one part of [07 §5.1](07-platforms.md) still open.
+- [ ] `lowlat-tray` over the same socket, announcing the other role.
 
 **Gate:**
 
 1. The service starts at boot and accepts a connection with no user logged in.
-2. **A stream survives the tray exiting and the user logging out.**
+2. **A stream survives the tray exiting and the user logging out**, and survives the helper
+   exiting mid-session with nothing disturbed. *Named regression test.*
 3. The tray attaches and detaches repeatedly against a running stream.
 4. Peer-credential authentication rejects an unauthorized local user.
+5. **The session role cannot be selected by a flag** appearing anywhere in the command line,
+   only by the first argument. *Named regression test: it is a privilege boundary, not a parsing
+   preference.*
+6. **A helper that stops answering is dropped rather than waited for**, with the deadline
+   observed rather than assumed.
+7. **Absent is not degraded**: with no helper the pointer reports shown and relative mode never
+   engages, no lease is held, and a mode request is refused with a reason. Nothing guesses.
+8. **Relative mode engages on an application that takes the pointer and does not engage when the
+   pointer merely outgrew its plane.** The second half is the whole reason the helper exists and
+   the case a scanout-only signal gets wrong ([07 §2.1](07-platforms.md)).
+9. A second helper for one session replaces the first rather than joining it.
+10. **The clipboard moves under `send` and `both` and under nothing else**, in the direction each
+    permits, with `off` and an unrecognised value both carrying nothing in either direction.
 
 ---
 
@@ -1640,9 +1675,25 @@ Newest first. Record approach changes and gate revisions here; per-commit detail
   stream has run. The hardware matrix this argument rests on is
   [09-compatibility.md](09-compatibility.md).
 
+- 2026-09-08: **`recv` is dropped and the clipboard gate has three values.** A guest that is
+  shown this desktop's clipboard can already be handed text by whoever is at the machine, so a
+  value sitting between `send` and `both` names a stricter arrangement than it delivers. The
+  asymmetry the values carry is that the milder direction is available on its own and the
+  dangerous one is not.
+
+- 2026-09-08: **Being local does not authorise anything, and the helper joins Phase 12.** The
+  rule that any local user may connect is withdrawn: a local socket carries credentials and the
+  channel has to act on them, or any account on the machine speaks as the tray -- by hand or
+  from a script -- and kicks a guest. Approval and ownership belong to signaling and to the
+  application above it, and nothing on this channel adds to them; what is left for the channel
+  to decide is which credential may act *on the host*, which is the one part of
+  [07 §5.1](07-platforms.md) still open. The helper is appended to **Phase 12** rather than
+  given a phase, because it is the same socket, the same framing and the same binary as the
+  tray and the two differ only in authorisation.
+
 - 2026-09-08: **The clipboard gate's four values are the guest's point of view, not the host's.**
   The setting is named `guest_clipboard` and names what a guest may do, so `send` is a guest
-  sending its clipboard to this desktop and `recv` is a guest receiving this desktop's. The entry
+  sending its clipboard to this desktop. The entry
   below had them the other way round and read the direction out of the host's mouth, which made
   the setting's own name argue against it. **An owner is `both` by default**, and the four values
   are about guests. The same pass corrected a second sentence there: it said an owner was merely
