@@ -45,9 +45,12 @@ mod ioctl {
 /// the machine restarts. The foreground terminal's keyboard mode is what
 /// separates the two, and reading it is one request.
 ///
-/// **No terminal at all answers false**, which is right rather than cautious:
-/// a system without the virtual terminal subsystem has nothing that could run
-/// the combination.
+/// **A terminal that cannot be opened answers false**, covering two cases that
+/// do not need telling apart: a system without the virtual terminal subsystem
+/// has nothing that could run the combination, and a process that may not look
+/// is not a system service, so it is in a session and a session has a display
+/// server. The dangerous case needs both a text console and the privilege to
+/// have opened the device node in the first place.
 #[must_use]
 pub fn console_takes_the_chord() -> bool {
     /// The two modes in which the terminal translates keys through its own
