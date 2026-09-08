@@ -3,6 +3,33 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-08 - A guest can ask for the attention chord
+
+### Added
+- **`Ctrl+Alt+Del`, typed on the asking guest's own keyboard.** The combination is taken by the
+  operating system a client runs on before any application sees it, so a remote user physically
+  cannot send it as keystrokes and asks the host for it instead. The request is an application
+  message with an empty body and it is answered where the rest of this host's application
+  protocol lives, not at the boundary: input comes from guests, and a general "inject these keys"
+  call would be a different decision.
+- **The chord is typed rather than passed through**, both modifiers down, the third key down,
+  then all three up in reverse. Whatever the guest was already holding of the three ends up
+  released, which is what the chord leaves behind on a real keyboard too.
+- **A text console is refused.** In front of a graphical session the combination reaches the
+  compositor and produces its leave dialog, which is what a client means by asking. In front of
+  a text console the terminal translates it and the machine restarts. The foreground terminal's
+  keyboard mode separates them in one request; no terminal at all is not the dangerous case and
+  is allowed.
+
+### Testing
+- Two named tests: the chord releases every key it pressed, including one the guest was already
+  holding, and a guest without the keyboard permission cannot ask for it. **The first was
+  confirmed to fail** with the release half removed.
+- **The reported stuck key did not reproduce and the expansion was re-read instead.** Two tests
+  pin the shape it was reported in -- a letter typed under a held modifier leaves nothing held,
+  and a modifier absent from a peer's modifier mask releases nothing, since that mask is the
+  peer's platform reporting itself at one keystroke rather than a state to act on.
+
 ## 2026-09-08 - Every key a guest sends can be read off the log
 
 ### Added

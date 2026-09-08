@@ -709,6 +709,31 @@ is offered: it is what the common controller libraries raise, and the shaped eff
 require carrying an envelope simulation for a peer that can express two motor strengths and
 nothing else.
 
+### §7.3 The attention chord
+
+**A guest asks for `Ctrl+Alt+Del` rather than typing it**, because the operating system the
+guest is running on takes that combination before any application sees it. The request arrives
+as an application message ([01 §11.1](01-protocol.md) opcode 17, sub-identifier 14) with an
+empty body, and the host types the chord on that guest's own virtual keyboard.
+
+Three things make it a host action rather than an ordinary keystroke:
+
+- **It is typed, not passed through.** Both modifiers go down, the third key goes down, and all
+  three come up in reverse, in one report. Whatever the guest was holding of those three ends up
+  released, which is what pressing the chord on a real keyboard would leave behind as well.
+- **The keyboard permission gates it**, because it is keystrokes. A guest that may not type may
+  not type these.
+- **A text console must be refused.** In front of a graphical session the combination reaches
+  the compositor and produces its leave dialog, which is the useful analogue of what the
+  requesting client means by it. In front of a text console it reaches nothing of the sort: the
+  terminal translates the combination itself and the machine restarts. The foreground terminal's
+  keyboard mode says which, and the request is refused and logged in the second case. A machine
+  with no virtual terminal subsystem at all has nothing that could run the combination and is
+  not the dangerous case.
+
+There is no general "inject these keys" call behind this. Input comes from guests; this is the
+one chord a guest is unable to send for itself.
+
 ## §8 Cursor
 
 The cursor travels out of band, not composited into the frame. That is a protocol property and
