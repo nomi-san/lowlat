@@ -3,6 +3,24 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-08 - Every key a guest sends can be read off the log
+
+### Added
+- **A line per keyboard message, naming what the expansion did with it.** A key that will not
+  release on the far side has two causes with the same symptom and different fixes: a release the
+  peer never sent, and a release this host dropped because it had no matching press recorded. The
+  message stream on its own tells those apart only if it can be read, and the per-opcode census
+  says the first of each kind and nothing after. The line carries the peer's code, its modifier
+  mask, the direction, the kernel key it mapped to, and which of `sent`, `not-held` and `no-key`
+  happened.
+- **`--verbose` on the daemon**, which is what turns it on. Nothing else in the program says
+  anything at this level, so in practice the switch means "log every key as it is expanded". The
+  line is not on the trace level, because that one is compiled out of the build a live run uses.
+- **The lock tap says so too.** The modifier mask is the peer's platform reporting itself at that
+  keystroke rather than a state this host can rely on, and a mask whose lock bit comes and goes
+  makes this host tap the lock key in the middle of somebody's typing. That is invisible in a
+  stream of injected events and obvious in one line.
+
 ## 2026-09-08 - A settled picture is re-coded, so still text sharpens
 
 ### Fixed
