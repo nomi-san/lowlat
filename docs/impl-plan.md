@@ -1558,7 +1558,7 @@ and deciding its shape without one of its two customers in front of it.
   injector's hook already exists. **Deferred past the helper itself** -- see the decision log --
   and the reason it was to be built first is answered rather than ignored: nothing
   request-and-reply shaped has been built for the channel to be bent out of.
-- [ ] The idle inhibitor, held as a lease while it is asked for.
+- [x] The idle inhibitor, held as a lease while it is asked for.
 - [ ] The display layout answered by the session, in place of the backend's own reading.
 - [ ] Display mode and rotation, requested rarely and refused with a reason when nothing is
   there to ask.

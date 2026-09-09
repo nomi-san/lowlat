@@ -3,6 +3,45 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-09 - The screen stays awake while somebody is watching
+
+### Added
+- **The idle inhibitor, the helper's first real customer.** A screen blanking during a session
+  is the desktop doing exactly what it was told, and nothing below the session can argue with it,
+  so the session is asked to stand its screen saver down while a guest is connected and to let go
+  when the last one leaves.
+- **Pushed as a state, not asked as a question.** It is state the service owns and the session
+  acts on; asking would mean waiting on a process in somebody's session for an answer nothing
+  needs. Sent on the change rather than on a timer, because a state repeated can arrive out of
+  order with the one that replaced it.
+- **Just enough of the session bus, written out here.** The whole of what is needed is two calls
+  on one interface, and a client library for that bus arrives with an executor this program keeps
+  to signaling. **The connection is the lease**: what comes back lives exactly as long as the
+  connection that asked for it, so a program that asks and exits has not asked at all -- which is
+  why the ordinary command line tools for that bus cannot hold one, and why this belongs in the
+  agent whose lifetime is the session's.
+- **A helper that finds no screen saver says so**, and the service gives the honest answer for
+  that session rather than waiting on one. The lease is also let go when the socket goes: held
+  while it is asked for, and a connection that has gone is nobody asking.
+
+### Fixed
+- **A header field carrying a signature was written as a string.** A signature counts its length
+  in one byte where a string counts it in four, so the call went out three bytes long and the bus
+  closed the connection without saying why. Found on the first call that carried a body: the one
+  before it has none and worked, which is what narrowed it.
+
+### Testing
+- The lease reaches the helper holding the place and reads back as the state it was sent as, and
+  three other things on the channel do not read as one.
+- A live test against a real session bus, off by default. **What it can assert is bounded and the
+  bound is the interface's**: the screen saver answers whether it is active, never who asked it
+  not to be, and the desktop's own list of what holds the machine awake is a different interface
+  that does not carry these. So it asserts the real service answered a well formed call with a
+  cookie of its own -- which is exactly the assertion that caught the signature field above.
+- **The register of helpers is one static for the program**, so the tests that read it were
+  changed to ask whether a process holds a place rather than to count what is in it. Counting
+  passed alone and failed beside a second test that registers.
+
 ## 2026-09-09 - A helper announces what its session can do
 
 ### Added
