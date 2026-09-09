@@ -303,6 +303,12 @@ fn serve(mut stream: UnixStream) {
             greeting.role.name(),
             body.len()
         );
+        // **Only a helper speaks for a session.** A tray acts on the host and
+        // is a different question with a different answer, so what it says
+        // about a session is not taken (docs/07-platforms.md section 5.1).
+        if greeting.role == Role::Helper {
+            say(&body);
+        }
     }
     if greeting.role == Role::Helper {
         leave_place(greeting.peer);
@@ -381,6 +387,68 @@ pub(crate) fn screen_awake(awake: bool) {
             );
         }
     }
+}
+
+/// What a session has said that the service has not acted on yet.
+///
+/// **A queue rather than a call, because the two ends are different threads
+/// and only one of them may touch the seam.** The channel's own threads read
+/// the socket; the loop that owns the guests drains this.
+static SAID: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
+
+/// How many unread things from a session are kept.
+///
+/// **Small, and the oldest is what goes.** These are clipboard contents, where
+/// the newest is the only one anybody wants; a queue that grew instead would
+/// let a session agent spend this program's memory.
+const SAID_MAX: usize = 4;
+
+fn say(body: &[u8]) {
+    let Ok(mut said) = SAID.lock() else { return };
+    if said.len() >= SAID_MAX {
+        said.remove(0);
+        lowlat_common::log_warn!("channel: the session is talking faster than this reads");
+    }
+    said.push(body.to_vec());
+}
+
+/// Take everything a session has said since the last time this was asked.
+pub(crate) fn take_said() -> Vec<Vec<u8>> {
+    SAID.lock()
+        .map(|mut said| std::mem::take(&mut *said))
+        .unwrap_or_default()
+}
+
+/// Hand the session a guest's copied text to put on its clipboard.
+///
+/// **Nothing happens when there is no helper**, and the caller is told so: a
+/// selection can only be owned from inside a session, so with nobody there the
+/// text has nowhere to go and saying it arrived would be a lie.
+pub(crate) fn clipboard(text: &[u8]) -> bool {
+    // **Any terminator is taken off here.** The wire counts one and the layer
+    // that reads it takes one off, but a peer that sent two would otherwise
+    // put a stray byte on somebody's desktop clipboard, where it is invisible
+    // until it is pasted into something that minds.
+    let text = text.strip_suffix(&[0]).unwrap_or(text);
+    let body =
+        serde_json::json!({ "clipboard": String::from_utf8_lossy(text).as_ref() }).to_string();
+    let Ok(mut live) = HELPERS.lock() else {
+        return false;
+    };
+    let mut reached = false;
+    for held in live.iter_mut() {
+        reached |= write_frame(&mut held.handle, body.as_bytes()).is_ok();
+    }
+    reached
+}
+
+/// The copied text a frame carries, in either direction.
+pub(crate) fn is_clipboard(body: &[u8]) -> Option<String> {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()?
+        .get("clipboard")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 /// Whether a frame is the service saying somebody is or is not watching.
@@ -494,6 +562,19 @@ mod tests {
 
     fn pair() -> (UnixStream, UnixStream) {
         UnixStream::pair().expect("a socket pair")
+    }
+
+    /// **The register of helpers is one static for the program, and what the
+    /// service pushes goes to all of them.** That is right for a service and
+    /// wrong for tests running side by side in one process, where one test's
+    /// lease lands in another's socket. The tests that register take this
+    /// first.
+    static ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn alone() -> std::sync::MutexGuard<'static, ()> {
+        ONE_AT_A_TIME
+            .lock()
+            .unwrap_or_else(|held| held.into_inner())
     }
 
     /// **A real accepted connection, not a socket pair.** The credentials come
@@ -621,6 +702,7 @@ mod tests {
     /// anything can act on.
     #[test]
     fn a_second_helper_for_one_session_replaces_the_first() {
+        let _alone = alone();
         let peer = Peer {
             pid: 4242,
             uid: 1000,
@@ -679,6 +761,7 @@ mod tests {
     /// the state it was sent as.
     #[test]
     fn the_screen_lease_reaches_the_helper_that_holds_the_place() {
+        let _alone = alone();
         let peer = Peer {
             pid: 5150,
             uid: 1001,
@@ -700,6 +783,40 @@ mod tests {
         assert_eq!(is_awake(&hello(Role::Helper, Can::default())), None);
 
         leave_place(peer);
+    }
+
+    /// **A stray terminator does not reach a desktop's clipboard.** The wire
+    /// counts one and the layer that reads it takes one off, so a peer that
+    /// sent two would otherwise put a byte on somebody's clipboard that is
+    /// invisible until it is pasted into something that minds.
+    #[test]
+    fn copied_text_reaches_the_session_without_its_terminator() {
+        let _alone = alone();
+        let peer = Peer {
+            pid: 5151,
+            uid: 1002,
+            gid: 1002,
+        };
+        let (near, mut far) = pair();
+        take_place(peer, &near);
+
+        assert!(clipboard(b"a link\0"));
+        let mut body = Vec::new();
+        read_frame(&mut far, &mut body).expect("copied text");
+        assert_eq!(is_clipboard(&body).as_deref(), Some("a link"));
+
+        assert!(clipboard(b"no terminator"));
+        read_frame(&mut far, &mut body).expect("copied text");
+        assert_eq!(is_clipboard(&body).as_deref(), Some("no terminator"));
+
+        // A lease is not copied text and copied text is not a lease.
+        assert_eq!(is_clipboard(&hello(Role::Helper, Can::default())), None);
+        assert_eq!(is_awake(&body), None);
+
+        leave_place(peer);
+        // With nobody in the session there is nowhere for it to go, and the
+        // caller is told rather than left to assume it arrived.
+        assert!(!clipboard(b"into the void"));
     }
 
     #[test]

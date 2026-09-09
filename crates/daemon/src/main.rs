@@ -677,6 +677,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // turned out to be a different size from the one that was asked for.
     let settings = app::Settings {
         accept_microphone: flag_set("--accept-microphone"),
+        // **Off unless asked for, and anything unrecognised is off.** One of
+        // the two directions ships whatever the person at this machine copied,
+        // and a typo must not open it.
+        guest_clipboard: app::Clipboard::named(flag("--clipboard").as_deref()),
         output: flag("--output").unwrap_or_default(),
         // The ceiling is configured in whole megabits; a client reads it as
         // an integer and there is nothing below one to report.
@@ -951,6 +955,16 @@ async fn session_loop(
             channel::screen_awake(watched);
         }
 
+        // **Drained here rather than acted on where it arrives.** The channel
+        // reads its socket on its own threads and only this loop may touch the
+        // guests, so what a session says waits in a queue until this asks for
+        // it (docs/07-platforms.md section 5.1).
+        for said in channel::take_said() {
+            if let Some(text) = channel::is_clipboard(&said) {
+                app::clipboard_to_guests(seam, settings, text.as_bytes());
+            }
+        }
+
         while let Some(received) = seam.poll_event() {
             // **Said out loud, because the queue is bounded.** An application
             // that stopped polling long enough loses the oldest events, and a
@@ -1042,17 +1056,26 @@ async fn session_loop(
                 // so the choice of what they mean is made at this level and
                 // the layers under it stay ignorant of it.
                 Event::UserData { guest, id, text } => {
-                    let printable: String = text
-                        .iter()
-                        .take(120)
-                        .map(|byte| {
-                            if byte.is_ascii_graphic() || *byte == b' ' {
-                                char::from(*byte)
-                            } else {
-                                '.'
-                            }
-                        })
-                        .collect();
+                    // **The exact bytes for configuration, a length for a
+                    // person's own text.** Having the bytes beside the question
+                    // is what makes a wrong answer findable, and that reasoning
+                    // inverts for the identifiers that carry what somebody
+                    // typed or copied: the same line turns this log into a
+                    // transcript of a desktop.
+                    let printable: String = if app::carries_user_text(id) {
+                        String::new()
+                    } else {
+                        text.iter()
+                            .take(120)
+                            .map(|byte| {
+                                if byte.is_ascii_graphic() || *byte == b' ' {
+                                    char::from(*byte)
+                                } else {
+                                    '.'
+                                }
+                            })
+                            .collect()
+                    };
                     let spoken = app::on_message(seam, guest, id, &text, settings);
                     lowlat_common::log_info!(
                         "lowlatd: guest {guest} sent id={id} len={} {}body={printable}",

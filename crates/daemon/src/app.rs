@@ -41,6 +41,67 @@ mod id {
     /// before any application sees it, so a remote user physically cannot send
     /// it as keystrokes and asks the host to produce it instead.
     pub(crate) const SECURE_ATTENTION: u32 = 14;
+    /// Copied text, in both directions.
+    pub(crate) const CLIPBOARD: u32 = 7;
+}
+
+/// Which application messages carry a person's own text rather than
+/// configuration.
+///
+/// **What is logged for these is a length and an identifier, never the body.**
+/// The exact bytes beside the question are what make a wrong answer findable,
+/// and that reasoning holds for configuration and inverts for user text: the
+/// same line that would help turns the log into a transcript of everything
+/// anybody copies on this desktop. Applies to what is sent as well as to what
+/// arrives.
+pub(crate) const fn carries_user_text(id: u32) -> bool {
+    matches!(id, id::CLIPBOARD)
+}
+
+/// Which way copied text may travel for one guest.
+///
+/// **An owner is not a guest.** Ownership arrives relayed from signaling and
+/// is never read from the peer, and the setting names what a *guest* may do
+/// (docs/07-platforms.md section 5.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Clipboard {
+    #[default]
+    Off,
+    /// A guest's clipboard reaches the desktop.
+    Send,
+    /// That, and the desktop's reaches the guest.
+    Both,
+}
+
+impl Clipboard {
+    /// **Anything unrecognised is `off`** -- absent, empty, misspelled, or a
+    /// value from a newer version -- so that a typo cannot open a clipboard
+    /// and a configuration this build does not understand fails closed.
+    pub(crate) fn named(name: Option<&str>) -> Self {
+        match name {
+            Some("send") => Self::Send,
+            Some("both") => Self::Both,
+            _ => Self::Off,
+        }
+    }
+
+    pub(crate) const fn name(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Send => "send",
+            Self::Both => "both",
+        }
+    }
+
+    /// Whether this guest's own clipboard may reach the desktop.
+    const fn takes_from(self, owner: bool) -> bool {
+        owner || matches!(self, Self::Send | Self::Both)
+    }
+
+    /// Whether the desktop's clipboard may reach this guest.
+    const fn gives_to(self, owner: bool) -> bool {
+        owner || matches!(self, Self::Both)
+    }
 }
 
 /// The settings this host was started with.
@@ -73,6 +134,9 @@ pub(crate) struct Settings {
     /// exists at all. Published as zero while it does not, which is what a
     /// host with no microphone support has always said.
     pub(crate) accept_microphone: bool,
+    /// Which way copied text may travel for a guest that does not own the
+    /// machine.
+    pub(crate) guest_clipboard: Clipboard,
     /// Offer one output that does not exist.
     ///
     /// **A probe, off by default.** Whether a reader draws a chooser at all
@@ -245,8 +309,54 @@ pub(crate) fn on_message(
             }
             true
         }
+        // **Handed to the session, which is the only thing that can hold a
+        // selection.** Putting text on a clipboard is announcing that you own
+        // it, and the bytes are asked for later when somebody pastes, so
+        // nothing outside a session can do it (docs/07-platforms.md 5.1).
+        //
+        // **Claimed even when it is refused**, because a refusal is this
+        // host's answer rather than a message it did not understand.
+        id::CLIPBOARD => {
+            let owner = seam.guests().iter().any(|g| g.number == guest && g.owner);
+            if settings.guest_clipboard.takes_from(owner) {
+                let reached = crate::channel::clipboard(body);
+                lowlat_common::log_info!(
+                    "lowlatd: guest {guest} sent a clipboard of {} bytes, session={}",
+                    body.len(),
+                    u8::from(reached)
+                );
+            } else {
+                lowlat_common::log_info!(
+                    "lowlatd: guest {guest} sent a clipboard of {} bytes, refused={}",
+                    body.len(),
+                    settings.guest_clipboard.name()
+                );
+            }
+            true
+        }
         _ => false,
     }
+}
+
+/// Pass the desktop's own clipboard to the guests that may have it.
+///
+/// **Sent rather than offered, because that is the shape the message has.**
+/// Copied text travels as an application message with no request behind it, so
+/// a host that waited to be asked would never send one.
+pub(crate) fn clipboard_to_guests(seam: &mut Admission, settings: &Settings, text: &[u8]) {
+    let mut reached = 0u32;
+    for guest in seam.guests() {
+        if !settings.guest_clipboard.gives_to(guest.owner) {
+            continue;
+        }
+        if seam.send_user_data(guest.number, id::CLIPBOARD, text) {
+            reached += 1;
+        }
+    }
+    lowlat_common::log_info!(
+        "lowlatd: the desktop's clipboard of {} bytes reached {reached} guest(s)",
+        text.len()
+    );
 }
 
 /// Tell every guest what changed about the capture, if anything did.
@@ -807,6 +917,7 @@ mod tests {
     fn settings() -> Settings {
         Settings {
             accept_microphone: false,
+            guest_clipboard: Clipboard::Off,
             output: "card0:DP-2".to_string(),
             bitrate_mbps: 10,
             fps: 60,
@@ -886,6 +997,7 @@ mod tests {
     fn the_output_reported_is_the_one_the_host_would_capture() {
         let asked = Settings {
             accept_microphone: false,
+            guest_clipboard: Clipboard::Off,
             output: String::new(),
             ..settings()
         };
@@ -915,6 +1027,7 @@ mod tests {
         // An explicit request still wins over both.
         let told = Settings {
             accept_microphone: false,
+            guest_clipboard: Clipboard::Off,
             output: "card0:HDMI-A-1".to_string(),
             ..settings()
         };
@@ -932,6 +1045,7 @@ mod tests {
     fn an_output_is_named_even_when_none_was_asked_for() {
         let asked = Settings {
             accept_microphone: false,
+            guest_clipboard: Clipboard::Off,
             output: String::new(),
             ..settings()
         };
@@ -1064,6 +1178,47 @@ mod tests {
         }
     }
 
+    /// **A typo cannot open a clipboard.** Absent, empty, misspelled or a
+    /// value from a newer version all mean off, so a configuration this build
+    /// does not understand fails closed.
+    #[test]
+    fn an_unrecognised_clipboard_setting_is_off() {
+        assert_eq!(Clipboard::named(Some("send")), Clipboard::Send);
+        assert_eq!(Clipboard::named(Some("both")), Clipboard::Both);
+        for named in [
+            None,
+            Some(""),
+            Some("off"),
+            Some("Send"),
+            Some("recv"),
+            Some("all"),
+        ] {
+            assert_eq!(Clipboard::named(named), Clipboard::Off, "{named:?}");
+        }
+        assert_eq!(Clipboard::default(), Clipboard::Off);
+    }
+
+    /// **The milder direction is available on its own and the dangerous one is
+    /// not**, and an owner is `both` whatever the setting says.
+    #[test]
+    fn the_setting_names_what_a_guest_may_do_and_an_owner_is_not_a_guest() {
+        let guest = false;
+        assert!(!Clipboard::Off.takes_from(guest));
+        assert!(!Clipboard::Off.gives_to(guest));
+        // Sending is a guest's text arriving here, where a person still has to
+        // choose to paste it.
+        assert!(Clipboard::Send.takes_from(guest));
+        assert!(!Clipboard::Send.gives_to(guest));
+        assert!(Clipboard::Both.takes_from(guest));
+        assert!(Clipboard::Both.gives_to(guest));
+
+        let owner = true;
+        for setting in [Clipboard::Off, Clipboard::Send, Clipboard::Both] {
+            assert!(setting.takes_from(owner), "{setting:?}");
+            assert!(setting.gives_to(owner), "{setting:?}");
+        }
+    }
+
     /// A body for a language this host does not speak is reported as
     /// unhandled rather than swallowed.
     #[test]
@@ -1081,8 +1236,17 @@ mod tests {
             stream: None,
         });
         assert!(!on_message(&mut seam, 1, 0, b"Hello host", &settings()));
-        assert!(!on_message(&mut seam, 1, 7, b"clipboard", &settings()));
+        assert!(!on_message(
+            &mut seam,
+            1,
+            99,
+            b"from a newer client",
+            &settings()
+        ));
         assert!(on_message(&mut seam, 1, 9, b"", &settings()));
+        // **Claimed even with the clipboard off**, because refusing is this
+        // host's answer rather than a message it did not understand.
+        assert!(on_message(&mut seam, 1, 7, b"copied", &settings()));
         // **Claimed with no guest of that number to ask.** The identifier is
         // one this host speaks; whether there was anybody to type it for is a
         // different question and not what this answer means.
