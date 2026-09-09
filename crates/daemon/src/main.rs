@@ -101,6 +101,7 @@ async fn main() {
 
 mod app;
 mod channel;
+mod dbus;
 
 /// Which of the two programs an invocation is.
 ///
@@ -290,7 +291,21 @@ fn session() -> ! {
     // for the rest. Nothing is claimed yet: the customers land with their own
     // sources, and a helper that reports nothing is not a helper that is
     // absent.
-    let can = channel::Can::default();
+    // **What this session offers, found rather than assumed.** A desktop with
+    // no screen saver of its own, or none that answers on the bus, is a
+    // session that cannot hold a screen open, and saying so is what lets the
+    // service give the honest answer instead of waiting for one.
+    let mut screen = match dbus::Screen::connect() {
+        Ok(screen) => Some(screen),
+        Err(error) => {
+            lowlat_common::log_warn!("session: nothing to ask about the screen, error={error}");
+            None
+        }
+    };
+    let can = channel::Can {
+        idle: screen.is_some(),
+        ..channel::Can::default()
+    };
     // **Reconnected rather than exited.** A helper outlives the service by
     // design -- a system service restarts, a session does not -- so losing the
     // socket is a wait rather than an ending. Backed off because the common
@@ -307,7 +322,14 @@ fn session() -> ! {
                         lowlat_common::log_info!("session: sent away, reason={reason}");
                         std::process::exit(0);
                     }
+                    if let Some(awake) = channel::is_awake(&body) {
+                        hold_screen(screen.as_mut(), awake);
+                    }
                 }
+                // **Let go on the way out.** The lease is held while it is
+                // asked for, and a socket that has gone is nobody asking. A
+                // service that comes back says so again.
+                hold_screen(screen.as_mut(), false);
                 // **What is known, which is only that the connection ended.**
                 // A service that went away and one that is still there both
                 // read as a closed socket from here; the case where it is
@@ -320,6 +342,29 @@ fn session() -> ! {
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(wait));
+    }
+}
+
+/// Take or let go of the screen, and say which happened.
+///
+/// **Reported rather than answered.** The service asked for a state rather
+/// than a reply, so what comes back is a line in the log of the session that
+/// owns the screen, which is where somebody looking for a screen that blanked
+/// anyway would look.
+fn hold_screen(screen: Option<&mut dbus::Screen>, awake: bool) {
+    let Some(screen) = screen else { return };
+    let held = if awake {
+        screen.inhibit()
+    } else {
+        screen.release()
+    };
+    match held {
+        Ok(()) => lowlat_common::log_info!(
+            "session: screen asked to stay awake={} holding={}",
+            u8::from(awake),
+            u8::from(screen.holding())
+        ),
+        Err(error) => lowlat_common::log_warn!("session: the screen refused, error={error}"),
     }
 }
 
@@ -744,6 +789,8 @@ async fn session_loop(
 
     // When the room was last told what everyone's numbers are.
     let mut rostered = lowlat_common::clock::Time::now();
+    // Whether the session was last told somebody is watching.
+    let mut awake = false;
 
     loop {
         tokio::select! {
@@ -890,6 +937,18 @@ async fn session_loop(
         if lowlat_common::clock::elapsed_ms(rostered) >= ROSTER_MS && occupancy(seam) > 0 {
             rostered = lowlat_common::clock::Time::now();
             app::announce_guests(seam);
+        }
+
+        // **A lease, held while somebody is watching.** The screen blanking
+        // during a session is the desktop doing exactly what it was told, and
+        // nothing below the session can argue with it, so the session is asked
+        // (docs/07-platforms.md section 5.1). Said on the change rather than on
+        // a timer: it is a state, and a state repeated is a state that can
+        // arrive out of order with the one that replaced it.
+        let watched = occupancy(seam) > 0;
+        if watched != awake {
+            awake = watched;
+            channel::screen_awake(watched);
         }
 
         while let Some(received) = seam.poll_event() {

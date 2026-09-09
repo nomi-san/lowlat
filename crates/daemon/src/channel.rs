@@ -361,6 +361,36 @@ pub(crate) fn greet(stream: &mut UnixStream) -> Option<Greeting> {
     Some(Greeting { role, peer, can })
 }
 
+/// Tell the session whether somebody is watching this machine.
+///
+/// **A push rather than a question**, because it is a state the service owns
+/// and the session acts on: asking would mean waiting on a process in
+/// somebody's session for an answer nothing here needs.
+///
+/// **Nothing happens when there is no helper**, which is the honest answer
+/// rather than a degraded one: with nobody in the session to ask, the screen
+/// does what the desktop decides.
+pub(crate) fn screen_awake(awake: bool) {
+    let body = serde_json::json!({ "awake": awake }).to_string();
+    let Ok(mut live) = HELPERS.lock() else { return };
+    for held in live.iter_mut() {
+        if let Err(error) = write_frame(&mut held.handle, body.as_bytes()) {
+            lowlat_common::log_warn!(
+                "channel: helper unreachable, pid={} error={error}",
+                held.pid
+            );
+        }
+    }
+}
+
+/// Whether a frame is the service saying somebody is or is not watching.
+pub(crate) fn is_awake(body: &[u8]) -> Option<bool> {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()?
+        .get("awake")?
+        .as_bool()
+}
+
 /// What the service says before closing a connection it is ending on purpose.
 ///
 /// **A reason rather than a bare close**, because the two closes a session
@@ -601,8 +631,13 @@ mod tests {
         let (second, _second_far) = pair();
 
         take_place(peer, &first);
+        assert!(holds(peer.pid));
         take_place(later, &second);
-        assert_eq!(HELPERS.lock().expect("held").len(), 1);
+        // **By process rather than by count.** The register is one static for
+        // the program, so a test that counts what is in it counts whatever
+        // another test on another thread put there too.
+        assert!(!holds(peer.pid), "the replaced helper still holds a place");
+        assert!(holds(later.pid));
 
         // **The replaced helper is told why, then closed.** Being told is what
         // stops it coming back and displacing its own replacement.
@@ -626,9 +661,45 @@ mod tests {
         // The one that was already replaced must not take its replacement's
         // place away on the way out.
         leave_place(peer);
-        assert_eq!(HELPERS.lock().expect("held").len(), 1);
+        assert!(holds(later.pid), "the replacement's place was taken away");
         leave_place(later);
-        assert!(HELPERS.lock().expect("held").is_empty());
+        assert!(!holds(later.pid));
+    }
+
+    /// Whether a process holds a place right now.
+    fn holds(pid: i32) -> bool {
+        HELPERS
+            .lock()
+            .expect("held")
+            .iter()
+            .any(|held| held.pid == pid)
+    }
+
+    /// The lease reaches whichever helper holds the place, and reads back as
+    /// the state it was sent as.
+    #[test]
+    fn the_screen_lease_reaches_the_helper_that_holds_the_place() {
+        let peer = Peer {
+            pid: 5150,
+            uid: 1001,
+            gid: 1001,
+        };
+        let (near, mut far) = pair();
+        take_place(peer, &near);
+
+        let mut body = Vec::new();
+        screen_awake(true);
+        read_frame(&mut far, &mut body).expect("a lease");
+        assert_eq!(is_awake(&body), Some(true));
+        screen_awake(false);
+        read_frame(&mut far, &mut body).expect("a release");
+        assert_eq!(is_awake(&body), Some(false));
+
+        // Anything else on the channel is not a lease and must not read as one.
+        assert_eq!(is_awake(BYE_REPLACED), None);
+        assert_eq!(is_awake(&hello(Role::Helper, Can::default())), None);
+
+        leave_place(peer);
     }
 
     #[test]
