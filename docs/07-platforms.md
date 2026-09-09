@@ -419,8 +419,14 @@ Four things need session state, and none of them can be answered below it:
 | relative pointer mode (§2.1) | a signal, pushed on change | the feature; a guest is never put into relative mode |
 | the idle inhibitor | a lease, held while asked | the screen may blank during a session |
 | the display layout | a signal, pushed on change | the backend's own reading is used, and it is only ever right about the desktop as it was when the display opened |
-| display mode and rotation | a request, rarely | a guest's request is refused with a reason |
 | the clipboard | an ownership, held | a guest's text is dropped and the desktop's never leaves |
+
+**Display mode and rotation are not on that list and must not be added to it.** This host does
+not set the mode of a display it does not own and does not relay a request to do so either
+([impl-plan.md](impl-plan.md), *Output selection*, decided 2026-08-21): the mode of somebody's
+desk is changed where it is already changed, and capture follows whatever the display became.
+The row was left here after that decision and read as work outstanding, which is how it came to
+be scheduled twice.
 
 #### The layout is a signal, not a question
 

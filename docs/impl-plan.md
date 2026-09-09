@@ -1563,8 +1563,6 @@ and deciding its shape without one of its two customers in front of it.
   planned as a question and is a signal: the answer has to be right whenever a guest moves its
   pointer, and a host that asks once is silently wrong from the moment a display is plugged in
   ([07 §5.1](07-platforms.md)).
-- [ ] Display mode and rotation, requested rarely and refused with a reason when nothing is
-  there to ask.
 - [x] **The clipboard, both directions, behind `guest_clipboard`** ([07 §5.1](07-platforms.md)):
   an ownership held for as long as the selection is, not a value written once. **One desktop's
   mechanism so far**, announced through the capability, so a session that has none says so and
@@ -1686,6 +1684,16 @@ Newest first. Record approach changes and gate revisions here; per-commit detail
   and now asks that none be loaded into the process, checked against the process map after a
   stream has run. The hardware matrix this argument rests on is
   [09-compatibility.md](09-compatibility.md).
+
+- 2026-09-09: **Display mode and rotation was scheduled a second time, and is struck out.** It
+  appeared in Phase 12's task list as a session-helper customer, taken from a row in
+  [07 §5.1](07-platforms.md) that had been left there when *Output selection* decided on
+  2026-08-21 that this host does not set the mode of a display it does not own and does not relay
+  a request to do so either. The row is gone and the section now says why it must not come back.
+  **A decision recorded in one document and not in the other is a decision that gets made
+  twice**, and the second making had already reached a task list before anybody noticed. The
+  daemon's refusal said "cannot set yet", which read as unbuilt work rather than as a settled
+  answer; it now says what it does.
 
 - 2026-09-09: **The helper is built before its first customer, and the relative-pointer signal
   is deferred.** The entry below reasoned that relative mode was the customer to build the
