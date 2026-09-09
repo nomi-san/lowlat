@@ -3,7 +3,7 @@
 What a machine needs to host, which parts meet it, and how each answer was arrived at.
 
 **This document is about hosting.** A guest needs nothing installed and no particular hardware;
-see [§6](#6-guests).
+see [§7](#7-guests).
 
 ---
 
@@ -66,7 +66,7 @@ and on the third the profile exists but a shader may not write the picture the e
 a stream that has settled on full chroma passes over it before a device is asked, and the
 session continues on a backend that can code it instead of ending on one that cannot.
 
-**A guest's decoder is the other half and is not in these tables**; see [§6](#6-guests).
+**A guest's decoder is the other half and is not in these tables**; see [§7](#7-guests).
 
 ---
 
@@ -80,8 +80,12 @@ Every row carries how it was established, because these are not equally solid:
   works.
 - **derived** -- follows from a documented interface floor. Weakest, and marked so it can be
   challenged.
+- **not run** -- nothing has been tried. Said out loud rather than left blank, because a row with
+  no grade reads as one that passed.
 
-Nothing here is marked measured unless a stream came out of that part and decoded.
+Nothing here is marked measured unless a stream came out of that part and decoded. The same rule
+applies to the desktop side in [§6](#6-desktop-environments): one desktop is measured and the
+rest are not run.
 
 ---
 
@@ -201,7 +205,64 @@ served by the compute tier anyway.
 
 ---
 
-## §6 Guests
+## §6 Desktop environments
+
+**The three stages above are below the display server and do not care which desktop is
+running.** Capture reads the display device, conversion and encode are the graphics stack; a
+session that draws anything at all is a session this can capture. What the desktop decides is a
+separate list, and it is short:
+
+| what | what it needs from the session | without it |
+|---|---|---|
+| absolute input landing in the right place | the desktop's layout: which outputs exist, and where each sits | the axis spans the captured picture alone, which is right on one output and wrong on two |
+| following a display that appears or moves | the same, watched rather than asked | the mapping is right about the desktop as it was when the display opened |
+| the screen not blanking mid-session | an inhibitor the session honours | the desktop blanks while somebody is watching it |
+| the clipboard, either direction | something that can own a selection and outlive the copy | copied text does not cross |
+| the attention chord | whatever the desktop binds the combination to | the keys are typed and nothing answers them |
+
+**Only the first two decide whether hosting is correct.** The rest are features that are absent
+rather than broken, which is the rule the session channel is built to
+([07 §5.1](07-platforms.md)).
+
+### The mechanisms, and where each one exists
+
+| capability | mechanism | grade |
+|---|---|---|
+| layout, and changes to it | `zxdg_output_manager_v1` on the session's own socket | **measured** on KDE Plasma Wayland, including an output appearing and going away |
+| idle inhibitor | `org.freedesktop.ScreenSaver` on the session bus | **measured** on KDE Plasma Wayland |
+| clipboard | `org.kde.klipper` on the session bus | **measured** on KDE Plasma Wayland, and **it is that desktop's own interface** |
+| attention chord | none: the keys are typed on the guest's own keyboard | **measured** on KDE Plasma Wayland, which answers with its leave dialog |
+
+**The clipboard is the one with no portable mechanism**, and it is named here rather than in a
+footnote. The interface used is a single desktop's. The portable-looking route is a privileged
+selection protocol -- `wlr-data-control-unstable-v1` and its successor -- which some compositors
+offer and at least one major one does not; the alternative on those is a client holding a
+selection, which needs focus that a background program does not have. A session that offers
+nothing announces that it offers nothing and the host answers honestly.
+
+**An X11 session answers none of the first two.** The layout is read over a Wayland socket and a
+session without one is a session that does not answer, so absolute input spans the picture
+alone -- correct on one output, wrong on two. The clipboard and the inhibitor are on the session
+bus and are not Wayland's, so a desktop offering them on X11 offers them here too.
+
+### What is not run
+
+Everything above is measured on **one** desktop. Nothing else has been run at all, and none of
+it is marked otherwise. What to run, per desktop, is four things:
+
+| check | how |
+|---|---|
+| can this machine host | `cargo run -p lowlat-host --example can-host` |
+| does the layout read, and does it follow a change | `cargo run -p lowlat-capture --example layout-watch`, then plug a display in or start a virtual one |
+| does the screen stay awake | `cargo test -p lowlatd -- --ignored the_screen` |
+| does the clipboard cross | `cargo test -p lowlatd -- --ignored the_desktop_clipboard` |
+
+The first is the only one that gates hosting. The other three each answer for one feature, and a
+"no" from any of them is a session that says so rather than a host that misbehaves.
+
+---
+
+## §7 Guests
 
 **Nothing to install, and no hardware requirement worth stating.** A guest decodes H.264 or
 HEVC, which every platform with a client has done in hardware for a decade and can do in
@@ -224,7 +285,7 @@ status and reports it; it cannot detect the condition itself and does not guess.
 
 ---
 
-## §7 Windows
+## §8 Windows
 
 Planned, after the Linux capture gate ([07 §10](07-platforms.md)). The stages map across but
 the constraints do not:
@@ -239,7 +300,7 @@ the constraints do not:
 
 ---
 
-## §8 What a software encoder would and would not fix
+## §9 What a software encoder would and would not fix
 
 **It would not widen this matrix much**, which is why it is not the next thing built.
 
@@ -264,7 +325,7 @@ closes half the gap and not the half that was open.
 
 ---
 
-## §9 Open questions
+## §10 Open questions
 
 | Question | Status |
 |---|---|
@@ -273,3 +334,5 @@ closes half the gap and not the half that was open.
 | Whether the low-power entry point is better than the shader one where both exist | never measured; the order prefers the shader one so nothing already served changes |
 | Whether the low-power path costs latency against the shader one | **answered 2026-08-27**: it does not. Intel discrete encodes 1080p desktop content in about 3.7 ms, roughly 1 to 1.5 ms behind the vendor backend, and the reference encoder on the same device reads 3.2 ms |
 | A conversion tier below OpenGL 4.3 | not planned (§4) |
+| Whether any desktop but one answers the layout, the inhibitor and the clipboard | **not run** (§6). The first decides whether absolute input lands correctly on more than one output; the others are features that are absent rather than broken |
+| A clipboard mechanism that is not one desktop's own | **open** (§6). The portable-looking route is offered by some compositors and not by at least one major one |
