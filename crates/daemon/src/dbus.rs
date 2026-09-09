@@ -23,6 +23,21 @@ const OBJECT: &str = "/org/freedesktop/ScreenSaver";
 const WHO: &str = "lowlat";
 const WHY: &str = "a remote session is connected";
 
+/// The clipboard, on the desktop that offers this one.
+///
+/// **The mechanism is the desktop's, not a standard one.** A selection is
+/// owned rather than stored, so what serves it has to still be running when
+/// somebody pastes; here that is the desktop's own clipboard component, which
+/// is always running and whose whole job this is. Another desktop needs
+/// another mechanism behind the same capability, and one that has none
+/// announces that it has none.
+const CLIP: &str = "org.kde.klipper";
+const CLIP_OBJECT: &str = "/klipper";
+/// **Not the same as the name that owns it.** The service is reached by one
+/// and its methods are on the other, and using the name for both is a call the
+/// bus answers with a refusal rather than with a hint.
+const CLIP_FACE: &str = "org.kde.klipper.klipper";
+
 /// A reply that is not this size is not one this reads.
 const HEADER: usize = 16;
 
@@ -186,6 +201,106 @@ impl Screen {
         let body = rest.get(padded..).unwrap_or(&[]).to_vec();
         Ok((kind, reply_serial(fields), body))
     }
+}
+
+/// A connection to the session bus that owns the clipboard.
+///
+/// **Its own connection, not the lease's.** One of them blocks waiting for the
+/// desktop to say the clipboard changed while the other is asked to hold a
+/// screen open, and a single connection would have to be two things at once.
+#[derive(Debug)]
+pub(crate) struct Clip {
+    screen: Screen,
+    /// What was last seen or set, so a change this host caused is not sent
+    /// back to the guest that caused it.
+    last: String,
+}
+
+impl Clip {
+    /// Open a connection and ask to hear about clipboard changes.
+    pub(crate) fn connect() -> Result<Self, String> {
+        let mut screen = Screen::connect()?;
+        // **Asked for by name.** The bus delivers a signal only to connections
+        // that said they wanted it, so without this the socket is silent.
+        let mut rule = Vec::new();
+        put_string(
+            &mut rule,
+            "type='signal',interface='org.kde.klipper.klipper',member='clipboardHistoryUpdated'",
+        );
+        screen.call(
+            "org.freedesktop.DBus",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus",
+            "AddMatch",
+            &[("s", rule)],
+        )?;
+        // A desktop that answers the name but not the call is one this cannot
+        // use, and finding out now is what the capability is announced from.
+        let mut clip = Self {
+            screen,
+            last: String::new(),
+        };
+        clip.last = clip.read()?;
+        Ok(clip)
+    }
+
+    /// What is on the desktop's clipboard now.
+    pub(crate) fn read(&mut self) -> Result<String, String> {
+        let reply = self
+            .screen
+            .call(CLIP, CLIP_OBJECT, CLIP_FACE, "getClipboardContents", &[])?;
+        Ok(string_at(&reply))
+    }
+
+    /// Put a guest's text on the desktop's clipboard.
+    ///
+    /// **Remembered as ours**, so the change it causes is not read back and
+    /// sent to the guest that sent it.
+    pub(crate) fn write(&mut self, text: &str) -> Result<(), String> {
+        let mut body = Vec::new();
+        put_string(&mut body, text);
+        self.screen.call(
+            CLIP,
+            CLIP_OBJECT,
+            CLIP_FACE,
+            "setClipboardContents",
+            &[("s", body)],
+        )?;
+        self.last = text.to_string();
+        Ok(())
+    }
+
+    /// Wait for the desktop to say its clipboard changed, and answer with what
+    /// it changed to.
+    ///
+    /// **Answers `None` when nothing arrived before the deadline**, which is
+    /// how the caller gets a turn to do anything else. A deadline is not a
+    /// failure here and neither is a signal about something else.
+    pub(crate) fn changed(&mut self, within: std::time::Duration) -> Option<String> {
+        self.screen.stream.set_read_timeout(Some(within)).ok()?;
+        let arrived = self.screen.read_message().is_ok();
+        self.screen.stream.set_read_timeout(None).ok()?;
+        if !arrived {
+            return None;
+        }
+        let now = self.read().ok()?;
+        // **Repeats are dropped.** The desktop says its history changed rather
+        // than what it changed to, and it says so for a copy this host made
+        // itself.
+        if now.is_empty() || now == self.last {
+            return None;
+        }
+        self.last.clone_from(&now);
+        Some(now)
+    }
+}
+
+/// The first string in a reply body.
+fn string_at(body: &[u8]) -> String {
+    let len = le32(body, 0) as usize;
+    body.get(4..4 + len)
+        .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+        .unwrap_or_default()
 }
 
 impl Drop for Screen {
@@ -399,6 +514,43 @@ mod tests {
     /// service answered a well formed call with a cookie of its own, which is
     /// exactly the assertion that caught the header field written as a string
     /// where it had to be a signature.
+    /// **Off by default: it needs a desktop whose clipboard answers on the
+    /// bus.** Run it as the person who is logged in, with `--ignored`. It
+    /// leaves the clipboard holding what it found.
+    #[test]
+    #[ignore = "needs a session bus"]
+    fn the_desktop_clipboard_can_be_read_and_written() {
+        let mut clip = Clip::connect().expect("a clipboard");
+        let held = clip.read().expect("read");
+
+        let written = format!("lowlat probe {}", std::process::id());
+        clip.write(&written).expect("written");
+        assert_eq!(clip.read().expect("read back"), written);
+
+        // **What this host set is not reported back as a change**, or a guest
+        // that pasted here would be handed its own text.
+        assert_eq!(
+            clip.changed(std::time::Duration::from_millis(300)),
+            None,
+            "our own write came back as a change"
+        );
+
+        // **A change somebody else made is reported.** This is the half the
+        // guests are sent, and asserting only that our own write is quiet
+        // would pass just as well on a connection that hears nothing at all.
+        let mut elsewhere = Clip::connect().expect("a second connection");
+        let outside = format!("copied elsewhere {}", std::process::id());
+        elsewhere.write(&outside).expect("written elsewhere");
+        assert_eq!(
+            clip.changed(std::time::Duration::from_millis(2000))
+                .as_deref(),
+            Some(outside.as_str()),
+            "a change made outside this connection was not reported"
+        );
+
+        clip.write(&held).expect("put back");
+    }
+
     #[test]
     #[ignore = "needs a session bus"]
     fn the_screen_can_be_held_and_let_go() {

@@ -302,10 +302,34 @@ fn session() -> ! {
             None
         }
     };
+    let clip = match dbus::Clip::connect() {
+        Ok(clip) => Some(clip),
+        Err(error) => {
+            lowlat_common::log_warn!("session: no clipboard to own, error={error}");
+            None
+        }
+    };
     let can = channel::Can {
         idle: screen.is_some(),
+        clipboard: clip.is_some(),
         ..channel::Can::default()
     };
+    // **A thread of its own, because owning a clipboard is a wait.** The
+    // desktop says when its selection changed and nothing says when it will,
+    // so something has to be sitting on that answer while this reads the
+    // service's socket.
+    let (copied, to_copy) = std::sync::mpsc::channel::<String>();
+    let writer: Writer = std::sync::Arc::new(std::sync::Mutex::new(None));
+    if let Some(clip) = clip {
+        let writer = std::sync::Arc::clone(&writer);
+        if std::thread::Builder::new()
+            .name("lowlat-clip".to_string())
+            .spawn(move || own_clipboard(clip, &to_copy, &writer))
+            .is_err()
+        {
+            lowlat_common::log_warn!("session: no thread for the clipboard");
+        }
+    }
     // **Reconnected rather than exited.** A helper outlives the service by
     // design -- a system service restarts, a session does not -- so losing the
     // socket is a wait rather than an ending. Backed off because the common
@@ -316,6 +340,11 @@ fn session() -> ! {
             Ok(mut stream) => {
                 lowlat_common::log_info!("session: connected");
                 wait = FIRST_RETRY_MS;
+                if let Ok(sending) = stream.try_clone()
+                    && let Ok(mut writer) = writer.lock()
+                {
+                    *writer = Some(sending);
+                }
                 let mut body = Vec::new();
                 while channel::read_frame(&mut stream, &mut body).is_ok() {
                     if let Some(reason) = channel::is_bye(&body) {
@@ -325,6 +354,12 @@ fn session() -> ! {
                     if let Some(awake) = channel::is_awake(&body) {
                         hold_screen(screen.as_mut(), awake);
                     }
+                    if let Some(text) = channel::is_clipboard(&body) {
+                        let _ = copied.send(text);
+                    }
+                }
+                if let Ok(mut writer) = writer.lock() {
+                    *writer = None;
                 }
                 // **Let go on the way out.** The lease is held while it is
                 // asked for, and a socket that has gone is nobody asking. A
@@ -344,6 +379,55 @@ fn session() -> ! {
         std::thread::sleep(std::time::Duration::from_millis(wait));
     }
 }
+
+/// Where the clipboard thread writes, when there is a service to write to.
+type Writer = std::sync::Arc<std::sync::Mutex<Option<std::os::unix::net::UnixStream>>>;
+
+/// Own the desktop's clipboard: report what it becomes, and set what a guest
+/// sent.
+///
+/// **One connection doing both, on a cadence.** Waiting for the desktop to
+/// speak and being told to set something are two things to be doing at once,
+/// and a tick is the smaller of the two ways to have both: the other is a poll
+/// over the bus and a pipe to wake it. Nothing is timed against this and no
+/// data path passes through it -- a person pastes, and a fifth of a second
+/// either way is not a thing anybody can see.
+///
+/// **One connection also keeps the echo out.** What this host sets, it
+/// remembers, so the change it causes is not read back and handed to the guest
+/// that caused it.
+fn own_clipboard(
+    mut clip: dbus::Clip,
+    to_copy: &std::sync::mpsc::Receiver<String>,
+    writer: &Writer,
+) {
+    loop {
+        if let Some(text) = clip.changed(std::time::Duration::from_millis(CLIP_TICK_MS)) {
+            let body = serde_json::json!({ "clipboard": text }).to_string();
+            lowlat_common::log_info!("session: the desktop copied {} bytes", text.len());
+            if let Ok(mut writer) = writer.lock()
+                && let Some(stream) = writer.as_mut()
+                && let Err(error) = crate::channel::write_frame(stream, body.as_bytes())
+            {
+                lowlat_common::log_warn!("session: the service did not take it, error={error}");
+            }
+        }
+        while let Ok(text) = to_copy.try_recv() {
+            match clip.write(&text) {
+                Ok(()) => {
+                    lowlat_common::log_info!("session: a guest copied {} bytes here", text.len());
+                }
+                Err(error) => {
+                    lowlat_common::log_warn!("session: the clipboard refused, error={error}");
+                }
+            }
+        }
+    }
+}
+
+/// How long the clipboard thread waits on the desktop before it looks at what
+/// a guest sent.
+const CLIP_TICK_MS: u64 = 200;
 
 /// Take or let go of the screen, and say which happened.
 ///
@@ -792,6 +876,13 @@ async fn session_loop(
     );
 
     // When the room was last told what everyone's numbers are.
+    // **Said out loud at startup.** One of its two directions ships whatever
+    // the person at this machine copied, so which way it is set is not
+    // something anybody should have to infer from behaviour.
+    lowlat_common::log_info!(
+        "lowlatd: a guest's clipboard is {}",
+        settings.guest_clipboard.name()
+    );
     let mut rostered = lowlat_common::clock::Time::now();
     // Whether the session was last told somebody is watching.
     let mut awake = false;
