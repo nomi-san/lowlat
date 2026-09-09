@@ -1571,7 +1571,9 @@ framing and the same binary as the tray, and the two differ in authorisation rat
 transport ([07 §5.1](07-platforms.md)). Splitting them would mean building the channel twice
 and deciding its shape without one of its two customers in front of it.
 
-- [ ] `lowlatd` as a system service, with the unit file and device access rules.
+- [x] **`lowlatd` as a system service, with the unit file and device access rules** (`packaging/`).
+  The privilege it needs was measured rather than assumed: `CAP_SYS_ADMIN`, with group membership
+  alone reporting the display as unreachable ([07 §6.1](07-platforms.md)).
 - [x] **The session channel**: length-prefixed frames on a Unix stream socket at a known path,
   JSON bodies, a first frame carrying version, role and capability, peer credentials as the
   identity, and one helper to a session with the newest winning.

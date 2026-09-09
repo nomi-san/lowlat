@@ -613,16 +613,39 @@ The daemon runs as a dedicated system user, never as root.
 | display device | supplementary group for the device class, plus a rule for the render node |
 | input device node | supplementary group plus a rule granting the daemon write access |
 | HID device node | the same, and only once a controller needing that layer is emulated ([§4.2](#42-gamepads-and-the-two-device-layers)) |
-| framebuffer export | may require a specific capability rather than group membership, which §3's probe determines |
+| framebuffer export | **`CAP_SYS_ADMIN`, and group membership is not enough** -- see below |
 
 The unit grants the minimum that works, denies device access by default and allows the two
 device classes explicitly, and runs with a private temporary directory, no new privileges, and
-a read-only system tree.
+a read-only system tree. It lives in `packaging/` with the account it runs as and the rule that
+opens the input node.
 
-If §3 concludes that scanout needs a broad capability, **that is a product decision, not a
-packaging detail**, and it is documented prominently rather than buried in a unit file. A
-remote desktop daemon holding a broad capability is a meaningful attack surface, and users are
-entitled to choose the lower-privilege backend with the reduced feature set instead.
+### §6.1 Scanout needs a broad capability, and that is a product decision
+
+**Measured.** The same binary, on the same display, at three privileges:
+
+| | answer |
+|---|---|
+| a member of the `video` group | **the display is unreachable** |
+| the same, plus `CAP_SYS_ADMIN` | it can host |
+| root | it can host |
+
+**The capability is the whole of the difference.** Everything before the buffer handles works on
+group membership alone: the device opens, its connectors enumerate, the lit plane is found. What
+is refused is the handle set of the framebuffer being scanned out, and every later stage -- the
+import, the export, the pointer read -- fails on its absence with the same answer an empty
+desktop gives. That is why the pre-flight reads the handles rather than checking whether a plane
+is lit, and why it tells "nothing is lit" apart from "this process may not read what is".
+
+**This is documented here rather than buried in the unit file** because a remote desktop daemon
+holding `CAP_SYS_ADMIN` is a meaningful attack surface, and it is the reader's decision to take
+or refuse. Refusing it is a working configuration: the daemon still selects outputs, still reads
+modes, still caps the encoder's rate, and reports that it cannot reach the display rather than
+failing somewhere deep in a stream.
+
+**It is a capability rather than a group because of what it gates**, which is reading another
+process's buffers out of the display controller. No group confers that, and no distribution
+ships one that does.
 
 ## §7 Audio
 
