@@ -1549,7 +1549,7 @@ and deciding its shape without one of its two customers in front of it.
 - [ ] **The session channel**: length-prefixed frames on a Unix stream socket at a known path,
   JSON bodies, a first frame carrying version, role and capability, peer credentials as the
   identity, a deadline on every request, and one helper to a session with the newest winning.
-- [ ] **`lowlatd` in its session role**, selected by the first argument and never by a flag that
+- [x] **`lowlatd` in its session role**, selected by the first argument and never by a flag that
   may appear anywhere in a command line.
 - [ ] **The relative-pointer signal**, pushed on change. The customer the channel is built
   around, because its shape is continuous and a request-and-reply channel bent to carry it later

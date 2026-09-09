@@ -3,6 +3,40 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-09 - The session side has a socket to connect to
+
+### Added
+- **The role is the first argument and nothing else.** The two roles run at different privilege,
+  so a file that can be talked into the wrong one is a security defect rather than a bug. A flag
+  is matched wherever it appears in a command line and an argument in first position is not, and
+  the role is decided before any flag is read, because a role that depends on a line having been
+  scanned is a role a line can be written to change. The boundary landed ahead of the agent it
+  protects, so nothing is ever added to the wrong side of it.
+- **The service listens and the session connects outward**, on a known path. That removes the
+  problem rather than solving it: nothing discovers a session, drops privilege or guesses which
+  desktop is running, and a connection arrives with an identity because a local socket carries
+  the peer's credentials.
+- **Length-prefixed frames with a JSON first frame** carrying a version and a role. A version
+  this build does not speak ends the connection rather than being worked around: both sides ship
+  in one file, so the only way to see a mismatch is a stale process, and continuing with one is
+  how a stale process becomes a wrong answer.
+- **A thread rather than the runtime**, which stays signaling's. A socket carrying a handful of
+  messages a second does not need an executor to read it.
+- **The credentials are recorded and nothing gates on them.** A host action has to be able to
+  say who asked for it; the criterion that would read them is deferred, and the socket's mode
+  says so rather than hiding the deferral in a file permission.
+- **Only the first frame is on a clock.** A helper that has announced itself is long lived and
+  silent by design -- it speaks when its session changes -- so a deadline past the greeting would
+  drop exactly the quiet ones.
+
+### Testing
+- A frame survives a round trip, a declared length over the cap is refused before it is believed,
+  and four shapes of unusable greeting are each refused.
+- **A real bound socket, accepted, rather than a socket pair**: a pair is one process at both
+  ends however the credentials are read, so only a bound path exercises the bind, the mode it is
+  left with, and the accept. **Both new checks were confirmed to fail** with the mode narrowed
+  and with the version comparison removed.
+
 ## 2026-09-08 - A guest can ask for the attention chord
 
 ### Added
