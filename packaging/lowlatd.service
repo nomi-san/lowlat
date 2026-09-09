@@ -1,0 +1,79 @@
+[Unit]
+Description=lowlat remote desktop host
+# The signaling client needs a route before it can advertise, and it retries
+# rather than failing, so this orders the start and does not gate it.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# **The flags are configuration, so they come from the file below** rather
+# than from this unit, which a package owns and an administrator should not
+# have to edit. Unquoted on purpose: systemd splits it on whitespace, which is
+# what makes it a list of arguments rather than one long one.
+ExecStart=/usr/bin/lowlatd $LOWLATD_ARGS
+Restart=on-failure
+RestartSec=2
+
+# **A dedicated system user, never root.** Everything below grants exactly what
+# was measured to be needed and nothing else.
+User=lowlat
+Group=lowlat
+# The display device, the render node it converts on, and the input node it
+# creates the guests' devices on.
+SupplementaryGroups=video render input
+
+# **The one broad privilege, and it is a product decision rather than a
+# packaging detail** (docs/07-platforms.md section 6). Reading the buffer
+# handles of what a display is scanning out is refused without it: measured on
+# this hardware, a process in the video group opens the device, enumerates its
+# connectors and finds the lit plane, and is then refused the handles that
+# every later stage needs. Group membership alone answers "nothing is being
+# scanned out", which is also what an empty desktop answers.
+AmbientCapabilities=CAP_SYS_ADMIN
+CapabilityBoundingSet=CAP_SYS_ADMIN
+NoNewPrivileges=yes
+
+# Where the session side connects, created and torn down with the service.
+RuntimeDirectory=lowlatd
+RuntimeDirectoryMode=0755
+
+# The signaling server and session are configuration rather than arguments.
+EnvironmentFile=/etc/lowlat/lowlatd.env
+
+# **Denied by default, then the two classes it needs.** char-drm covers both
+# the display device and the render node; the input node is named because it
+# is the only one of its class this opens.
+DevicePolicy=closed
+DeviceAllow=char-drm rw
+DeviceAllow=/dev/uinput rw
+
+# **Not `strict`, deliberately.** The session's own sockets live under /run,
+# and a read-only /run refuses a connection to one, which would take the
+# desktop's sound with it.
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+UMask=0077
+
+# **Four more that the hardening report asks for and this does not take**, each
+# for a measured or structural reason rather than an oversight:
+#
+#   ProcSubset=pid            hides /proc/sys, and the default host name is
+#                             read from /proc/sys/kernel/hostname
+#   MemoryDenyWriteExecute=   the graphics stack compiles shaders at runtime
+#   PrivateDevices=           the whole point is two device classes
+#   PrivateNetwork=,          a remote desktop host talks to peers nobody can
+#   IPAddressDeny=            enumerate in advance
+
+[Install]
+WantedBy=multi-user.target
