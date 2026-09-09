@@ -2618,25 +2618,18 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                     }
                 }
                 Ask::SecureAttention => {
-                    // **Refused where it is typed, not where it is asked**, so
-                    // the one path that produces the chord is the one that
-                    // decides against it. Two reasons to refuse and they are
-                    // told apart: a guest that may not type, and a console
-                    // that would restart the machine rather than show a
-                    // dialog.
-                    let took = if lowlat_inject::uinput::console_takes_the_chord() {
-                        "console"
-                    } else if input
+                    // **Typed or not typed, and nothing else is decided here.**
+                    // Whether the machine is one where the chord means a leave
+                    // dialog rather than a restart is the asking program's
+                    // question; this end types keys and reports the keyboard
+                    // permission, which is the only part it knows.
+                    let typed = input
                         .as_mut()
-                        .is_some_and(|input| input.injector.secure_attention(&mut input.sink))
-                    {
-                        "typed"
-                    } else {
-                        "refused"
-                    };
+                        .is_some_and(|input| input.injector.secure_attention(&mut input.sink));
                     lowlat_common::log_info!(
-                        "guest: number={} asked for the attention chord, took={took}",
-                        args.guest
+                        "guest: number={} asked for the attention chord, typed={}",
+                        args.guest,
+                        u8::from(typed)
                     );
                 }
             }

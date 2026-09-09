@@ -34,4 +34,5 @@ pub mod capture {
 
 pub mod inject {
     pub use lowlat_inject::event::Permissions;
+    pub use lowlat_inject::uinput::console_takes_the_chord;
 }

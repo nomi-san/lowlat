@@ -228,8 +228,21 @@ pub(crate) fn on_message(
         // guest asked for is a keystroke, and it either happened on this
         // machine or it did not. The guest's own thread says which on its log
         // line, because that is where the keyboard permission is read.
+        //
+        // **Refused here rather than where it is typed**, because what the
+        // chord is worth is a property of this machine rather than of the
+        // keyboard it goes out on. In front of a graphical session it reaches
+        // the compositor and produces its leave dialog, which is what asking
+        // for it means. In front of a text console the terminal translates it
+        // itself and the machine restarts, which is not.
         id::SECURE_ATTENTION => {
-            seam.secure_attention(guest);
+            if lowlat::inject::console_takes_the_chord() {
+                lowlat_common::log_warn!(
+                    "lowlatd: guest {guest} asked for the attention chord, refused=console"
+                );
+            } else {
+                seam.secure_attention(guest);
+            }
             true
         }
         _ => false,
