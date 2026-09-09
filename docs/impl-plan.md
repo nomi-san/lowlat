@@ -1003,12 +1003,38 @@ same size for this reason).
   established host has. A peer adapts to the size it is sent, so nothing on the far side needs
   the change to have come from it. That removes the per-compositor output-management protocol
   from the plan entirely, and with it one of the session helper's customers.
-- [ ] **A display this host creates is the exception, and it is the more important case.** A
-  virtual display has exactly one client, which is us, so its mode is ours to set with no
-  session involved at all -- which is what makes a requested resolution and refresh rate work
-  properly for a headless host, and it is the product [07 §2.2](07-platforms.md) already
-  separates out. **The two paths differ in who owns the display, not in what capture does with
-  it.**
+- [ ] **A display this host creates is the exception, and it is the more important case.** It is
+  what makes a requested resolution and refresh rate work properly for a headless host, and it is
+  the product [07 §2.2](07-platforms.md) already separates out. **The two paths differ in who
+  owns the display, not in what capture does with it.**
+
+  **Corrected 2026-09-09, against a measurement.** This item said a virtual display "has exactly
+  one client, which is us, so its mode is ours to set with no session involved at all". On this
+  stack that is false, and it is false in a way that decides the shape of the work rather than a
+  detail of it. There are two ways to get a display that is not hardware, and neither is ours
+  alone:
+
+  | route | who owns it | what it costs |
+  |---|---|---|
+  | ask the session for one | the session | a per-compositor output-management protocol, over the channel [07 §5.1](07-platforms.md) already has |
+  | the kernel's own virtual driver | us, genuinely | it is absent from this kernel, so nothing has been run against it |
+
+  Measured with a session-created output up: **the display device sees nothing of it** -- the
+  same three connectors with and without -- so scanout can neither capture it nor set its mode,
+  and it is not the kind of display the encoder can be pointed at either. It also **moves every
+  real output**, because the compositor re-lays-out the desktop around it, which is what makes it
+  the sharpest form of the stale-layout fault the session's layout signal exists for.
+
+  So a virtual display on this stack is **asked for, sized and given up through the session**,
+  and the item is a session-side one rather than a device-side one. That returns a customer to
+  [07 §5.1](07-platforms.md) -- a request, rarely, refused with a reason when nothing is there to
+  ask -- and it is deliberately **not written into that section's table until it is scheduled**,
+  because a row for unscheduled work is exactly what got display mode scheduled twice. The
+  kernel's virtual driver stays the better answer wherever it exists, and remains untested here.
+
+  **It is not the decision above coming back.** That one is about the mode of a display somebody
+  else owns, and it stands. This is about a display created for this host at its own request,
+  which is a different question with a different answer.
 - [x] **A frame-rate cap needs none of that.** Capping the encoder at a requested rate while the
   display runs at its own is already what this does, and it is the useful half of the request in
   every case where the mode cannot be set. *Closed 2026-08-26. The cap was a constant in the
@@ -1684,6 +1710,18 @@ Newest first. Record approach changes and gate revisions here; per-commit detail
   and now asks that none be loaded into the process, checked against the process map after a
   stream has run. The hardware matrix this argument rests on is
   [09-compatibility.md](09-compatibility.md).
+
+- 2026-09-09: **A virtual display is the session's on this stack, and the plan said otherwise.**
+  *Output selection* rested on a virtual display having exactly one client -- us -- so that its
+  mode needed no session at all. Measured against a session-created output: the display device
+  lists the same three connectors with it and without, so it can be neither captured nor
+  mode-set from below, and the kernel's own virtual driver is absent here. The item is corrected
+  rather than dropped, because the product it serves is unchanged and only the route to it moves:
+  a virtual display is asked for and sized through the session. **The decision not to relay a
+  guest's mode request is untouched** -- that is somebody else's desk, and this is a display
+  created for this host at its own request. The same run also showed such an output **moves every
+  real output**, the compositor re-laying-out the desktop around it, which is the sharpest form
+  of the fault the layout signal exists for and the live proof of its change detection.
 
 - 2026-09-09: **Display mode and rotation was scheduled a second time, and is struck out.** It
   appeared in Phase 12's task list as a session-helper customer, taken from a row in
