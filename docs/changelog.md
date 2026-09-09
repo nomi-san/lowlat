@@ -6,6 +6,15 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 ## 2026-09-09 - The frame rate comes from the display
 
 ### Added
+- **A rate a guest asks for over the configuration message is clamped to the display as well.**
+  It was applied as asked, under a comment saying the display bounds it anyway. The display
+  bounds the rate and not the number, and the number is what the encoder's per-frame budget is
+  divided by: a guest asking for four times the display's rate got the display's rate with a
+  quarter of the budget for each frame. Zero stays no change, as it is for the rate ceiling
+  beside it.
+- **The output listing is enumerated once per configuration message**, where describing what is
+  running and checking what a guest asked for each read the devices separately. Two reads of one
+  machine is how the two answers come to disagree about what is lit.
 - **`--fps` absent now means the captured output's own refresh rate.** It is the one answer this
   program cannot give before it has looked at a display, so it is carried as zero and settled
   where the display is opened.
@@ -30,6 +39,10 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - The rule is pinned three ways -- a ceiling above the display is clamped, a ceiling below it is
   honoured, and nothing asked takes the display's rate -- and **two of the three were confirmed
   to fail**, with the clamp removed and with the follow removed.
+- **The first test written for the guest's half tested nothing**, and removing the clamp under it
+  did not make it fail: the message handler returns early when nothing is streaming, so the
+  branch was never reached. The decision moved out into a function of its own, which the test now
+  drives directly; both halves of it were then confirmed to fail.
 - Read against three real displays on three different cards, and **checked against what the
   desktop itself reports**: 1920x1080@60, 1920x1200@60 and 2560x1440@120, matching in every case.
   A figure that agreed with itself and with nothing else would have looked identical.
