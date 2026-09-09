@@ -283,15 +283,53 @@ fn candex<'a>(
 /// arrives with the sources of those signals; today it is announced and
 /// silent, which is a helper that reports nothing rather than a helper that is
 /// absent.
-fn session() -> Result<(), Box<dyn std::error::Error>> {
-    let mut stream = channel::connect(channel::Role::Helper)
-        .map_err(|error| format!("cannot reach the service: {error}"))?;
-    lowlat_common::log_info!("session: connected");
-    let mut body = Vec::new();
-    while channel::read_frame(&mut stream, &mut body).is_ok() {}
-    lowlat_common::log_info!("session: the service is gone");
-    Ok(())
+fn session() -> ! {
+    // **What this session can do, announced rather than assumed.** The
+    // mechanisms differ per desktop and one of them offers no protocol at all,
+    // so a helper says what it found and the service answers the honest way
+    // for the rest. Nothing is claimed yet: the customers land with their own
+    // sources, and a helper that reports nothing is not a helper that is
+    // absent.
+    let can = channel::Can::default();
+    // **Reconnected rather than exited.** A helper outlives the service by
+    // design -- a system service restarts, a session does not -- so losing the
+    // socket is a wait rather than an ending. Backed off because the common
+    // reason to fail is that there is nothing there yet.
+    let mut wait = FIRST_RETRY_MS;
+    loop {
+        match channel::connect(channel::Role::Helper, can) {
+            Ok(mut stream) => {
+                lowlat_common::log_info!("session: connected");
+                wait = FIRST_RETRY_MS;
+                let mut body = Vec::new();
+                while channel::read_frame(&mut stream, &mut body).is_ok() {
+                    if let Some(reason) = channel::is_bye(&body) {
+                        lowlat_common::log_info!("session: sent away, reason={reason}");
+                        std::process::exit(0);
+                    }
+                }
+                // **What is known, which is only that the connection ended.**
+                // A service that went away and one that is still there both
+                // read as a closed socket from here; the case where it is
+                // deliberate is the one above, and it says so.
+                lowlat_common::log_info!("session: the connection ended");
+            }
+            Err(error) => {
+                lowlat_common::log_warn!("session: cannot reach the service, error={error}");
+                wait = (wait * 2).min(LAST_RETRY_MS);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(wait));
+    }
 }
+
+/// How long a session agent waits before asking for the service again, and
+/// how long it eventually waits.
+///
+/// **A cadence, not a deadline**: nothing is timed against these and no data
+/// path passes through them, so the coarse sleep this uses is the right one.
+const FIRST_RETRY_MS: u64 = 250;
+const LAST_RETRY_MS: u64 = 5_000;
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // **Decided before any flag is read**, which is the whole of the rule: a
@@ -308,7 +346,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         lowlat_common::log::set_level(lowlat_common::log::Level::Debug);
     }
     if program == Program::Session {
-        return session();
+        session();
     }
     // **Before anything else is set up.** It answers the one question that has
     // to be answered before --output can be used at all, and a machine being

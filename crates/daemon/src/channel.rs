@@ -79,6 +79,60 @@ impl Role {
     }
 }
 
+/// What a session-side program says it can do.
+///
+/// **Announced rather than assumed, because it varies with the desktop.** The
+/// mechanisms behind these differ per display stack and one of them offers no
+/// protocol at all, so a helper that cannot do a thing says so and the service
+/// answers the honest way instead. This is what makes "absent is not degraded"
+/// per customer rather than all or nothing (docs/07-platforms.md section 5.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct Can {
+    /// Report whether an application has taken the pointer.
+    pub(crate) pointer: bool,
+    /// Hold the screen awake while it is asked to.
+    pub(crate) idle: bool,
+    /// Own a selection, in either direction.
+    pub(crate) clipboard: bool,
+    /// Answer where the displays are.
+    pub(crate) layout: bool,
+}
+
+impl Can {
+    /// **Names this build does not know are dropped, not refused.** A newer
+    /// session agent naming a fifth thing is one this service will not ask
+    /// for, which is not a reason to end the connection -- unlike a version,
+    /// which says the framing itself may differ.
+    fn named(names: &serde_json::Value) -> Self {
+        let mut can = Self::default();
+        for name in names.as_array().unwrap_or(&Vec::new()) {
+            match name.as_str() {
+                Some("pointer") => can.pointer = true,
+                Some("idle") => can.idle = true,
+                Some("clipboard") => can.clipboard = true,
+                Some("layout") => can.layout = true,
+                _ => {}
+            }
+        }
+        can
+    }
+
+    fn names(self) -> Vec<&'static str> {
+        let mut names = Vec::new();
+        for (held, name) in [
+            (self.pointer, "pointer"),
+            (self.idle, "idle"),
+            (self.clipboard, "clipboard"),
+            (self.layout, "layout"),
+        ] {
+            if held {
+                names.push(name);
+            }
+        }
+        names
+    }
+}
+
 /// Who is on the other end, as the kernel reports them.
 ///
 /// **Recorded on every connection even though nothing gates on them yet.** A
@@ -97,6 +151,7 @@ pub(crate) struct Peer {
 pub(crate) struct Greeting {
     pub(crate) role: Role,
     pub(crate) peer: Peer,
+    pub(crate) can: Can,
 }
 
 /// Start listening, if the socket can be made.
@@ -140,6 +195,68 @@ fn bind(path: &str) -> std::io::Result<UnixListener> {
     Ok(listener)
 }
 
+/// The helpers connected now, one to a session.
+///
+/// **Keyed by the user, which is the nearest thing to a session this end can
+/// see.** Credentials carry a user and a process and nothing about a seat, and
+/// a helper's claims are bounded by its credentials in any case. Two sessions
+/// belonging to one person is the case this gets wrong, and only one of them
+/// is in front of the screen.
+static HELPERS: std::sync::Mutex<Vec<Held>> = std::sync::Mutex::new(Vec::new());
+
+/// A helper's place, and the handle that ends it.
+#[derive(Debug)]
+struct Held {
+    uid: u32,
+    pid: i32,
+    /// A second reference to the same connection, so a replacement can close
+    /// what it replaced. Shutting it down is what wakes that helper's own
+    /// thread out of its read.
+    handle: UnixStream,
+}
+
+/// Take this helper's place, ending whatever held it.
+///
+/// **Newest wins.** A reconnect replaces its predecessor rather than joining
+/// it, because two answers to "has an application taken the pointer" is not a
+/// state anything can act on.
+fn take_place(peer: Peer, stream: &UnixStream) {
+    let Ok(handle) = stream.try_clone() else {
+        return;
+    };
+    let Ok(mut live) = HELPERS.lock() else { return };
+    if let Some(at) = live.iter().position(|held| held.uid == peer.uid) {
+        let mut gone = live.swap_remove(at);
+        lowlat_common::log_info!(
+            "channel: helper replaced, pid={} by pid={}",
+            gone.pid,
+            peer.pid
+        );
+        // **Told why before it is closed.** A helper reconnects when it loses
+        // the socket, because a service restarting is the ordinary reason to
+        // lose one; a helper that came back after being replaced would displace
+        // its own replacement, and the two would trade the place forever. Only
+        // this end can tell the two closes apart, so only this end can say.
+        let _ = write_frame(&mut gone.handle, BYE_REPLACED);
+        let _ = gone.handle.shutdown(std::net::Shutdown::Both);
+    }
+    live.push(Held {
+        uid: peer.uid,
+        pid: peer.pid,
+        handle,
+    });
+}
+
+/// Give up a place, if this connection still holds one.
+///
+/// **By process rather than by user**, so a helper that was already replaced
+/// does not take its replacement's place away on the way out.
+fn leave_place(peer: Peer) {
+    if let Ok(mut live) = HELPERS.lock() {
+        live.retain(|held| held.pid != peer.pid);
+    }
+}
+
 fn accept(listener: &UnixListener) {
     let live = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     for stream in listener.incoming() {
@@ -169,12 +286,16 @@ fn serve(mut stream: UnixStream) {
         return;
     };
     lowlat_common::log_info!(
-        "channel: {} connected, pid={} uid={} gid={}",
+        "channel: {} connected, pid={} uid={} gid={} can={:?}",
         greeting.role.name(),
         greeting.peer.pid,
         greeting.peer.uid,
-        greeting.peer.gid
+        greeting.peer.gid,
+        greeting.can.names()
     );
+    if greeting.role == Role::Helper {
+        take_place(greeting.peer, &stream);
+    }
     let mut body = Vec::new();
     while read_frame(&mut stream, &mut body).is_ok() {
         lowlat_common::log_debug!(
@@ -182,6 +303,9 @@ fn serve(mut stream: UnixStream) {
             greeting.role.name(),
             body.len()
         );
+    }
+    if greeting.role == Role::Helper {
+        leave_place(greeting.peer);
     }
     lowlat_common::log_info!(
         "channel: {} gone, pid={}",
@@ -233,7 +357,24 @@ pub(crate) fn greet(stream: &mut UnixStream) -> Option<Greeting> {
         );
         return None;
     };
-    Some(Greeting { role, peer })
+    let can = hello.get("can").map_or_else(Can::default, Can::named);
+    Some(Greeting { role, peer, can })
+}
+
+/// What the service says before closing a connection it is ending on purpose.
+///
+/// **A reason rather than a bare close**, because the two closes a session
+/// agent sees mean opposite things: a service that went away is one to wait
+/// for, and a place given to somebody newer is not.
+pub(crate) const BYE_REPLACED: &[u8] = br#"{"bye":"replaced"}"#;
+
+/// Whether a frame is the service ending this connection on purpose.
+pub(crate) fn is_bye(body: &[u8]) -> Option<String> {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()?
+        .get("bye")?
+        .as_str()
+        .map(str::to_owned)
 }
 
 /// Connect to the service as `role` and announce this end.
@@ -241,15 +382,15 @@ pub(crate) fn greet(stream: &mut UnixStream) -> Option<Greeting> {
 /// **The session side connects outward**, which is the whole reason this
 /// channel has the shape it does: a service cannot reach into a desktop
 /// session, and a session reaching out arrives with an identity.
-pub(crate) fn connect(role: Role) -> std::io::Result<UnixStream> {
+pub(crate) fn connect(role: Role, can: Can) -> std::io::Result<UnixStream> {
     let mut stream = UnixStream::connect(SOCKET)?;
-    write_frame(&mut stream, &hello(role))?;
+    write_frame(&mut stream, &hello(role, can))?;
     Ok(stream)
 }
 
 /// This end's own first frame.
-pub(crate) fn hello(role: Role) -> Vec<u8> {
-    serde_json::json!({ "version": VERSION, "role": role.name() })
+pub(crate) fn hello(role: Role, can: Can) -> Vec<u8> {
+    serde_json::json!({ "version": VERSION, "role": role.name(), "can": can.names() })
         .to_string()
         .into_bytes()
 }
@@ -339,7 +480,7 @@ mod tests {
             let path = path.clone();
             move || {
                 let mut client = UnixStream::connect(&path).expect("connected");
-                write_frame(&mut client, &hello(Role::Tray)).expect("written");
+                write_frame(&mut client, &hello(Role::Tray, Can::default())).expect("written");
                 // Held open until the far side has read it.
                 let mut ignored = Vec::new();
                 let _ = read_frame(&mut client, &mut ignored);
@@ -383,12 +524,23 @@ mod tests {
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
     }
 
+    /// A helper that found half of what a session can offer, which is the
+    /// ordinary case: the mechanisms differ per desktop and one of them offers
+    /// no protocol at all.
+    const ANNOUNCED: Can = Can {
+        pointer: true,
+        idle: false,
+        clipboard: true,
+        layout: false,
+    };
+
     #[test]
-    fn a_hello_names_a_role_and_a_version() {
+    fn a_hello_names_a_role_a_version_and_what_it_can_do() {
         let (mut a, mut b) = pair();
-        write_frame(&mut a, &hello(Role::Helper)).expect("written");
+        write_frame(&mut a, &hello(Role::Helper, ANNOUNCED)).expect("written");
         let greeting = greet(&mut b).expect("greeted");
         assert_eq!(greeting.role, Role::Helper);
+        assert_eq!(greeting.can, ANNOUNCED);
         // A local socket pair is this process on both ends.
         assert_eq!(greeting.peer.pid, std::process::id().cast_signed());
     }
@@ -408,6 +560,75 @@ mod tests {
             write_frame(&mut a, body.to_string().as_bytes()).expect("written");
             assert!(greet(&mut b).is_none(), "accepted {body}");
         }
+    }
+
+    /// **A name this build does not know is dropped, not refused.** A newer
+    /// session agent offering a fifth thing is one this service will not ask
+    /// for, which is not a reason to end the connection -- unlike a version,
+    /// which says the framing itself may differ.
+    #[test]
+    fn a_capability_this_build_does_not_know_is_passed_over() {
+        let (mut a, mut b) = pair();
+        let body = serde_json::json!({
+            "version": VERSION,
+            "role": "helper",
+            "can": ["idle", "something newer"],
+        });
+        write_frame(&mut a, body.to_string().as_bytes()).expect("written");
+        let greeting = greet(&mut b).expect("greeted");
+        assert_eq!(
+            greeting.can,
+            Can {
+                idle: true,
+                ..Can::default()
+            }
+        );
+    }
+
+    /// **Newest wins.** A reconnect replaces its predecessor rather than
+    /// joining it, and the replacement is what wakes the old one out of its
+    /// read: two answers to one question about a session is not a state
+    /// anything can act on.
+    #[test]
+    fn a_second_helper_for_one_session_replaces_the_first() {
+        let peer = Peer {
+            pid: 4242,
+            uid: 1000,
+            gid: 1000,
+        };
+        let later = Peer { pid: 4243, ..peer };
+        let (first, mut first_far) = pair();
+        let (second, _second_far) = pair();
+
+        take_place(peer, &first);
+        take_place(later, &second);
+        assert_eq!(HELPERS.lock().expect("held").len(), 1);
+
+        // **The replaced helper is told why, then closed.** Being told is what
+        // stops it coming back and displacing its own replacement.
+        //
+        // **On a clock, and the kind is asserted**, or a replacement that
+        // failed to close anything would leave this blocked forever and read
+        // as a hang rather than as the failure it is.
+        first_far
+            .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+            .expect("a deadline");
+        let mut body = Vec::new();
+        read_frame(&mut first_far, &mut body).expect("a reason");
+        assert_eq!(is_bye(&body).as_deref(), Some("replaced"));
+        let ended = read_frame(&mut first_far, &mut body).expect_err("still open");
+        assert_eq!(
+            ended.kind(),
+            std::io::ErrorKind::UnexpectedEof,
+            "the replaced connection was left open"
+        );
+
+        // The one that was already replaced must not take its replacement's
+        // place away on the way out.
+        leave_place(peer);
+        assert_eq!(HELPERS.lock().expect("held").len(), 1);
+        leave_place(later);
+        assert!(HELPERS.lock().expect("held").is_empty());
     }
 
     #[test]
