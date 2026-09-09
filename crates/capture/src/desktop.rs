@@ -101,13 +101,17 @@ pub fn at_origin() -> Option<String> {
 }
 
 /// One output as the layout describes it.
+///
+/// **Every field is optional because a layout arrives in pieces.** An output
+/// names itself in one event and describes its rectangle in others, so a
+/// half-filled one is an ordinary intermediate state rather than a fault.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-struct Output {
-    name: Option<String>,
-    x: Option<i32>,
-    y: Option<i32>,
-    width: Option<u32>,
-    height: Option<u32>,
+pub struct Output {
+    pub name: Option<String>,
+    pub x: Option<i32>,
+    pub y: Option<i32>,
+    pub width: Option<u32>,
+    pub height: Option<u32>,
 }
 
 /// Reduce a layout to one output's placement within it.
@@ -117,7 +121,7 @@ struct Output {
 /// is dropped rather than defaulted: a missing rectangle contributes nothing
 /// to a bounding box, while a rectangle assumed to be at the origin silently
 /// makes the desktop bigger than it is.
-fn place(outputs: &[Output], connector: &str) -> Option<Placement> {
+pub fn place(outputs: &[Output], connector: &str) -> Option<Placement> {
     let rects: Vec<(&str, i32, i32, u32, u32)> = outputs
         .iter()
         .filter_map(|output| {
@@ -151,6 +155,72 @@ fn place(outputs: &[Output], connector: &str) -> Option<Placement> {
         desktop_width: u32::try_from(right - left).ok()?,
         desktop_height: u32::try_from(bottom - top).ok()?,
     })
+}
+
+/// A session's layout, watched rather than asked for.
+///
+/// **The connection is the subscription.** A session re-describes an output
+/// when it moves and announces one that appears, but only to a client that is
+/// still there: a query that connects, reads and closes learns the layout once
+/// and can never learn that it changed. This is that query with the closing
+/// left out.
+///
+/// **It speaks for the session it is in.** Where a one-shot query scans every
+/// socket and picks whichever describes the output being captured, this is
+/// held by something already inside a session and asks that one.
+#[derive(Debug)]
+pub struct Watch {
+    session: Session,
+}
+
+impl Watch {
+    /// Open the session named by the environment, and read its layout once.
+    ///
+    /// **Answers `None` when there is no session to watch**, which is the
+    /// honest answer for a program started outside one rather than a reason to
+    /// go looking for somebody else's.
+    pub fn open() -> Option<(Self, Vec<Output>)> {
+        let named = std::env::var("WAYLAND_DISPLAY").ok()?;
+        let path = Path::new(&named);
+        let socket = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            PathBuf::from(std::env::var("XDG_RUNTIME_DIR").ok()?).join(path)
+        };
+        let stream = UnixStream::connect(socket).ok()?;
+        let mut session = Session::new(stream);
+        let outputs = session.snapshot()?;
+        Some((Self { session }, outputs))
+    }
+
+    /// Wait for the layout to change, and answer with what it became.
+    ///
+    /// **`None` is the ordinary answer**, and covers both nothing arriving
+    /// before the deadline and something arriving that left the layout as it
+    /// was. A session re-sends every field of an output it re-describes, so
+    /// events are not changes.
+    pub fn changed(&mut self, within: Duration) -> Option<Vec<Output>> {
+        self.session.stream.set_read_timeout(Some(within)).ok()?;
+        let mut chunk = [0u8; 4096];
+        let read = self.session.stream.read(&mut chunk).ok()?;
+        // A closed connection is a session that ended, and there is nothing
+        // further to hear from it.
+        if read == 0 {
+            return None;
+        }
+        self.session
+            .pending
+            .extend_from_slice(chunk.get(..read).unwrap_or_default());
+        self.session.consume()?;
+        if !self.session.moved {
+            return None;
+        }
+        // **Settled before it is believed.** What arrived may be half of a
+        // description, and a rectangle read between two of its own events is a
+        // layout nobody ever had.
+        self.session.stream.set_read_timeout(Some(TIMEOUT)).ok()?;
+        self.session.snapshot()
+    }
 }
 
 /// Every session socket worth asking, the one named by the environment first.
@@ -223,6 +293,7 @@ fn query(socket: &Path) -> Option<Vec<Output>> {
 }
 
 /// One conversation, from the registry to the outputs it names.
+#[derive(Debug)]
 struct Session {
     stream: UnixStream,
     /// Client object identifiers, which are ours to allocate and start above
@@ -237,8 +308,15 @@ struct Session {
     /// descriptions belongs to.
     outputs: HashMap<u32, Output>,
     described: HashMap<u32, u32>,
+    /// The object bound for each name the registry gave, so an output that is
+    /// removed can be found again: removal names what was advertised, not what
+    /// was bound for it.
+    named: HashMap<u32, u32>,
     /// Whatever has arrived and is not yet a whole message.
     pending: Vec<u8>,
+    /// Whether anything about the layout has actually changed since this was
+    /// last cleared.
+    moved: bool,
 }
 
 impl Session {
@@ -251,24 +329,40 @@ impl Session {
             manager: None,
             outputs: HashMap::new(),
             described: HashMap::new(),
+            named: HashMap::new(),
             pending: Vec::new(),
+            moved: false,
         }
     }
 
     /// The two rounds a layout takes: what exists, then what each one is.
     fn layout(mut self) -> Option<Vec<Output>> {
-        self.registry = self.allocate();
-        let mut body = Vec::new();
-        put_u32(&mut body, self.registry);
-        self.send(DISPLAY, 1, &body)?;
-        self.settle()?;
+        self.snapshot()
+    }
 
-        // **Nothing is asked for until everything has been named**, because a
-        // description is requested per output and the outputs are not known
-        // until the first round has finished arriving.
+    /// Ask for everything not yet described, and wait for the answers.
+    ///
+    /// **Both rounds every time, because the second depends on the first.** A
+    /// description is asked for per output and the outputs are not known until
+    /// the round that names them has finished arriving; an output that appears
+    /// later is undescribed until this runs again.
+    fn snapshot(&mut self) -> Option<Vec<Output>> {
+        if self.registry == 0 {
+            self.registry = self.allocate();
+            let mut body = Vec::new();
+            put_u32(&mut body, self.registry);
+            self.send(DISPLAY, 1, &body)?;
+            self.settle()?;
+        }
+
         let manager = self.manager?;
-        let bound: Vec<u32> = self.outputs.keys().copied().collect();
-        for output in bound {
+        let undescribed: Vec<u32> = self
+            .outputs
+            .keys()
+            .copied()
+            .filter(|output| !self.described.values().any(|had| had == output))
+            .collect();
+        for output in undescribed {
             let described = self.allocate();
             let mut body = Vec::new();
             put_u32(&mut body, described);
@@ -277,8 +371,9 @@ impl Session {
             self.described.insert(described, output);
         }
         self.settle()?;
+        self.moved = false;
 
-        Some(self.outputs.into_values().collect())
+        Some(self.outputs.values().cloned().collect())
     }
 
     fn allocate(&mut self) -> u32 {
@@ -356,8 +451,16 @@ impl Session {
             self.barrier = 0;
             return Some(());
         }
-        if object == self.registry && opcode == 0 {
-            self.global(body);
+        if object == self.registry {
+            match opcode {
+                0 => self.global(body),
+                // **An output that went away takes its rectangle with it.**
+                // Left behind, it keeps contributing to the bounding box the
+                // absolute axis is spread over, so a desktop that shrank would
+                // go on being mapped at its old width.
+                1 => self.gone(body),
+                _ => {}
+            }
             return Some(());
         }
         // An output names itself, which is the same name the display device
@@ -376,6 +479,7 @@ impl Session {
         let Some(described) = self.outputs.get_mut(&output) else {
             return Some(());
         };
+        let before = described.clone();
         match opcode {
             0 => {
                 described.x = read_i32(body);
@@ -390,6 +494,11 @@ impl Session {
             3 if described.name.is_none() => described.name = read_str(body, 0),
             _ => {}
         }
+        // **Compared rather than assumed.** A session re-sends every field of
+        // an output it re-describes, most of them unchanged, so a watcher told
+        // by the arrival of an event alone would report a layout change every
+        // time anything at all was re-announced.
+        self.moved |= *described != before;
         Some(())
     }
 
@@ -408,6 +517,8 @@ impl Session {
                 // version above what is offered is refused outright.
                 let id = self.bind(name, &interface, version.min(4));
                 self.outputs.insert(id, Output::default());
+                self.named.insert(name, id);
+                self.moved = true;
             }
             // The rectangles are the manager's to describe, and the version
             // that names an output alongside them is the second.
@@ -416,6 +527,20 @@ impl Session {
             }
             _ => {}
         }
+    }
+
+    /// Something the session no longer offers.
+    fn gone(&mut self, body: &[u8]) {
+        let Some(name) = read_u32(body.get(..4).unwrap_or_default()) else {
+            return;
+        };
+        let Some(object) = self.named.remove(&name) else {
+            return;
+        };
+        if self.outputs.remove(&object).is_some() {
+            self.moved = true;
+        }
+        self.described.retain(|_, output| *output != object);
     }
 
     fn bind(&mut self, name: u32, interface: &str, version: u32) -> u32 {
@@ -487,6 +612,99 @@ mod tests {
             width: Some(width),
             height: Some(height),
         }
+    }
+
+    /// A session with a socket nothing is on the other end of, which is all a
+    /// test of what arrives needs.
+    fn session() -> Session {
+        let (near, _far) = UnixStream::pair().expect("a socket pair");
+        let mut session = Session::new(near);
+        session.registry = 2;
+        session
+    }
+
+    /// **An output that appears is a change**, and it is the case the whole
+    /// watch exists for: a display added after a stream started leaves the
+    /// desktop wider than the mapping believes it is.
+    #[test]
+    fn an_output_appearing_or_going_away_moves_the_layout() {
+        let mut session = session();
+        let mut body = Vec::new();
+        put_u32(&mut body, 7);
+        put_str(&mut body, "wl_output");
+        put_u32(&mut body, 4);
+        session.event(2, 0, &body).expect("a global");
+        assert!(session.moved, "an output appeared and nothing said so");
+        assert_eq!(session.outputs.len(), 1);
+
+        session.moved = false;
+        let mut body = Vec::new();
+        put_u32(&mut body, 7);
+        session.event(2, 1, &body).expect("a removal");
+        assert!(session.moved, "an output went away and nothing said so");
+        assert!(
+            session.outputs.is_empty(),
+            "a departed output still counts toward the desktop it left"
+        );
+    }
+
+    /// **Off by default: it needs a session to be inside.** Run it as the
+    /// person who is logged in, with `--ignored`.
+    ///
+    /// It asserts what can be asserted without moving somebody's screen: that
+    /// the connection opens, that the layout it reads is the same one the
+    /// one-shot query reports, and that a quiet desktop reports no change. The
+    /// half it cannot reach is a real hotplug, which needs a display to be
+    /// plugged in while it runs.
+    #[test]
+    #[ignore = "needs a session"]
+    fn a_watch_reads_the_layout_its_session_has() {
+        let (mut watch, outputs) = Watch::open().expect("a session");
+        assert!(!outputs.is_empty(), "a session with no outputs at all");
+
+        for output in &outputs {
+            let name = output.name.clone().expect("every output names itself");
+            assert_eq!(
+                place(&outputs, &name),
+                placement_of(&name),
+                "the watch and the one-shot query disagree about {name}"
+            );
+        }
+
+        // **A desktop nobody touched reports nothing.** Without this the watch
+        // could be reporting a change on every event it receives, which is the
+        // failure that looks most like working.
+        assert_eq!(
+            watch.changed(Duration::from_millis(300)),
+            None,
+            "a still desktop reported a layout change"
+        );
+    }
+
+    /// **Events are not changes.** A session re-sends every field of an output
+    /// it re-describes, most of them unchanged, so a watch woken by arrival
+    /// alone would report a layout change whenever anything was re-announced.
+    #[test]
+    fn a_description_that_says_the_same_thing_is_not_a_change() {
+        let mut session = session();
+        session.outputs.insert(9, Output::default());
+        session.described.insert(10, 9);
+
+        let mut body = Vec::new();
+        put_u32(&mut body, 100);
+        put_u32(&mut body, 200);
+        session.event(10, 0, &body).expect("a position");
+        assert!(session.moved, "the first position is a change");
+
+        session.moved = false;
+        session.event(10, 0, &body).expect("the same position");
+        assert!(!session.moved, "the same position read as a move");
+
+        let mut moved = Vec::new();
+        put_u32(&mut moved, 101);
+        put_u32(&mut moved, 200);
+        session.event(10, 0, &moved).expect("a new position");
+        assert!(session.moved, "a real move was not noticed");
     }
 
     /// **The desktop is every output, not the one being captured.** This is

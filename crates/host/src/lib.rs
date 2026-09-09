@@ -30,6 +30,9 @@ pub use admission::{Admission, Config, Event, HostCredentials, Outcome, Peer};
 /// this one does not settle.
 pub mod capture {
     pub use lowlat_capture::Backend;
+    /// The session's own account of where its displays are, re-exported so a
+    /// program passing one along does not have to name the capture crate.
+    pub use lowlat_capture::desktop::{Output, Placement, Watch, place};
 }
 
 pub mod inject {

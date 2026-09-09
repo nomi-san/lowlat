@@ -1398,6 +1398,17 @@ impl Stream {
     /// **Named before it is announced**, exactly as an output change is: the
     /// loop reads the counter and only then takes the values, so a value that
     /// had not landed yet would be applied a pass late.
+    /// Say where the captured picture sits in the desktop around it.
+    ///
+    /// **Told rather than read, because only a session knows.** The display
+    /// device reports a position inside its own framebuffer and nothing about
+    /// the desktop that framebuffer is part of, so this is the one number the
+    /// stream cannot discover for itself -- and the one that goes stale the
+    /// moment a display is added.
+    pub fn set_place(&self, place: Option<lowlat_capture::desktop::Placement>) {
+        self.shared.publish_place(place);
+    }
+
     pub fn set_video(&self, video: LiveVideo) {
         let Ok(mut held) = self.shared.video.lock() else {
             return;

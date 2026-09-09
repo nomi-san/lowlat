@@ -1329,6 +1329,19 @@ impl Admission {
         }
     }
 
+    /// Say where the captured picture sits in the desktop around it.
+    ///
+    /// **The one thing about the display that has to be told rather than
+    /// read.** A display device reports a position inside its own framebuffer
+    /// and knows nothing of the desktop that framebuffer belongs to, so this
+    /// arrives from whatever is inside the session laying it out, and it is
+    /// what a guest's absolute input is mapped against.
+    pub fn set_place(&self, place: Option<lowlat_capture::desktop::Placement>) {
+        if let Some(stream) = self.stream.as_ref() {
+            stream.set_place(place);
+        }
+    }
+
     /// Send every guest the same application message.
     ///
     /// Answers how many it reached, which is not the guest count: one whose

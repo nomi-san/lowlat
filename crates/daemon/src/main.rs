@@ -313,9 +313,16 @@ fn session() -> ! {
             None
         }
     };
+    // **Watched rather than asked for, which is the whole reason this is here
+    // and not in the service.** A session re-describes an output when it moves
+    // and announces one that appears, but only to a client that is still
+    // connected; a query that opens, reads and closes learns the layout once
+    // and can never learn that it changed.
+    let watching = lowlat::capture::Watch::open();
     let can = channel::Can {
         idle: screen.is_some(),
         clipboard: clip.is_some(),
+        layout: watching.is_some(),
         ..channel::Can::default()
     };
     // **A thread of its own, because owning a clipboard is a wait.** The
@@ -324,6 +331,16 @@ fn session() -> ! {
     // service's socket.
     let (copied, to_copy) = std::sync::mpsc::channel::<String>();
     let writer: Writer = std::sync::Arc::new(std::sync::Mutex::new(None));
+    if let Some((watch, first)) = watching {
+        let writer = std::sync::Arc::clone(&writer);
+        if std::thread::Builder::new()
+            .name("lowlat-layout".to_string())
+            .spawn(move || watch_layout(watch, first, &writer))
+            .is_err()
+        {
+            lowlat_common::log_warn!("session: no thread for the layout");
+        }
+    }
     if let Some(clip) = clip {
         let writer = std::sync::Arc::clone(&writer);
         if std::thread::Builder::new()
@@ -383,6 +400,74 @@ fn session() -> ! {
         std::thread::sleep(std::time::Duration::from_millis(wait));
     }
 }
+
+/// Tell the stream where its picture sits, from the layout a session gave.
+///
+/// **The connector, not the identity.** A session names an output the way the
+/// display device does; the identity this host selects by carries the device
+/// alongside, and the two are the same name with a prefix.
+fn situate(
+    seam: &mut Admission,
+    layout: Option<&[lowlat::capture::Output]>,
+) -> Option<lowlat::capture::Placement> {
+    let outputs = layout?;
+    let listed = lowlat::display::Display::outputs();
+    let capturing = lowlat::display::captured(&listed, seam.captured())?;
+    let place = lowlat::capture::place(outputs, &capturing.connector);
+    match place {
+        Some(place) => lowlat_common::log_info!(
+            "lowlatd: {} is {}x{} at {},{} of a {}x{} desktop",
+            capturing.connector,
+            place.width,
+            place.height,
+            place.x,
+            place.y,
+            place.desktop_width,
+            place.desktop_height
+        ),
+        None => lowlat_common::log_info!(
+            "lowlatd: the session describes no {}, absolute input spans the picture alone",
+            capturing.connector
+        ),
+    }
+    seam.set_place(place);
+    place
+}
+
+/// Report this session's display layout, and every change to it.
+///
+/// **The first one is sent unasked.** A service that opened its display before
+/// a helper connected read the layout once for itself; saying it again costs a
+/// frame and covers the case where it read nothing at all.
+fn watch_layout(
+    mut watch: lowlat::capture::Watch,
+    first: Vec<lowlat::capture::Output>,
+    writer: &Writer,
+) {
+    let say = |outputs: &[lowlat::capture::Output]| {
+        lowlat_common::log_info!("session: the desktop has {} output(s)", outputs.len());
+        let body = channel::layout(outputs);
+        if let Ok(mut writer) = writer.lock()
+            && let Some(stream) = writer.as_mut()
+            && let Err(error) = channel::write_frame(stream, body.as_bytes())
+        {
+            lowlat_common::log_warn!("session: the service did not take the layout, {error}");
+        }
+    };
+    say(&first);
+    // **Only what changed.** A session re-sends every field of an output it
+    // re-describes, so a report per event would be a report per anything.
+    while let Some(outputs) = watch.changed(std::time::Duration::from_millis(LAYOUT_TICK_MS)) {
+        say(&outputs);
+    }
+}
+
+/// How long the layout thread waits on its session before looking again.
+///
+/// **A deadline on a read, not a poll.** Nothing is asked for on this
+/// connection; the wait exists so a session that ends is noticed rather than
+/// waited on forever.
+const LAYOUT_TICK_MS: u64 = 1_000;
 
 /// Where the clipboard thread writes, when there is a service to write to.
 type Writer = std::sync::Arc<std::sync::Mutex<Option<std::os::unix::net::UnixStream>>>;
@@ -887,6 +972,11 @@ async fn session_loop(
         "lowlatd: a guest's clipboard is {}",
         settings.guest_clipboard.name()
     );
+    // The session's last account of its displays, and which output the stream
+    // was pointed at when it was last acted on.
+    let mut layout: Option<Vec<lowlat::capture::Output>> = None;
+    let mut situated = 0u32;
+    let mut placed: Option<lowlat::capture::Placement> = None;
     let mut rostered = lowlat_common::clock::Time::now();
     // Whether the session was last told somebody is watching.
     let mut awake = false;
@@ -1058,6 +1148,28 @@ async fn session_loop(
             if let Some(text) = channel::is_clipboard(&said) {
                 app::clipboard_to_guests(seam, settings, text.as_bytes());
             }
+            if let Some(outputs) = channel::is_layout(&said) {
+                layout = Some(outputs);
+                placed = situate(seam, layout.as_deref());
+            }
+        }
+
+        // **Resolved when either half moves, not only when the desktop does.**
+        // The two go stale for different reasons: a desktop that gained a
+        // display, and a stream pointed at a different screen. Either leaves a
+        // guest's absolute input mapped against a rectangle it is not in.
+        let capturing = seam.captured();
+        if capturing != situated {
+            situated = capturing;
+            placed = situate(seam, layout.as_deref());
+        }
+        // **Said every pass, though it is worked out only when it changes.**
+        // The stream publishes what it read for itself when a pipeline is
+        // built, and that reading is the one-shot one that goes stale; without
+        // this, a rebuild for any reason at all would put the stale answer
+        // back and nothing would notice. Repeating costs two stores.
+        if placed.is_some() {
+            seam.set_place(placed);
         }
 
         while let Some(received) = seam.poll_event() {
