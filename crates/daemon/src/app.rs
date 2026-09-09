@@ -104,12 +104,6 @@ impl Clipboard {
     }
 }
 
-/// What is reported when neither the configuration nor the display says.
-///
-/// **The same figure the stream falls back to**, because two answers to one
-/// question is how a panel comes to show a rate nothing is producing.
-const DEFAULT_FPS: u32 = 60;
-
 /// The settings this host was started with.
 ///
 /// **Only what configuration really decides.** The size the stream produces
@@ -241,13 +235,13 @@ fn describe(
     // rule as the size two fields up: before the stream has opened a display,
     // the display's own rate is what it is about to produce, so that is what
     // is reported rather than the request that has not been answered yet.
+    // **Only when nothing has settled one.** A running stream has already
+    // resolved its rate against the display it opened, and asking the question
+    // a second time here would answer it from a listing that may describe a
+    // different output -- reporting a rate the stream is not running at, which
+    // is the one thing this whole field exists to avoid.
     let fps = if fps == 0 {
-        listed
-            .iter()
-            .find(|candidate| candidate.id == output)
-            .map(|found| found.refresh_hz)
-            .filter(|refresh| *refresh > 0)
-            .unwrap_or(DEFAULT_FPS)
+        lowlat::stream::paced(0, refresh_of(listed, &output))
     } else {
         fps
     };
@@ -294,15 +288,20 @@ pub(crate) fn on_message(
             true
         }
         id::CONFIG => {
+            // **Enumerated once and used twice.** Describing what is running
+            // and checking what a guest asked for are the same question about
+            // the same machine, and asking the devices twice is how the two
+            // come to disagree about what is lit.
+            let listed = Display::outputs();
             let described = describe(
                 seam.picture(),
-                &Display::outputs(),
+                &listed,
                 Display::preferred().as_deref(),
                 seam.captured(),
                 settings,
                 seam.video(),
             );
-            apply(seam, body, &described);
+            apply(seam, body, &described, &listed);
             // **Not answered.** The client asks again with 9 the moment it has
             // sent one of these, so an answer here would arrive beside the one
             // it is about to ask for.
@@ -640,7 +639,39 @@ fn outputs(fake: bool) -> String {
 }
 
 /// Take what a client asked for, and act on the part of it that is ours.
-fn apply(seam: &mut Admission, body: &[u8], video: &Video) {
+/// The frame rate a configuration message asks for, against the display it
+/// would run on.
+///
+/// **A ceiling, and clamped to the display rather than merely bounded by it.**
+/// The loop will not run ahead of the display's own present, so a rate above
+/// the refresh was never going to be reached -- but it is also what the
+/// encoder's per-frame budget is divided by, so honouring the request as asked
+/// spends a quarter of each frame on a display presenting a quarter as often.
+/// Same rule the pipeline is built with, asked here because this is the other
+/// place a rate is chosen.
+///
+/// **Zero is no change**, as it is for the rate ceiling beside it: a panel
+/// that leaves a field alone sends zero, and reading that as a request to
+/// follow the display would change something nobody touched.
+fn asked_fps(first: &serde_json::Value, current: u32, refresh_hz: u32) -> u32 {
+    match first.get("encoderFPS").and_then(serde_json::Value::as_u64) {
+        Some(0) | None => current,
+        Some(asked) => {
+            u32::try_from(asked).map_or(current, |asked| lowlat::stream::paced(asked, refresh_hz))
+        }
+    }
+}
+
+/// How often the output being captured presents, or zero when nothing here
+/// knows.
+fn refresh_of(listed: &[Selectable], output: &str) -> u32 {
+    listed
+        .iter()
+        .find(|candidate| candidate.id == output)
+        .map_or(0, |found| found.refresh_hz)
+}
+
+fn apply(seam: &mut Admission, body: &[u8], video: &Video, listed: &[Selectable]) {
     let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(body) else {
         lowlat_common::log_info!("lowlatd: a configuration arrived that is not JSON, ignoring it");
         return;
@@ -672,7 +703,7 @@ fn apply(seam: &mut Admission, body: &[u8], video: &Video) {
         // that refusal is the display failing to open at all -- which ends every
         // guest on the stream, including the one that asked. A guest naming
         // something that is not there must cost nothing.
-        chosen if Display::outputs().iter().any(|real| real.id == chosen) => {
+        chosen if listed.iter().any(|real| real.id == chosen) => {
             lowlat_common::log_info!("lowlatd: guest asked to capture {chosen}");
             seam.select_output(Some(chosen.to_string()));
         }
@@ -734,15 +765,7 @@ fn apply(seam: &mut Admission, body: &[u8], video: &Video) {
         let asked_mbps = asked as f64;
         wanted.bitrate_mbps = asked_mbps;
     }
-    // **A ceiling rather than a target, and the display bounds it anyway**:
-    // the loop paces on the display's own present, so asking for more than
-    // the captured output refreshes at produces what it refreshes at.
-    if let Some(asked) = first.get("encoderFPS").and_then(serde_json::Value::as_u64)
-        && asked != 0
-        && let Ok(asked) = u32::try_from(asked)
-    {
-        wanted.fps = asked;
-    }
+    wanted.fps = asked_fps(first, running.fps, refresh_of(listed, &video.output));
     if let Some(asked) = first.get("fullFPS").and_then(serde_json::Value::as_bool) {
         wanted.full_fps = asked;
     }
@@ -1240,6 +1263,37 @@ mod tests {
             assert!(setting.takes_from(owner), "{setting:?}");
             assert!(setting.gives_to(owner), "{setting:?}");
         }
+    }
+
+    /// **A guest cannot ask for more frames than the display presents.** The
+    /// loop would not have reached the rate anyway, but the number is also
+    /// what the encoder's per-frame budget is divided by, so honouring the
+    /// request as asked spends a fraction of each frame for no more frames.
+    #[test]
+    fn a_rate_a_guest_asks_for_is_clamped_to_the_display() {
+        let display = refresh_of(&listed(), "card0:DP-2");
+        assert_eq!(display, 60, "the fixture is what makes the clamp visible");
+        let asked = |json: &str| {
+            let parsed: serde_json::Value = serde_json::from_str(json).expect("json");
+            asked_fps(&parsed, 90, display)
+        };
+
+        assert_eq!(asked(r#"{"encoderFPS":120}"#), 60, "asked past the display");
+        assert_eq!(asked(r#"{"encoderFPS":30}"#), 30, "asked under it");
+        assert_eq!(asked(r#"{"encoderFPS":60}"#), 60, "asked for exactly it");
+
+        // **Zero and absent are no change, not a request to follow.** A panel
+        // that leaves the field alone sends one of the two, and acting on it
+        // would change something nobody touched.
+        assert_eq!(asked(r#"{"encoderFPS":0}"#), 90);
+        assert_eq!(asked(r#"{}"#), 90);
+        assert_eq!(asked(r#"{"encoderFPS":"fast"}"#), 90, "not a number");
+        assert_eq!(asked(r#"{"encoderFPS":4294967296}"#), 90, "past a u32");
+
+        // A display that will not say leaves the request standing.
+        let parsed: serde_json::Value =
+            serde_json::from_str(r#"{"encoderFPS":144}"#).expect("json");
+        assert_eq!(asked_fps(&parsed, 90, 0), 144);
     }
 
     /// A body for a language this host does not speak is reported as

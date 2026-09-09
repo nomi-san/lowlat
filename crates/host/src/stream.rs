@@ -3349,6 +3349,11 @@ fn settle_pace(shared: &Shared, asked: u32, refresh_hz: u32) -> u32 {
 
 /// The rate a stream of this display is paced at.
 ///
+/// **Public because it is asked twice**, at the two ends of the same
+/// question: here, when a pipeline is built, and above the boundary, when a
+/// guest changes the rate while one is running. Two answers to that would let
+/// a panel report a rate nothing is producing.
+///
 /// **The display is the ceiling and the configuration is the request.** A
 /// capture paced faster than the display presents produces the same picture
 /// twice, and the loop already refuses to run ahead of the presents, so a
@@ -3360,7 +3365,7 @@ fn settle_pace(shared: &Shared, asked: u32, refresh_hz: u32) -> u32 {
 /// without being told. Zero from the device -- a mode it will not describe --
 /// leaves the request alone, including when the request is itself absent, and
 /// then the default stands.
-fn paced(asked: u32, refresh_hz: u32) -> u32 {
+pub fn paced(asked: u32, refresh_hz: u32) -> u32 {
     match (asked, refresh_hz) {
         (0, 0) => DEFAULT_FPS,
         (0, refresh) => refresh,
