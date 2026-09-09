@@ -714,9 +714,11 @@ fn apply(seam: &mut Admission, body: &[u8], video: &Video, listed: &[Selectable]
         }
     }
 
-    // **Said rather than done.** Both change the display's own mode, which
-    // belongs to whoever owns the display, and on a display this host did not
-    // create that is the session (docs/impl-plan.md, output selection). A
+    // **Said rather than done, and not because it is unbuilt.** Both change the
+    // display's own mode, which belongs to whoever owns the display, and on a
+    // display this host did not create that is the session; the mode of
+    // somebody's desk is changed where it is already changed and capture
+    // follows whatever it became (docs/impl-plan.md, output selection). A
     // request that is quietly dropped looks like a host that ignored its
     // guest, so it is reported.
     for (field, current) in [("resolutionX", video.width), ("resolutionY", video.height)] {
@@ -725,7 +727,7 @@ fn apply(seam: &mut Admission, body: &[u8], video: &Video, listed: &[Selectable]
             && asked != u64::from(current)
         {
             lowlat_common::log_info!(
-                "lowlatd: guest asked for {field}={asked}, which this host cannot set yet"
+                "lowlatd: guest asked for {field}={asked}, which this host does not set"
             );
         }
     }
@@ -734,7 +736,7 @@ fn apply(seam: &mut Admission, body: &[u8], video: &Video, listed: &[Selectable]
         .and_then(serde_json::Value::as_bool)
         .is_some_and(|asked| asked != video.rotated)
     {
-        lowlat_common::log_info!("lowlatd: guest asked to rotate, which this host cannot set yet");
+        lowlat_common::log_info!("lowlatd: guest asked to rotate, which this host does not set");
     }
 
     // **The rest is live and is applied.** The frame rate, the rate ceiling
