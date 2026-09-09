@@ -3,6 +3,46 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-09 - The desktop's shape is watched, not read once
+
+### Fixed
+- **A display added while a stream runs left absolute input mapped against the desktop as it
+  was.** Where the captured picture sits was read once, when the display opened, and never again:
+  adding a display does not change the captured output's own size, so nothing rebuilt and nothing
+  re-read. The absolute axis is spread over the whole desktop, so every position came back scaled
+  by the ratio between the old extent and the new one and the far part of the screen could not be
+  reached at all. Rearranging or removing an output is the same stale read.
+
+### Added
+- **The session reports its layout, and every change to it.** This was planned as a question the
+  service asks and it is a signal: the answer has to be right whenever a guest moves its pointer,
+  which is continuously, so a host that asks once is silently wrong from the moment somebody
+  plugs a display in.
+- **The connection is the subscription.** A session re-describes an output when it moves and
+  announces one that appears, but only to a client that is still there -- a query that opens,
+  reads and closes learns the layout once and can never learn that it changed. The helper holds
+  its own session's connection open; a service with no helper keeps the one-shot reading, which
+  was always right for the one-output case.
+- **Events are not changes.** A session re-sends every field of an output it re-describes, most
+  of them unchanged, so what is reported is a layout compared against the last one rather than
+  the arrival of anything.
+- **An output that goes away takes its rectangle with it.** Left behind it keeps contributing to
+  the bounding box the axis is spread over, so a desktop that shrank would go on being mapped at
+  its old width.
+- **The service repeats what it worked out on every pass**, because the stream publishes its own
+  one-shot reading whenever a pipeline is rebuilt, and without this a rebuild for any reason at
+  all would quietly put the stale answer back.
+
+### Testing
+- The change detection is pinned without a compositor: an output appearing and one going away are
+  both changes, and a description repeating what it already said is not. **Both were confirmed to
+  fail** -- with every event treated as a change, and with a departed output left in place.
+- The layout crosses the channel unchanged, including an output described only in part, and the
+  bounding box it reduces to is asserted rather than the fields alone.
+- A live test against this session, off by default: the watch's layout agrees with the one-shot
+  query for every output, and a desktop nobody touched reports no change -- which is the failure
+  that would look most like working.
+
 ## 2026-09-09 - The frame rate comes from the display
 
 ### Added

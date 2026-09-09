@@ -418,9 +418,31 @@ Four things need session state, and none of them can be answered below it:
 |---|---|---|
 | relative pointer mode (§2.1) | a signal, pushed on change | the feature; a guest is never put into relative mode |
 | the idle inhibitor | a lease, held while asked | the screen may blank during a session |
-| the display layout | a question, asked when needed | the backend's own reading is used instead |
+| the display layout | a signal, pushed on change | the backend's own reading is used, and it is only ever right about the desktop as it was when the display opened |
 | display mode and rotation | a request, rarely | a guest's request is refused with a reason |
 | the clipboard | an ownership, held | a guest's text is dropped and the desktop's never leaves |
+
+#### The layout is a signal, not a question
+
+**It was written down as a question and that is wrong.** Where the captured
+output sits in the desktop is not needed at a moment of this host's choosing;
+it has to be right whenever a guest moves its pointer, which is continuously.
+A host that asks once has an answer that is correct until somebody plugs in a
+display, and then silently wrong: the absolute axis is spread over the whole
+desktop, so a desktop that grew leaves every position scaled by the ratio
+between the old extent and the new one, and the far part of the screen cannot
+be reached at all.
+
+**The connection is the subscription.** A session re-describes an output when
+it moves and announces one that appears, but only to a client that is still
+there, so a query that opens, reads and closes can learn the layout and can
+never learn that it changed. The helper holds that connection open and reports
+what changed; a service with no helper keeps the one-shot reading, which is
+right for the one-output case it was always right for.
+
+**Events are not changes.** A session re-sends every field of an output it
+re-describes, most of them unchanged, so what is reported is a layout compared
+against the last one rather than the arrival of anything.
 
 #### The clipboard is an ownership, not a value
 

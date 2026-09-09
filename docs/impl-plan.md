@@ -1559,7 +1559,10 @@ and deciding its shape without one of its two customers in front of it.
   and the reason it was to be built first is answered rather than ignored: nothing
   request-and-reply shaped has been built for the channel to be bent out of.
 - [x] The idle inhibitor, held as a lease while it is asked for.
-- [ ] The display layout answered by the session, in place of the backend's own reading.
+- [x] **The display layout pushed by the session**, in place of the backend's own reading. It was
+  planned as a question and is a signal: the answer has to be right whenever a guest moves its
+  pointer, and a host that asks once is silently wrong from the moment a display is plugged in
+  ([07 §5.1](07-platforms.md)).
 - [ ] Display mode and rotation, requested rarely and refused with a reason when nothing is
   there to ask.
 - [x] **The clipboard, both directions, behind `guest_clipboard`** ([07 §5.1](07-platforms.md)):
