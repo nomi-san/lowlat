@@ -1347,7 +1347,10 @@ mod tests {
 
         out.batches.clear();
         inject.release_all(&mut out);
-        assert!(out.batches.is_empty(), "something was still tracked as held");
+        assert!(
+            out.batches.is_empty(),
+            "something was still tracked as held"
+        );
     }
 
     /// **A mask that reports the modifier on some messages and not others is

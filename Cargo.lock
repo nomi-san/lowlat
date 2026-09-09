@@ -601,6 +601,7 @@ dependencies = [
 name = "lowlatd"
 version = "0.0.0"
 dependencies = [
+ "libc",
  "lowlat-audio",
  "lowlat-common",
  "lowlat-host",

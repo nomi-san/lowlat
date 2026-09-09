@@ -21,6 +21,10 @@ lowlat-host.workspace = true
 # The sound configuration its flags fill in.
 lowlat-audio.workspace = true
 lowlat-kessel.workspace = true
+# The peer's credentials on a local socket, which std exposes only behind an
+# unstable feature. Already in the graph; this is a direct edge, not a new
+# dependency.
+libc.workspace = true
 # The translation between signaling and the seam is JSON on one side and an
 # async client on the other; both stop at this boundary.
 tokio.workspace = true

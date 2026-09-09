@@ -100,6 +100,7 @@ async fn main() {
 }
 
 mod app;
+mod channel;
 
 /// Which of the two programs an invocation is.
 ///
@@ -273,23 +274,41 @@ fn candex<'a>(
     }
 }
 
+/// The session agent: connect outward, say what this is, and hold the
+/// connection for as long as the session does.
+///
+/// **It speaks for its own session and nothing else**, so it carries no
+/// privilege worth taking and is never asked to do anything it could not do on
+/// its own behalf (docs/07-platforms.md section 5.1). What it has to say
+/// arrives with the sources of those signals; today it is announced and
+/// silent, which is a helper that reports nothing rather than a helper that is
+/// absent.
+fn session() -> Result<(), Box<dyn std::error::Error>> {
+    let mut stream = channel::connect(channel::Role::Helper)
+        .map_err(|error| format!("cannot reach the service: {error}"))?;
+    lowlat_common::log_info!("session: connected");
+    let mut body = Vec::new();
+    while channel::read_frame(&mut stream, &mut body).is_ok() {}
+    lowlat_common::log_info!("session: the service is gone");
+    Ok(())
+}
+
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
-    // **Answered before any flag is looked at**, which is the whole of the
-    // rule: a role decided after a line has been scanned is a role a line can
-    // be written to change.
+    // **Decided before any flag is read**, which is the whole of the rule: a
+    // role that depends on a line having been scanned is a role a line can be
+    // written to change. Everything after this belongs to whichever role it
+    // answered.
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if program_of(args.iter().map(String::as_str)) == Program::Session {
-        // Phase 12 lands the session agent. The role exists ahead of it so
-        // that nothing is ever added to the wrong side of the boundary.
-        eprintln!("lowlatd: the session role is not built yet");
-        return Ok(());
-    }
+    let program = program_of(args.iter().map(String::as_str));
     // **Off by default and worth having at all only for input.** Nothing else
     // in this program says anything at this level, so the switch is in
     // practice "log every key as it is expanded", which is the one fault that
     // cannot be read off a stream of injected events afterwards.
     if flag_set("--verbose") {
         lowlat_common::log::set_level(lowlat_common::log::Level::Debug);
+    }
+    if program == Program::Session {
+        return session();
     }
     // **Before anything else is set up.** It answers the one question that has
     // to be answered before --output can be used at all, and a machine being
@@ -486,6 +505,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             .spawn(move || report_microphone(&heard))
             .ok();
     }
+    // **Opened before the first guest and independent of one.** A session-side
+    // program connects when its session starts, which is not when somebody
+    // decides to stream, and nothing on the channel is load bearing either way
+    // (docs/07-platforms.md section 5.1).
+    channel::listen();
     let mut seam = Admission::new(Config {
         microphone: Some(hear),
         exclusive_pointer,
