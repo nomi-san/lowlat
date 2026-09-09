@@ -175,6 +175,9 @@ pub struct Output {
     pub connector: String,
     pub width: u32,
     pub height: u32,
+    /// How many times a second it presents, or zero when the device will not
+    /// say.
+    pub refresh_hz: u32,
 }
 
 /// One scan of the device.
@@ -208,6 +211,13 @@ pub struct Layout {
     /// session knows the layout and names each output exactly this way
     /// (see [`crate::desktop`]).
     pub connector: Option<String>,
+    /// How many times a second this output presents, or zero when the device
+    /// will not say.
+    ///
+    /// **Read here because this is where the lit controller is known.** It is
+    /// the ceiling on any rate a stream of this display can have: a capture
+    /// paced faster than the display presents produces the same picture twice.
+    pub refresh_hz: u32,
 }
 
 /// What [`Card::export`] asks for. Close-on-exec and nothing else; see there
@@ -391,11 +401,14 @@ impl Card {
             })
             .unwrap_or(0);
 
+        let refresh_hz = primary_crtc.map_or(0, |crtc| self.refresh_of(crtc));
+
         match (primary, primary_plane, primary_crtc) {
             (Some(primary), Some(primary_plane), Some(_)) => Ok(Layout {
                 primary,
                 primary_plane,
                 crtc_index,
+                refresh_hz,
                 cursor,
                 cursor_plane,
                 connector,
@@ -431,6 +444,7 @@ impl Card {
                 connector,
                 width: described.width,
                 height: described.height,
+                refresh_hz: self.refresh_of(crtc),
             });
         }
         Ok(found)
@@ -537,6 +551,33 @@ impl Card {
 
     /// Re-read what the pointer plane is drawing, and where.
     ///
+    /// How many times a second a controller presents, or zero when it will
+    /// not say.
+    ///
+    /// **Computed rather than read where the field is empty.** The mode
+    /// carries a refresh figure and a timing description, and the figure is
+    /// filled in by whoever set the mode: it is right when a driver set it and
+    /// zero when userspace built the mode itself. The timings are always
+    /// there, and the rate they describe is the pixel clock over the whole
+    /// frame including the parts that are not picture.
+    fn refresh_of(&self, crtc: crtc::Handle) -> u32 {
+        let Some(mode) = self.get_crtc(crtc).ok().and_then(|info| info.mode()) else {
+            return 0;
+        };
+        let stated = mode.vrefresh();
+        if stated > 0 {
+            return stated;
+        }
+        let (_, _, htotal) = mode.hsync();
+        let (_, _, vtotal) = mode.vsync();
+        let whole = u64::from(htotal) * u64::from(vtotal);
+        if whole == 0 {
+            return 0;
+        }
+        // The clock is in kilohertz, so a thousand of them is a hertz.
+        u32::try_from(u64::from(mode.clock()) * 1000 / whole).unwrap_or(0)
+    }
+
     /// **The per-frame call for the pointer**, as [`Card::framebuffer_on`] is
     /// for the display. Nothing drawn is a state rather than a failure: a
     /// compositor takes the plane down when an application hides the pointer,

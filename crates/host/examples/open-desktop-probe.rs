@@ -32,11 +32,11 @@ fn main() {
 
     // The encoder is configured for what the display is showing, so its size
     // has to be known before it exists. The source does its own scan.
-    let Some((width, height)) = Display::size_of_display(wanted.as_deref()) else {
+    let Some((width, height, refresh_hz)) = Display::shape_of_display(wanted.as_deref()) else {
         fail("no output of that name is lit");
     };
     let backend = Some(lowlat::capture::Backend::requested());
-    println!("{width}x{height}, converting on {backend:?}");
+    println!("{width}x{height}@{refresh_hz}, converting on {backend:?}");
 
     let api = vaapi::Vaapi::load().unwrap_or_else(|e| fail(&format!("encoder: {e}")));
     let display = api

@@ -104,6 +104,12 @@ impl Clipboard {
     }
 }
 
+/// What is reported when neither the configuration nor the display says.
+///
+/// **The same figure the stream falls back to**, because two answers to one
+/// question is how a panel comes to show a rate nothing is producing.
+const DEFAULT_FPS: u32 = 60;
+
 /// The settings this host was started with.
 ///
 /// **Only what configuration really decides.** The size the stream produces
@@ -231,6 +237,20 @@ fn describe(
             )
         },
     );
+    // **Zero is "follow the display", and a reader has no use for it.** Same
+    // rule as the size two fields up: before the stream has opened a display,
+    // the display's own rate is what it is about to produce, so that is what
+    // is reported rather than the request that has not been answered yet.
+    let fps = if fps == 0 {
+        listed
+            .iter()
+            .find(|candidate| candidate.id == output)
+            .map(|found| found.refresh_hz)
+            .filter(|refresh| *refresh > 0)
+            .unwrap_or(DEFAULT_FPS)
+    } else {
+        fps
+    };
     Video {
         output,
         bitrate_mbps,
@@ -910,6 +930,7 @@ mod tests {
             connector: "DP-2".to_string(),
             width: 2560,
             height: 1440,
+            refresh_hz: 60,
             place: None,
         }]
     }
@@ -1007,6 +1028,7 @@ mod tests {
                 connector: "HDMI-A-1".to_string(),
                 width: 2560,
                 height: 1440,
+                refresh_hz: 60,
                 place: None,
             },
             Selectable {
@@ -1014,6 +1036,7 @@ mod tests {
                 connector: "DP-4".to_string(),
                 width: 2560,
                 height: 1440,
+                refresh_hz: 60,
                 place: None,
             },
         ];

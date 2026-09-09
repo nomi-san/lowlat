@@ -52,7 +52,11 @@ const DEFAULT_STUN: &str = "stun.l.google.com:19302,stun.cloudflare.com:3478";
 /// and the host is authoritative over all of it, so a declaration is a request.
 const WIDTH: u32 = 1920;
 const HEIGHT: u32 = 1080;
-const FPS: u32 = 60;
+/// **Zero, which is a request to follow the captured display.** The rate a
+/// display presents at is the ceiling on any stream of it, and it is not
+/// knowable from here: the fallback when a device will not describe its mode
+/// belongs where the display is opened, not where a flag is parsed.
+const FPS: u32 = 0;
 
 /// The bitrate ceiling, in megabits per second, before it is divided among the
 /// guests on the stream. Ten is the documented default, and higher values buy
@@ -573,13 +577,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let height: u32 = flag("--height")
         .and_then(|v| v.parse().ok())
         .unwrap_or(HEIGHT);
-    // The rate the stream is paced at, which is a ceiling rather than a
-    // promise: the loop follows the display's own present, so asking for more
-    // than the captured output refreshes at produces what it refreshes at.
-    let fps: u32 = flag("--fps")
-        .and_then(|v| v.parse().ok())
-        .filter(|value| *value > 0)
-        .unwrap_or(FPS);
+    // **Absent means the captured display's own rate**, which is the answer
+    // this program cannot give until it has looked at the display, so it is
+    // passed on as zero and settled there. A number is a ceiling rather than a
+    // promise and is clamped to the display: the loop will not run ahead of
+    // the presents, so anything above the refresh is a rate the stream cannot
+    // reach while still being what the encoder's budget is divided by.
+    let fps: u32 = flag("--fps").and_then(|v| v.parse().ok()).unwrap_or(FPS);
     // Rows of unpredictable detail in the synthetic picture. Zero is the flat
     // picture; a band makes frames large enough to need more than one
     // fragment, which is the only way a peer's reassembly is exercised.

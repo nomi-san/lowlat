@@ -2545,8 +2545,8 @@ fn run_vulkan(
         lowlat_encode::vulkan::Depth::Eight
     };
     // The display decides the size, exactly as on the other paths.
-    let (width, height) = match await_display(config.output.as_deref()) {
-        Some(size) => size,
+    let (width, height, refresh_hz) = match await_display(config.output.as_deref()) {
+        Some(shape) => shape,
         None => {
             lowlat_common::log_error!(
                 "stream: nothing has been scanning out for {:.0}s, ending {} guest(s)",
@@ -2560,6 +2560,7 @@ fn run_vulkan(
     let config = Config {
         width,
         height,
+        fps: settle_pace(shared, config.fps, refresh_hz),
         ..config
     };
 
@@ -2718,19 +2719,19 @@ fn run_open(
     // **The size the display settled on, before anything is built for it.**
     // Same rule as the vendor path: a display decides its own size and
     // everything downstream has to be told the same answer.
-    let (width, height) = if config.display {
+    let (width, height, refresh_hz) = if config.display {
         match await_display(config.output.as_deref()) {
-            Some(size) => {
-                if size != (config.width, config.height) {
+            Some(shape) => {
+                if (shape.0, shape.1) != (config.width, config.height) {
                     lowlat_common::log_info!(
                         "stream: the display is {}x{}, not the configured {}x{}; following it",
-                        size.0,
-                        size.1,
+                        shape.0,
+                        shape.1,
                         config.width,
                         config.height
                     );
                 }
-                size
+                shape
             }
             None => {
                 lowlat_common::log_error!(
@@ -2742,12 +2743,13 @@ fn run_open(
             }
         }
     } else {
-        (config.width, config.height)
+        (config.width, config.height, 0)
     };
     shared.publish_picture(width, height);
     let config = Config {
         width,
         height,
+        fps: settle_pace(shared, config.fps, refresh_hz),
         ..config
     };
 
@@ -2899,7 +2901,7 @@ fn run_vendor(
     // **The display decides the picture size when it is the source.** The
     // encoder is created before the source exists and its registration fixes
     // the shape, so asking the display first is the only way the two agree.
-    let (width, height) = if config.display {
+    let (width, height, refresh_hz) = if config.display {
         // **A display that is asleep is the ordinary case for this product,
         // not a fault.** Somebody connecting to a machine whose screen has
         // powered down is most of what remote access is for, so it is waited
@@ -2907,17 +2909,17 @@ fn run_vendor(
         // that wakes a blanked display is somebody at the desk, and a guest
         // held indefinitely on a machine nobody is at learns nothing.
         match await_display(config.output.as_deref()) {
-            Some(size) => {
-                if size != (config.width, config.height) {
+            Some(shape) => {
+                if (shape.0, shape.1) != (config.width, config.height) {
                     lowlat_common::log_info!(
                         "stream: the display is {}x{}, not the configured {}x{}; following it",
-                        size.0,
-                        size.1,
+                        shape.0,
+                        shape.1,
                         config.width,
                         config.height
                     );
                 }
-                size
+                shape
             }
             None => {
                 lowlat_common::log_error!(
@@ -2929,7 +2931,7 @@ fn run_vendor(
             }
         }
     } else {
-        (config.width, config.height)
+        (config.width, config.height, 0)
     };
     // **Said once the size is settled and before any guest is seated.** It is
     // the coordinate space a peer's absolute input is expressed in, so a guest
@@ -2947,6 +2949,7 @@ fn run_vendor(
     let config = Config {
         width,
         height,
+        fps: settle_pace(shared, config.fps, refresh_hz),
         ..config
     };
     let Ok(mut encoder) = session.initialize(
@@ -3295,13 +3298,14 @@ fn requested(asked: &mpsc::Receiver<Option<String>>) -> Option<Option<String>> {
     last
 }
 
-/// Wait for something to scan out, and report what shape it is.
-fn await_display(wanted: Option<&str>) -> Option<(u32, u32)> {
+/// Wait for something to scan out, and report what shape it is: its size, and
+/// how many times a second it presents.
+fn await_display(wanted: Option<&str>) -> Option<(u32, u32, u32)> {
     let began = lowlat_common::clock::Time::now();
     let mut said = false;
     loop {
-        if let Some(size) = crate::display::Display::size_of_display(wanted) {
-            return Some(size);
+        if let Some(shape) = crate::display::Display::shape_of_display(wanted) {
+            return Some(shape);
         }
         if !said {
             said = true;
@@ -3313,6 +3317,101 @@ fn await_display(wanted: Option<&str>) -> Option<(u32, u32)> {
             return None;
         }
         std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+}
+
+/// Resolve the pace against the display, and publish it where the loop reads
+/// it.
+///
+/// **Published as well as returned**, because the loop paces from the live
+/// figure rather than from the configuration: a display that came back at
+/// another rate has to move the pacing, not only what the encoder was built
+/// for.
+fn settle_pace(shared: &Shared, asked: u32, refresh_hz: u32) -> u32 {
+    let settled = paced(asked, refresh_hz);
+    if let Ok(mut live) = shared.video.lock() {
+        if live.fps == settled {
+            return settled;
+        }
+        live.fps = settled;
+    }
+    shared.video_asked.fetch_add(1, Ordering::Release);
+    lowlat_common::log_info!(
+        "stream: pacing at {settled} fps, display={refresh_hz} asked={}",
+        if asked == 0 {
+            "the display".to_string()
+        } else {
+            asked.to_string()
+        }
+    );
+    settled
+}
+
+/// The rate a stream of this display is paced at.
+///
+/// **The display is the ceiling and the configuration is the request.** A
+/// capture paced faster than the display presents produces the same picture
+/// twice, and the loop already refuses to run ahead of the presents, so a
+/// number above the display's rate is one the stream cannot reach and would
+/// still be configured against: it feeds the encoder's own budget, where
+/// asking for twice the frames halves what each may spend.
+///
+/// **Absent means follow the display**, which is the answer this can give
+/// without being told. Zero from the device -- a mode it will not describe --
+/// leaves the request alone, including when the request is itself absent, and
+/// then the default stands.
+fn paced(asked: u32, refresh_hz: u32) -> u32 {
+    match (asked, refresh_hz) {
+        (0, 0) => DEFAULT_FPS,
+        (0, refresh) => refresh,
+        (asked, 0) => asked,
+        (asked, refresh) => asked.min(refresh),
+    }
+}
+
+/// What a stream runs at when neither the configuration nor the display says.
+const DEFAULT_FPS: u32 = 60;
+
+#[cfg(test)]
+mod pace_tests {
+    use super::{DEFAULT_FPS, paced};
+
+    /// **The display is a ceiling and the request is a request.** Asking for
+    /// more than the display presents is a rate the loop will not reach, and
+    /// configuring the encoder for it divides each frame's budget by a number
+    /// of frames that never arrive.
+    #[test]
+    fn the_pace_is_the_lesser_of_what_was_asked_and_what_the_display_does() {
+        assert_eq!(paced(60, 60), 60);
+        assert_eq!(
+            paced(120, 60),
+            60,
+            "a display cannot present faster than it does"
+        );
+        assert_eq!(
+            paced(30, 144),
+            30,
+            "a ceiling below the display is honoured"
+        );
+        assert_eq!(paced(240, 120), 120);
+    }
+
+    /// **Absent means follow the display**, which is the whole point of the
+    /// zero: it is the one answer that cannot be given before a display has
+    /// been looked at.
+    #[test]
+    fn nothing_asked_takes_the_displays_own_rate() {
+        assert_eq!(paced(0, 144), 144);
+        assert_eq!(paced(0, 60), 60);
+    }
+
+    /// A device that will not describe its mode leaves the request standing,
+    /// and the default stands when there is no request either. Guessing a
+    /// rate here would configure the encoder against a display nobody read.
+    #[test]
+    fn a_display_that_will_not_say_leaves_the_request_alone() {
+        assert_eq!(paced(90, 0), 90);
+        assert_eq!(paced(0, 0), DEFAULT_FPS);
     }
 }
 

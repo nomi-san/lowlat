@@ -481,7 +481,7 @@ fn the_status_struct_is_the_size_its_fields_come_to() {
     let fields = 4 * 4        // size, guests, width, height
         + 1 + 1 + 1 + 1       // running, audio_active, ten_bit, reserved
         + 4 + 4               // codec, chroma
-        + LOWLAT_OUTPUT_MAX;  // audio_device
+        + LOWLAT_OUTPUT_MAX; // audio_device
     assert_eq!(
         core::mem::size_of::<lowlat_host_status>(),
         fields,

@@ -3280,7 +3280,10 @@ mod start_tests {
             "a zeroed structure already asks for the aggressive level; the defaults must not"
         );
         // The sizes are filled in, so a caller starting here never sets them.
-        assert_eq!(cfg.size as usize, core::mem::size_of::<lowlat_host_config>());
+        assert_eq!(
+            cfg.size as usize,
+            core::mem::size_of::<lowlat_host_config>()
+        );
         assert_eq!(
             cfg.video.size as usize,
             core::mem::size_of::<lowlat_host_video_config>()

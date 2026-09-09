@@ -34,6 +34,9 @@ pub struct Selectable {
     pub connector: String,
     pub width: u32,
     pub height: u32,
+    /// How many times a second it presents, or zero when the device will not
+    /// say.
+    pub refresh_hz: u32,
     /// Where it sits in the desktop, when a session describes it.
     pub place: Option<Placement>,
 }
@@ -1042,12 +1045,19 @@ impl Display {
     /// What the display is showing, before anything is built on it.
     ///
     /// **The encoder has to be configured for this and is created first**, so
-    /// the size has to be readable without a device, a converter or a target.
+    /// this has to be readable without a device, a converter or a target.
     /// Configuring it for anything else produces a stream of the wrong shape
     /// rather than a refusal, which is a whole session wasted.
-    pub fn size_of_display(wanted: Option<&str>) -> Option<(u32, u32)> {
+    ///
+    /// The refresh figure is zero when the device will not say, which is a
+    /// caller's cue to keep whatever it was going to use.
+    pub fn shape_of_display(wanted: Option<&str>) -> Option<(u32, u32, u32)> {
         let (_, _, layout) = Self::find(wanted).ok()?;
-        Some((layout.primary.width, layout.primary.height))
+        Some((
+            layout.primary.width,
+            layout.primary.height,
+            layout.refresh_hz,
+        ))
     }
 
     /// Every output on this machine that is lit, by the name one is asked for
@@ -1075,6 +1085,7 @@ impl Display {
                     connector: output.connector,
                     width: output.width,
                     height: output.height,
+                    refresh_hz: output.refresh_hz,
                 });
             }
         }
