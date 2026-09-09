@@ -55,6 +55,13 @@ Rules:
   universal, and it is probed rather than assumed: measured 2026-08-25, the open stack
   delivers the events and the proprietary NVIDIA driver refuses the request outright, so a
   stream asks once at start and falls back to the timer when the answer is no.
+- **The rate is read from the display, not only bounded by it.** The mode the lit controller is
+  running carries how often it presents, so the frame clock is set from `min(asked, refresh)` and
+  from the refresh alone when nothing was asked. Bounding without reading is not enough: the
+  configured rate is what the encoder's per-frame budget is divided by, so a stream asking for
+  twice the frames the display can present halves what each frame may spend and reaches the
+  display's rate anyway. Zero from the device -- a mode it will not describe -- leaves the
+  request standing, and a default stands when there is no request either.
 - **Dirty-rectangle awareness is deferred.** It is a real optimization for desktop work and it
   interacts with the reference chain in ways that need measurement first.
 

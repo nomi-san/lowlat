@@ -217,7 +217,7 @@ whole:
 
 | Field | Live | Why |
 |---|---|---|
-| `fps` | yes | A **ceiling** over the display's own rate, not a target. Changes the pacing from the next frame. |
+| `fps` | yes | A **ceiling** over the display's own rate, not a target, and **clamped to it**: a rate above what the display presents is one the loop will not reach while still being the number the encoder's per-frame budget is divided by. Zero asks for the display's own rate. Changes the pacing from the next frame. |
 | `bitrate_mbps` | yes | Re-bases the rate budget and reaches the encoder through the reconfigure the rate loop already performs every pass. No keyframe, no interruption ([00 §D8](00-overview.md)). |
 | `min_bitrate_mbps` | yes | The floor congestion control may not descend below, and it **moves down with the ceiling**: a ceiling lowered under a floor that stayed leaves every controller pinned at a rate the operator just asked not to exceed. |
 | `full_fps` | yes | Emit at `fps` even when the picture has not changed. **Clearing it is a permission, not an instruction** -- there is no damage signal here, so nothing yet skips a repeated picture, and continuing to send costs bitrate rather than being wrong. |
@@ -648,4 +648,6 @@ the capture-changed event -- rather than asking for it. A host that creates its 
 chooses that display's size when it creates it, which is a different question from setting the
 mode of a display somebody else owns, and that one is nobody's here
 ([impl-plan.md](impl-plan.md), *Output selection*). A frame rate is a **cap** over whatever the
-display runs at, not a target.
+display runs at, not a target, and **zero asks for the display's own rate**: the display is
+read when the pipeline is built, so the number the application is told is one the stream can
+actually reach.

@@ -3,6 +3,37 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-09 - The frame rate comes from the display
+
+### Added
+- **`--fps` absent now means the captured output's own refresh rate.** It is the one answer this
+  program cannot give before it has looked at a display, so it is carried as zero and settled
+  where the display is opened.
+- **A rate that was asked for is clamped to the display**: `min(asked, refresh)`. Bounding it in
+  the loop was never enough on its own. The frame clock caps the rate and the display's present
+  sets the phase, so a stream asking for more than the display can present already ran at the
+  display's rate -- but the number it asked for is also what the encoder's per-frame budget is
+  divided by, so asking for twice the frames halved what each frame could spend and produced a
+  worse picture at the same rate.
+- **The refresh figure is computed where the mode does not carry one.** A mode filled in by a
+  driver states it; one built by userspace leaves it zero, and then the timings say it: the pixel
+  clock over the whole frame including the parts that are not picture.
+- **Resolved on every build rather than once**, so an output switched while a stream runs is
+  followed, and published where the loop paces from rather than only where the encoder is
+  configured.
+- **The output listing carries it too**, so a client that asks for the configuration before a
+  stream exists is told a rate rather than the zero that means "follow". Same rule as the
+  picture's size one field along: before a display has been opened, the display's own answer is
+  what the stream is about to produce.
+
+### Testing
+- The rule is pinned three ways -- a ceiling above the display is clamped, a ceiling below it is
+  honoured, and nothing asked takes the display's rate -- and **two of the three were confirmed
+  to fail**, with the clamp removed and with the follow removed.
+- Read against three real displays on three different cards, and **checked against what the
+  desktop itself reports**: 1920x1080@60, 1920x1200@60 and 2560x1440@120, matching in every case.
+  A figure that agreed with itself and with nothing else would have looked identical.
+
 ## 2026-09-09 - Copied text crosses in both directions
 
 ### Added
