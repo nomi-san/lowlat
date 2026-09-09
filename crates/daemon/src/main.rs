@@ -8,6 +8,7 @@
 //! queue maps back onto two outbound actions. Nothing else here is protocol.
 //!
 //!   KESSEL_WS_SERVER=... KESSEL_SESSION=... lowlatd [--name NAME] [--port N]
+//!   lowlatd session
 
 use std::net::SocketAddr;
 
@@ -99,6 +100,39 @@ async fn main() {
 }
 
 mod app;
+
+/// Which of the two programs an invocation is.
+///
+/// **One binary, two roles**, because the two sides speak a private protocol
+/// that changes whenever either does and one build cannot disagree with itself
+/// (docs/07-platforms.md section 5.1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Program {
+    /// The system service: the stream, the network, and the socket the session
+    /// side connects to.
+    Service,
+    /// The session agent, which connects outward and speaks for its own
+    /// session and no other.
+    Session,
+}
+
+/// The word that selects the session role, in first position and nowhere else.
+const SESSION_ROLE: &str = "session";
+
+/// The program this invocation is, from the arguments after the name it was
+/// run under.
+///
+/// **Read from the first argument alone.** The two roles run at different
+/// privilege, so a file that can be talked into the wrong one is a security
+/// defect rather than a bug: a flag is matched wherever it appears in a
+/// command line, and an argument in first position is not. Everything else on
+/// the line belongs to whichever role this answers.
+fn program_of<'a>(args: impl IntoIterator<Item = &'a str>) -> Program {
+    match args.into_iter().next() {
+        Some(SESSION_ROLE) => Program::Session,
+        _ => Program::Service,
+    }
+}
 
 fn flag(name: &str) -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
@@ -240,6 +274,16 @@ fn candex<'a>(
 }
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    // **Answered before any flag is looked at**, which is the whole of the
+    // rule: a role decided after a line has been scanned is a role a line can
+    // be written to change.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if program_of(args.iter().map(String::as_str)) == Program::Session {
+        // Phase 12 lands the session agent. The role exists ahead of it so
+        // that nothing is ever added to the wrong side of the boundary.
+        eprintln!("lowlatd: the session role is not built yet");
+        return Ok(());
+    }
     // **Off by default and worth having at all only for input.** Nothing else
     // in this program says anything at this level, so the switch is in
     // practice "log every key as it is expanded", which is the one fault that
@@ -898,5 +942,32 @@ async fn session_loop(
                 other => lowlat_common::log_info!("lowlatd: unhandled seam event {other:?}"),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod role_tests {
+    use super::{Program, program_of};
+
+    /// **The role is a privilege boundary, so the word only counts in first
+    /// position.** A flag is matched wherever it appears in a command line;
+    /// this must not be, or a service invoked with an argument somebody else
+    /// chose can be turned into a session agent, or the reverse.
+    #[test]
+    fn only_the_first_argument_selects_the_session_role() {
+        assert_eq!(program_of(["session"]), Program::Session);
+        assert_eq!(program_of(["session", "--verbose"]), Program::Session);
+
+        assert_eq!(program_of([] as [&str; 0]), Program::Service);
+        assert_eq!(program_of(["--verbose"]), Program::Service);
+        // The word, anywhere but first.
+        assert_eq!(program_of(["--name", "session"]), Program::Service);
+        assert_eq!(program_of(["--verbose", "session"]), Program::Service);
+        // The word as a flag, which is the shape the rule exists to refuse.
+        assert_eq!(program_of(["--session"]), Program::Service);
+        assert_eq!(
+            program_of(["--output", "card0:DP-1", "--session"]),
+            Program::Service
+        );
     }
 }
