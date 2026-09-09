@@ -1562,8 +1562,10 @@ and deciding its shape without one of its two customers in front of it.
 - [ ] The display layout answered by the session, in place of the backend's own reading.
 - [ ] Display mode and rotation, requested rarely and refused with a reason when nothing is
   there to ask.
-- [ ] **The clipboard, both directions, behind `guest_clipboard`** ([07 §5.1](07-platforms.md)):
-  an ownership held for as long as the selection is, not a value written once.
+- [x] **The clipboard, both directions, behind `guest_clipboard`** ([07 §5.1](07-platforms.md)):
+  an ownership held for as long as the selection is, not a value written once. **One desktop's
+  mechanism so far**, announced through the capability, so a session that has none says so and
+  the service answers the honest way rather than waiting.
 - [ ] **The peer's credentials read and recorded on every connection**, and one place where a
   criterion would go. **Which credential authorises a host action is deferred**: any local user
   may act, and [07 §5.1](07-platforms.md) names what that costs.

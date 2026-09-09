@@ -3,6 +3,45 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-09 - Copied text crosses in both directions
+
+### Added
+- **The clipboard, behind `guest_clipboard`.** `send` is a guest's text arriving on this
+  desktop, where a person still has to choose to paste it; `both` adds the direction that ships
+  whatever the person at this machine copied. An owner is `both` whatever the setting says, and
+  **anything unrecognised is off**, so a typo cannot open a clipboard. The setting is said out
+  loud at startup, because which way it is set should not have to be inferred from behaviour.
+- **The session owns the selection, because nothing else can.** Putting text on a clipboard is
+  announcing that you own it and the bytes are asked for later, when somebody pastes, so
+  whatever serves it has to still be running then. That is the desktop's own clipboard
+  component here; another desktop needs another mechanism behind the same capability, and one
+  that has none announces that it has none.
+- **A thread of its own for it**, because owning a clipboard is a wait: the desktop says when
+  its selection changed and nothing says when it will. One connection does both directions,
+  which is also what keeps the echo out -- what this host sets, it remembers, so the change it
+  causes is not read back and handed to the guest that caused it.
+
+### Fixed
+- **The log printed the body of every application message.** Having the exact bytes beside the
+  question is what makes a wrong answer findable, and that reasoning inverts for the identifiers
+  carrying what somebody typed or copied: the same line turns the log into a transcript of a
+  desktop. Length and identifier for those, exact bytes for the rest, in both directions.
+- **A stray terminator no longer reaches a desktop's clipboard.** The wire counts one and the
+  layer that reads it takes one off; a peer that sent two would otherwise leave a byte on
+  somebody's clipboard that is invisible until it is pasted into something that minds.
+
+### Testing
+- The three-valued setting: every unrecognised spelling is off, the milder direction is
+  available on its own, and an owner is not a guest.
+- A live test against a real desktop, off by default, asserting **both** halves: what this host
+  sets is not reported back as a change, and a change made on another connection is. Asserting
+  only the first would pass equally well on a connection that hears nothing at all.
+- Driven end to end against a running service: the helper announces `idle` and `clipboard`, and
+  a copy made on the desktop arrives at the service.
+- **The tests that share the helper register are serialised.** What the service pushes goes to
+  every helper, which is right for a service and wrong for tests running side by side in one
+  process, where one test's message lands in another's socket.
+
 ## 2026-09-09 - The screen stays awake while somebody is watching
 
 ### Added

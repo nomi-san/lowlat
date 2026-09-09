@@ -440,7 +440,10 @@ copy of what it saw. That is a property of somebody's configuration and not of t
 building on it means a feature that works on one desk and not the next.
 
 The mechanism differs per desktop as well -- a privileged selection protocol here, an X
-selection there -- which is the same reason the rest of this section exists.
+selection there -- which is the same reason the rest of this section exists. **It is announced
+rather than assumed**: a helper says whether its session has one, and a session that has none is
+answered honestly instead of waited on. One mechanism ships today, and a desktop with a
+different one needs its own behind the same capability rather than a change anywhere above.
 
 **The policy, though, is not the helper's and not the boundary's.** Copied text travels as an
 opaque application message ([01 §11.1](01-protocol.md)), so the library never sees it and the
