@@ -3,6 +3,38 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-09 - A helper announces what its session can do
+
+### Added
+- **The first frame carries what the sender can do**, and the service records it per connection.
+  The mechanisms behind pointer visibility, the idle inhibitor, the clipboard and the display
+  layout differ per desktop and one of them offers no protocol at all, so a helper says what it
+  found and the service answers the honest way for the rest. This is what makes "absent is not
+  degraded" a per-customer answer rather than an all-or-nothing one. **A name this build does not
+  know is passed over rather than refused**, unlike a version, which says the framing itself may
+  differ.
+- **One helper to a session, newest wins**, keyed by the user -- the nearest thing to a session
+  the credentials carry. Two sessions belonging to one person is the case that gets wrong, and
+  only one of them is in front of the screen.
+- **A session agent reconnects rather than exits.** It outlives the service by design: a system
+  service restarts and a session does not, so losing the socket is a wait rather than an ending.
+
+### Fixed
+- **A replaced helper displaced its own replacement, and the two traded the place forever.**
+  Found in a live run rather than in a test, because both halves are individually correct: newest
+  wins, and a helper that loses the socket comes back. From the session side the two closes look
+  identical, so the service now says which it is before closing a connection it ends on purpose,
+  and a helper told it was replaced stays gone.
+
+### Testing
+- Capability names round trip, an unknown one is dropped, and a second helper for one session
+  replaces the first -- takes its place, tells it why, and closes it. **Both halves of that were
+  confirmed to fail**, with the displacement removed and with the close removed. The close check
+  is on a deadline and asserts the error kind, so a replacement that closed nothing fails rather
+  than hangs.
+- The two-helper case was then driven end to end against a running service, which is where the
+  ping-pong was found.
+
 ## 2026-09-09 - The session side has a socket to connect to
 
 ### Added

@@ -1546,14 +1546,18 @@ transport ([07 §5.1](07-platforms.md)). Splitting them would mean building the 
 and deciding its shape without one of its two customers in front of it.
 
 - [ ] `lowlatd` as a system service, with the unit file and device access rules.
-- [ ] **The session channel**: length-prefixed frames on a Unix stream socket at a known path,
+- [x] **The session channel**: length-prefixed frames on a Unix stream socket at a known path,
   JSON bodies, a first frame carrying version, role and capability, peer credentials as the
-  identity, a deadline on every request, and one helper to a session with the newest winning.
+  identity, and one helper to a session with the newest winning.
+- [ ] **A deadline on every request**, which lands with the first customer that asks one. There
+  are no requests yet: what exists is the greeting, which is on a clock, and signals, which are
+  not requests and must not be put on one.
 - [x] **`lowlatd` in its session role**, selected by the first argument and never by a flag that
   may appear anywhere in a command line.
-- [ ] **The relative-pointer signal**, pushed on change. The customer the channel is built
-  around, because its shape is continuous and a request-and-reply channel bent to carry it later
-  would be the wrong shape ([07 §2.1](07-platforms.md)). The injector's hook already exists.
+- [ ] **The relative-pointer signal**, pushed on change ([07 §2.1](07-platforms.md)). The
+  injector's hook already exists. **Deferred past the helper itself** -- see the decision log --
+  and the reason it was to be built first is answered rather than ignored: nothing
+  request-and-reply shaped has been built for the channel to be bent out of.
 - [ ] The idle inhibitor, held as a lease while it is asked for.
 - [ ] The display layout answered by the session, in place of the backend's own reading.
 - [ ] Display mode and rotation, requested rarely and refused with a reason when nothing is
@@ -1677,6 +1681,18 @@ Newest first. Record approach changes and gate revisions here; per-commit detail
   and now asks that none be loaded into the process, checked against the process map after a
   stream has run. The hardware matrix this argument rests on is
   [09-compatibility.md](09-compatibility.md).
+
+- 2026-09-09: **The helper is built before its first customer, and the relative-pointer signal
+  is deferred.** The entry below reasoned that relative mode was the customer to build the
+  channel around, because its signal is continuous and a request-and-reply channel bent to carry
+  one later would be the wrong shape. **The risk it names is real and the ordering it concluded
+  is not the only answer to it**: what protects the shape is that nothing request-and-reply has
+  been built at all -- the frames run both ways, a signal is not a reply, and the one deadline
+  that exists is on the greeting rather than on a request. So the helper's own machinery lands
+  first: what it announces it can do, and one helper to a session with the newest winning. **A
+  live run then found what the tests could not**: a replaced helper reconnects like any other,
+  displaces its own replacement, and the two trade the place forever, so the service now says why
+  it is closing a connection it ends on purpose.
 
 - 2026-09-08: **`recv` is dropped and the clipboard gate has three values.** A guest that is
   shown this desktop's clipboard can already be handed text by whoever is at the machine, so a
