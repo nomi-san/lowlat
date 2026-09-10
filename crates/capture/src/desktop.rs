@@ -54,16 +54,43 @@ pub struct Placement {
     pub rotation: Rotation,
 }
 
+/// The layout a session-side program has reported, which is asked before
+/// any socket is.
+///
+/// **A service account cannot reach a session's sockets** -- the runtime
+/// directory they live in is the user's alone -- so a host running as one
+/// learns the layout only from what its session helper pushes. Kept here so
+/// that every reader of the layout, and not only the stream, answers from
+/// the same thing; a program with no helper finds nothing here and asks the
+/// sockets as before.
+static TOLD: std::sync::Mutex<Option<Vec<Output>>> = std::sync::Mutex::new(None);
+
+/// Record the layout a session reported, or forget it.
+pub fn tell(outputs: Option<Vec<Output>>) {
+    if let Ok(mut told) = TOLD.lock() {
+        *told = outputs;
+    }
+}
+
+/// Every layout worth asking: the one that was reported, then every socket.
+fn layouts() -> Vec<Vec<Output>> {
+    let mut found = Vec::new();
+    if let Ok(told) = TOLD.lock()
+        && let Some(outputs) = told.as_ref()
+    {
+        found.push(outputs.clone());
+    }
+    found.extend(sockets().iter().filter_map(|socket| query(socket)));
+    found
+}
+
 /// Where the named output sits, as the session driving it lays it out.
 ///
 /// The name is the display device's own, such as `DP-2`. **It is also what
 /// picks the session**: several may be running, and the one that answers with
 /// this output in its layout is by definition the one compositing it.
 pub fn placement_of(connector: &str) -> Option<Placement> {
-    for socket in sockets() {
-        let Some(outputs) = query(&socket) else {
-            continue;
-        };
+    for outputs in layouts() {
         if let Some(found) = place(&outputs, connector) {
             lowlat_common::log_info!(
                 "desktop: {connector} is {}x{} at {},{} of {}x{}",
@@ -94,10 +121,7 @@ pub fn placement_of(connector: &str) -> Option<Placement> {
 /// Nothing when no session answers, which is the honest answer: without a
 /// layout there is no origin to be at.
 pub fn at_origin() -> Option<String> {
-    for socket in sockets() {
-        let Some(outputs) = query(&socket) else {
-            continue;
-        };
+    for outputs in layouts() {
         let found = outputs.iter().find_map(|output| {
             let name = output.name.as_deref()?;
             let placed = place(&outputs, name)?;

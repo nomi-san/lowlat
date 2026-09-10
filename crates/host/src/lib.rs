@@ -32,7 +32,7 @@ pub mod capture {
     pub use lowlat_capture::Backend;
     /// The session's own account of where its displays are, re-exported so a
     /// program passing one along does not have to name the capture crate.
-    pub use lowlat_capture::desktop::{Output, Placement, Watch, place};
+    pub use lowlat_capture::desktop::{Output, Placement, Watch, place, tell};
     /// Asking the session to change a display, which only a program inside
     /// the session can do; the stream itself only ever follows the display.
     pub use lowlat_capture::mode;

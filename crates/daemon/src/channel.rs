@@ -727,8 +727,13 @@ pub(crate) fn hello(role: Role, can: Can) -> Vec<u8> {
         .into_bytes()
 }
 
-/// Who opened this connection.
-fn peer_of(stream: &UnixStream) -> Option<Peer> {
+/// Who is on the other end of this connection.
+///
+/// **Read by both ends.** The service records who connected; the session
+/// side reads which account the service runs as, because that account has to
+/// be let into the session's own runtime directory before it can reach the
+/// sound server there.
+pub(crate) fn peer_of(stream: &UnixStream) -> Option<Peer> {
     let mut cred = libc::ucred {
         pid: 0,
         uid: 0,

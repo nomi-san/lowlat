@@ -103,6 +103,7 @@ async fn main() {
     }
 }
 
+mod acl;
 mod app;
 mod channel;
 mod dbus;
@@ -335,11 +336,13 @@ fn session() -> ! {
     // service's socket.
     let (copied, to_copy) = std::sync::mpsc::channel::<String>();
     let writer: Writer = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let latest: Latest = std::sync::Arc::new(std::sync::Mutex::new(None));
     if let Some((watch, first)) = watching {
         let writer = std::sync::Arc::clone(&writer);
+        let latest = std::sync::Arc::clone(&latest);
         if std::thread::Builder::new()
             .name("lowlat-layout".to_string())
-            .spawn(move || watch_layout(watch, first, &writer))
+            .spawn(move || watch_layout(watch, first, &writer, &latest))
             .is_err()
         {
             lowlat_common::log_warn!("session: no thread for the layout");
@@ -365,10 +368,25 @@ fn session() -> ! {
             Ok(mut stream) => {
                 lowlat_common::log_info!("session: connected");
                 wait = FIRST_RETRY_MS;
+                if let Some(service) = channel::peer_of(&stream) {
+                    let_in(service.uid);
+                }
                 if let Ok(sending) = stream.try_clone()
                     && let Ok(mut writer) = writer.lock()
                 {
                     *writer = Some(sending);
+                }
+                // **The layout is said again on every connection.** The service
+                // on the other end may have just started and read nothing, and
+                // the layout thread speaks only on change.
+                if let Ok(kept) = latest.lock()
+                    && let Some(outputs) = kept.as_ref()
+                    && let Err(error) =
+                        channel::write_frame(&mut stream, channel::layout(outputs).as_bytes())
+                {
+                    lowlat_common::log_warn!(
+                        "session: the service did not take the layout, {error}"
+                    );
                 }
                 let mut body = Vec::new();
                 while channel::read_frame(&mut stream, &mut body).is_ok() {
@@ -457,9 +475,16 @@ fn watch_layout(
     mut watch: lowlat::capture::Watch,
     first: Vec<lowlat::capture::Output>,
     writer: &Writer,
+    latest: &Latest,
 ) {
     let say = |outputs: &[lowlat::capture::Output]| {
         lowlat_common::log_info!("session: the desktop has {} output(s)", outputs.len());
+        // **Kept, for the next connection.** A service that restarts has
+        // read nothing, and the layout is only ever sent on change; the
+        // connect loop sends what is kept here the moment it connects.
+        if let Ok(mut kept) = latest.lock() {
+            *kept = Some(outputs.to_vec());
+        }
         let body = channel::layout(outputs);
         if let Ok(mut writer) = writer.lock()
             && let Some(stream) = writer.as_mut()
@@ -482,6 +507,36 @@ fn watch_layout(
                 lowlat_common::log_warn!("session: the layout can no longer be watched");
                 return;
             }
+        }
+    }
+}
+
+/// Let the account the service runs as into this session's runtime directory.
+///
+/// **The sound server's socket is in there, and the directory is the user's
+/// alone.** Root traverses it regardless and needs nothing; a dedicated
+/// service account is refused at the directory and never reaches the socket,
+/// which reads as "the sound server refused the connection". What is granted
+/// is traverse on the directory and on the sound server's own, and to one
+/// account, for as long as the directory lasts -- which is the session.
+fn let_in(uid: u32) {
+    if uid == 0 || uid == unsafe { libc::getuid() } {
+        return;
+    }
+    let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") else {
+        return;
+    };
+    let runtime = std::path::PathBuf::from(runtime);
+    for dir in [runtime.clone(), runtime.join("pulse")] {
+        if !dir.is_dir() {
+            continue;
+        }
+        match acl::grant_traverse(&dir, uid) {
+            Ok(()) => lowlat_common::log_info!("session: let uid={uid} into {}", dir.display()),
+            Err(error) => lowlat_common::log_warn!(
+                "session: could not let uid={uid} into {}, error={error}",
+                dir.display()
+            ),
         }
     }
 }
@@ -523,6 +578,9 @@ const LAYOUT_TICK_MS: u64 = 1_000;
 
 /// Where the clipboard thread writes, when there is a service to write to.
 type Writer = std::sync::Arc<std::sync::Mutex<Option<std::os::unix::net::UnixStream>>>;
+
+/// The layout last reported, for a service that connects after it was.
+type Latest = std::sync::Arc<std::sync::Mutex<Option<Vec<lowlat::capture::Output>>>>;
 
 /// Own the desktop's clipboard: report what it becomes, and set what a guest
 /// sent.
@@ -1218,6 +1276,11 @@ async fn session_loop(
                 app::clipboard_to_guests(seam, settings, text.as_bytes());
             }
             if let Some(outputs) = channel::is_layout(&said) {
+                // **Told to every reader, not only the stream.** The output
+                // listing, the corner preference and what a guest is told all
+                // read the layout for themselves, and a service account cannot
+                // reach the session's sockets to do it.
+                lowlat::capture::tell(Some(outputs.clone()));
                 layout = Some(outputs);
                 placed = situate(seam, layout.as_deref());
             }

@@ -40,11 +40,16 @@ RuntimeDirectoryMode=0755
 # The signaling server and session are configuration rather than arguments.
 EnvironmentFile=/etc/lowlat/lowlatd.env
 
-# **Denied by default, then the two classes it needs.** char-drm covers both
-# the display device and the render node; the input node is named because it
-# is the only one of its class this opens.
+# **Denied by default, then the classes it needs.** char-drm covers both the
+# display device and the render node; the input node is named because it is
+# the only one of its class this opens. The vendor driver's own nodes are not
+# display devices: its encoder is reached through them, and without them a
+# display on that card is captured and then refused an encoder (measured:
+# "compute runtime unavailable", and the stream stays on the other card).
 DevicePolicy=closed
 DeviceAllow=char-drm rw
+DeviceAllow=char-nvidia rw
+DeviceAllow=char-nvidia-uvm rw
 DeviceAllow=/dev/uinput rw
 
 # **Not `strict`, deliberately.** The session's own sockets live under /run,
