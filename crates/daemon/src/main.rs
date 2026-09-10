@@ -1306,6 +1306,10 @@ async fn session_loop(
         // desktop, which is right for a greeter on one screen.
         if lowlat_common::clock::elapsed_ms(seated) >= SEAT_MS {
             seated = lowlat_common::clock::Time::now();
+            // **No answer is no change.** Between one session and the next
+            // the seat has no active session for a moment, and a layout
+            // adopted then would be somebody's stale one over a desktop that
+            // is about to be described properly.
             let active = seat::active_uid();
             let chosen = match active {
                 Some(active) => match helper_layout.as_ref() {
@@ -1314,7 +1318,7 @@ async fn session_loop(
                     }
                     _ => lowlat::capture::layout_of(active),
                 },
-                None => helper_layout.as_ref().map(|(_, outputs)| outputs.clone()),
+                None => layout.clone(),
             };
             if chosen != layout {
                 lowlat_common::log_info!(
@@ -1323,6 +1327,12 @@ async fn session_loop(
                     chosen.as_ref().map_or(0, Vec::len)
                 );
                 placed = adopt_layout(seam, &mut layout, chosen);
+            } else if placed.is_none() && layout.is_some() {
+                // **A layout adopted while the display was dark placed
+                // nothing**, because nothing was lit to place; the display
+                // coming back changes no name the pass below can see, so
+                // this asks again until it is placed.
+                placed = situate(seam, layout.as_deref());
             }
         }
 

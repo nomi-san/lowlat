@@ -4,6 +4,14 @@ Description=lowlat remote desktop host
 # rather than failing, so this orders the start and does not gate it.
 After=network-online.target
 Wants=network-online.target
+# **The vendor encoder's kernel half is loaded on first use, and the device
+# list below is resolved once, when this starts.** Without this a service that
+# started before anything had used the encoder had that device denied for its
+# whole life, and every guest after the first login was ended with the encoder
+# unavailable (measured across a reboot). Wanted rather than required, so a
+# machine without the vendor's driver starts as before.
+Wants=modprobe@nvidia_uvm.service
+After=modprobe@nvidia_uvm.service
 
 [Service]
 # **The flags are configuration, so they come from the file below** rather
@@ -11,6 +19,11 @@ Wants=network-online.target
 # have to edit. Unquoted on purpose: systemd splits it on whitespace, which is
 # what makes it a list of arguments rather than one long one.
 ExecStart=/usr/bin/lowlatd $LOWLATD_ARGS
+# The vendor's own tool makes the encoder's device node, which nothing else
+# does until a program in the session uses the encoder first. With full
+# privilege, because the node is made outside the sandbox below; ignored where
+# the tool is absent.
+ExecStartPre=-+/usr/bin/nvidia-modprobe -u -c=0
 Restart=on-failure
 RestartSec=2
 
