@@ -1,6 +1,7 @@
 //! The stream loop against the real display, with a local seat.
 //!
 //!   sudo timed-stream [seconds]
+//!   LOWLAT_SYNTH=1 timed-stream [seconds]     the generator, no display needed
 //!
 //! Starts the same encode loop the daemon runs, capturing the display named
 //! in `LOWLAT_OUTPUT` (default `card0:HDMI-A-1`) and encoding on the backend
@@ -49,7 +50,9 @@ fn main() {
         audio_kbps: 128,
         allow_raw_audio: false,
         output: output.clone(),
-        display: true,
+        // `LOWLAT_SYNTH=1` runs the generator instead, which needs no display
+        // and no privilege, and is how the generator itself is checked.
+        display: std::env::var("LOWLAT_SYNTH").is_err(),
         width: 1920,
         height: 1080,
         fps: 60,

@@ -630,6 +630,29 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
+    // **Whether this process can reach the display, answered before anything
+    // is advertised.** A display that is lit but out of reach is the
+    // privilege, and a host that finds that out from its first guest has
+    // advertised a stream it could never produce. Nothing lit is not refused:
+    // the session may not have started yet, and the stream waits for one.
+    if !flag_set("--synth") {
+        match lowlat::display::Display::capturable() {
+            lowlat::display::Capturable::Yes => {}
+            lowlat::display::Capturable::NothingLit => {
+                lowlat_common::log_warn!(
+                    "lowlatd: nothing is scanning out yet, waiting for a display"
+                );
+            }
+            lowlat::display::Capturable::NotReachable => {
+                return Err(
+                    "a display is lit and its framebuffer cannot be reached; this needs the \
+                            capture privilege, or --synth to generate pictures instead"
+                        .into(),
+                );
+            }
+        }
+    }
+
     let configured =
         std::env::var("KESSEL_WS_SERVER").map_err(|_| "KESSEL_WS_SERVER is not set")?;
     let configured = configured.trim();
@@ -694,10 +717,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let bitrate_mbps: f64 = flag("--bitrate")
         .and_then(|v| v.parse().ok())
         .unwrap_or(DEFAULT_BITRATE_MBPS);
-    // The size the stream runs at. A larger one is how a frame is made big
-    // enough to need more than one fragment, which is the whole of the
-    // reassembly path a peer runs and the part a small synthetic picture never
-    // reaches.
+    // The size the generated picture runs at, under --synth; a display
+    // decides its own. A larger one is how a frame is made big enough to
+    // need more than one fragment, which is the whole of the reassembly path
+    // a peer runs and the part a small synthetic picture never reaches.
     let width: u32 = flag("--width")
         .and_then(|v| v.parse().ok())
         .unwrap_or(WIDTH);
@@ -858,10 +881,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             // enumerated in and moves when a cable does; the name is the
             // system's own and is what a session knows the output by too.
             output: flag("--output"),
-            // Off unless asked for. Capture needs the elevated capability and
-            // a display, and a run that has neither should generate pictures
-            // rather than refuse to start.
-            display: flag_set("--capture"),
+            // **The display, unless asked otherwise.** A host streams a
+            // desktop; the generator exists so the layers above capture can
+            // be run and measured without a screen, and a run that wants it
+            // says so. A host that cannot open the display refuses rather
+            // than generating pictures in its place, because a stream of the
+            // wrong thing is worse than none.
+            display: !flag_set("--synth"),
         }),
     });
 
