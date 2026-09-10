@@ -175,6 +175,7 @@ fn describe(
     listed: &[Selectable],
     preferred: Option<&str>,
     captured: u32,
+    rotation: lowlat::video::Rotation,
     settings: &Settings,
     live: Option<lowlat::stream::LiveVideo>,
 ) -> Video {
@@ -183,14 +184,11 @@ fn describe(
     // told the request rather than the result marks the wrong screen -- then
     // picking the right one changes nothing, because the host already believes
     // it is there.
-    let capturing = lowlat::display::captured(listed, captured);
-    // **The turn is the display's, read from the session that turned it.**
-    // Reported as the one flag a reader has for it, which is whether the
-    // picture is on its side at all.
-    let rotated = capturing
-        .and_then(|output| output.place)
-        .is_some_and(|place| place.rotation != lowlat::video::Rotation::None);
-    let running = capturing.map(|output| output.id.clone());
+    // **The turn is the display's, as the session told the stream.** Reported
+    // as the one flag a reader has for it, which is whether the picture is on
+    // its side at all.
+    let rotated = rotation != lowlat::video::Rotation::None;
+    let running = lowlat::display::captured(listed, captured).map(|output| output.id.clone());
     let output = if let Some(running) = running {
         running
     } else if settings.output.is_empty() {
@@ -281,6 +279,7 @@ pub(crate) fn on_message(
                 &Display::outputs(),
                 Display::preferred().as_deref(),
                 seam.captured(),
+                seam.rotation(),
                 settings,
                 seam.video(),
             );
@@ -304,6 +303,7 @@ pub(crate) fn on_message(
                 &listed,
                 Display::preferred().as_deref(),
                 seam.captured(),
+                seam.rotation(),
                 settings,
                 seam.video(),
             );
@@ -411,6 +411,7 @@ pub(crate) fn announce_capture(seam: &mut Admission, settings: &Settings, last: 
         &listed,
         Display::preferred().as_deref(),
         captured,
+        seam.rotation(),
         settings,
         seam.video(),
     );
@@ -753,9 +754,7 @@ fn apply(seam: &mut Admission, body: &[u8], video: &Video, listed: &[Selectable]
     // **A turn is one flag, and it means a quarter.** The established host
     // turns an upright display a quarter and turns any turned one back, and
     // leaves a display already turned some other way alone; the same here.
-    let turned = lowlat::display::captured(listed, seam.captured())
-        .and_then(|output| output.place)
-        .map_or(lowlat::video::Rotation::None, |place| place.rotation);
+    let turned = seam.rotation();
     let asked_rotation = match (
         first.get("rotated").and_then(serde_json::Value::as_bool),
         turned,
@@ -1040,6 +1039,7 @@ mod tests {
             &listed(),
             Some("card0:DP-2"),
             0,
+            lowlat::video::Rotation::None,
             &started,
             Some(running),
         );
@@ -1049,7 +1049,15 @@ mod tests {
 
         // With nothing streaming there is nothing to read, and the settings
         // are the only answer there is.
-        let early = describe(None, &listed(), Some("card0:DP-2"), 0, &started, None);
+        let early = describe(
+            None,
+            &listed(),
+            Some("card0:DP-2"),
+            0,
+            lowlat::video::Rotation::None,
+            &started,
+            None,
+        );
         assert_eq!(early.fps, started.fps);
         assert_eq!(early.bitrate_mbps, started.bitrate_mbps);
     }
@@ -1069,6 +1077,7 @@ mod tests {
             &listed(),
             Some("card0:DP-2"),
             0,
+            lowlat::video::Rotation::None,
             &settings(),
             None,
         );
@@ -1077,7 +1086,15 @@ mod tests {
         // And before a display has been opened, the output's own size is what
         // the stream is about to produce. What is never consulted is the
         // configuration, which carries no size at all.
-        let early = describe(None, &listed(), Some("card0:DP-2"), 0, &settings(), None);
+        let early = describe(
+            None,
+            &listed(),
+            Some("card0:DP-2"),
+            0,
+            lowlat::video::Rotation::None,
+            &settings(),
+            None,
+        );
         assert_eq!((early.width, early.height), (2560, 1440));
     }
 
@@ -1113,7 +1130,15 @@ mod tests {
             },
         ];
         // The host would take the second; the first is merely first.
-        let described = describe(None, &listed, Some("card1:DP-4"), 0, &asked, None);
+        let described = describe(
+            None,
+            &listed,
+            Some("card1:DP-4"),
+            0,
+            lowlat::video::Rotation::None,
+            &asked,
+            None,
+        );
         assert_eq!(
             described.output, "card1:DP-4",
             "the enumeration order was reported instead of the choice"
@@ -1127,7 +1152,16 @@ mod tests {
             ..settings()
         };
         assert_eq!(
-            describe(None, &listed, Some("card1:DP-4"), 0, &told, None).output,
+            describe(
+                None,
+                &listed,
+                Some("card1:DP-4"),
+                0,
+                lowlat::video::Rotation::None,
+                &told,
+                None
+            )
+            .output,
             "card0:HDMI-A-1"
         );
     }
@@ -1145,16 +1179,46 @@ mod tests {
             ..settings()
         };
         assert_eq!(
-            describe(None, &listed(), Some("card0:DP-2"), 0, &asked, None).output,
+            describe(
+                None,
+                &listed(),
+                Some("card0:DP-2"),
+                0,
+                lowlat::video::Rotation::None,
+                &asked,
+                None
+            )
+            .output,
             "card0:DP-2"
         );
         assert_eq!(
-            describe(None, &listed(), Some("card0:DP-2"), 0, &settings(), None).output,
+            describe(
+                None,
+                &listed(),
+                Some("card0:DP-2"),
+                0,
+                lowlat::video::Rotation::None,
+                &settings(),
+                None
+            )
+            .output,
             "card0:DP-2"
         );
 
         // Nothing lit is the one case where there is honestly nothing to name.
-        assert_eq!(describe(None, &[], None, 0, &asked, None).output, "");
+        assert_eq!(
+            describe(
+                None,
+                &[],
+                None,
+                0,
+                lowlat::video::Rotation::None,
+                &asked,
+                None
+            )
+            .output,
+            ""
+        );
     }
 
     /// **The shape is the client's, not ours.** It reads named fields and

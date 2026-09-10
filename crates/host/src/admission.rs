@@ -1338,6 +1338,17 @@ impl Admission {
         }
     }
 
+    /// Which way the session has turned the captured output, as last told.
+    ///
+    /// **The stream's answer, which is the session's.** A caller that read the
+    /// layout for itself would be asking the session over a socket a service
+    /// account cannot reach, and would answer flat for a display that is not.
+    pub fn rotation(&self) -> lowlat_core::video::Rotation {
+        self.stream
+            .as_ref()
+            .map_or(lowlat_core::video::Rotation::None, Stream::rotation)
+    }
+
     /// Send every guest the same application message.
     ///
     /// Answers how many it reached, which is not the guest count: one whose

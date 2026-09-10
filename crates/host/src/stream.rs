@@ -1437,6 +1437,11 @@ impl Stream {
             .map_or_else(|held| *held.into_inner(), |held| *held)
     }
 
+    /// Which way the session has turned the captured output, as last told.
+    pub fn rotation(&self) -> lowlat_core::video::Rotation {
+        self.shared.rotation()
+    }
+
     /// What size the stream is really producing, once it is known.
     ///
     /// **The picture, never the configuration.** A display decides its own
