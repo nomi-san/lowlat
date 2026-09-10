@@ -416,14 +416,15 @@ fn situate(
     let place = lowlat::capture::place(outputs, &capturing.connector);
     match place {
         Some(place) => lowlat_common::log_info!(
-            "lowlatd: {} is {}x{} at {},{} of a {}x{} desktop",
+            "lowlatd: {} is {}x{} at {},{} of a {}x{} desktop, rotation={}",
             capturing.connector,
             place.width,
             place.height,
             place.x,
             place.y,
             place.desktop_width,
-            place.desktop_height
+            place.desktop_height,
+            place.rotation as u8
         ),
         None => lowlat_common::log_info!(
             "lowlatd: the session describes no {}, absolute input spans the picture alone",
@@ -715,13 +716,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 parsed
             });
-    let rotation = match flag("--rotate").as_deref() {
-        Some("90") => lowlat::video::Rotation::Deg90,
-        Some("180") => lowlat::video::Rotation::Deg180,
-        Some("270") => lowlat::video::Rotation::Deg270,
-        _ => lowlat::video::Rotation::None,
-    };
-
     // **Off unless asked for.** One guest driving at a time is a room's
     // decision, not a host's, and imposing it breaks two people sharing a
     // desktop.
@@ -818,7 +812,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             fps,
             configured_mbps: bitrate_mbps,
             min_mbps: MIN_BITRATE_MBPS,
-            rotation,
             detail_rows,
             // **Named, not indexed.** An index is whichever order the kernel
             // enumerated in and moves when a cable does; the name is the
@@ -864,7 +857,6 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         )]
         bitrate_mbps: bitrate_mbps.round().max(0.0) as u32,
         fps,
-        rotated: !matches!(rotation, lowlat::video::Rotation::None),
         host_os: flag("--host-os").and_then(|v| v.parse().ok()).unwrap_or(0),
         fake_output: flag_set("--fake-output"),
         // **Off unless asked for.** Nothing here skips a repeated picture, so

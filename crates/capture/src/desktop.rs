@@ -28,6 +28,8 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use lowlat_core::video::Rotation;
+
 /// Where one output sits, in the desktop's own units.
 ///
 /// The origin is measured from the desktop's own corner rather than from
@@ -42,6 +44,12 @@ pub struct Placement {
     /// The whole desktop the input layer spreads an absolute device over.
     pub desktop_width: u32,
     pub desktop_height: u32,
+    /// Which way the session has turned this output.
+    ///
+    /// **Followed, never set here.** A turned output is drawn turned into a
+    /// framebuffer that keeps its landscape shape, so the picture captured
+    /// from it is on its side and only the session can say by how much.
+    pub rotation: Rotation,
 }
 
 /// Where the named output sits, as the session driving it lays it out.
@@ -112,6 +120,25 @@ pub struct Output {
     pub y: Option<i32>,
     pub width: Option<u32>,
     pub height: Option<u32>,
+    /// The session's transform, in its own numbering: a quarter turn per
+    /// step, with the mirrored ones from four.
+    pub transform: Option<u32>,
+}
+
+/// The session's transform as the wire says it.
+///
+/// **A quarter turn per step, and the turn is the same one.** The session
+/// draws a turned desktop into the framebuffer a quarter counter-clockwise
+/// per step; the code the peer receives makes it turn the picture the same
+/// quarter clockwise, so the two are the same digit apart. The mirrored
+/// transforms carry a flip the picture cannot express and the turn they can.
+fn rotation_of(transform: Option<u32>) -> Rotation {
+    match transform.map(|transform| transform & 3) {
+        Some(1) => Rotation::Deg90,
+        Some(2) => Rotation::Deg180,
+        Some(3) => Rotation::Deg270,
+        _ => Rotation::None,
+    }
 }
 
 /// Reduce a layout to one output's placement within it.
@@ -135,6 +162,10 @@ pub fn place(outputs: &[Output], connector: &str) -> Option<Placement> {
         })
         .collect();
     let (_, ours_x, ours_y, width, height) = *rects.iter().find(|(name, ..)| *name == connector)?;
+    let rotation = outputs
+        .iter()
+        .find(|output| output.name.as_deref() == Some(connector))
+        .map_or(Rotation::None, |output| rotation_of(output.transform));
 
     let mut left = i64::MAX;
     let mut top = i64::MAX;
@@ -154,6 +185,7 @@ pub fn place(outputs: &[Output], connector: &str) -> Option<Placement> {
         height,
         desktop_width: u32::try_from(right - left).ok()?,
         desktop_height: u32::try_from(bottom - top).ok()?,
+        rotation,
     })
 }
 
@@ -464,13 +496,21 @@ impl Session {
             return Some(());
         }
         // An output names itself, which is the same name the display device
-        // knows it by and the only thing tying the two together.
+        // knows it by and the only thing tying the two together; and its
+        // geometry ends with the transform, which nothing below the session
+        // reports.
         if let Some(output) = self.outputs.get_mut(&object) {
-            if opcode == 4
-                && let Some(name) = read_str(body, 0)
-            {
-                output.name = Some(name);
+            let before = output.clone();
+            match opcode {
+                0 => output.transform = trailing_u32(body),
+                4 => {
+                    if let Some(name) = read_str(body, 0) {
+                        output.name = Some(name);
+                    }
+                }
+                _ => {}
             }
+            self.moved |= *output != before;
             return Some(());
         }
         let Some(&output) = self.described.get(&object) else {
@@ -611,6 +651,55 @@ mod tests {
             y: Some(y),
             width: Some(width),
             height: Some(height),
+            transform: None,
+        }
+    }
+
+    /// **A turned output is a change**, and the transform is the last of
+    /// the geometry's arguments, after two strings of no fixed length.
+    #[test]
+    fn a_turn_arrives_at_the_end_of_the_geometry_and_is_a_change() {
+        let mut session = session();
+        session.outputs.insert(9, Output::default());
+
+        let mut body = Vec::new();
+        for value in [0u32, 0, 600, 340, 0] {
+            put_u32(&mut body, value);
+        }
+        put_str(&mut body, "AOC");
+        put_str(&mut body, "Q27B30S3");
+        put_u32(&mut body, 1);
+        session.event(9, 0, &body).expect("a geometry");
+        assert!(session.moved, "a turn was not noticed");
+        assert_eq!(session.outputs[&9].transform, Some(1));
+
+        session.moved = false;
+        session.event(9, 0, &body).expect("the same geometry");
+        assert!(!session.moved, "the same geometry read as a change");
+    }
+
+    /// **The session's transform and the wire's code are one digit apart**,
+    /// and the mirrored transforms keep their turn.
+    #[test]
+    fn the_placement_carries_the_turn_the_session_reports() {
+        for (transform, expected) in [
+            (None, Rotation::None),
+            (Some(0), Rotation::None),
+            (Some(1), Rotation::Deg90),
+            (Some(2), Rotation::Deg180),
+            (Some(3), Rotation::Deg270),
+            (Some(4), Rotation::None),
+            (Some(5), Rotation::Deg90),
+            (Some(7), Rotation::Deg270),
+        ] {
+            let mut turned = output("DP-1", 2560, 0, 1440, 2560);
+            turned.transform = transform;
+            let layout = [output("DP-4", 0, 0, 2560, 1440), turned];
+            let ours = place(&layout, "DP-1").expect("the turned output is placeable");
+            assert_eq!(ours.rotation, expected, "transform {transform:?}");
+            // **The rectangle is the desktop's, already turned.** Nothing
+            // here swaps it: the session laid the output out portrait.
+            assert_eq!((ours.width, ours.height), (1440, 2560));
         }
     }
 

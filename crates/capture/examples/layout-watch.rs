@@ -18,12 +18,13 @@ fn say(what: &str, outputs: &[lowlat_capture::desktop::Output]) {
     let mut line = String::new();
     for output in outputs {
         line.push_str(&format!(
-            " {}={:?}x{:?}@{:?},{:?}",
+            " {}={:?}x{:?}@{:?},{:?} transform={:?}",
             output.name.as_deref().unwrap_or("?"),
             output.width,
             output.height,
             output.x,
-            output.y
+            output.y,
+            output.transform
         ));
     }
     println!("{what}:{line}");

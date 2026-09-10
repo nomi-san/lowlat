@@ -66,7 +66,6 @@ fn main() {
         backend,
         configured_mbps: 10.0,
         min_mbps: 1.0,
-        rotation: lowlat_core::video::Rotation::None,
         detail_rows: 0,
     });
 

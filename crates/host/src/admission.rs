@@ -1010,11 +1010,7 @@ impl Admission {
         let emit = self.emit.clone();
         let servers = self.config.servers.clone();
         let seats = self.stream.as_ref().map(Stream::seats);
-        let video = self
-            .config
-            .stream
-            .as_ref()
-            .map(|s| (s.width, s.height, s.rotation));
+        let video = self.config.stream.as_ref().map(|s| (s.width, s.height));
         let ours = (local.ufrag.clone(), local.pwd.clone());
         let theirs = (attempt.peer.ufrag.clone(), attempt.peer.pwd.clone());
         let permissions = attempt.peer.permissions;
@@ -1433,9 +1429,9 @@ struct Attached {
     seed: [u8; 16],
     /// A way onto the stream, taken once this guest is streamable.
     seats: Option<Seats>,
-    /// The stream's dimensions and orientation, which the video header
-    /// carries.
-    video: Option<(u32, u32, lowlat_core::video::Rotation)>,
+    /// The stream's configured dimensions, which the video header carries
+    /// until the picture's own are known.
+    video: Option<(u32, u32)>,
     /// This guest's small number, used where a name has to be short.
     guest: u32,
     /// Who has the pointer.
@@ -1940,12 +1936,12 @@ impl Input<Devices> {
     /// this fails is a deployment problem on the host rather than anything the
     /// peer did, and refusing the guest would report it as a connection
     /// failure to the one party who cannot fix it.
-    fn open(label: &str, video: Option<(u32, u32, Rotation)>) -> Option<Self> {
-        let (width, height, rotation) = video?;
+    fn open(label: &str, video: Option<(u32, u32)>) -> Option<Self> {
+        let (width, height) = video?;
         // **Not placed yet, and it does not have to be.** A guest is seated
         // before the loop has opened a display, so the layout is not known
         // here; the loop below picks it up on the pass after it is.
-        let extents = desktop_extents(width, height, rotation, None);
+        let extents = desktop_extents(width, height, Rotation::None, None);
         match Devices::create(label) {
             Ok(devices) => Some(Self {
                 injector: Injector::new(extents),
@@ -2058,11 +2054,13 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     // A place on the stream, taken once this guest has declared itself. Held
     // for the rest of the session and given back by dropping it.
     let mut seat: Option<SeatHold> = None;
-    let mut packetiser = args.video.map(|(width, height, rotation)| {
+    let mut packetiser = args.video.map(|(width, height)| {
         Packetiser::new(
             u16::try_from(width).unwrap_or(u16::MAX),
             u16::try_from(height).unwrap_or(u16::MAX),
-            rotation,
+            // Flat until the session says which way the display is turned,
+            // which arrives with the placement below.
+            Rotation::None,
             // Eight bits until a seated guest asks otherwise and an encoder
             // is rebuilt for it; the consensus is what will supply this.
             false,
@@ -2112,6 +2110,8 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
     let mut followed: Option<(u16, u16)> = None;
     // Where that picture sits in the desktop, once a session has said.
     let mut placed: Option<Place> = None;
+    // Which way the session has turned it, from the same source.
+    let mut oriented = Rotation::None;
     // The last position published as commanded, so one that has not moved is
     // not republished on every pass.
     let mut commanded: Option<(i32, i32)> = None;
@@ -2168,20 +2168,28 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
         // **Where the picture sits in the desktop arrives separately and
         // later**, because it is read from the session once the display is
         // open, so the two are followed together rather than one gating the
-        // other. Only the size rebuilds the framing; the placement changes
-        // nothing a peer can see.
+        // other. The size and the turn rebuild the framing, because the
+        // header carries both; the placement changes nothing a peer can see.
+        //
+        // **The turn is the session's, read beside the placement.** A turned
+        // display is drawn turned into a framebuffer that keeps its shape, so
+        // the picture is on its side and the peer is told by how much; it
+        // turns the picture back and maps its pointer in the desktop's
+        // orientation, which is why the extents swap below.
         let settled = seat.as_ref().and_then(SeatHold::picture);
         let situated = seat.as_ref().and_then(SeatHold::place);
-        if (settled, situated) != (followed, placed)
+        let turned = seat.as_ref().map_or(Rotation::None, SeatHold::rotation);
+        if (settled, situated, turned) != (followed, placed, oriented)
             && let Some((width, height)) = settled
-            && let Some((_, _, rotation)) = args.video
+            && args.video.is_some()
         {
-            if followed != settled {
+            if followed != settled || oriented != turned {
                 lowlat_common::log_info!(
-                    "guest: the stream is {width}x{height}, following it for the picture and for \
-                     absolute input"
+                    "guest: the stream is {width}x{height} rotation={}, following it for the \
+                     picture and for absolute input",
+                    turned as u8
                 );
-                let mut framing = Packetiser::new(width, height, rotation, false);
+                let mut framing = Packetiser::new(width, height, turned, false);
                 framing.reconfigured();
                 if let Some(negotiation) = negotiation.as_mut() {
                     negotiation.encoder_initialised(framing.generation());
@@ -2201,11 +2209,12 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             }
             followed = settled;
             placed = situated;
+            oriented = turned;
             if let Some(input) = input.as_mut() {
                 input.injector.set_extents(desktop_extents(
                     u32::from(width),
                     u32::from(height),
-                    rotation,
+                    turned,
                     situated,
                 ));
             }

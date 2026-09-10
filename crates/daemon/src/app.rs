@@ -115,7 +115,6 @@ pub(crate) struct Settings {
     pub(crate) output: String,
     pub(crate) bitrate_mbps: u32,
     pub(crate) fps: u32,
-    pub(crate) rotated: bool,
     pub(crate) full_fps: bool,
     /// What to stamp into the platform field a host declares itself with.
     ///
@@ -184,7 +183,14 @@ fn describe(
     // told the request rather than the result marks the wrong screen -- then
     // picking the right one changes nothing, because the host already believes
     // it is there.
-    let running = lowlat::display::captured(listed, captured).map(|output| output.id.clone());
+    let capturing = lowlat::display::captured(listed, captured);
+    // **The turn is the display's, read from the session that turned it.**
+    // Reported as the one flag a reader has for it, which is whether the
+    // picture is on its side at all.
+    let rotated = capturing
+        .and_then(|output| output.place)
+        .is_some_and(|place| place.rotation != lowlat::video::Rotation::None);
+    let running = capturing.map(|output| output.id.clone());
     let output = if let Some(running) = running {
         running
     } else if settings.output.is_empty() {
@@ -251,7 +257,7 @@ fn describe(
         fps,
         width,
         height,
-        rotated: settings.rotated,
+        rotated,
         full_fps,
         host_os: settings.host_os,
     }
@@ -967,7 +973,6 @@ mod tests {
             output: "card0:DP-2".to_string(),
             bitrate_mbps: 10,
             fps: 60,
-            rotated: false,
             full_fps: true,
             host_os: 0,
             fake_output: false,

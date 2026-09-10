@@ -1242,10 +1242,6 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
             height: 0,
             detail_rows: 0,
             display: true,
-            // **Followed rather than configured.** The display decides its own
-            // orientation and this reports what it found; there is nothing to
-            // read it from yet, so it is declared flat until there is.
-            rotation: lowlat_core::video::Rotation::None,
             fps: video.fps,
             configured_mbps: video.bitrate_mbps,
             min_mbps: video.min_mbps,

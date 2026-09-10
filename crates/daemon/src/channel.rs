@@ -477,6 +477,9 @@ pub(crate) fn is_layout(body: &[u8]) -> Option<Vec<lowlat::capture::Output>> {
                 height: read(output, "height")
                     .and_then(|value| value.as_u64())
                     .and_then(|value| u32::try_from(value).ok()),
+                transform: read(output, "transform")
+                    .and_then(|value| value.as_u64())
+                    .and_then(|value| u32::try_from(value).ok()),
             })
             .collect(),
     )
@@ -493,6 +496,7 @@ pub(crate) fn layout(outputs: &[lowlat::capture::Output]) -> String {
                 "y": output.y,
                 "width": output.width,
                 "height": output.height,
+                "transform": output.transform,
             })
         })
         .collect();
@@ -880,13 +884,15 @@ mod tests {
                 y: Some(0),
                 width: Some(2560),
                 height: Some(1440),
+                transform: Some(0),
             },
             lowlat::capture::Output {
                 name: Some("HDMI-A-1".to_string()),
                 x: Some(2560),
                 y: Some(0),
-                width: Some(1920),
-                height: Some(1080),
+                width: Some(1080),
+                height: Some(1920),
+                transform: Some(1),
             },
             // Half described, which is an ordinary intermediate state.
             lowlat::capture::Output {
@@ -901,8 +907,9 @@ mod tests {
         // is fully described, so the captured output knows how wide the axis
         // its input is spread over really is.
         let place = lowlat::capture::place(&crossed, "HDMI-A-1").expect("placed");
-        assert_eq!((place.x, place.width), (2560, 1920));
-        assert_eq!(place.desktop_width, 4480);
+        assert_eq!((place.x, place.width), (2560, 1080));
+        assert_eq!(place.desktop_width, 3640);
+        assert_eq!(place.rotation, lowlat::video::Rotation::Deg90);
 
         // Nothing else on the channel reads as a layout.
         assert_eq!(is_layout(BYE_REPLACED), None);

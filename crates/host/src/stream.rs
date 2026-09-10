@@ -34,7 +34,7 @@
 //! flight, and every index lost that way is a pool slot that never comes back.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::mpsc;
 
 use lowlat_capture::synthetic::{Marker, Synthetic};
@@ -524,6 +524,9 @@ pub(crate) struct Shared {
     /// per display, and a reader that manages to catch the pair mid-write
     /// takes the whole of it again on its next pass.
     place_desktop: AtomicU32,
+    /// Which way the session has turned the captured output, as the video
+    /// header says it, stored beside the rectangle under the same discipline.
+    place_rotation: AtomicU8,
     /// Where a guest last told the pointer to be, and how many times one has:
     /// the position in the low half and a count in the high.
     ///
@@ -905,6 +908,8 @@ impl Shared {
             return;
         };
         let field = |value: u32| u64::from(value.min(0xFFFF));
+        self.place_rotation
+            .store(place.rotation as u8, Ordering::Release);
         self.place_desktop.store(
             (place.desktop_width.min(0xFFFF) << 16) | place.desktop_height.min(0xFFFF),
             Ordering::Release,
@@ -1145,13 +1150,6 @@ pub struct Config {
     pub configured_mbps: f64,
     /// The floor a controller may not descend below.
     pub min_mbps: f64,
-    /// How the display this stream shows is oriented.
-    ///
-    /// **The coded picture never rotates.** A quarter turn changes what a peer
-    /// presents and what it maps pointer coordinates against, and leaves the
-    /// bitstream landscape, so this travels in the header rather than through
-    /// the encoder.
-    pub rotation: lowlat_core::video::Rotation,
     /// Rows of unpredictable detail the source paints, from the top.
     ///
     /// **Zero is the flat picture every recorded measurement was taken
@@ -1290,6 +1288,7 @@ impl Stream {
             picture: AtomicU32::new(0),
             place_rect: AtomicU64::new(0),
             place_desktop: AtomicU32::new(0),
+            place_rotation: AtomicU8::new(0),
             commanded: AtomicU64::new(0),
             cursor: CursorCell::default(),
             stopping: AtomicU32::new(0),
@@ -1659,6 +1658,27 @@ impl SeatHold {
         if rect == 0 {
             return None;
         }
+        self.placed_rect(rect)
+    }
+
+    /// Which way the session has turned the captured output.
+    ///
+    /// **Known exactly when the placement is.** A host with no session to ask
+    /// is not told, and declares the picture flat: that is the honest reading
+    /// of nothing, and it is right whenever the picture is.
+    pub fn rotation(&self) -> lowlat_core::video::Rotation {
+        if self.shared.place_rect.load(Ordering::Acquire) == 0 {
+            return lowlat_core::video::Rotation::None;
+        }
+        match lowlat_core::video::Rotation::from_bits(
+            self.shared.place_rotation.load(Ordering::Acquire),
+        ) {
+            lowlat_core::video::Rotation::Unknown => lowlat_core::video::Rotation::None,
+            known => known,
+        }
+    }
+
+    fn placed_rect(&self, rect: u64) -> Option<lowlat_inject::event::Place> {
         let desktop = self.shared.place_desktop.load(Ordering::Acquire);
         let field = |shift: u32| u32::try_from((rect >> shift) & 0xFFFF).unwrap_or(0);
         Some(lowlat_inject::event::Place {
@@ -4849,7 +4869,6 @@ mod tests {
             backend: Some(Backend::Open),
             configured_mbps: 10.0,
             min_mbps: 1.0,
-            rotation: lowlat_core::video::Rotation::None,
             detail_rows: 0,
         });
         let shared = Arc::clone(&stream.shared);
@@ -4988,7 +5007,6 @@ mod tests {
                 backend: Some(Backend::Open),
                 configured_mbps: 10.0,
                 min_mbps: 1.0,
-                rotation: lowlat_core::video::Rotation::None,
                 detail_rows: 0,
                 full_fps: false,
                 cg_level: 1,
@@ -5011,6 +5029,7 @@ mod tests {
                 picture: AtomicU32::new(0),
                 place_rect: AtomicU64::new(0),
                 place_desktop: AtomicU32::new(0),
+                place_rotation: AtomicU8::new(0),
                 commanded: AtomicU64::new(0),
                 cursor: CursorCell::default(),
                 stopping: AtomicU32::new(0),
@@ -5086,6 +5105,7 @@ mod tests {
             picture: AtomicU32::new(0),
             place_rect: AtomicU64::new(0),
             place_desktop: AtomicU32::new(0),
+            place_rotation: AtomicU8::new(0),
             commanded: AtomicU64::new(0),
             cursor: CursorCell::default(),
             stopping: AtomicU32::new(0),
@@ -5175,7 +5195,6 @@ mod tests {
             backend: Some(Backend::Open),
             configured_mbps: 10.0,
             min_mbps: 1.0,
-            rotation: lowlat_core::video::Rotation::None,
             detail_rows: 0,
             full_fps: false,
             cg_level: 1,
@@ -5421,6 +5440,7 @@ mod tests {
             picture: AtomicU32::new(0),
             place_rect: AtomicU64::new(0),
             place_desktop: AtomicU32::new(0),
+            place_rotation: AtomicU8::new(0),
             commanded: AtomicU64::new(0),
             cursor: CursorCell::default(),
             stopping: AtomicU32::new(0),
@@ -5577,6 +5597,48 @@ mod tests {
         // would arrive as a different picture rather than as a refusal.
         shared.publish_picture(1920, 1080);
         assert_eq!(seat.picture(), Some((1920, 1080)));
+    }
+
+    /// **The turn travels with the placement and is flat without one.** A
+    /// host with no session to ask is not told which way the display faces,
+    /// and declaring the picture flat is the honest reading of nothing.
+    #[test]
+    fn the_sessions_turn_reaches_a_guest_with_the_placement() {
+        use lowlat_core::video::Rotation;
+        let (shared, stream, _arrivals) = parked();
+        let wake = lowlat_net::Wake::new().expect("wake");
+        let seat = stream
+            .seats()
+            .take(
+                wake.handle().expect("handle"),
+                wake.handle().expect("a second handle"),
+            )
+            .expect("a free seat");
+
+        assert_eq!(seat.rotation(), Rotation::None, "nothing placed is flat");
+        let mut place = lowlat_capture::desktop::Placement {
+            x: 2560,
+            y: 0,
+            width: 1440,
+            height: 2560,
+            desktop_width: 4000,
+            desktop_height: 2560,
+            rotation: Rotation::Deg90,
+        };
+        shared.publish_place(Some(place));
+        assert_eq!(seat.rotation(), Rotation::Deg90);
+        assert_eq!(seat.place().map(|placed| placed.width), Some(1440));
+
+        place.rotation = Rotation::None;
+        shared.publish_place(Some(place));
+        assert_eq!(seat.rotation(), Rotation::None);
+
+        shared.publish_place(None);
+        assert_eq!(
+            seat.rotation(),
+            Rotation::None,
+            "a placement withdrawn takes its turn"
+        );
     }
 
     #[test]
@@ -6866,7 +6928,6 @@ mod tests {
             backend: Some(Backend::Open),
             configured_mbps: 10.0,
             min_mbps: 1.0,
-            rotation: lowlat_core::video::Rotation::None,
             detail_rows: 0,
         });
         let wake = lowlat_net::Wake::new().expect("wake");
@@ -6969,7 +7030,6 @@ mod tests {
             backend: Some(Backend::Open),
             configured_mbps: 10.0,
             min_mbps: 1.0,
-            rotation: lowlat_core::video::Rotation::None,
             detail_rows: rows,
         });
         let wake = lowlat_net::Wake::new().expect("wake");
@@ -7136,7 +7196,6 @@ mod tests {
             backend: Some(Backend::Open),
             configured_mbps: 10.0,
             min_mbps: 1.0,
-            rotation: lowlat_core::video::Rotation::None,
             detail_rows: 0,
             full_fps: false,
             cg_level: 1,
@@ -7166,7 +7225,6 @@ mod tests {
             backend: Some(Backend::Open),
             configured_mbps: 10.0,
             min_mbps: 1.0,
-            rotation: lowlat_core::video::Rotation::None,
             detail_rows: 0,
             full_fps: false,
             cg_level: 1,
