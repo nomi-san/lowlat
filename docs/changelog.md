@@ -3,6 +3,35 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-10 - The display is the default, the turn is followed, the mode is asked for
+
+### Fixed
+- **A host streamed the generator unless told `--capture`**, and the packaged unit did not say
+  it, so an installed service would have streamed a test pattern. The display is now the
+  default and **`--synth`** asks for the generator; `--capture` is gone. A host that cannot reach
+  the display says so at startup -- before it has advertised a stream it could never produce --
+  and names both ways out: the capture privilege, or `--synth`. Nothing lit is waited for, not
+  refused, because the session may not have started yet.
+- **A display the session had turned streamed on its side.** A turned display is drawn turned
+  into a framebuffer that keeps its landscape shape, and nothing below the session says by how
+  much; the header declared whatever `--rotate` was told, which was a startup flag about a
+  display it never looked at. The session's transform now arrives with the layout, the header
+  declares it, and `--rotate` is gone.
+
+### Added
+- **A guest's request for a size or a turn is asked of the session**, which owns the display,
+  over the compositor's own output-management protocol; the stream takes no part and follows
+  whatever the display becomes. One request outstanding at a time, on a deadline at both ends,
+  and a helper that does not answer is dropped rather than waited for. A session with no
+  mechanism, or no session at all, refuses with a reason. This is the channel's first request,
+  and the deadline every request was to carry landed with it.
+
+### Changed
+- **The mode of a display the session owns is asked for rather than never set.** The earlier
+  decision rested on the display device refusing every client but its owner, which is still
+  true and is no longer the point: the owner takes requests, and was measured setting a real
+  mode in a fifth of a second.
+
 ## 2026-09-09 - The desktop's shape is watched, not read once
 
 ### Fixed
