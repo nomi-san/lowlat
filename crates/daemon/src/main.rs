@@ -319,10 +319,14 @@ fn session() -> ! {
     // connected; a query that opens, reads and closes learns the layout once
     // and can never learn that it changed.
     let watching = lowlat::capture::Watch::open();
+    // **Whether the session takes mode requests is a property of the
+    // compositor**, asked once here and announced, so a desktop without the
+    // mechanism refuses a request at the service rather than here.
     let can = channel::Can {
         idle: screen.is_some(),
         clipboard: clip.is_some(),
         layout: watching.is_some(),
+        mode: lowlat::capture::mode::offered(),
         ..channel::Can::default()
     };
     // **A thread of its own, because owning a clipboard is a wait.** The
@@ -377,6 +381,15 @@ fn session() -> ! {
                     }
                     if let Some(text) = channel::is_clipboard(&body) {
                         let _ = copied.send(text);
+                    }
+                    if let Some(asked) = channel::is_mode_ask(&body) {
+                        let outcome = change_mode(&asked.output, asked.size, asked.rotation);
+                        let answer = channel::reply(asked.id, &outcome);
+                        if let Err(error) = channel::write_frame(&mut stream, &answer) {
+                            lowlat_common::log_warn!(
+                                "session: the service did not take the answer, {error}"
+                            );
+                        }
                     }
                 }
                 if let Ok(mut writer) = writer.lock() {
@@ -462,6 +475,34 @@ fn watch_layout(
         say(&outputs);
     }
 }
+
+/// Change an output as the service asked, and say what the session said.
+///
+/// **Answered inline, on the helper's own deadline**, which is shorter than
+/// the service's: a session that is slow answers with a refusal rather than
+/// with silence, and the service never has to drop this helper for a
+/// compositor that took its time.
+fn change_mode(output: &str, size: Option<(u32, u32)>, rotation: Option<u8>) -> Result<(), String> {
+    // The wire's code is one-based and the session's transform is not.
+    let transform = rotation.map(|rotation| u32::from(rotation.saturating_sub(1)));
+    let outcome = lowlat::capture::mode::set(
+        output,
+        lowlat::capture::mode::Change { size, transform },
+        std::time::Duration::from_millis(MODE_MS),
+    );
+    match &outcome {
+        Ok(()) => {
+            lowlat_common::log_info!("session: {output} set to {size:?} transform={transform:?}")
+        }
+        Err(reason) => lowlat_common::log_warn!(
+            "session: {output} not set to {size:?} transform={transform:?}, {reason}"
+        ),
+    }
+    outcome
+}
+
+/// How long the helper waits on the compositor for a mode change.
+const MODE_MS: u64 = 3_000;
 
 /// How long the layout thread waits on its session before looking again.
 ///
@@ -1144,7 +1185,17 @@ async fn session_loop(
                 layout = Some(outputs);
                 placed = situate(seam, layout.as_deref());
             }
+            // **The answer to a mode request is a line, not an action.** The
+            // stream follows whatever the display became on its own.
+            match channel::is_reply(&said) {
+                Some(Ok(())) => lowlat_common::log_info!("lowlatd: the session set the mode"),
+                Some(Err(reason)) => {
+                    lowlat_common::log_info!("lowlatd: the session refused the mode, {reason}");
+                }
+                None => {}
+            }
         }
+        channel::drop_overdue();
 
         // **Resolved when either half moves, not only when the desktop does.**
         // The two go stale for different reasons: a desktop that gained a

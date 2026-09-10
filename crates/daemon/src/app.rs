@@ -720,29 +720,71 @@ fn apply(seam: &mut Admission, body: &[u8], video: &Video, listed: &[Selectable]
         }
     }
 
-    // **Said rather than done, and not because it is unbuilt.** Both change the
-    // display's own mode, which belongs to whoever owns the display, and on a
-    // display this host did not create that is the session; the mode of
-    // somebody's desk is changed where it is already changed and capture
-    // follows whatever it became (docs/impl-plan.md, output selection). A
-    // request that is quietly dropped looks like a host that ignored its
-    // guest, so it is reported.
-    for (field, current) in [("resolutionX", video.width), ("resolutionY", video.height)] {
-        if let Some(asked) = first.get(field).and_then(serde_json::Value::as_u64)
-            && asked != 0
-            && asked != u64::from(current)
+    // **Asked of the session, which owns the display.** A size or a turn is
+    // the display's own mode, and on a display this host did not create
+    // that belongs to whoever holds it; the session takes requests for it
+    // where a person's own display settings already send them
+    // (docs/07-platforms.md section 5.1). The stream is not told: it follows
+    // whatever the display becomes, as it does when the mode is changed by
+    // hand. A request that cannot be put is refused with the reason, so a
+    // guest whose request went nowhere can be told why by whoever reads the
+    // log rather than by nothing changing.
+    //
+    // **The output asked about is the one being captured now**, which is
+    // also the one the size and the turn describe: a request naming another
+    // output arrives above as a switch, and the mode it names is applied to
+    // that output on the next request, once the stream has moved.
+    let asked_size = match (
+        first.get("resolutionX").and_then(serde_json::Value::as_u64),
+        first.get("resolutionY").and_then(serde_json::Value::as_u64),
+    ) {
+        (Some(width), Some(height))
+            if width != 0
+                && height != 0
+                && (width, height) != (u64::from(video.width), u64::from(video.height)) =>
         {
-            lowlat_common::log_info!(
-                "lowlatd: guest asked for {field}={asked}, which this host does not set"
-            );
+            match (u32::try_from(width), u32::try_from(height)) {
+                (Ok(width), Ok(height)) => Some((width, height)),
+                _ => None,
+            }
         }
-    }
-    if first
-        .get("rotated")
-        .and_then(serde_json::Value::as_bool)
-        .is_some_and(|asked| asked != video.rotated)
-    {
-        lowlat_common::log_info!("lowlatd: guest asked to rotate, which this host does not set");
+        _ => None,
+    };
+    // **A turn is one flag, and it means a quarter.** The established host
+    // turns an upright display a quarter and turns any turned one back, and
+    // leaves a display already turned some other way alone; the same here.
+    let turned = lowlat::display::captured(listed, seam.captured())
+        .and_then(|output| output.place)
+        .map_or(lowlat::video::Rotation::None, |place| place.rotation);
+    let asked_rotation = match (
+        first.get("rotated").and_then(serde_json::Value::as_bool),
+        turned,
+    ) {
+        (Some(true), lowlat::video::Rotation::None) => Some(lowlat::video::Rotation::Deg90 as u8),
+        (Some(false), lowlat::video::Rotation::None) | (None, _) => None,
+        (Some(false), _) => Some(lowlat::video::Rotation::None as u8),
+        (Some(true), _) => None,
+    };
+    if asked_size.is_some() || asked_rotation.is_some() {
+        let output = lowlat::display::captured(listed, seam.captured())
+            .map(|output| output.connector.clone())
+            .unwrap_or_default();
+        match crate::channel::ask_mode(crate::channel::ModeAsk {
+            output: &output,
+            size: asked_size,
+            rotation: asked_rotation,
+        }) {
+            Ok(()) => lowlat_common::log_info!(
+                "lowlatd: guest asked for {output} at {:?} rotation={:?}, asking the session",
+                asked_size,
+                asked_rotation
+            ),
+            Err(reason) => lowlat_common::log_info!(
+                "lowlatd: guest asked for {output} at {:?} rotation={:?}, refused: {reason}",
+                asked_size,
+                asked_rotation
+            ),
+        }
     }
 
     // **The rest is live and is applied.** The frame rate, the rate ceiling

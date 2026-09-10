@@ -96,6 +96,8 @@ pub(crate) struct Can {
     pub(crate) clipboard: bool,
     /// Answer where the displays are.
     pub(crate) layout: bool,
+    /// Change an output's mode or turn, on request.
+    pub(crate) mode: bool,
 }
 
 impl Can {
@@ -111,6 +113,7 @@ impl Can {
                 Some("idle") => can.idle = true,
                 Some("clipboard") => can.clipboard = true,
                 Some("layout") => can.layout = true,
+                Some("mode") => can.mode = true,
                 _ => {}
             }
         }
@@ -124,6 +127,7 @@ impl Can {
             (self.idle, "idle"),
             (self.clipboard, "clipboard"),
             (self.layout, "layout"),
+            (self.mode, "mode"),
         ] {
             if held {
                 names.push(name);
@@ -209,6 +213,7 @@ static HELPERS: std::sync::Mutex<Vec<Held>> = std::sync::Mutex::new(Vec::new());
 struct Held {
     uid: u32,
     pid: i32,
+    can: Can,
     /// A second reference to the same connection, so a replacement can close
     /// what it replaced. Shutting it down is what wakes that helper's own
     /// thread out of its read.
@@ -220,7 +225,7 @@ struct Held {
 /// **Newest wins.** A reconnect replaces its predecessor rather than joining
 /// it, because two answers to "has an application taken the pointer" is not a
 /// state anything can act on.
-fn take_place(peer: Peer, stream: &UnixStream) {
+fn take_place(peer: Peer, can: Can, stream: &UnixStream) {
     let Ok(handle) = stream.try_clone() else {
         return;
     };
@@ -243,6 +248,7 @@ fn take_place(peer: Peer, stream: &UnixStream) {
     live.push(Held {
         uid: peer.uid,
         pid: peer.pid,
+        can,
         handle,
     });
 }
@@ -294,7 +300,7 @@ fn serve(mut stream: UnixStream) {
         greeting.can.names()
     );
     if greeting.role == Role::Helper {
-        take_place(greeting.peer, &stream);
+        take_place(greeting.peer, greeting.can, &stream);
     }
     let mut body = Vec::new();
     while read_frame(&mut stream, &mut body).is_ok() {
@@ -386,6 +392,182 @@ pub(crate) fn screen_awake(awake: bool) {
                 held.pid
             );
         }
+    }
+}
+
+/// A request the service has put to the session and not heard back on.
+///
+/// **One at a time, and on a clock.** The channel's only request so far is
+/// a mode change, which a guest asks for rarely and a session answers in
+/// well under a second; a second one arriving before the first is answered
+/// is refused rather than queued, because the two would be about the same
+/// display. The deadline is the rule every request carries
+/// (docs/07-platforms.md section 5.1): a helper that has stopped answering
+/// is dropped rather than waited for.
+static ASKED: std::sync::Mutex<Option<Asked>> = std::sync::Mutex::new(None);
+
+#[derive(Debug, Clone, Copy)]
+struct Asked {
+    id: u64,
+    pid: i32,
+    since: std::time::Instant,
+}
+
+static NEXT_ASK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// How long a session has to answer a request.
+///
+/// A mode change was measured at a fifth of a second on the desktop this was
+/// built against, and a display on a real link may re-train for a second or
+/// two; the helper's own wait on the compositor is shorter than this, so a
+/// session that is merely slow answers with a refusal rather than silence.
+const ASK_MS: u64 = 5_000;
+
+/// What a mode request names. Either half may be absent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ModeAsk<'a> {
+    pub(crate) output: &'a str,
+    pub(crate) size: Option<(u32, u32)>,
+    /// The turn as the video header spells it, one-based.
+    pub(crate) rotation: Option<u8>,
+}
+
+/// Ask the session to change an output's mode or turn.
+///
+/// **Refused with a reason where there is nobody to ask**, which is the
+/// honest answer: a session with no helper, or a helper whose desktop offers
+/// no mechanism, cannot be made to answer by waiting. The answer arrives
+/// later on the queue below and is read by the loop that asked.
+pub(crate) fn ask_mode(ask: ModeAsk<'_>) -> Result<(), &'static str> {
+    let Ok(mut asked) = ASKED.lock() else {
+        return Err("the channel is poisoned");
+    };
+    if asked.is_some() {
+        return Err("a request is already outstanding");
+    }
+    let Ok(mut live) = HELPERS.lock() else {
+        return Err("the channel is poisoned");
+    };
+    let Some(held) = live.iter_mut().find(|held| held.can.mode) else {
+        return Err(if live.is_empty() {
+            "no session helper is connected"
+        } else {
+            "the session cannot set a mode"
+        });
+    };
+    // Distinct from every earlier one, so a late answer cannot be taken for
+    // a current one.
+    let id = NEXT_ASK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let body = serde_json::json!({
+        "ask": id,
+        "mode": {
+            "output": ask.output,
+            "width": ask.size.map(|(width, _)| width),
+            "height": ask.size.map(|(_, height)| height),
+            "rotation": ask.rotation,
+        },
+    })
+    .to_string();
+    if write_frame(&mut held.handle, body.as_bytes()).is_err() {
+        return Err("the session helper is unreachable");
+    }
+    *asked = Some(Asked {
+        id,
+        pid: held.pid,
+        since: std::time::Instant::now(),
+    });
+    Ok(())
+}
+
+/// A mode request as the session reads it, with the id its answer names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ModeAsked {
+    pub(crate) id: u64,
+    pub(crate) output: String,
+    pub(crate) size: Option<(u32, u32)>,
+    pub(crate) rotation: Option<u8>,
+}
+
+/// Whether a frame is the service asking for a mode, and what it asks.
+pub(crate) fn is_mode_ask(body: &[u8]) -> Option<ModeAsked> {
+    let parsed = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    let id = parsed.get("ask")?.as_u64()?;
+    let mode = parsed.get("mode")?;
+    let output = mode.get("output")?.as_str()?.to_owned();
+    let dimension = |field: &str| {
+        mode.get(field)
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| u32::try_from(value).ok())
+    };
+    let size = match (dimension("width"), dimension("height")) {
+        (Some(width), Some(height)) => Some((width, height)),
+        _ => None,
+    };
+    let rotation = mode
+        .get("rotation")
+        .and_then(serde_json::Value::as_u64)
+        .and_then(|value| u8::try_from(value).ok());
+    Some(ModeAsked {
+        id,
+        output,
+        size,
+        rotation,
+    })
+}
+
+/// The session's answer to a request.
+pub(crate) fn reply(id: u64, outcome: &Result<(), String>) -> Vec<u8> {
+    match outcome {
+        Ok(()) => serde_json::json!({ "reply": id, "ok": true }),
+        Err(reason) => serde_json::json!({ "reply": id, "error": reason }),
+    }
+    .to_string()
+    .into_bytes()
+}
+
+/// Whether a frame answers the request outstanding, and how.
+///
+/// **An answer to a request nobody is waiting on is dropped**, which is what
+/// a reply arriving after its deadline is: the helper it came from has
+/// already been let go.
+pub(crate) fn is_reply(body: &[u8]) -> Option<Result<(), String>> {
+    let parsed = serde_json::from_slice::<serde_json::Value>(body).ok()?;
+    let id = parsed.get("reply")?.as_u64()?;
+    let mut asked = ASKED.lock().ok()?;
+    if asked.map(|asked| asked.id) != Some(id) {
+        return None;
+    }
+    *asked = None;
+    Some(
+        match parsed.get("error").and_then(serde_json::Value::as_str) {
+            Some(reason) => Err(reason.to_owned()),
+            None => Ok(()),
+        },
+    )
+}
+
+/// Let go of a helper that has not answered in time.
+///
+/// **Called from the loop that asked, every pass.** The connection is shut
+/// from this end, which wakes the helper's own thread out of its read and
+/// records it as gone; a helper that is still alive reconnects and is a new
+/// helper, with nothing outstanding.
+pub(crate) fn drop_overdue() {
+    let Ok(mut asked) = ASKED.lock() else { return };
+    let Some(pending) = *asked else { return };
+    if pending.since.elapsed() < std::time::Duration::from_millis(ASK_MS) {
+        return;
+    }
+    *asked = None;
+    lowlat_common::log_warn!(
+        "channel: helper did not answer within {ASK_MS} ms, dropped, pid={}",
+        pending.pid
+    );
+    if let Ok(mut live) = HELPERS.lock()
+        && let Some(at) = live.iter().position(|held| held.pid == pending.pid)
+    {
+        let gone = live.swap_remove(at);
+        let _ = gone.handle.shutdown(std::net::Shutdown::Both);
     }
 }
 
@@ -695,6 +877,7 @@ mod tests {
         idle: false,
         clipboard: true,
         layout: false,
+        mode: false,
     };
 
     #[test]
@@ -764,9 +947,9 @@ mod tests {
         let (first, mut first_far) = pair();
         let (second, _second_far) = pair();
 
-        take_place(peer, &first);
+        take_place(peer, Can::default(), &first);
         assert!(holds(peer.pid));
-        take_place(later, &second);
+        take_place(later, Can::default(), &second);
         // **By process rather than by count.** The register is one static for
         // the program, so a test that counts what is in it counts whatever
         // another test on another thread put there too.
@@ -800,6 +983,128 @@ mod tests {
         assert!(!holds(later.pid));
     }
 
+    /// **A request goes to the helper that can answer it, is refused with a
+    /// reason where none can, and is answered by the frame that names it.**
+    /// The refusals are the "absent is not degraded" rule for a request: a
+    /// session with no helper, or one whose desktop has no mechanism, cannot
+    /// be made to answer by waiting.
+    #[test]
+    fn a_mode_request_reaches_a_helper_that_can_and_is_refused_otherwise() {
+        let _alone = alone();
+        let _ = ASKED.lock().map(|mut asked| *asked = None);
+        let ask = ModeAsk {
+            output: "DP-1",
+            size: Some((1920, 1080)),
+            rotation: Some(2),
+        };
+        // A stale entry from another test is not "no helper" but is still
+        // not one that can set a mode, so only the reason differs.
+        assert!(
+            ask_mode(ask).is_err(),
+            "nothing connected and something was asked"
+        );
+
+        let peer = Peer {
+            pid: 5151,
+            uid: 1000,
+            gid: 1000,
+        };
+        let (unable, _unable_far) = pair();
+        take_place(peer, Can::default(), &unable);
+        assert_eq!(ask_mode(ask), Err("the session cannot set a mode"));
+
+        let able = Peer { pid: 5152, ..peer };
+        let (stream, mut far) = pair();
+        take_place(
+            able,
+            Can {
+                mode: true,
+                ..Can::default()
+            },
+            &stream,
+        );
+        ask_mode(ask).expect("asked");
+        assert_eq!(
+            ask_mode(ask),
+            Err("a request is already outstanding"),
+            "two requests about one display were both put"
+        );
+
+        far.set_read_timeout(Some(std::time::Duration::from_millis(500)))
+            .expect("a deadline");
+        let mut body = Vec::new();
+        read_frame(&mut far, &mut body).expect("the request");
+        let asked = is_mode_ask(&body).expect("a mode request");
+        assert_eq!(
+            (asked.output.as_str(), asked.size, asked.rotation),
+            ("DP-1", Some((1920, 1080)), Some(2))
+        );
+
+        // **A stray answer names nothing outstanding and is dropped**; the
+        // right one clears the request and carries the session's reason.
+        assert_eq!(is_reply(&reply(asked.id + 1, &Ok(()))), None);
+        assert_eq!(
+            is_reply(&reply(asked.id, &Err("no such mode".to_string()))),
+            Some(Err("no such mode".to_string()))
+        );
+        assert_eq!(is_reply(&reply(asked.id, &Ok(()))), None, "answered twice");
+
+        // Nothing on the channel that is not one reads as one.
+        assert_eq!(is_mode_ask(BYE_REPLACED), None);
+        assert_eq!(is_reply(BYE_REPLACED), None);
+
+        leave_place(peer);
+        leave_place(able);
+    }
+
+    /// **A helper that stops answering is dropped rather than waited for.**
+    /// The deadline is observed from the loop that asked, and dropping is a
+    /// shutdown of the connection, which is what the helper's own thread
+    /// notices.
+    #[test]
+    fn a_helper_that_does_not_answer_in_time_is_dropped() {
+        let _alone = alone();
+        let peer = Peer {
+            pid: 5153,
+            uid: 1000,
+            gid: 1000,
+        };
+        let (stream, mut far) = pair();
+        take_place(
+            peer,
+            Can {
+                mode: true,
+                ..Can::default()
+            },
+            &stream,
+        );
+        let _ = ASKED.lock().map(|mut asked| *asked = None);
+        ask_mode(ModeAsk {
+            output: "DP-1",
+            size: None,
+            rotation: Some(1),
+        })
+        .expect("asked");
+
+        drop_overdue();
+        assert!(holds(peer.pid), "dropped before its deadline");
+        if let Ok(mut asked) = ASKED.lock()
+            && let Some(pending) = asked.as_mut()
+        {
+            pending.since -= std::time::Duration::from_millis(ASK_MS + 1);
+        }
+        drop_overdue();
+        assert!(!holds(peer.pid), "kept past its deadline");
+        assert!(ASKED.lock().expect("held").is_none());
+
+        far.set_read_timeout(Some(std::time::Duration::from_millis(500)))
+            .expect("a deadline");
+        let mut body = Vec::new();
+        read_frame(&mut far, &mut body).expect("the request went out");
+        let ended = read_frame(&mut far, &mut body).expect_err("still open");
+        assert_eq!(ended.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
+
     /// Whether a process holds a place right now.
     fn holds(pid: i32) -> bool {
         HELPERS
@@ -820,7 +1125,7 @@ mod tests {
             gid: 1001,
         };
         let (near, mut far) = pair();
-        take_place(peer, &near);
+        take_place(peer, Can::default(), &near);
 
         let mut body = Vec::new();
         screen_awake(true);
@@ -850,7 +1155,7 @@ mod tests {
             gid: 1002,
         };
         let (near, mut far) = pair();
-        take_place(peer, &near);
+        take_place(peer, Can::default(), &near);
 
         assert!(clipboard(b"a link\0"));
         let mut body = Vec::new();

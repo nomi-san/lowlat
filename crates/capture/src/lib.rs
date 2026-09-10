@@ -20,9 +20,11 @@ pub mod convert;
 pub mod cursor;
 pub mod desktop;
 pub mod gl;
+pub mod mode;
 pub mod scanout;
 pub mod synthetic;
 pub mod vulkan;
+mod wayland;
 
 use lowlat_common::clock::Time;
 

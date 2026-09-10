@@ -30,6 +30,8 @@ use std::time::Duration;
 
 use lowlat_core::video::Rotation;
 
+use crate::wayland::{DISPLAY, put_str, put_u32, read_i32, read_str, read_u32, trailing_u32};
+
 /// Where one output sits, in the desktop's own units.
 ///
 /// The origin is measured from the desktop's own corner rather than from
@@ -295,16 +297,8 @@ fn sockets() -> Vec<PathBuf> {
     found
 }
 
-// The session protocol, as much of it as one layout needs.
-//
-// Requests are a header of the object and a packed size and opcode, then
-// arguments of four bytes each; a string is its length including a terminator,
-// then the bytes, padded out to four. Every reply is the same shape, which is
-// what lets an event nothing here understands be stepped over by its size
-// rather than having to be described.
-
-/// The connection itself, which is object one and never allocated.
-const DISPLAY: u32 = 1;
+// The session protocol, as much of it as one layout needs; the framing is
+// shared with the other client of it in `wayland.rs`.
 
 /// A reply that has not arrived is a session that is not answering. This runs
 /// on the thread that opens the display, so it is bounded rather than waited
@@ -595,49 +589,9 @@ impl Session {
     }
 }
 
-fn put_u32(out: &mut Vec<u8>, value: u32) {
-    out.extend_from_slice(&value.to_ne_bytes());
-}
-
-/// A string is its length including a terminator, then the bytes, padded to
-/// the four-byte alignment every argument sits on.
-fn put_str(out: &mut Vec<u8>, value: &str) {
-    let bytes = value.as_bytes();
-    put_u32(out, u32::try_from(bytes.len() + 1).unwrap_or(1));
-    out.extend_from_slice(bytes);
-    out.push(0);
-    while out.len() % 4 != 0 {
-        out.push(0);
-    }
-}
-
-fn read_u32(bytes: &[u8]) -> Option<u32> {
-    Some(u32::from_ne_bytes(bytes.get(..4)?.try_into().ok()?))
-}
-
-fn read_i32(bytes: &[u8]) -> Option<i32> {
-    Some(i32::from_ne_bytes(bytes.get(..4)?.try_into().ok()?))
-}
-
 /// A dimension, which the protocol signs and nothing real makes negative.
 fn extent(bytes: &[u8]) -> Option<u32> {
     u32::try_from(read_i32(bytes)?).ok()
-}
-
-/// The string at an offset, without its terminator.
-fn read_str(body: &[u8], at: usize) -> Option<String> {
-    let length = read_u32(body.get(at..)?)? as usize;
-    let bytes = body.get(at + 4..at + 4 + length.checked_sub(1)?)?;
-    String::from_utf8(bytes.to_vec()).ok()
-}
-
-/// The last argument of a message whose string length is not known in advance.
-///
-/// A padded string is followed by whatever comes after it, and stepping over
-/// one to reach a fixed final argument costs the same arithmetic twice; the
-/// final four bytes are the argument either way.
-fn trailing_u32(body: &[u8]) -> Option<u32> {
-    read_u32(body.get(body.len().checked_sub(4)?..)?)
 }
 
 #[cfg(test)]
