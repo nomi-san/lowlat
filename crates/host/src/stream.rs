@@ -3991,7 +3991,14 @@ fn encode_loop<E: Encoder + FromDevice>(
             // is read from the same device and the same thread as the frame,
             // which is what the state it reports is a property of; a thread
             // outside this one sees another seat or nothing at all.
-            if now_ms - pointer_ms >= POINTER_MS {
+            //
+            // **Not while the display is dark.** A display that is not
+            // scanning out has an empty pointer plane too, and reading that
+            // as "an application took the pointer" would put every guest
+            // into relative mode for the whole of a greeter that draws
+            // through no plane at all. Nothing is known, so nothing is said,
+            // and the last state stands.
+            if now_ms - pointer_ms >= POINTER_MS && !held {
                 pointer_ms = now_ms;
                 publish_pointer(
                     shared,
