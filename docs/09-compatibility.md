@@ -249,6 +249,33 @@ session without one is a session that does not answer, so absolute input spans t
 alone -- correct on one output, wrong on two. The clipboard and the inhibitor are on the session
 bus and are not Wayland's, so a desktop offering them on X11 offers them here too.
 
+### Other desktops, by what each one offers
+
+Nothing below is measured; it is what each stack offers against the rows above, and it says
+what would have to be built for each.
+
+| | GNOME on Wayland | Xfce, and any X11 session |
+|---|---|---|
+| capture | scanout, as on any Wayland compositor | scanout where the X server presents through the display device: the open drivers do, one vendor's does not (§3 to §5 and [07 §2](07-platforms.md)) |
+| layout and orientation | `zxdg_output_manager_v1` and `wl_output`, offered | **no Wayland socket**: a RandR query, not built; absent, the axis spans the picture |
+| idle inhibitor | the shell serves `org.freedesktop.ScreenSaver` | the desktop's screensaver or power manager serves it |
+| clipboard | **none**: no privileged selection protocol to speak of | an X selection client, not built |
+| mode and turn | `org.gnome.Mutter.DisplayConfig` on the session bus, a second mechanism behind the same capability | RandR, not built |
+| login screen | GDM is a Wayland compositor session: captured like any session, with a socket for the layout | X: the vendor-driver case |
+
+So GNOME needs one mechanism (the mode request over its bus) to reach parity minus the
+clipboard, and its login screen is the good case. X11 needs three session-side mechanisms
+and, on one vendor's driver, a capture route that does not exist below the session.
+
+**Two arrangements to avoid on X11**, both measured 2026-09-10. An X server on one vendor's
+own driver presents through no plane the display device reports, so there is nothing to
+capture and the pointer plane is empty too. And a panel driven by one card and rendered by
+another -- one X server, the second card as an output sink -- **hung the scanning-out card
+and the desk with it** after four minutes of capture: the conversion on that card stopped
+completing, then the card's own display commit waited on a fence that never came, and the
+X server blocked behind it until a reboot. Whether the capture caused it or exposed it is not
+known; the configuration is not supported either way.
+
 ### What is not run
 
 Everything above is measured on **one** desktop. Nothing else has been run at all, and none of
