@@ -1,0 +1,14 @@
+# Run SDDM's greeter on KWin (Wayland) rather than on X.
+#
+# The X greeter on this card presents through no KMS plane, so a remote guest
+# sees nothing until somebody logs in at the desk. KWin presents through the
+# display device like any session, gives the greeter a real cursor plane and a
+# Wayland socket of its own. This is the arrangement Plasma 6 recommends.
+#
+# To revert: delete this file (SDDM falls back to its X greeter).
+[General]
+DisplayServer=wayland
+GreeterEnvironment=QT_WAYLAND_SHELL_INTEGRATION=layer-shell
+
+[Wayland]
+CompositorCommand=kwin_wayland --drm --no-lockscreen --no-global-shortcuts --locale1
