@@ -229,33 +229,57 @@ impl Watch {
 
     /// Wait for the layout to change, and answer with what it became.
     ///
-    /// **`None` is the ordinary answer**, and covers both nothing arriving
+    /// **`Ok(None)` is the ordinary answer**, and covers both nothing arriving
     /// before the deadline and something arriving that left the layout as it
     /// was. A session re-sends every field of an output it re-describes, so
-    /// events are not changes.
-    pub fn changed(&mut self, within: Duration) -> Option<Vec<Output>> {
-        self.session.stream.set_read_timeout(Some(within)).ok()?;
+    /// events are not changes. **A quiet session is not an ended one**: the
+    /// two are told apart here because a watcher that stops at the first
+    /// quiet tick has watched for one tick, which is what the helper did for
+    /// a day while its change detection was being proven through a probe
+    /// that happened to loop.
+    pub fn changed(&mut self, within: Duration) -> Result<Option<Vec<Output>>, Ended> {
+        self.session
+            .stream
+            .set_read_timeout(Some(within))
+            .map_err(|_| Ended)?;
         let mut chunk = [0u8; 4096];
-        let read = self.session.stream.read(&mut chunk).ok()?;
-        // A closed connection is a session that ended, and there is nothing
-        // further to hear from it.
-        if read == 0 {
-            return None;
-        }
+        let read = match self.session.stream.read(&mut chunk) {
+            Ok(0) => return Err(Ended),
+            Ok(read) => read,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                return Ok(None);
+            }
+            Err(_) => return Err(Ended),
+        };
         self.session
             .pending
             .extend_from_slice(chunk.get(..read).unwrap_or_default());
-        self.session.consume()?;
+        // A stream out of step, or a protocol error, is a session there is
+        // nothing further to hear from.
+        self.session.consume().ok_or(Ended)?;
         if !self.session.moved {
-            return None;
+            return Ok(None);
         }
         // **Settled before it is believed.** What arrived may be half of a
         // description, and a rectangle read between two of its own events is a
         // layout nobody ever had.
-        self.session.stream.set_read_timeout(Some(TIMEOUT)).ok()?;
-        self.session.snapshot()
+        self.session
+            .stream
+            .set_read_timeout(Some(TIMEOUT))
+            .map_err(|_| Ended)?;
+        self.session.snapshot().map(Some).ok_or(Ended)
     }
 }
+
+/// The session a watch was in has ended, and there is nothing further to
+/// hear from it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ended;
 
 /// Every session socket worth asking, the one named by the environment first.
 ///
@@ -719,9 +743,12 @@ mod tests {
         // failure that looks most like working.
         assert_eq!(
             watch.changed(Duration::from_millis(300)),
-            None,
+            Ok(None),
             "a still desktop reported a layout change"
         );
+        // **And a quiet tick is not the session ending.** Twice, because the
+        // first quiet read is where a watcher that confused the two stopped.
+        assert_eq!(watch.changed(Duration::from_millis(300)), Ok(None));
     }
 
     /// **Events are not changes.** A session re-sends every field of an output

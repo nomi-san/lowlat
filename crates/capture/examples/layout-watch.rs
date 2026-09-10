@@ -8,8 +8,13 @@ fn main() {
     say("first", &first);
     let until = std::time::Instant::now() + std::time::Duration::from_secs(25);
     while std::time::Instant::now() < until {
-        if let Some(outputs) = watch.changed(std::time::Duration::from_millis(500)) {
-            say("changed", &outputs);
+        match watch.changed(std::time::Duration::from_millis(500)) {
+            Ok(Some(outputs)) => say("changed", &outputs),
+            Ok(None) => {}
+            Err(_) => {
+                eprintln!("the session ended");
+                break;
+            }
         }
     }
 }

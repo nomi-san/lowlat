@@ -469,10 +469,20 @@ fn watch_layout(
         }
     };
     say(&first);
-    // **Only what changed.** A session re-sends every field of an output it
-    // re-describes, so a report per event would be a report per anything.
-    while let Some(outputs) = watch.changed(std::time::Duration::from_millis(LAYOUT_TICK_MS)) {
-        say(&outputs);
+    // **Only what changed, and for as long as the session lasts.** A session
+    // re-sends every field of an output it re-describes, so a report per
+    // event would be a report per anything; and a quiet tick is not the
+    // session ending, which is the distinction this loop once got wrong and
+    // stopped watching after its first second.
+    loop {
+        match watch.changed(std::time::Duration::from_millis(LAYOUT_TICK_MS)) {
+            Ok(Some(outputs)) => say(&outputs),
+            Ok(None) => {}
+            Err(_) => {
+                lowlat_common::log_warn!("session: the layout can no longer be watched");
+                return;
+            }
+        }
     }
 }
 
