@@ -24,7 +24,7 @@ product differences rather than implementation details.
 | | scanout | compositor-mediated | X11 | virtual display |
 |---|---|---|---|---|
 | unattended, no session | yes | **no** | partial | yes |
-| login screen | yes | **no** | only if the greeter is X11 | not applicable |
+| login screen | where the greeter presents through the display device (measured: a Wayland compositor does, one vendor's X driver does not) | **no** | only if the greeter is X11 | not applicable |
 | any compositor | yes | yes | **no** | not applicable |
 | mirrors a physical screen | yes | yes | yes | **no** |
 | zero-copy buffer export | yes | yes | only with a vendor path | yes |
@@ -42,7 +42,14 @@ Read the columns as products, not as implementations:
   desktop. It is also bound to a live user session and its first use requires an interactive
   grant, which is exactly the thing a machine you connect *back* to cannot provide.
 - **X11** is easy and complete, and it is a dead end. Every major distribution now defaults to
-  a Wayland session.
+  a Wayland session. **It is also the one thing scanout cannot see on one vendor's driver**,
+  measured 2026-09-10 across a login: an X server on that vendor's own driver presents
+  through the driver's private path, and every plane of the display device reads empty
+  while the panel shows the picture. A Wayland compositor on the same card presents through
+  the device and is captured; so is X on the open driver of another card. The default login
+  screen on the distribution measured is X, so a host on that vendor's card shows nothing at
+  its login screen until the greeter is moved to a Wayland compositor -- a configuration
+  matter, and the one this project recommends.
 - **virtual display** creates a display that is not attached to any monitor. Either as a
   kernel-provided virtual device that the user's existing compositor extends onto, or as a
   session we run ourselves. It has no greeter problem because there is no greeter, and no
