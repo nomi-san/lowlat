@@ -3864,6 +3864,26 @@ fn encode_loop<E: Encoder + FromDevice>(
             if display.as_deref().is_some_and(|d| !d.attached()) {
                 return Exit::Rediscover("nothing is plugged into the device being captured");
             }
+            // **A dark display whose picture has moved to another card.** A
+            // panel moved from one card to the other leaves the first
+            // connector reporting itself connected and disabled, so the
+            // check above says plugged and the read above says dark, and
+            // the loop would hold the last picture forever while the desktop
+            // is lit on a device it is not looking at. Where nothing was
+            // asked for by name, the rule that chose this output is asked
+            // again, and a different answer is followed.
+            if held
+                && config.output.is_none()
+                && let Some(desktop) = display.as_deref()
+                && let Some(lit) = crate::display::Display::preferred()
+                && desktop.selected() != Some(lit.as_str())
+            {
+                lowlat_common::log_info!(
+                    "stream: the desktop is lit on {lit} now, not on {}",
+                    desktop.selected().unwrap_or("this output")
+                );
+                return Exit::Rediscover("the lit output moved");
+            }
         }
         // **The tick splits around the collect.** The conversion is submitted
         // before the collect below, so the device works on it while the loop
