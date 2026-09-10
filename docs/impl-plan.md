@@ -1640,12 +1640,24 @@ and deciding its shape without one of its two customers in front of it.
   criterion would go. **Which credential authorises a host action is deferred**: any local user
   may act, and [07 §5.1](07-platforms.md) names what that costs.
 - [ ] `lowlat-tray` over the same socket, announcing the other role.
+- [x] **The display's session decides whose layout is in force**, asked of the login manager
+  once a second: a helper for that session stands, else its sockets are asked, else the picture
+  is the desktop. A user switch keeps the first session alive with its helper connected and its
+  layout describing a desktop nobody is scanning out, which is why the helper's push alone was
+  not enough. *Built 2026-09-10, measured across switches to a greeter and back.*
 
 **Gate:**
 
-1. The service starts at boot and accepts a connection with no user logged in.
+1. The service starts at boot and accepts a connection with no user logged in. *Passed
+   2026-09-10 on the third boot of the day, after two that each found a boot-order fault:
+   the vendor encoder's module and node were made lazily by the first session and the unit's
+   device list had been resolved without them, and a device that refused for a moment ended
+   its guest. With the greeter on a Wayland compositor the guest at the login screen gets the
+   picture, the pointer and the greeter's own layout.*
 2. **A stream survives the tray exiting and the user logging out**, and survives the helper
-   exiting mid-session with nothing disturbed. *Named regression test.*
+   exiting mid-session with nothing disturbed. *Named regression test.* *The helper half and
+   the user-switch half passed live 2026-09-10; the logout half passed the same day with the
+   stream carrying on into the greeter. The tray half waits on the tray.*
 3. The tray attaches and detaches repeatedly against a running stream.
 4. **A host action names who asked for it.** The connection's credentials appear on the line
    that records a kick or a settings change, so it can be attributed. Authorising on them is
