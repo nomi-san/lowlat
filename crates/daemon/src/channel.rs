@@ -313,7 +313,7 @@ fn serve(mut stream: UnixStream) {
         // is a different question with a different answer, so what it says
         // about a session is not taken (docs/07-platforms.md section 5.1).
         if greeting.role == Role::Helper {
-            say(&body);
+            say(greeting.peer.uid, &body);
         }
     }
     if greeting.role == Role::Helper {
@@ -576,7 +576,7 @@ pub(crate) fn drop_overdue() {
 /// **A queue rather than a call, because the two ends are different threads
 /// and only one of them may touch the seam.** The channel's own threads read
 /// the socket; the loop that owns the guests drains this.
-static SAID: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
+static SAID: std::sync::Mutex<Vec<(u32, Vec<u8>)>> = std::sync::Mutex::new(Vec::new());
 
 /// How many unread things from a session are kept.
 ///
@@ -585,20 +585,33 @@ static SAID: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
 /// let a session agent spend this program's memory.
 const SAID_MAX: usize = 4;
 
-fn say(body: &[u8]) {
+fn say(uid: u32, body: &[u8]) {
     let Ok(mut said) = SAID.lock() else { return };
     if said.len() >= SAID_MAX {
         said.remove(0);
         lowlat_common::log_warn!("channel: the session is talking faster than this reads");
     }
-    said.push(body.to_vec());
+    said.push((uid, body.to_vec()));
 }
 
-/// Take everything a session has said since the last time this was asked.
-pub(crate) fn take_said() -> Vec<Vec<u8>> {
+/// Take everything a session has said since the last time this was asked,
+/// each with the account whose session said it.
+///
+/// **The account matters for one thing it says.** A layout describes the
+/// desktop of the session that pushed it, and whether that session is the one
+/// in front of the display is decided by the reader, not here.
+pub(crate) fn take_said() -> Vec<(u32, Vec<u8>)> {
     SAID.lock()
         .map(|mut said| std::mem::take(&mut *said))
         .unwrap_or_default()
+}
+
+/// Whether a helper for this account holds a place right now.
+pub(crate) fn helper_for(uid: u32) -> bool {
+    HELPERS
+        .lock()
+        .map(|live| live.iter().any(|held| held.uid == uid))
+        .unwrap_or(false)
 }
 
 /// Hand the session a guest's copied text to put on its clipboard.
@@ -727,13 +740,8 @@ pub(crate) fn hello(role: Role, can: Can) -> Vec<u8> {
         .into_bytes()
 }
 
-/// Who is on the other end of this connection.
-///
-/// **Read by both ends.** The service records who connected; the session
-/// side reads which account the service runs as, because that account has to
-/// be let into the session's own runtime directory before it can reach the
-/// sound server there.
-pub(crate) fn peer_of(stream: &UnixStream) -> Option<Peer> {
+/// Who opened this connection.
+fn peer_of(stream: &UnixStream) -> Option<Peer> {
     let mut cred = libc::ucred {
         pid: 0,
         uid: 0,

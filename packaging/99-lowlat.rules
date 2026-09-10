@@ -1,7 +1,0 @@
-# The input node the guests' devices are created on.
-#
-# **It is root-only until a rule says otherwise**, and the module may not be
-# loaded when this runs, so the static node is named as well: without that the
-# permissions are applied to a node that does not exist yet and are lost when
-# it appears.
-KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"

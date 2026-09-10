@@ -72,6 +72,32 @@ pub fn tell(outputs: Option<Vec<Output>>) {
     }
 }
 
+/// The layout of the session belonging to one account, asked over its own
+/// sockets.
+///
+/// **For the session in front of the display when no helper speaks for it**
+/// -- a greeter, or a user whose helper is not running. Its sockets live in
+/// its runtime directory, which admits its owner and root.
+pub fn layout_of(uid: u32) -> Option<Vec<Output>> {
+    let runtime = PathBuf::from(format!("/run/user/{uid}"));
+    let entries = std::fs::read_dir(&runtime).ok()?;
+    let mut sockets: Vec<PathBuf> = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_prefix("wayland-"))
+                .is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
+        })
+        .collect();
+    sockets.sort();
+    sockets
+        .iter()
+        .filter_map(|socket| query(socket))
+        .find(|outputs| !outputs.is_empty())
+}
+
 /// Every layout worth asking: the one that was reported, then every socket.
 fn layouts() -> Vec<Vec<Output>> {
     let mut found = Vec::new();
@@ -447,7 +473,12 @@ impl Session {
         self.settle()?;
         self.moved = false;
 
-        Some(self.outputs.values().cloned().collect())
+        // **In one order whoever asks.** The outputs live in a map, and two
+        // readings of one unchanged desktop have to compare equal, or a
+        // reader keeping the last one would see a change on every read.
+        let mut outputs: Vec<Output> = self.outputs.values().cloned().collect();
+        outputs.sort_by(|a, b| a.name.cmp(&b.name));
+        Some(outputs)
     }
 
     fn allocate(&mut self) -> u32 {

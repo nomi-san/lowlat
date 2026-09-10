@@ -14,23 +14,15 @@ ExecStart=/usr/bin/lowlatd $LOWLATD_ARGS
 Restart=on-failure
 RestartSec=2
 
-# **A dedicated system user, never root.** Everything below grants exactly what
-# was measured to be needed and nothing else.
-User=lowlat
-Group=lowlat
-# The display device, the render node it converts on, and the input node it
-# creates the guests' devices on.
-SupplementaryGroups=video render input
-
-# **The one broad privilege, and it is a product decision rather than a
-# packaging detail** (docs/07-platforms.md section 6). Reading the buffer
-# handles of what a display is scanning out is refused without it: measured on
-# this hardware, a process in the video group opens the device, enumerates its
-# connectors and finds the lit plane, and is then refused the handles that
-# every later stage needs. Group membership alone answers "nothing is being
-# scanned out", which is also what an empty desktop answers.
-AmbientCapabilities=CAP_SYS_ADMIN
-CapabilityBoundingSet=CAP_SYS_ADMIN
+# **Root, and it is a product decision rather than a packaging detail**
+# (docs/07-platforms.md section 6.1). Reading the buffer handles of what a
+# display is scanning out needs CAP_SYS_ADMIN, which is already the whole
+# machine; and a session's sockets -- the sound server's, the compositor's, the
+# greeter's -- live in runtime directories that admit their owner and root and
+# nobody else. A dedicated account carrying the capability was measured to be
+# refused at each of those doors. The bounding set keeps root to what capture,
+# the device nodes and those directories need.
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH
 NoNewPrivileges=yes
 
 # Where the session side connects, created and torn down with the service.
@@ -56,7 +48,13 @@ DeviceAllow=/dev/uinput rw
 # and a read-only /run refuses a connection to one, which would take the
 # desktop's sound with it.
 ProtectSystem=full
-ProtectHome=yes
+# **Not ProtectHome, for the same reason**: it hides /run/user along with the
+# home directories, and /run/user is where every session's sockets are -- the
+# sound server's, the compositor's, the greeter's. Measured: with it set, the
+# service found no session at all. The two directories it was really for are
+# hidden by name instead.
+ProtectHome=no
+InaccessiblePaths=-/home -/root
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

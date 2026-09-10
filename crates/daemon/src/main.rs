@@ -103,10 +103,10 @@ async fn main() {
     }
 }
 
-mod acl;
 mod app;
 mod channel;
 mod dbus;
+mod seat;
 
 /// Which of the two programs an invocation is.
 ///
@@ -368,9 +368,6 @@ fn session() -> ! {
             Ok(mut stream) => {
                 lowlat_common::log_info!("session: connected");
                 wait = FIRST_RETRY_MS;
-                if let Some(service) = channel::peer_of(&stream) {
-                    let_in(service.uid);
-                }
                 if let Ok(sending) = stream.try_clone()
                     && let Ok(mut writer) = writer.lock()
                 {
@@ -430,6 +427,34 @@ fn session() -> ! {
         }
         std::thread::sleep(std::time::Duration::from_millis(wait));
     }
+}
+
+/// How often the seat is asked which session owns the display.
+///
+/// The question costs a few file reads and, where the owning session has no
+/// helper, one round trip to its compositor -- measured under a tenth of a
+/// millisecond -- so the interval is set by how stale a layout may be after a
+/// switch, not by cost.
+const SEAT_MS: f64 = 1000.0;
+
+/// Take a layout as the one in force, and tell everything that reads one.
+///
+/// **Told to every reader, not only the stream.** The output listing, the
+/// corner preference and what a guest is told all read the layout for
+/// themselves. A layout of nothing withdraws the placement, so the absolute
+/// axis spans the picture alone rather than a desktop that is no longer there.
+fn adopt_layout(
+    seam: &mut Admission,
+    layout: &mut Option<Vec<lowlat::capture::Output>>,
+    chosen: Option<Vec<lowlat::capture::Output>>,
+) -> Option<lowlat::capture::Placement> {
+    lowlat::capture::tell(chosen.clone());
+    *layout = chosen;
+    let placed = situate(seam, layout.as_deref());
+    if placed.is_none() {
+        seam.set_place(None);
+    }
+    placed
 }
 
 /// Tell the stream where its picture sits, from the layout a session gave.
@@ -507,36 +532,6 @@ fn watch_layout(
                 lowlat_common::log_warn!("session: the layout can no longer be watched");
                 return;
             }
-        }
-    }
-}
-
-/// Let the account the service runs as into this session's runtime directory.
-///
-/// **The sound server's socket is in there, and the directory is the user's
-/// alone.** Root traverses it regardless and needs nothing; a dedicated
-/// service account is refused at the directory and never reaches the socket,
-/// which reads as "the sound server refused the connection". What is granted
-/// is traverse on the directory and on the sound server's own, and to one
-/// account, for as long as the directory lasts -- which is the session.
-fn let_in(uid: u32) {
-    if uid == 0 || uid == unsafe { libc::getuid() } {
-        return;
-    }
-    let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") else {
-        return;
-    };
-    let runtime = std::path::PathBuf::from(runtime);
-    for dir in [runtime.clone(), runtime.join("pulse")] {
-        if !dir.is_dir() {
-            continue;
-        }
-        match acl::grant_traverse(&dir, uid) {
-            Ok(()) => lowlat_common::log_info!("session: let uid={uid} into {}", dir.display()),
-            Err(error) => lowlat_common::log_warn!(
-                "session: could not let uid={uid} into {}, error={error}",
-                dir.display()
-            ),
         }
     }
 }
@@ -1099,11 +1094,15 @@ async fn session_loop(
         "lowlatd: a guest's clipboard is {}",
         settings.guest_clipboard.name()
     );
-    // The session's last account of its displays, and which output the stream
-    // was pointed at when it was last acted on.
+    // The layout in force, which output the stream was pointed at when it was
+    // last acted on, and where the picture sits in that layout.
     let mut layout: Option<Vec<lowlat::capture::Output>> = None;
     let mut situated = 0u32;
     let mut placed: Option<lowlat::capture::Placement> = None;
+    // The last layout a helper pushed, and whose session it describes.
+    let mut helper_layout: Option<(u32, Vec<lowlat::capture::Output>)> = None;
+    // When the seat was last asked who owns the display.
+    let mut seated = lowlat_common::clock::Time::now();
     let mut rostered = lowlat_common::clock::Time::now();
     // Whether the session was last told somebody is watching.
     let mut awake = false;
@@ -1271,18 +1270,19 @@ async fn session_loop(
         // reads its socket on its own threads and only this loop may touch the
         // guests, so what a session says waits in a queue until this asks for
         // it (docs/07-platforms.md section 5.1).
-        for said in channel::take_said() {
+        for (uid, said) in channel::take_said() {
             if let Some(text) = channel::is_clipboard(&said) {
                 app::clipboard_to_guests(seam, settings, text.as_bytes());
             }
             if let Some(outputs) = channel::is_layout(&said) {
-                // **Told to every reader, not only the stream.** The output
-                // listing, the corner preference and what a guest is told all
-                // read the layout for themselves, and a service account cannot
-                // reach the session's sockets to do it.
-                lowlat::capture::tell(Some(outputs.clone()));
-                layout = Some(outputs);
-                placed = situate(seam, layout.as_deref());
+                // **Kept, and applied only if that session owns the display.**
+                // A helper in a session that has gone inactive keeps pushing a
+                // layout about a desktop nobody is scanning out.
+                let owns = seat::active_uid().is_none_or(|active| active == uid);
+                helper_layout = Some((uid, outputs.clone()));
+                if owns {
+                    placed = adopt_layout(seam, &mut layout, Some(outputs));
+                }
             }
             // **The answer to a mode request is a line, not an action.** The
             // stream follows whatever the display became on its own.
@@ -1295,6 +1295,36 @@ async fn session_loop(
             }
         }
         channel::drop_overdue();
+
+        // **The display belongs to whichever session is in front of it, and
+        // the login manager says which.** A user switch keeps the first
+        // session alive with its helper connected, and puts a greeter with no
+        // helper in front of the display; the layout in force has to be that
+        // session's. Once a second: where the owning session has a helper,
+        // its last push stands; where it has none, its own sockets are asked,
+        // which root may do; where they say nothing, the picture is the
+        // desktop, which is right for a greeter on one screen.
+        if lowlat_common::clock::elapsed_ms(seated) >= SEAT_MS {
+            seated = lowlat_common::clock::Time::now();
+            let active = seat::active_uid();
+            let chosen = match active {
+                Some(active) => match helper_layout.as_ref() {
+                    Some((uid, outputs)) if *uid == active && channel::helper_for(active) => {
+                        Some(outputs.clone())
+                    }
+                    _ => lowlat::capture::layout_of(active),
+                },
+                None => helper_layout.as_ref().map(|(_, outputs)| outputs.clone()),
+            };
+            if chosen != layout {
+                lowlat_common::log_info!(
+                    "lowlatd: the display's session changed, uid={:?} outputs={}",
+                    active,
+                    chosen.as_ref().map_or(0, Vec::len)
+                );
+                placed = adopt_layout(seam, &mut layout, chosen);
+            }
+        }
 
         // **Resolved when either half moves, not only when the desktop does.**
         // The two go stale for different reasons: a desktop that gained a
