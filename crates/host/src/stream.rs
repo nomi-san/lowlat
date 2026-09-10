@@ -1945,6 +1945,9 @@ fn run(
     // every rebuild tries it again and fails, and each new guest is ended on
     // arrival, so reconnecting cannot recover it either.
     let mut previous_output: Option<Option<String>> = None;
+    // When the device first refused an encoder in the current run of
+    // refusals, so a refusal that persists can be told from one that passes.
+    let mut refused_since: Option<lowlat_common::clock::Time> = None;
     loop {
         // Waiting rather than holding hardware. A host advertises itself long
         // before anyone connects, and an encoder open across that whole time
@@ -2096,6 +2099,18 @@ fn run(
                     shared.refused.store(0, Ordering::Relaxed);
                     continue;
                 }
+                // **A refusal that passes is not a refusal.** The vendor's
+                // compute runtime answers "unavailable" for a moment while a
+                // session takes the device over -- measured at a login, ten
+                // refusals in half a second and then an encoder -- and a
+                // guest ended on the first of them was ended over nothing.
+                // So the device is asked again for a while before anybody is
+                // told, at the same pace the wait below sets.
+                let since = *refused_since.get_or_insert_with(lowlat_common::clock::Time::now);
+                if lowlat_common::clock::elapsed_ms(since) < REFUSAL_GRACE_MS {
+                    std::thread::sleep(IDLE_WAIT);
+                    continue;
+                }
                 {
                     lowlat_common::log_error!(
                         "stream: no encoder for codec={:?}, ending {} guest(s), reason={}",
@@ -2124,6 +2139,7 @@ fn run(
                 }
             }
             Exit::Rediscover(_) | Exit::Reconfigure(..) => {
+                refused_since = None;
                 // **Disarmed, because the output it was holding worked.** A
                 // run that got this far captured the screen it was asked for,
                 // so a failure later belongs to whatever changed after it and
@@ -3076,6 +3092,13 @@ fn start_bps(config: &Config) -> u32 {
 
 /// How long the loop sleeps while no guest is seated.
 const IDLE_WAIT: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// How long a device may refuse an encoder before its guests are told.
+///
+/// Long enough to cover a session taking the device over, which is when the
+/// refusals that pass were seen; short enough that a device which really has
+/// no encoder answers within the time a peer would wait for a first frame.
+const REFUSAL_GRACE_MS: f64 = 3000.0;
 
 /// Pictures the encoder may hold at once.
 const ENCODE_DEPTH: usize = 4;
