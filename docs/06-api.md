@@ -633,9 +633,12 @@ than converted. Reflexive servers are a fixed array with a count rather than a p
 length, so the structure stays one blittable block with nothing in it to free.
 
 **Rotation is followed, not configured.** A display decides its own orientation exactly as it
-decides its own size, so asking for one is the same request as asking for a mode. Nothing here
-reads it from the display yet, so a stream is declared flat until something does; that is a gap
-rather than a decision, and it is the one thing removing the field cost.
+decides its own size, so asking for one is the same request as asking for a mode. **It is read
+from the session since 2026-09-10**, on the same connection that places the output in the
+desktop, and declared in the video header from there; a host with no session to ask declares
+the picture flat. A guest's request for a size or a turn is the application's to relay to the
+session, and it stays out of this configuration for the same reason a size does
+([impl-plan.md](impl-plan.md), *Output selection*).
 
 **Was open until Phase 8:** the concrete `lowlat_host_config` field set, which depends on the
 capture backend decision in [07-platforms.md](07-platforms.md), and the status code range

@@ -216,6 +216,8 @@ separate list, and it is short:
 |---|---|---|
 | absolute input landing in the right place | the desktop's layout: which outputs exist, and where each sits | the axis spans the captured picture alone, which is right on one output and wrong on two |
 | following a display that appears or moves | the same, watched rather than asked | the mapping is right about the desktop as it was when the display opened |
+| a turned display streaming upright | the same events, which carry the output's transform | the picture streams on its side, declared flat |
+| a guest's request for a size or a turn | the compositor's output-management protocol, asked by the session | refused with a reason |
 | the screen not blanking mid-session | an inhibitor the session honours | the desktop blanks while somebody is watching it |
 | the clipboard, either direction | something that can own a selection and outlive the copy | copied text does not cross |
 | the attention chord | whatever the desktop binds the combination to | the keys are typed and nothing answers them |
@@ -229,6 +231,8 @@ rather than broken, which is the rule the session channel is built to
 | capability | mechanism | grade |
 |---|---|---|
 | layout, and changes to it | `zxdg_output_manager_v1` on the session's own socket | **measured** on KDE Plasma Wayland, including an output appearing and going away |
+| the output's transform | `wl_output` on the same socket, which every compositor offers | **measured** on KDE Plasma Wayland, a head turned and turned back |
+| a display mode or turn on request | `kde_output_management_v2` | **measured** on KDE Plasma Wayland from the command line, 0.19 s to a new mode on the device; **not built** |
 | idle inhibitor | `org.freedesktop.ScreenSaver` on the session bus | **measured** on KDE Plasma Wayland |
 | clipboard | `org.kde.klipper` on the session bus | **measured** on KDE Plasma Wayland, and **it is that desktop's own interface** |
 | attention chord | none: the keys are typed on the guest's own keyboard | **measured** on KDE Plasma Wayland, which answers with its leave dialog |
@@ -254,6 +258,7 @@ it is marked otherwise. What to run, per desktop, is four things:
 |---|---|
 | can this machine host | `cargo run -p lowlat-host --example can-host` |
 | does the layout read, and does it follow a change | `cargo run -p lowlat-capture --example layout-watch`, then plug a display in or start a virtual one |
+| does a turn arrive | the same, then turn a display in the desktop's own settings; the transform on that output changes |
 | does the screen stay awake | `cargo test -p lowlatd -- --ignored the_screen` |
 | does the clipboard cross | `cargo test -p lowlatd -- --ignored the_desktop_clipboard` |
 

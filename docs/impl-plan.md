@@ -1003,6 +1003,19 @@ same size for this reason).
   established host has. A peer adapts to the size it is sent, so nothing on the far side needs
   the change to have come from it. That removes the per-compositor output-management protocol
   from the plan entirely, and with it one of the session helper's customers.
+
+  **Re-taken 2026-09-10, against a measurement the first decision did not have.** The
+  compositor that holds the display device also takes requests for it: asked over its own
+  output-management protocol, the session set a real mode on the device in **0.19 s** and a
+  rotation in 0.03 s, both visible in the device's own state. The first decision was taken
+  against the device refusing everyone but its owner, which is still true and no longer
+  the point; asking the owner is what a person's own display settings do. So the request
+  **is relayed, through the session helper and nothing else**: the SDK follows the display
+  as it always has, and the daemon -- which owns the application protocol a guest's request
+  arrives on -- asks the session to change it. The helper announces whether its session has
+  a mechanism, one desktop's ships first, and a session with none refuses with a reason
+  ([07 §5.1](07-platforms.md)). The public configuration is unchanged: there is still no
+  requested resolution in it, because the request is the application's and not the stream's.
 - [ ] **A display this host creates is the exception, and it is the more important case.** It is
   what makes a requested resolution and refresh rate work properly for a headless host, and it is
   the product [07 §2.2](07-platforms.md) already separates out. **The two paths differ in who
@@ -1043,11 +1056,21 @@ same size for this reason).
   ceiling rather than a promise: the loop follows the display's own present, so asking for more
   than the captured output refreshes at produces what it refreshes at.*
 
-**So the split to hold:** the output is selected here, the mode is followed rather than set, and
-a display this host creates is the one case where a requested size is ours to apply. That keeps
-the whole feature working at the greeter, and it keeps a requested size out of the public
-configuration ([06 §14](06-api.md)): a field that only ever reports itself refused describes a
-stream nobody is producing, which is the one mistake this phase has already made four times.
+**So the split to hold:** the output is selected here, the mode and the orientation are
+followed by the stream and changed only by asking the session, and a display this host creates
+is the one case where a requested size is ours to apply. That keeps the whole feature working
+at the greeter, and it keeps a requested size out of the public configuration
+([06 §14](06-api.md)): a field that only ever reports itself refused describes a stream nobody
+is producing, which is the one mistake this phase has already made four times.
+
+- [x] **The orientation is followed, from the session.** A turned display is drawn turned into
+  a framebuffer that keeps its landscape shape, so scanout captures the picture on its side and
+  nothing below the session says by how much. The session's transform arrives with the layout,
+  travels with the placement, and is what the video header declares; the peer turns the picture
+  back and maps its pointer in the desktop's orientation. *Closed 2026-09-10, measured on a
+  turned head: the transform arrived on the layout watch and the device's plane stayed unturned.*
+  The daemon's startup flag for it is gone, because a declared turn that the display did not make
+  streamed a picture at a right angle to the desk.
 
 **Gate:**
 
@@ -1579,7 +1602,15 @@ and deciding its shape without one of its two customers in front of it.
   identity, and one helper to a session with the newest winning.
 - [ ] **A deadline on every request**, which lands with the first customer that asks one. There
   are no requests yet: what exists is the greeting, which is on a clock, and signals, which are
-  not requests and must not be put on one.
+  not requests and must not be put on one. **The first customer is the display mode request
+  below**, so the two land together.
+- [ ] **Display mode and rotation, asked of the session** ([07 §5.1](07-platforms.md)). A
+  guest's request for a size or a turn arrives on the application protocol the daemon owns,
+  and the daemon asks the helper, which asks the compositor over its output-management
+  protocol. One desktop's mechanism first, announced as a capability like the clipboard's; a
+  session with none, or no session at all, refuses with a reason. The stream itself does not
+  take part: it follows whatever the display becomes, as it did before. *Re-admitted 2026-09-10
+  after the decision of 2026-08-21 was re-taken against a measurement; see the change log.*
 - [x] **`lowlatd` in its session role**, selected by the first argument and never by a flag that
   may appear anywhere in a command line.
 - [ ] **The relative-pointer signal**, pushed on change ([07 §2.1](07-platforms.md)). The
@@ -1590,7 +1621,8 @@ and deciding its shape without one of its two customers in front of it.
 - [x] **The display layout pushed by the session**, in place of the backend's own reading. It was
   planned as a question and is a signal: the answer has to be right whenever a guest moves its
   pointer, and a host that asks once is silently wrong from the moment a display is plugged in
-  ([07 §5.1](07-platforms.md)).
+  ([07 §5.1](07-platforms.md)). **The orientation rides on it** since 2026-09-10: the same
+  events carry the session's transform, and the video header declares what they say.
 - [x] **The clipboard, both directions, behind `guest_clipboard`** ([07 §5.1](07-platforms.md)):
   an ownership held for as long as the selection is, not a value written once. **One desktop's
   mechanism so far**, announced through the capability, so a session that has none says so and
@@ -1622,6 +1654,11 @@ and deciding its shape without one of its two customers in front of it.
 9. A second helper for one session replaces the first rather than joining it.
 10. **The clipboard moves under `send` and `both` and under nothing else**, in the direction each
     permits, with `off` and an unrecognised value both carrying nothing in either direction.
+11. **A guest's mode request changes the display and the stream follows it**, with the size and
+    the turn the peer is told matching what the desktop became; a request the session cannot
+    honour is answered with a reason and changes nothing. *The turned half is measured
+    2026-09-10 from the display's side: a display turned by hand streams upright, with absolute
+    input landing where it was aimed.*
 
 ---
 
@@ -1713,6 +1750,19 @@ Newest first. Record approach changes and gate revisions here; per-commit detail
   stream has run. The hardware matrix this argument rests on is
   [09-compatibility.md](09-compatibility.md).
 
+- 2026-09-10: **The mode is the session's to set, and the request goes to it.** The decision of
+  2026-08-21 not to relay a guest's mode request rested on the display device refusing every
+  client but its owner -- true, and beside the point once the owner is asked instead: the
+  session set a real mode on the device in 0.19 s over its own output-management protocol, and
+  a rotation in 0.03 s. **The relay is re-admitted as a helper customer** and struck from
+  nothing else: the stream still follows the display, the public configuration still has no
+  requested size, and the daemon, which owns the application protocol the request arrives on,
+  is what asks. The 2026-09-09 entry below that struck the row from [07 §5.1](07-platforms.md)
+  was right about the process -- a decision in one document gets made twice -- and the row is
+  back with the measurement beside it rather than by drift. **The same measurement found the
+  orientation was never followed**: a display turned by the session is drawn turned into a
+  landscape framebuffer, so scanout streamed it on its side while a startup flag declared
+  whatever it was told. The transform now arrives with the layout and the flag is gone.
 - 2026-09-09: **A virtual display is the session's on this stack, and the plan said otherwise.**
   *Output selection* rested on a virtual display having exactly one client -- us -- so that its
   mode needed no session at all. Measured against a session-created output: the display device

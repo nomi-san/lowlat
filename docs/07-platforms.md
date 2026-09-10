@@ -412,21 +412,32 @@ the host, and kicking a guest is not something any local user may do.
 
 #### What it is for
 
-Four things need session state, and none of them can be answered below it:
+Five things need session state, and none of them can be answered below it:
 
 | customer | shape | what is lost without a helper |
 |---|---|---|
 | relative pointer mode (§2.1) | a signal, pushed on change | the feature; a guest is never put into relative mode |
 | the idle inhibitor | a lease, held while asked | the screen may blank during a session |
-| the display layout | a signal, pushed on change | the backend's own reading is used, and it is only ever right about the desktop as it was when the display opened |
+| the display layout, and its orientation | a signal, pushed on change | the backend's own reading is used, and it is only ever right about the desktop as it was when the display opened; a turned display streams on its side |
 | the clipboard | an ownership, held | a guest's text is dropped and the desktop's never leaves |
+| the display mode and rotation | a request, with one answer | a guest asking for a size or a turn is refused with a reason |
 
-**Display mode and rotation are not on that list and must not be added to it.** This host does
-not set the mode of a display it does not own and does not relay a request to do so either
-([impl-plan.md](impl-plan.md), *Output selection*, decided 2026-08-21): the mode of somebody's
-desk is changed where it is already changed, and capture follows whatever the display became.
-The row was left here after that decision and read as work outstanding, which is how it came to
-be scheduled twice.
+**The mode row was struck on 2026-08-21 and is back on 2026-09-10, on a measurement.** The
+display device admits one client and refuses every other, a service included; that was the
+ground for not relaying a request, and it is still true. What was not measured then is that
+the client it admits takes requests: asked over the compositor's own output-management
+protocol, the session set a real mode on the device in 0.19 s and a turn in 0.03 s. So the
+request goes where a person's own display settings already send it, and nothing here holds the
+device. **It is a request of the helper and of nothing else**: the stream follows whatever the
+display becomes, exactly as before, and the application layer above the SDK is what asks.
+
+**The orientation is the layout's business, not the mode request's.** A display the session has
+turned is drawn turned into a framebuffer that keeps its landscape shape, so scanout captures
+the picture on its side and the device reports no turn at all. The session's transform arrives
+on the same events that place the output, and the stream declares it in the video header; the
+peer turns the picture back and maps its pointer in the desktop's orientation. A host with no
+session declares the picture flat, which is the honest reading of nothing and right whenever
+the picture is.
 
 #### The layout is a signal, not a question
 
@@ -559,8 +570,8 @@ that is no longer there.
    and a helper that dies mid-session disturbs nothing. This is the same rule the tray has
    always had, and it is what keeps a logout survivable.
 2. **Absent is not degraded.** With no helper the answers are the honest ones: the pointer is
-   reported shown, so relative mode never engages; no idle lease is held; a mode request is
-   refused and the guest is told why. Nothing guesses.
+   reported shown, so relative mode never engages; no idle lease is held; the picture is
+   declared flat; a mode request is refused and the guest is told why. Nothing guesses.
 3. **The service never blocks on it.** Every request carries a deadline, and a helper that
    stops answering is dropped rather than waited for. An unbounded wait on a process in
    somebody's session is an unbounded wait on somebody's session.
