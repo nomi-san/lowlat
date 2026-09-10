@@ -51,10 +51,14 @@ EnvironmentFile=/etc/lowlat/lowlatd.env
 # display devices: its encoder is reached through them, and without them a
 # display on that card is captured and then refused an encoder (measured:
 # "compute runtime unavailable", and the stream stays on the other card).
+# The vendor's nodes may also be *made* here: its tool above creates the
+# encoder's node when nothing else has, and the device list denies making
+# nodes unless told otherwise -- measured across a boot, where the tool ran,
+# reported nothing, and the node appeared only at the first login.
 DevicePolicy=closed
 DeviceAllow=char-drm rw
-DeviceAllow=char-nvidia rw
-DeviceAllow=char-nvidia-uvm rw
+DeviceAllow=char-nvidia rwm
+DeviceAllow=char-nvidia-uvm rwm
 DeviceAllow=/dev/uinput rw
 
 # **Not `strict`, deliberately.** The session's own sockets live under /run,
