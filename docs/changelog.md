@@ -26,6 +26,16 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   mechanism, or no session at all, refuses with a reason. This is the channel's first request,
   and the deadline every request was to carry landed with it.
 
+- **The session's layout thread stopped after its first quiet second.** The watch answered the
+  same thing for a read that timed out and for a connection that closed, and the loop took the
+  first for the second; its change detection had been proven through a probe that loops on
+  time, so the helper carried its first layout and never another. Seen live as a turn the
+  session applied and the stream never heard of.
+- **A pointer read off a turned display arrived lying down.** The pointer plane is drawn
+  turned with the rest of the framebuffer, and a peer sets its own pointer from the picture,
+  so the picture is turned back before it is encoded, and the drawn part's place is turned
+  into the desktop's orientation, which is the space the hotspot is learned in.
+
 ### Changed
 - **The mode of a display the session owns is asked for rather than never set.** The earlier
   decision rested on the display device refusing every client but its owner, which is still

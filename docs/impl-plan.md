@@ -1067,8 +1067,10 @@ is producing, which is the one mistake this phase has already made four times.
   a framebuffer that keeps its landscape shape, so scanout captures the picture on its side and
   nothing below the session says by how much. The session's transform arrives with the layout,
   travels with the placement, and is what the video header declares; the peer turns the picture
-  back and maps its pointer in the desktop's orientation. *Closed 2026-09-10, measured on a
-  turned head: the transform arrived on the layout watch and the device's plane stayed unturned.*
+  back and maps its pointer in the desktop's orientation. **The pointer's picture is turned back
+  here**, because a peer sets its own pointer from it and draws that upright, and the drawn
+  part's place is turned into the desktop's orientation so the hotspot can still be learned
+  from a command. *Closed 2026-09-10 against a stock client at every turn.*
   The daemon's startup flag for it is gone, because a declared turn that the display did not make
   streamed a picture at a right angle to the desk.
 
@@ -1614,8 +1616,10 @@ and deciding its shape without one of its two customers in front of it.
   part: it follows whatever the display becomes, as it did before. *Re-admitted 2026-09-10
   after the decision of 2026-08-21 was re-taken against a measurement; see the change log.
   Built the same day: a mode in 75 ms and a turn in 9 ms from the helper's side, the size
-  chosen at the refresh the display was already running where that size offers it. The
-  request from a real guest is the half not yet run.*
+  chosen at the refresh the display was already running where that size offers it. Run from a
+  stock client the same evening: sizes applied and the stream rebuilt behind them, a size the
+  panel does not offer refused with its name, and every quarter turn arriving upright with the
+  pointer and its hotspot right.*
 - [x] **`lowlatd` in its session role**, selected by the first argument and never by a flag that
   may appear anywhere in a command line.
 - [ ] **The relative-pointer signal**, pushed on change ([07 §2.1](07-platforms.md)). The
@@ -1661,10 +1665,10 @@ and deciding its shape without one of its two customers in front of it.
     permits, with `off` and an unrecognised value both carrying nothing in either direction.
 11. **A guest's mode request changes the display and the stream follows it**, with the size and
     the turn the peer is told matching what the desktop became; a request the session cannot
-    honour is answered with a reason and changes nothing. *The turned half is measured
-    2026-09-10 from the display's side: a display turned by hand streams upright, with absolute
-    input landing where it was aimed. The request itself is measured from the helper's side
-    and not yet from a guest's.*
+    honour is answered with a reason and changes nothing. *Passed 2026-09-10 from a stock
+    client: two sizes applied and one refused by name, every turn from a quarter to three
+    quarters shown upright with the pointer upright and its hotspot on the point, and absolute
+    input landing where it was aimed.*
 
 ---
 
