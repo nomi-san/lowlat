@@ -1600,17 +1600,22 @@ and deciding its shape without one of its two customers in front of it.
 - [x] **The session channel**: length-prefixed frames on a Unix stream socket at a known path,
   JSON bodies, a first frame carrying version, role and capability, peer credentials as the
   identity, and one helper to a session with the newest winning.
-- [ ] **A deadline on every request**, which lands with the first customer that asks one. There
-  are no requests yet: what exists is the greeting, which is on a clock, and signals, which are
-  not requests and must not be put on one. **The first customer is the display mode request
-  below**, so the two land together.
-- [ ] **Display mode and rotation, asked of the session** ([07 §5.1](07-platforms.md)). A
+- [x] **A deadline on every request**, which landed with the first customer that asked one:
+  the mode request below. **One request outstanding at a time**, refused rather than queued
+  while one is, and a helper that has not answered in five seconds is dropped from the loop
+  that asked -- the connection is shut, which is what its own thread notices. The helper's own
+  wait on the compositor is shorter, so a slow session answers with a refusal rather than with
+  silence. Signals are still not requests and are still on no clock.
+- [x] **Display mode and rotation, asked of the session** ([07 §5.1](07-platforms.md)). A
   guest's request for a size or a turn arrives on the application protocol the daemon owns,
   and the daemon asks the helper, which asks the compositor over its output-management
-  protocol. One desktop's mechanism first, announced as a capability like the clipboard's; a
-  session with none, or no session at all, refuses with a reason. The stream itself does not
-  take part: it follows whatever the display becomes, as it did before. *Re-admitted 2026-09-10
-  after the decision of 2026-08-21 was re-taken against a measurement; see the change log.*
+  protocol. One desktop's mechanism, announced as a capability like the clipboard's; a session
+  with none, or no session at all, refuses with a reason. The stream itself does not take
+  part: it follows whatever the display becomes, as it did before. *Re-admitted 2026-09-10
+  after the decision of 2026-08-21 was re-taken against a measurement; see the change log.
+  Built the same day: a mode in 75 ms and a turn in 9 ms from the helper's side, the size
+  chosen at the refresh the display was already running where that size offers it. The
+  request from a real guest is the half not yet run.*
 - [x] **`lowlatd` in its session role**, selected by the first argument and never by a flag that
   may appear anywhere in a command line.
 - [ ] **The relative-pointer signal**, pushed on change ([07 §2.1](07-platforms.md)). The
@@ -1658,7 +1663,8 @@ and deciding its shape without one of its two customers in front of it.
     the turn the peer is told matching what the desktop became; a request the session cannot
     honour is answered with a reason and changes nothing. *The turned half is measured
     2026-09-10 from the display's side: a display turned by hand streams upright, with absolute
-    input landing where it was aimed.*
+    input landing where it was aimed. The request itself is measured from the helper's side
+    and not yet from a guest's.*
 
 ---
 

@@ -232,7 +232,7 @@ rather than broken, which is the rule the session channel is built to
 |---|---|---|
 | layout, and changes to it | `zxdg_output_manager_v1` on the session's own socket | **measured** on KDE Plasma Wayland, including an output appearing and going away |
 | the output's transform | `wl_output` on the same socket, which every compositor offers | **measured** on KDE Plasma Wayland, a head turned and turned back |
-| a display mode or turn on request | `kde_output_management_v2` | **measured** on KDE Plasma Wayland from the command line, 0.19 s to a new mode on the device; **not built** |
+| a display mode or turn on request | `kde_output_management_v2` on the session's own socket | **measured** on KDE Plasma Wayland, a mode in 75 ms and a turn in 9 ms from the helper's side; the request from a guest is not yet run |
 | idle inhibitor | `org.freedesktop.ScreenSaver` on the session bus | **measured** on KDE Plasma Wayland |
 | clipboard | `org.kde.klipper` on the session bus | **measured** on KDE Plasma Wayland, and **it is that desktop's own interface** |
 | attention chord | none: the keys are typed on the guest's own keyboard | **measured** on KDE Plasma Wayland, which answers with its leave dialog |
@@ -259,6 +259,7 @@ it is marked otherwise. What to run, per desktop, is four things:
 | can this machine host | `cargo run -p lowlat-host --example can-host` |
 | does the layout read, and does it follow a change | `cargo run -p lowlat-capture --example layout-watch`, then plug a display in or start a virtual one |
 | does a turn arrive | the same, then turn a display in the desktop's own settings; the transform on that output changes |
+| does the session take a mode request | `cargo run -p lowlat-capture --example mode-probe -- <connector> <WxH> [transform]`, as the person logged in |
 | does the screen stay awake | `cargo test -p lowlatd -- --ignored the_screen` |
 | does the clipboard cross | `cargo test -p lowlatd -- --ignored the_desktop_clipboard` |
 

@@ -574,7 +574,9 @@ that is no longer there.
    declared flat; a mode request is refused and the guest is told why. Nothing guesses.
 3. **The service never blocks on it.** Every request carries a deadline, and a helper that
    stops answering is dropped rather than waited for. An unbounded wait on a process in
-   somebody's session is an unbounded wait on somebody's session.
+   somebody's session is an unbounded wait on somebody's session. One request is outstanding
+   at a time, a second is refused rather than queued, and the answer is read by the loop that
+   asked, on its next pass, from the same queue the session's signals arrive on.
 4. **A helper speaks only for itself.** The peer's credentials, not its claims, say which user
    is on the other end, and its statements apply to that user's session and no other. It is
    never asked to do anything it could not do on its own behalf, so it carries no privilege
