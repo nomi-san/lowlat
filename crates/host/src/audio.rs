@@ -69,6 +69,15 @@ impl Silence {
 /// good from being asked once per frame.
 const RETRY_MS: f64 = 2000.0;
 
+/// How long to wait before asking for a sound device that has never answered.
+///
+/// **A service that starts at boot meets its first guest before any
+/// session exists**, and the sound server arrives with the login, minutes
+/// later; a device that was never held is therefore asked for again, at a
+/// pace that keeps a machine with no sound server at all from paying for the
+/// question often. Each ask is a connection attempt on the loop that encodes.
+const RETRY_ABSENT_MS: f64 = 10_000.0;
+
 /// What a room's sound costs, and who it goes to.
 pub(crate) struct Sound {
     capture: Option<Capture>,
@@ -135,12 +144,13 @@ impl Sound {
 
 /// Whether a device that is not being read is asked for again on this pass.
 ///
-/// **Only one that was once held is retried.** A capture that never opened is
-/// a machine with no sound server, which is answered once when the first guest
-/// arrives; asking it again costs a connection attempt that blocks the loop
-/// trying to encode, and the answer does not change.
+/// **One that was held is asked for soon; one that never was, rarely.** A
+/// capture that never opened was once taken to mean a machine with no sound
+/// server, and the answer taken not to change; a guest seated at the greeter
+/// showed that it does, at the login. The cost of asking is a connection
+/// attempt on the loop that encodes, so the never-held case is paced apart.
 fn due(opened: bool, since_ms: f64) -> bool {
-    opened && since_ms >= RETRY_MS
+    since_ms >= if opened { RETRY_MS } else { RETRY_ABSENT_MS }
 }
 
 /// Take the sound device and publish what it delivers.
@@ -329,13 +339,21 @@ mod tests {
         assert!(guest_mbps(true, 128) > guest_mbps(false, 128) * 10.0);
     }
 
-    /// **A device that was held and stopped is taken again; one that never
-    /// opened is not.** The second half is what keeps a machine with no sound
-    /// server from spending a connection attempt per frame on an answer that
-    /// does not change -- and that attempt blocks the loop that encodes.
+    /// **A device that was held and stopped is taken again soon; one that
+    /// never opened is taken again rarely.** The second half is what lets a
+    /// guest seated before the login hear the session that follows, while
+    /// keeping a machine with no sound server from spending a connection
+    /// attempt per frame -- that attempt blocks the loop that encodes.
     #[test]
-    fn only_a_device_that_was_held_is_taken_again() {
-        assert!(!due(false, 60_000.0), "a device never held was retried");
+    fn a_device_never_held_is_asked_for_again_but_rarely() {
+        assert!(
+            !due(false, RETRY_MS),
+            "a device never held was retried as if lost"
+        );
+        assert!(
+            due(false, RETRY_ABSENT_MS),
+            "a device never held was never asked for again"
+        );
         assert!(due(true, RETRY_MS), "a lost device was not taken again");
     }
 
