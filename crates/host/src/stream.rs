@@ -898,6 +898,18 @@ impl Shared {
         self.captured.store(checksum, Ordering::Release);
     }
 
+    /// Which way the session has turned the captured output, flat when no
+    /// session has said.
+    fn rotation(&self) -> lowlat_core::video::Rotation {
+        if self.place_rect.load(Ordering::Acquire) == 0 {
+            return lowlat_core::video::Rotation::None;
+        }
+        match lowlat_core::video::Rotation::from_bits(self.place_rotation.load(Ordering::Acquire)) {
+            lowlat_core::video::Rotation::Unknown => lowlat_core::video::Rotation::None,
+            known => known,
+        }
+    }
+
     /// Say where the captured output sits in the desktop around it.
     ///
     /// Nothing said is one output, which needs no placing: the absolute axis
@@ -1667,15 +1679,7 @@ impl SeatHold {
     /// is not told, and declares the picture flat: that is the honest reading
     /// of nothing, and it is right whenever the picture is.
     pub fn rotation(&self) -> lowlat_core::video::Rotation {
-        if self.shared.place_rect.load(Ordering::Acquire) == 0 {
-            return lowlat_core::video::Rotation::None;
-        }
-        match lowlat_core::video::Rotation::from_bits(
-            self.shared.place_rotation.load(Ordering::Acquire),
-        ) {
-            lowlat_core::video::Rotation::Unknown => lowlat_core::video::Rotation::None,
-            known => known,
-        }
+        self.shared.rotation()
     }
 
     fn placed_rect(&self, rect: u64) -> Option<lowlat_inject::event::Place> {
@@ -3235,6 +3239,13 @@ fn publish_pointer(
     now_ms: f64,
 ) {
     let Some(desktop) = display else { return };
+    // **The plane is drawn turned with the display**, and everything a peer
+    // is told about the pointer is in the desktop's own orientation: the
+    // picture is turned back before it is encoded, and the drawn part's
+    // place is turned here, so a command -- which arrives in that
+    // orientation -- can be compared against it for the hotspot.
+    let turn = shared.rotation();
+    desktop.set_pointer_turn(turn);
     let Some(seen) = desktop.pointer() else {
         // **Nothing is compositing a pointer, which usually means something
         // took it over.** Held for long enough, it is reported: a client turns
@@ -3247,24 +3258,41 @@ fn publish_pointer(
         }
         return;
     };
-    let Some((x, y)) = within(seen.x, seen.y, width, height) else {
+    let (x, y, drawn_width, drawn_height) = lowlat_capture::cursor::upright_rect(
+        turn,
+        (width, height),
+        (
+            seen.x,
+            seen.y,
+            u32::from(seen.width),
+            u32::from(seen.height),
+        ),
+    );
+    let (desktop_width, desktop_height) = if turn.quarter_turn() {
+        (height, width)
+    } else {
+        (width, height)
+    };
+    let Some((x, y)) = within(x, y, desktop_width, desktop_height) else {
         return;
     };
+    let drawn_width = u16::try_from(drawn_width).unwrap_or(u16::MAX);
+    let drawn_height = u16::try_from(drawn_height).unwrap_or(u16::MAX);
     // Derived from what a guest told the pointer to be, against where the
     // display then drew it. Zero until this shape has been seen once with a
     // command settled behind it.
     let (hot_x, hot_y) = hotspots.update(
         shared.commanded(),
         seen.checksum,
-        (x, y, seen.width, seen.height),
+        (x, y, drawn_width, drawn_height),
     );
     let state = PointerState {
         x,
         y,
         hot_x,
         hot_y,
-        width: seen.width,
-        height: seen.height,
+        width: drawn_width,
+        height: drawn_height,
         checksum: seen.checksum,
         hidden: false,
     };

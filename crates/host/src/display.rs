@@ -1527,6 +1527,12 @@ impl Display {
         self.cursor.image()
     }
 
+    /// Say which way the session has turned this display, so the pointer
+    /// read off its plane is turned back before it travels.
+    pub fn set_pointer_turn(&mut self, turn: lowlat_core::video::Rotation) {
+        self.cursor.set_turn(turn);
+    }
+
     /// What the display is showing, for the encoder's configuration.
     pub fn size(&self) -> (u32, u32) {
         (self.shape.width, self.shape.height)

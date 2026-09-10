@@ -24,6 +24,8 @@
 
 use std::os::fd::AsRawFd;
 
+use lowlat_core::video::Rotation;
+
 use crate::scanout::{Card, CursorPlane, Error, Framebuffer};
 
 /// The most a pointer plane can be, which is what the drivers here advertise.
@@ -275,6 +277,11 @@ pub struct Watcher {
     /// The current picture, in the form the wire carries it.
     png: Vec<u8>,
     held: Held,
+    /// Which way the display has been turned, so the picture can be turned
+    /// back before it is encoded.
+    turn: Rotation,
+    /// The turned pixels, reused so turning one never allocates.
+    upright: Vec<u8>,
 }
 
 /// The picture currently held, and what names it.
@@ -313,6 +320,23 @@ impl Watcher {
             // encoding one never allocates.
             png: vec![0; lowlat_core::png::upper_bound(LIMIT, LIMIT)],
             held: Held::default(),
+            turn: Rotation::None,
+            upright: Vec::new(),
+        }
+    }
+
+    /// Say which way the display is turned.
+    ///
+    /// **The plane is drawn turned with the rest of the framebuffer**, so a
+    /// pointer read off it is on its side by exactly the display's turn. A
+    /// peer sets its own pointer from the picture and draws that upright, so
+    /// the picture is turned back here, before it is encoded and named; a
+    /// turn that changes makes a new picture with a new name, which is what
+    /// keeps a peer that caches pointers from reusing a sideways one.
+    pub fn set_turn(&mut self, turn: Rotation) {
+        if self.turn != turn {
+            self.turn = turn;
+            self.held = Held::default();
         }
     }
 
@@ -351,7 +375,15 @@ impl Watcher {
             // The two fields are named rather than reached through `self`,
             // because the bytes just read are borrowed out of the reader for
             // as long as they are in use.
-            fresh = Self::adopt(&mut self.png, &mut self.held, extent, rgba)?;
+            let (width, height) = upright(self.turn, rgba, extent, &mut self.upright);
+            fresh = Self::adopt(
+                &mut self.png,
+                &mut self.held,
+                extent,
+                &self.upright,
+                width,
+                height,
+            )?;
             // Counted after the picture is adopted, because the bytes it was
             // read into are borrowed out of the reader until then.
             if self.reader.read_whole() {
@@ -387,10 +419,20 @@ impl Watcher {
     /// display**, which is the half that has been got wrong: a redraw is not a
     /// new shape, and treating one as the other sends the same pointer over
     /// and over.
-    fn adopt(png: &mut [u8], held: &mut Held, extent: Extent, rgba: &[u8]) -> Result<bool, Error> {
-        let stride = (extent.width as usize).saturating_mul(4);
-        let used = lowlat_core::png::encode(rgba, extent.width, extent.height, stride, png)
-            .map_err(|_| Error::UnknownFormat(extent.width))?;
+    ///
+    /// `extent` is the drawn part as it sits in the plane; `width` and
+    /// `height` are the picture's, which differ from it by the turn.
+    fn adopt(
+        png: &mut [u8],
+        held: &mut Held,
+        extent: Extent,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<bool, Error> {
+        let stride = (width as usize).saturating_mul(4);
+        let used = lowlat_core::png::encode(rgba, width, height, stride, png)
+            .map_err(|_| Error::UnknownFormat(width))?;
         let checksum = lowlat_core::crc32::of(png.get(..used).unwrap_or_default());
         if checksum == held.checksum {
             return Ok(false);
@@ -426,6 +468,74 @@ impl Watcher {
     pub fn image(&self) -> &[u8] {
         self.png.get(..self.held.used).unwrap_or_default()
     }
+}
+
+/// Turn a picture read off the plane back upright, and say its new size.
+///
+/// The display draws a turned desktop a quarter counter-clockwise per step
+/// of its transform, and the pointer plane with it; turning the picture the
+/// same quarter clockwise is what puts it upright. A half turn is its own
+/// inverse.
+pub fn upright(turn: Rotation, rgba: &[u8], extent: Extent, into: &mut Vec<u8>) -> (u32, u32) {
+    let (bw, bh) = (extent.width as usize, extent.height as usize);
+    let (uw, uh) = match turn {
+        Rotation::Deg90 | Rotation::Deg270 => (bh, bw),
+        _ => (bw, bh),
+    };
+    into.clear();
+    into.resize(uw * uh * 4, 0);
+    for uy in 0..uh {
+        for ux in 0..uw {
+            let (bx, by) = match turn {
+                Rotation::Deg90 => (uy, bh - 1 - ux),
+                Rotation::Deg270 => (bw - 1 - uy, ux),
+                Rotation::Deg180 => (bw - 1 - ux, bh - 1 - uy),
+                _ => (ux, uy),
+            };
+            let from = (by * bw + bx) * 4;
+            let to = (uy * uw + ux) * 4;
+            if let (Some(pixel), Some(slot)) = (rgba.get(from..from + 4), into.get_mut(to..to + 4))
+            {
+                slot.copy_from_slice(pixel);
+            }
+        }
+    }
+    (
+        u32::try_from(uw).unwrap_or(u32::MAX),
+        u32::try_from(uh).unwrap_or(u32::MAX),
+    )
+}
+
+/// Where a rectangle drawn in a turned framebuffer sits in the desktop the
+/// framebuffer shows.
+///
+/// `frame` is the framebuffer's own size and the rectangle is in its pixels;
+/// the answer is in the desktop's, which for a quarter turn has the frame's
+/// sides swapped. Signed, because a pointer straddles the edges.
+pub fn upright_rect(
+    turn: Rotation,
+    frame: (u32, u32),
+    rect: (i32, i32, u32, u32),
+) -> (i32, i32, u32, u32) {
+    let (fw, fh) = (i64::from(frame.0), i64::from(frame.1));
+    let (x, y, w, h) = (
+        i64::from(rect.0),
+        i64::from(rect.1),
+        i64::from(rect.2),
+        i64::from(rect.3),
+    );
+    let (x, y, w, h) = match turn {
+        Rotation::Deg90 => (fh - y - h, x, h, w),
+        Rotation::Deg270 => (y, fw - x - w, h, w),
+        Rotation::Deg180 => (fw - x - w, fh - y - h, w, h),
+        _ => (x, y, w, h),
+    };
+    (
+        i32::try_from(x).unwrap_or(i32::MAX),
+        i32::try_from(y).unwrap_or(i32::MAX),
+        u32::try_from(w).unwrap_or(u32::MAX),
+        u32::try_from(h).unwrap_or(u32::MAX),
+    )
 }
 
 /// Whether a partial read answered the question on its own.
@@ -472,6 +582,64 @@ fn extent(pixels: &[u8], width: u32, height: u32, pitch: usize) -> Option<Extent
 mod tests {
     use super::*;
 
+    /// **A picture read off a turned plane is turned back, and its place is
+    /// turned with it.** The direction is the one measured on the display:
+    /// a quarter turn draws the desktop's top along the framebuffer's left
+    /// edge, so turning the picture a quarter clockwise puts it upright, and
+    /// the drawn part's corner moves with the same turn.
+    #[test]
+    fn a_pointer_read_off_a_turned_plane_comes_back_upright() {
+        // Two wide, three high, each pixel its own number.
+        let rgba: Vec<u8> = (0u8..6).flat_map(|p| [p, p, p, 255]).collect();
+        let extent = Extent {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 3,
+        };
+        let first = |pixels: &[u8]| -> Vec<u8> { pixels.iter().step_by(4).copied().collect() };
+        let mut out = Vec::new();
+
+        assert_eq!(upright(Rotation::None, &rgba, extent, &mut out), (2, 3));
+        assert_eq!(first(&out), [0, 1, 2, 3, 4, 5]);
+
+        // Clockwise: the left column, read from the bottom, is the top row.
+        assert_eq!(upright(Rotation::Deg90, &rgba, extent, &mut out), (3, 2));
+        assert_eq!(first(&out), [4, 2, 0, 5, 3, 1]);
+
+        // Counter-clockwise: the right column, read from the top, is the top row.
+        assert_eq!(upright(Rotation::Deg270, &rgba, extent, &mut out), (3, 2));
+        assert_eq!(first(&out), [1, 3, 5, 0, 2, 4]);
+
+        assert_eq!(upright(Rotation::Deg180, &rgba, extent, &mut out), (2, 3));
+        assert_eq!(first(&out), [5, 4, 3, 2, 1, 0]);
+
+        // A 100x50 frame turned a quarter is a 50x100 desktop. A rectangle at
+        // the frame's top-left corner is the desktop's bottom-left under a
+        // clockwise turn, and its top-right under the other.
+        assert_eq!(
+            upright_rect(Rotation::None, (100, 50), (0, 0, 2, 3)),
+            (0, 0, 2, 3)
+        );
+        assert_eq!(
+            upright_rect(Rotation::Deg90, (100, 50), (0, 0, 2, 3)),
+            (47, 0, 3, 2)
+        );
+        assert_eq!(
+            upright_rect(Rotation::Deg270, (100, 50), (0, 0, 2, 3)),
+            (0, 98, 3, 2)
+        );
+        assert_eq!(
+            upright_rect(Rotation::Deg180, (100, 50), (0, 0, 2, 3)),
+            (98, 47, 2, 3)
+        );
+        // The frame's far corner under a clockwise turn is the desktop's origin.
+        assert_eq!(
+            upright_rect(Rotation::Deg90, (100, 50), (98, 47, 2, 3)),
+            (0, 98, 3, 2)
+        );
+    }
+
     /// **A partial read that did not settle has to ask for the rest.** The
     /// pointer is usually drawn in the first rows of the plane and reading
     /// only those is most of the saving, but a pointer drawn below them, or
@@ -510,18 +678,18 @@ mod tests {
         let Watcher { png, held, .. } = &mut watcher;
 
         assert!(
-            Watcher::adopt(png, held, area, &arrow).expect("encode"),
+            Watcher::adopt(png, held, area, &arrow, 2, 2).expect("encode"),
             "the first picture"
         );
         let first = held.checksum;
         assert!(
-            !Watcher::adopt(png, held, area, &arrow).expect("encode"),
+            !Watcher::adopt(png, held, area, &arrow, 2, 2).expect("encode"),
             "the same picture read again"
         );
         assert_eq!(held.checksum, first, "the name of a picture is its bytes");
 
         assert!(
-            Watcher::adopt(png, held, area, &beam).expect("encode"),
+            Watcher::adopt(png, held, area, &beam, 2, 2).expect("encode"),
             "a real change"
         );
         assert_ne!(held.checksum, first);
