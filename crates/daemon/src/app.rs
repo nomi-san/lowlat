@@ -424,7 +424,12 @@ pub(crate) struct Shown {
 ///
 /// **Whether anybody needs to hear it is the channel's decision**, which
 /// compares against what it last sent; this only says what is true now.
-pub(crate) fn state(seam: &Admission, shown: &mut Shown) -> serde_json::Value {
+pub(crate) fn state(
+    seam: &Admission,
+    shown: &mut Shown,
+    peers: &std::collections::HashMap<String, crate::Introduced>,
+    established: &std::collections::HashSet<String>,
+) -> serde_json::Value {
     let captured = seam.captured();
     if captured != shown.captured {
         shown.captured = captured;
@@ -445,10 +450,20 @@ pub(crate) fn state(seam: &Admission, shown: &mut Shown) -> serde_json::Value {
         lowlat::stream::Codec::H264 => "h264",
         lowlat::stream::Codec::H265 => "h265",
     });
+    // **Seated is not connected.** A guest has a number from the answer
+    // onward, before its media path exists, and a tray telling somebody that
+    // a guest arrived should mean the guest is there.
     let guests: Vec<serde_json::Value> = seam
         .guests()
         .iter()
-        .map(|guest| serde_json::json!({ "id": guest.number, "owner": guest.owner }))
+        .map(|guest| {
+            serde_json::json!({
+                "id": guest.number,
+                "owner": guest.owner,
+                "name": peers.get(&guest.attempt).map_or("", |peer| peer.name.as_str()),
+                "connected": established.contains(&guest.attempt),
+            })
+        })
         .collect();
     serde_json::json!({
         "output": shown.output,

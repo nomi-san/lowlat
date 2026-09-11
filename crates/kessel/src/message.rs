@@ -191,6 +191,23 @@ pub struct OfferRelay {
     /// ([04 §3](../../../docs/04-signaling.md)).
     #[serde(default)]
     pub permissions: Permissions,
+    /// Who the peer is, as the service names them.
+    ///
+    /// **For people, not for policy.** A peer is identified by its credentials
+    /// and addressed by its attempt; the name is what a person at the host is
+    /// shown, and an offer without one is a peer with no name rather than a
+    /// peer refused.
+    #[serde(default)]
+    pub user: User,
+}
+
+/// The account behind a peer, as the service describes it.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct User {
+    #[serde(default)]
+    pub id: u64,
+    #[serde(default)]
+    pub name: String,
 }
 
 /// What a guest may drive.

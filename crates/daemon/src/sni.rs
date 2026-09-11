@@ -44,8 +44,30 @@ pub(crate) struct Shown {
     pub(crate) fps: u32,
     pub(crate) bitrate_mbps: u32,
     pub(crate) codec: String,
-    /// Each guest by number, and whether it owns the machine.
-    pub(crate) guests: Vec<(u32, bool)>,
+    pub(crate) guests: Vec<Guest>,
+}
+
+/// One seated guest, as a person would want it described.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Guest {
+    pub(crate) number: u32,
+    pub(crate) owner: bool,
+    /// The account's name, or empty where the service gave none.
+    pub(crate) name: String,
+    /// Whether its media path is up: seated is not connected.
+    pub(crate) connected: bool,
+}
+
+impl Guest {
+    /// What to call this guest: the seat's number, which is what the log and
+    /// the roster know it by, and the account's name where there is one.
+    fn label(&self) -> String {
+        if self.name.is_empty() {
+            format!("Guest#{}", self.number)
+        } else {
+            format!("Guest#{} {}", self.number, self.name)
+        }
+    }
 }
 
 impl Shown {
@@ -78,9 +100,22 @@ impl Shown {
                 guests
                     .iter()
                     .filter_map(|guest| {
-                        let id = guest.get("id")?.as_u64()?;
-                        let owner = guest.get("owner").and_then(serde_json::Value::as_bool);
-                        Some((u32::try_from(id).ok()?, owner.unwrap_or(false)))
+                        let flag = |field: &str| {
+                            guest
+                                .get(field)
+                                .and_then(serde_json::Value::as_bool)
+                                .unwrap_or(false)
+                        };
+                        Some(Guest {
+                            number: u32::try_from(guest.get("id")?.as_u64()?).ok()?,
+                            owner: flag("owner"),
+                            name: guest
+                                .get("name")
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or_default()
+                                .to_string(),
+                            connected: flag("connected"),
+                        })
                     })
                     .collect()
             })
@@ -128,6 +163,32 @@ pub(crate) enum Click {
     Kick(u32),
     Bitrate(u32),
     Quit,
+}
+
+/// Who arrived and who left between two states, by label.
+///
+/// **Connected, not seated, on both edges.** An arrival is a guest whose
+/// media path came up, and a departure is one that had come up and is gone;
+/// an attempt that never got that far is nothing a person needs telling
+/// about.
+pub(crate) fn arrivals(before: &[Guest], after: &[Guest]) -> Vec<(String, bool)> {
+    let was_up = |number: u32, guests: &[Guest]| {
+        guests
+            .iter()
+            .any(|guest| guest.number == number && guest.connected)
+    };
+    let mut told = Vec::new();
+    for guest in after {
+        if guest.connected && !was_up(guest.number, before) {
+            told.push((guest.label(), true));
+        }
+    }
+    for guest in before {
+        if guest.connected && !after.iter().any(|now| now.number == guest.number) {
+            told.push((guest.label(), false));
+        }
+    }
+    told
 }
 
 /// The menu's entries, by the number the panel names them with.
@@ -220,15 +281,16 @@ fn menu(shown: &Shown) -> Entry {
             ..Entry::item(NOBODY, "No guests")
         });
     }
-    for (guest, owner) in &shown.guests {
-        let label = if *owner {
-            format!("Kick guest {guest} (owner)")
-        } else {
-            format!("Kick guest {guest}")
-        };
+    for guest in &shown.guests {
+        let label = format!(
+            "Kick {}{}{}",
+            guest.label(),
+            if guest.owner { " (owner)" } else { "" },
+            if guest.connected { "" } else { " (connecting)" }
+        );
         root.children.push(Entry {
             enabled: shown.connected,
-            ..Entry::item(KICK_AT + i32::try_from(*guest).unwrap_or(0), label)
+            ..Entry::item(KICK_AT + i32::try_from(guest.number).unwrap_or(0), label)
         });
     }
     root.children.push(Entry::separator(SEPARATOR_AT + 1));
@@ -636,6 +698,40 @@ impl Bus {
             "s",
             &body.0,
         )
+        .map(|_| ())
+    }
+
+    /// Put a notification on the desktop, the way any application does.
+    ///
+    /// **Fire and forget.** The server answers with an id nothing here needs,
+    /// and a desktop with no notification server refuses the call, which the
+    /// bus loop logs like any other refusal.
+    pub(crate) fn notify(&self, summary: &str, body: &str) {
+        if let Err(error) = self.notify_serial(summary, body) {
+            lowlat_common::log_warn!("tray: not notified, {error}");
+        }
+    }
+
+    /// The call itself, answering with its serial so a test can find the
+    /// reply.
+    fn notify_serial(&self, summary: &str, body: &str) -> Result<u32, String> {
+        let mut out = Out::default();
+        out.str("lowlat");
+        out.u32(0);
+        out.str(ICON);
+        out.str(summary);
+        out.str(body);
+        out.array(4, |_| {});
+        out.array(8, |_| {});
+        out.i32(-1);
+        self.call(
+            "org.freedesktop.Notifications",
+            "/org/freedesktop/Notifications",
+            "org.freedesktop.Notifications",
+            "Notify",
+            "susssasa{sv}i",
+            &out.0,
+        )
     }
 
     fn next_serial(&self) -> u32 {
@@ -653,7 +749,8 @@ impl Bus {
             .map_err(|error| format!("write: {error}"))
     }
 
-    /// A method call, sent and not waited for; the answer arrives in `serve`.
+    /// A method call, sent and not waited for; the answer arrives in `serve`,
+    /// naming the serial this answers with.
     fn call(
         &self,
         destination: &str,
@@ -662,11 +759,12 @@ impl Bus {
         member: &str,
         signature: &str,
         body: &[u8],
-    ) -> Result<(), String> {
+    ) -> Result<u32, String> {
+        let serial = self.next_serial();
         self.send(&dbus::message(
             dbus::METHOD_CALL,
             0,
-            self.next_serial(),
+            serial,
             &[
                 (dbus::PATH, "o", object),
                 (dbus::INTERFACE, "s", interface),
@@ -677,6 +775,7 @@ impl Bus {
             signature,
             body,
         ))
+        .map(|()| serial)
     }
 
     fn signal(&self, object: &str, interface: &str, member: &str, signature: &str, body: &[u8]) {
@@ -1025,7 +1124,19 @@ mod tests {
             fps: 120,
             bitrate_mbps: 20,
             codec: "h265".to_string(),
-            guests: vec![(1, true), (3, false)],
+            guests: vec![
+                Guest {
+                    number: 1,
+                    owner: true,
+                    name: "someone@example.org".to_string(),
+                    connected: true,
+                },
+                Guest {
+                    number: 3,
+                    connected: true,
+                    ..Guest::default()
+                },
+            ],
         }
     }
 
@@ -1070,9 +1181,9 @@ mod tests {
         assert!(!tree.find(STATUS).expect("status").enabled);
         assert_eq!(
             tree.find(KICK_AT + 1).expect("kick").label,
-            "Kick guest 1 (owner)"
+            "Kick Guest#1 someone@example.org (owner)"
         );
-        assert_eq!(tree.find(KICK_AT + 3).expect("kick").label, "Kick guest 3");
+        assert_eq!(tree.find(KICK_AT + 3).expect("kick").label, "Kick Guest#3");
         let rates = tree.find(RATES).expect("rates");
         let marked: Vec<(i32, Option<bool>)> = rates
             .children
@@ -1126,7 +1237,10 @@ mod tests {
         let state = serde_json::json!({
             "output": "DP-4", "width": 2560, "height": 1440, "fps": 120,
             "bitrate": 20, "codec": "h265",
-            "guests": [{ "id": 1, "owner": true }, { "id": 3, "owner": false }],
+            "guests": [
+                { "id": 1, "owner": true, "name": "someone@example.org", "connected": true },
+                { "id": 3, "owner": false, "connected": true },
+            ],
         });
         let mut read = Shown {
             connected: true,
@@ -1137,10 +1251,86 @@ mod tests {
         // A field that is missing reads as nothing rather than as a failure.
         read.read(&serde_json::json!({ "guests": [{ "id": 2 }] }));
         assert_eq!(read.line(), "Waiting for a display, 1 guest");
-        assert_eq!(read.guests, vec![(2, false)]);
+        assert_eq!(
+            read.guests,
+            vec![Guest {
+                number: 2,
+                ..Guest::default()
+            }]
+        );
+        // A guest not yet connected is listed and said so, and is still one
+        // a tray may end.
+        assert_eq!(
+            menu(&read).find(KICK_AT + 2).expect("kick").label,
+            "Kick Guest#2 (connecting)"
+        );
         read.read(&serde_json::json!({}));
         assert_eq!(read.line(), "Idle, nobody connected");
         assert!(read.guests.is_empty());
+    }
+
+    /// **A person is told about a media path coming up and going down, and
+    /// nothing else.** An attempt that never connected is not an arrival when
+    /// it appears nor a departure when it goes, and a guest already up when
+    /// the tray first looks is neither.
+    #[test]
+    fn a_person_is_told_who_arrived_and_who_left() {
+        let up = |number: u32, name: &str| Guest {
+            number,
+            name: name.to_string(),
+            connected: true,
+            ..Guest::default()
+        };
+        let seated = |number: u32| Guest {
+            number,
+            ..Guest::default()
+        };
+        // Guest 1 was up, guest 2 was only seated.
+        let before = vec![up(1, "someone@example.org"), seated(2)];
+        // Guest 2 came up, guest 3 is only seated, guest 1 left.
+        let after = vec![up(2, ""), seated(3)];
+        assert_eq!(
+            arrivals(&before, &after),
+            vec![
+                ("Guest#2".to_string(), true),
+                ("Guest#1 someone@example.org".to_string(), false),
+            ]
+        );
+        // Nothing changed: nothing said.
+        assert!(arrivals(&after, &after).is_empty());
+        // A seated guest that vanishes without ever connecting: nothing said.
+        assert!(arrivals(&[seated(3)], &[]).is_empty());
+    }
+
+    /// **Off by default: it needs a desktop session's own bus.** Run it as the
+    /// person who is logged in, with `--ignored`; it puts one notification on
+    /// that desktop. What it asserts is that the real notification server
+    /// answered a well formed call with an id of its own, which is the one
+    /// check that catches a body marshalled wrong.
+    #[test]
+    #[ignore = "needs a session bus"]
+    fn a_notification_reaches_the_desktop() {
+        let bus = Bus::open().expect("a bus");
+        let serial = bus
+            .notify_serial("lowlat probe", "this is a test notification")
+            .expect("sent");
+        let mut reader = bus.reader.lock().expect("the reader");
+        loop {
+            let message = dbus::read_message(&mut reader).expect("a message");
+            if message.fields.reply_serial != Some(serial) {
+                continue;
+            }
+            assert_eq!(
+                message.kind,
+                dbus::METHOD_RETURN,
+                "refused: {:?} {:?}",
+                message.fields.error_name,
+                String::from_utf8_lossy(&message.body)
+            );
+            let id = dbus::le32(&message.body, 0);
+            assert!(id > 0, "the server gave the notification no id");
+            break;
+        }
     }
 
     /// An array's length counts its elements from their own alignment, not

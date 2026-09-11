@@ -501,6 +501,10 @@ fn follow_service(
                     shown.connected = true;
                     bus.changed(&shown);
                 }
+                // **The first state after a connect is a baseline, not
+                // news.** What is there when the tray first looks is shown;
+                // what changes afterwards is what a person is told about.
+                let mut known: Option<Vec<sni::Guest>> = None;
                 let mut body = Vec::new();
                 while channel::read_frame(&mut stream, &mut body).is_ok() {
                     if let Some(state) = channel::is_state(&body)
@@ -508,6 +512,13 @@ fn follow_service(
                     {
                         shown.read(&state);
                         bus.changed(&shown);
+                        if let Some(before) = known.as_deref() {
+                            for (who, arrived) in sni::arrivals(before, &shown.guests) {
+                                let what = if arrived { "connected" } else { "disconnected" };
+                                bus.notify(&format!("{who} {what}"), "");
+                            }
+                        }
+                        known = Some(shown.guests.clone());
                     }
                     if let Some(reason) = channel::is_bye(&body) {
                         lowlat_common::log_info!("tray: sent away, reason={reason}");
@@ -700,6 +711,16 @@ const MODE_MS: u64 = 3_000;
 /// connection; the wait exists so a session that ends is noticed rather than
 /// waited on forever.
 const LAYOUT_TICK_MS: u64 = 1_000;
+
+/// What signaling said about a peer when it was introduced: where to answer,
+/// and who it is.
+#[derive(Debug, Clone)]
+struct Introduced {
+    /// The address an answer or a candidate goes to.
+    from: String,
+    /// The account's name, or empty for a peer the service did not name.
+    name: String,
+}
 
 /// Where the clipboard thread writes, when there is a service to write to.
 type Writer = std::sync::Arc<std::sync::Mutex<Option<std::os::unix::net::UnixStream>>>;
@@ -1126,7 +1147,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         // the bitrate forever is not a default worth having.
         full_fps: flag_set("--full-fps"),
     };
-    let mut peers: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut peers: std::collections::HashMap<String, Introduced> = std::collections::HashMap::new();
     let mut established: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut backoff = Backoff::new();
 
@@ -1195,7 +1216,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 async fn session_loop(
     mut client: Client,
     seam: &mut Admission,
-    peers: &mut std::collections::HashMap<String, String>,
+    peers: &mut std::collections::HashMap<String, Introduced>,
     established: &mut std::collections::HashSet<String>,
     name: &str,
     capacity: u32,
@@ -1249,7 +1270,13 @@ async fn session_loop(
                     "offer_relay" => {
                         let offer: OfferRelay = serde_json::from_value(message.payload)?;
                         lowlat_common::log_info!("lowlatd: offer {} from {}", offer.attempt_id, offer.from);
-                        peers.insert(offer.attempt_id.clone(), offer.from.clone());
+                        peers.insert(
+                            offer.attempt_id.clone(),
+                            Introduced {
+                                from: offer.from.clone(),
+                                name: offer.user.name.clone(),
+                            },
+                        );
 
                         // Admission is the application's decision, and this
                         // application's policy is capacity alone.
@@ -1442,7 +1469,7 @@ async fn session_loop(
         // the channel decides whether it differs from what it last sent.
         // Nothing is worked out for nobody.
         if channel::trays() > 0 {
-            channel::state(&app::state(seam, &mut shown));
+            channel::state(&app::state(seam, &mut shown, peers, established));
         }
 
         // **The display belongs to whichever session is in front of it, and
@@ -1520,7 +1547,7 @@ async fn session_loop(
                     from_stun,
                     lan,
                 } => {
-                    let Some(to) = peers.get(&attempt) else {
+                    let Some(to) = peers.get(&attempt).map(|peer| &peer.from) else {
                         continue;
                     };
                     let kind = if from_stun { "reflexive" } else { "host" };
@@ -1541,7 +1568,7 @@ async fn session_loop(
                     )?;
                 }
                 Event::Ready { attempt } => {
-                    let Some(to) = peers.get(&attempt) else {
+                    let Some(to) = peers.get(&attempt).map(|peer| &peer.from) else {
                         continue;
                     };
                     client.send(
