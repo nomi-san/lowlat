@@ -263,6 +263,143 @@ fn leave_place(peer: Peer) {
     }
 }
 
+/// The trays connected now.
+///
+/// **Any number, unlike helpers.** A tray is shown state and asks for
+/// actions, and two of them showing the same room is not a contradiction the
+/// way two answers about one session would be.
+static TRAYS: std::sync::Mutex<Vec<Held>> = std::sync::Mutex::new(Vec::new());
+
+/// The last state the service published, for a tray that connects between
+/// two changes.
+static STATE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Take a tray on, telling it what the service last said.
+///
+/// **Told on connect rather than on the next change**, because a tray
+/// started by hand against a quiet stream would otherwise show nothing until
+/// something happened.
+fn attach(peer: Peer, stream: &UnixStream) {
+    let Ok(mut handle) = stream.try_clone() else {
+        return;
+    };
+    if let Ok(kept) = STATE.lock()
+        && let Some(body) = kept.as_ref()
+    {
+        let _ = write_frame(&mut handle, body.as_bytes());
+    }
+    if let Ok(mut live) = TRAYS.lock() {
+        live.push(Held {
+            uid: peer.uid,
+            pid: peer.pid,
+            can: Can::default(),
+            handle,
+        });
+    }
+}
+
+fn detach(peer: Peer) {
+    if let Ok(mut live) = TRAYS.lock() {
+        live.retain(|held| held.pid != peer.pid);
+    }
+}
+
+/// How many trays are connected, so the state is not worked out for nobody.
+pub(crate) fn trays() -> usize {
+    TRAYS.lock().map_or(0, |live| live.len())
+}
+
+/// Tell every tray what the host is doing, if it differs from the last time.
+///
+/// **Compared here rather than by the caller**, so the rule that a state
+/// repeated is not a change lives in one place; the loop says what it sees
+/// on every pass and this decides whether anybody needs to hear it.
+pub(crate) fn state(state: &serde_json::Value) {
+    let body = serde_json::json!({ "state": state }).to_string();
+    let Ok(mut kept) = STATE.lock() else { return };
+    if kept.as_ref() == Some(&body) {
+        return;
+    }
+    *kept = Some(body.clone());
+    let Ok(mut live) = TRAYS.lock() else { return };
+    for held in live.iter_mut() {
+        if let Err(error) = write_frame(&mut held.handle, body.as_bytes()) {
+            lowlat_common::log_warn!("channel: tray unreachable, pid={} error={error}", held.pid);
+        }
+    }
+}
+
+/// What a tray has asked for that the service has not acted on yet.
+///
+/// **With the credentials of the connection that asked**, because a host
+/// action has to be able to say who asked for it, and the criterion that
+/// would refuse one is deferred rather than absent (docs/07-platforms.md
+/// section 5.1).
+static ACTED: std::sync::Mutex<Vec<(Peer, Vec<u8>)>> = std::sync::Mutex::new(Vec::new());
+
+/// How many unread actions are kept. A person clicks slower than the loop
+/// reads, so the cap is a bound on a tray that is not a person.
+const ACTED_MAX: usize = 8;
+
+fn act(peer: Peer, body: &[u8]) {
+    let Ok(mut acted) = ACTED.lock() else { return };
+    if acted.len() >= ACTED_MAX {
+        acted.remove(0);
+        lowlat_common::log_warn!("channel: a tray is asking faster than this reads");
+    }
+    acted.push((peer, body.to_vec()));
+}
+
+/// Take everything the trays have asked for since the last time this was
+/// asked, each with who asked.
+pub(crate) fn take_acted() -> Vec<(Peer, Vec<u8>)> {
+    ACTED
+        .lock()
+        .map(|mut acted| std::mem::take(&mut *acted))
+        .unwrap_or_default()
+}
+
+/// A tray's request to end one guest.
+pub(crate) fn kick(guest: u32) -> Vec<u8> {
+    serde_json::json!({ "kick": guest })
+        .to_string()
+        .into_bytes()
+}
+
+pub(crate) fn is_kick(body: &[u8]) -> Option<u32> {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()?
+        .get("kick")?
+        .as_u64()
+        .and_then(|guest| u32::try_from(guest).ok())
+}
+
+/// A tray's request to change the stream, in the shape a guest's own
+/// request has, so the two are answered by one rule.
+pub(crate) fn config(config: &serde_json::Value) -> Vec<u8> {
+    serde_json::json!({ "config": config })
+        .to_string()
+        .into_bytes()
+}
+
+/// The configuration a frame carries, as bytes for the same reader a guest's
+/// goes to.
+pub(crate) fn is_config(body: &[u8]) -> Option<Vec<u8>> {
+    let config = serde_json::from_slice::<serde_json::Value>(body)
+        .ok()?
+        .get("config")?
+        .clone();
+    Some(config.to_string().into_bytes())
+}
+
+/// The state a frame carries, as the service described it.
+pub(crate) fn is_state(body: &[u8]) -> Option<serde_json::Value> {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()?
+        .get("state")
+        .cloned()
+}
+
 fn accept(listener: &UnixListener) {
     let live = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     for stream in listener.incoming() {
@@ -299,8 +436,9 @@ fn serve(mut stream: UnixStream) {
         greeting.peer.gid,
         greeting.can.names()
     );
-    if greeting.role == Role::Helper {
-        take_place(greeting.peer, greeting.can, &stream);
+    match greeting.role {
+        Role::Helper => take_place(greeting.peer, greeting.can, &stream),
+        Role::Tray => attach(greeting.peer, &stream),
     }
     let mut body = Vec::new();
     while read_frame(&mut stream, &mut body).is_ok() {
@@ -309,15 +447,18 @@ fn serve(mut stream: UnixStream) {
             greeting.role.name(),
             body.len()
         );
-        // **Only a helper speaks for a session.** A tray acts on the host and
-        // is a different question with a different answer, so what it says
-        // about a session is not taken (docs/07-platforms.md section 5.1).
-        if greeting.role == Role::Helper {
-            say(greeting.peer.uid, &body);
+        // **Only a helper speaks for a session, and only a tray acts on the
+        // host.** The two are different questions with different answers, so
+        // what each says goes to its own queue and is read as what it is
+        // (docs/07-platforms.md section 5.1).
+        match greeting.role {
+            Role::Helper => say(greeting.peer.uid, &body),
+            Role::Tray => act(greeting.peer, &body),
         }
     }
-    if greeting.role == Role::Helper {
-        leave_place(greeting.peer);
+    match greeting.role {
+        Role::Helper => leave_place(greeting.peer),
+        Role::Tray => detach(greeting.peer),
     }
     lowlat_common::log_info!(
         "channel: {} gone, pid={}",
@@ -1232,6 +1373,111 @@ mod tests {
         // Nothing else on the channel reads as a layout.
         assert_eq!(is_layout(BYE_REPLACED), None);
         assert_eq!(is_layout(&hello(Role::Helper, Can::default())), None);
+    }
+
+    /// **A tray is told the state on connect and on change, and not on a
+    /// repeat.** A tray started by hand against a quiet stream would otherwise
+    /// show nothing until something happened, and one told every pass would
+    /// redraw a menu twenty times a second.
+    #[test]
+    fn a_tray_is_told_the_state_on_connect_and_on_change() {
+        let _alone = alone();
+        let _ = STATE.lock().map(|mut kept| *kept = None);
+        let peer = Peer {
+            pid: 6001,
+            uid: 1003,
+            gid: 1003,
+        };
+        let mut body = Vec::new();
+
+        // Nothing has been said yet, so a tray connecting now is told nothing.
+        let (near, mut far) = pair();
+        attach(peer, &near);
+        assert_eq!(trays(), 1);
+        far.set_read_timeout(Some(std::time::Duration::from_millis(100)))
+            .expect("a deadline");
+        assert!(
+            read_frame(&mut far, &mut body).is_err(),
+            "told a state nobody said"
+        );
+
+        let first = serde_json::json!({ "output": "DP-4", "guests": [] });
+        state(&first);
+        read_frame(&mut far, &mut body).expect("the state");
+        assert_eq!(is_state(&body), Some(first.clone()));
+
+        // Said again unchanged: nothing.
+        state(&first);
+        assert!(
+            read_frame(&mut far, &mut body).is_err(),
+            "a repeat was sent"
+        );
+
+        // Changed: sent.
+        let second = serde_json::json!({ "output": "DP-4", "guests": [{ "id": 1 }] });
+        state(&second);
+        read_frame(&mut far, &mut body).expect("the change");
+        assert_eq!(is_state(&body), Some(second.clone()));
+
+        // A tray connecting later is told the last state at once.
+        let later = Peer { pid: 6002, ..peer };
+        let (near_later, mut far_later) = pair();
+        attach(later, &near_later);
+        far_later
+            .set_read_timeout(Some(std::time::Duration::from_millis(500)))
+            .expect("a deadline");
+        read_frame(&mut far_later, &mut body).expect("the kept state");
+        assert_eq!(is_state(&body), Some(second));
+
+        detach(peer);
+        detach(later);
+        assert_eq!(trays(), 0);
+        // Nothing else on the channel reads as a state.
+        assert_eq!(is_state(BYE_REPLACED), None);
+        assert_eq!(is_state(&hello(Role::Tray, Can::default())), None);
+    }
+
+    /// **What a tray says is an action with its credentials, and what a
+    /// helper says is not.** Driven through the real dispatch rather than the
+    /// queues alone, so a frame that took the wrong branch would show here.
+    #[test]
+    fn what_a_tray_asks_is_queued_with_who_asked() {
+        let _alone = alone();
+        let _ = take_acted();
+        let _ = take_said();
+
+        let (near, mut far) = pair();
+        let served = std::thread::spawn(move || serve(near));
+        write_frame(&mut far, &hello(Role::Tray, Can::default())).expect("hello");
+        write_frame(&mut far, &kick(3)).expect("a kick");
+        let wanted = serde_json::json!({ "video": [{ "encoderMaxBitrate": 20 }] });
+        write_frame(&mut far, &config(&wanted)).expect("a change");
+        drop(far);
+        served.join().expect("served");
+
+        let acted = take_acted();
+        assert_eq!(acted.len(), 2, "both actions queued: {acted:?}");
+        let (who, body) = &acted[0];
+        assert_eq!(who.pid, std::process::id().cast_signed());
+        assert_eq!(is_kick(body), Some(3));
+        assert_eq!(is_config(body), None);
+        let (_, body) = &acted[1];
+        assert_eq!(is_kick(body), None);
+        let carried: serde_json::Value =
+            serde_json::from_slice(&is_config(body).expect("a config")).expect("json");
+        assert_eq!(carried, wanted);
+        // Nothing a tray says is taken as a session's statement.
+        assert!(take_said().is_empty(), "a tray spoke for a session");
+
+        // And the other way round: a helper's frame is not an action.
+        let (near, mut far) = pair();
+        let served = std::thread::spawn(move || serve(near));
+        write_frame(&mut far, &hello(Role::Helper, Can::default())).expect("hello");
+        write_frame(&mut far, &kick(3)).expect("a kick from the wrong role");
+        drop(far);
+        served.join().expect("served");
+        assert!(take_acted().is_empty(), "a helper acted on the host");
+        assert_eq!(take_said().len(), 1);
     }
 
     #[test]

@@ -307,7 +307,7 @@ pub(crate) fn on_message(
                 settings,
                 seam.video(),
             );
-            apply(seam, body, &described, &listed);
+            apply(seam, body, &described, &listed, &format!("guest {guest}"));
             // **Not answered.** The client asks again with 9 the moment it has
             // sent one of these, so an answer here would arrive beside the one
             // it is about to ask for.
@@ -361,6 +361,104 @@ pub(crate) fn on_message(
         }
         _ => false,
     }
+}
+
+/// The status a peer renders as having been kicked.
+///
+/// **Non-zero, and one the peer already has words for.** A peer carries on
+/// through a zero, and a value outside its own enumeration shows as a blank
+/// reason rather than as one.
+const KICKED: i32 = 5;
+
+/// Act on what a tray asked for, saying who asked.
+///
+/// **The credentials are on the line, and nothing else gates on them yet.**
+/// Any local user may act, which is a deferral with its cost written down
+/// (docs/07-platforms.md section 5.1); what keeps it a deferral is that a
+/// kick or a change can be attributed afterwards.
+pub(crate) fn on_action(
+    seam: &mut Admission,
+    settings: &Settings,
+    who: crate::channel::Peer,
+    body: &[u8],
+) {
+    let by = format!("tray pid={} uid={}", who.pid, who.uid);
+    if let Some(guest) = crate::channel::is_kick(body) {
+        if seam.kick_guest(guest, KICKED) {
+            lowlat_common::log_info!("lowlatd: guest {guest} kicked, asked by {by}");
+        } else {
+            lowlat_common::log_info!("lowlatd: {by} asked to kick guest {guest}, who is not here");
+        }
+    }
+    // **The same reader a guest's request goes to**, so what a tray may change
+    // and what a guest may change are one rule rather than two that drift.
+    if let Some(config) = crate::channel::is_config(body) {
+        let listed = Display::outputs();
+        let described = describe(
+            seam.picture(),
+            &listed,
+            Display::preferred().as_deref(),
+            seam.captured(),
+            seam.rotation(),
+            settings,
+            seam.video(),
+        );
+        apply(seam, &config, &described, &listed, &by);
+    }
+}
+
+/// What a tray is shown, and the one part of it that costs something to
+/// find out.
+///
+/// **The output's name is re-read only when the capture moves.** Everything
+/// else a tray shows is a field the seam already holds; the name needs the
+/// display devices enumerated, which is not something to do twenty times a
+/// second for an icon.
+#[derive(Debug, Default)]
+pub(crate) struct Shown {
+    captured: u32,
+    output: String,
+}
+
+/// The host as a tray would show it: the picture, its rate, and who is here.
+///
+/// **Whether anybody needs to hear it is the channel's decision**, which
+/// compares against what it last sent; this only says what is true now.
+pub(crate) fn state(seam: &Admission, shown: &mut Shown) -> serde_json::Value {
+    let captured = seam.captured();
+    if captured != shown.captured {
+        shown.captured = captured;
+        shown.output = lowlat::display::captured(&Display::outputs(), captured)
+            .map(|output| output.connector.clone())
+            .unwrap_or_default();
+    }
+    let (width, height) = seam.picture().unwrap_or((0, 0));
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a live bitrate in megabits, rounded and floored at zero"
+    )]
+    let (fps, bitrate_mbps) = seam.video().map_or((0, 0), |live| {
+        (live.fps, live.bitrate_mbps.round().max(0.0) as u32)
+    });
+    let codec = seam.colour().map_or("", |(codec, _, _)| match codec {
+        lowlat::stream::Codec::H264 => "h264",
+        lowlat::stream::Codec::H265 => "h265",
+    });
+    let guests: Vec<serde_json::Value> = seam
+        .guests()
+        .iter()
+        .map(|guest| serde_json::json!({ "id": guest.number, "owner": guest.owner }))
+        .collect();
+    serde_json::json!({
+        "output": shown.output,
+        "width": width,
+        "height": height,
+        "fps": fps,
+        "bitrate": bitrate_mbps,
+        "codec": codec,
+        "guests": guests,
+    })
 }
 
 /// Pass the desktop's own clipboard to the guests that may have it.
@@ -645,7 +743,6 @@ fn outputs(fake: bool) -> String {
     serde_json::Value::Array(listed).to_string()
 }
 
-/// Take what a client asked for, and act on the part of it that is ours.
 /// The frame rate a configuration message asks for, against the display it
 /// would run on.
 ///
@@ -678,7 +775,12 @@ fn refresh_of(listed: &[Selectable], output: &str) -> u32 {
         .map_or(0, |found| found.refresh_hz)
 }
 
-fn apply(seam: &mut Admission, body: &[u8], video: &Video, listed: &[Selectable]) {
+/// Take what a client asked for, and act on the part of it that is ours.
+///
+/// **`who` is on every line this writes**, because a change to the stream is
+/// a host action and a host action says who asked for it: a guest by number,
+/// or a tray by the credentials of its connection.
+fn apply(seam: &mut Admission, body: &[u8], video: &Video, listed: &[Selectable], who: &str) {
     let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(body) else {
         lowlat_common::log_info!("lowlatd: a configuration arrived that is not JSON, ignoring it");
         return;
@@ -700,7 +802,7 @@ fn apply(seam: &mut Admission, body: &[u8], video: &Video, listed: &[Selectable]
         // somewhere, so the host goes back to whichever output it would have
         // taken on its own.
         AUTO if !video.output.is_empty() => {
-            lowlat_common::log_info!("lowlatd: guest asked for whichever output this host picks");
+            lowlat_common::log_info!("lowlatd: {who} asked for whichever output this host picks");
             seam.select_output(None);
         }
         AUTO => {}
@@ -711,12 +813,12 @@ fn apply(seam: &mut Admission, body: &[u8], video: &Video, listed: &[Selectable]
         // guest on the stream, including the one that asked. A guest naming
         // something that is not there must cost nothing.
         chosen if listed.iter().any(|real| real.id == chosen) => {
-            lowlat_common::log_info!("lowlatd: guest asked to capture {chosen}");
+            lowlat_common::log_info!("lowlatd: {who} asked to capture {chosen}");
             seam.select_output(Some(chosen.to_string()));
         }
         chosen => {
             lowlat_common::log_info!(
-                "lowlatd: guest asked to capture {chosen}, which nothing here is lighting"
+                "lowlatd: {who} asked to capture {chosen}, which nothing here is lighting"
             );
         }
     }
@@ -774,12 +876,12 @@ fn apply(seam: &mut Admission, body: &[u8], video: &Video, listed: &[Selectable]
             rotation: asked_rotation,
         }) {
             Ok(()) => lowlat_common::log_info!(
-                "lowlatd: guest asked for {output} at {:?} rotation={:?}, asking the session",
+                "lowlatd: {who} asked for {output} at {:?} rotation={:?}, asking the session",
                 asked_size,
                 asked_rotation
             ),
             Err(reason) => lowlat_common::log_info!(
-                "lowlatd: guest asked for {output} at {:?} rotation={:?}, refused: {reason}",
+                "lowlatd: {who} asked for {output} at {:?} rotation={:?}, refused: {reason}",
                 asked_size,
                 asked_rotation
             ),
@@ -829,7 +931,7 @@ fn apply(seam: &mut Admission, body: &[u8], video: &Video, listed: &[Selectable]
         return;
     }
     lowlat_common::log_info!(
-        "lowlatd: guest changed the stream, fps={} bitrate={:.1} full_fps={}",
+        "lowlatd: {who} changed the stream, fps={} bitrate={:.1} full_fps={}",
         wanted.fps,
         wanted.bitrate_mbps,
         u8::from(wanted.full_fps)

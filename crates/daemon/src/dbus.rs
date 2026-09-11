@@ -55,20 +55,10 @@ pub(crate) struct Screen {
 }
 
 impl Screen {
-    /// Open the session bus, or say why not.
-    ///
-    /// **The address comes from the environment**, which is the session's own
-    /// account of where its bus is. A session agent has one because it was
-    /// started inside a session; a program that has to guess at one is a
-    /// program running outside the session it is describing.
+    /// Open the session bus and name this connection on it, or say why not.
     pub(crate) fn connect() -> Result<Self, String> {
-        let address =
-            std::env::var("DBUS_SESSION_BUS_ADDRESS").map_err(|_| "no session bus".to_string())?;
-        let path = socket_of(&address).ok_or_else(|| format!("no socket in {address}"))?;
-        let mut stream = UnixStream::connect(&path).map_err(|error| format!("{path}: {error}"))?;
-        authenticate(&mut stream)?;
         let mut screen = Self {
-            stream,
+            stream: open()?,
             serial: 0,
             cookie: None,
         };
@@ -136,31 +126,20 @@ impl Screen {
         let signature: String = body.iter().map(|(text, _)| *text).collect();
         let payload: Vec<u8> = body.iter().flat_map(|(_, bytes)| bytes.clone()).collect();
 
-        let mut message = Vec::new();
-        message.extend_from_slice(&[b'l', 1, 0, 1]);
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "a body this builds is a handful of bytes"
-        )]
-        message.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-        message.extend_from_slice(&serial.to_le_bytes());
-
-        let mut fields = Vec::new();
-        put_field(&mut fields, 1, "o", object);
-        put_field(&mut fields, 2, "s", interface);
-        put_field(&mut fields, 3, "s", member);
-        put_field(&mut fields, 6, "s", destination);
-        if !signature.is_empty() {
-            put_field(&mut fields, 8, "g", &signature);
-        }
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "five header fields are a hundred bytes at most"
-        )]
-        message.extend_from_slice(&(fields.len() as u32).to_le_bytes());
-        message.extend_from_slice(&fields);
-        align(&mut message, 8);
-        message.extend_from_slice(&payload);
+        let message = message(
+            METHOD_CALL,
+            0,
+            serial,
+            &[
+                (PATH, "o", object),
+                (INTERFACE, "s", interface),
+                (MEMBER, "s", member),
+                (DESTINATION, "s", destination),
+            ],
+            None,
+            &signature,
+            &payload,
+        );
 
         self.stream
             .write_all(&message)
@@ -169,38 +148,150 @@ impl Screen {
         // Anything that is not the answer to this call is somebody else's
         // signal arriving on a shared bus, and is passed over.
         loop {
-            let (kind, to, body) = self.read_message()?;
-            if to != Some(serial) {
+            let answer = read_message(&mut self.stream)?;
+            if answer.fields.reply_serial != Some(serial) {
                 continue;
             }
-            return match kind {
-                2 => Ok(body),
+            return match answer.kind {
+                METHOD_RETURN => Ok(answer.body),
                 _ => Err(format!("{member} refused")),
             };
         }
     }
+}
 
-    /// One message in: its type, the serial it answers, and its body.
-    fn read_message(&mut self) -> Result<(u8, Option<u32>, Vec<u8>), String> {
-        let mut head = [0u8; HEADER];
-        self.stream
-            .read_exact(&mut head)
-            .map_err(|error| format!("read: {error}"))?;
-        let kind = head.get(1).copied().unwrap_or(0);
-        let body_len = le32(&head, 4) as usize;
-        let fields_len = le32(&head, 12) as usize;
-        let padded = fields_len.next_multiple_of(8);
-        if body_len > MAX_MESSAGE || padded > MAX_MESSAGE {
-            return Err("a message over the cap".to_string());
-        }
-        let mut rest = vec![0u8; padded + body_len];
-        self.stream
-            .read_exact(&mut rest)
-            .map_err(|error| format!("read: {error}"))?;
-        let fields = rest.get(..fields_len).unwrap_or(&[]);
-        let body = rest.get(padded..).unwrap_or(&[]).to_vec();
-        Ok((kind, reply_serial(fields), body))
+/// Open the session bus, or say why not.
+///
+/// **The address comes from the environment**, which is the session's own
+/// account of where its bus is. A session agent has one because it was
+/// started inside a session; a program that has to guess at one is a program
+/// running outside the session it is describing.
+pub(crate) fn open() -> Result<UnixStream, String> {
+    let address =
+        std::env::var("DBUS_SESSION_BUS_ADDRESS").map_err(|_| "no session bus".to_string())?;
+    let path = socket_of(&address).ok_or_else(|| format!("no socket in {address}"))?;
+    let mut stream = UnixStream::connect(&path).map_err(|error| format!("{path}: {error}"))?;
+    authenticate(&mut stream)?;
+    Ok(stream)
+}
+
+/// The four kinds of message, as the second byte of a header names them.
+pub(crate) const METHOD_CALL: u8 = 1;
+pub(crate) const METHOD_RETURN: u8 = 2;
+pub(crate) const ERROR: u8 = 3;
+pub(crate) const SIGNAL: u8 = 4;
+
+/// The flag on a call whose sender wants no reply.
+pub(crate) const NO_REPLY: u8 = 1;
+
+/// The header fields, by the code each is filed under.
+pub(crate) const PATH: u8 = 1;
+pub(crate) const INTERFACE: u8 = 2;
+pub(crate) const MEMBER: u8 = 3;
+pub(crate) const ERROR_NAME: u8 = 4;
+const REPLY_SERIAL: u8 = 5;
+pub(crate) const DESTINATION: u8 = 6;
+const SENDER: u8 = 7;
+const SIGNATURE: u8 = 8;
+
+/// One whole message, ready to write.
+///
+/// The text fields are given with the signature each is written as, since a
+/// path and a string are marshalled alike and a signature is not; the serial
+/// a reply answers is the one field that is a number.
+pub(crate) fn message(
+    kind: u8,
+    flags: u8,
+    serial: u32,
+    named: &[(u8, &str, &str)],
+    reply_serial: Option<u32>,
+    signature: &str,
+    body: &[u8],
+) -> Vec<u8> {
+    let mut message = Vec::new();
+    message.extend_from_slice(&[b'l', kind, flags, 1]);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a body this builds is bounded by the cap below"
+    )]
+    message.extend_from_slice(&(body.len() as u32).to_le_bytes());
+    message.extend_from_slice(&serial.to_le_bytes());
+
+    let mut fields = Vec::new();
+    for (code, sig, value) in named {
+        put_field(&mut fields, *code, sig, value);
     }
+    if let Some(answers) = reply_serial {
+        align(&mut fields, 8);
+        fields.push(REPLY_SERIAL);
+        put_signature(&mut fields, "u");
+        align(&mut fields, 4);
+        fields.extend_from_slice(&answers.to_le_bytes());
+    }
+    if !signature.is_empty() {
+        put_field(&mut fields, SIGNATURE, "g", signature);
+    }
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "a handful of header fields are a few hundred bytes at most"
+    )]
+    message.extend_from_slice(&(fields.len() as u32).to_le_bytes());
+    message.extend_from_slice(&fields);
+    align(&mut message, 8);
+    message.extend_from_slice(body);
+    message
+}
+
+/// One message in.
+#[derive(Debug)]
+pub(crate) struct Message {
+    pub(crate) kind: u8,
+    pub(crate) flags: u8,
+    pub(crate) serial: u32,
+    pub(crate) fields: Fields,
+    pub(crate) body: Vec<u8>,
+}
+
+/// What a message's header says about it, each field read by its own
+/// declared type and the rest skipped by their own widths.
+#[derive(Debug, Default)]
+pub(crate) struct Fields {
+    pub(crate) path: Option<String>,
+    pub(crate) interface: Option<String>,
+    pub(crate) member: Option<String>,
+    pub(crate) error_name: Option<String>,
+    pub(crate) reply_serial: Option<u32>,
+    pub(crate) sender: Option<String>,
+    pub(crate) signature: Option<String>,
+}
+
+pub(crate) fn read_message(stream: &mut UnixStream) -> Result<Message, String> {
+    let mut head = [0u8; HEADER];
+    stream
+        .read_exact(&mut head)
+        .map_err(|error| format!("read: {error}"))?;
+    let kind = head.get(1).copied().unwrap_or(0);
+    let flags = head.get(2).copied().unwrap_or(0);
+    let body_len = le32(&head, 4) as usize;
+    let serial = le32(&head, 8);
+    let fields_len = le32(&head, 12) as usize;
+    let padded = fields_len.next_multiple_of(8);
+    if body_len > MAX_MESSAGE || padded > MAX_MESSAGE {
+        return Err("a message over the cap".to_string());
+    }
+    let mut rest = vec![0u8; padded + body_len];
+    stream
+        .read_exact(&mut rest)
+        .map_err(|error| format!("read: {error}"))?;
+    let fields = fields(rest.get(..fields_len).unwrap_or(&[]));
+    let body = rest.get(padded..).unwrap_or(&[]).to_vec();
+    Ok(Message {
+        kind,
+        flags,
+        serial,
+        fields,
+        body,
+    })
 }
 
 /// A connection to the session bus that owns the clipboard.
@@ -278,7 +369,7 @@ impl Clip {
     /// failure here and neither is a signal about something else.
     pub(crate) fn changed(&mut self, within: std::time::Duration) -> Option<String> {
         self.screen.stream.set_read_timeout(Some(within)).ok()?;
-        let arrived = self.screen.read_message().is_ok();
+        let arrived = read_message(&mut self.screen.stream).is_ok();
         self.screen.stream.set_read_timeout(None).ok()?;
         if !arrived {
             return None;
@@ -365,57 +456,78 @@ fn read_line(stream: &mut UnixStream) -> Result<String, String> {
     String::from_utf8(line).map_err(|_| "auth line is not text".to_string())
 }
 
-/// The serial a reply answers, read out of its header fields.
+/// The header fields, walked by their own declared types.
 ///
-/// Field 5 is the one that says so; the rest are skipped by their own
-/// declared lengths rather than by knowing what they mean.
-fn reply_serial(fields: &[u8]) -> Option<u32> {
+/// Each is skipped by its own width rather than by knowing what it means, and
+/// a field of a type this does not know ends the walk rather than guessing
+/// its width and reading somebody else's bytes as a name.
+fn fields(fields: &[u8]) -> Fields {
+    let mut found = Fields::default();
+    let text = |at: usize, len: usize| {
+        fields
+            .get(at..at + len)
+            .map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+    };
     let mut at = 0usize;
     while at + 4 <= fields.len() {
         at = at.next_multiple_of(8);
-        let code = *fields.get(at)?;
-        let signature_len = usize::from(*fields.get(at + 1)?);
-        let signature = fields.get(at + 2..at + 2 + signature_len)?;
+        let (Some(&code), Some(&signature_len)) = (fields.get(at), fields.get(at + 1)) else {
+            break;
+        };
+        let signature_len = usize::from(signature_len);
+        let Some(signature) = fields.get(at + 2..at + 2 + signature_len) else {
+            break;
+        };
         // The signature is followed by its own terminator.
         let mut value = at + 2 + signature_len + 1;
         match signature {
             b"u" => {
                 value = value.next_multiple_of(4);
-                let found = le32(fields, value);
-                if code == 5 {
-                    return Some(found);
+                if code == REPLY_SERIAL {
+                    found.reply_serial = Some(le32(fields, value));
                 }
                 at = value + 4;
             }
             b"s" | b"o" => {
                 value = value.next_multiple_of(4);
                 let len = le32(fields, value) as usize;
+                let read = text(value + 4, len);
+                match code {
+                    PATH => found.path = read,
+                    INTERFACE => found.interface = read,
+                    MEMBER => found.member = read,
+                    ERROR_NAME => found.error_name = read,
+                    SENDER => found.sender = read,
+                    _ => {}
+                }
                 at = value + 4 + len + 1;
             }
             b"g" => {
-                let len = usize::from(*fields.get(value)?);
+                let Some(&len) = fields.get(value) else { break };
+                let len = usize::from(len);
+                if code == SIGNATURE {
+                    found.signature = text(value + 1, len);
+                }
                 at = value + 1 + len + 1;
             }
-            // A field this does not know ends the walk rather than guessing
-            // its width and reading somebody else's bytes as a serial.
-            _ => return None,
+            _ => break,
         }
     }
-    None
+    found
 }
 
-fn le32(bytes: &[u8], at: usize) -> u32 {
+pub(crate) fn le32(bytes: &[u8], at: usize) -> u32 {
     bytes
         .get(at..at + 4)
         .and_then(|slice| <[u8; 4]>::try_from(slice).ok())
         .map_or(0, u32::from_le_bytes)
 }
 
-fn align(buf: &mut Vec<u8>, to: usize) {
+pub(crate) fn align(buf: &mut Vec<u8>, to: usize) {
     buf.resize(buf.len().next_multiple_of(to), 0);
 }
 
-fn put_string(buf: &mut Vec<u8>, text: &str) {
+pub(crate) fn put_string(buf: &mut Vec<u8>, text: &str) {
     align(buf, 4);
     #[allow(
         clippy::cast_possible_truncation,
@@ -426,7 +538,7 @@ fn put_string(buf: &mut Vec<u8>, text: &str) {
     buf.push(0);
 }
 
-fn put_signature(buf: &mut Vec<u8>, text: &str) {
+pub(crate) fn put_signature(buf: &mut Vec<u8>, text: &str) {
     #[allow(
         clippy::cast_possible_truncation,
         reason = "a signature here is two characters"
@@ -443,7 +555,7 @@ fn put_signature(buf: &mut Vec<u8>, text: &str) {
 /// four, so writing the field that carries the body's signature as a string
 /// puts three extra bytes into a header and the bus disconnects without a word
 /// about why.
-fn put_field(buf: &mut Vec<u8>, code: u8, signature: &str, value: &str) {
+pub(crate) fn put_field(buf: &mut Vec<u8>, code: u8, signature: &str, value: &str) {
     align(buf, 8);
     buf.push(code);
     put_signature(buf, signature);
@@ -493,14 +605,21 @@ mod tests {
         align(&mut fields, 4);
         fields.extend_from_slice(&4242u32.to_le_bytes());
 
-        assert_eq!(reply_serial(&fields), Some(4242));
+        let read = super::fields(&fields);
+        assert_eq!(read.reply_serial, Some(4242));
+        // And every field before it was read for what it is.
+        assert_eq!(read.path.as_deref(), Some("/org/freedesktop/DBus"));
+        assert_eq!(read.signature.as_deref(), Some("us"));
+        assert_eq!(read.member, None);
     }
 
     #[test]
     fn a_header_with_no_serial_answers_nothing() {
         let mut fields = Vec::new();
         put_field(&mut fields, 3, "s", "NameAcquired");
-        assert_eq!(reply_serial(&fields), None);
+        let read = super::fields(&fields);
+        assert_eq!(read.reply_serial, None);
+        assert_eq!(read.member.as_deref(), Some("NameAcquired"));
     }
 
     /// **Off by default: it needs a desktop session's own bus.** Run it as the

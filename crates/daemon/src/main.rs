@@ -107,6 +107,7 @@ mod app;
 mod channel;
 mod dbus;
 mod seat;
+mod sni;
 
 /// Which of the two programs an invocation is.
 ///
@@ -121,10 +122,14 @@ enum Program {
     /// The session agent, which connects outward and speaks for its own
     /// session and no other.
     Session,
+    /// The tray, which connects outward, shows the host and acts on it.
+    Tray,
 }
 
-/// The word that selects the session role, in first position and nowhere else.
+/// The words that select the session-side roles, in first position and
+/// nowhere else.
 const SESSION_ROLE: &str = "session";
+const TRAY_ROLE: &str = "tray";
 
 /// The program this invocation is, from the arguments after the name it was
 /// run under.
@@ -137,6 +142,7 @@ const SESSION_ROLE: &str = "session";
 fn program_of<'a>(args: impl IntoIterator<Item = &'a str>) -> Program {
     match args.into_iter().next() {
         Some(SESSION_ROLE) => Program::Session,
+        Some(TRAY_ROLE) => Program::Tray,
         _ => Program::Service,
     }
 }
@@ -429,6 +435,130 @@ fn session() -> ! {
     }
 }
 
+/// The tray: `lowlatd tray`, run inside a session.
+///
+/// **Never load-bearing.** It attaches, shows what the host is doing, asks
+/// for a kick or a rate, and detaches; the stream neither waits on it nor
+/// notices it go (docs/07-platforms.md section 5). The desktop draws it
+/// from what it describes over the session bus, so it links no toolkit and
+/// is the same binary as the service for the same reason the helper is: the
+/// two sides speak a private protocol, and one build cannot disagree with
+/// itself.
+fn tray() -> ! {
+    let bus = match sni::Bus::open() {
+        Ok(bus) => std::sync::Arc::new(bus),
+        Err(error) => {
+            lowlat_common::log_error!("tray: no session bus to be drawn on, {error}");
+            std::process::exit(1);
+        }
+    };
+    let shown = std::sync::Arc::new(std::sync::Mutex::new(sni::Shown::default()));
+    let writer: Writer = std::sync::Arc::new(std::sync::Mutex::new(None));
+    // **The service on its own thread, the bus on this one.** Each is a
+    // blocking read, and what one hears the other announces.
+    {
+        let bus = std::sync::Arc::clone(&bus);
+        let shown = std::sync::Arc::clone(&shown);
+        let writer = std::sync::Arc::clone(&writer);
+        if std::thread::Builder::new()
+            .name("lowlat-tray".to_string())
+            .spawn(move || follow_service(&bus, &shown, &writer))
+            .is_err()
+        {
+            lowlat_common::log_error!("tray: no thread for the service");
+            std::process::exit(1);
+        }
+    }
+    let why = bus.serve(&shown, |click| act(click, &writer));
+    // **The bus going away is the session ending**, and a tray outside a
+    // session is nothing.
+    lowlat_common::log_info!("tray: the session bus ended, {why}");
+    std::process::exit(0);
+}
+
+/// Stay connected to the service, and show what it says.
+///
+/// **Reconnected rather than exited**, as the helper is: a system service
+/// restarts and a session does not, so losing the socket is a wait. What is
+/// shown meanwhile is that there is nothing to show.
+fn follow_service(
+    bus: &sni::Bus,
+    shown: &std::sync::Mutex<sni::Shown>,
+    writer: &std::sync::Mutex<Option<std::os::unix::net::UnixStream>>,
+) {
+    let mut wait = FIRST_RETRY_MS;
+    loop {
+        match channel::connect(channel::Role::Tray, channel::Can::default()) {
+            Ok(mut stream) => {
+                lowlat_common::log_info!("tray: connected");
+                wait = FIRST_RETRY_MS;
+                if let Ok(sending) = stream.try_clone()
+                    && let Ok(mut writer) = writer.lock()
+                {
+                    *writer = Some(sending);
+                }
+                if let Ok(mut shown) = shown.lock() {
+                    shown.connected = true;
+                    bus.changed(&shown);
+                }
+                let mut body = Vec::new();
+                while channel::read_frame(&mut stream, &mut body).is_ok() {
+                    if let Some(state) = channel::is_state(&body)
+                        && let Ok(mut shown) = shown.lock()
+                    {
+                        shown.read(&state);
+                        bus.changed(&shown);
+                    }
+                    if let Some(reason) = channel::is_bye(&body) {
+                        lowlat_common::log_info!("tray: sent away, reason={reason}");
+                    }
+                }
+                if let Ok(mut writer) = writer.lock() {
+                    *writer = None;
+                }
+                if let Ok(mut shown) = shown.lock() {
+                    shown.connected = false;
+                    bus.changed(&shown);
+                }
+                lowlat_common::log_info!("tray: the connection ended");
+            }
+            Err(error) => {
+                lowlat_common::log_warn!("tray: cannot reach the service, error={error}");
+                wait = (wait * 2).min(LAST_RETRY_MS);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(wait));
+    }
+}
+
+/// What a click asks the service for.
+///
+/// **Not waited on.** The answer is the state the service pushes back: a
+/// guest gone from the list, a rate marked; a request that changed nothing
+/// is read off the service's own log, where it says who asked.
+fn act(click: sni::Click, writer: &std::sync::Mutex<Option<std::os::unix::net::UnixStream>>) {
+    let frame = match click {
+        sni::Click::Quit => {
+            lowlat_common::log_info!("tray: quit");
+            std::process::exit(0);
+        }
+        sni::Click::Kick(guest) => channel::kick(guest),
+        sni::Click::Bitrate(mbps) => channel::config(&serde_json::json!({
+            "video": [{ "encoderMaxBitrate": mbps }],
+        })),
+    };
+    let sent = writer.lock().ok().and_then(|mut writer| {
+        writer
+            .as_mut()
+            .map(|stream| channel::write_frame(stream, &frame))
+    });
+    match sent {
+        Some(Ok(())) => lowlat_common::log_info!("tray: asked, {click:?}"),
+        Some(Err(error)) => lowlat_common::log_warn!("tray: not asked, {click:?} error={error}"),
+        None => lowlat_common::log_warn!("tray: not connected, {click:?} goes nowhere"),
+    }
+}
+
 /// How often the seat is asked which session owns the display.
 ///
 /// The question costs a few file reads and, where the owning session has no
@@ -668,8 +798,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if flag_set("--verbose") {
         lowlat_common::log::set_level(lowlat_common::log::Level::Debug);
     }
-    if program == Program::Session {
-        session();
+    match program {
+        Program::Session => session(),
+        Program::Tray => tray(),
+        Program::Service => {}
     }
     // **Before anything else is set up.** It answers the one question that has
     // to be answered before --output can be used at all, and a machine being
@@ -1106,6 +1238,8 @@ async fn session_loop(
     let mut rostered = lowlat_common::clock::Time::now();
     // Whether the session was last told somebody is watching.
     let mut awake = false;
+    // What a tray is shown, and the part of it that is re-read on a change.
+    let mut shown = app::Shown::default();
 
     loop {
         tokio::select! {
@@ -1295,6 +1429,21 @@ async fn session_loop(
             }
         }
         channel::drop_overdue();
+
+        // **What a tray asked for, acted on here and attributed.** A tray's
+        // frames wait in their own queue for the same reason a session's do:
+        // only this loop may touch the guests.
+        for (who, asked) in channel::take_acted() {
+            app::on_action(seam, settings, who, &asked);
+        }
+        // **Said on every pass while somebody is looking, and sent on
+        // change.** The room and the picture both move without an event this
+        // loop sees, so what a tray shows is worked out each time round and
+        // the channel decides whether it differs from what it last sent.
+        // Nothing is worked out for nobody.
+        if channel::trays() > 0 {
+            channel::state(&app::state(seam, &mut shown));
+        }
 
         // **The display belongs to whichever session is in front of it, and
         // the login manager says which.** A user switch keeps the first
@@ -1490,6 +1639,11 @@ mod role_tests {
     fn only_the_first_argument_selects_the_session_role() {
         assert_eq!(program_of(["session"]), Program::Session);
         assert_eq!(program_of(["session", "--verbose"]), Program::Session);
+        assert_eq!(program_of(["tray"]), Program::Tray);
+        assert_eq!(program_of(["tray", "--verbose"]), Program::Tray);
+        assert_eq!(program_of(["--tray"]), Program::Service);
+        assert_eq!(program_of(["--verbose", "tray"]), Program::Service);
+        assert_eq!(program_of(["session", "tray"]), Program::Session);
 
         assert_eq!(program_of([] as [&str; 0]), Program::Service);
         assert_eq!(program_of(["--verbose"]), Program::Service);
