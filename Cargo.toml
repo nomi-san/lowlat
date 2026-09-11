@@ -13,7 +13,6 @@ members = [
     "crates/host",
     "crates/kessel",
     "crates/daemon",
-    "crates/tray",
 ]
 exclude = ["fuzz"]
 

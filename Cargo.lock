@@ -591,13 +591,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lowlat-tray"
-version = "0.0.0"
-dependencies = [
- "lowlat-common",
-]
-
-[[package]]
 name = "lowlatd"
 version = "0.0.0"
 dependencies = [
