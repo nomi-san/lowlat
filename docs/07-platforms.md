@@ -589,6 +589,9 @@ guests, and each recorded with the connection's credentials on the line. A chang
 a tray goes through the same reader a guest's own request does, so what a tray may change is
 what a guest may change, by one rule. There is no reply to an action: the state that comes
 back is the acknowledgement, and a request that changed nothing says why on the service's log.
+A guest arriving or leaving is also a desktop notification, put up by the tray through the
+session's notification service; it announces a media path coming up or going down, never a
+seat taken or an attempt abandoned, and never what was already there when the tray first looked.
 
 #### The rules that matter more than the encoding
 

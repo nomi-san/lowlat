@@ -28,6 +28,16 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - **The item survives the panel.** The register is repeated whenever the name that draws
   items changes hands, and a service restart reads as a passive item that comes back active
   when the service does.
+- **A guest arriving or leaving is a desktop notification**, put up by the tray through the
+  session's own notification service the way any application does. **Connected, not seated,
+  on both edges**: a guest has a number from the answer onward, before its media path exists,
+  so the toast is for the path coming up and for a guest that had come up going away, and an
+  attempt that never got that far is not news. What a tray finds already there when it first
+  looks is shown, not announced.
+- **A guest is named.** The offer carries the peer's account name and the daemon dropped it;
+  it is carried now, so a toast and a kick entry read `Guest#3 someone@example.org`, the seat's
+  number first because that is what the log and the roster know the guest by, and the name
+  where the service gave one.
 
 ### Testing
 - The menu is walked back out of the bytes it was written as, and the rate in force is the
@@ -41,6 +51,10 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   layout, a rate click and a kick click both land on the service's log with the tray's pid and
   uid, a separator click lands nowhere, six trays attached and detached with the service and
   the helper untouched, and a service restart under a tray is one reconnect 250 ms later.
+- Who is announced is pinned without a desktop: a path coming up is an arrival, a guest that
+  had come up and is gone is a departure, and a seated attempt is neither on either edge. An
+  ignored test puts one notification on a real desktop and asserts the server answered with
+  an id, which is the one check that catches a body marshalled wrong.
 
 ## 2026-09-10 - The display is the default, the turn is followed, the mode is asked for
 
