@@ -58,8 +58,8 @@ lowlat-audio     sound capture, encode, and decode
 lowlat-inject    uinput
 lowlat-host      orchestration and the C ABI shared library
 lowlat-kessel    signaling client
-lowlatd          system service
-lowlat-tray      user session client
+lowlatd          system service; also the session helper and the tray, as its
+                 second and third roles
 ```
 
 The protocol core is `no_std` and sans-IO: no sockets, no threads, no clock reads, no random

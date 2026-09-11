@@ -65,8 +65,8 @@ lowlat-audio     sound capture, encode, and decode; no display stack, no vendor 
 lowlat-inject    uinput
 lowlat-host      orchestration plus the C ABI cdylib
 lowlat-kessel    signaling client; async permitted; the SDK does not link it
-lowlatd          system service
-lowlat-tray      user session client over a Unix socket
+lowlatd          system service; the session helper and the tray are the same
+                 binary in its second and third roles, over a Unix socket
 ```
 
 Dependency direction is strictly downward. `core` depends only on `common`. Nothing depends
