@@ -3,6 +3,45 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-11 - The tray, drawn by the desktop
+
+### Added
+- **`lowlatd tray`, the same binary in a third role.** It links no toolkit: the desktop's own
+  panel draws the icon and the menu from a status notifier item this describes over the
+  session bus, so the only reason the tray was to be a separate program is gone, and the
+  reason the helper is not one -- two sides of a private protocol shipped in one file cannot
+  disagree with each other -- applies to it as it stands. The role is selected by the first
+  argument and nothing else, like the session's.
+- **What it shows and what it asks.** A line saying what the host is doing -- idle, waiting
+  for a display, or the output, size, rate, ceiling and codec being streamed and how many are
+  watching -- a kick per seated guest, the rate ceiling as a choice of four, and quit. A click
+  is a frame to the service; the answer is the state the service pushes back, so a guest gone
+  from the list or a rate marked is the acknowledgement.
+- **The service tells every tray what it is doing**, on connect and on change and not on a
+  repeat: the state is worked out each pass while a tray is attached and sent only when it
+  differs from what was last sent, and nothing is worked out for nobody. A tray connecting
+  between changes is told the last state at once.
+- **A host action names who asked for it.** The connection's credentials are on the line that
+  records a kick and on the line that records a change to the stream, which is what keeps
+  local authorisation a deferral rather than a gap. A change asked for by a tray goes through
+  the same reader a guest's request does, so the two cannot drift.
+- **The item survives the panel.** The register is repeated whenever the name that draws
+  items changes hands, and a service restart reads as a passive item that comes back active
+  when the service does.
+
+### Testing
+- The menu is walked back out of the bytes it was written as, and the rate in force is the
+  one marked; every separator's number is nothing to click. **The last assertion failed first:
+  the separators were numbered into the rate range, so a clicked separator was a request for
+  9000 Mbps.** The ranges no longer meet.
+- A tray is told the state on connect, on change and not on a repeat; what a tray says is
+  queued as an action with its credentials and what a helper says is not, driven through the
+  real dispatch. **Both were confirmed to fail** with the branch bent.
+- Live, against the running service: the bus's own tool decodes every property and the whole
+  layout, a rate click and a kick click both land on the service's log with the tray's pid and
+  uid, a separator click lands nowhere, six trays attached and detached with the service and
+  the helper untouched, and a service restart under a tray is one reconnect 250 ms later.
+
 ## 2026-09-10 - The display is the default, the turn is followed, the mode is asked for
 
 ### Fixed

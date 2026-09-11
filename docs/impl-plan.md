@@ -1636,10 +1636,20 @@ and deciding its shape without one of its two customers in front of it.
   an ownership held for as long as the selection is, not a value written once. **One desktop's
   mechanism so far**, announced through the capability, so a session that has none says so and
   the service answers the honest way rather than waiting.
-- [ ] **The peer's credentials read and recorded on every connection**, and one place where a
+- [x] **The peer's credentials read and recorded on every connection**, and one place where a
   criterion would go. **Which credential authorises a host action is deferred**: any local user
-  may act, and [07 §5.1](07-platforms.md) names what that costs.
-- [ ] `lowlat-tray` over the same socket, announcing the other role.
+  may act, and [07 §5.1](07-platforms.md) names what that costs. *The place exists where a
+  connection announces its role, and since 2026-09-11 a kick and a change to the stream both
+  carry the connection's pid and uid on the line that records them.*
+- [x] **The tray over the same socket, announcing the other role.** Built 2026-09-11 as
+  `lowlatd tray`, a third role of the one binary, because the desktop draws it: a status
+  notifier item on the session bus, no toolkit linked, so the reason it was to be a separate
+  program is gone and the reason the helper is not one applies. It shows what the host is
+  doing, kicks a seated guest, sets the rate ceiling, and quits.
+- [ ] **The session side started with the session.** Nothing starts `lowlatd session` or
+  `lowlatd tray` at login yet; both are started by hand. A user unit or an autostart entry in
+  `packaging/`, which is also where [07 §5.1](07-platforms.md) says the known socket path
+  earns its keep.
 - [x] **The display's session decides whose layout is in force**, asked of the login manager
   once a second: a helper for that session stands, else its sockets are asked, else the picture
   is the desktop. A user switch keeps the first session alive with its helper connected and its
@@ -1657,11 +1667,17 @@ and deciding its shape without one of its two customers in front of it.
 2. **A stream survives the tray exiting and the user logging out**, and survives the helper
    exiting mid-session with nothing disturbed. *Named regression test.* *The helper half and
    the user-switch half passed live 2026-09-10; the logout half passed the same day with the
-   stream carrying on into the greeter. The tray half waits on the tray.*
-3. The tray attaches and detaches repeatedly against a running stream.
+   stream carrying on into the greeter. The tray half: six trays exited under the running
+   service on 2026-09-11 with the service and the helper untouched, but no guest was streaming
+   through it at the time, and that run is still owed.*
+3. The tray attaches and detaches repeatedly against a running stream. *Six times on
+   2026-09-11 against the running service, each connect and each departure on the log, the
+   watcher's item list back to what it was; as with item 2, a run with a guest seated is owed.*
 4. **A host action names who asked for it.** The connection's credentials appear on the line
    that records a kick or a settings change, so it can be attributed. Authorising on them is
-   deferred and the criterion is not built ([07 §5.1](07-platforms.md)).
+   deferred and the criterion is not built ([07 §5.1](07-platforms.md)). *Passed 2026-09-11:
+   a rate change and a kick clicked over the bus each landed as one line naming the tray's pid
+   and uid.*
 5. **The session role cannot be selected by a flag** appearing anywhere in the command line,
    only by the first argument. *Named regression test: it is a privilege boundary, not a parsing
    preference.*

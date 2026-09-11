@@ -358,8 +358,8 @@ lowlatd            system service, owns capture, encode, inject, media
    |
    +-- unix socket, peer-credential authenticated
    |
-lowlatd helper     user session, the same binary in its session role, optional
-lowlat-tray        user session, configuration and guest list, optional
+lowlatd session    user session, the same binary in its session role, optional
+lowlatd tray       user session, the same binary in its tray role, optional
 ```
 
 **Compositor-mediated:**
@@ -407,8 +407,16 @@ first argument and by nothing else -- **never by a flag that may appear anywhere
 line**, because a service and a session agent run at different privilege and a file that can
 be talked into the wrong one is a security defect rather than a bug.
 
-**The tray stays a separate program.** Not for protocol reasons: it will link a user-interface
-toolkit, and that has no business inside a system service's binary.
+**The tray is the same binary in a third role, for the same reason.** It was to be a separate
+program because it would link a user-interface toolkit, which has no business inside a system
+service's binary; it links none. The desktop's own panel draws it: the tray describes a status
+notifier item over the session bus -- a handful of properties, a menu as a tree the panel asks
+for when it opens, and an event when something in it is clicked -- and the panel does the
+drawing. What it costs is the marshalling for that, which is a page on top of the session bus
+client the helper already has. What it buys is that the two sides of a private protocol ship
+in one file. One desktop family serves the protocol natively and another only through an
+extension; where nothing on the bus registers items, the tray says so and registers the moment
+something does.
 
 **It is one channel with two roles, not two channels.** The tray needs the same two directions
 the helper does -- state pushed as it changes, and questions that get one answer -- so it
@@ -558,18 +566,29 @@ program, and nothing on this channel adds to them or argues with them. A local c
 different question with a different answer, and the two must not be made to look alike.
 
 **The socket is at a known path**, and the reason is a consequence rather than a preference.
-The service starts both session-side programs itself and could hand each a private path, but a
-tray started by hand -- which is how a person gets one back after closing it -- is not started
-by the service and has nothing to be handed. A path it cannot find is a tray that cannot
-connect, and asking the service to start another one needs the channel it is missing. So the
-path is known, a tray started by hand simply connects and is the tray, and no protocol for
-asking to be restarted has to exist at all. A private path would put secrecy where a credential
-belongs, and would cost exactly the tray somebody starts by hand.
+The session-side programs are started by the session, since nothing below it can start them
+(the table above), so nothing is in a position to hand either a private path; and a tray
+started by hand -- which is how a person gets one back after closing it -- is started by
+nobody at all. A path it cannot find is a tray that cannot connect, and asking the service to
+start another one needs the channel it is missing. So the path is known, a tray started by
+hand simply connects and is the tray, and no protocol for asking to be restarted has to exist
+at all. A private path would put secrecy where a credential belongs, and would cost exactly
+the tray somebody starts by hand.
 
-**A session-side program exiting means nothing to the stream.** The service starts them and
-does not depend on them: a tray that is closed is not a tray that is missed, and a session
-that ends takes both with it while the stream carries on. Nothing is restarted into a session
-that is no longer there.
+**A session-side program exiting means nothing to the stream.** The service does not depend
+on them: a tray that is closed is not a tray that is missed, and a session that ends takes
+both with it while the stream carries on. Nothing is restarted into a session that is no
+longer there.
+
+**A tray shows the host and acts on it, and the service tells it rather than being asked.**
+What the host is doing -- which output, at what size and rate, coded how, and who is seated --
+is pushed to every tray when it changes and to a tray the moment it connects, so a menu opened
+at any time describes the room as it is. The actions are a kick of a seated guest and a change
+to the stream's rate ceiling, each a frame the service acts on from the loop that owns the
+guests, and each recorded with the connection's credentials on the line. A change asked for by
+a tray goes through the same reader a guest's own request does, so what a tray may change is
+what a guest may change, by one rule. There is no reply to an action: the state that comes
+back is the acknowledgement, and a request that changed nothing says why on the service's log.
 
 #### The rules that matter more than the encoding
 
