@@ -1669,7 +1669,9 @@ and deciding its shape without one of its two customers in front of it.
    the user-switch half passed live 2026-09-10; the logout half passed the same day with the
    stream carrying on into the greeter. The tray half: six trays exited under the running
    service on 2026-09-11 with the service and the helper untouched, but no guest was streaming
-   through it at the time, and that run is still owed.*
+   through it at the time, and that run is still owed. Later the same day a tray was quit
+   six seconds after it had kicked the only guest, and the service seated the next guest three
+   minutes on; the strict form, a quit under a guest watching, is what remains.*
 3. The tray attaches and detaches repeatedly against a running stream. *Six times on
    2026-09-11 against the running service, each connect and each departure on the log, the
    watcher's item list back to what it was; as with item 2, a run with a guest seated is owed.*
@@ -1677,7 +1679,8 @@ and deciding its shape without one of its two customers in front of it.
    that records a kick or a settings change, so it can be attributed. Authorising on them is
    deferred and the criterion is not built ([07 §5.1](07-platforms.md)). *Passed 2026-09-11:
    a rate change and a kick clicked over the bus each landed as one line naming the tray's pid
-   and uid.*
+   and uid; then from the panel with a stock client seated, the rate change reached the live
+   stream and the kick ended the client with the status it renders as kicked.*
 5. **The session role cannot be selected by a flag** appearing anywhere in the command line,
    only by the first argument. *Named regression test: it is a privilege boundary, not a parsing
    preference.*
