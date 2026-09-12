@@ -28,7 +28,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 1
+#define LOWLAT_ABI_MINOR 2
 
 /// The longest attempt identifier carried across this boundary.
 ///
@@ -164,6 +164,9 @@ typedef enum lowlat_status {
     LOWLAT_ERR_CRYPTO = -105,
     /// No guest with that number is connected.
     LOWLAT_ERR_UNKNOWN_GUEST = -106,
+    /// A browser's offer carried no certificate digest, or one that is not
+    /// a SHA-256 digest: nothing its handshake could be checked against.
+    LOWLAT_ERR_FINGERPRINT = -107,
     /// Nothing is lit. There is no display to capture: a headless machine, or
     /// one whose session has not started.
     LOWLAT_ERR_NO_DISPLAY = -200,
@@ -213,6 +216,9 @@ typedef enum lowlat_outcome {
     LOWLAT_OUTCOME_CONTROL_STALLED = 7,
     /// The host ended it, and `reason` carries what the peer was told.
     LOWLAT_OUTCOME_KICKED = 8,
+    /// The browser pipe's security handshake did not complete, the peer was
+    /// not the one the offer named, or its association ended with an error.
+    LOWLAT_OUTCOME_HANDSHAKE_FAILED = 9,
 } lowlat_outcome;
 
 /// Which codec the stream is encoded with.
@@ -309,6 +315,14 @@ typedef enum lowlat_quality {
     LOWLAT_QUALITY_BALANCED = 1,
     LOWLAT_QUALITY_HIGHEST = 2,
 } lowlat_quality;
+
+/// Which pipe an attempt speaks.
+typedef enum lowlat_transport {
+    /// Authenticated records on the attempt socket. The default.
+    LOWLAT_TRANSPORT_BUD = 0,
+    /// A browser's data channel on the same socket.
+    LOWLAT_TRANSPORT_WEB = 1,
+} lowlat_transport;
 
 /// One host session, as the application holds it.
 ///
@@ -514,6 +528,16 @@ typedef struct lowlat_attempt_info {
     /// takes the pointer from another guest rather than waiting for it.
     bool owner;
     uint8_t reserved2[3];
+    /// Which pipe the offer asked for, a `lowlat_transport` value.
+    ///
+    /// **Appended in minor 2.** An application built against minor 1 sets a
+    /// smaller `size`, and everything from here on then reads as the native
+    /// transport with no digest.
+    uint32_t transport;
+    /// The peer's certificate digest as its offer carried it, with or
+    /// without the hash name. Read on the browser pipe and required there;
+    /// ignored on the native one.
+    char fingerprint[LOWLAT_FINGERPRINT_MAX];
 } lowlat_attempt_info;
 
 /// One address a peer might be reachable at.

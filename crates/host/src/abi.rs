@@ -88,6 +88,9 @@ pub enum lowlat_status {
     LOWLAT_ERR_CRYPTO = -105,
     /// No guest with that number is connected.
     LOWLAT_ERR_UNKNOWN_GUEST = -106,
+    /// A browser's offer carried no certificate digest, or one that is not
+    /// a SHA-256 digest: nothing its handshake could be checked against.
+    LOWLAT_ERR_FINGERPRINT = -107,
 
     /// Nothing is lit. There is no display to capture: a headless machine, or
     /// one whose session has not started.
@@ -100,7 +103,7 @@ pub enum lowlat_status {
 /// The major version, raised only when something already published changes.
 pub const LOWLAT_ABI_MAJOR: u32 = 0;
 /// The minor version, raised when surface is appended.
-pub const LOWLAT_ABI_MINOR: u32 = 1;
+pub const LOWLAT_ABI_MINOR: u32 = 2;
 
 /// Major and minor, packed.
 ///
@@ -117,7 +120,7 @@ pub extern "C" fn lowlat_abi_version() -> u32 {
 ///
 /// A table rather than a match, because the value arriving is an integer and
 /// not necessarily one of these.
-const DESCRIPTIONS: [(lowlat_status, &CStr); 17] = [
+const DESCRIPTIONS: [(lowlat_status, &CStr); 18] = [
     (LOWLAT_OK, c"ok"),
     (LOWLAT_TIMEOUT, c"no event within the timeout"),
     (
@@ -148,6 +151,10 @@ const DESCRIPTIONS: [(lowlat_status, &CStr); 17] = [
     (LOWLAT_ERR_IO, c"a socket or thread could not be created"),
     (LOWLAT_ERR_CRYPTO, c"credentials could not be produced"),
     (LOWLAT_ERR_UNKNOWN_GUEST, c"no guest with that number"),
+    (
+        LOWLAT_ERR_FINGERPRINT,
+        c"the offer's certificate digest is missing or malformed",
+    ),
     (LOWLAT_ERR_NO_DISPLAY, c"nothing is lit"),
     (
         LOWLAT_ERR_DISPLAY_UNREACHABLE,
@@ -234,6 +241,9 @@ pub enum lowlat_outcome {
     LOWLAT_OUTCOME_CONTROL_STALLED = 7,
     /// The host ended it, and `reason` carries what the peer was told.
     LOWLAT_OUTCOME_KICKED = 8,
+    /// The browser pipe's security handshake did not complete, the peer was
+    /// not the one the offer named, or its association ended with an error.
+    LOWLAT_OUTCOME_HANDSHAKE_FAILED = 9,
 }
 
 /// A local candidate for the application to forward.
@@ -764,6 +774,30 @@ pub struct lowlat_attempt_info {
     /// takes the pointer from another guest rather than waiting for it.
     pub owner: bool,
     pub reserved2: [u8; 3],
+    /// Which pipe the offer asked for, a [`lowlat_transport`] value.
+    ///
+    /// **Appended in minor 2.** An application built against minor 1 sets a
+    /// smaller `size`, and everything from here on then reads as the native
+    /// transport with no digest.
+    pub transport: u32,
+    /// The peer's certificate digest as its offer carried it, with or
+    /// without the hash name. Read on the browser pipe and required there;
+    /// ignored on the native one.
+    pub fingerprint: [c_char; LOWLAT_FINGERPRINT_MAX],
+}
+
+/// The size of [`lowlat_attempt_info`] before the fields minor 2 appended,
+/// which is the smallest `size` a caller may set.
+const ATTEMPT_INFO_MINOR_1: usize = core::mem::offset_of!(lowlat_attempt_info, transport);
+
+/// Which pipe an attempt speaks.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_transport {
+    /// Authenticated records on the attempt socket. The default.
+    LOWLAT_TRANSPORT_BUD = 0,
+    /// A browser's data channel on the same socket.
+    LOWLAT_TRANSPORT_WEB = 1,
 }
 
 /// One address a peer might be reachable at.
@@ -1374,6 +1408,7 @@ fn refused(error: crate::admission::Error) -> lowlat_status {
         Error::Withdrawn => LOWLAT_ERR_WITHDRAWN,
         Error::Io => LOWLAT_ERR_IO,
         Error::Crypto => LOWLAT_ERR_CRYPTO,
+        Error::Fingerprint => LOWLAT_ERR_FINGERPRINT,
     }
 }
 
@@ -1404,17 +1439,28 @@ pub unsafe extern "C" fn lowlat_host_new_attempt(
 ) -> lowlat_status {
     unsafe {
         entered(ll, |handle| {
-            let Some(info) = info.as_ref() else {
-                return LOWLAT_ERR_INVALID_ARGUMENT;
-            };
-            if (info.size as usize) < core::mem::size_of::<lowlat_attempt_info>() {
+            if info.is_null() {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             }
+            // **Field by field, never through a reference to the whole.** The
+            // caller's `size` says how much of the structure exists; an
+            // application built against an earlier minor allocated less, and
+            // a reference to the full structure would reach past it.
+            let size = core::ptr::addr_of!((*info).size).read_unaligned() as usize;
+            if size < ATTEMPT_INFO_MINOR_1 {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let attempt_id = core::ptr::addr_of!((*info).attempt_id).read_unaligned();
+            let ufrag_field = core::ptr::addr_of!((*info).ufrag).read_unaligned();
+            let pwd_field = core::ptr::addr_of!((*info).pwd).read_unaligned();
+            let aes256_field = core::ptr::addr_of!((*info).aes256).read_unaligned();
+            let permissions = core::ptr::addr_of!((*info).permissions).read_unaligned();
+            let owner = core::ptr::addr_of!((*info).owner).read_unaligned();
             let (Some(attempt), Some(ufrag), Some(pwd), Some(aes256)) = (
-                taken(&info.attempt_id),
-                taken(&info.ufrag),
-                taken(&info.pwd),
-                taken(&info.aes256),
+                taken(&attempt_id),
+                taken(&ufrag_field),
+                taken(&pwd_field),
+                taken(&aes256_field),
             ) else {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             };
@@ -1423,16 +1469,44 @@ pub unsafe extern "C" fn lowlat_host_new_attempt(
             if attempt.is_empty() || ufrag.is_empty() || pwd.is_empty() {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             }
+            // The fields minor 2 appended are read only when the caller's
+            // size says they are there; a smaller structure is a native
+            // attempt with no digest, which is what every earlier caller
+            // meant.
+            let (transport, fingerprint) = if size >= core::mem::size_of::<lowlat_attempt_info>() {
+                let transport = core::ptr::addr_of!((*info).transport).read_unaligned();
+                let fingerprint = core::ptr::addr_of!((*info).fingerprint).read_unaligned();
+                let transport = match transport {
+                    x if x == lowlat_transport::LOWLAT_TRANSPORT_BUD as u32 => {
+                        crate::admission::Transport::Bud
+                    }
+                    x if x == lowlat_transport::LOWLAT_TRANSPORT_WEB as u32 => {
+                        crate::admission::Transport::Web
+                    }
+                    _ => return LOWLAT_ERR_INVALID_ARGUMENT,
+                };
+                let Some(fingerprint) = taken(&fingerprint) else {
+                    return LOWLAT_ERR_INVALID_ARGUMENT;
+                };
+                (
+                    transport,
+                    (!fingerprint.is_empty()).then(|| fingerprint.to_string()),
+                )
+            } else {
+                (crate::admission::Transport::Bud, None)
+            };
             let peer = crate::admission::Peer {
                 ufrag: ufrag.to_string(),
                 pwd: pwd.to_string(),
                 aes256: (!aes256.is_empty()).then(|| aes256.to_string()),
                 permissions: lowlat_inject::event::Permissions {
-                    keyboard: info.permissions.keyboard,
-                    pointer: info.permissions.pointer,
-                    gamepad: info.permissions.gamepad,
+                    keyboard: permissions.keyboard,
+                    pointer: permissions.pointer,
+                    gamepad: permissions.gamepad,
                 },
-                owner: info.owner,
+                owner,
+                transport,
+                fingerprint,
             };
             let mut held = handle.held();
             let Some(seam) = held.seam.as_mut() else {
@@ -2907,6 +2981,7 @@ fn described(received: &crate::events::Received) -> lowlat_event {
                 Outcome::TransportFailed => (LOWLAT_OUTCOME_TRANSPORT_FAILED, 0),
                 Outcome::ControlStalled => (LOWLAT_OUTCOME_CONTROL_STALLED, 0),
                 Outcome::Kicked(reason) => (LOWLAT_OUTCOME_KICKED, *reason),
+                Outcome::HandshakeFailed => (LOWLAT_OUTCOME_HANDSHAKE_FAILED, 0),
             };
             let mut body = lowlat_ended_event {
                 attempt: [0; LOWLAT_ATTEMPT_MAX],
@@ -3491,6 +3566,8 @@ mod seam_tests {
             },
             owner: false,
             reserved2: [0; 3],
+            transport: lowlat_transport::LOWLAT_TRANSPORT_BUD as u32,
+            fingerprint: [0; LOWLAT_FINGERPRINT_MAX],
         };
         put(&mut info.attempt_id, id);
         put(&mut info.ufrag, "G+sZxQ==");
@@ -3499,6 +3576,119 @@ mod seam_tests {
         // attempt registered without one takes the legacy cipher.
         put(&mut info.aes256, "deadbeef");
         info
+    }
+
+    /// A browser's attempt: the pipe named, a digest carried, no media key.
+    fn web_attempt(id: &str) -> lowlat_attempt_info {
+        let mut info = attempt(id);
+        info.transport = lowlat_transport::LOWLAT_TRANSPORT_WEB as u32;
+        info.aes256 = [0; LOWLAT_ICE_MAX];
+        put(
+            &mut info.fingerprint,
+            "sha-256 00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:\
+             00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF",
+        );
+        info
+    }
+
+    /// An application built against minor 1 sets the size that structure
+    /// had, and its attempt is the native one with no digest. *Named
+    /// regression test*: the appended fields are read only when the size
+    /// says they exist.
+    #[test]
+    fn an_old_size_attempt_info_still_registers_a_bud_attempt() {
+        let handle = started();
+        let mut info = attempt("old");
+        // Poisoned past the old size: a reader that reached into the tail
+        // would refuse the transport value below.
+        info.transport = u32::MAX;
+        info.size = u32::try_from(ATTEMPT_INFO_MINOR_1).unwrap_or(u32::MAX);
+        assert_eq!(
+            unsafe { lowlat_host_new_attempt(handle, &raw const info) },
+            LOWLAT_OK
+        );
+        let mut ours = credentials();
+        assert_eq!(
+            unsafe { lowlat_host_begin_p2p(handle, c"old".as_ptr(), 0, &raw mut ours) },
+            LOWLAT_OK
+        );
+        // A native answer: the media key is there and the digest is the
+        // random material, not a certificate's.
+        assert!(taken(&ours.aes256).is_some_and(|text| !text.is_empty()));
+        assert!(taken(&ours.fingerprint).is_some_and(|text| !text.starts_with("sha-256 ")));
+
+        // One byte short of the old size is refused, and so is a transport
+        // value nothing defined at the full size.
+        info.size -= 1;
+        assert_eq!(
+            unsafe { lowlat_host_new_attempt(handle, &raw const info) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        let mut info = attempt("bad");
+        info.transport = 7;
+        assert_eq!(
+            unsafe { lowlat_host_new_attempt(handle, &raw const info) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        unsafe { lowlat_host_stop(handle) };
+        unsafe { lowlat_destroy(handle) };
+    }
+
+    /// A browser is trusted by its digest and nothing else, so an attempt
+    /// on that pipe with none, or with one that is not a digest, is refused
+    /// with its own status.
+    #[test]
+    fn a_web_attempt_needs_a_fingerprint() {
+        let handle = started();
+        let mut info = web_attempt("web");
+        info.fingerprint = [0; LOWLAT_FINGERPRINT_MAX];
+        assert_eq!(
+            unsafe { lowlat_host_new_attempt(handle, &raw const info) },
+            LOWLAT_ERR_FINGERPRINT
+        );
+        put(&mut info.fingerprint, "sha-256 not:a:digest");
+        assert_eq!(
+            unsafe { lowlat_host_new_attempt(handle, &raw const info) },
+            LOWLAT_ERR_FINGERPRINT
+        );
+        let text = unsafe { CStr::from_ptr(lowlat_status_string(LOWLAT_ERR_FINGERPRINT as i32)) };
+        assert_eq!(
+            text.to_str().unwrap(),
+            "the offer's certificate digest is missing or malformed"
+        );
+        unsafe { lowlat_host_stop(handle) };
+        unsafe { lowlat_destroy(handle) };
+    }
+
+    /// A browser's answer carries the process certificate's digest with its
+    /// hash name, which the peer pastes into its own description, and no
+    /// media key, which the peer has no field for.
+    #[test]
+    fn a_web_answer_carries_the_certificate_fingerprint_and_no_media_key() {
+        let handle = started();
+        let info = web_attempt("web");
+        assert_eq!(
+            unsafe { lowlat_host_new_attempt(handle, &raw const info) },
+            LOWLAT_OK
+        );
+        let mut ours = credentials();
+        assert_eq!(
+            unsafe { lowlat_host_begin_p2p(handle, c"web".as_ptr(), 0, &raw mut ours) },
+            LOWLAT_OK
+        );
+        let fingerprint = taken(&ours.fingerprint).expect("a digest");
+        assert!(fingerprint.starts_with("sha-256 "), "{fingerprint}");
+        assert_eq!(fingerprint.len(), 8 + 32 * 3 - 1, "{fingerprint}");
+        assert_eq!(
+            fingerprint,
+            lowlat_crypto::cert::certificate()
+                .unwrap()
+                .fingerprint_sdp()
+        );
+        assert_eq!(taken(&ours.aes256), Some(""));
+        assert_ne!(ours.port, 0);
+        unsafe { lowlat_host_stop(handle) };
+        unsafe { lowlat_destroy(handle) };
     }
 
     /// Register and approve one attempt, which is what gives it a number.

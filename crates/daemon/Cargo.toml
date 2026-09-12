@@ -28,6 +28,9 @@ libc.workspace = true
 # The translation between signaling and the seam is JSON on one side and an
 # async client on the other; both stop at this boundary.
 tokio.workspace = true
+# The facade the browser pipe's state machines log through, bridged onto
+# this program's own stream. Already in the graph behind them.
+log = "0.4"
 serde_json.workspace = true
 
 [lints]

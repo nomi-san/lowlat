@@ -268,8 +268,17 @@ internal sealed class Host
                     Gamepad = perms?["gamepad"]?.GetValue<bool>() ?? true,
                 },
                 Owner = payload["is_owner"]?.GetValue<bool>() ?? false,
+                // A browser asks for its pipe with mode 2; anything else is
+                // the native transport.
+                Transport = payload["data"]?["mode"]?.GetValue<int>() == 2
+                    ? Transport.Web
+                    : Transport.Bud,
             };
             Text.Put(((Span<byte>)info.Id)[..Sizes.Attempt], attemptId);
+            // The peer's certificate digest, which a browser's offer carries
+            // and its handshake is checked against.
+            Text.Put(((Span<byte>)info.Fingerprint)[..Sizes.Fingerprint],
+                creds?["fingerprint"]?.GetValue<string>() ?? "");
             Text.Put(((Span<byte>)info.Ufrag)[..Sizes.Ice],
                 creds?["ice_ufrag"]?.GetValue<string>() ?? "");
             Text.Put(((Span<byte>)info.Pwd)[..Sizes.Ice],

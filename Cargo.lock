@@ -874,6 +874,7 @@ name = "lowlatd"
 version = "0.0.0"
 dependencies = [
  "libc",
+ "log",
  "lowlat-audio",
  "lowlat-common",
  "lowlat-host",

@@ -33,6 +33,7 @@ internal enum Status
     ErrIo = -104,
     ErrCrypto = -105,
     ErrUnknownGuest = -106,
+    ErrFingerprint = -107,
     ErrNoDisplay = -200,
     ErrDisplayUnreachable = -201,
 }
@@ -59,7 +60,12 @@ internal enum Outcome : uint
     TransportFailed = 6,
     ControlStalled = 7,
     Kicked = 8,
+    HandshakeFailed = 9,
 }
+
+/// Which pipe an attempt speaks: the native transport, or a browser's data
+/// channel on the same socket.
+internal enum Transport : uint { Bud = 0, Web = 1 }
 
 internal enum Codec : uint { H264 = 1, Hevc = 2 }
 
@@ -326,11 +332,22 @@ internal struct AttemptInfo
     public Permissions Permissions;
     public byte OwnerByte;
     private byte reserved0, reserved1, reserved2;
+    /// Appended in minor 2; a caller that sets the size the structure had
+    /// before registers a native attempt with no digest.
+    public uint TransportValue;
+    [InlineArray(Sizes.Fingerprint)] public struct FingerprintField { private byte first; }
+    public FingerprintField Fingerprint;
 
     public bool Owner
     {
         get => OwnerByte != 0;
         set => OwnerByte = value ? (byte)1 : (byte)0;
+    }
+
+    public Transport Transport
+    {
+        get => (Transport)TransportValue;
+        set => TransportValue = (uint)value;
     }
 }
 

@@ -34,11 +34,12 @@ enum Arrival {
     PeerReady,
 }
 use lowlat_core::control::{self, CONTROL_CHANNEL, status};
-use lowlat_core::endpoint::Endpoint;
+use lowlat_core::endpoint::{Endpoint, Media};
 use lowlat_core::envelope::{Cipher, Envelope};
 use lowlat_core::send::{SendRing, SendSlot};
 use lowlat_core::session::{DELIVERY_DEADLINE_MS, Session};
 use lowlat_core::video::Rotation;
+use lowlat_net::web::WebSession;
 use lowlat_net::{Guest, Shell, Socket, Wake};
 
 use crate::session::{Negotiation, State};
@@ -193,6 +194,10 @@ pub enum Outcome {
     /// media path rather than from signaling, because a peer that closes a
     /// session it was using does not withdraw its offer.
     PeerGone,
+    /// The browser pipe's security handshake did not complete, or the peer
+    /// was not the one the credential exchange named, or its association
+    /// ended with an error. A path existed; the pipe on it did not.
+    HandshakeFailed,
     /// Nothing sent to the peer has been acknowledged for the delivery
     /// deadline, while there was something outstanding the whole time.
     ///
@@ -259,6 +264,16 @@ pub enum Outcome {
     Kicked(i32),
 }
 
+/// Which pipe a peer speaks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Transport {
+    /// The native transport: authenticated records on the attempt socket.
+    Bud,
+    /// The browser's: a data channel, SCTP on DTLS, on the same socket.
+    Web,
+}
+
 /// What the offer told us about the peer.
 #[derive(Debug, Clone)]
 pub struct Peer {
@@ -267,6 +282,11 @@ pub struct Peer {
     /// Media key material. Retained because the answer's key is ours, not
     /// theirs; this is kept for the legacy path and for logging its absence.
     pub aes256: Option<String>,
+    /// Which pipe the offer asked for.
+    pub transport: Transport,
+    /// The peer's certificate digest, which a browser's offer carries and
+    /// its handshake is checked against. A native peer's is not read.
+    pub fingerprint: Option<String>,
     /// What this peer may drive, as signaling reported it.
     pub permissions: lowlat_inject::event::Permissions,
     /// Whether this peer owns the machine, which decides only one thing: it
@@ -310,6 +330,9 @@ pub enum Error {
     Io,
     /// Entropy or key material.
     Crypto,
+    /// A browser offered no certificate digest, or one that is not a
+    /// SHA-256 digest. Nothing its handshake could be checked against.
+    Fingerprint,
 }
 
 impl core::fmt::Display for Error {
@@ -321,6 +344,7 @@ impl core::fmt::Display for Error {
             Self::Withdrawn => "attempt was withdrawn before it was registered",
             Self::Io => "socket or thread could not be created",
             Self::Crypto => "credentials could not be produced",
+            Self::Fingerprint => "the offer's certificate digest is missing or malformed",
         };
         f.write_str(text)
     }
@@ -865,6 +889,16 @@ impl Admission {
         if self.occupancy() >= self.config.max_guests {
             return Err(Error::AtCapacity);
         }
+        // A browser is trusted by its digest and nothing else, so an offer
+        // without one has nothing a handshake could be checked against.
+        if peer.transport == Transport::Web
+            && peer
+                .fingerprint
+                .as_deref()
+                .is_none_or(|text| lowlat_crypto::cert::parse_fingerprint(text).is_err())
+        {
+            return Err(Error::Fingerprint);
+        }
         self.attempts.insert(
             id.to_string(),
             Attempt {
@@ -937,45 +971,72 @@ impl Admission {
 
         let local = lowlat_crypto::credentials().map_err(|_| Error::Crypto)?;
         let seed = lowlat_crypto::transaction_seed().map_err(|_| Error::Crypto)?;
-        // **Which cipher is the offer's own statement.** An offer that carried
-        // a media key takes the 256-bit mode, keyed from ours; one that did
-        // not comes from a generation with no such field, and both ends key
-        // from this host's fingerprint under the legacy 128-bit mode. The
-        // peer's own material is never the key either way -- presence is the
-        // whole of what it says.
-        let cipher = if attempt.peer.aes256.is_some() {
-            Cipher::Aes256
-        } else {
-            Cipher::Aes128
+        let keying = match attempt.peer.transport {
+            Transport::Bud => {
+                // **Which cipher is the offer's own statement.** An offer that
+                // carried a media key takes the 256-bit mode, keyed from ours;
+                // one that did not comes from a generation with no such field,
+                // and both ends key from this host's fingerprint under the
+                // legacy 128-bit mode. The peer's own material is never the
+                // key either way -- presence is the whole of what it says.
+                let cipher = if attempt.peer.aes256.is_some() {
+                    Cipher::Aes256
+                } else {
+                    Cipher::Aes128
+                };
+                let source = match cipher {
+                    Cipher::Aes256 => &local.aes256,
+                    Cipher::Aes128 => &local.fingerprint,
+                };
+                // **Key and nonce prefix together, and both are needed.** The
+                // nonce is the credential's four-byte prefix followed by the
+                // counter, never four zeros, so a session built from the key
+                // alone seals records no peer can open and rejects every
+                // record a peer sends. That looks exactly like a path that
+                // established and carries nothing. The prefix follows the key,
+                // so its offset moves with the cipher.
+                let key_len = cipher.key_len();
+                let (key, prefix) =
+                    lowlat_crypto::key_material(source, key_len).map_err(|_| Error::Crypto)?;
+                let mut material = [0u8; MATERIAL_LEN];
+                material
+                    .get_mut(..key_len)
+                    .ok_or(Error::Crypto)?
+                    .copy_from_slice(key.get(..key_len).ok_or(Error::Crypto)?);
+                material
+                    .get_mut(key_len..key_len + prefix.len())
+                    .ok_or(Error::Crypto)?
+                    .copy_from_slice(&prefix);
+                if cipher == Cipher::Aes128 {
+                    lowlat_common::log_info!(
+                        "guest: attempt={} takes the legacy cipher, the offer carried no media key",
+                        id
+                    );
+                }
+                Keying::Bud { material, cipher }
+            }
+            // A browser's session keys itself in its handshake; what this side
+            // holds is the digest the peer's certificate must carry.
+            Transport::Web => {
+                let expect = attempt
+                    .peer
+                    .fingerprint
+                    .as_deref()
+                    .and_then(|text| lowlat_crypto::cert::parse_fingerprint(text).ok())
+                    .ok_or(Error::Fingerprint)?;
+                lowlat_common::log_info!("guest: attempt={} takes the browser pipe", id);
+                Keying::Web { expect }
+            }
         };
-        let source = match cipher {
-            Cipher::Aes256 => &local.aes256,
-            Cipher::Aes128 => &local.fingerprint,
+        // The answer's digest: the process certificate's for a browser, which
+        // pastes it into its own description, and the random material a
+        // native peer keys the legacy cipher from.
+        let fingerprint = match keying {
+            Keying::Bud { .. } => local.fingerprint.clone(),
+            Keying::Web { .. } => lowlat_crypto::cert::certificate()
+                .map_err(|_| Error::Crypto)?
+                .fingerprint_sdp(),
         };
-        // **Key and nonce prefix together, and both are needed.** The nonce is
-        // the credential's four-byte prefix followed by the counter, never
-        // four zeros, so a session built from the key alone seals records no
-        // peer can open and rejects every record a peer sends. That looks
-        // exactly like a path that established and carries nothing. The
-        // prefix follows the key, so its offset moves with the cipher.
-        let key_len = cipher.key_len();
-        let (key, prefix) =
-            lowlat_crypto::key_material(source, key_len).map_err(|_| Error::Crypto)?;
-        let mut material = [0u8; MATERIAL_LEN];
-        material
-            .get_mut(..key_len)
-            .ok_or(Error::Crypto)?
-            .copy_from_slice(key.get(..key_len).ok_or(Error::Crypto)?);
-        material
-            .get_mut(key_len..key_len + prefix.len())
-            .ok_or(Error::Crypto)?
-            .copy_from_slice(&prefix);
-        if cipher == Cipher::Aes128 {
-            lowlat_common::log_info!(
-                "guest: attempt={} takes the legacy cipher, the offer carried no media key",
-                id
-            );
-        }
 
         // Walks from where it was asked to start, so a second concurrent guest
         // lands on the next free port rather than failing to bind at all, and
@@ -1020,27 +1081,28 @@ impl Admission {
         let guest = Guest::spawn(wake, move |wake, running| {
             run_guest(
                 Attached {
-                    attempt_id,
-                    emit,
-                    microphone,
                     socket,
                     servers,
-                    arrivals,
-                    said,
-                    asked,
-                    telemetry,
                     ours,
                     theirs,
-                    material,
-                    cipher,
+                    keying,
                     seed,
-                    seats,
-                    video,
-                    guest: guest_number,
-                    floor,
-                    permissions,
-                    owner,
-                    rumble_probe,
+                    driven: Driven {
+                        attempt_id,
+                        emit,
+                        microphone,
+                        arrivals,
+                        said,
+                        asked,
+                        telemetry,
+                        seats,
+                        video,
+                        guest: guest_number,
+                        floor,
+                        permissions,
+                        owner,
+                        rumble_probe,
+                    },
                 },
                 wake,
                 running,
@@ -1082,14 +1144,18 @@ impl Admission {
         Ok(HostCredentials {
             ufrag: local.ufrag,
             pwd: local.pwd,
-            fingerprint: local.fingerprint,
-            // **A legacy answer carries no media key.** The peer has no field
-            // to read one from, and the empty string is the truth about the
-            // session rather than an omission: this attempt is keyed from the
-            // fingerprint above.
-            aes256: match cipher {
-                Cipher::Aes256 => local.aes256,
-                Cipher::Aes128 => String::new(),
+            fingerprint,
+            // **A legacy answer carries no media key**, and neither does a
+            // browser's. The peer has no field to read one from, and the
+            // empty string is the truth about the session rather than an
+            // omission: a legacy attempt is keyed from the digest above and
+            // a browser's keys itself.
+            aes256: match keying {
+                Keying::Bud {
+                    cipher: Cipher::Aes256,
+                    ..
+                } => local.aes256,
+                Keying::Bud { .. } | Keying::Web { .. } => String::new(),
             },
             port: bound,
         })
@@ -1416,11 +1482,36 @@ impl Admission {
 }
 
 /// Everything one guest's loop owns for its lifetime.
+/// How a guest's media half is keyed: the native cipher and its material,
+/// or the digest a browser's certificate must carry.
+#[derive(Debug, Clone, Copy)]
+enum Keying {
+    Bud {
+        /// The key and the four-byte nonce prefix that follows it, packed
+        /// at the front; the cipher says how much of it is key.
+        material: [u8; MATERIAL_LEN],
+        cipher: Cipher,
+    },
+    Web {
+        expect: [u8; lowlat_crypto::cert::FINGERPRINT_LEN],
+    },
+}
+
+/// What a guest thread is built from.
 struct Attached {
-    attempt_id: String,
-    emit: crate::events::Sender,
     socket: Socket,
     servers: Vec<SocketAddr>,
+    ours: (String, String),
+    theirs: (String, String),
+    keying: Keying,
+    seed: [u8; 16],
+    driven: Driven,
+}
+
+/// What the guest loop is driven by, whichever pipe carries it.
+struct Driven {
+    attempt_id: String,
+    emit: crate::events::Sender,
     arrivals: mpsc::Receiver<Arrival>,
     /// Application messages the seam wants sent to this guest.
     said: mpsc::Receiver<Said>,
@@ -1430,13 +1521,6 @@ struct Attached {
     telemetry: Arc<Telemetry>,
     /// Where a guest's microphone goes, when this host takes one.
     microphone: Option<crate::microphone::Sender>,
-    ours: (String, String),
-    theirs: (String, String),
-    /// The key and the four-byte nonce prefix that follows it, packed at the
-    /// front; the cipher says how much of it is key.
-    material: [u8; MATERIAL_LEN],
-    cipher: Cipher,
-    seed: [u8; 16],
     /// A way onto the stream, taken once this guest is streamable.
     seats: Option<Seats>,
     /// The stream's configured dimensions, which the video header carries
@@ -1557,8 +1641,8 @@ struct Consumers<'a> {
     telemetry: &'a Telemetry,
 }
 
-fn drain_control<S: lowlat_inject::event::Sink>(
-    session: &mut Session<'_>,
+fn drain_control<M: Media, S: lowlat_inject::event::Sink>(
+    session: &mut M,
     negotiation: &mut Negotiation,
     mut input: Option<&mut Input<S>>,
     pointer: Pointer<'_>,
@@ -1687,7 +1771,7 @@ fn forward_declaration(negotiation: &mut Negotiation, seat: Option<&SeatHold>, d
 }
 
 /// Ask a peer's controller to vibrate.
-fn send_rumble(session: &mut Session<'_>, pad: u32, large: u8, small: u8) {
+fn send_rumble<M: Media>(session: &mut M, pad: u32, large: u8, small: u8) {
     send_control(
         session,
         &control::Control {
@@ -1713,7 +1797,7 @@ fn past_the_cap(text: &[u8]) -> bool {
 /// **The body is written as it was handed over.** Building it belongs where
 /// the caller is, so nothing on this thread allocates to send one, and the
 /// terminator a peer reads it as a C string by is already there.
-fn send_said(session: &mut Session<'_>, message: &Said) {
+fn send_said<M: Media>(session: &mut M, message: &Said) {
     send_control(
         session,
         &control::Control {
@@ -1734,7 +1818,7 @@ fn send_said(session: &mut Session<'_>, message: &Said) {
 /// **Sent before the session is torn down, not after.** The message rides the
 /// control channel like any other and needs a turn of the shell to reach the
 /// wire; a caller that returns immediately drops it.
-fn send_disconnect(session: &mut Session<'_>, reason: i32) {
+fn send_disconnect<M: Media>(session: &mut M, reason: i32) {
     #[allow(
         clippy::cast_sign_loss,
         reason = "the status is a signed value carried in an unsigned argument, and the peer                   reads it back as signed"
@@ -1793,8 +1877,8 @@ fn follow_epoch(
 /// rather than truncated, so the next predicted frame would reference a
 /// picture the peer never received. Only the gate may latch, and the gate is
 /// on the stream's thread, so the guest says so and the stream acts on it.
-fn send_frames(
-    session: &mut Session<'_>,
+fn send_frames<M: Media>(
+    session: &mut M,
     seat: &SeatHold,
     packetiser: &mut Packetiser,
     negotiation: &mut Negotiation,
@@ -1840,7 +1924,7 @@ fn send_frames(
 /// Reports what it sent and what it had to drop, because **the two together
 /// are the only place sound appears in a live run**: the picture's numbers say
 /// nothing about it, and a refusal here is invisible on the wire by design.
-fn send_audio(session: &mut Session<'_>, seat: &SeatHold, raw: bool, sound: &mut AudioSent) {
+fn send_audio<M: Media>(session: &mut M, seat: &SeatHold, raw: bool, sound: &mut AudioSent) {
     let header = crate::audio::header(raw);
     while let Some(packet) = seat.next_audio() {
         if session
@@ -1868,7 +1952,7 @@ struct AudioSent {
 /// A refusal is dropped rather than reported: everything sent this way is a
 /// cadence that repeats, so a message lost to a full control window is
 /// replaced by the next one rather than being worth a retry of its own.
-fn send_control(session: &mut Session<'_>, message: &control::Control<'_>) {
+fn send_control<M: Media>(session: &mut M, message: &control::Control<'_>) {
     let mut header = [0u8; control::CONTROL_HEADER_LEN];
     let Ok(written) = control::encode_header(&mut header, message) else {
         return;
@@ -1995,66 +2079,102 @@ fn desktop_extents(width: u32, height: u32, rotation: Rotation, place: Option<Pl
 /// Everything it borrows is owned here, on this thread, which is what lets the
 /// endpoint hold references into storage allocated once at the top.
 fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
-    // Allocated once, here, and lent to the rings for the life of the thread.
-    // **Video receive is absent on purpose**: video is host to guest only, and
-    // the group acknowledgement reports zero for an unattached channel, which
-    // is the truth about a channel the peer never sends on.
-    let mut control_recv_bodies = vec![0u8; SLOT * CONTROL_RECV_SLOTS];
-    let mut control_recv_meta = vec![SlotMeta::default(); CONTROL_RECV_SLOTS];
-    let mut control_send_bodies = vec![0u8; SLOT * CONTROL_SEND_SLOTS];
-    let mut control_send_meta = vec![SendSlot::default(); CONTROL_SEND_SLOTS];
-    let mut video_send_bodies = vec![0u8; SLOT * VIDEO_SEND_SLOTS];
-    let mut video_send_meta = vec![SendSlot::default(); VIDEO_SEND_SLOTS];
-    // **Sound gets its own window, because it is its own channel.** Sized for
-    // the deepest packet either codec produces times the queue a guest may be
-    // behind by, which is a fifth of a second.
-    let mut audio_send_bodies = vec![0u8; SLOT * AUDIO_SEND_SLOTS];
-    let mut audio_send_meta = vec![SendSlot::default(); AUDIO_SEND_SLOTS];
-    let mut inbound = vec![0u8; MAX_INBOUND];
-
-    let Ok(envelope) = Envelope::from_credential(&args.material, args.cipher) else {
-        return;
-    };
-    let mut session = Session::new(envelope, 1, 0.0);
-    if !attach_recv(
-        &mut session,
-        CONTROL_CHANNEL,
-        &mut control_recv_bodies,
-        &mut control_recv_meta,
-    ) || !attach_send(
-        &mut session,
-        CONTROL_CHANNEL,
-        &mut control_send_bodies,
-        &mut control_send_meta,
-    ) || !attach_send(
-        &mut session,
-        VIDEO_CHANNEL,
-        &mut video_send_bodies,
-        &mut video_send_meta,
-    ) || !attach_send(
-        &mut session,
-        AUDIO_CHANNEL,
-        &mut audio_send_bodies,
-        &mut audio_send_meta,
-    ) {
-        return;
-    }
-
+    let Attached {
+        socket,
+        servers,
+        ours,
+        theirs,
+        keying,
+        seed,
+        driven,
+    } = args;
     let mut conn = Conn::new(
         Credentials {
-            local_ufrag: &args.ours.0,
-            local_pwd: &args.ours.1,
-            remote_ufrag: &args.theirs.0,
-            remote_pwd: &args.theirs.1,
+            local_ufrag: &ours.0,
+            local_pwd: &ours.1,
+            remote_ufrag: &theirs.0,
+            remote_pwd: &theirs.1,
         },
-        args.seed,
+        seed,
         0.0,
     );
-    for server in &args.servers {
+    for server in &servers {
         let _ = conn.add_server(*server);
     }
 
-    let mut shell = Shell::new(args.socket, wake, Endpoint::new(conn, session));
+    match keying {
+        Keying::Bud { material, cipher } => {
+            // Allocated once, here, and lent to the rings for the life of the
+            // thread. **Video receive is absent on purpose**: video is host to
+            // guest only, and the group acknowledgement reports zero for an
+            // unattached channel, which is the truth about a channel the peer
+            // never sends on.
+            let mut control_recv_bodies = vec![0u8; SLOT * CONTROL_RECV_SLOTS];
+            let mut control_recv_meta = vec![SlotMeta::default(); CONTROL_RECV_SLOTS];
+            let mut control_send_bodies = vec![0u8; SLOT * CONTROL_SEND_SLOTS];
+            let mut control_send_meta = vec![SendSlot::default(); CONTROL_SEND_SLOTS];
+            let mut video_send_bodies = vec![0u8; SLOT * VIDEO_SEND_SLOTS];
+            let mut video_send_meta = vec![SendSlot::default(); VIDEO_SEND_SLOTS];
+            // **Sound gets its own window, because it is its own channel.**
+            // Sized for the deepest packet either codec produces times the
+            // queue a guest may be behind by, which is a fifth of a second.
+            let mut audio_send_bodies = vec![0u8; SLOT * AUDIO_SEND_SLOTS];
+            let mut audio_send_meta = vec![SendSlot::default(); AUDIO_SEND_SLOTS];
+
+            let Ok(envelope) = Envelope::from_credential(&material, cipher) else {
+                return;
+            };
+            let mut session = Session::new(envelope, 1, 0.0);
+            if !attach_recv(
+                &mut session,
+                CONTROL_CHANNEL,
+                &mut control_recv_bodies,
+                &mut control_recv_meta,
+            ) || !attach_send(
+                &mut session,
+                CONTROL_CHANNEL,
+                &mut control_send_bodies,
+                &mut control_send_meta,
+            ) || !attach_send(
+                &mut session,
+                VIDEO_CHANNEL,
+                &mut video_send_bodies,
+                &mut video_send_meta,
+            ) || !attach_send(
+                &mut session,
+                AUDIO_CHANNEL,
+                &mut audio_send_bodies,
+                &mut audio_send_meta,
+            ) {
+                return;
+            }
+            let shell = Shell::new(socket, wake, Endpoint::new(conn, session));
+            drive(driven, shell, running);
+        }
+        Keying::Web { expect } => {
+            let session = match WebSession::client(expect, 1, 0.0) {
+                Ok(session) => session,
+                Err(error) => {
+                    lowlat_common::log_error!(
+                        "guest: attempt={} has no browser session, error={error}",
+                        driven.attempt_id
+                    );
+                    return;
+                }
+            };
+            let shell = Shell::new(socket, wake, Endpoint::new(conn, session));
+            drive(driven, shell, running);
+        }
+    }
+}
+
+/// The guest loop, on whichever pipe the shell carries.
+///
+/// Everything here is written against the media seam and nothing else, so
+/// the loop that drives a native session and the loop that drives a
+/// browser's are this one function instantiated twice.
+fn drive<M: Media>(args: Driven, mut shell: Shell<'_, M>, running: &lowlat_net::Running) {
+    let mut inbound = vec![0u8; MAX_INBOUND];
     args.telemetry.began();
     let mut reported: Vec<SocketAddr> = Vec::new();
     // The negotiation, from the moment the media path exists. Absent before
@@ -2963,6 +3083,8 @@ mod tests_support {
             ufrag: "aaaa".into(),
             pwd: "passwordforaaaa".into(),
             aes256: None,
+            transport: super::Transport::Bud,
+            fingerprint: None,
         }
     }
 

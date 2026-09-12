@@ -12,7 +12,7 @@
 
 use std::net::SocketAddr;
 
-use lowlat::admission::{Admission, Config, Event, Peer};
+use lowlat::admission::{Admission, Config, Event, Peer, Transport};
 use lowlat_kessel::message::{
     Answer, AnswerData, CancelRelay, Candex, CandexRelay, CandidateData, ConnUpdate, Credentials,
     HostDataBase, OfferRelay, Relayed, no_credentials,
@@ -100,6 +100,36 @@ async fn main() {
     if let Err(error) = run().await {
         lowlat_common::log_error!("lowlatd: {error}");
         std::process::exit(1);
+    }
+}
+
+/// The `log` facade onto this program's own stream.
+struct Bridge;
+
+static BRIDGE: Bridge = Bridge;
+
+impl log::Log for Bridge {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        lowlat_common::log::enabled(level_of(metadata.level()))
+    }
+
+    fn log(&self, record: &log::Record) {
+        let level = level_of(record.level());
+        if lowlat_common::log::enabled(level) {
+            lowlat_common::log::emit(level, &format!("{}: {}", record.target(), record.args()));
+        }
+    }
+
+    fn flush(&self) {}
+}
+
+fn level_of(level: log::Level) -> lowlat_common::log::Level {
+    match level {
+        log::Level::Error => lowlat_common::log::Level::Error,
+        log::Level::Warn => lowlat_common::log::Level::Warn,
+        log::Level::Info => lowlat_common::log::Level::Info,
+        log::Level::Debug => lowlat_common::log::Level::Debug,
+        log::Level::Trace => lowlat_common::log::Level::Trace,
     }
 }
 
@@ -819,6 +849,10 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     if flag_set("--verbose") {
         lowlat_common::log::set_level(lowlat_common::log::Level::Debug);
     }
+    // The browser pipe's two state machines say what they see through the
+    // `log` facade; carried onto this program's own stream at the level they
+    // chose, so a handshake that fails is one log and not two.
+    let _ = log::set_logger(&BRIDGE).map(|()| log::set_max_level(log::LevelFilter::Debug));
     match program {
         Program::Session => session(),
         Program::Tray => tray(),
@@ -1288,10 +1322,17 @@ async fn session_loop(
                         let refusal = if reject_all {
                             Some("policy".to_string())
                         } else {
+                            let transport = if offer.data.wants_web() {
+                                Transport::Web
+                            } else {
+                                Transport::Bud
+                            };
                             seam.new_attempt(&offer.attempt_id, Peer {
                                 ufrag: offer.data.creds.ice_ufrag,
                                 pwd: offer.data.creds.ice_pwd,
                                 aes256: offer.data.creds.aes256,
+                                transport,
+                                fingerprint: offer.data.creds.fingerprint,
                                 permissions: lowlat::inject::Permissions {
                                     keyboard: offer.permissions.keyboard,
                                     pointer: offer.permissions.mouse,

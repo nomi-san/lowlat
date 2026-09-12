@@ -243,6 +243,22 @@ impl Default for Permissions {
 #[derive(Debug, Clone, Deserialize)]
 pub struct OfferData {
     pub creds: PeerCredentials,
+    /// Which pipe the peer wants: absent or 1 is the native transport, 2 is
+    /// the browser's. Anything else is treated as the native one, because a
+    /// peer that asks for a pipe this host does not have gets the one every
+    /// peer has rather than silence.
+    #[serde(default)]
+    pub mode: Option<u32>,
+}
+
+/// The offer's transport field value that asks for the browser pipe.
+pub const MODE_WEB: u32 = 2;
+
+impl OfferData {
+    /// Whether the offer asks for the browser pipe.
+    pub fn wants_web(&self) -> bool {
+        self.mode == Some(MODE_WEB)
+    }
 }
 
 /// The peer's half of the credentials. Only the check fields are used; the
@@ -253,6 +269,11 @@ pub struct PeerCredentials {
     pub ice_pwd: String,
     #[serde(default)]
     pub aes256: Option<String>,
+    /// The peer's certificate digest, which only a browser sends and which
+    /// its handshake is checked against. A native peer's is random and is
+    /// not read.
+    #[serde(default)]
+    pub fingerprint: Option<String>,
 }
 
 /// What a relayed candidate exchange asks a host to do.
@@ -503,6 +524,44 @@ mod tests {
         assert!(wire.contains(r#""sync":false"#), "{wire}");
         // The version block rides at the same level, not nested under a key.
         assert!(wire.contains(r#""ver_data":1"#), "{wire}");
+    }
+
+    /// A browser's offer names its pipe and carries its certificate digest;
+    /// a native one carries neither, and one asking for a pipe this host
+    /// does not have is read as native rather than refused.
+    #[test]
+    fn an_offer_with_mode_two_and_a_fingerprint_reads_as_web() {
+        let relay: OfferRelay = serde_json::from_str(
+            r#"{"attempt_id":"a","from":"peer","data":{"ver_data":1,"mode":2,
+                "creds":{"ice_ufrag":"u","ice_pwd":"p","fingerprint":"sha-256 AB:CD"},
+                "versions":{"p2p":1,"bud":1,"init":1,"video":1,"audio":1,"control":1}}}"#,
+        )
+        .expect("a browser's offer");
+        assert!(relay.data.wants_web());
+        assert_eq!(
+            relay.data.creds.fingerprint.as_deref(),
+            Some("sha-256 AB:CD")
+        );
+        assert_eq!(relay.data.creds.aes256, None);
+    }
+
+    #[test]
+    fn an_offer_without_mode_reads_as_bud() {
+        let native: OfferRelay = serde_json::from_str(
+            r#"{"attempt_id":"a","from":"peer","data":{"ver_data":1,
+                "creds":{"ice_ufrag":"u","ice_pwd":"p","fingerprint":"abcd","aes256":"ef"}}}"#,
+        )
+        .expect("a native offer");
+        assert!(!native.data.wants_web());
+        assert_eq!(native.data.creds.aes256.as_deref(), Some("ef"));
+
+        let unknown: OfferRelay = serde_json::from_str(
+            r#"{"attempt_id":"a","from":"peer","data":{"ver_data":1,"mode":7,
+                "creds":{"ice_ufrag":"u","ice_pwd":"p"}}}"#,
+        )
+        .expect("an offer for a pipe that does not exist");
+        assert!(!unknown.data.wants_web());
+        assert_eq!(unknown.data.creds.fingerprint, None);
     }
 
     /// Absent means the legacy cipher, so an empty key must not appear at all

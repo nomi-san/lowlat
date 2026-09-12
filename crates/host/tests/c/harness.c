@@ -17,6 +17,7 @@
 
 #include <dlfcn.h>
 #include <stdio.h>
+#include <stddef.h>
 #include <string.h>
 #include <time.h>
 
@@ -399,6 +400,47 @@ int main(int argc, char **argv)
         return 1;
     }
     end_connection(ll, legacy.attempt_id);
+    /* A browser's offer names its pipe and carries its certificate digest,
+     * and the answer carries this process's digest with its hash name and no
+     * media key. Without a digest the offer is refused with its own status. */
+    lowlat_attempt_info web = offer;
+    snprintf(web.attempt_id, sizeof web.attempt_id, "%s", "web-attempt");
+    memset(web.aes256, 0, sizeof web.aes256);
+    web.transport = LOWLAT_TRANSPORT_WEB;
+    if (new_attempt(ll, &web) != LOWLAT_ERR_FINGERPRINT) {
+        fprintf(stderr, "harness: a browser offer without a digest was not refused as such\n");
+        return 1;
+    }
+    snprintf(web.fingerprint, sizeof web.fingerprint, "%s",
+             "sha-256 00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:"
+             "00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF");
+    if (new_attempt(ll, &web) != LOWLAT_OK) {
+        fprintf(stderr, "harness: a browser offer could not be registered\n");
+        return 1;
+    }
+    lowlat_credentials web_answer;
+    memset(&web_answer, 0, sizeof web_answer);
+    web_answer.size = (uint32_t) sizeof web_answer;
+    if (begin_p2p(ll, web.attempt_id, 0, &web_answer) != LOWLAT_OK) {
+        fprintf(stderr, "harness: a browser attempt could not be approved\n");
+        return 1;
+    }
+    if (strncmp(web_answer.fingerprint, "sha-256 ", 8) != 0 || web_answer.aes256[0] != '\0') {
+        fprintf(stderr, "harness: a browser answer did not carry the digest alone\n");
+        return 1;
+    }
+    end_connection(ll, web.attempt_id);
+    /* An application built against the previous minor sets the size that
+     * structure had; its attempt is the native one, whatever lies past it. */
+    lowlat_attempt_info older = offer;
+    snprintf(older.attempt_id, sizeof older.attempt_id, "%s", "older-attempt");
+    older.size = (uint32_t) offsetof(lowlat_attempt_info, transport);
+    older.transport = 0xFFFFFFFFu;
+    if (new_attempt(ll, &older) != LOWLAT_OK) {
+        fprintf(stderr, "harness: an older-sized offer was refused\n");
+        return 1;
+    }
+    end_connection(ll, older.attempt_id);
     /* The roster, in the two calls an application makes: how many, then who.
      * Nothing is allocated on the caller's behalf, so there is nothing to
      * free. */
