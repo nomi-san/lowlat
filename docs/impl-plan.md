@@ -1729,10 +1729,10 @@ description it hands its browser, which is what lets a second browser family con
 - [x] **A hermetic pair under the simulator, two shells over loopback, and the benchmark**
   that records what the second pipe allocates and costs per datagram. *2026-09-12: 23 and
   20 allocations per datagram, 14 us at p50 and 24 at p99, in the change log.*
-- [ ] **Signaling, admission, the C ABI and the daemon**: the offer's transport field and
+- [x] **Signaling, admission, the C ABI and the daemon**: the offer's transport field and
   the peer's fingerprint, a registration that refuses a browser without one, the answer that
   carries the certificate's digest and no media key, two appended and size-gated fields on the
-  attempt description.
+  attempt description. *2026-09-12, minor 2.*
 - [ ] **The guest loop on both transports**, the encode-latency report on a two-second cadence
   rather than a frame count, and a declaration without the base flag counted.
 - [ ] **Fuzz targets** for the record layer and the session, with a corpus of real browser

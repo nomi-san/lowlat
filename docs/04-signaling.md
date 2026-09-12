@@ -144,6 +144,18 @@ Carried in the offer and the answer:
 **The key travels over the signaling transport's TLS and nowhere else.** It is never logged,
 never persisted, and zeroized on session teardown.
 
+**The offer also names its pipe**, in `data.mode`: absent or 1 is the native transport, 2 is
+the browser's ([01 §14](01-protocol.md)). The same four fields serve both, and what changes is
+what two of them mean. On the native pipe the fingerprint is random material the legacy cipher
+keys from, and the media key is real. On the browser pipe **the fingerprint is a real
+certificate digest** -- `sha-256` followed by a space and the colon-separated uppercase pairs,
+which is the form the browser's own description carries -- and there is no media key on either
+side: the peer's is not read, and the answer omits the field, because the pipe keys itself in
+its handshake and the host is trusted by that digest alone. A browser's offer without a digest,
+or with one that is not a SHA-256 digest, is refused at registration rather than answered:
+there would be nothing to check its handshake against. A value of `mode` nothing defines is
+read as the native pipe, which every peer has, rather than as a refusal.
+
 `aes256` is the switch described in [01 §4](01-protocol.md): present selects the 256-bit
 cipher, absent selects the 128-bit legacy path with the fingerprint. Both are implemented, the
 credential decides, and there is no negotiation.

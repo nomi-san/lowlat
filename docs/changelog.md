@@ -66,6 +66,20 @@ the same attempt socket, chosen by one field in the offer. The decisions are in
   transport sends at the rate the host chooses and repairs the gaps; this pipe cannot, and
   the rate controller follows it down. A lower retransmission floor was tried and moved
   the figure by five percent, so the defaults stand.
+- **The pipe is chosen by the offer and reaches the C ABI** (`lowlat-kessel`, `lowlat-host`,
+  `lowlatd`). The offer's `mode` and the peer's certificate digest are read; a browser attempt
+  without a digest, or with one that is not a SHA-256 digest, is refused at registration with
+  its own status, because there would be nothing its handshake could be checked against; on a
+  browser attempt the answer carries the process certificate's digest with its hash name and
+  no media key. `lowlat_attempt_info` gains `transport` and `fingerprint`, **appended and
+  size-gated**: the boundary reads the structure field by field within the caller's `size`
+  and never through a reference to the whole of it, so an application built against minor 1
+  registers a native attempt as it always did, whatever lies past its allocation. Minor 2,
+  with `lowlat_transport`, `LOWLAT_ERR_FINGERPRINT` and `LOWLAT_OUTCOME_HANDSHAKE_FAILED`.
+  The guest loop is written once against the media seam and built for whichever pipe the
+  offer asked for; the helpers it calls take the seam and not the native session.
+- The daemon carries the two state machines' own log lines onto its stream at the level they
+  chose, so a handshake that fails is one log and not two.
 - **Measured, in release, ten seconds of a stream shaped like a real one** -- sixty 30 KiB
   pictures and fifty sound packets a second, 14.7 Mbps -- through a pair of sessions under
   a fake clock: **23 allocations per datagram on the host side and 20 on the guest's**,
@@ -104,6 +118,14 @@ the same attempt socket, chosen by one field in the offer. The decisions are in
   it and a round trip measured; and two ends beginning the association at once still
   associate. Two shells over real sockets: punch, handshake, association and a 200 KiB
   picture, then a clean close read on the far side.
+- A browser's offer reads as the browser pipe with its digest, a native one as native, and
+  one naming a pipe nothing defines as native. Across the boundary: an attempt described at
+  the previous minor's size registers as native with the tail poisoned, one byte short is
+  refused, an undefined transport value is refused, a browser attempt without a digest or
+  with a malformed one is refused with its own status and description, and a browser's answer
+  carries this process's digest with its hash name and an empty media key. The C harness
+  does the same three things under C and C++ with warnings as errors, and the C# example
+  builds.
 
 ## 2026-09-11 - The tray, drawn by the desktop
 

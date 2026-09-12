@@ -352,6 +352,23 @@ generated here, from the one audited source of entropy, and both directions of t
 from it. An application-supplied key would make an integrator's random number generator the
 session's.
 
+**Which pipe an attempt speaks is the offer's to say**, and the application copies it across in
+`lowlat_attempt_info.transport` as a `lowlat_transport` value -- `LOWLAT_TRANSPORT_BUD`, the
+native transport and the zero a cleared structure carries, or `LOWLAT_TRANSPORT_WEB`, a
+browser's data channel on the same socket ([01 §14](01-protocol.md)). On the browser pipe the
+application also copies the peer's certificate digest into `fingerprint`, with or without its
+hash name; registering without one is refused with `LOWLAT_ERR_FINGERPRINT`, because there
+would be nothing the handshake could be checked against. On the native pipe the field is not
+read. The credentials that come back differ in the same two places: a browser's answer carries
+this process's certificate digest with its hash name in `fingerprint` and an empty `aes256`,
+which is the truth about a pipe that keys itself.
+
+**Both fields were appended in minor 2 and are read only when `size` says they exist.** An
+application built against minor 1 sets the size that structure had and registers a native
+attempt with no digest, whatever lies past its allocation; the boundary reads the structure
+field by field and never through a reference to the whole of it. A `transport` value nothing
+defines is refused as an invalid argument rather than defaulted.
+
 `lowlat_host_add_candidate` and `lowlat_host_end_connection` accept unknown attempt
 identifiers silently. Those are races with teardown, not errors, and returning a status the
 caller would have to ignore is worse than returning nothing. A withdrawal that arrives before
@@ -423,7 +440,11 @@ ignores it, which is why the type field is first.
 **A guest's state changes are the four attempt events**, not one event with a
 state field: candidate and ready while it negotiates, established when a path is found, ended
 with a typed outcome. Splitting them is what lets an application respond to each without
-switching on a state inside a state.
+switching on a state inside a state. One outcome belongs to the browser pipe alone:
+`LOWLAT_OUTCOME_HANDSHAKE_FAILED`, a path that existed and a pipe on it that did not -- the
+security handshake never completed, the peer was not the one the offer named, or its
+association ended with an error. The native pipe has no such outcome, because its records
+either authenticate or they do not, and a peer that stops is `PEER_GONE`.
 
 **Each of the last three is raised where its change happens**, which is the only place that can
 tell a change from a repetition. The capture one comes from the loop that rebuilt, because
@@ -577,6 +598,10 @@ changing a signature, or changing the meaning of an existing field.
 
 `lowlat_abi_version` returns major and minor packed. A loader refusing a mismatched major is
 correct; refusing a newer minor is not.
+
+**Minor 2** (2026-09-12) appended `transport` and `fingerprint` to `lowlat_attempt_info`, the
+`lowlat_transport` enumeration, the status `LOWLAT_ERR_FINGERPRINT` and the outcome
+`LOWLAT_OUTCOME_HANDSHAKE_FAILED` ([§4](#4-signaling-seam)).
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected
