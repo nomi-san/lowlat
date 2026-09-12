@@ -22,12 +22,14 @@
 //! probe leaves at a TTL that must be restored afterwards and a shell cannot be
 //! trusted to remember an obligation that is not in the type.
 
+use core::fmt;
 use core::net::{IpAddr, SocketAddr};
 
+use crate::channel::Drops;
 use crate::conn::{self, Conn, Egress, Ttl};
 use crate::demux::{self, Datagram};
 use crate::error::Result;
-use crate::session::{self, Health, Session};
+use crate::session::{self, Health, Pressure, Session};
 
 /// What an inbound datagram turned out to be.
 ///
@@ -35,26 +37,113 @@ use crate::session::{self, Health, Session};
 /// them into one enum that half the callers would have to ignore.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum Inbound {
+pub enum Inbound<I = session::Inbound> {
     /// A connectivity check or its answer.
     Connectivity(conn::Inbound),
-    /// An encrypted record.
-    Media(session::Inbound),
+    /// A record for the media half.
+    Media(I),
 }
 
-/// A peer: the punch and the session it hands over to.
+/// A failure of the media half that the peer did not cause by leaving.
+///
+/// The native session has none: its records either authenticate or they do
+/// not, and a peer that stops is a matter of [`Health`]. A transport with a
+/// handshake can fail before any record flows, and that failure has a name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Fault {
+    /// The security handshake did not complete, or the peer was not who the
+    /// credential exchange said it would be.
+    Handshake,
+    /// The peer's transport ended the association with an error.
+    Aborted,
+}
+
+/// The media half of a peer: what carries messages once a path exists.
+///
+/// One vocabulary, more than one pipe. The shell and the guest loop are
+/// written against this and instantiated per transport, so the loop that
+/// drives a native session and the loop that drives a browser's are the same
+/// code and cannot drift apart. The methods are exactly what the guest loop
+/// reads and nothing more; anything a single transport needs beyond them is
+/// reached through that transport's own type.
+///
+/// Every method takes time as a parameter and none touches a socket. That is
+/// the property the whole core has, and a media half that lives outside the
+/// core keeps it too.
+pub trait Media: fmt::Debug {
+    /// What one record turned out to be, in this transport's own words.
+    type Inbound: Copy + fmt::Debug;
+
+    /// The connectivity engine chose a path. Called once, before any record
+    /// is emitted toward it. A transport with a handshake starts it here.
+    fn path_ready(&mut self, _now_ms: f64) {}
+
+    /// Feed one datagram the demultiplexer classed as a record.
+    fn process_input(
+        &mut self,
+        datagram: &[u8],
+        now_ms: f64,
+        scratch: &mut [u8],
+    ) -> Result<Self::Inbound>;
+
+    /// Housekeeping: timers, acknowledgements, liveness.
+    fn poll(&mut self, now_ms: f64);
+
+    /// Milliseconds until this half next needs attention.
+    fn next_timer_ms(&self, now_ms: f64) -> f64;
+
+    /// Emit the next datagram into `out`. Drive until `None`.
+    fn get_output(&mut self, now_ms: f64, out: &mut [u8]) -> Option<Result<usize>>;
+
+    /// Queue one message on a channel. Returns the message's number in the
+    /// channel's own sequence.
+    fn send_message(&mut self, channel: u8, header: &[u8], payload: &[u8]) -> Result<u32>;
+
+    /// Take the next complete message on a channel into `out`.
+    fn take_message(&mut self, channel: u8, out: &mut [u8]) -> Option<Result<usize>>;
+
+    /// Liveness, judged in both directions.
+    fn health(&self, now_ms: f64) -> Health;
+
+    /// A failure the peer did not cause by leaving, if one has happened.
+    fn fault(&self) -> Option<Fault> {
+        None
+    }
+
+    /// One channel's send pressure, as the congestion controller, the
+    /// delivery gate and the diagnostics read it.
+    fn send_pressure(&self, channel: u8) -> Option<Pressure>;
+
+    /// Smoothed round trip, in fractional milliseconds.
+    fn srtt_ms(&self) -> f64;
+
+    /// The smallest recent round trip beside the smoothed one.
+    fn rtt_min_ms(&self) -> f64;
+
+    /// When the peer last acknowledged anything.
+    fn last_ack_in_ms(&self) -> f64;
+
+    /// Contiguous receive frontier on a channel.
+    fn recv_cumulative(&self, channel: u8) -> Option<u32>;
+
+    /// Stores the receive side refused on a channel, counted per kind.
+    fn recv_drops(&self, channel: u8) -> Option<Drops>;
+}
+
+/// A peer: the punch and the media half it hands over to.
 #[derive(Debug)]
-pub struct Endpoint<'a> {
+pub struct Endpoint<'a, M: Media = Session<'a>> {
     conn: Conn<'a>,
-    session: Session<'a>,
+    session: M,
 }
 
-impl<'a> Endpoint<'a> {
-    /// Pair a connectivity attempt with the session that will use its path.
+impl<'a, M: Media> Endpoint<'a, M> {
+    /// Pair a connectivity attempt with the media half that will use its path.
     ///
-    /// Both are built by the caller, because the session needs ring storage and
+    /// Both are built by the caller, because a session needs ring storage and
     /// key material that arrive from different places at different times.
-    pub fn new(conn: Conn<'a>, session: Session<'a>) -> Self {
+    pub fn new(conn: Conn<'a>, session: M) -> Self {
         Self { conn, session }
     }
 
@@ -63,8 +152,8 @@ impl<'a> Endpoint<'a> {
         &mut self.conn
     }
 
-    /// The session, for messages.
-    pub fn session(&mut self) -> &mut Session<'a> {
+    /// The media half, for messages.
+    pub fn session(&mut self) -> &mut M {
         &mut self.session
     }
 
@@ -73,9 +162,14 @@ impl<'a> Endpoint<'a> {
         self.conn.path()
     }
 
-    /// Liveness of the media session.
+    /// Liveness of the media half.
     pub fn health(&self, now_ms: f64) -> Health {
         self.session.health(now_ms)
+    }
+
+    /// A failure of the media half the peer did not cause by leaving.
+    pub fn fault(&self) -> Option<Fault> {
+        self.session.fault()
     }
 
     /// Feed one received datagram, whatever it is.
@@ -95,11 +189,15 @@ impl<'a> Endpoint<'a> {
         local: Option<IpAddr>,
         now_ms: f64,
         scratch: &mut [u8],
-    ) -> Result<Inbound> {
+    ) -> Result<Inbound<M::Inbound>> {
         match demux::classify(datagram) {
-            Datagram::Check => Ok(Inbound::Connectivity(
-                self.conn.process_input(datagram, from, local)?,
-            )),
+            Datagram::Check => {
+                let inbound = self.conn.process_input(datagram, from, local)?;
+                if let conn::Inbound::PathEstablished(_) = inbound {
+                    self.session.path_ready(now_ms);
+                }
+                Ok(Inbound::Connectivity(inbound))
+            }
             Datagram::Record => Ok(Inbound::Media(
                 self.session.process_input(datagram, now_ms, scratch)?,
             )),

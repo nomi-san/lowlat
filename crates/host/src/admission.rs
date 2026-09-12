@@ -35,8 +35,7 @@ enum Arrival {
 }
 use lowlat_core::control::{self, CONTROL_CHANNEL, status};
 use lowlat_core::endpoint::Endpoint;
-use lowlat_core::envelope::{Cipher, ENVELOPE_LEN, Envelope};
-use lowlat_core::packet::HEADER_LEN;
+use lowlat_core::envelope::{Cipher, Envelope};
 use lowlat_core::send::{SendRing, SendSlot};
 use lowlat_core::session::{DELIVERY_DEADLINE_MS, Session};
 use lowlat_core::video::Rotation;
@@ -70,7 +69,7 @@ const KICK_GRACE_MS: f64 = 250.0;
 /// width *is* the fragment width, so widening it puts oversized datagrams on
 /// a path nothing has measured, and a peer that cannot take one discards the
 /// whole thing silently.
-const BODY: usize = lowlat_core::DEFAULT_DATAGRAM - ENVELOPE_LEN - HEADER_LEN;
+const BODY: usize = lowlat_core::DEFAULT_BODY;
 const SLOT: usize = BODY;
 
 /// Ring depths, per channel and direction.

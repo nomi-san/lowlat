@@ -75,7 +75,13 @@ pub const DEFAULT_DATAGRAM: usize = 1229;
 /// Largest cleartext a datagram at the ceiling can carry.
 pub const MAX_CLEARTEXT: usize = MAX_DATAGRAM - envelope::ENVELOPE_LEN;
 
+/// Payload bytes one fragment carries at the default datagram size: the
+/// datagram less the envelope and the data header. The unit the send window
+/// and the delivery gate count in.
+pub const DEFAULT_BODY: usize = DEFAULT_DATAGRAM - envelope::ENVELOPE_LEN - packet::HEADER_LEN;
+
 // The ceiling is a peer-safety bound, so make it impossible to raise the
 // default past it by editing one constant.
 const _: () = assert!(DEFAULT_DATAGRAM <= MAX_DATAGRAM);
 const _: () = assert!(MAX_CLEARTEXT + envelope::ENVELOPE_LEN == MAX_DATAGRAM);
+const _: () = assert!(DEFAULT_BODY == 1193);

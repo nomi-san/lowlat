@@ -638,6 +638,69 @@ impl<'a> Session<'a> {
     }
 }
 
+/// The native session is the first media half; everything it does is what
+/// the trait says, so the implementation is delegation and nothing else.
+impl crate::endpoint::Media for Session<'_> {
+    type Inbound = Inbound;
+
+    fn process_input(
+        &mut self,
+        datagram: &[u8],
+        now_ms: f64,
+        scratch: &mut [u8],
+    ) -> Result<Inbound> {
+        Session::process_input(self, datagram, now_ms, scratch)
+    }
+
+    fn poll(&mut self, now_ms: f64) {
+        Session::poll(self, now_ms);
+    }
+
+    fn next_timer_ms(&self, now_ms: f64) -> f64 {
+        Session::next_timer_ms(self, now_ms)
+    }
+
+    fn get_output(&mut self, now_ms: f64, out: &mut [u8]) -> Option<Result<usize>> {
+        Session::get_output(self, now_ms, out)
+    }
+
+    fn send_message(&mut self, channel: u8, header: &[u8], payload: &[u8]) -> Result<u32> {
+        Session::send_message(self, channel, header, payload)
+    }
+
+    fn take_message(&mut self, channel: u8, out: &mut [u8]) -> Option<Result<usize>> {
+        Session::take_message(self, channel, out)
+    }
+
+    fn health(&self, now_ms: f64) -> Health {
+        Session::health(self, now_ms)
+    }
+
+    fn send_pressure(&self, channel: u8) -> Option<Pressure> {
+        Session::send_pressure(self, channel)
+    }
+
+    fn srtt_ms(&self) -> f64 {
+        Session::srtt_ms(self)
+    }
+
+    fn rtt_min_ms(&self) -> f64 {
+        Session::rtt_min_ms(self)
+    }
+
+    fn last_ack_in_ms(&self) -> f64 {
+        Session::last_ack_in_ms(self)
+    }
+
+    fn recv_cumulative(&self, channel: u8) -> Option<u32> {
+        Session::recv_cumulative(self, channel)
+    }
+
+    fn recv_drops(&self, channel: u8) -> Option<Drops> {
+        Session::recv_drops(self, channel)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -49,7 +49,11 @@ pub const PROBE_TTL: u8 = 4;
 pub const MAX_CANDIDATES: usize = 16;
 
 /// Responses owed to a peer that are not yet on the wire.
-const MAX_PENDING: usize = 4;
+///
+/// Sixteen, because a peer running a full agent checks every pair it holds
+/// in one burst and keeps checking after a path exists, and an answer that
+/// is dropped for want of a slot reads to that peer as a pair that failed.
+const MAX_PENDING: usize = 16;
 
 /// Reflexive servers consulted for our own mapped address.
 pub const MAX_SERVERS: usize = 4;
@@ -539,12 +543,20 @@ impl<'a> Conn<'a> {
     /// The shell arms its wait from this alongside the session's own timer, and
     /// waits for whichever is sooner.
     pub fn next_timer_ms(&self, now_ms: f64) -> f64 {
+        // An answer is owed in every state: a peer keeps checking the path it
+        // chose for as long as it uses it, and one that goes unanswered
+        // concludes the path is gone.
+        let owed = self.pending.iter().flatten().next().is_some();
         if !matches!(self.state, State::Checking) {
-            return f64::INFINITY;
+            return if owed {
+                self.pace_wait(now_ms)
+            } else {
+                f64::INFINITY
+            };
         }
 
         let mut soonest = (self.started_ms + PUNCH_WINDOW_MS - now_ms).max(0.0);
-        if self.pending.iter().flatten().next().is_some() {
+        if owed {
             soonest = soonest.min(self.pace_wait(now_ms));
         }
         for candidate in self.candidates.iter().flatten() {
@@ -1087,6 +1099,75 @@ mod tests {
             "a response must be signed with our own password"
         );
         assert_eq!(reply.mapped_address(), Some(peer));
+    }
+
+    /// A peer that checks after the path is chosen is owed an answer on the
+    /// clock, not on the next wake something else causes. A timer that reads
+    /// infinity once established leaves that answer to whatever wakes the
+    /// loop next, which on a quiet link is the peer giving up.
+    #[test]
+    fn a_pending_answer_arms_the_timer_after_establishment() {
+        let mut conn = conn();
+        let peer = addr(1, 4000);
+        conn.add_candidate(peer, Kind::Reflexive).unwrap();
+        let sent = drain(&mut conn, 0.0);
+        let (egress, buf) = sent.last().copied().unwrap();
+        let mut response = [0u8; 256];
+        let len = answer(&buf, egress.len, addr(9, 5000), &mut response);
+        conn.process_input(&response[..len], peer, None).unwrap();
+        assert!(conn.next_timer_ms(600.0).is_infinite());
+
+        let mut theirs = [0u8; 256];
+        let len = stun::encode_binding_request(
+            &mut theirs,
+            TransactionId([0x5B; 12]),
+            THEIRS,
+            OURS,
+            [0; 8],
+            OUR_PWD,
+        )
+        .unwrap();
+        conn.process_input(&theirs[..len], peer, None).unwrap();
+
+        let due = conn.next_timer_ms(600.0);
+        assert!(due.is_finite() && due <= PACING_MS, "timer reads {due}");
+        assert_eq!(drain(&mut conn, 600.0 + due).len(), 1);
+        assert!(conn.next_timer_ms(700.0).is_infinite());
+    }
+
+    /// A peer running a full agent checks every pair it holds in one burst.
+    /// Every one of those is owed an answer; one dropped for want of a slot
+    /// reads to the peer as a pair that failed.
+    #[test]
+    fn sixteen_checks_in_one_burst_are_all_answered() {
+        let mut conn = conn();
+        let peer = addr(1, 4000);
+        for index in 0..16u8 {
+            let mut theirs = [0u8; 256];
+            let len = stun::encode_binding_request(
+                &mut theirs,
+                TransactionId([index; 12]),
+                THEIRS,
+                OURS,
+                [0; 8],
+                OUR_PWD,
+            )
+            .unwrap();
+            assert_eq!(
+                conn.process_input(&theirs[..len], peer, None).unwrap(),
+                Inbound::CheckAnswered,
+                "check {index}"
+            );
+        }
+
+        let sent = drain(&mut conn, 0.0);
+        let answers = sent
+            .iter()
+            .filter(|(egress, buf)| {
+                Message::parse(&buf[..egress.len]).unwrap().method() == Method::BindingSuccess
+            })
+            .count();
+        assert_eq!(answers, 16, "answers went out for {answers} of 16 checks");
     }
 
     /// An answer that took longer than the check cadence is still an answer.

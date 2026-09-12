@@ -22,7 +22,8 @@
 use std::io;
 use std::os::fd::AsRawFd;
 
-use lowlat_core::endpoint::Endpoint;
+use lowlat_core::endpoint::{Endpoint, Media};
+use lowlat_core::session::Session;
 
 use crate::recv;
 use crate::send;
@@ -107,11 +108,14 @@ impl Stats {
 }
 
 /// One guest's loop: a socket, a wake, and the endpoint they drive.
+///
+/// Generic over the endpoint's media half, so the loop is written once and
+/// instantiated per transport; nothing here knows which one it is driving.
 #[derive(Debug)]
-pub struct Shell<'a> {
+pub struct Shell<'a, M: Media = Session<'a>> {
     socket: Socket,
     wake: Wake,
-    endpoint: Endpoint<'a>,
+    endpoint: Endpoint<'a, M>,
     inbound: recv::Batch,
     outbound: send::Batch,
     scratch: Box<[u8]>,
@@ -121,12 +125,12 @@ pub struct Shell<'a> {
     base: lowlat_common::clock::Time,
 }
 
-impl<'a> Shell<'a> {
+impl<'a, M: Media> Shell<'a, M> {
     /// Take ownership of the socket and wake for the life of the session.
     ///
     /// The shell's clock starts here: passes are stamped in milliseconds
     /// since construction, so build the endpoint's engines against time zero.
-    pub fn new(socket: Socket, wake: Wake, endpoint: Endpoint<'a>) -> Self {
+    pub fn new(socket: Socket, wake: Wake, endpoint: Endpoint<'a, M>) -> Self {
         lowlat_common::log_info!(
             "net: socket open, rcvbuf={} sndbuf={}",
             socket.granted_recv_buffer(),
@@ -145,7 +149,7 @@ impl<'a> Shell<'a> {
     }
 
     /// The endpoint, for candidates and messages.
-    pub fn endpoint(&mut self) -> &mut Endpoint<'a> {
+    pub fn endpoint(&mut self) -> &mut Endpoint<'a, M> {
         &mut self.endpoint
     }
 
@@ -177,7 +181,7 @@ impl<'a> Shell<'a> {
     /// arms the timeout and nothing else -- a pass stamped with it sees the
     /// deadline it woke for as not yet due, does nothing, and pays a second
     /// wake one clamped minimum later.
-    pub fn turn(&mut self, mut app: impl FnMut(&mut Endpoint<'a>)) -> io::Result<Turn> {
+    pub fn turn(&mut self, mut app: impl FnMut(&mut Endpoint<'a, M>)) -> io::Result<Turn> {
         let armed_ms = lowlat_common::clock::elapsed_ms(self.base);
         let timeout = self
             .endpoint
