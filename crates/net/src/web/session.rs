@@ -153,17 +153,36 @@ impl WebSession {
         now_ms: f64,
     ) -> std::result::Result<Self, dimpl::Error> {
         let config = Link::config()?;
+        let certificate = DtlsCertificate {
+            certificate: certificate.der().to_vec(),
+            private_key: certificate.key_pkcs8().to_vec(),
+        };
+        let epoch = Instant::now();
+        // A server link sends nothing until a first flight reaches it and
+        // runs no timer until then, so it is made at once: the peer's first
+        // flight can land before this side's own punch has settled, and a
+        // link that did not exist yet would drop it and cost the peer a
+        // whole retransmission interval.
+        let (link, state) = match role {
+            Role::Client => (None, State::AwaitingPath),
+            Role::Server => (
+                Some(Link::server(
+                    Arc::clone(&config),
+                    certificate.clone(),
+                    epoch,
+                    now_ms,
+                )),
+                State::Handshaking,
+            ),
+        };
         Ok(Self {
             role,
             expect,
-            certificate: DtlsCertificate {
-                certificate: certificate.der().to_vec(),
-                private_key: certificate.key_pkcs8().to_vec(),
-            },
+            certificate,
             config,
-            epoch: Instant::now(),
-            state: State::AwaitingPath,
-            link: None,
+            epoch,
+            state,
+            link,
             assoc: Assoc::new(now_ms),
             staged: VecDeque::new(),
             inflight: VecDeque::new(),
@@ -197,9 +216,31 @@ impl WebSession {
         self.state == State::Up
     }
 
+    /// The association's own figures, for a diagnostic line: congestion
+    /// window, smoothed round trip, unacknowledged chunks, retransmitted
+    /// packets, and bytes still queued on a stream.
+    pub fn figures(&self, channel: u8) -> Option<(usize, f64, usize, usize, usize)> {
+        let m = self.assoc.metrics()?;
+        Some((
+            m.cwnd_bytes,
+            m.srtt.as_secs_f64() * 1000.0,
+            m.unack_data_count,
+            m.rtx_packets_count,
+            self.assoc.buffered(channel),
+        ))
+    }
+
     /// Messages refused for their payload identifier or their stream.
     pub fn skipped(&self) -> u64 {
         self.skipped
+    }
+
+    /// Begin the association from this side whatever the role, which a peer
+    /// racing the client to it would do. The client begins it on its own.
+    pub fn begin_association(&mut self) {
+        if self.state == State::Up {
+            self.assoc.connect();
+        }
     }
 
     /// Say goodbye to the peer. The alert leaves on the next output.
@@ -323,8 +364,11 @@ impl WebSession {
                 lowlat_common::log_warn!("web: association aborted, kind={kind:?} reason={reason}");
                 self.end(Some(Fault::Aborted));
             }
+            // A refused send has already been answered to its caller and
+            // counted there; the association's own line about it is noise
+            // at anything above debug.
             SocketEvent::OnError(kind, reason) => {
-                lowlat_common::log_warn!("web: association error, kind={kind:?} reason={reason}");
+                lowlat_common::log_debug!("web: association error, kind={kind:?} reason={reason}");
             }
             SocketEvent::OnLifecycleMessageFullySent(id) => {
                 let id = id.value();
@@ -428,11 +472,10 @@ impl Media for WebSession {
         }
         let config = Arc::clone(&self.config);
         let certificate = self.certificate.clone();
-        let link = match self.role {
-            Role::Client => Link::client(config, certificate, self.epoch, now_ms),
-            Role::Server => Ok(Link::server(config, certificate, self.epoch, now_ms)),
-        };
-        match link {
+        // A client link fires its first flight the moment it exists, which
+        // is why it waits for the path: made earlier, its retries run out
+        // while the punch is still finding one.
+        match Link::client(config, certificate, self.epoch, now_ms) {
             Ok(link) => {
                 self.link = Some(link);
                 self.state = State::Handshaking;
@@ -609,20 +652,24 @@ impl Media for WebSession {
         let stream = self.streams.get(usize::from(channel))?;
         let threshold = self.level.rtt_mult * self.srtt_ms + self.level.base_ms;
         let now_ms = self.now_ms;
-        let (mut window, mut stale) = (0u32, 0u32);
+        // The window is everything queued and not yet delivered, in
+        // fragments. Stale within it: what has not been handed to the path
+        // at all, as an unsent fragment is natively, and what was handed
+        // over whole longer ago than the level's threshold. A message part
+        // way onto the wire is fresh for the part that is there.
+        let (mut window, mut pending, mut stale) = (0u32, 0u32, 0u32);
         for sent in self.inflight.iter().filter(|s| s.channel == channel) {
             window = window.saturating_add(sent.fragments);
-            // Queued and not yet on the wire counts as stale, as an unsent
-            // fragment does natively; so does anything on the wire past the
-            // threshold the level sets.
-            let is_stale = match sent.sent_ms {
-                None => true,
-                Some(sent_ms) => now_ms - sent_ms > threshold,
-            };
-            if is_stale {
-                stale = stale.saturating_add(sent.fragments);
+            match sent.sent_ms {
+                None => pending = pending.saturating_add(sent.fragments),
+                Some(sent_ms) if now_ms - sent_ms > threshold => {
+                    stale = stale.saturating_add(sent.fragments);
+                }
+                Some(_) => {}
             }
         }
+        let unsent = fragments_of(self.assoc.buffered(channel));
+        stale = stale.saturating_add(unsent.min(pending));
         let metrics = self.assoc.metrics();
         let rtx = metrics.as_ref().map_or(0, |m| m.rtx_packets_count as u64);
         let rtx_bytes = metrics.as_ref().map_or(0, |m| m.rtx_bytes_count);

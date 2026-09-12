@@ -865,6 +865,7 @@ version = "0.0.0"
 dependencies = [
  "lowlat-common",
  "lowlat-core",
+ "lowlat-crypto",
  "lowlat-net",
 ]
 

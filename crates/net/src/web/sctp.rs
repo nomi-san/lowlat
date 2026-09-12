@@ -124,6 +124,11 @@ impl Assoc {
         self.socket.get_metrics()
     }
 
+    /// Bytes queued on a stream and not yet handed to the path.
+    pub(super) fn buffered(&self, stream: u8) -> usize {
+        self.socket.buffered_amount(StreamId(u16::from(stream)))
+    }
+
     /// A message with any stream and identifier, for a test that needs a
     /// peer to misbehave.
     #[cfg(test)]

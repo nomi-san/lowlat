@@ -13,6 +13,8 @@ lowlat-common.workspace = true
 lowlat-core.workspace = true
 # The namespace fixtures run the real shell, not a loop that stands in for one.
 lowlat-net.workspace = true
+# A browser session under the simulator wants an identity for each end.
+lowlat-crypto.workspace = true
 
 [lints]
 workspace = true
