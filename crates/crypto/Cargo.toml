@@ -13,5 +13,17 @@ authors.workspace = true
 # over the platform call rather than a userspace generator with state to leak.
 getrandom.workspace = true
 
+# The browser transport's identity: a P-256 key pair in a self-signed
+# certificate, which a peer trusts by SHA-256 digest alone. The same crates,
+# at the same versions, that the handshake library resolves, so nothing is
+# duplicated in the graph.
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "pkcs8", "pem", "std"] }
+ecdsa = { version = "0.16", default-features = false, features = ["der", "pkcs8", "pem", "signing", "verifying"] }
+# `hazmat` is what unlocks a profile with no extensions, which is the shape a
+# peer that checks only the digest wants.
+x509-cert = { version = "0.2", default-features = false, features = ["builder", "hazmat", "std"] }
+sha2 = { version = "0.10", default-features = false, features = ["oid"] }
+zeroize = { version = "1", default-features = false, features = ["alloc"] }
+
 [lints]
 workspace = true

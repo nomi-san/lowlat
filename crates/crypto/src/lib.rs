@@ -13,6 +13,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod cert;
+
 use core::fmt;
 
 /// A credential set for one attempt, in the form signaling carries.
@@ -22,7 +24,8 @@ use core::fmt;
 /// rejected on length before anything looks at their contents.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Credentials {
-    /// base64 of 4 bytes, 8 characters.
+    /// base64 of 6 bytes, 8 characters and no padding: `=` is not a
+    /// character a peer's credential grammar admits.
     pub ufrag: String,
     /// base64 of 24 bytes, 32 characters.
     pub pwd: String,
@@ -56,6 +59,10 @@ pub enum Error {
     Entropy,
     /// Key material was too short or not hexadecimal.
     Material,
+    /// The process certificate could not be made.
+    Certificate,
+    /// A fingerprint that is not a SHA-256 digest.
+    Fingerprint,
 }
 
 impl fmt::Display for Error {
@@ -63,6 +70,8 @@ impl fmt::Display for Error {
         match self {
             Self::Entropy => write!(f, "the platform supplied no entropy"),
             Self::Material => write!(f, "key material is malformed"),
+            Self::Certificate => write!(f, "the certificate could not be made"),
+            Self::Fingerprint => write!(f, "the fingerprint is not a sha-256 digest"),
         }
     }
 }
@@ -92,7 +101,7 @@ pub fn fill(buf: &mut [u8]) -> Result<(), Error> {
 
 /// A fresh credential set.
 pub fn credentials() -> Result<Credentials, Error> {
-    let mut ufrag = [0u8; 4];
+    let mut ufrag = [0u8; 6];
     let mut pwd = [0u8; 24];
     let mut fingerprint = [0u8; 32];
     let mut aes = [0u8; AES_MATERIAL];
@@ -156,7 +165,7 @@ pub fn key_material(
     Ok((key, prefix))
 }
 
-fn nibble(c: u8) -> Result<u8, Error> {
+pub(crate) fn nibble(c: u8) -> Result<u8, Error> {
     match c {
         b'0'..=b'9' => Ok(c - b'0'),
         b'a'..=b'f' => Ok(c - b'a' + 10),
@@ -233,6 +242,13 @@ mod tests {
         let creds = credentials().expect("entropy");
         assert_eq!(creds.ufrag.len(), 8);
         assert_eq!(creds.pwd.len(), 32);
+        for text in [&creds.ufrag, &creds.pwd] {
+            assert!(
+                text.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'+' || b == b'/'),
+                "{text}"
+            );
+        }
         assert_eq!(creds.fingerprint.len(), 64);
         assert_eq!(creds.aes256.len(), 254);
     }
