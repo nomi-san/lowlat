@@ -31,6 +31,25 @@ the same attempt socket, chosen by one field in the offer. The decisions are in
   burst, and it arms its timer for an owed answer after the path is chosen as well as
   before, because such a peer keeps checking the path it uses and reads an unanswered check
   as the path gone.
+- **The browser session** (`lowlat-net`, `web`): a DTLS 1.2 record layer and an SCTP
+  association behind the media seam, both sans-IO crates fed bytes and told the time by the
+  shell, both timed from the session's own clock -- the record layer's instants are derived
+  from the millisecond clock against one epoch, the association's timeline from the moment it
+  was opened -- so a browser session runs under the same fake clock as a native one. The host
+  is the DTLS client and fires the first flight the moment the path exists; the association
+  begins once the peer's certificate matches the digest the credential exchange carried, and
+  a certificate that does not, or a handshake that never completes, is a **fault** rather
+  than a silence. The mapping is the browser client's and is applied in one place: the
+  control header kept, the video and audio headers dropped, one association message per
+  protocol message, the binary identifier only, every stream reliable and ordered. What the
+  congestion controller reads -- the window, the stale count, the byte and packet counters
+  -- is synthesised from the messages queued and in flight and the association's own
+  figures, so the controller and the gate steer this pipe unchanged. Records the layer
+  produces while input is fed are staged for the next output pass; a message a reader has
+  not taken is held, a thousand deep per channel, and the oldest goes beyond that.
+- The dependency policy gained one ignored advisory, with its reason: the time crate the
+  record layer formats a validity with, whose fix wants a newer compiler than the workspace
+  minimum. The minimum is to be raised on its own rather than inside this phase.
 
 ### Testing
 - One certificate per process, the digest round-tripping with and without its hash name and
@@ -40,6 +59,20 @@ the same attempt socket, chosen by one field in the offer. The decisions are in
   session does.
 - Sixteen checks in one burst all answered, which failed with the old capacity; an owed
   answer arming the timer after establishment, and the timer back to infinity once it is out.
+- A pair of browser sessions under a fake clock: handshake and association in twenty ticks,
+  the control header kept and the media headers dropped in both directions, a foreign
+  payload identifier and an out-of-range stream skipped and counted, a wrong digest a
+  handshake fault with no association made, a 600 KiB message crossing whole, a message past
+  the ceiling refused as oversized, the timer the sooner of the two engines', and a clean
+  close read as dead with no fault. The process certificate loads into the record layer and
+  produces its first flight, which is the check that catches a key encoding the layer cannot
+  read.
+- **Against a second implementation**, ignored and run by hand: the handshake completes
+  against OpenSSL's DTLS server -- cookie exchange, the server's certificate against the
+  digest, the client's certificate on request -- and the association's first packet is read
+  on the far side as application data. The server's standard input has to be held open;
+  on end of file there it shuts the connection down, which cost a round of suspecting the
+  record layer.
 
 ## 2026-09-11 - The tray, drawn by the desktop
 

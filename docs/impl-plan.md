@@ -1723,8 +1723,9 @@ description it hands its browser, which is what lets a second browser family con
 - [x] **The media seam.** The endpoint and the shell become generic over their media half, so
   the guest loop is written once and instantiated twice, with no dispatch on a data path.
   *2026-09-12.*
-- [ ] **The browser session**: the DTLS client, the association, and the message mapping --
+- [x] **The browser session**: the DTLS client, the association, and the message mapping --
   the control header kept, the media headers dropped, one message per protocol message.
+  *2026-09-12, and verified against a second implementation's DTLS server.*
 - [ ] **A hermetic pair under the simulator, two shells over loopback, and the benchmark**
   that records what the second pipe allocates and costs per datagram.
 - [ ] **Signaling, admission, the C ABI and the daemon**: the offer's transport field and
