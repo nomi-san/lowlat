@@ -290,6 +290,52 @@ mod tests {
         println!("wrote {path} and {beside} ({IN_FLIGHT} pictures)");
     }
 
+    /// The stream this backend produces, for an external parser to say what
+    /// its sequence set declares. The check that matters is the reorder
+    /// depth: `bitstream_restriction_flag` set and `max_num_reorder_frames`
+    /// zero, which is what stops a hardware decoder holding pictures back.
+    ///
+    /// ```text
+    /// ffmpeg -hide_banner -loglevel trace -i /tmp/nvenc.h264 -c copy \
+    ///     -bsf:v trace_headers -f null - 2>&1 | grep -E 'reorder|restriction'
+    /// ```
+    #[test]
+    #[ignore = "requires the vendor driver"]
+    fn it_encodes_h264_for_an_external_parser() {
+        let cuda = crate::cuda::Cuda::load().expect("compute runtime");
+        let device = cuda.any_device().expect("a device");
+        let context = cuda.retain_primary(&device).expect("context");
+        let api = Api::load().expect("encoder runtime");
+        let session = api.open_session(context).expect("session");
+        let config = Config {
+            codec: Codec::H264,
+            width: 1920,
+            height: 1080,
+            fps: 60,
+            bitrate_bps: 20_000_000,
+            min_qp: crate::DEFAULT_MIN_QP,
+            chroma: Chroma::default(),
+            depth: Depth::Eight,
+        };
+        let mut encoder = session.initialize(&cuda, config).expect("initialize");
+        let mut source = lowlat_capture::synthetic::Synthetic::new(config.width, config.height);
+        let mut stream = Vec::new();
+        let mut collected = 0usize;
+        for index in 0..IN_FLIGHT {
+            let frame = source.acquire();
+            encoder.submit(&frame, index == 0).expect("submit");
+        }
+        while collected < IN_FLIGHT {
+            if let Poll::Ready { bitstream, .. } = encoder.poll().expect("poll") {
+                stream.extend_from_slice(bitstream);
+                collected += 1;
+            }
+        }
+        let path = std::env::var("LOWLAT_DUMP").unwrap_or_else(|_| "/tmp/nvenc.h264".into());
+        std::fs::write(&path, &stream).expect("write");
+        println!("wrote {path} ({IN_FLIGHT} pictures)");
+    }
+
     /// The packing here is four bits of minor, unlike the structure stamps,
     /// and confusing the two produces a comparison that is wrong only for
     /// some driver versions. Checked in both directions.
@@ -1145,6 +1191,14 @@ impl<'a> Session<'a> {
                     // alone, with no separate out-of-band step to get wrong.
                     h264.set_repeatSPSPPS(1);
                     let vui = &mut h264.h264VUIParameters;
+                    // **The stream says it reorders nothing.** Without the
+                    // restriction the sequence set is silent about the
+                    // reorder depth, and a decoder that cannot know holds
+                    // pictures back to the level's worst case: a hundred
+                    // milliseconds of decode latency measured on one
+                    // hardware decoder, from a stream with no reordering
+                    // in it at all.
+                    vui.bitstreamRestrictionFlag = 1;
                     vui.videoSignalTypePresentFlag = 1;
                     vui.videoFormat = colour::VIDEO_FORMAT_UNSPECIFIED;
                     vui.videoFullRangeFlag = colour::FULL_RANGE;

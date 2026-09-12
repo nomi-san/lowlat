@@ -131,7 +131,19 @@ pub fn sequence_parameter_set(params: &Params, out: &mut [u8]) -> Option<usize> 
     w.bit(false); // no hypothetical reference decoder, either kind
     w.bit(false);
     w.bit(false); // no picture structure signalling
-    w.bit(false); // no bitstream restrictions
+
+    // **The stream says it reorders nothing.** Silent about the reorder
+    // depth, a decoder that cannot know holds pictures back to the level's
+    // worst case: a hundred milliseconds of decode latency measured on one
+    // hardware decoder, from a stream with no reordering in it at all.
+    w.bit(true); // bitstream restrictions follow
+    w.bit(true); // motion vectors may cross the picture edge
+    w.ue(2); // max_bytes_per_pic_denom, the default
+    w.ue(1); // max_bits_per_mb_denom, the default
+    w.ue(16); // log2_max_mv_length_horizontal
+    w.ue(16); // log2_max_mv_length_vertical
+    w.ue(0); // max_num_reorder_frames: output order is decode order
+    w.ue(params.max_num_ref_frames); // max_dec_frame_buffering
 
     if !w.trailing_bits() {
         return None;
