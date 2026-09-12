@@ -54,6 +54,16 @@ impl Link {
         Config::builder().mtu(DTLS_MTU).build().map(Arc::new)
     }
 
+    /// The same, with the handshake's randomness fixed, for a fuzzer that
+    /// wants the same bytes to walk the same path twice.
+    pub(super) fn config_seeded(seed: u64) -> Result<Arc<Config>, dimpl::Error> {
+        Config::builder()
+            .mtu(DTLS_MTU)
+            .dangerously_set_rng_seed(seed)
+            .build()
+            .map(Arc::new)
+    }
+
     /// A link in the client role: it fires the first handshake flight.
     ///
     /// The flight is queued here, on the first run of the timers, so a link

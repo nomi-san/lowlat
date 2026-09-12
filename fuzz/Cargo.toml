@@ -15,6 +15,10 @@ lowlat-core = { path = "../crates/core" }
 # The microphone target reaches past the wire parse into the codec, because
 # that is where the bytes a guest chose actually get interpreted.
 lowlat-audio = { path = "../crates/audio" }
+# The browser pipe: its record layer and its association parse what a peer
+# sends, and both are reached through the session that owns them.
+lowlat-net = { path = "../crates/net" }
+lowlat-crypto = { path = "../crates/crypto" }
 
 [[bin]]
 name = "envelope"
@@ -61,6 +65,20 @@ bench = false
 [[bin]]
 name = "microphone"
 path = "fuzz_targets/microphone.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "web_dtls"
+path = "fuzz_targets/web_dtls.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "web_session"
+path = "fuzz_targets/web_session.rs"
 test = false
 doc = false
 bench = false

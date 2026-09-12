@@ -152,7 +152,39 @@ impl WebSession {
         level: usize,
         now_ms: f64,
     ) -> std::result::Result<Self, dimpl::Error> {
-        let config = Link::config()?;
+        Self::build(role, expect, certificate, level, now_ms, Link::config()?)
+    }
+
+    /// [`WebSession::new`] with the handshake's randomness fixed. **For a
+    /// fuzzer**, which wants the same bytes to walk the same path twice, and
+    /// for nothing that faces a peer.
+    #[doc(hidden)]
+    pub fn new_seeded(
+        role: Role,
+        expect: Option<[u8; FINGERPRINT_LEN]>,
+        certificate: &Certificate,
+        level: usize,
+        now_ms: f64,
+        seed: u64,
+    ) -> std::result::Result<Self, dimpl::Error> {
+        Self::build(
+            role,
+            expect,
+            certificate,
+            level,
+            now_ms,
+            Link::config_seeded(seed)?,
+        )
+    }
+
+    fn build(
+        role: Role,
+        expect: Option<[u8; FINGERPRINT_LEN]>,
+        certificate: &Certificate,
+        level: usize,
+        now_ms: f64,
+        config: Arc<Config>,
+    ) -> std::result::Result<Self, dimpl::Error> {
         let certificate = DtlsCertificate {
             certificate: certificate.der().to_vec(),
             private_key: certificate.key_pkcs8().to_vec(),
@@ -233,6 +265,17 @@ impl WebSession {
     /// Messages refused for their payload identifier or their stream.
     pub fn skipped(&self) -> u64 {
         self.skipped
+    }
+
+    /// Hand the record layer bytes to carry as application data, around the
+    /// association. **For a fuzzer**, which wants the far side's association
+    /// parser fed through real records; nothing that faces a peer calls it.
+    #[doc(hidden)]
+    pub fn inject_application_data(&mut self, data: &[u8]) -> bool {
+        match self.link.as_mut() {
+            Some(link) if self.state == State::Up => link.send(data).is_ok(),
+            _ => false,
+        }
     }
 
     /// Begin the association from this side whatever the role, which a peer
