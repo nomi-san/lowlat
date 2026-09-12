@@ -1737,9 +1737,13 @@ description it hands its browser, which is what lets a second browser family con
   rather than a frame count, and a declaration without the base flag counted. *2026-09-12.*
 - [x] **Fuzz targets** for the record layer and the session. *2026-09-12.* The corpus of
   real browser checks for the check parser waits on the first live capture.
-- [ ] **Live gate 1: a stock browser client** streams from the service. *Streamed on the
-  first connect, 2026-09-12, and found the reorder-depth omission; the ten-minute soak with
-  sound and the large keyframe are still owed.*
+- [x] **Live gate 1: a stock browser client** streams from the service. *Streamed on the
+  first connect, 2026-09-12, and found the reorder-depth omission; then sixteen minutes at
+  50 Mbps with sound and input, 94738 frames and 47638 sound packets, no retransmission, a
+  clean departure read as such. The keyframe-larger-than-262144-bytes item is not reachable
+  on this host -- the per-frame budget caps a keyframe well below it at any rate the tray
+  offers -- and stays with gate item 3 as unverified against a browser; a 600 KiB message
+  crosses to our own peer under the simulator.*
 - [ ] **`examples/web-client`**, a page that decodes with the browser's own codecs, on two
   browser families. **Live gate 2.**
 - [ ] Documentation closure.

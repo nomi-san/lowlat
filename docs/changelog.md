@@ -112,6 +112,11 @@ the same attempt socket, chosen by one field in the offer. The decisions are in
     been paying this.
   - The two state machines' packet dumps reached the journal at hundreds of lines a second;
     below a warning they are debug now, and formatted only when asked for.
+  Then the soak: sixteen minutes at 50 Mbps with sound and input, 94738 frames and 47638
+  sound packets carried, no retransmission on the LAN, round trip 4 to 18 ms, and the
+  browser's departure read as a clean leave rather than a silence. The association's
+  library warns once per connect that a cookie acknowledgement arrived in a state it did
+  not expect, which is the collision -- both ends begin the association -- resolving; benign.
 - **Measured, in release, ten seconds of a stream shaped like a real one** -- sixty 30 KiB
   pictures and fifty sound packets a second, 14.7 Mbps -- through a pair of sessions under
   a fake clock: **23 allocations per datagram on the host side and 20 on the guest's**,
