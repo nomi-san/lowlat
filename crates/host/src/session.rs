@@ -21,9 +21,11 @@ pub const INIT_DEADLINE_MS: f64 = 5000.0;
 /// the other two describes a stream it is not being sent.
 pub const PRIMARY_STREAM: u32 = 0;
 
-/// Encode latency goes out every thirtieth frame, which is half a second at
-/// sixty.
-pub const LATENCY_INTERVAL_FRAMES: u64 = 30;
+/// Encode latency goes out every two seconds, on the clock rather than on a
+/// frame count. A count is a cadence only while frames flow; a still desktop
+/// sends one a second, and a browser page reads five seconds of silence on
+/// the control channel as a dead link.
+pub const LATENCY_INTERVAL_MS: f64 = 2000.0;
 
 /// The smoothing the latency figure carries. `latency = 0.9 * latency + 0.1 *
 /// sample`, so a single slow frame moves the reported figure by a tenth of its
@@ -73,6 +75,8 @@ pub struct Negotiation {
     seen: u64,
     frames: u64,
     latency_ms: f64,
+    /// When the latency figure last went out, or never.
+    reported_ms: Option<f64>,
     /// The generation to announce, set when the encoder is initialized and
     /// cleared by the frame that announces it.
     announce: Option<u32>,
@@ -94,6 +98,7 @@ impl Negotiation {
             seen: 0,
             frames: 0,
             latency_ms: 0.0,
+            reported_ms: None,
             announce: None,
         }
     }
@@ -156,7 +161,12 @@ impl Negotiation {
                 );
                 match init::parse(message.body) {
                     Ok(asked) => {
-                        self.flags = asked.flags;
+                        // **The base bit is put in whether or not the peer
+                        // sent it.** Every native declaration carries it and a
+                        // browser's carries only the codec bit, so without it
+                        // a browser declaring the base codec would declare
+                        // zero, which the consensus reads as no declaration.
+                        self.flags = asked.flags | init::FLAG_BASE;
                         self.asked = Some(asked);
                         self.state = State::Ready;
                     }
@@ -190,7 +200,7 @@ impl Negotiation {
                 if message.a0 != PRIMARY_STREAM {
                     return true;
                 }
-                self.flags = message.a1;
+                self.flags = message.a1 | init::FLAG_BASE;
                 if message.a2 != 0 {
                     self.reconfigure = true;
                 }
@@ -248,10 +258,32 @@ impl Negotiation {
         };
 
         Reports {
-            latency_us: (self.frames % LATENCY_INTERVAL_FRAMES == 0)
-                .then(|| microseconds(self.latency_ms)),
             generation: self.announce.take(),
         }
+    }
+
+    /// The encode-latency message, when its cadence is due: at once the
+    /// first time, then every [`LATENCY_INTERVAL_MS`], frames or no frames.
+    ///
+    /// **Its first argument is 1, not 0**, which is what the message writer
+    /// has to remember. The figure is zero until a picture has been timed,
+    /// and the message goes out anyway: it is the control channel's proof of
+    /// life as much as it is a number.
+    pub fn latency_report(&mut self, now_ms: f64, stream: u32) -> Option<Control<'static>> {
+        let due = self
+            .reported_ms
+            .is_none_or(|last| now_ms - last >= LATENCY_INTERVAL_MS);
+        if !due {
+            return None;
+        }
+        self.reported_ms = Some(now_ms);
+        Some(Control {
+            a0: 1,
+            a1: microseconds(self.latency_ms),
+            a2: stream,
+            opcode: op::ENCODE_LATENCY,
+            body: &[],
+        })
     }
 
     /// The smoothed capture-to-collected time, in milliseconds.
@@ -282,27 +314,11 @@ fn microseconds(ms: f64) -> u32 {
 /// What a frame owes the peer, beyond the picture itself.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reports {
-    /// Encode latency, in microseconds, on the frames that carry it.
-    ///
-    /// **Its first argument is 1, not 0**, which is what the message writer
-    /// has to remember.
-    pub latency_us: Option<u32>,
     /// An encoder generation to announce, once, after an initialization.
     pub generation: Option<u32>,
 }
 
 impl Reports {
-    /// The encode-latency message, if this frame carries one.
-    pub fn latency_message(&self, stream: u32) -> Option<Control<'static>> {
-        self.latency_us.map(|us| Control {
-            a0: 1,
-            a1: us,
-            a2: stream,
-            opcode: op::ENCODE_LATENCY,
-            body: &[],
-        })
-    }
-
     /// The generation announcement, if this frame carries one.
     pub fn generation_message(&self, stream: u32) -> Option<Control<'static>> {
         self.generation.map(|generation| Control {
@@ -494,21 +510,52 @@ mod tests {
         );
     }
 
-    /// Every thirtieth frame, and the first argument is one.
+    /// On the clock and not on a frame count: due at once, then every two
+    /// seconds whether ninety frames passed or none, and the first argument
+    /// is one. *Named regression test.*
     #[test]
-    fn encode_latency_goes_out_on_a_cadence_and_carries_its_marker() {
+    fn the_latency_report_is_a_two_second_cadence_not_a_frame_count() {
         let mut guest = Negotiation::opened(0.0);
+        let first = guest.latency_report(0.0, 0).expect("due at once");
+        assert_eq!(first.a0, 1, "the first argument is not one");
+        assert_eq!(first.opcode, op::ENCODE_LATENCY);
+        assert_eq!(first.a1, 0, "nothing timed yet is zero, not garbage");
+
+        // Ninety frames inside the interval: not one report among them.
         for frame in 1..=90u64 {
-            let reports = guest.on_frame(4.0);
-            let due = frame % LATENCY_INTERVAL_FRAMES == 0;
-            assert_eq!(reports.latency_us.is_some(), due, "at frame {frame}");
-            if due {
-                let message = reports.latency_message(0).expect("a message");
-                assert_eq!(message.a0, 1, "the first argument is not one");
-                assert_eq!(message.opcode, op::ENCODE_LATENCY);
-                assert_eq!(message.a1, 4000, "four milliseconds is not 4000 us");
-            }
+            guest.on_frame(4.0);
+            let at = f64::from(u32::try_from(frame).unwrap()) * 16.0;
+            assert!(guest.latency_report(at, 0).is_none(), "at {at} ms");
         }
+        let second = guest
+            .latency_report(2000.0, 0)
+            .expect("due on the interval");
+        assert_eq!(second.a1, 4000, "four milliseconds is not 4000 us");
+
+        // No frames at all for the next interval, and it is still due.
+        assert!(guest.latency_report(3999.0, 0).is_none());
+        assert!(guest.latency_report(4000.0, 0).is_some());
+    }
+
+    /// A declaration without the base bit -- a browser's, which carries only
+    /// the codec bit -- counts as a declaration rather than as none.
+    #[test]
+    fn a_declaration_without_the_base_flag_still_counts() {
+        let mut guest = Negotiation::opened(0.0);
+        guest.on_control(&control(
+            op::INIT,
+            0,
+            0,
+            0,
+            b"{\"_version\":1,\"_max_w\":60000,\"_max_h\":60000,\"_flags\":0,\
+\"resolutionX\":0,\"resolutionY\":0,\"refreshRate\":60,\"mediaContainer\":0}\0",
+        ));
+        assert_eq!(guest.flags(), lowlat_core::init::FLAG_BASE);
+        guest.on_control(&control(op::ENCODER_CONFIG, 0, 1, 1, &[]));
+        assert_eq!(
+            guest.flags(),
+            lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC
+        );
     }
 
     /// The smoothing moves a tenth of the way, so one slow frame is not a

@@ -1898,14 +1898,11 @@ fn send_frames<M: Media>(
             continue;
         }
 
-        // What the frame owes the peer beyond the picture. Both are cadences
-        // rather than per-frame traffic: the latency figure every thirtieth
-        // frame, the generation once after an initialisation.
+        // What the frame owes the peer beyond the picture: the generation,
+        // once after an initialisation. The latency figure is on the clock
+        // rather than on the frame, and goes out from the loop.
         sent += 1;
         let reports = negotiation.on_frame(seat.encode_latency_ms());
-        if let Some(message) = reports.latency_message(0) {
-            send_control(session, &message);
-        }
         if let Some(message) = reports.generation_message(0) {
             send_control(session, &message);
         }
@@ -3006,6 +3003,32 @@ fn drive<M: Media>(args: Driven, mut shell: Shell<'_, M>, running: &lowlat_net::
             });
         }
 
+        // **A pipe that failed on a path that exists.** The native pipe never
+        // reports one; a browser's does, and it is the one ending that is
+        // neither a silence nor a departure, so it is named before liveness
+        // gets a chance to call it a peer gone.
+        if let Some(fault) = shell.endpoint().fault() {
+            lowlat_common::log_warn!(
+                "guest: attempt={} pipe failed, fault={fault:?}",
+                args.attempt_id
+            );
+            args.emit.send(Event::Ended {
+                attempt: args.attempt_id.clone(),
+                outcome: Outcome::HandshakeFailed,
+            });
+            return;
+        }
+
+        // **The latency figure is on the clock, from the moment the path
+        // exists.** A seat waiting on a display sends no frames, and a peer
+        // that reads silence on the control channel as a dead link must not
+        // be given any; the figure is zero until a picture has been timed.
+        if let Some(negotiation) = negotiation.as_mut()
+            && let Some(message) = negotiation.latency_report(now, 0)
+        {
+            send_control(shell.endpoint().session(), &message);
+        }
+
         // Only once there is a path. Before that nothing has arrived by
         // definition, so liveness would read as dead from the first pass.
         if negotiation.is_some() {
@@ -3617,6 +3640,82 @@ mod tests {
             "something other than a candidate came before the marker: {candidates:?}"
         );
         seam.end_connection("a");
+    }
+
+    /// A browser whose certificate is not the one its offer named is a
+    /// handshake fault, reported as its own outcome rather than as a peer
+    /// gone: a path existed and the pipe on it did not. Driven end to end
+    /// through the seam, a real socket and a real peer, whose identity is
+    /// simply not the digest the offer carried.
+    #[test]
+    fn a_web_guest_fault_ends_the_attempt_with_a_handshake_outcome() {
+        use lowlat_core::endpoint::Endpoint;
+        use lowlat_net::web::{Role, WebSession};
+
+        let mut seam = admission(4);
+        let events = seam.take_events().expect("the queue");
+        let theirs = lowlat_crypto::cert::Certificate::generate().unwrap();
+        // The digest the offer names is not the peer's.
+        let named = lowlat_crypto::cert::format_fingerprint(&[0xEE; 32]);
+        seam.new_attempt(
+            "web",
+            Peer {
+                transport: Transport::Web,
+                fingerprint: Some(named),
+                ..peer()
+            },
+        )
+        .expect("register");
+        let host = seam.begin_p2p("web", 0).expect("approve");
+        let host_addr = SocketAddr::new(
+            std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST),
+            host.port,
+        );
+
+        // The peer: the other end of the same credentials, on its own socket,
+        // expecting the digest this process really presents.
+        let ours = lowlat_crypto::cert::certificate().unwrap();
+        let socket = Socket::open(0).expect("socket");
+        let mut peer_addr = socket.local_addr().expect("addr");
+        peer_addr.set_ip(std::net::IpAddr::V6(std::net::Ipv6Addr::LOCALHOST));
+        let mut conn = Conn::new(
+            Credentials {
+                local_ufrag: "aaaa",
+                local_pwd: "passwordforaaaa",
+                remote_ufrag: &host.ufrag,
+                remote_pwd: &host.pwd,
+            },
+            [0x5A; 16],
+            0.0,
+        );
+        conn.add_candidate(host_addr, Kind::Direct).unwrap();
+        conn.set_peer_ready();
+        let session = WebSession::new(Role::Server, Some(*ours.fingerprint()), &theirs, 1, 0.0)
+            .expect("session");
+        let mut shell = Shell::new(
+            socket,
+            Wake::new().expect("wake"),
+            Endpoint::new(conn, session),
+        );
+        seam.add_candidate("web", peer_addr, false, Kind::Direct);
+        seam.add_candidate("web", peer_addr, true, Kind::Direct);
+
+        let started = std::time::Instant::now();
+        let mut ended = None;
+        while started.elapsed() < core::time::Duration::from_secs(10) && ended.is_none() {
+            shell.turn(|_| {}).expect("turn");
+            while let Some(taken) = events.recv_timeout(core::time::Duration::from_millis(1)) {
+                if let Event::Ended { outcome, .. } = taken.event {
+                    ended = Some(outcome);
+                }
+            }
+        }
+        assert_eq!(ended, Some(Outcome::HandshakeFailed));
+        assert!(
+            shell.endpoint().path().is_some(),
+            "the peer never found the path"
+        );
+        seam.end_connection("web");
     }
 
     #[test]
