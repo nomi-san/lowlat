@@ -1735,8 +1735,8 @@ description it hands its browser, which is what lets a second browser family con
   attempt description. *2026-09-12, minor 2.*
 - [x] **The guest loop on both transports**, the encode-latency report on a two-second cadence
   rather than a frame count, and a declaration without the base flag counted. *2026-09-12.*
-- [ ] **Fuzz targets** for the record layer and the session, with a corpus of real browser
-  checks.
+- [x] **Fuzz targets** for the record layer and the session. *2026-09-12.* The corpus of
+  real browser checks for the check parser waits on the first live capture.
 - [ ] **Live gate 1: a stock browser client** streams from the service.
 - [ ] **`examples/web-client`**, a page that decodes with the browser's own codecs, on two
   browser families. **Live gate 2.**

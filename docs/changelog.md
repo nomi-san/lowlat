@@ -91,6 +91,13 @@ the same attempt socket, chosen by one field in the offer. The decisions are in
   browser's carries only the codec bit, so a browser declaring the base codec declared zero,
   which the consensus reads as no declaration at all; the bit is put in on both the
   initialisation and the encoder configuration.
+- **Two fuzz targets for the pipe.** The record layer is fed arbitrary datagrams in every
+  state it passes through, with a real peer advanced between them so the deeper states are
+  reachable at all; the association is fed arbitrary bytes carried as real application data
+  by the far side's record layer, so its parser sees them exactly as it would from a hostile
+  browser. Both run seeded. Thirty and forty seconds clean at about fifty executions a
+  second, which is what a handshake's signatures cost under the sanitizer; the minimized
+  corpora are committed.
 - **Measured, in release, ten seconds of a stream shaped like a real one** -- sixty 30 KiB
   pictures and fifty sound packets a second, 14.7 Mbps -- through a pair of sessions under
   a fake clock: **23 allocations per datagram on the host side and 20 on the guest's**,

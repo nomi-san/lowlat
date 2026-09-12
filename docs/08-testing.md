@@ -122,6 +122,12 @@ Every byte that arrives from the network is parsed by a fuzz target:
 - relay framing
 - cursor image decoding
 - signaling payloads, at the application layer
+- the browser pipe's record layer, fed datagrams in every state it passes through with a
+  real peer advanced between them, and its association, fed bytes carried as real
+  application data by the far side's record layer, so the parser sees them as it would from
+  a hostile browser. Both run seeded so the same bytes walk the same path twice, and both
+  are slow by the standards of the parsers above -- a handshake is a few signatures -- so
+  their bounded runs are counted in tens of seconds rather than millions of executions.
 
 Rules:
 
