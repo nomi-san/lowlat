@@ -80,6 +80,17 @@ the same attempt socket, chosen by one field in the offer. The decisions are in
   offer asked for; the helpers it calls take the seam and not the native session.
 - The daemon carries the two state machines' own log lines onto its stream at the level they
   chose, so a handshake that fails is one log and not two.
+- **A failed pipe is its own ending.** The guest loop asks its media half for a fault on every
+  pass and ends the attempt with `HandshakeFailed` before liveness can call it a peer gone: a
+  path existed and the pipe on it did not.
+- **The encode-latency report is on the clock**: every two seconds from the moment the path
+  exists, on every transport, zero until a picture has been timed, instead of every thirtieth
+  frame. A count is a cadence only while frames flow; a still desktop sends one frame a second,
+  and a browser page reads five seconds of silence on the control channel as a dead link.
+- **A declaration without the base bit counts.** Every native declaration carries it and a
+  browser's carries only the codec bit, so a browser declaring the base codec declared zero,
+  which the consensus reads as no declaration at all; the bit is put in on both the
+  initialisation and the encoder configuration.
 - **Measured, in release, ten seconds of a stream shaped like a real one** -- sixty 30 KiB
   pictures and fifty sound packets a second, 14.7 Mbps -- through a pair of sessions under
   a fake clock: **23 allocations per datagram on the host side and 20 on the guest's**,
@@ -126,6 +137,11 @@ the same attempt socket, chosen by one field in the offer. The decisions are in
   carries this process's digest with its hash name and an empty media key. The C harness
   does the same three things under C and C++ with warnings as errors, and the C# example
   builds.
+- The latency report due at once, then on the interval whether ninety frames passed or none;
+  a bare declaration reading as the base codec and a bare codec bit as the base codec plus
+  it; and, end to end through the seam, a real socket and a real peer whose certificate is
+  not the digest the offer named, the attempt ending with the handshake outcome inside a
+  tenth of a second.
 
 ## 2026-09-11 - The tray, drawn by the desktop
 

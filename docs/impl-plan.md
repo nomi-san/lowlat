@@ -1733,8 +1733,8 @@ description it hands its browser, which is what lets a second browser family con
   the peer's fingerprint, a registration that refuses a browser without one, the answer that
   carries the certificate's digest and no media key, two appended and size-gated fields on the
   attempt description. *2026-09-12, minor 2.*
-- [ ] **The guest loop on both transports**, the encode-latency report on a two-second cadence
-  rather than a frame count, and a declaration without the base flag counted.
+- [x] **The guest loop on both transports**, the encode-latency report on a two-second cadence
+  rather than a frame count, and a declaration without the base flag counted. *2026-09-12.*
 - [ ] **Fuzz targets** for the record layer and the session, with a corpus of real browser
   checks.
 - [ ] **Live gate 1: a stock browser client** streams from the service.

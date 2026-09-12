@@ -590,8 +590,13 @@ thirty-two-bit argument, so it needs a narrowing cast and not a comparison again
 | 29 | encoder generation | stream, generation, 0 | v1 |
 | 34 | frame timing | 0, stream, 0, plus 16-byte body | diagnostic |
 
-Two of these have cadences rather than triggers. Encode latency goes out every 30th frame. The
-guest list is sent on a change of membership and repeated on an interval; see
+Two of these have cadences rather than triggers. Encode latency goes out **every two seconds
+on the clock, from the moment the path exists** -- not every thirtieth frame, which it was until
+2026-09-12: a frame count is a cadence only while frames flow, a still desktop sends one a
+second, and a browser page reads five seconds of silence on the control channel as a dead link
+([§14](#14-the-browser-transport)). The figure is zero until a picture has been timed and the
+message goes out anyway, on every transport; a native peer reads the extra reports as it reads
+any. The guest list is sent on a change of membership and repeated on an interval; see
 [§11.2b](#112b-the-guest-list) for why the interval is measured in time rather than in frames.
 
 **Opcode 10's argument is a status the peer already renders**, from the same enumeration its own
