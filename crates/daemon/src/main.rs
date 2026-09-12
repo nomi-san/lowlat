@@ -123,12 +123,13 @@ impl log::Log for Bridge {
     fn flush(&self) {}
 }
 
+/// The facade's levels onto this program's: a warning is a warning, and
+/// everything the two crates consider informational is debug here.
 fn level_of(level: log::Level) -> lowlat_common::log::Level {
     match level {
         log::Level::Error => lowlat_common::log::Level::Error,
         log::Level::Warn => lowlat_common::log::Level::Warn,
-        log::Level::Info => lowlat_common::log::Level::Info,
-        log::Level::Debug => lowlat_common::log::Level::Debug,
+        log::Level::Info | log::Level::Debug => lowlat_common::log::Level::Debug,
         log::Level::Trace => lowlat_common::log::Level::Trace,
     }
 }
@@ -850,9 +851,16 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         lowlat_common::log::set_level(lowlat_common::log::Level::Debug);
     }
     // The browser pipe's two state machines say what they see through the
-    // `log` facade; carried onto this program's own stream at the level they
-    // chose, so a handshake that fails is one log and not two.
-    let _ = log::set_logger(&BRIDGE).map(|()| log::set_max_level(log::LevelFilter::Debug));
+    // `log` facade; carried onto this program's own stream so a handshake
+    // that fails is one log and not two. **Their idea of informational is a
+    // hex dump of every packet**, so anything below a warning from them is
+    // this program's debug, and is not even formatted unless asked for.
+    let facade = if flag_set("--verbose") {
+        log::LevelFilter::Debug
+    } else {
+        log::LevelFilter::Warn
+    };
+    let _ = log::set_logger(&BRIDGE).map(|()| log::set_max_level(facade));
     match program {
         Program::Session => session(),
         Program::Tray => tray(),
