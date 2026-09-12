@@ -83,9 +83,17 @@ impl Certificate {
 /// The process certificate, made on the first call and kept.
 pub fn certificate() -> Result<&'static Certificate, Error> {
     static CERTIFICATE: OnceLock<Result<Certificate, Error>> = OnceLock::new();
-    match CERTIFICATE.get_or_init(mint) {
+    match CERTIFICATE.get_or_init(Certificate::generate) {
         Ok(certificate) => Ok(certificate),
         Err(error) => Err(*error),
+    }
+}
+
+impl Certificate {
+    /// A fresh identity. The process has one, from [`certificate`]; a peer
+    /// built for a test wants its own.
+    pub fn generate() -> Result<Self, Error> {
+        mint()
     }
 }
 

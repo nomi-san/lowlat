@@ -33,6 +33,7 @@ pub mod send;
 pub mod shell;
 pub mod socket;
 pub mod wake;
+pub mod web;
 
 pub use addrs::{MAX_HOST_ADDRESSES, host_addresses};
 pub use guest::{Guest, Running};

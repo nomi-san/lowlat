@@ -11,7 +11,16 @@ authors.workspace = true
 [dependencies]
 lowlat-common.workspace = true
 lowlat-core.workspace = true
+lowlat-crypto.workspace = true
 libc.workspace = true
+
+# The browser transport's two state machines, both sans-IO: fed bytes and
+# told the time by the shell, owning no socket, thread or clock, which is what
+# lets a browser session run under the same fake clock as a native one. The
+# record layer takes the pure-Rust provider; its default provider is a C build
+# and its certificate feature drags that in, so the certificate is ours.
+dimpl = { version = "0.7", default-features = false, features = ["rust-crypto"] }
+dcsctp = "0.1"
 
 [dev-dependencies]
 lowlat-common = { workspace = true, features = ["alloc-counter"] }

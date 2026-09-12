@@ -16,7 +16,15 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-ignore = []
+ignore = [
+    # `time` 0.3.45, reached through the DTLS record layer, which uses it to
+    # format a certificate's validity and never to parse one. The advisory is
+    # stack exhaustion while parsing a deeply nested format description, an
+    # input nothing here takes from anywhere. The fixed version wants a newer
+    # compiler than the workspace's minimum, so the minimum is the thing to
+    # raise, deliberately and on its own.
+    { id = "RUSTSEC-2026-0009", reason = "unreachable: format only, no parsing of untrusted input" },
+]
 
 [licenses]
 version = 2
