@@ -1737,7 +1737,9 @@ description it hands its browser, which is what lets a second browser family con
   rather than a frame count, and a declaration without the base flag counted. *2026-09-12.*
 - [x] **Fuzz targets** for the record layer and the session. *2026-09-12.* The corpus of
   real browser checks for the check parser waits on the first live capture.
-- [ ] **Live gate 1: a stock browser client** streams from the service.
+- [ ] **Live gate 1: a stock browser client** streams from the service. *Streamed on the
+  first connect, 2026-09-12, and found the reorder-depth omission; the ten-minute soak with
+  sound and the large keyframe are still owed.*
 - [ ] **`examples/web-client`**, a page that decodes with the browser's own codecs, on two
   browser families. **Live gate 2.**
 - [ ] Documentation closure.

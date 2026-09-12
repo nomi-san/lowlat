@@ -98,6 +98,20 @@ the same attempt socket, chosen by one field in the offer. The decisions are in
   browser. Both run seeded. Thirty and forty seconds clean at about fifty executions a
   second, which is what a handshake's signatures cost under the sanitizer; the minimized
   corpora are committed.
+- **Live gate 1, a stock browser client on Chrome, on the first connect** (2026-09-12,
+  17:05): the offer took the pipe, the path came up over the LAN, the handshake completed,
+  the association came up through an INIT collision (the browser begins it too), the
+  browser declared itself, and the stream ran at 120 fps on a still desktop with 5 to 7 ms
+  of round trip, no retransmissions, and input landing. Two things it found:
+  - **The sequence set said nothing about its reorder depth**, and the browser's hardware
+    decoder on one platform held pictures back to the level's worst case: **a hundred
+    milliseconds** of decode on a stream with no reordering in it. Both H.264 writers now
+    carry the bitstream restriction with `max_num_reorder_frames` zero, traced on the vendor
+    stream before and after; **ten milliseconds** on the second connect, against two on the
+    same machine's native client. Every macOS decoder of this stream, native or browser, had
+    been paying this.
+  - The two state machines' packet dumps reached the journal at hundreds of lines a second;
+    below a warning they are debug now, and formatted only when asked for.
 - **Measured, in release, ten seconds of a stream shaped like a real one** -- sixty 30 KiB
   pictures and fifty sound packets a second, 14.7 Mbps -- through a pair of sessions under
   a fake clock: **23 allocations per datagram on the host side and 20 on the guest's**,
