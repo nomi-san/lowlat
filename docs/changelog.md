@@ -3,6 +3,29 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-12 - The browser transport, begun
+
+Phase 13 opens ([impl-plan.md](impl-plan.md)): a browser as a guest over SCTP on DTLS 1.2, on
+the same attempt socket, chosen by one field in the offer. The decisions are in
+[00 D3 and D13](00-overview.md); this entry grows as the sub-phases land.
+
+### Added
+- **The process certificate** (`lowlat-crypto`): a P-256 key pair in a self-signed
+  certificate with no extensions, minted once per process from the crate's own entropy, and
+  its SHA-256 digest in the form the credential exchange carries -- the hash name, a space,
+  and uppercase pairs joined by colons. A peer trusts it by that digest and nothing else, so
+  the certificate is a container for a key and carries nothing a peer might refuse.
+- **The username fragment is drawn from six bytes rather than four**, so its encoding is
+  eight characters with no padding; `=` is not a character the credential grammar admits,
+  and a browser that checks would refuse it.
+
+### Testing
+- One certificate per process, the digest round-tripping with and without its hash name and
+  in either case, a refusal for any other hash or length, and the DER parsing back as a
+  certificate whose self-signature verifies under the key its PKCS#8 form loads to -- which
+  is the check that catches a key encoding the handshake library cannot read before a
+  session does.
+
 ## 2026-09-11 - The tray, drawn by the desktop
 
 ### Added

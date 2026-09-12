@@ -1,6 +1,6 @@
 # Implementation plan
 
-**Status:** locked 2026-08-15. Phases 0 to 12 with verification gates.
+**Status:** locked 2026-08-15. Phases 0 to 13 with verification gates.
 
 Conventions, per [AGENTS.md](../AGENTS.md) §2:
 
@@ -1703,10 +1703,72 @@ and deciding its shape without one of its two customers in front of it.
 
 ---
 
+## Phase 13 - The browser transport
+
+**Added 2026-09-12.** A browser is a guest over a second pipe on the same attempt socket:
+SCTP over DTLS 1.2, which is what a data channel is. Everything above the transport -- the
+control vocabulary, the media payloads, admission, the guest list, the encoder consensus --
+is reused unchanged; what is new is the pipe, the certificate a process presents on it, and
+the field in the offer that chooses it. [01 §14](01-protocol.md) has the wire contract,
+[00 D13](00-overview.md) the decisions behind it.
+
+**The order is chosen so the browser that already exists is served first.** A stock browser
+client defines the wire; our own page comes second on the same wire and differs only in the
+description it hands its browser, which is what lets a second browser family connect.
+
+- [x] **The process certificate and an ice-safe username fragment.** A P-256 key pair in a
+  self-signed certificate with no extensions, one per process, its SHA-256 digest carried in
+  the credential exchange with the hash name. The username fragment is drawn from six bytes so
+  its encoding needs no padding. *2026-09-12.*
+- [ ] **The media seam.** The endpoint and the shell become generic over their media half, so
+  the guest loop is written once and instantiated twice, with no dispatch on a data path.
+- [ ] **The browser session**: the DTLS client, the association, and the message mapping --
+  the control header kept, the media headers dropped, one message per protocol message.
+- [ ] **A hermetic pair under the simulator, two shells over loopback, and the benchmark**
+  that records what the second pipe allocates and costs per datagram.
+- [ ] **Signaling, admission, the C ABI and the daemon**: the offer's transport field and
+  the peer's fingerprint, a registration that refuses a browser without one, the answer that
+  carries the certificate's digest and no media key, two appended and size-gated fields on the
+  attempt description.
+- [ ] **The guest loop on both transports**, the encode-latency report on a two-second cadence
+  rather than a frame count, and a declaration without the base flag counted.
+- [ ] **Fuzz targets** for the record layer and the session, with a corpus of real browser
+  checks.
+- [ ] **Live gate 1: a stock browser client** streams from the service.
+- [ ] **`examples/web-client`**, a page that decodes with the browser's own codecs, on two
+  browser families. **Live gate 2.**
+- [ ] Documentation closure.
+
+**Gate:**
+
+1. The workspace tests, the lints and the dependency policy pass, and the native transport's
+   zero-allocation checks still read zero.
+2. The record-layer and session fuzz targets, and the check parser with a corpus of real
+   browser checks, run clean for the CI budget.
+3. **A stock browser client streams from the service for ten minutes** with input and sound,
+   and a keyframe larger than 262144 bytes renders.
+4. **`examples/web-client` streams on Chrome and on Firefox.**
+5. A native stock client streams as before on the same build, and an attempt described with
+   the previous size of the attempt structure still registers.
+6. The benchmark is recorded: allocations per datagram and per message on the browser path,
+   and per-datagram time at p50, p95 and p99.
+7. The encode-latency report is seen on the wire every two seconds on both transports.
+
+---
+
 ## Change log
 
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
+
+- 2026-09-12: **Phase 13 is added: the browser transport.** A browser was always the reason
+  the credential exchange carries a certificate fingerprint and an ICE-shaped username and
+  password ([03 §1](03-connectivity.md)); the pipe behind it is now built. Decided with the
+  numbers in view: the wire follows the browser client that already exists, both state
+  machines are sans-IO crates driven by the shell rather than stacks with threads of their
+  own, and the one rule that said no -- no TLS inside the SDK -- is amended to say what it
+  meant, which is no reactor, no socket and no clock ([00 D3 and D13](00-overview.md)). The
+  second pipe allocates and is measured for it; the first one still does not.
 
 - 2026-08-30: **Phase 11.6 is written, and the 4:4:4 question is re-opened with numbers.**
   The investigation measured both depths on the vendor interface -- 1.39x the bytes at eight
