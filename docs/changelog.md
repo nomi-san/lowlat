@@ -18,6 +18,19 @@ the same attempt socket, chosen by one field in the offer. The decisions are in
 - **The username fragment is drawn from six bytes rather than four**, so its encoding is
   eight characters with no padding; `=` is not a character the credential grammar admits,
   and a browser that checks would refuse it.
+- **The media seam.** The guest loop reads a fixed set of calls from its session -- feed a
+  record, poll, the next deadline, drain, queue a message, take one, liveness, pressure and
+  the round-trip figures -- and that set is now a trait in the core, implemented by the
+  native session by delegation. The endpoint and the shell take the media half as a type
+  parameter with the native session as the default, so everything that exists keeps its
+  shape and the browser session is a second instantiation of the same loop rather than a
+  second loop. A media half may also report a **fault** -- a handshake that did not complete,
+  an association the peer ended with an error -- which the native session never does.
+- **Owed answers, in every state.** The connectivity engine keeps sixteen answers pending
+  rather than four, because a peer running a full agent checks every pair it holds in one
+  burst, and it arms its timer for an owed answer after the path is chosen as well as
+  before, because such a peer keeps checking the path it uses and reads an unanswered check
+  as the path gone.
 
 ### Testing
 - One certificate per process, the digest round-tripping with and without its hash name and
@@ -25,6 +38,8 @@ the same attempt socket, chosen by one field in the offer. The decisions are in
   certificate whose self-signature verifies under the key its PKCS#8 form loads to -- which
   is the check that catches a key encoding the handshake library cannot read before a
   session does.
+- Sixteen checks in one burst all answered, which failed with the old capacity; an owed
+  answer arming the timer after establishment, and the timer back to infinity once it is out.
 
 ## 2026-09-11 - The tray, drawn by the desktop
 

@@ -1720,8 +1720,9 @@ description it hands its browser, which is what lets a second browser family con
   self-signed certificate with no extensions, one per process, its SHA-256 digest carried in
   the credential exchange with the hash name. The username fragment is drawn from six bytes so
   its encoding needs no padding. *2026-09-12.*
-- [ ] **The media seam.** The endpoint and the shell become generic over their media half, so
+- [x] **The media seam.** The endpoint and the shell become generic over their media half, so
   the guest loop is written once and instantiated twice, with no dispatch on a data path.
+  *2026-09-12.*
 - [ ] **The browser session**: the DTLS client, the association, and the message mapping --
   the control header kept, the media headers dropped, one message per protocol message.
 - [ ] **A hermetic pair under the simulator, two shells over loopback, and the benchmark**
