@@ -1726,8 +1726,9 @@ description it hands its browser, which is what lets a second browser family con
 - [x] **The browser session**: the DTLS client, the association, and the message mapping --
   the control header kept, the media headers dropped, one message per protocol message.
   *2026-09-12, and verified against a second implementation's DTLS server.*
-- [ ] **A hermetic pair under the simulator, two shells over loopback, and the benchmark**
-  that records what the second pipe allocates and costs per datagram.
+- [x] **A hermetic pair under the simulator, two shells over loopback, and the benchmark**
+  that records what the second pipe allocates and costs per datagram. *2026-09-12: 23 and
+  20 allocations per datagram, 14 us at p50 and 24 at p99, in the change log.*
 - [ ] **Signaling, admission, the C ABI and the daemon**: the offer's transport field and
   the peer's fingerprint, a registration that refuses a browser without one, the answer that
   carries the certificate's digest and no media key, two appended and size-gated fields on the

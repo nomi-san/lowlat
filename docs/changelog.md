@@ -50,6 +50,28 @@ the same attempt socket, chosen by one field in the offer. The decisions are in
 - The dependency policy gained one ignored advisory, with its reason: the time crate the
   record layer formats a validity with, whose fix wants a newer compiler than the workspace
   minimum. The minimum is to be raised on its own rather than inside this phase.
+- **A server link is made at once, a client link on the path.** The peer's first flight can
+  land before this side's own punch has settled, and a link that did not exist yet dropped
+  it and cost the peer a whole retransmission interval: over loopback the pipe was secure
+  976 ms after the path and is now secure 18 ms after it. A client link still waits for
+  the path, because it fires its first flight the moment it exists and its retries would
+  run out while the punch was still finding one.
+- **What the pipe carries on a lossy path is bounded the way any fair stream is.** The
+  association answers every loss and every reordering by halving its window and then
+  growing it one packet per round trip, so a 600 KiB picture and eight deltas that cross
+  a clean 20 ms link in about half a second take seven seconds at one percent loss, and
+  five milliseconds of per-datagram jitter alone -- neighbours reordered constantly, every
+  reordering a reported gap -- took six. About 1.2 packets per round trip over the square
+  root of the loss rate: two megabits at this path's 60 ms and one percent. The native
+  transport sends at the rate the host chooses and repairs the gaps; this pipe cannot, and
+  the rate controller follows it down. A lower retransmission floor was tried and moved
+  the figure by five percent, so the defaults stand.
+- **Measured, in release, ten seconds of a stream shaped like a real one** -- sixty 30 KiB
+  pictures and fifty sound packets a second, 14.7 Mbps -- through a pair of sessions under
+  a fake clock: **23 allocations per datagram on the host side and 20 on the guest's**,
+  about 350 and 300 per message; **14 us per datagram at p50 on either side, 15 at p95,
+  24 at p99**. At that rate the pipe alone is about two percent of a core per browser
+  guest, against a native path that allocates nothing. Accepted, and now a number.
 
 ### Testing
 - One certificate per process, the digest round-tripping with and without its hash name and
@@ -73,6 +95,15 @@ the same attempt socket, chosen by one field in the offer. The decisions are in
   on the far side as application data. The server's standard input has to be held open;
   on end of file there it shuts the connection down, which cost a round of suspecting the
   record layer.
+- Under the simulator, from a seed: both roles punch, handshake and associate in 200 ms of
+  simulated time; a 600 KiB picture and eight deltas cross whole and in order over loss,
+  duplication and reordering with the path's own drop count asserted above zero; two
+  thousand messages arrive in order on the sound channel under the same path; a wrong
+  digest is a handshake fault with no association made; a clean close reads as dead with no
+  fault; on a policed path the window passes the controller's floor with a stale share in
+  it and a round trip measured; and two ends beginning the association at once still
+  associate. Two shells over real sockets: punch, handshake, association and a 200 KiB
+  picture, then a clean close read on the far side.
 
 ## 2026-09-11 - The tray, drawn by the desktop
 
