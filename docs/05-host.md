@@ -141,9 +141,11 @@ decoder is entitled to interpret with a different matrix, and some do.
 with `max_num_reorder_frames` zero. A set silent about the reorder depth leaves a decoder that
 cannot know to hold pictures back to the level's worst case, and one hardware decoder measured
 a hundred milliseconds of decode on a stream with no reordering in it; with the depth stated it
-measured ten (2026-09-12). The HEVC set states the same in its own field. Every writer here --
-the vendor interface's usability block and the hand-written set -- carries it; the Vulkan
-Video H.264 set carries no usability information at all yet, which is an open item.
+measured ten (2026-09-12). The HEVC set states the same in its own field. Every writer here
+carries it: the vendor interface's usability block, the hand-written set, and since
+2026-09-13 the Vulkan Video set, which until then carried no usability information at all --
+no reorder depth and no colour description -- and now carries both, traced on the device's
+own output and decoded by an independent decoder as BT.709.
 
 **8-bit is the default and 10-bit is what a guest may ask for** (D7, from 2026-08-30). A
 recorded reference session is `yuv420p` throughout and a stream runs at eight bits until a

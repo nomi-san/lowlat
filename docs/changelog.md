@@ -142,6 +142,17 @@ the same attempt socket, chosen by one field in the offer. The decisions are in
   a browser; and on loopback with no loss the stale count holds the rate at picture size
   times frame rate ([05 §5](05-host.md)).
 
+### Fixed
+- **The Vulkan Video H.264 set now carries its usability information** (2026-09-13). It was
+  the one writer with none: no bitstream restriction, so a decoder that cannot know the
+  reorder depth holds pictures back to the level's worst case, and no colour description, so
+  a decoder is entitled to guess the matrix. It now states a reorder depth of zero, a
+  buffering of one, and BT.709 throughout, like the other two; traced on the device's own
+  stream before and after, and decoded by an independent decoder as BT.709 with every frame
+  read. The seat dump that produced the trace can now reach the third encoder, which it could
+  not: it named the open backend, and the third is chosen only over an unnamed one on a real
+  output.
+
 ### Testing
 - One certificate per process, the digest round-tripping with and without its hash name and
   in either case, a refusal for any other hash or length, and the DER parsing back as a
