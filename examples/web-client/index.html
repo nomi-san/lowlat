@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>lowlat web client</title>
+    <style>
+      :root { color-scheme: dark; }
+      body { margin: 0; font: 13px system-ui, sans-serif; background: #111; color: #ddd; }
+      form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 8px 12px; background: #1b1b1b; }
+      label { display: flex; gap: 4px; align-items: center; }
+      input[type=text], input[type=password], input[type=number] {
+        background: #222; color: #ddd; border: 1px solid #333; border-radius: 3px; padding: 3px 6px;
+      }
+      input[type=number] { width: 4em; }
+      button { background: #2d6cdf; color: #fff; border: 0; border-radius: 3px; padding: 4px 12px; cursor: pointer; }
+      button:disabled { background: #444; cursor: default; }
+      #status { font-family: monospace; white-space: pre; padding: 4px 12px; color: #9a9; }
+      #screen { display: block; max-width: 100vw; max-height: calc(100vh - 80px); margin: 0 auto; background: #000; }
+    </style>
+  </head>
+  <body>
+    <form id="form">
+      <label>server <input id="server" type="text" value="kessel-ws.parsec.app" size="22" /></label>
+      <label>session <input id="session" type="password" size="22" autocomplete="off" /></label>
+      <label>peer <input id="peer" type="text" size="28" /></label>
+      <label>Mbit/s <input id="bitrate" type="number" min="1" max="500" value="30" /></label>
+      <label>fps <input id="fps" type="number" min="1" max="240" value="60" /></label>
+      <label><input id="hevc" type="checkbox" /> HEVC</label>
+      <button id="connect" type="submit">Connect</button>
+      <button id="disconnect" type="button" disabled>Disconnect</button>
+      <button id="keyframe" type="button" disabled>Keyframe</button>
+    </form>
+    <div id="status">idle</div>
+    <canvas id="screen" width="1280" height="720"></canvas>
+    <script type="module" src="dist/main.js"></script>
+  </body>
+</html>
