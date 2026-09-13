@@ -7110,7 +7110,14 @@ mod tests {
             cg_level: 1,
             full_fps,
             codec,
-            backend: Some(Backend::Open),
+            // The third encoder is only ever chosen over an unnamed backend
+            // on a real output, so a dump of its stream leaves the backend
+            // unnamed and lets the preference decide.
+            backend: if std::env::var("LOWLAT_VULKAN_ENCODE").is_ok_and(|v| v == "1") {
+                None
+            } else {
+                Some(Backend::Open)
+            },
             configured_mbps: 10.0,
             min_mbps: 1.0,
             detail_rows: rows,

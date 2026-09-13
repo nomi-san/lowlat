@@ -23,6 +23,13 @@ use ash::vk;
 
 use crate::Poll;
 
+/// Unspecified: the picture is not analogue-sourced and has no video format
+/// to declare.
+const VIDEO_FORMAT_UNSPECIFIED: u8 = 5;
+/// BT.709 for primaries, transfer and matrix alike; the far side applies it
+/// unconditionally, so it is a statement rather than a preference.
+const BT709: u8 = 1;
+
 /// What went wrong.
 ///
 /// Driver results are carried as their raw code rather than a formatted
@@ -1279,6 +1286,27 @@ impl Device {
         if sps.frame_crop_right_offset > 0 || sps.frame_crop_bottom_offset > 0 {
             sps.flags.set_frame_cropping_flag(1);
         }
+        // SAFETY: as above.
+        let mut vui: ash::vk::native::StdVideoH264SequenceParameterSetVui =
+            unsafe { core::mem::zeroed() };
+        // **The stream says it reorders nothing.** Silent about the reorder
+        // depth, a decoder that cannot know holds pictures back to the
+        // level's worst case: a hundred milliseconds of decode latency
+        // measured on one hardware decoder, from a stream with no
+        // reordering in it at all. The colour description travels with it,
+        // because a decoder handed none may choose a different matrix.
+        vui.flags.set_bitstream_restriction_flag(1);
+        vui.max_num_reorder_frames = 0;
+        vui.max_dec_frame_buffering = 1;
+        vui.flags.set_video_signal_type_present_flag(1);
+        vui.video_format = VIDEO_FORMAT_UNSPECIFIED;
+        vui.flags.set_video_full_range_flag(0);
+        vui.flags.set_color_description_present_flag(1);
+        vui.colour_primaries = BT709;
+        vui.transfer_characteristics = BT709;
+        vui.matrix_coefficients = BT709;
+        sps.flags.set_vui_parameters_present_flag(1);
+        sps.pSequenceParameterSetVui = &raw const vui;
         // SAFETY: as above.
         let mut pps: ash::vk::native::StdVideoH264PictureParameterSet =
             unsafe { core::mem::zeroed() };
