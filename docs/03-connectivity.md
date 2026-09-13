@@ -36,6 +36,13 @@ machinery behind it.
 **Emit the controlled role on every binding request.** This is fixed by the protocol, not
 negotiated, and varying it breaks the peer.
 
+**A browser is the one peer that runs the full procedure**, and the fixed role is what lets it:
+its agent is always controlling, it pairs every candidate of ours with every one of its own,
+checks each pair in a burst, nominates one, and keeps checking the pair it uses for as long as
+the session lasts. None of that needs anything of this engine but what it already does --
+answer every authenticated check, from the address it arrived at, for the life of the
+attempt -- and the two figures that had to grow for it are in §4.
+
 ## §2 One socket, two protocols
 
 Connectivity checks and media share a single socket for the life of the session. Classification
@@ -136,6 +143,16 @@ Standard STUN binding requests and responses, with these specifics:
   filtering translator, which drops it, so the one candidate a second address exists for
   never completes a check. The shell reports each datagram's arrival address and the engine
   carries it on the queued answer ([02 s5](02-io-shell.md)).
+- **Sixteen answers are held pending, in every state** (2026-09-12). A peer running the full
+  procedure checks every pair it holds in one burst, and four slots dropped answers from the
+  burst; and it keeps checking the path it uses after the path is chosen, reading an
+  unanswered check as the path gone, so the engine arms its timer for an owed answer after
+  establishment as well as before. A check is also bounded at 256 bytes, which is what such a
+  peer's request comes to with its username, priority, role, integrity and fingerprint
+  attributes; nothing larger is a check.
+- **A browser may offer a host candidate as a multicast name rather than an address**, which
+  this engine cannot probe. The address it hides is learned when that browser's own check
+  arrives from it -- the peer-reflexive admission of §3 -- and the path completes from there.
 
 ## §5 The punch
 
@@ -332,3 +349,10 @@ whether the peer imposes any ordering requirement between candidate arrival and 
 probe.
 
 **Ours by design, with no peer-side counterpart:** the relay path in §7 in its entirety.
+
+**Confirmed against two browser families, 2026-09-12 and 2026-09-13:** the fixed controlled
+role against a full agent that is always controlling; sixteen pending answers under a check
+burst; consent checks answered for the life of the session; a `.local` host candidate
+completed from the browser's own check; 43 distinct browser checks captured on the attempt
+socket and run through the check parser's fuzz corpus, which kept the seven that reached
+new branches.

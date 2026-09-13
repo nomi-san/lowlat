@@ -123,6 +123,24 @@ the same attempt socket, chosen by one field in the offer. The decisions are in
   about 350 and 300 per message; **14 us per datagram at p50 on either side, 15 at p95,
   24 at p99**. At that rate the pipe alone is about two percent of a core per browser
   guest, against a native path that allocates nothing. Accepted, and now a number.
+- **`examples/web-client`, and live gate 2 on two browser families** (2026-09-13). The
+  smallest page that streams from the service: the signaling client in the peer role, a peer
+  connection with the three pre-agreed channels and a synthesized answer in the current
+  data-channel form, the declaration on channel 0, and the picture decoded by the browser's
+  own decoder and drawn as a WebGL2 quad, all on the main thread. Keyframes are read off the
+  bitstream's unit types rather than replayed from a cache; a decoder that needs a fresh
+  chain asks with opcode 13. The rate and frame rate fields go out as the application's
+  video configuration once the first picture has arrived, because a request that arrives
+  before the stream exists is dropped as a change to nothing. Both Chrome and Firefox
+  connected on the first try -- 340 ms from offer to association, Firefox over the host's
+  IPv6 candidate -- and were driven through their developer-tools protocols rather than
+  clicked; then both sat eleven minutes side by side at 60 fps, 41293 and 40445 frames decoded with no decoder error and no retransmission, and both departures -- a button on one, the tab closed on the other -- read on the host as a clean leave. The 43 distinct connectivity checks the two browsers sent
+  during their connects went through the check parser's corpus, which keeps the seven that
+  reach branches nothing else did. Two things the page's own rate
+  field made visible and which stay open: the keyframe an encoder rebuild produces is 20 to
+  26 KB whatever the rate, so the keyframe-over-262144-bytes item is still unverified against
+  a browser; and on loopback with no loss the stale count holds the rate at picture size
+  times frame rate ([05 §5](05-host.md)).
 
 ### Testing
 - One certificate per process, the digest round-tripping with and without its hash name and

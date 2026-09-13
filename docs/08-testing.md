@@ -168,6 +168,13 @@ in this repository: a formatting check that reported success while examining zer
 Covered paths: receive, decrypt, dispatch, reassemble, packetize, encrypt, send, and the input
 path end to end.
 
+**The browser pipe is exempt and measured instead** ([02 §7](02-io-shell.md)). Its record
+layer and association allocate by design, so the assertion would only ever fail there; the
+benchmark that replaces it records allocations per datagram in each direction and the
+per-datagram time at p50, p95 and p99, and a change to those figures is reviewed as a
+regression. The native pipe's assertion runs on the same build and still reads zero, which is
+what keeps the exemption from spreading.
+
 ## §9 Benchmarks and latency
 
 - **Performance claims cite measurements**, as p50, p95, and p99. **Never an average.** The
@@ -190,6 +197,14 @@ path end to end.
   than failing. A skip that reads as a failure trains people to ignore failures.
 - **Continuous integration has no GPU**, so it runs the software encoder path end to end. That
   is the second reason the software backend exists ([05 §4](05-host.md)).
+- **The browser pipe has two live rows and neither can be replaced by a hermetic one.** A
+  stock browser client, unmodified, streaming from the service; and `examples/web-client` on
+  two browser families, driven through their developer-tools protocols so a run is scripted
+  rather than clicked. The hermetic pair proves the state machines against each other; only a
+  real browser proves the handshake against a second implementation of the record layer, the
+  description against a second parser, and the picture against a second decoder. Each run
+  also captures the browser's connectivity checks off the attempt socket and folds the
+  distinct ones into the check parser's corpus (§6).
 
 ## §11 Soak
 

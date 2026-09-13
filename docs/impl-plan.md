@@ -1744,19 +1744,24 @@ description it hands its browser, which is what lets a second browser family con
   on this host -- the per-frame budget caps a keyframe well below it at any rate the tray
   offers -- and stays with gate item 3 as unverified against a browser; a 600 KiB message
   crosses to our own peer under the simulator.*
-- [ ] **`examples/web-client`**, a page that decodes with the browser's own codecs, on two
-  browser families. **Live gate 2.**
-- [ ] Documentation closure.
+- [x] **`examples/web-client`**, a page that decodes with the browser's own codecs, on two
+  browser families. **Live gate 2.** *2026-09-13: Chrome and Firefox on the first connect,
+  eleven minutes each side by side at 60 fps, 41293 and 40445 frames, both departures read as clean; the reinit keyframe is 20 to 26 KB whatever the rate, so the
+  keyframe-over-262144-bytes half of gate item 3 stays unverified against a browser.*
+- [x] Documentation closure. *2026-09-13.*
 
 **Gate:**
 
 1. The workspace tests, the lints and the dependency policy pass, and the native transport's
    zero-allocation checks still read zero.
 2. The record-layer and session fuzz targets, and the check parser with a corpus of real
-   browser checks, run clean for the CI budget.
+   browser checks, run clean for the CI budget. *Passed 2026-09-13: 43 checks from two
+   browser families, twenty seconds clean, corpus minimized.*
 3. **A stock browser client streams from the service for ten minutes** with input and sound,
-   and a keyframe larger than 262144 bytes renders.
-4. **`examples/web-client` streams on Chrome and on Firefox.**
+   and a keyframe larger than 262144 bytes renders. *The first half passed 2026-09-12; the
+   keyframe half is open: no host here produces one, and a 600 KiB message crosses only to
+   our own peer under the simulator.*
+4. **`examples/web-client` streams on Chrome and on Firefox.** *Passed 2026-09-13.*
 5. A native stock client streams as before on the same build, and an attempt described with
    the previous size of the attempt structure still registers.
 6. The benchmark is recorded: allocations per datagram and per message on the browser path,

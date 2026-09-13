@@ -367,6 +367,30 @@ Stating it as "follow the healthy majority" was wrong on both counts. A majority
 the minority receiving a rate its path cannot carry, and there is no majority at all in the
 single-guest case that v1 actually ships.
 
+**On the browser pipe the same controller reads the same figures, synthesized.** The
+association owns retransmission there ([01 §14](01-protocol.md)), so nothing in the host
+sees an acknowledgement; what the controller and the gate read is derived from what the
+association reports, per channel:
+
+| Figure | Native source | Browser source |
+|---|---|---|
+| window | fragments sent and not yet acknowledged | fragments of every message queued and not yet delivered |
+| stale | fragments unsent or unacknowledged past the level's threshold | fragments fully handed to the association longer ago than the threshold and not yet delivered, plus what is still buffered unsent; a message part way onto the wire is fresh for the part that is there |
+| bytes and packets sent | counted at the send | the bytes offered per stream, with the association's retransmitted bytes charged to the video channel |
+| acknowledged bytes | from the group acknowledgement | from the association's delivery notification per message |
+| resends by negative acknowledgement | counted at the retransmit | the association's retransmitted packet count, charged to video |
+| resends by timeout | counted at the retransmit | **always zero**: the association's timers are its own and are not distinguished |
+| round trip | from the acknowledgement | the association's smoothed estimate |
+
+The mapping is the reason the controller, the gate and the multi-guest arithmetic above run
+unchanged on both pipes. Two observations from the loopback runs of 2026-09-13 are kept as
+open items rather than tuned away: with no loss and a round trip under a millisecond, the
+stale count still reads a large share of the window whenever a picture exceeds about seventy
+fragments, and the rate the controller settles at is then the picture size times the frame
+rate -- 21 Mbit/s at 30 frames a second, 85 at 120 -- well under the ceiling the page asked
+for. Whether that is the threshold, the association's acknowledgement cadence or the
+delivery notification is not yet established.
+
 ## §6 Multi-guest delivery
 
 v1 policy is single-guest simple, but the data model is multi-guest from the first line

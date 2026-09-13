@@ -121,6 +121,17 @@ loop:
   where they are exercised with injected time; a shell that arms from the session alone misses
   every connectivity deadline, and one that arms from connectivity alone polls forever once the
   attempt is over.
+- **The endpoint is generic over its media half, and so is the shell.** The loop above reads a
+  fixed set of calls from the session -- feed a datagram, poll, the next deadline, drain
+  output, queue a message, take one, liveness, pressure, the round-trip figures -- and that
+  set is a trait in the core with the native session as the default type. The browser session
+  ([01 §14](01-protocol.md)) is the second instantiation: the same loop, the same shell,
+  monomorphised twice, with no dispatch on a data path. Two things the media half decides that
+  the loop does not: it is told when the path is established, because the browser's record
+  layer sends its first flight only from then and must not be built before; and it may report
+  a **fault** -- a handshake that did not complete, an association the peer aborted -- which
+  the native session never does and which the guest loop turns into an outcome of its own
+  ([06 §5](06-api.md)).
 - **An output carries its destination and how to send it.** A mapping probe leaves at a reduced
   TTL, and the socket must be restored immediately afterwards or the media path silently caps
   at a few hops ([03 §4](03-connectivity.md)). The obligation is in the type rather than in a
@@ -223,6 +234,14 @@ whole.
 - **Handoff is by slot index**, not by copying bytes, wherever the pool allows.
 - Shell hot paths satisfy the same zero-allocation assertions as the core: the counting
   allocator in the test harness must report exactly zero.
+- **The browser session is the one exemption, and it is measured rather than assumed.** Its
+  record layer and its association are sans-IO crates that allocate per datagram and per
+  message, and rewriting either to a fixed-capacity design is not a cost this project pays for
+  the second pipe. The exemption is bounded by the benchmark that stands in for the assertion
+  ([08 §8](08-testing.md)): 23 allocations per received datagram and 20 per sent one, 14 us at
+  p50 and 24 us at p99 per datagram on the development machine (2026-09-12). A change that
+  moves those figures is reviewed as an allocation regression, and the native path's counting
+  assertion still reads zero on the same build.
 - **This crate contains `unsafe`, and it is the first that does outside the concurrency
   primitives.** Batched receive, offload send, and the wake descriptor are all syscalls. Keep
   the unsafe in thin wrappers whose safety argument is local, and note that the `miri`

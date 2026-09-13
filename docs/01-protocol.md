@@ -22,6 +22,13 @@ UDP datagram
 Two transports share one socket for the lifetime of a session: connectivity checks and
 encrypted media. There is no separate control connection.
 
+**A browser is served on a second stack under the same signaling and the same checks**
+([§14](#14-the-browser-transport)): a datagram transport layer session over the
+attempt socket, carrying a stream-oriented association whose streams are the channels
+above. Everything from the channel stream upward -- the control messages, the media
+payloads, the declaration -- is the same on both; the record envelope, the rings, the
+acknowledgements and the congestion signals of §3 to §10 belong to the native stack alone.
+
 ## §2 Datagram demultiplexing
 
 A received datagram is classified on its first two bytes before anything else happens.
@@ -37,6 +44,13 @@ else:
 This works because a record envelope always begins `0x17`, which is outside the range a STUN
 message type can occupy in its first byte. Implementations MUST NOT introduce a record type
 whose first byte is `0x00` or `0x01`.
+
+**The bytes cannot choose between the two media stacks.** The record magic `17 FE FD` *is*
+the header of an application-data record on the browser's transport layer, so a datagram of
+either stack classifies the same way here. Which stack an endpoint runs is fixed per attempt
+by the offer's transport field ([04 §4](04-signaling.md)), never inferred from traffic, and an
+endpoint on the browser stack hands everything that is not a check to its record layer
+(§14).
 
 ## §3 Record envelope
 
@@ -973,3 +987,112 @@ picture.
 | hard liveness timeout | 120 s | §9 |
 | delivery deadline | 15 s | §9 |
 | congestion window floor | 100 | §10 |
+| browser: association port | 5000 | §14, both sides |
+| browser: payload protocol identifier | 53 | §14, binary; the only one accepted |
+| browser: record layer datagram | 1229 | §14, the native default |
+| browser: association packet | 1191 | §14, the datagram less the record overhead of 37 |
+| browser: largest message | 4 MiB | §14 |
+| browser: send queue per stream | 4000 fragments | §14, a refusal coincides with the gate's |
+| browser: control silence read as dead by a page | 5 s | §14, the reason for the two-second cadence in §11.2 |
+
+## §14 The browser transport
+
+A browser cannot open a socket, so it is served over the transport its own data channels
+speak: a datagram transport layer security session (version 1.2) on the attempt socket, and
+inside it a stream control transmission association whose streams carry the channels. Both
+are standard; what this section fixes is the mapping, which follows the browser client that
+already exists and is therefore not a matter of choice ([00 D13](00-overview.md)).
+
+### §14.1 Roles and trust
+
+**The host is the client of the handshake** and sends the first flight the moment the path
+exists; the browser answers as the server. A browser's description therefore names the host
+as the active side. Each side presents a self-signed certificate and the only trust is the
+digest: the credential exchange carries each side's SHA-256 digest with the hash name in
+front (`sha-256 AA:BB:...`, uppercase pairs joined by colons), and a handshake whose peer
+certificate does not digest to the value signaled is a fault that ends the attempt. The host's
+certificate is one per process, P-256, with no extensions; it is a container for a key and
+nothing a browser might refuse ([04 §4](04-signaling.md)).
+
+The record layer is bounded to the native datagram size, 1229 bytes, and the association's
+packet to 1191, which is that less the 37 bytes a record costs. There is no path probing on
+this stack (§8 does not apply); the first size is the only size.
+
+### §14.2 Streams
+
+The association listens on port 5000 on both sides. **The stream number is the channel
+number**, and the streams are agreed in advance: a browser opens them as negotiated with the
+channel number as the identifier, and the host never receives or answers an in-band open.
+Only channels 0, 1 and 2 are served.
+
+| Stream | Carries | Reliability | Priority |
+|---|---|---|---|
+| 0 | control messages (§11) | reliable, ordered | highest |
+| 1 | video | reliable, ordered | lowest |
+| 2 | audio | reliable, ordered | between |
+
+**Every stream is reliable and ordered**, as every native channel is (§6), and the drop
+that keeps sound from arriving late happens in the same place on both stacks: before a
+message is queued, never after ([05 §9.2](05-host.md)). What differs is who retransmits --
+the association, on its own timers, rather than the acknowledgements of §9 -- and that the
+streams are interleaved, so a large picture in flight holds neither control nor sound; video
+shares a head-of-line with nothing but itself.
+
+### §14.3 Messages
+
+**One protocol message is one association message.** There is no length prefix -- that
+prefix is a property of the native rings (§5.3), not of the protocol -- and the only payload
+protocol identifier accepted is 53, the binary one; a message under any other identifier is
+dropped and counted. A message larger than 4 MiB is refused at the sender, and the send queue
+per stream holds 4000 fragments' worth, chosen so that a refusal there coincides with what the
+frame gate would refuse anyway ([05 §5](05-host.md)).
+
+**The control channel keeps its 13-byte header; video and audio lose theirs.** A message on
+stream 0 is exactly the bytes of §11, header first. A message on stream 1 is the access unit
+alone -- the ten-byte video header of §11.3 is not sent -- and a message on stream 2 is the
+codec payload alone, without the fifteen-byte audio header of §11.4. So a browser learns
+nothing per frame: no dimensions, no rotation, no keyframe flag, no encoder generation, no
+sample rate. It reads the codec from its own declaration, the size from the decoded picture,
+and whether a unit is a keyframe from the unit types in the bitstream. Anything a host
+signals through a media header is invisible on this stack, which is why the encoder
+generation and the pointer travel on the control channel and why the H.264 sequence set must
+state everything a decoder needs ([05 §4](05-host.md)).
+
+The pointer message (§11.2) never uses its cached form here, because a browser declares no
+pointer cache; every update that carries a picture carries the whole picture.
+
+### §14.4 Liveness and pressure
+
+**A page reads five seconds of silence on the control channel as a dead link.** The
+encode-latency report of §11.2 goes out every two seconds on the clock from the moment the
+path exists, whatever the frame rate, so a still desktop does not look dead. The host's own
+liveness on this stack is progress: an authenticated data record arriving, or a message the
+association reports delivered, stamps it, with the same soft and hard timeouts as §9, and a
+message sent and not delivered past the delivery deadline of §9 is undeliverable. A closed record layer, or an association the peer aborts, ends the
+attempt with a fault the host reports as a failed handshake or an aborted association.
+
+The congestion controller of §10 runs unchanged on this stack; what it reads is synthesized
+from the association rather than from the acknowledgements of §9 ([05 §5](05-host.md)).
+There is no retransmission timeout count to report, because the association retransmits on
+its own timers, so that figure reads zero here.
+
+### §14.5 What a page must do
+
+The stack is symmetric enough that the requirements on a browser page are short:
+
+1. Send the offer with the transport field set to 2 and the triple its browser generated;
+   apply the host's triple as its answer, naming the host as the active side of the handshake
+   and stating the port and the message ceiling above.
+2. Add the host's candidates only after that answer is set -- one browser family refuses a
+   candidate offered before the remote description exists -- and send its own as it gathers
+   them, followed by the readiness marker ([03 §3](03-connectivity.md)); without the marker
+   the host checks only directly routable addresses.
+3. Send opcode 11 on channel 0 as soon as the channel opens, with the eight keys of §11.5 and
+   the flags reduced to what it can decode.
+4. Feed each message on stream 1 to its decoder as one access unit, marking keyframes from
+   the bitstream; ask for a fresh reference chain with opcode 13 (same flags, third argument
+   set) rather than replaying a picture it saw earlier.
+5. Treat five seconds without a control message as the end of the session; leave with
+   opcode 10 and a zero status.
+
+`examples/web-client` is the smallest page that does all five.

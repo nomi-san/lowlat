@@ -50,7 +50,7 @@ tray, log out, and the stream keeps running.
 ```
 lowlat-common    clock, futex wait, SPSC rings, byteorder, sequence arithmetic, log
 lowlat-core      no_std sans-IO: wire, channels, rings, crypto, recovery, NAT, ICE, STUN, TURN
-lowlat-net       IO shell: sockets, threads, timers, wakeups
+lowlat-net       IO shell: sockets, threads, timers, wakeups; the browser transport
 lowlat-sim       deterministic simulator and network namespace fixtures
 lowlat-capture   frame source trait and backends
 lowlat-encode    NVENC, FFmpeg software, VAAPI
@@ -68,8 +68,10 @@ That makes the transport and connectivity state machines fully deterministic, wh
 allows loss, reordering, and NAT topologies to be tested as reproducible unit tests rather
 than as soak runs.
 
-The SDK owns all of its threads and contains no async runtime, no TLS, and no JSON. Signaling
-lives outside it, so an application can bring its own.
+The SDK owns all of its threads and contains no async runtime, no TLS stack, and no JSON.
+Signaling lives outside it, so an application can bring its own. A browser is served on the
+same signaling over a second pipe, a data channel on the attempt socket, and
+[examples/web-client](examples/web-client) is the smallest page that streams from it.
 
 ## Platform support
 
@@ -77,7 +79,7 @@ lives outside it, so an application can bring its own.
 |---|---|
 | Linux host | primary target |
 | Windows host | planned |
-| Clients | any platform with a stock Parsec client; nothing to install |
+| Clients | any platform with a stock Parsec client, or a browser; nothing to install |
 
 Capture backends and their privilege requirements are covered in
 [docs/07-platforms.md](docs/07-platforms.md).
