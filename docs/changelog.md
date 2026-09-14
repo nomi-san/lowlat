@@ -210,6 +210,12 @@ the same attempt socket, chosen by one field in the offer. The decisions are in
   holding its signaling connection, which the daemon already does, so a token obtained once
   lasts until the machine has been off for a week. A refusal is reported in the service's own
   words: a wrong password, an address that has to be confirmed by mail first.
+- **The helper and the tray start with the session.** Two user units, `lowlat-session` and
+  `lowlat-tray`, part of the graphical session's target and wanted by it, so a login starts
+  both and a logout ends both, on every desktop that runs its session under the user manager.
+  Enabled for every user. The tray's Quit stays quit until the next login or a `systemctl
+  --user start`; the helper is restarted only if it fails, since being replaced by a newer
+  helper is its one deliberate exit.
 
 ## 2026-09-11 - The tray, drawn by the desktop
 

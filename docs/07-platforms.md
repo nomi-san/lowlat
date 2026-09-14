@@ -567,7 +567,9 @@ different question with a different answer, and the two must not be made to look
 
 **The socket is at a known path**, and the reason is a consequence rather than a preference.
 The session-side programs are started by the session, since nothing below it can start them
-(the table above), so nothing is in a position to hand either a private path; and a tray
+(the table above) -- as user units that are part of the graphical session's target, so a login
+starts them and a logout ends them -- so nothing is in a position to hand either a private
+path; and a tray
 started by hand -- which is how a person gets one back after closing it -- is started by
 nobody at all. A path it cannot find is a tray that cannot connect, and asking the service to
 start another one needs the channel it is missing. So the path is known, a tray started by

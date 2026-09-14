@@ -1646,10 +1646,11 @@ and deciding its shape without one of its two customers in front of it.
   notifier item on the session bus, no toolkit linked, so the reason it was to be a separate
   program is gone and the reason the helper is not one applies. It shows what the host is
   doing, kicks a seated guest, sets the rate ceiling, and quits.
-- [ ] **The session side started with the session.** Nothing starts `lowlatd session` or
-  `lowlatd tray` at login yet; both are started by hand. A user unit or an autostart entry in
-  `packaging/`, which is also where [07 §5.1](07-platforms.md) says the known socket path
-  earns its keep.
+- [x] **The session side started with the session.** Two user units in `packaging/`, part of
+  `graphical-session.target` and wanted by it, enabled for every user the way the distribution
+  enables its own; the helper and the tray start with a login and end with a logout. *Built
+  2026-09-14; started under the user manager against the running service, the helper replacing
+  the one started by hand and the tray registering its item.*
 - [x] **The display's session decides whose layout is in force**, asked of the login manager
   once a second: a helper for that session stands, else its sockets are asked, else the picture
   is the desktop. A user switch keeps the first session alive with its helper connected and its
