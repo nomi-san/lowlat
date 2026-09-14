@@ -545,8 +545,16 @@ fn many_connect_and_teardown_cycles_leak_nothing() {
     assert_eq!(threads_after, threads_before, "a thread leaked per cycle");
     // The lesson behind this gate is a few kilobytes per cycle. A tenth of a
     // kilobyte per cycle is far below that and far above allocator noise.
+    //
+    // **Not under a sanitizer.** Its allocator keeps freed memory in a
+    // quarantine so a use after free can be caught, so the resident set grows
+    // with allocations that were correctly freed: a slope there is the
+    // quarantine filling, measured at 25 kB a cycle with the leak checker
+    // reporting nothing, and leaks under a sanitizer are that checker's to
+    // find. The descriptor and thread counts above mean the same either way.
+    let sanitized = std::env::var("RUSTFLAGS").is_ok_and(|flags| flags.contains("sanitizer="));
     assert!(
-        rss_growth < cycles / 10 + 4096,
+        sanitized || rss_growth < cycles / 10 + 4096,
         "resident memory grew {rss_growth} kB over {cycles} cycles, which is a slope"
     );
 }
