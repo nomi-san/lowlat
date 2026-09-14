@@ -21,14 +21,60 @@ fn root() -> PathBuf {
         .expect("the workspace root is two levels above this crate")
 }
 
-/// The directory cargo put this test's own executable in, which is also where
-/// it put the shared object.
+/// The profile directory this test was built into, which is also where cargo
+/// puts the shared object.
+///
+/// **Found by name, not by depth.** Where a test executable sits under the
+/// profile directory has changed between cargo versions -- `deps/` in one,
+/// `build/<crate>/<hash>/out/` in another -- and the shared object is put in
+/// the profile directory by both.
 fn artifacts() -> PathBuf {
     let exe = std::env::current_exe().expect("a running test has a path");
-    exe.parent()
-        .and_then(Path::parent)
-        .expect("a test executable lives in <profile>/deps")
+    exe.ancestors()
+        .find(|dir| {
+            dir.file_name()
+                .is_some_and(|name| name == "debug" || name == "release")
+        })
+        .expect("a test executable lives under a profile directory")
         .to_path_buf()
+}
+
+/// The target triple this test was built for, when one was named.
+///
+/// A build for a named target lands one directory deeper than the target
+/// directory itself, so the triple is the directory between the two. The
+/// target directory is the workspace's unless the environment moved it.
+fn named_target(profile: &Path) -> Option<String> {
+    let target_dir = std::env::var_os("CARGO_TARGET_DIR")
+        .map_or_else(|| root().join("target"), PathBuf::from)
+        .canonicalize()
+        .ok()?;
+    let parent = profile.parent()?.canonicalize().ok()?;
+    if parent == target_dir {
+        return None;
+    }
+    parent.file_name()?.to_str().map(str::to_owned)
+}
+
+/// The flags with any sanitizer request taken out, in either spelling.
+fn without_sanitizer(flags: &str) -> String {
+    let mut kept = Vec::new();
+    let mut tokens = flags.split_whitespace().peekable();
+    while let Some(token) = tokens.next() {
+        if token.starts_with("-Zsanitizer=") {
+            continue;
+        }
+        if token == "-Z"
+            && tokens
+                .peek()
+                .is_some_and(|next| next.starts_with("sanitizer="))
+        {
+            tokens.next();
+            continue;
+        }
+        kept.push(token);
+    }
+    kept.join(" ")
 }
 
 /// The shared object, which is what every check here is really about.
@@ -48,6 +94,23 @@ fn shared_object() -> PathBuf {
     if profile.file_name().is_some_and(|name| name == "release") {
         build.arg("--release");
     }
+    // **Named again when it was named.** Naming the target is what keeps the
+    // flags the outer build was given -- a sanitizer among them -- off the
+    // proc macros, which cargo compiles for the host only when a target is
+    // named. Without it a sanitized derive cannot be loaded by the compiler
+    // and the build fails on a crate it cannot find.
+    if let Some(triple) = named_target(&profile) {
+        build.args(["--target", &triple]);
+    }
+    // **Unsanitized, whatever this test was.** The object is opened by a C
+    // harness compiled with no sanitizer runtime, and an object built with one
+    // fails to load on that runtime's own symbols. What these tests check of
+    // it -- its exported names, a panic held at the boundary -- is the same
+    // either way; the library's own tests are what a sanitizer sees.
+    build.env(
+        "RUSTFLAGS",
+        without_sanitizer(&std::env::var("RUSTFLAGS").unwrap_or_default()),
+    );
     let built = build.output().expect("cargo builds the shared object");
     assert!(
         built.status.success(),
