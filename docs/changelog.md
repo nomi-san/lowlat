@@ -201,6 +201,16 @@ the same attempt socket, chosen by one field in the offer. The decisions are in
 ## 2026-09-14 - Logging in is a person's job
 
 ### Added
+- **A Debian package**, `cargo deb -p lowlatd`: the service and its unit, the login tool as
+  `lowlat-login`, the two user units enabled for every user the way the distribution enables
+  its own, the environment file as a conffile at 0640 so the session token survives an
+  upgrade, and the login-screen example under the package's documentation. Installed on the
+  development machine over the hand-installed files: the conffile prompt kept the existing
+  environment, the unit in force moved from `/etc` to the package's, and the service restarted
+  onto the packaged binary with the helper and the tray reconnecting.
+- **A host that is installed and not yet logged in exits cleanly**, saying what is missing and
+  where it goes. It used to fail on the missing session, which under `Restart=on-failure` is a
+  restart every two seconds from the first boot until somebody logs in.
 - **`scripts/kessel-login.py`**, standard library only: logs in to the signaling service with
   an email, a password and an optional second factor, says who it logged in as and which peer
   the host will be, and with `--install` writes the session into the unit's environment file

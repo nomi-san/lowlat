@@ -113,6 +113,24 @@ The daemon needs access to `/dev/uinput` for input injection and to the display 
 for capture. Privilege requirements per capture backend, along with the udev rules and the
 systemd unit, are documented in [docs/07-platforms.md](docs/07-platforms.md).
 
+## Installing
+
+On Debian, build the package and install it; `cargo-deb` is the only build-time tool needed.
+
+```sh
+cargo install cargo-deb
+cargo deb -p lowlatd
+sudo dpkg -i target/debian/lowlat_*.deb
+sudo lowlat-login --install
+```
+
+The package carries the service and its unit, a login tool, the two user units that start the
+session helper and the tray with each graphical session, and `/etc/lowlat/lowlatd.env`, where
+the signaling server and the session live; that file is a conffile and survives upgrades. The
+service starts at boot and, until it has been logged in, says so and exits. Where the login
+screen should be reachable too, the example under `/usr/share/doc/lowlat/` moves the greeter
+onto a Wayland compositor.
+
 ## Documentation
 
 | Document | Contents |

@@ -1598,7 +1598,9 @@ and deciding its shape without one of its two customers in front of it.
 
 - [x] **`lowlatd` as a system service, with the unit file and device access rules** (`packaging/`).
   The privilege it needs was measured rather than assumed: `CAP_SYS_ADMIN`, with group membership
-  alone reporting the display as unreachable ([07 §6.1](07-platforms.md)).
+  alone reporting the display as unreachable ([07 §6.1](07-platforms.md)). *Packaged
+  2026-09-14 as a Debian package built by `cargo deb`, with the login tool and the session
+  side's user units; an rpm and a tarball with an install script are to follow.*
 - [x] **The session channel**: length-prefixed frames on a Unix stream socket at a known path,
   JSON bodies, a first frame carrying version, role and capability, peer credentials as the
   identity, and one helper to a session with the newest winning.
