@@ -198,6 +198,41 @@ the same attempt socket, chosen by one field in the offer. The decisions are in
   not the digest the offer named, the attempt ending with the handshake outcome inside a
   tenth of a second.
 
+## 2026-09-14 - Continuous integration is green again
+
+The workflow had failed on every push since 2026-08-16, at the format step, so nothing
+after it had run in a month. Clearing that reached seven more layers, one per push, each
+in a test's harness rather than in the product:
+
+### Fixed
+- **Format**: three files rustfmt had been asking about.
+- **A lint from the newer stable** on a probe example, since the runner tracks stable and
+  the machine here was one release behind.
+- **The conversion tests on a runner**: the sanitizer job never installed the software
+  driver; the GL fallback's tests had no EGL on either job; a device opened for a colour
+  check demanded the four import-only interfaces it never calls, and Ubuntu's software
+  driver lacks one; and the blocking diagnostic shared the loop's hundred-millisecond
+  collect bound, which a software driver compiling its shader on first dispatch exceeds.
+  Each fix is in the test helper or the diagnostic; the product's device requirements and
+  the loop's bound are unchanged.
+- **The sanitizer's own noise named rather than switched off**: the software driver's
+  exit-time allocations and a desktop's implicit layer, in a suppression file, so leak
+  detection stays on for everything the job exists for.
+- **The ABI gate's nested build** finds its profile directory by name (nightly cargo lays
+  the build out differently), names the target it was built for so a sanitizer stays off
+  the proc macros, and builds the object unsanitized, since a C harness with no sanitizer
+  runtime cannot load one.
+- **A refresh-count test that starts a real pipeline** is off by default like its
+  neighbours, with the run instruction.
+- **The net soak** reads the thread count once it has settled and does not read the
+  resident-memory slope under a sanitizer, whose quarantine of freed memory is a slope by
+  design; descriptors and threads still gate in both jobs.
+
+### Changed
+- **The sanitizer job leaves the simulator's rate trajectories to the plain job.** They are
+  pure-Rust simulation of the controller and took forty-nine of the job's fifty-two minutes
+  sanitized; the simulator's other targets, which drive the shell's real paths, stay.
+
 ## 2026-09-14 - Logging in is a person's job
 
 ### Added
