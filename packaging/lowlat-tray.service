@@ -1,0 +1,14 @@
+# A user unit: starts with a graphical session and ends with it.
+[Unit]
+Description=lowlat tray
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/lowlatd tray
+# Quit from the menu is an exit of zero and stays quit; the tray is back at
+# the next login, or by hand: systemctl --user start lowlat-tray.
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target

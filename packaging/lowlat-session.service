@@ -1,0 +1,18 @@
+# A user unit: starts with a graphical session and ends with it.
+[Unit]
+Description=lowlat session helper
+# Everything this speaks for -- the compositor's layout and modes, the screen
+# saver, the clipboard -- exists only inside a graphical session and goes
+# away with it, so this is part of the session rather than started by it.
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/lowlatd session
+# The helper never exits on its own: with no service to reach it waits, and
+# when the service restarts it reconnects. Its one deliberate exit is being
+# replaced by a newer helper for the same session, which is not a failure.
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=graphical-session.target
