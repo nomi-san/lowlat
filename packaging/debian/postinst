@@ -1,0 +1,23 @@
+#!/bin/sh
+# The system unit's enable and start are generated into the marker below.
+# The two user units are enabled for every user the way the distribution's
+# own are, so a login starts the helper and the tray; sessions already open
+# pick them up at their next login.
+set -e
+
+USER_UNITS="lowlat-session.service lowlat-tray.service"
+
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ] || [ "$1" = "abort-deconfigure" ] || [ "$1" = "abort-remove" ]; then
+    deb-systemd-helper --user unmask $USER_UNITS >/dev/null || true
+    if deb-systemd-helper --user --quiet was-enabled $USER_UNITS; then
+        deb-systemd-helper --user enable $USER_UNITS >/dev/null || true
+    else
+        deb-systemd-helper --user update-state $USER_UNITS >/dev/null || true
+    fi
+fi
+
+#DEBHELPER#
+
+if [ "$1" = "configure" ] && [ -z "$2" ]; then
+    echo "lowlat: log the host in with: sudo lowlat-login --install" >&2
+fi

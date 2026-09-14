@@ -1,0 +1,19 @@
+#!/bin/sh
+set -e
+
+USER_UNITS="lowlat-session.service lowlat-tray.service"
+
+if [ "$1" = "remove" ]; then
+    if [ -x /usr/bin/deb-systemd-helper ]; then
+        deb-systemd-helper --user mask $USER_UNITS >/dev/null || true
+    fi
+fi
+
+if [ "$1" = "purge" ]; then
+    if [ -x /usr/bin/deb-systemd-helper ]; then
+        deb-systemd-helper --user purge $USER_UNITS >/dev/null || true
+        deb-systemd-helper --user unmask $USER_UNITS >/dev/null || true
+    fi
+fi
+
+#DEBHELPER#

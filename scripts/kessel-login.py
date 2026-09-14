@@ -8,9 +8,11 @@ person runs, not a step the service takes. The token it obtains stays valid
 for as long as lowlatd keeps its signaling connection, which is what the
 daemon does on its own; a machine that has been off for a week logs in again.
 
-    scripts/kessel-login.py                      # print what to put in lowlatd.env
-    sudo scripts/kessel-login.py --install       # write it there and restart lowlatd
-    sudo scripts/kessel-login.py --logout        # revoke the session lowlatd.env carries
+    lowlat-login                      # print what to put in lowlatd.env
+    sudo lowlat-login --install       # write it there and restart lowlatd
+    sudo lowlat-login --logout        # revoke the session lowlatd.env carries
+
+Installed as lowlat-login; scripts/kessel-login.py in a checkout.
 
 The API host comes from KESSEL_API_SERVER when set. Standard library only.
 """

@@ -911,15 +911,25 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    let configured =
-        std::env::var("KESSEL_WS_SERVER").map_err(|_| "KESSEL_WS_SERVER is not set")?;
+    // **Not configured is not a failure.** A host that has been installed and
+    // not yet logged in is an expected state, and a unit that failed on it
+    // would be restarted into it every few seconds until somebody did; so
+    // this says what is missing and where it goes, and exits cleanly.
+    let configured = std::env::var("KESSEL_WS_SERVER").unwrap_or_default();
+    let session = std::env::var("KESSEL_SESSION").unwrap_or_default();
     let configured = configured.trim();
+    if configured.is_empty() || session.trim().is_empty() {
+        lowlat_common::log_warn!(
+            "lowlatd: not configured, KESSEL_WS_SERVER and KESSEL_SESSION are read from \
+             /etc/lowlat/lowlatd.env and lowlat-login --install obtains the session"
+        );
+        return Ok(());
+    }
     let server = if configured.contains("://") {
         configured.to_string()
     } else {
         format!("wss://{configured}")
     };
-    let session = std::env::var("KESSEL_SESSION").map_err(|_| "KESSEL_SESSION is not set")?;
     let hostname = read("/proc/sys/kernel/hostname");
     let name = flag("--name").unwrap_or(if hostname.is_empty() {
         "lowlat".to_string()

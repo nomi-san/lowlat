@@ -2,6 +2,7 @@
 name = "lowlatd"
 version = "0.0.0"
 publish = false
+description = "Ultra-low-latency remote desktop host that stock clients connect to"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -35,3 +36,36 @@ serde_json.workspace = true
 
 [lints]
 workspace = true
+
+# The Debian package, built with `cargo deb -p lowlatd`. The service, its
+# unit, the two user units for the session side, the login tool, and the
+# environment file the session token lives in, kept across upgrades.
+[package.metadata.deb]
+name = "lowlat"
+maintainer = "Nguyen Duy <wuuyi123@gmail.com>"
+copyright = "2026, Nguyen Duy"
+license-file = ["../../LICENSE", "0"]
+section = "net"
+priority = "optional"
+extended-description = """\
+An ultra-low-latency remote desktop host that stock clients connect to \
+unmodified. Runs as a system service that captures the display, encodes on \
+the GPU and streams it; a helper and a tray start with each graphical session."""
+depends = "$auto, python3, systemd"
+assets = [
+    ["target/release/lowlatd", "usr/bin/", "755"],
+    ["../../scripts/kessel-login.py", "usr/bin/lowlat-login", "755"],
+    ["../../packaging/lowlatd.env", "etc/lowlat/lowlatd.env", "640"],
+    ["../../packaging/lowlat-session.service", "usr/lib/systemd/user/", "644"],
+    ["../../packaging/lowlat-tray.service", "usr/lib/systemd/user/", "644"],
+    ["../../packaging/sddm-10-wayland.conf.example", "usr/share/doc/lowlat/", "644"],
+    ["../../README.md", "usr/share/doc/lowlat/", "644"],
+]
+conf-files = ["/etc/lowlat/lowlatd.env"]
+maintainer-scripts = "../../packaging/debian"
+
+[package.metadata.deb.systemd-units]
+unit-scripts = "../../packaging"
+unit-name = "lowlatd"
+enable = true
+start = true
