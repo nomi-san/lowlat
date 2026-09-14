@@ -46,6 +46,12 @@ A persistent bidirectional connection to the service, authenticated at connect t
 The role determines message direction: a host receives offers and sends answers, a client does
 the reverse.
 
+**The session identifier is obtained by a person, not by the host.** Logging in may need a
+second factor and, from a new address, a confirmation from the account's mail, so it is not
+a step a service can take unattended; `scripts/kessel-login.py` does it and puts the result
+where the service reads it. What the service needs at run time is only the token, and holding
+the connection keeps the token alive, so a host that runs keeps its own session current.
+
 Liveness is the connection itself. The service treats a dropped connection as the host going
 away, which is why §6 forbids a heartbeat *at the message layer*.
 

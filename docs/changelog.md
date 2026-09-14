@@ -198,6 +198,19 @@ the same attempt socket, chosen by one field in the offer. The decisions are in
   not the digest the offer named, the attempt ending with the handshake outcome inside a
   tenth of a second.
 
+## 2026-09-14 - Logging in is a person's job
+
+### Added
+- **`scripts/kessel-login.py`**, standard library only: logs in to the signaling service with
+  an email, a password and an optional second factor, says who it logged in as and which peer
+  the host will be, and with `--install` writes the session into the unit's environment file
+  and restarts the service; `--logout` revokes the session that file carries. **Not in the
+  daemon, deliberately.** Logging in can need a second factor or a confirmation from the
+  account's mail, so it is interactive by nature; and the service keeps a token alive by
+  holding its signaling connection, which the daemon already does, so a token obtained once
+  lasts until the machine has been off for a week. A refusal is reported in the service's own
+  words: a wrong password, an address that has to be confirmed by mail first.
+
 ## 2026-09-11 - The tray, drawn by the desktop
 
 ### Added
