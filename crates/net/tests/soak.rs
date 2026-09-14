@@ -478,6 +478,24 @@ fn many_connect_and_teardown_cycles_leak_nothing() {
             .unwrap_or(0)
     }
 
+    // **Read once it has stopped moving.** A joined thread is gone from the
+    // process before join returns, but the kernel's count of the thread group
+    // drops a moment later, when the task is released; on a small machine
+    // under load the moment is long enough to be read, and a count taken then
+    // is one too high, so a thread that left reads as a thread that leaked.
+    fn threads_settled() -> u64 {
+        let began = std::time::Instant::now();
+        let mut last = field("Threads:");
+        loop {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            let now = field("Threads:");
+            if now == last || began.elapsed() > std::time::Duration::from_secs(1) {
+                return now;
+            }
+            last = now;
+        }
+    }
+
     let one_cycle = || {
         let socket = Socket::open(0).expect("socket");
         let wake = Wake::new().expect("wake");
@@ -502,7 +520,7 @@ fn many_connect_and_teardown_cycles_leak_nothing() {
         one_cycle();
     }
     let fds_before = descriptors();
-    let threads_before = field("Threads:");
+    let threads_before = threads_settled();
     let rss_before = field("VmRSS:");
 
     for _ in 0..cycles {
@@ -510,7 +528,7 @@ fn many_connect_and_teardown_cycles_leak_nothing() {
     }
 
     let fds_after = descriptors();
-    let threads_after = field("Threads:");
+    let threads_after = threads_settled();
     let rss_after = field("VmRSS:");
     let rss_growth = rss_after.saturating_sub(rss_before);
 
