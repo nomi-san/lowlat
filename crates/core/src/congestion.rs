@@ -376,7 +376,11 @@ mod tests {
         for _ in 0..5 {
             controller.tick(window, stale, 0.0);
         }
-        assert_eq!(controller.total_decreases(), 1, "a run cuts once per period");
+        assert_eq!(
+            controller.total_decreases(),
+            1,
+            "a run cuts once per period"
+        );
 
         // A separated episode is not a fresh one: the ticks carry over, so
         // this one is still inside the same period and still does not cut.

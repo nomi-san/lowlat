@@ -206,7 +206,10 @@ mod tests {
         // the buffer stops growing with the rate.
         assert_eq!(super::vbv_bits(30_000_000, 60), super::VBV_MAX_BITS);
         // A zero frame rate divides by one rather than panicking.
-        assert_eq!(super::vbv_bits(1_000_000, 0), super::VBV_MAX_BITS.min(3_100_000));
+        assert_eq!(
+            super::vbv_bits(1_000_000, 0),
+            super::VBV_MAX_BITS.min(3_100_000)
+        );
         // And it is strictly more than the one frame this used to be.
         for (bps, fps) in [(4_900_000u32, 120u32), (10_000_000, 60), (2_000_000, 30)] {
             assert!(
@@ -1080,9 +1083,7 @@ const VBV_MAX_BITS: u32 = 768_000;
 fn vbv_bits(bitrate_bps: u32, fps: u32) -> u32 {
     let per_frame = bitrate_bps / fps.max(1);
     let scaled = u64::from(per_frame) * u64::from(VBV_FRAME_TENTHS) / 10;
-    u32::try_from(scaled)
-        .unwrap_or(u32::MAX)
-        .min(VBV_MAX_BITS)
+    u32::try_from(scaled).unwrap_or(u32::MAX).min(VBV_MAX_BITS)
 }
 
 impl<'a> Session<'a> {

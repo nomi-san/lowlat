@@ -437,8 +437,8 @@ fn run(seed: u64, profile: Profile, duration_ms: f64, mode: Mode) -> Outcome {
         // sender keeps offering and keeps emitting; the datagrams are simply
         // never handed to the link, which is what an outage looks like from
         // both ends.
-        let out = profile.outage_every_ms > 0.0
-            && (now % profile.outage_every_ms) < profile.outage_ms;
+        let out =
+            profile.outage_every_ms > 0.0 && (now % profile.outage_every_ms) < profile.outage_ms;
         while let Some(result) = tx.get_output(now, &mut wire) {
             let len = result.expect("sender emitted a malformed datagram");
             if !out {
@@ -853,12 +853,7 @@ fn trajectories_at_each_congestion_level() {
     ];
     for (name, base) in profiles {
         for level in 0..congestion::LEVELS.len() {
-            let outcome = run(
-                0x1EA1,
-                Profile { level, ..base },
-                30_000.0,
-                Mode::Incumbent,
-            );
+            let outcome = run(0x1EA1, Profile { level, ..base }, 30_000.0, Mode::Incumbent);
             println!(
                 "{name} level={level}: final={:.2} Mibit/s offered={:.2} delivered={:.2} \
                  decreases={}",
@@ -884,9 +879,24 @@ fn trajectories_at_each_congestion_level() {
 #[test]
 fn level_zero_cuts_a_clean_path_that_the_other_levels_hold() {
     let base = Profile::default();
-    let zero = run(0x1EA1, Profile { level: 0, ..base }, 30_000.0, Mode::Incumbent);
-    let one = run(0x1EA1, Profile { level: 1, ..base }, 30_000.0, Mode::Incumbent);
-    let two = run(0x1EA1, Profile { level: 2, ..base }, 30_000.0, Mode::Incumbent);
+    let zero = run(
+        0x1EA1,
+        Profile { level: 0, ..base },
+        30_000.0,
+        Mode::Incumbent,
+    );
+    let one = run(
+        0x1EA1,
+        Profile { level: 1, ..base },
+        30_000.0,
+        Mode::Incumbent,
+    );
+    let two = run(
+        0x1EA1,
+        Profile { level: 2, ..base },
+        30_000.0,
+        Mode::Incumbent,
+    );
 
     assert_eq!(
         one.decreases, 0,
@@ -1156,8 +1166,7 @@ fn ack_silence_answers_an_outage_sooner_and_the_outcome_is_the_same() {
     // the profile can register one at all.
     let sensitive = run(0x0FF0, profile, 30_000.0, Mode::Gradient);
     assert!(
-        (sensitive.delivered_mbps - incumbent.delivered_mbps).abs()
-            / incumbent.delivered_mbps
+        (sensitive.delivered_mbps - incumbent.delivered_mbps).abs() / incumbent.delivered_mbps
             > 0.05,
         "no predicate moves this profile, so it cannot show that one does not"
     );
@@ -1169,8 +1178,8 @@ fn ack_silence_answers_an_outage_sooner_and_the_outcome_is_the_same() {
     // recovery's phase, so the two runs are not bit-identical; what the
     // finding says is that the shift is not worth having, and a candidate
     // that earned adoption would move this by far more than the margin.
-    let moved = (candidate.delivered_mbps - incumbent.delivered_mbps).abs()
-        / incumbent.delivered_mbps;
+    let moved =
+        (candidate.delivered_mbps - incumbent.delivered_mbps).abs() / incumbent.delivered_mbps;
     assert!(
         moved < 0.005,
         "the silence moved delivered throughput by {:.2}%: incumbent={:.4} candidate={:.4}",
