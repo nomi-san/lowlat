@@ -111,6 +111,16 @@ pub fn poke_groups(width: u32, height: u32) -> (u32, u32) {
 /// bounded.
 const COLLECT_BUDGET_NS: u64 = 100_000_000;
 
+/// How long the blocking diagnostic waits, in nanoseconds.
+///
+/// **A diagnostic has nothing to fall behind.** The loop's budget above is
+/// what keeps a stuck display from wedging a caller; a diagnostic runs one
+/// conversion and reads it back, and on a software driver the first dispatch
+/// of a fresh pipeline compiles the shader, which on a small machine is far
+/// past a hundred milliseconds and nothing wrong. Ten seconds is past any
+/// compile and still a bound.
+const RUN_BUDGET_NS: u64 = 10_000_000_000;
+
 /// What the shader is told, per dispatch.
 ///
 /// Laid out to match the shader's own block exactly. Two signed extents then
@@ -1756,6 +1766,18 @@ impl Converter {
         dither: bool,
     ) -> Result<Digest, Error> {
         self.submit(device, source, target, dither)?;
+        // SAFETY: the fence is this device's and was submitted just above.
+        match unsafe {
+            device
+                .device
+                .wait_for_fences(&[self.fence], true, RUN_BUDGET_NS)
+        } {
+            // Either way the collect below reads the answer: a fired fence is
+            // read at once, and a timeout falls through to the loop's own
+            // bound and its refusal.
+            Ok(()) | Err(vk::Result::TIMEOUT) => {}
+            Err(error) => return Err(driver(error)),
+        }
         self.collect(device)?.ok_or(Error::Busy)
     }
 
