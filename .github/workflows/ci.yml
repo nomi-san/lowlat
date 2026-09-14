@@ -90,6 +90,12 @@ jobs:
       - name: Install nightly
         run: rustup toolchain install nightly --component rust-src
 
+      # The conversion tests run on the software driver here as they do in the
+      # check job; without it every one of them fails on an incompatible
+      # driver before the sanitizer has anything to look at.
+      - name: Install a graphics driver for the conversion test
+        run: sudo apt-get update && sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+
       - name: Address sanitizer
         run: |
           cargo +nightly test --workspace --all-features \
