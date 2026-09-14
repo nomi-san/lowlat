@@ -7171,7 +7171,11 @@ mod tests {
     /// publish ring, the ring refuses, every guest behind it latches, and the
     /// gate grants a refresh: that path must land on `no_room` or `no_slot`.
     /// A seat drained promptly must not.
+    ///
+    /// A real pipeline, so it needs a render node and is off by default. Run
+    /// with `cargo test -p lowlat-host -- --ignored a_refresh_is_counted`.
     #[test]
+    #[ignore = "requires a render node"]
     fn a_refresh_is_counted_where_it_was_asked_for() {
         // The control first. Frames are taken as fast as they are made, so
         // nothing is ever behind and nothing asks for a recovery.
