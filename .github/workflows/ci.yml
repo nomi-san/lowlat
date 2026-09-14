@@ -26,7 +26,18 @@ jobs:
       # nearly blind to one, because a desktop is mostly grey and a grey pixel
       # carries no colour for a matrix to act on.
       - name: Install a graphics driver for the conversion test
-        run: sudo apt-get update && sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers libegl1 libgl1-mesa-dri libgbm1 vulkan-tools
+
+      # What the software driver on this runner offers, in the log, so a test
+      # refused an interface can be read against the driver rather than
+      # guessed at.
+      - name: Describe the software driver
+        run: |
+          vulkaninfo --summary 2>/dev/null | grep -E 'deviceName|driverInfo|apiVersion' || true
+          vulkaninfo 2>/dev/null | grep -E 'VK_EXT_image_drm_format_modifier|VK_EXT_external_memory_dma_buf|VK_KHR_external_memory_fd|VK_EXT_queue_family_foreign' | sort -u || true
+          ls -la /dev/udmabuf /dev/dri 2>&1 || true
 
       - name: Cache
         uses: actions/cache@v6
@@ -94,7 +105,9 @@ jobs:
       # check job; without it every one of them fails on an incompatible
       # driver before the sanitizer has anything to look at.
       - name: Install a graphics driver for the conversion test
-        run: sudo apt-get update && sudo apt-get install -y libvulkan1 mesa-vulkan-drivers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers libegl1 libgl1-mesa-dri libgbm1
 
       - name: Address sanitizer
         run: |
