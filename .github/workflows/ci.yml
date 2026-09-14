@@ -103,3 +103,6 @@ jobs:
         env:
           RUSTFLAGS: -Z sanitizer=address
           RUSTDOCFLAGS: -Z sanitizer=address
+          # The software driver's own allocations, which it never frees; see
+          # the file. Leak detection stays on for everything else.
+          LSAN_OPTIONS: suppressions=${{ github.workspace }}/.github/lsan-suppressions.txt

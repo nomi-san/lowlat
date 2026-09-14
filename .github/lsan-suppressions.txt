@@ -1,0 +1,12 @@
+# What LeakSanitizer is told to pass over in the sanitizer job.
+#
+# The colour conversion tests run on the software Vulkan driver, which keeps
+# allocations of its own until the process ends and never frees them; every
+# one of them is allocated from inside the driver's library. They are the
+# driver's to leak and nothing this workspace can free, so they are named
+# here by library rather than by switching leak detection off for the code
+# the job exists to check.
+leak:libvulkan_lvp.so
+# Pulled in by an implicit Vulkan layer on a desktop machine, so the job can
+# be run there too; nothing in this workspace links it.
+leak:libdbus-1.so
