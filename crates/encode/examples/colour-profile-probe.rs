@@ -246,7 +246,7 @@ fn report(
                 println!(
                     "  {}  YES     picture {:?}  shader-writable {}  granularity {}x{}",
                     spec.label,
-                    picture.map_or(vk::Format::UNDEFINED, |format| format),
+                    picture.unwrap_or(vk::Format::UNDEFINED),
                     shared,
                     granularity.width,
                     granularity.height,

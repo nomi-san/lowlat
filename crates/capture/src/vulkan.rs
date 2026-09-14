@@ -327,17 +327,21 @@ impl Device {
         let instance = unsafe { entry.create_instance(&create, None) }.map_err(driver)?;
 
         // SAFETY: enumerating from a live instance.
-        let candidates = unsafe { instance.enumerate_physical_devices() }
-            .map_err(driver)
-            .unwrap_or_default();
+        let candidates = unsafe { instance.enumerate_physical_devices() }.map_err(driver)?;
+        // **The last refusal is the answer when nothing opens**, so a machine
+        // whose only device lacks one interface says which, rather than that
+        // it has no device at all.
+        let mut refused = Error::NoDeviceForNode;
         let opened = candidates
             .into_iter()
-            .find_map(|physical| {
-                Self::open(&instance, physical, false)
-                    .ok()
-                    .map(|(device, queue, family, _)| (physical, device, queue, family))
+            .find_map(|physical| match Self::open(&instance, physical, false) {
+                Ok((device, queue, family, _)) => Some((physical, device, queue, family)),
+                Err(error) => {
+                    refused = error;
+                    None
+                }
             })
-            .ok_or(Error::NoDeviceForNode);
+            .ok_or(refused);
 
         match opened {
             Ok((physical, device, queue, queue_family)) => {
