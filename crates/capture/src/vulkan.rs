@@ -117,6 +117,16 @@ const REQUIRED: [&CStr; 5] = [
     ash::khr::image_format_list::NAME,
 ];
 
+/// What the conversion itself needs, which is what a test with no display
+/// asks for.
+///
+/// **The import-only interfaces are not among them.** A test uploads its
+/// pattern and allocates its target, so the buffer-sharing and tiling
+/// interfaces above would be demanded and never called; a software driver
+/// that lacks one of them can still check the colour transform, which is the
+/// only reason such a device is ever opened.
+const CONVERSION: [&CStr; 1] = [ash::khr::image_format_list::NAME];
+
 /// What an encoder on this same device needs, on top of [`REQUIRED`].
 ///
 /// **Asked for only when a caller says it wants one.** Every one of these is
@@ -286,7 +296,7 @@ impl Device {
         // to be released exactly once on that path. Resolving it all into one
         // result keeps that to a single place.
         let opened = Self::find(&instance, major, minor).and_then(|physical| {
-            Self::open(&instance, physical, encode)
+            Self::open(&instance, physical, encode, &REQUIRED)
                 .map(|(device, queue, family, encode)| (physical, device, queue, family, encode))
         });
 
@@ -334,13 +344,15 @@ impl Device {
         let mut refused = Error::NoDeviceForNode;
         let opened = candidates
             .into_iter()
-            .find_map(|physical| match Self::open(&instance, physical, false) {
-                Ok((device, queue, family, _)) => Some((physical, device, queue, family)),
-                Err(error) => {
-                    refused = error;
-                    None
-                }
-            })
+            .find_map(
+                |physical| match Self::open(&instance, physical, false, &CONVERSION) {
+                    Ok((device, queue, family, _)) => Some((physical, device, queue, family)),
+                    Err(error) => {
+                        refused = error;
+                        None
+                    }
+                },
+            )
             .ok_or(refused);
 
         match opened {
@@ -416,11 +428,12 @@ impl Device {
         instance: &ash::Instance,
         physical: vk::PhysicalDevice,
         encode: bool,
+        required: &[&'static CStr],
     ) -> Result<(ash::Device, vk::Queue, u32, Option<(vk::Queue, u32)>), Error> {
         // SAFETY: the device came from this instance.
         let available =
             unsafe { instance.enumerate_device_extension_properties(physical) }.map_err(driver)?;
-        for wanted in REQUIRED {
+        for wanted in required {
             if !advertises(&available, wanted) {
                 return Err(Error::Unsupported(
                     wanted.to_str().unwrap_or("a required interface"),
@@ -499,7 +512,7 @@ impl Device {
             );
         }
         let mut names: Vec<*const core::ffi::c_char> =
-            REQUIRED.iter().map(|name| name.as_ptr()).collect();
+            required.iter().map(|name| name.as_ptr()).collect();
         if encode {
             names.extend(REQUIRED_ENCODE.iter().map(|name| name.as_ptr()));
             for wanted in OPTIONAL_ENCODE {
