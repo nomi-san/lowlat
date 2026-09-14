@@ -11,12 +11,41 @@ service are design inputs rather than afterthoughts.
 
 ## Status
 
-**Design complete, implementation starting.** The protocol, IO shell, and host pipeline are
-specified in [docs/](docs/); no code has landed yet. The phase plan and its verification gates
-are in [docs/impl-plan.md](docs/impl-plan.md).
+**Pre-release. A Linux machine hosts, and stock clients stream from it.** Everything below has
+been run against unmodified clients rather than argued for; the phase plan with each gate's
+result is [docs/impl-plan.md](docs/impl-plan.md), and the working log is
+[docs/changelog.md](docs/changelog.md).
 
-This README describes what lowlat is being built to do. Nothing here is a claim that it
-currently does it.
+What works today, measured on one desktop (KDE Plasma on Wayland, Debian 13):
+
+- **Streaming** H.264 and HEVC, eight-bit and ten-bit, 4:2:0 and (where every encoder on the
+  machine can) 4:4:4, from the display device below the compositor -- so the login screen and
+  an unattended machine stream too. Encoders: NVENC, VA-API on AMD and Intel, and Vulkan Video;
+  which hardware hosts, and what sets each floor, is [docs/09-compatibility.md](docs/09-compatibility.md).
+- **Sound**: the desktop's output to the guests, and a guest's microphone taken by the host.
+- **Input** through the kernel: keyboard, pointer, and an emulated controller.
+- **The session side**: the desktop's layout and orientation followed live, a guest's request
+  for a display size or a turn, the screen kept awake while somebody is watching, the
+  clipboard in either direction behind a setting, a tray with a kick per guest and the rate,
+  and a desktop notification when a guest arrives or leaves.
+- **Browsers** as guests over a second pipe on the same signaling, including a page of our own
+  ([examples/web-client](examples/web-client)).
+- **Packaged**: a system service that starts at boot, a helper and a tray that start with each
+  login, a login tool, and a Debian package.
+
+What does not, yet:
+
+- A Windows host.
+- A guest's microphone as a device other applications on the host can open: the route is
+  measured and not built.
+- Relative pointer mode: an application that takes the pointer (mouselook) is not yet put into
+  it, because the session-side signal for it is deferred.
+- Per-guest pressure handling with more than one guest seated: guests are admitted up to a
+  capacity of four, and the cascade that protects the others from a starved one is open work.
+- Any local user may act on the host through the tray; authorising on the connection's
+  credentials is deferred, with its cost written down.
+- Every desktop but one: what GNOME and X11 sessions would need is in
+  [docs/09-compatibility.md](docs/09-compatibility.md), unmeasured.
 
 ## Why
 
@@ -50,10 +79,11 @@ tray, log out, and the stream keeps running.
 ```
 lowlat-common    clock, futex wait, SPSC rings, byteorder, sequence arithmetic, log
 lowlat-core      no_std sans-IO: wire, channels, rings, crypto, recovery, NAT, ICE, STUN, TURN
+lowlat-crypto    credentials, key material, and the only source of randomness
 lowlat-net       IO shell: sockets, threads, timers, wakeups; the browser transport
 lowlat-sim       deterministic simulator and network namespace fixtures
-lowlat-capture   frame source trait and backends
-lowlat-encode    NVENC, FFmpeg software, VAAPI
+lowlat-capture   scanout capture, the desktop's layout, and the display's own modes
+lowlat-encode    NVENC, VA-API, Vulkan Video
 lowlat-audio     sound capture, encode, and decode
 lowlat-inject    uinput
 lowlat-host      orchestration and the C ABI shared library
@@ -82,7 +112,8 @@ same signaling over a second pipe, a data channel on the attempt socket, and
 | Clients | any platform with a stock Parsec client, or a browser; nothing to install |
 
 Capture backends and their privilege requirements are covered in
-[docs/07-platforms.md](docs/07-platforms.md).
+[docs/07-platforms.md](docs/07-platforms.md); which hardware can host, and which desktops have
+been measured, in [docs/09-compatibility.md](docs/09-compatibility.md).
 
 ## Integration
 
@@ -105,13 +136,16 @@ cargo test
 cargo clippy --all-targets -- -D warnings
 ```
 
-Hardware encoding requires an NVIDIA GPU with NVENC and a current driver. Software encoding
-loads FFmpeg at runtime and is used where hardware encoding is unavailable, and in continuous
-integration where no GPU is present.
+Hosting needs a GPU with a hardware encoder reached through NVENC, VA-API or Vulkan Video,
+and a display device the process may read; there is no software encoder, and a machine without
+a hardware path is refused with the stage that failed named. The matrix of what hosts is
+[docs/09-compatibility.md](docs/09-compatibility.md). Every encoder and graphics interface is
+loaded at runtime, so the build has no such requirement and the tests run without a GPU
+against a synthetic source.
 
-The daemon needs access to `/dev/uinput` for input injection and to the display or GPU devices
-for capture. Privilege requirements per capture backend, along with the udev rules and the
-systemd unit, are documented in [docs/07-platforms.md](docs/07-platforms.md).
+The daemon needs access to `/dev/uinput` for input injection and to the display device for
+capture, which is a capability rather than a group. The privilege requirements, the device
+rules and the service unit are documented in [docs/07-platforms.md](docs/07-platforms.md).
 
 ## Installing
 
@@ -144,14 +178,17 @@ onto a Wayland compositor.
 | [06-api.md](docs/06-api.md) | the C ABI |
 | [07-platforms.md](docs/07-platforms.md) | display stacks, privileges, service topology |
 | [08-testing.md](docs/08-testing.md) | test tiers, simulation, fuzzing, benchmarks |
+| [09-compatibility.md](docs/09-compatibility.md) | which hardware and desktops host, and how each answer was established |
 | [impl-plan.md](docs/impl-plan.md) | phases and verification gates |
+| [changelog.md](docs/changelog.md) | working log, newest first |
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
 
-Third-party components retain their own licenses. FFmpeg is loaded dynamically at runtime and
-is never linked, so GPL-licensed codec libraries stay out of lowlat's link graph.
+Third-party components retain their own licenses. No copyleft library is linked or loaded:
+the encoders are reached through the drivers' own interfaces, and the check is made against
+the running process rather than the link graph.
 
 ## Disclaimer
 
