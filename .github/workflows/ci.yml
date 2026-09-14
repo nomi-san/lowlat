@@ -109,9 +109,19 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libvulkan1 mesa-vulkan-drivers libegl1 libgl1-mesa-dri libgbm1
 
+      # **Not the rate trajectories.** They are pure-Rust simulation of the
+      # congestion controller and took forty-nine of this job's fifty-two
+      # minutes sanitized, for code a memory sanitizer has nothing to say
+      # about; the plain job runs them. The simulator's other targets are
+      # cheap and drive the shell's real paths -- the browser pipe's record
+      # layer, recovery -- so they stay, named because cargo cannot leave one
+      # target of a crate out. A new target in that crate is added here.
       - name: Address sanitizer
         run: |
-          cargo +nightly test --workspace --all-features \
+          cargo +nightly test --workspace --exclude lowlat-sim --all-features \
+            -Z build-std --target x86_64-unknown-linux-gnu
+          cargo +nightly test -p lowlat-sim --all-features \
+            --lib --test netns --test recovery --test topology --test web_pair \
             -Z build-std --target x86_64-unknown-linux-gnu
         env:
           RUSTFLAGS: -Z sanitizer=address
