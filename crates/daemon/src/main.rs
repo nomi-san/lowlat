@@ -1562,11 +1562,16 @@ async fn session_loop(
                     chosen.as_ref().map_or(0, Vec::len)
                 );
                 placed = adopt_layout(seam, &mut layout, chosen);
-            } else if placed.is_none() && layout.is_some() {
+            } else if placed.is_none() && layout.is_some() && seam.captured() != 0 {
                 // **A layout adopted while the display was dark placed
                 // nothing**, because nothing was lit to place; the display
                 // coming back changes no name the pass below can see, so
-                // this asks again until it is placed.
+                // this asks again until it is placed. **Only while something
+                // is being captured**: with no guest seated nothing is, and
+                // there is nothing to place -- the pass below places it when
+                // a stream starts. Without this an idle host enumerated its
+                // display devices and asked the session's sockets once a
+                // second, forever, and said so each time.
                 placed = situate(seam, layout.as_deref());
             }
         }
