@@ -1,0 +1,71 @@
+name: build
+
+# Started by hand: a release build of the daemon and the Debian package, kept
+# as artifacts. Nothing here runs on a push; ci.yml is what every push gets.
+on:
+  workflow_dispatch:
+    inputs:
+      deb_version:
+        description: "Package version (e.g. 0.1.0~pre1-1); the crate's when empty"
+        required: false
+        default: ""
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    name: release binary and package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # The artifacts are named by the short commit; there is no expression
+      # for a prefix of the full one.
+      - name: Short commit
+        id: sha
+        run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      # The build itself needs nothing graphical: every encoder and graphics
+      # interface is loaded at runtime. cargo-deb is the one tool on top.
+      - uses: taiki-e/install-action@cargo-deb
+
+      - name: Cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Build
+        run: cargo build --release -p lowlatd
+
+      - name: Package
+        run: |
+          if [ -n "${{ inputs.deb_version }}" ]; then
+            cargo deb -p lowlatd --no-build --deb-version "${{ inputs.deb_version }}"
+          else
+            cargo deb -p lowlatd --no-build
+          fi
+          ls -la target/debian/
+
+      - name: Describe
+        run: |
+          target/release/lowlatd --outputs || true
+          dpkg-deb -I target/debian/lowlat_*.deb
+
+      - name: Upload the binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowlatd-linux-x86_64-${{ steps.sha.outputs.short }}
+          path: target/release/lowlatd
+          if-no-files-found: error
+
+      - name: Upload the package
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowlat-deb-${{ steps.sha.outputs.short }}
+          path: target/debian/lowlat_*.deb
+          if-no-files-found: error
