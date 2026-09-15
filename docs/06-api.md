@@ -316,6 +316,78 @@ second configuration that looks accepted and is not is a host running settings n
 reports the output the loop is actually on, which a guest may have switched and a display may
 have moved by itself; an application that kept its own copy would mark the wrong screen.
 
+## §3b Client
+
+**Planned, 2026-09-15; built by [impl-plan-client.md](impl-plan-client.md).** The shape is
+fixed here so the header and the mirror can grow into it; a signature below that has not
+landed is not in the header yet, and the header is the truth.
+
+```c
+lowlat_status lowlat_client_create(const lowlat_client_create_info *info, lowlat_client **out);
+void          lowlat_client_destroy(lowlat_client *cl);
+
+lowlat_status lowlat_client_new_attempt(lowlat_client *cl, const lowlat_client_config *cfg,
+                                        const char *attempt_id, uint32_t transport,
+                                        lowlat_credentials *ours);
+void          lowlat_client_add_candidate(lowlat_client *cl, const char *attempt_id,
+                                          const lowlat_candidate *cand);
+lowlat_status lowlat_client_begin_p2p(lowlat_client *cl, const char *attempt_id,
+                                      const lowlat_credentials *theirs);
+void          lowlat_client_end_connection(lowlat_client *cl);
+
+lowlat_status lowlat_client_acquire_frame(lowlat_client *cl, uint8_t stream, uint32_t timeout_ms,
+                                          lowlat_frame *out);
+lowlat_status lowlat_client_release_frame(lowlat_client *cl, const lowlat_frame *frame,
+                                          const lowlat_fence *done);
+lowlat_status lowlat_client_acquire_audio(lowlat_client *cl, uint32_t timeout_ms,
+                                          int16_t *samples, uint32_t *count);
+lowlat_status lowlat_client_send_input(lowlat_client *cl, const lowlat_input *msg);
+lowlat_status lowlat_client_send_user_data(lowlat_client *cl, uint32_t id,
+                                           const void *data, uint32_t len);
+
+lowlat_status lowlat_client_set_video_config(lowlat_client *cl, const lowlat_client_video_config *cfg);
+lowlat_status lowlat_client_get_status(lowlat_client *cl, lowlat_client_status *out);
+lowlat_status lowlat_client_get_metrics(lowlat_client *cl, lowlat_metrics *out);
+lowlat_status lowlat_client_poll_events(lowlat_client *cl, uint32_t timeout_ms,
+                                        lowlat_event *out, void *body, uint32_t *body_len);
+```
+
+**The seam is the host's, mirrored.** A client makes the offer: `new_attempt` produces the
+credentials and certificate digest the application puts in it, candidates come out as events
+for the application to relay, and `begin_p2p` takes what the answer carried. Nothing in the
+library speaks to a signaling service (D3); the example client does, itself.
+
+**Pictures are acquired and released, never called back with.** `acquire_frame` is the poll:
+it waits up to its timeout for a picture newer than the last one lent, discards older ready
+ones, and lends the newest. At most two are held per stream -- the one being presented and
+the one just acquired, so a swap has no gap -- and a third acquire is refused with
+`LOWLAT_ERR_INVALID_ARGUMENT` rather than silently dropping one. `release_frame` may carry a
+fence the application's device signals when it has finished reading, which is what lets a
+decoder write into shared memory without waiting on the application's CPU; a null fence
+means reusable now. The rule 5 of §1 holds: no callback fires from inside the library.
+
+**`lowlat_frame` carries either planes or a handle**, and says which. Planes are pointers,
+pitches and a format into memory valid for the lease; a handle is a device-level reference --
+a buffer descriptor and layout modifier, or a shared texture and fence -- the application
+imports into its own device. The application names the kind it wants in
+`lowlat_client_create_info` and is told the kind it got; a decoder that cannot export lends
+planes. Every picture also carries size, rotation, depth, chroma and generation, so a renderer
+needs nothing from the stream itself.
+
+**Sound is decoded, not played.** `acquire_audio` hands out signed sixteen-bit stereo at
+48 kHz, up to 960 frames a call, in order and already paced by the playback window
+([10 §6](10-client.md)); the device is the application's.
+
+**Input is one tagged structure**, `lowlat_input`, for keyboard, mouse button, wheel, motion,
+pad button, pad axis, pad state and release-all, in window coordinates; the library transforms,
+guards and encodes ([10 §8](10-client.md)).
+
+**Status and metrics mirror the host's** (§3): the same named channels, seen from the
+receiving side, plus the decoder in use and the queue depth, so one panel serves both ends.
+
+**Events** add to §5's set: cursor (image in the body, hotspot, suppressed), relative mode,
+blocked and unblocked, rumble, stream ended with a reason, host mode.
+
 ## §4 Signaling seam
 
 The four calls from [04 §9](04-signaling.md). This is the entire contact surface between any

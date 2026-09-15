@@ -33,6 +33,9 @@ What works today, measured on one desktop (KDE Plasma on Wayland, Debian 13):
 - **Packaged**: a system service that starts at boot, a helper and a tray that start with each
   login, a login tool, and a Debian package.
 
+In progress: **a client**, the other half of the same library and header, planned in
+[docs/impl-plan-client.md](docs/impl-plan-client.md).
+
 What does not, yet:
 
 - A Windows host.
@@ -180,7 +183,9 @@ onto a Wayland compositor.
 | [07-platforms.md](docs/07-platforms.md) | display stacks, privileges, service topology |
 | [08-testing.md](docs/08-testing.md) | test tiers, simulation, fuzzing, benchmarks |
 | [09-compatibility.md](docs/09-compatibility.md) | which hardware and desktops host, and how each answer was established |
+| [10-client.md](docs/10-client.md) | the client: receive path, frame queue, keyframe policy, decode, sound, input |
 | [impl-plan.md](docs/impl-plan.md) | phases and verification gates |
+| [impl-plan-client.md](docs/impl-plan-client.md) | the client's phases and gate |
 | [changelog.md](docs/changelog.md) | working log, newest first |
 
 ## License

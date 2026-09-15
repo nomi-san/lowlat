@@ -1,6 +1,6 @@
 # Implementation plan
 
-**Status:** locked 2026-08-15. Phases 0 to 13 with verification gates.
+**Status:** locked 2026-08-15. Phases 0 to 13 with verification gates; the client is [impl-plan-client.md](impl-plan-client.md).
 
 Conventions, per [AGENTS.md](../AGENTS.md) §2:
 

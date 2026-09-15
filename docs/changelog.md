@@ -3,6 +3,26 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-15 - The client, designed
+
+The client half is planned: [10-client.md](10-client.md) is the design,
+[impl-plan-client.md](impl-plan-client.md) the phases C0 to C6, [06 §3b](06-api.md) the
+surface, [00 D14](00-overview.md) the decision. Decided at the interview: acquire and release
+for pictures with a fence, at most two held; VA-API then NVDEC, no Vulkan Video decode,
+software decode deferred with its licence question; the library decodes sound and encodes
+input, the application owns the device and the window; signaling in the example, not the
+library; one stream over the native transport on Linux. The gate is an established host,
+passed again at every phase so that what ships is always a client that connects.
+
+### Corrected
+- [01 §11.3](01-protocol.md): video header bits 5 and 6 -- parameter sets that need no
+  decoder rebuild, and the keyframe-metadata message a lagging client looks ahead for and
+  skips to. Neither is emitted by this host yet; the first is the cheapest improvement it owes
+  a newer client, since it and the established host both repeat parameter sets on every
+  keyframe and every such keyframe is a decoder rebuild without it.
+- [01 §11.5](01-protocol.md): the fourteen-key initialization the current client generation
+  sends, in order, with what each key means; a client of ours sends it.
+
 ## 2026-09-15 - The C ABI in its own crate, in two halves
 
 The first step of the client SDK, taken before the first pre-release so that the header it

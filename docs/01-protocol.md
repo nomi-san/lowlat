@@ -758,6 +758,30 @@ every stream until a guest asks otherwise.
 Bit 4, called full screen above, has never been observed set either, and now carries the same
 doubt. Nothing turns on it while we leave it clear.
 
+**Amended 2026-09-15: bits 5 and 6 exist, and a newer client generation reads them.** Neither
+is set by any host generation this host has been compared against, and this host does not set
+them yet; a client that understands them treats their absence as the older behaviour.
+
+- **Bit 5 (`0x20`): the parameter sets in this access unit need no decoder rebuild.** The rule
+  a client has always applied is that an access unit led by a sequence or video parameter set
+  tears its decoder down and builds it again -- that is how a codec or size change has always
+  been carried. Since parameter sets are repeated on every keyframe (this host does so, and so
+  does the established one), every keyframe is a decoder rebuild for every client that does not
+  see this bit. A host that sets it on a keyframe whose parameter sets are unchanged spares a
+  newer client the rebuild; an older client ignores it.
+- **Bit 6 (`0x40`): this message is keyframe metadata, not a picture.** After the ten-byte
+  header, a four-byte word at offset 14 carries bit 0 = reinitialised and bit 1 = keyframe; the
+  picture follows as the next message on the channel. A client that has fallen behind on the
+  channel looks ahead through the messages it holds for one of these whose picture has already
+  arrived and **skips forward to it** -- a catch-up over data that has all arrived, aligned to a
+  keyframe, which is what makes a lagging reader recover in one step instead of decoding its
+  way through the backlog. Nothing is skipped over a gap: the channel is reliable and a missing
+  fragment is retransmitted, never abandoned ([§9](#9-acknowledgement-retransmission-and-recovery)).
+
+Whether a host emits them is negotiated by the `_VideoProtocolVersion` key of the
+initialization ([§11.5](#115-session-initialization)); what its values mean is not yet read
+and is an open item.
+
 **The frame identifier is not a frame counter.** It is an encoder generation counter and stays
 constant across a whole session's frames, incrementing only when the encoder is reconfigured.
 It went from 1 to 2 across the same 112 second recording. Anything using it to order or
@@ -899,12 +923,29 @@ that state neither maximum, and a host that reads the absence as a ceiling has a
 nothing.
 
 **Eight keys is the smallest object seen, not the only one.** One peer sends exactly those
-eight in about 124 bytes; another sends around 306. A host reads the keys it knows and ignores
-the rest, which is what the "do not add keys" rule above constrains a *client* to, not a host.
+eight in about 124 bytes; the current client generation sends fourteen in about 306. A host
+reads the keys it knows and ignores the rest.
 
-**Do not add keys.** Peers exist that behave differently when the object carries more than these
-eight, taking different encoder-warmup or session-setup paths, so a host must not require extras
-and a client must not send them.
+**The fourteen-key body (amended 2026-09-15)**, in order, as the current client generation
+sends it:
+
+```
+_version 1   _max_w   _max_h   _flags   resolutionX   resolutionY   mediaContainer
+refreshRate 60   channels 2   channelMask 3   rawAudio   _cache_cursor true
+_VideoProtocolVersion   resolutions [ {width, height} x 3 ]
+```
+
+`channels` and `channelMask` describe the sound the client wants (two channels, front left and
+right); `rawAudio` asks for uncompressed sound; `_cache_cursor` says the client keeps cursor
+shapes by identifier; `resolutions` lists what the client can display, one entry per stream,
+which is what the host's display-size request is answered against; `_VideoProtocolVersion`
+selects the video framing extensions of [§11.3](#113-video-framing), and its values are not yet
+read. **A client of ours sends the fourteen**, because the host generation that reads them
+behaves differently when they are absent; a host of ours accepts either shape.
+
+**Do not add keys beyond those.** Peers exist that behave differently when the object carries
+keys they do not know, taking different encoder-warmup or session-setup paths, so a host must
+not require extras and a client must not invent them.
 
 Codec selection is carried in two places. The capability bit in the init flags declares
 support, and opcode 13 argument 1 carries the same video flags again. Opcode 13's other
