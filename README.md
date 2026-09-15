@@ -86,7 +86,8 @@ lowlat-capture   scanout capture, the desktop's layout, and the display's own mo
 lowlat-encode    NVENC, VA-API, Vulkan Video
 lowlat-audio     sound capture, encode, and decode
 lowlat-inject    uinput
-lowlat-host      orchestration and the C ABI shared library
+lowlat-host      host orchestration
+lowlat-sdk       the C ABI shared library, host and client halves as features
 lowlat-kessel    signaling client
 lowlatd          system service; also the session helper and the tray, as its
                  second and third roles

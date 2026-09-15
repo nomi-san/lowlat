@@ -3,6 +3,32 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-15 - The C ABI in its own crate, in two halves
+
+The first step of the client SDK, taken before the first pre-release so that the header it
+ships is the one that lasts ([06 §2](06-api.md), [§11](06-api.md)).
+
+### Changed
+- **`lowlat-sdk` builds the shared object and the header; `lowlat-host` is the host
+  orchestration beneath it.** The generator now reads a crate that holds nothing but the
+  boundary, which is what lets a feature on a module become a guard in the header without a
+  file being named.
+- **Two features, `host` and `client`, each a half of the library.** A build without the
+  host compiles none of the display stack, so a platform that can only be a client can build
+  the library at all. The header declares both halves unless the application defines
+  `LOWLAT_NO_HOST` or `LOWLAT_NO_CLIENT`, and then a call into the missing half fails to
+  compile rather than to link. The client half is empty for now; the seam exists.
+- **The handle is `lowlat_host`**, made by `lowlat_host_create` and freed by
+  `lowlat_host_destroy`, so that a client handle can be a second type and a host call on it
+  does not compile. The one-handle-two-roles shape of the established SDK is what this
+  refuses. Minor 3.
+
+### Added
+- `lowlat_features()`: which halves the loaded library carries, as two bits, so a loader
+  learns it once rather than at whichever name it failed to resolve first.
+- The gate's harness asks it first. A build of one half leaves an object of the same name in
+  the same place, and the gate ran against one once.
+
 ## 2026-09-12 - The browser transport, begun
 
 Phase 13 opens ([impl-plan.md](impl-plan.md)): a browser as a guest over SCTP on DTLS 1.2, on

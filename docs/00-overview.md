@@ -65,7 +65,9 @@ lowlat-capture   frame trait plus synthetic source; real backends at Gate B
 lowlat-encode    NVENC, then FFmpeg software, then VAAPI
 lowlat-audio     sound capture, encode, and decode; no display stack, no vendor runtime
 lowlat-inject    uinput
-lowlat-host      orchestration plus the C ABI cdylib
+lowlat-host      host orchestration: capture, encode, delivery, input
+lowlat-sdk       the C ABI cdylib and its header; the host and the client are
+                 its two halves, each a feature
 lowlat-kessel    signaling client; async permitted; the SDK does not link it
 lowlatd          system service; the session helper and the tray are the same
                  binary in its second and third roles, over a Unix socket

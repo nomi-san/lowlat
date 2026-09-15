@@ -1,6 +1,6 @@
 # 06 - Public API
 
-**Status:** locked 2026-08-15. Implemented by `lowlat-host`, generated as one C header.
+**Status:** locked 2026-08-15. Implemented by `lowlat-sdk`, generated as one C header.
 
 **The C ABI is the only public surface.** There is no public Rust API, no C++ wrapper, and no
 language-specific SDK. Every binding anyone will ever want consumes C: C#, Java, Swift,
@@ -39,16 +39,34 @@ mismatch is a link error rather than silent memory corruption at the first field
 ## §2 Lifecycle
 
 ```c
-lowlat_status lowlat_create(const lowlat_create_info *info, lowlat **out);
-void          lowlat_destroy(lowlat *ll);
+uint32_t      lowlat_abi_version(void);
+uint32_t      lowlat_features(void);
+const char   *lowlat_status_string(int32_t status);
 lowlat_status lowlat_set_log_callback(lowlat_log_fn fn, void *opaque);
 lowlat_status lowlat_set_log_level(uint32_t level);
-const char   *lowlat_status_string(int32_t status);
-uint32_t      lowlat_abi_version(void);
+
+lowlat_status lowlat_host_create(const lowlat_host_create_info *info, lowlat_host **out);
+void          lowlat_host_destroy(lowlat_host *ll);
 ```
 
-One handle owns one host session. `lowlat_destroy` stops hosting, disconnects every guest,
-joins every thread, and returns only when all of it has happened.
+**One library, one header, two halves, and a handle type per half.** A host session is a
+`lowlat_host`, made by `lowlat_host_create` and used by every `lowlat_host_*` call; a client
+session will be a `lowlat_client` in the same way. The two are distinct opaque types rather
+than one handle in two roles, so a host call on a client handle fails to compile, which is
+the same rule the symbol prefix enforces at link time (§1, rule 6). What takes no handle --
+the version, the features, the status text, the log -- belongs to neither half and is in
+every build.
+
+**Either half can be left out of a build.** A platform that can only be a client gets a
+library with no host in it and none of the host's display stack compiled; the header hides
+the same half when the application defines `LOWLAT_NO_HOST` (or `LOWLAT_NO_CLIENT`) before
+including it, so a call into the missing half is a compile error rather than a link error.
+A plain include declares everything. `lowlat_features` reports the halves of the library
+actually loaded, as `LOWLAT_FEATURE_HOST | LOWLAT_FEATURE_CLIENT`, so a loader that resolves
+names one at a time learns once what it lacks rather than at whichever name it reached first.
+
+One handle owns one host session. `lowlat_host_destroy` stops hosting, disconnects every
+guest, joins every thread, and returns only when all of it has happened.
 
 `lowlat_abi_version` lets a loader verify the library matches the header it was built against
 before calling anything else. It is the one function whose signature can never change.
@@ -82,28 +100,28 @@ timezone to mean something.
 ## §3 Host
 
 ```c
-lowlat_status lowlat_host_start(lowlat *ll, const lowlat_host_config *cfg);
-lowlat_status lowlat_host_stop(lowlat *ll);
-lowlat_status lowlat_host_get_status(lowlat *ll, lowlat_host_status *out);
-lowlat_status lowlat_host_poll_microphone(lowlat *ll, uint32_t timeout_ms, int16_t *samples,
+lowlat_status lowlat_host_start(lowlat_host *ll, const lowlat_host_config *cfg);
+lowlat_status lowlat_host_stop(lowlat_host *ll);
+lowlat_status lowlat_host_get_status(lowlat_host *ll, lowlat_host_status *out);
+lowlat_status lowlat_host_poll_microphone(lowlat_host *ll, uint32_t timeout_ms, int16_t *samples,
                                           uint32_t *count, uint32_t *guest, uint32_t *dropped);
 
-lowlat_status lowlat_host_set_video_config(lowlat *ll, const lowlat_host_video_config *cfg);
-lowlat_status lowlat_host_get_video_config(lowlat *ll, lowlat_host_video_config *out);
+lowlat_status lowlat_host_set_video_config(lowlat_host *ll, const lowlat_host_video_config *cfg);
+lowlat_status lowlat_host_get_video_config(lowlat_host *ll, lowlat_host_video_config *out);
 
-lowlat_status lowlat_host_set_audio_config(lowlat *ll, const lowlat_host_audio_config *cfg);
-lowlat_status lowlat_host_get_audio_config(lowlat *ll, lowlat_host_audio_config *out);
+lowlat_status lowlat_host_set_audio_config(lowlat_host *ll, const lowlat_host_audio_config *cfg);
+lowlat_status lowlat_host_get_audio_config(lowlat_host *ll, lowlat_host_audio_config *out);
 
-uint32_t      lowlat_host_get_guests(lowlat *ll, lowlat_guest *out, uint32_t *count);
-lowlat_status lowlat_host_kick_guest(lowlat *ll, uint32_t guest_id, int32_t reason);
-lowlat_status lowlat_host_set_permissions(lowlat *ll, uint32_t guest_id,
+uint32_t      lowlat_host_get_guests(lowlat_host *ll, lowlat_guest *out, uint32_t *count);
+lowlat_status lowlat_host_kick_guest(lowlat_host *ll, uint32_t guest_id, int32_t reason);
+lowlat_status lowlat_host_set_permissions(lowlat_host *ll, uint32_t guest_id,
                                           const lowlat_permissions *perms);
 
-lowlat_status lowlat_host_send_user_data(lowlat *ll, uint32_t guest_id, uint32_t id,
+lowlat_status lowlat_host_send_user_data(lowlat_host *ll, uint32_t guest_id, uint32_t id,
                                          const void *data, uint32_t len);
-lowlat_status lowlat_host_send_roster(lowlat *ll, const void *data, uint32_t len,
+lowlat_status lowlat_host_send_roster(lowlat_host *ll, const void *data, uint32_t len,
                                       uint32_t *reached);
-lowlat_status lowlat_host_get_metrics(lowlat *ll, uint32_t guest_id, lowlat_metrics *out);
+lowlat_status lowlat_host_get_metrics(lowlat_host *ll, uint32_t guest_id, lowlat_metrics *out);
 ```
 
 **The roster is not a variant of an application message.** It travels on its own opcode, it is
@@ -304,12 +322,12 @@ The four calls from [04 §9](04-signaling.md). This is the entire contact surfac
 signaling implementation and the SDK.
 
 ```c
-lowlat_status lowlat_host_new_attempt(lowlat *ll, const lowlat_attempt_info *info);
-void          lowlat_host_add_candidate(lowlat *ll, const char *attempt_id,
+lowlat_status lowlat_host_new_attempt(lowlat_host *ll, const lowlat_attempt_info *info);
+void          lowlat_host_add_candidate(lowlat_host *ll, const char *attempt_id,
                                         const lowlat_candidate *cand);
-lowlat_status lowlat_host_begin_p2p(lowlat *ll, const char *attempt_id,
+lowlat_status lowlat_host_begin_p2p(lowlat_host *ll, const char *attempt_id,
                                     uint16_t port, lowlat_credentials *out);
-void          lowlat_host_end_connection(lowlat *ll, const char *attempt_id);
+void          lowlat_host_end_connection(lowlat_host *ll, const char *attempt_id);
 ```
 
 **Registering is not approving.** `lowlat_host_new_attempt` takes a seat's worth of
@@ -396,7 +414,7 @@ on the way down yet.
 ## §5 Events
 
 ```c
-lowlat_status lowlat_host_poll_events(lowlat *ll, uint32_t timeout_ms, lowlat_event *out,
+lowlat_status lowlat_host_poll_events(lowlat_host *ll, uint32_t timeout_ms, lowlat_event *out,
                                       void *body, uint32_t *body_len);
 ```
 
@@ -602,6 +620,13 @@ correct; refusing a newer minor is not.
 **Minor 2** (2026-09-12) appended `transport` and `fingerprint` to `lowlat_attempt_info`, the
 `lowlat_transport` enumeration, the status `LOWLAT_ERR_FINGERPRINT` and the outcome
 `LOWLAT_OUTCOME_HANDSHAKE_FAILED` ([§4](#4-signaling-seam)).
+
+**Minor 3** (2026-09-15) added `lowlat_features` and its two bits, and renamed the handle:
+`lowlat` is `lowlat_host`, `lowlat_create_info` is `lowlat_host_create_info`, `lowlat_create`
+and `lowlat_destroy` are `lowlat_host_create` and `lowlat_host_destroy` ([§2](#2-lifecycle)).
+A rename before the first major version, under the rule below, taken before the first
+pre-release so that the header it ships is the one that lasts; nothing moved and nothing
+changed meaning.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected
