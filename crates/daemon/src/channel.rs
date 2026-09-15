@@ -792,14 +792,14 @@ pub(crate) fn is_clipboard(body: &[u8]) -> Option<String> {
 /// **Every field is optional on the way in as it is on the way out.** A
 /// session describes an output in pieces, and the reduction to a placement
 /// already drops one that is not fully described rather than defaulting it.
-pub(crate) fn is_layout(body: &[u8]) -> Option<Vec<lowlat::capture::Output>> {
+pub(crate) fn is_layout(body: &[u8]) -> Option<Vec<lowlat_host::capture::Output>> {
     let parsed = serde_json::from_slice::<serde_json::Value>(body).ok()?;
     let listed = parsed.get("layout")?.as_array()?;
     let read = |output: &serde_json::Value, field: &str| output.get(field).cloned();
     Some(
         listed
             .iter()
-            .map(|output| lowlat::capture::Output {
+            .map(|output| lowlat_host::capture::Output {
                 name: read(output, "name").and_then(|value| value.as_str().map(str::to_owned)),
                 x: read(output, "x")
                     .and_then(|value| value.as_i64())
@@ -822,7 +822,7 @@ pub(crate) fn is_layout(body: &[u8]) -> Option<Vec<lowlat::capture::Output>> {
 }
 
 /// Say what this session's displays are and where they sit.
-pub(crate) fn layout(outputs: &[lowlat::capture::Output]) -> String {
+pub(crate) fn layout(outputs: &[lowlat_host::capture::Output]) -> String {
     let described: Vec<serde_json::Value> = outputs
         .iter()
         .map(|output| {
@@ -1337,7 +1337,7 @@ mod tests {
     #[test]
     fn a_layout_crosses_as_the_session_described_it() {
         let described = vec![
-            lowlat::capture::Output {
+            lowlat_host::capture::Output {
                 name: Some("DP-7".to_string()),
                 x: Some(0),
                 y: Some(0),
@@ -1345,7 +1345,7 @@ mod tests {
                 height: Some(1440),
                 transform: Some(0),
             },
-            lowlat::capture::Output {
+            lowlat_host::capture::Output {
                 name: Some("HDMI-A-1".to_string()),
                 x: Some(2560),
                 y: Some(0),
@@ -1354,9 +1354,9 @@ mod tests {
                 transform: Some(1),
             },
             // Half described, which is an ordinary intermediate state.
-            lowlat::capture::Output {
+            lowlat_host::capture::Output {
                 name: Some("DP-4".to_string()),
-                ..lowlat::capture::Output::default()
+                ..lowlat_host::capture::Output::default()
             },
         ];
         let crossed = is_layout(layout(&described).as_bytes()).expect("a layout");
@@ -1365,10 +1365,10 @@ mod tests {
         // And the thing it exists for: the desktop is the bounding box of what
         // is fully described, so the captured output knows how wide the axis
         // its input is spread over really is.
-        let place = lowlat::capture::place(&crossed, "HDMI-A-1").expect("placed");
+        let place = lowlat_host::capture::place(&crossed, "HDMI-A-1").expect("placed");
         assert_eq!((place.x, place.width), (2560, 1080));
         assert_eq!(place.desktop_width, 3640);
-        assert_eq!(place.rotation, lowlat::video::Rotation::Deg90);
+        assert_eq!(place.rotation, lowlat_host::video::Rotation::Deg90);
 
         // Nothing else on the channel reads as a layout.
         assert_eq!(is_layout(BYE_REPLACED), None);

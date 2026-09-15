@@ -1,187 +1,19 @@
-//! The public C ABI.
+//! The host half of the public C ABI.
 //!
-//! The only public surface there is ([06-api.md](../docs/06-api.md)).
-//! Naming follows the header rather than Rust convention, which is permitted
-//! here and nowhere else.
+//! Every `lowlat_host_*` entry point and every type it takes or fills. Behind
+//! the `host` feature, which is what lets a build carry a client and no host.
 
-#![allow(non_camel_case_types)]
-
-use core::ffi::{CStr, c_char, c_void};
+use core::ffi::{c_char, c_void};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 
-use crate::admission::{Event, Outcome};
-use crate::events::Delivery;
+use ::lowlat_host::admission::{Event, Outcome};
+use ::lowlat_host::events::Delivery;
 use lowlat_event_type::*;
 use lowlat_outcome::*;
-use lowlat_status::*;
 
-/// A status code.
-///
-/// **An enumeration for the names and a plain integer wherever one is
-/// accepted.** Grouping the codes under a type is what tells a reader that
-/// `LOWLAT_TIMEOUT` is a status and `LOWLAT_ATTEMPT_MAX` is a size; taking one
-/// back by value as this type would be something else entirely, because
-/// reading a discriminant nothing defined is undefined behaviour and an
-/// application is free to hand back any integer it has.
-///
-/// Zero succeeds, positive is a non-fatal condition, negative is an error, and
-/// the error space is partitioned by subsystem so that a number says where it
-/// came from without a lookup:
-///
-/// ```text
-///   -1 to -99      the boundary itself: arguments, state, contained faults
-///   -100 to -199   signaling and admission
-///   -200 to -299   capture
-///   -300 to -399   encode
-///   -400 to -499   transport
-/// ```
-///
-/// A value is assigned once and never reused, including for a condition that
-/// is removed.
-// **`repr(C)` rather than `repr(i32)`, and every enumeration here follows
-// it.** Naming the width makes cbindgen state it in C, which only C23 and C++
-// have syntax for, so the header grows a `__STDC_VERSION__` fork and the same
-// name means an enumeration under one standard and an integer under another.
-// `repr(C)` is whatever the platform's C compiler picks, which is what the
-// application is compiling with anyway; `alone.c` asserts it is four bytes.
-//
-// Not a doc comment, because it describes this side of the boundary and the
-// header is written for the other one (AGENTS.md 1a).
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum lowlat_status {
-    /// The call succeeded.
-    LOWLAT_OK = 0,
-    /// No event arrived within the timeout. Not an error.
-    LOWLAT_TIMEOUT = 1,
-    /// A fault was contained at the boundary. The handle no longer runs.
-    LOWLAT_ERR_INTERNAL = -1,
-    /// An argument was missing, out of range, or contradicted another.
-    LOWLAT_ERR_INVALID_ARGUMENT = -2,
-    /// The buffer was too small. What it would have taken has been written
-    /// back, and nothing has been consumed.
-    LOWLAT_ERR_TOO_SMALL = -3,
-    /// A previous call was contained at the boundary, so this handle is no
-    /// longer trusted to describe its own state. Only destroying it still
-    /// works.
-    LOWLAT_ERR_POISONED = -4,
-    /// This handle is already hosting. Stopping first is the way to start
-    /// again with a different configuration.
-    LOWLAT_ERR_ALREADY_STARTED = -5,
-    /// This handle is not hosting, so there is nothing for the call to act on.
-    LOWLAT_ERR_NOT_STARTED = -6,
-
-    /// Every seat is taken. **The offer should be declined**, not left
-    /// unanswered: silence reads to a peer as a host still thinking about it.
-    LOWLAT_ERR_AT_CAPACITY = -100,
-    /// No attempt with that identifier.
-    LOWLAT_ERR_UNKNOWN_ATTEMPT = -101,
-    /// The attempt has already been approved.
-    LOWLAT_ERR_ALREADY_BEGUN = -102,
-    /// Withdrawn before it was registered, so it was over before it began. A
-    /// withdrawal can overtake the offer it withdraws.
-    LOWLAT_ERR_WITHDRAWN = -103,
-    /// A socket could not be opened, or a thread could not be started.
-    LOWLAT_ERR_IO = -104,
-    /// Credentials could not be produced.
-    LOWLAT_ERR_CRYPTO = -105,
-    /// No guest with that number is connected.
-    LOWLAT_ERR_UNKNOWN_GUEST = -106,
-    /// A browser's offer carried no certificate digest, or one that is not
-    /// a SHA-256 digest: nothing its handshake could be checked against.
-    LOWLAT_ERR_FINGERPRINT = -107,
-
-    /// Nothing is lit. There is no display to capture: a headless machine, or
-    /// one whose session has not started.
-    LOWLAT_ERR_NO_DISPLAY = -200,
-    /// A display is lit and its framebuffer cannot be reached, which is what
-    /// this process is allowed to do rather than what the machine has.
-    LOWLAT_ERR_DISPLAY_UNREACHABLE = -201,
-}
-
-/// The major version, raised only when something already published changes.
-pub const LOWLAT_ABI_MAJOR: u32 = 0;
-/// The minor version, raised when surface is appended.
-pub const LOWLAT_ABI_MINOR: u32 = 2;
-
-/// Major and minor, packed.
-///
-/// **The one function whose signature can never change**, because it is what a
-/// loader calls to decide whether it may call anything else.
-///
-/// @returns The major version in the high sixteen bits, the minor in the low.
-#[unsafe(no_mangle)]
-pub extern "C" fn lowlat_abi_version() -> u32 {
-    (LOWLAT_ABI_MAJOR << 16) | LOWLAT_ABI_MINOR
-}
-
-/// What each status says about itself.
-///
-/// A table rather than a match, because the value arriving is an integer and
-/// not necessarily one of these.
-const DESCRIPTIONS: [(lowlat_status, &CStr); 18] = [
-    (LOWLAT_OK, c"ok"),
-    (LOWLAT_TIMEOUT, c"no event within the timeout"),
-    (
-        LOWLAT_ERR_INTERNAL,
-        c"a fault was contained at the boundary",
-    ),
-    (LOWLAT_ERR_INVALID_ARGUMENT, c"an argument was not usable"),
-    (LOWLAT_ERR_TOO_SMALL, c"the buffer was too small"),
-    (LOWLAT_ERR_POISONED, c"the handle is poisoned"),
-    (
-        LOWLAT_ERR_ALREADY_STARTED,
-        c"this handle is already hosting",
-    ),
-    (LOWLAT_ERR_NOT_STARTED, c"this handle is not hosting"),
-    (LOWLAT_ERR_AT_CAPACITY, c"every seat is taken"),
-    (
-        LOWLAT_ERR_UNKNOWN_ATTEMPT,
-        c"no attempt with that identifier",
-    ),
-    (
-        LOWLAT_ERR_ALREADY_BEGUN,
-        c"the attempt was already approved",
-    ),
-    (
-        LOWLAT_ERR_WITHDRAWN,
-        c"the attempt was withdrawn before it was registered",
-    ),
-    (LOWLAT_ERR_IO, c"a socket or thread could not be created"),
-    (LOWLAT_ERR_CRYPTO, c"credentials could not be produced"),
-    (LOWLAT_ERR_UNKNOWN_GUEST, c"no guest with that number"),
-    (
-        LOWLAT_ERR_FINGERPRINT,
-        c"the offer's certificate digest is missing or malformed",
-    ),
-    (LOWLAT_ERR_NO_DISPLAY, c"nothing is lit"),
-    (
-        LOWLAT_ERR_DISPLAY_UNREACHABLE,
-        c"a display is lit and its framebuffer cannot be reached",
-    ),
-];
-
-/// Describe a status.
-///
-/// **It takes a plain integer rather than the enumeration**, so that a value
-/// from anywhere can be described -- including one this version of the library
-/// does not define, which is exactly the case an application reaches for this
-/// in. Passing a status to it is an ordinary widening conversion.
-///
-/// The pointer is to storage that outlives the library, so it is never freed
-/// and never copied out of.
-///
-/// @param[in] status Any status value, including one this version does not define.
-/// @returns A NUL-terminated description. Never null, never freed.
-#[unsafe(no_mangle)]
-pub extern "C" fn lowlat_status_string(status: i32) -> *const c_char {
-    let text: &CStr = DESCRIPTIONS
-        .iter()
-        .find(|(code, _)| *code as i32 == status)
-        .map_or(c"unknown status", |(_, text)| text);
-    text.as_ptr()
-}
+use super::guard;
+use super::lowlat_status::{self, *};
 
 /// The longest attempt identifier carried across this boundary.
 ///
@@ -390,6 +222,7 @@ pub const LOWLAT_OUTPUT_MAX: usize = 260;
 /// one blittable block with nothing in it to free. Four is already more than
 /// any host here has ever been configured with.
 pub const LOWLAT_SERVERS_MAX: usize = 4;
+const _: () = assert!(LOWLAT_SERVERS_MAX == ::lowlat_host::admission::SERVERS_MAX);
 /// The longest textual `host:port` for one of them.
 pub const LOWLAT_SERVER_MAX: usize = 64;
 
@@ -627,7 +460,7 @@ pub struct lowlat_host_config {
     /// How long a guest keeps the pointer after its last movement, when
     /// `exclusive_pointer` is set. Clamped rather than refused: this is a
     /// comfort setting and the nearest usable value beats refusing to start.
-    /// **Default: [`crate::floor::HOLD_MS`]**, the figure the arbitration was
+    /// **Default: [`::lowlat_host::floor::HOLD_MS`]**, the figure the arbitration was
     /// tuned to.
     pub exclusive_hold_ms: u32,
     /// Whether one guest at a time may drive the pointer. Off means everybody
@@ -712,7 +545,7 @@ pub extern "C" fn lowlat_host_config_default() -> lowlat_host_config {
 /// (docs/06-api.md 1).
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct lowlat_create_info {
+pub struct lowlat_host_create_info {
     pub size: u32,
 }
 
@@ -723,7 +556,7 @@ pub struct lowlat_create_info {
 /// that needs both (docs/06-api.md 8).
 #[derive(Debug)]
 struct Held {
-    seam: Option<crate::admission::Admission>,
+    seam: Option<::lowlat_host::admission::Admission>,
 }
 
 /// The longest credential this boundary carries.
@@ -893,140 +726,12 @@ pub struct lowlat_guest {
     pub attempt: [c_char; LOWLAT_ATTEMPT_MAX],
 }
 
-/// How severe a log line is.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum lowlat_log_level {
-    LOWLAT_LOG_ERROR = 0,
-    LOWLAT_LOG_WARN = 1,
-    LOWLAT_LOG_INFO = 2,
-    LOWLAT_LOG_DEBUG = 3,
-    LOWLAT_LOG_TRACE = 4,
-}
-
-/// Where log lines go.
-///
-/// **The one place this library calls into an application**, and the single
-/// exception to being poll-based. It is cold, it fires on whichever thread
-/// logged, and it must not call back in.
-pub type lowlat_log_fn =
-    Option<unsafe extern "C" fn(level: u32, message: *const c_char, opaque: *mut c_void)>;
-
-/// The callback and whatever the application wanted handed back with it.
-///
-/// **A lock rather than an atomic pair**, because the two must be read
-/// together: a callback taken with the previous registration's opaque pointer
-/// would hand an application a pointer belonging to something it has already
-/// forgotten. Logging is cold enough to afford it.
-static LOGGER: std::sync::Mutex<(lowlat_log_fn, usize)> = std::sync::Mutex::new((None, 0));
-
-/// Hand one already-formatted line to whatever the application registered.
-///
-/// **Installed once and replaceable behind that**, so an application may
-/// change where its logs go without the underlying sink -- which is
-/// process-wide and takes one installation -- having to be changed with it.
-fn to_application(level: lowlat_common::log::Level, message: &str) {
-    let Ok(logger) = LOGGER.lock() else {
-        return;
-    };
-    let (Some(callback), opaque) = *logger else {
-        return;
-    };
-    // **A copy, because a Rust string has no terminator and C reads one.**
-    // Logging allocates here and nowhere else on this path; a line with an
-    // interior NUL is truncated at it rather than dropped, since a short
-    // message beats a lost one.
-    let Ok(text) = std::ffi::CString::new(message) else {
-        let Ok(truncated) = std::ffi::CString::new(
-            message
-                .split('\0')
-                .next()
-                .unwrap_or_default()
-                .as_bytes()
-                .to_vec(),
-        ) else {
-            return;
-        };
-        unsafe { callback(level as u32, truncated.as_ptr(), opaque as *mut c_void) };
-        return;
-    };
-    unsafe { callback(level as u32, text.as_ptr(), opaque as *mut c_void) };
-}
-
-/// Receive log messages from every part of this library.
-///
-/// Passing `NULL` stops delivery and returns the library to writing lines on
-/// standard error itself.
-///
-/// **The callback may be replaced.** The underlying sink is process-wide and
-/// installed once; what an application registers here sits behind it, so
-/// calling this again changes where lines go rather than being refused.
-///
-/// @param[in] fn_ Where lines go, or `NULL` to return them to standard error.
-/// @param[in] opaque Handed back to `fn_` untouched.
-/// @returns [`LOWLAT_OK`].
-///
-/// # Safety
-///
-/// `fn_` must remain callable, and `opaque` valid, until this is called
-/// again with something else or with `NULL`. It may fire on any thread, and it must not
-/// call back into this library.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lowlat_set_log_callback(
-    fn_: lowlat_log_fn,
-    opaque: *mut c_void,
-) -> lowlat_status {
-    guard(LOWLAT_ERR_INTERNAL, || {
-        {
-            let Ok(mut logger) = LOGGER.lock() else {
-                return LOWLAT_ERR_INTERNAL;
-            };
-            *logger = (fn_, opaque as usize);
-        }
-        // Installed on the first registration and never again; a later one
-        // only changes what the shim finds.
-        lowlat_common::log::set_sink(to_application);
-        LOWLAT_OK
-    })
-}
-
-/// Set how much is logged. Lines above this level are not formatted at all.
-///
-/// @param[in] level One of [`lowlat_log_level`].
-/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_INVALID_ARGUMENT`] for a level nothing
-/// defines.
-#[unsafe(no_mangle)]
-pub extern "C" fn lowlat_set_log_level(level: u32) -> lowlat_status {
-    guard(LOWLAT_ERR_INTERNAL, || {
-        let level = match level {
-            code if code == lowlat_log_level::LOWLAT_LOG_ERROR as u32 => {
-                lowlat_common::log::Level::Error
-            }
-            code if code == lowlat_log_level::LOWLAT_LOG_WARN as u32 => {
-                lowlat_common::log::Level::Warn
-            }
-            code if code == lowlat_log_level::LOWLAT_LOG_INFO as u32 => {
-                lowlat_common::log::Level::Info
-            }
-            code if code == lowlat_log_level::LOWLAT_LOG_DEBUG as u32 => {
-                lowlat_common::log::Level::Debug
-            }
-            code if code == lowlat_log_level::LOWLAT_LOG_TRACE as u32 => {
-                lowlat_common::log::Level::Trace
-            }
-            _ => return LOWLAT_ERR_INVALID_ARGUMENT,
-        };
-        lowlat_common::log::set_level(level);
-        LOWLAT_OK
-    })
-}
-
 /// One host session, as the application holds it.
 ///
 /// Opaque: the application holds a pointer it cannot look inside, so what is
 /// in here changes freely.
 #[derive(Debug)]
-pub struct lowlat {
+pub struct lowlat_host {
     /// Set when a call was contained, and never cleared.
     poisoned: AtomicBool,
     held: std::sync::Mutex<Held>,
@@ -1038,19 +743,19 @@ pub struct lowlat {
     ///
     /// Held outside the lock because a poll waits for as long as its caller
     /// asked and every other call must stay answerable while it does.
-    events: crate::events::Receiver,
+    events: ::lowlat_host::events::Receiver,
     /// The other end, handed to each host as it starts.
-    raise: crate::events::Sender,
+    raise: ::lowlat_host::events::Sender,
     /// **A queue of its own, for the reason the events one is separate from
     /// everything else**: a hundred packets a second of sound sharing a bounded
     /// queue with control events would evict the events
     /// ([06 §13](../docs/06-api.md)).
-    heard: crate::microphone::Receiver,
+    heard: ::lowlat_host::microphone::Receiver,
     /// The other end, handed to each host as it starts.
-    hear: crate::microphone::Sender,
+    hear: ::lowlat_host::microphone::Sender,
 }
 
-impl lowlat {
+impl lowlat_host {
     /// **A poisoned lock is not a second failure to report.** The handle is
     /// already refusing every call once a panic has been contained, and that
     /// is the state this would be describing.
@@ -1061,7 +766,7 @@ impl lowlat {
 
 /// Create a handle.
 ///
-/// @param[in] info One [`lowlat_create_info`] whose `size` says how much of it is set.
+/// @param[in] info One [`lowlat_host_create_info`] whose `size` says how much of it is set.
 /// May be null, which takes every default.
 /// @param[out] out Receives the handle.
 /// @returns [`LOWLAT_OK`], or an error and `out` left untouched.
@@ -1071,9 +776,9 @@ impl lowlat {
 /// `out` must point to storage for one pointer. `info` may be null, which
 /// takes every default.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lowlat_create(
-    info: *const lowlat_create_info,
-    out: *mut *mut lowlat,
+pub unsafe extern "C" fn lowlat_host_create(
+    info: *const lowlat_host_create_info,
+    out: *mut *mut lowlat_host,
 ) -> lowlat_status {
     guard(LOWLAT_ERR_INTERNAL, || {
         if out.is_null() {
@@ -1087,9 +792,9 @@ pub unsafe extern "C" fn lowlat_create(
         {
             return LOWLAT_ERR_INVALID_ARGUMENT;
         }
-        let (raise, events) = crate::events::queue();
-        let (hear, heard) = crate::microphone::queue();
-        let handle = Box::new(lowlat {
+        let (raise, events) = ::lowlat_host::events::queue();
+        let (hear, heard) = ::lowlat_host::microphone::queue();
+        let handle = Box::new(lowlat_host {
             poisoned: AtomicBool::new(false),
             held: std::sync::Mutex::new(Held { seam: None }),
             events,
@@ -1107,15 +812,15 @@ pub unsafe extern "C" fn lowlat_create(
 /// **Works on a poisoned handle**, which is the point of poisoning: everything
 /// else is refused and this still releases what was taken.
 ///
-/// @param[in] ll The handle from [`lowlat_create`], not used again. Null is accepted
+/// @param[in] ll The handle from [`lowlat_host_create`], not used again. Null is accepted
 /// and does nothing.
 ///
 /// # Safety
 ///
-/// `ll` came from [`lowlat_create`] and is not used again. A null pointer is
+/// `ll` came from [`lowlat_host_create`] and is not used again. A null pointer is
 /// accepted and does nothing.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lowlat_destroy(ll: *mut lowlat) {
+pub unsafe extern "C" fn lowlat_host_destroy(ll: *mut lowlat_host) {
     guard((), || {
         if ll.is_null() {
             return;
@@ -1141,21 +846,25 @@ fn taken(from: &[c_char]) -> Option<&str> {
 /// application filled this structure, so each of these is whatever it wrote,
 /// and a value nothing defined is refused here instead of becoming a variant
 /// that does not exist.
-fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
+fn configured(cfg: &lowlat_host_config) -> Option<::lowlat_host::admission::Config> {
     // The microphone queue is the handle's, so the caller fills it in: this
     // builds what the configuration alone can say.
     let codec = match cfg.codec {
-        code if code == lowlat_codec::LOWLAT_CODEC_H264 as u32 => crate::stream::Codec::H264,
-        code if code == lowlat_codec::LOWLAT_CODEC_HEVC as u32 => crate::stream::Codec::H265,
+        code if code == lowlat_codec::LOWLAT_CODEC_H264 as u32 => {
+            ::lowlat_host::stream::Codec::H264
+        }
+        code if code == lowlat_codec::LOWLAT_CODEC_HEVC as u32 => {
+            ::lowlat_host::stream::Codec::H265
+        }
         _ => return None,
     };
     let backend = match cfg.encoder {
         code if code == lowlat_encoder::LOWLAT_ENCODER_FOLLOW_DISPLAY as u32 => None,
         code if code == lowlat_encoder::LOWLAT_ENCODER_OPEN as u32 => {
-            Some(crate::stream::Backend::Open)
+            Some(::lowlat_host::stream::Backend::Open)
         }
         code if code == lowlat_encoder::LOWLAT_ENCODER_VENDOR as u32 => {
-            Some(crate::stream::Backend::Vendor)
+            Some(::lowlat_host::stream::Backend::Vendor)
         }
         _ => return None,
     };
@@ -1197,7 +906,7 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
         // resolve is refused while the caller is still holding the call that
         // set it.
         let text = taken(server)?;
-        let found = crate::admission::resolve_server(text);
+        let found = ::lowlat_host::admission::resolve_server(text);
         // A name that resolves to nothing is refused here, while the caller is
         // still holding the call that set it.
         if found.is_empty() {
@@ -1224,7 +933,7 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
     let output = taken(&cfg.video.output)?;
     let (sound_on, allow_raw, audio_kbps, audio_live) = audio_configured(&cfg.audio)?;
 
-    Some(crate::admission::Config {
+    Some(::lowlat_host::admission::Config {
         microphone: None,
         base_port: cfg.base_port,
         // Not on the boundary yet: no application has asked to offer shared
@@ -1237,7 +946,7 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
         cg_level,
         // A live-run aid, and nothing an application should be able to ask for.
         rumble_probe: false,
-        stream: Some(crate::stream::Config {
+        stream: Some(::lowlat_host::stream::Config {
             // **Settled by what the guests declare, never configured.** One
             // encode serves every seat, so a depth chosen here would be chosen
             // for guests whose decoders an application cannot see.
@@ -1287,7 +996,7 @@ fn configured(cfg: &lowlat_host_config) -> Option<crate::admission::Config> {
 }
 
 /// Check the half that can also be set while a host runs.
-fn video_configured(cfg: &lowlat_host_video_config) -> Option<crate::stream::LiveVideo> {
+fn video_configured(cfg: &lowlat_host_video_config) -> Option<::lowlat_host::stream::LiveVideo> {
     if (cfg.size as usize) < core::mem::size_of::<lowlat_host_video_config>() {
         return None;
     }
@@ -1303,7 +1012,7 @@ fn video_configured(cfg: &lowlat_host_video_config) -> Option<crate::stream::Liv
     // Read for its terminator even where the value is not wanted here: a field
     // that was overrun is refused rather than half-read.
     taken(&cfg.output)?;
-    Some(crate::stream::LiveVideo {
+    Some(::lowlat_host::stream::LiveVideo {
         fps: cfg.fps,
         bitrate_mbps: cfg.bitrate_mbps,
         min_mbps: cfg.min_bitrate_mbps,
@@ -1347,18 +1056,18 @@ pub const LOWLAT_AUDIO_KBPS_MAX: u32 = 512;
 /// Guests are admitted through the signaling seam, which is the application's
 /// own; this starts what serves them once they arrive.
 ///
-/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] ll The handle from [`lowlat_host_create`].
 /// @param[in] cfg One [`lowlat_host_config`] whose `size` says how much of it is set.
 /// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_ALREADY_STARTED`] when this handle is
 /// already hosting.
 ///
 /// # Safety
 ///
-/// `ll` came from [`lowlat_create`], and `cfg` points to one
+/// `ll` came from [`lowlat_host_create`], and `cfg` points to one
 /// [`lowlat_host_config`] whose `size` says how much of it is set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_start(
-    ll: *mut lowlat,
+    ll: *mut lowlat_host,
     cfg: *const lowlat_host_config,
 ) -> lowlat_status {
     unsafe {
@@ -1385,7 +1094,7 @@ pub unsafe extern "C" fn lowlat_host_start(
             config.microphone = Some(handle.hear.clone());
             // **Raising into the handle's queue rather than its own**, so a
             // host starting and stopping does not take the queue with it.
-            held.seam = Some(crate::admission::Admission::raising(
+            held.seam = Some(::lowlat_host::admission::Admission::raising(
                 config,
                 handle.raise.clone(),
                 None,
@@ -1399,8 +1108,8 @@ pub unsafe extern "C" fn lowlat_host_start(
 ///
 /// Exhaustive on purpose: a new way for admission to refuse should break this
 /// build rather than reach an application as a generic failure.
-fn refused(error: crate::admission::Error) -> lowlat_status {
-    use crate::admission::Error;
+fn refused(error: ::lowlat_host::admission::Error) -> lowlat_status {
+    use ::lowlat_host::admission::Error;
     match error {
         Error::UnknownAttempt => LOWLAT_ERR_UNKNOWN_ATTEMPT,
         Error::AtCapacity => LOWLAT_ERR_AT_CAPACITY,
@@ -1423,18 +1132,18 @@ fn refused(error: crate::admission::Error) -> lowlat_status {
 /// left unanswered: nothing in the protocol reports a host that never replied,
 /// so a peer given silence sits connecting until its own deadline.
 ///
-/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] ll The handle from [`lowlat_host_create`].
 /// @param[in] info One [`lowlat_attempt_info`] whose `size` says how much of it is set.
 /// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_AT_CAPACITY`] when the room is full -- which
 /// the application should decline over its own signaling rather than leave unanswered.
 ///
 /// # Safety
 ///
-/// `ll` came from [`lowlat_create`], and `info` points to one
+/// `ll` came from [`lowlat_host_create`], and `info` points to one
 /// [`lowlat_attempt_info`] whose `size` says how much of it is set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_new_attempt(
-    ll: *mut lowlat,
+    ll: *mut lowlat_host,
     info: *const lowlat_attempt_info,
 ) -> lowlat_status {
     unsafe {
@@ -1478,10 +1187,10 @@ pub unsafe extern "C" fn lowlat_host_new_attempt(
                 let fingerprint = core::ptr::addr_of!((*info).fingerprint).read_unaligned();
                 let transport = match transport {
                     x if x == lowlat_transport::LOWLAT_TRANSPORT_BUD as u32 => {
-                        crate::admission::Transport::Bud
+                        ::lowlat_host::admission::Transport::Bud
                     }
                     x if x == lowlat_transport::LOWLAT_TRANSPORT_WEB as u32 => {
-                        crate::admission::Transport::Web
+                        ::lowlat_host::admission::Transport::Web
                     }
                     _ => return LOWLAT_ERR_INVALID_ARGUMENT,
                 };
@@ -1493,9 +1202,9 @@ pub unsafe extern "C" fn lowlat_host_new_attempt(
                     (!fingerprint.is_empty()).then(|| fingerprint.to_string()),
                 )
             } else {
-                (crate::admission::Transport::Bud, None)
+                (::lowlat_host::admission::Transport::Bud, None)
             };
-            let peer = crate::admission::Peer {
+            let peer = ::lowlat_host::admission::Peer {
                 ufrag: ufrag.to_string(),
                 pwd: pwd.to_string(),
                 aes256: (!aes256.is_empty()).then(|| aes256.to_string()),
@@ -1526,18 +1235,18 @@ pub unsafe extern "C" fn lowlat_host_new_attempt(
 /// withdrawal can overtake them, so this is a race with teardown rather than a
 /// fault, and a status the caller would have to ignore is worse than no status.
 ///
-/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] ll The handle from [`lowlat_host_create`].
 /// @param[in] attempt_id The attempt this address belongs to, NUL-terminated. One
 /// nothing registered is accepted silently.
 /// @param[in] cand One [`lowlat_candidate`].
 ///
 /// # Safety
 ///
-/// `ll` came from [`lowlat_create`], `attempt_id` is a NUL-terminated
+/// `ll` came from [`lowlat_host_create`], `attempt_id` is a NUL-terminated
 /// string, and `cand` points to one [`lowlat_candidate`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_add_candidate(
-    ll: *mut lowlat,
+    ll: *mut lowlat_host,
     attempt_id: *const c_char,
     cand: *const lowlat_candidate,
 ) {
@@ -1586,7 +1295,7 @@ pub unsafe extern "C" fn lowlat_host_add_candidate(
 /// gateway, a rule on the firewall, a pool it allocates from -- and none of
 /// those survive this library choosing for it.
 ///
-/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] ll The handle from [`lowlat_host_create`].
 /// @param[in] attempt_id The attempt to approve, NUL-terminated.
 /// @param[in] port Where the bind starts, not where it must land. Zero asks for the
 /// configured base port.
@@ -1597,12 +1306,12 @@ pub unsafe extern "C" fn lowlat_host_add_candidate(
 ///
 /// # Safety
 ///
-/// `ll` came from [`lowlat_create`], `attempt_id` is a NUL-terminated
+/// `ll` came from [`lowlat_host_create`], `attempt_id` is a NUL-terminated
 /// string, and `out` points to one [`lowlat_credentials`] whose `size` says how much of
 /// it is set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_begin_p2p(
-    ll: *mut lowlat,
+    ll: *mut lowlat_host,
     attempt_id: *const c_char,
     port: u16,
     out: *mut lowlat_credentials,
@@ -1645,16 +1354,19 @@ pub unsafe extern "C" fn lowlat_host_begin_p2p(
 /// learns from its own liveness deadline rather than from a message, for the
 /// same reason [`lowlat_host_stop`] does.
 ///
-/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] ll The handle from [`lowlat_host_create`].
 /// @param[in] attempt_id The attempt to end, NUL-terminated. One nothing registered is
 /// accepted silently and remembered.
 ///
 /// # Safety
 ///
-/// `ll` came from [`lowlat_create`] and `attempt_id` is a NUL-terminated
+/// `ll` came from [`lowlat_host_create`] and `attempt_id` is a NUL-terminated
 /// string.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lowlat_host_end_connection(ll: *mut lowlat, attempt_id: *const c_char) {
+pub unsafe extern "C" fn lowlat_host_end_connection(
+    ll: *mut lowlat_host,
+    attempt_id: *const c_char,
+) {
     unsafe {
         entered(ll, |handle| {
             let Some(attempt) = read_c_str(attempt_id) else {
@@ -1682,7 +1394,7 @@ pub unsafe extern "C" fn lowlat_host_end_connection(ll: *mut lowlat, attempt_id:
 /// the roster moves, and a caller that sized its array a moment ago must not
 /// be made to lose the call.
 ///
-/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] ll The handle from [`lowlat_host_create`].
 /// @param[out] out An array of at least `*count` entries, or `NULL` to ask only how
 /// many there are.
 /// @param[in,out] count The array's capacity in, the number written out.
@@ -1695,7 +1407,7 @@ pub unsafe extern "C" fn lowlat_host_end_connection(ll: *mut lowlat, attempt_id:
 /// point to at least `*count` elements.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_get_guests(
-    ll: *mut lowlat,
+    ll: *mut lowlat_host,
     out: *mut lowlat_guest,
     count: *mut u32,
 ) -> lowlat_status {
@@ -1753,7 +1465,7 @@ pub unsafe extern "C" fn lowlat_host_get_guests(
 /// what a peer will accept is refused here rather than sent and dropped in
 /// silence at the far end.
 ///
-/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] ll The handle from [`lowlat_host_create`].
 /// @param[in] guest_id Which guest, or [`LOWLAT_GUEST_ALL`] for everyone seated.
 /// @param[in] id The sub-identifier, which means whatever the application and its
 /// clients agreed it means.
@@ -1768,7 +1480,7 @@ pub unsafe extern "C" fn lowlat_host_get_guests(
 /// copied before the call returns and never retained.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_send_user_data(
-    ll: *mut lowlat,
+    ll: *mut lowlat_host,
     guest_id: u32,
     id: u32,
     data: *const c_void,
@@ -1822,7 +1534,7 @@ pub unsafe extern "C" fn lowlat_host_send_user_data(
 /// seat goes back. It does not disappear from the roster the instant this
 /// returns.
 ///
-/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] ll The handle from [`lowlat_host_create`].
 /// @param[in] guest_id Which guest to end.
 /// @param[in] reason What the peer is told, in the protocol's own disconnect numbering
 /// rather than this API's. Zero tells it nothing and leaves it seated.
@@ -1830,10 +1542,10 @@ pub unsafe extern "C" fn lowlat_host_send_user_data(
 ///
 /// # Safety
 ///
-/// `ll` came from [`lowlat_create`].
+/// `ll` came from [`lowlat_host_create`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_kick_guest(
-    ll: *mut lowlat,
+    ll: *mut lowlat_host,
     guest_id: u32,
     reason: i32,
 ) -> lowlat_status {
@@ -1865,7 +1577,7 @@ pub unsafe extern "C" fn lowlat_host_kick_guest(
 /// The change reaches the roster immediately and the guest's own devices on its
 /// next pass.
 ///
-/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] ll The handle from [`lowlat_host_create`].
 /// @param[in] guest_id Which guest.
 /// @param[in] perms One [`lowlat_permissions`]. Every flag clear is how a guest's input
 /// is turned off.
@@ -1873,11 +1585,11 @@ pub unsafe extern "C" fn lowlat_host_kick_guest(
 ///
 /// # Safety
 ///
-/// `ll` came from [`lowlat_create`], and `perms` points to one
+/// `ll` came from [`lowlat_host_create`], and `perms` points to one
 /// [`lowlat_permissions`].
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_set_permissions(
-    ll: *mut lowlat,
+    ll: *mut lowlat_host,
     guest_id: u32,
     perms: *const lowlat_permissions,
 ) -> lowlat_status {
@@ -2016,7 +1728,7 @@ pub unsafe extern "C" fn lowlat_get_outputs(
         if count.is_null() {
             return LOWLAT_ERR_INVALID_ARGUMENT;
         }
-        let listed = crate::display::Display::outputs();
+        let listed = ::lowlat_host::display::Display::outputs();
         let found = u32::try_from(listed.len()).unwrap_or(u32::MAX);
         if out.is_null() {
             unsafe { count.write(found) };
@@ -2067,16 +1779,16 @@ pub unsafe extern "C" fn lowlat_get_outputs(
 #[unsafe(no_mangle)]
 pub extern "C" fn lowlat_can_host() -> lowlat_status {
     guard(LOWLAT_ERR_INTERNAL, || {
-        status_of(crate::display::Display::capturable())
+        status_of(::lowlat_host::display::Display::capturable())
     })
 }
 
 /// What each answer means at the boundary.
-fn status_of(found: crate::display::Capturable) -> lowlat_status {
+fn status_of(found: ::lowlat_host::display::Capturable) -> lowlat_status {
     match found {
-        crate::display::Capturable::Yes => LOWLAT_OK,
-        crate::display::Capturable::NothingLit => LOWLAT_ERR_NO_DISPLAY,
-        crate::display::Capturable::NotReachable => LOWLAT_ERR_DISPLAY_UNREACHABLE,
+        ::lowlat_host::display::Capturable::Yes => LOWLAT_OK,
+        ::lowlat_host::display::Capturable::NothingLit => LOWLAT_ERR_NO_DISPLAY,
+        ::lowlat_host::display::Capturable::NotReachable => LOWLAT_ERR_DISPLAY_UNREACHABLE,
     }
 }
 
@@ -2135,7 +1847,7 @@ pub struct lowlat_host_status {
 /// application asking what state something is in should not have to know the
 /// answer first.
 ///
-/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] ll The handle from [`lowlat_host_create`].
 /// @param[out] out One [`lowlat_host_status`] whose `size` says how much of it is set.
 /// @returns [`LOWLAT_OK`], on a handle that is not hosting too.
 ///
@@ -2145,7 +1857,7 @@ pub struct lowlat_host_status {
 /// it is set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_get_status(
-    ll: *mut lowlat,
+    ll: *mut lowlat_host,
     out: *mut lowlat_host_status,
 ) -> lowlat_status {
     unsafe {
@@ -2180,7 +1892,7 @@ pub unsafe extern "C" fn lowlat_host_get_status(
             // Zero and clear until an encoder exists, the same way a picture
             // of no size is reported before a display has been opened.
             let (codec, ten_bit, chroma_444) = match seam.colour() {
-                Some((crate::stream::Codec::H264, ten_bit, chroma_444)) => (
+                Some((::lowlat_host::stream::Codec::H264, ten_bit, chroma_444)) => (
                     lowlat_codec::LOWLAT_CODEC_H264 as u32,
                     ten_bit,
                     if chroma_444 {
@@ -2189,7 +1901,7 @@ pub unsafe extern "C" fn lowlat_host_get_status(
                         lowlat_chroma::LOWLAT_CHROMA_420 as u32
                     },
                 ),
-                Some((crate::stream::Codec::H265, ten_bit, chroma_444)) => (
+                Some((::lowlat_host::stream::Codec::H265, ten_bit, chroma_444)) => (
                     lowlat_codec::LOWLAT_CODEC_HEVC as u32,
                     ten_bit,
                     if chroma_444 {
@@ -2227,7 +1939,7 @@ pub unsafe extern "C" fn lowlat_host_get_status(
 /// Answers how many guests it reached, which is zero for an empty room and not
 /// an error.
 ///
-/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] ll The handle from [`lowlat_host_create`].
 /// @param[in] data The body, whose shape belongs to the clients the application serves.
 /// Copied before this returns and never retained.
 /// @param[in] len How long the body is.
@@ -2241,7 +1953,7 @@ pub unsafe extern "C" fn lowlat_host_get_status(
 /// copied before the call returns and never retained.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_send_roster(
-    ll: *mut lowlat,
+    ll: *mut lowlat_host,
     data: *const c_void,
     len: u32,
     reached: *mut u32,
@@ -2354,7 +2066,7 @@ pub struct lowlat_metrics {
 }
 
 /// One channel's figures, as the boundary reports them.
-fn channel_metrics(from: crate::admission::ChannelMetrics) -> lowlat_channel_metrics {
+fn channel_metrics(from: ::lowlat_host::admission::ChannelMetrics) -> lowlat_channel_metrics {
     lowlat_channel_metrics {
         packets_sent: from.packets_sent,
         fast_rts: from.fast_rts,
@@ -2371,7 +2083,7 @@ fn channel_metrics(from: crate::admission::ChannelMetrics) -> lowlat_channel_met
 /// time and how many frames it has queued waiting to decode are the peer's to
 /// know; reporting either would be reporting a number this host made up.
 ///
-/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] ll The handle from [`lowlat_host_create`].
 /// @param[in] guest_id Which guest.
 /// @param[out] out One [`lowlat_metrics`] whose `size` says how much of it is set.
 /// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_UNKNOWN_GUEST`].
@@ -2382,7 +2094,7 @@ fn channel_metrics(from: crate::admission::ChannelMetrics) -> lowlat_channel_met
 /// is set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_get_metrics(
-    ll: *mut lowlat,
+    ll: *mut lowlat_host,
     guest_id: u32,
     out: *mut lowlat_metrics,
 ) -> lowlat_status {
@@ -2438,7 +2150,7 @@ pub unsafe extern "C" fn lowlat_host_get_metrics(
 /// because there is nothing yet for the values to apply to and accepting them
 /// silently would report settings that never took.
 ///
-/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] ll The handle from [`lowlat_host_create`].
 /// @param[in] cfg One [`lowlat_host_video_config`] whose `size` says how much of it is
 /// set.
 /// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_INVALID_ARGUMENT`] when the host is not
@@ -2446,11 +2158,11 @@ pub unsafe extern "C" fn lowlat_host_get_metrics(
 ///
 /// # Safety
 ///
-/// `ll` came from [`lowlat_create`], and `cfg` points to one
+/// `ll` came from [`lowlat_host_create`], and `cfg` points to one
 /// [`lowlat_host_video_config`] whose `size` says how much of it is set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_set_video_config(
-    ll: *mut lowlat,
+    ll: *mut lowlat_host,
     cfg: *const lowlat_host_video_config,
 ) -> lowlat_status {
     unsafe {
@@ -2482,7 +2194,7 @@ pub unsafe extern "C" fn lowlat_host_set_video_config(
 /// A device that does not resolve is refused rather than substituted, and the
 /// host keeps the one it has.
 ///
-/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] ll The handle from [`lowlat_host_create`].
 /// @param[in] cfg One [`lowlat_host_audio_config`] whose `size` says how much of it is
 /// set.
 /// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_INVALID_ARGUMENT`] for a device that does
@@ -2490,11 +2202,11 @@ pub unsafe extern "C" fn lowlat_host_set_video_config(
 ///
 /// # Safety
 ///
-/// `ll` came from [`lowlat_create`], and `cfg` points to one
+/// `ll` came from [`lowlat_host_create`], and `cfg` points to one
 /// [`lowlat_host_audio_config`] whose `size` says how much of it is set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_set_audio_config(
-    ll: *mut lowlat,
+    ll: *mut lowlat_host,
     cfg: *const lowlat_host_audio_config,
 ) -> lowlat_status {
     unsafe {
@@ -2523,7 +2235,7 @@ pub unsafe extern "C" fn lowlat_host_set_audio_config(
             let Some(seam) = held.seam.as_ref() else {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             };
-            seam.set_audio(&crate::stream::SoundSettings {
+            seam.set_audio(&::lowlat_host::stream::SoundSettings {
                 on,
                 allow_raw,
                 kbps,
@@ -2547,18 +2259,18 @@ pub unsafe extern "C" fn lowlat_host_set_audio_config(
 /// actually being read, and whether anything is, is in
 /// [`lowlat_host_status`].
 ///
-/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] ll The handle from [`lowlat_host_create`].
 /// @param[out] out One [`lowlat_host_audio_config`] whose `size` says how much of it is
 /// set.
 /// @returns [`LOWLAT_OK`].
 ///
 /// # Safety
 ///
-/// `ll` came from [`lowlat_create`], and `out` points to one
+/// `ll` came from [`lowlat_host_create`], and `out` points to one
 /// [`lowlat_host_audio_config`] whose `size` says how much of it is set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_get_audio_config(
-    ll: *mut lowlat,
+    ll: *mut lowlat_host,
     out: *mut lowlat_host_audio_config,
 ) -> lowlat_status {
     unsafe {
@@ -2595,18 +2307,18 @@ pub unsafe extern "C" fn lowlat_host_get_audio_config(
 /// stream's answer, and an application that kept its own copy would be
 /// describing settings another guest may have changed underneath it.
 ///
-/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] ll The handle from [`lowlat_host_create`].
 /// @param[out] out One [`lowlat_host_video_config`] whose `size` says how much of it is
 /// set.
 /// @returns [`LOWLAT_OK`].
 ///
 /// # Safety
 ///
-/// `ll` came from [`lowlat_create`], and `out` points to one
+/// `ll` came from [`lowlat_host_create`], and `out` points to one
 /// [`lowlat_host_video_config`] whose `size` says how much of it is set.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_get_video_config(
-    ll: *mut lowlat,
+    ll: *mut lowlat_host,
     out: *mut lowlat_host_video_config,
 ) -> lowlat_status {
     unsafe {
@@ -2632,8 +2344,8 @@ pub unsafe extern "C" fn lowlat_host_get_video_config(
             // **What is being captured, not what was asked for.** A guest can
             // switch outputs and a display can move by itself; an application
             // told the request marks the wrong screen.
-            let listed = crate::display::Display::outputs();
-            let running = crate::display::captured(&listed, seam.captured())
+            let listed = ::lowlat_host::display::Display::outputs();
+            let running = ::lowlat_host::display::captured(&listed, seam.captured())
                 .map(|output| output.id.clone())
                 .unwrap_or_default();
             put(&mut slot.output, &running);
@@ -2653,14 +2365,14 @@ pub unsafe extern "C" fn lowlat_host_get_video_config(
 /// stopping costs a peer the wait rather than being immediate to it. There is
 /// no reason parameter here because there is nothing yet that could carry one.
 ///
-/// @param[in] ll The handle from [`lowlat_create`]. It may be started again.
+/// @param[in] ll The handle from [`lowlat_host_create`]. It may be started again.
 /// @returns [`LOWLAT_OK`], once every guest is disconnected and every thread joined.
 ///
 /// # Safety
 ///
-/// `ll` came from [`lowlat_create`].
+/// `ll` came from [`lowlat_host_create`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lowlat_host_stop(ll: *mut lowlat) -> lowlat_status {
+pub unsafe extern "C" fn lowlat_host_stop(ll: *mut lowlat_host) -> lowlat_status {
     unsafe {
         entered(ll, |handle| {
             // The queue outlives the seam on purpose: what it raised on the way
@@ -2703,7 +2415,7 @@ pub const LOWLAT_MICROPHONE_CHANNELS: u32 = 1;
 /// [`lowlat_host_audio_config`] to take one; it is off by default, and until
 /// it is on a peer keeps its microphone muted and sends nothing.
 ///
-/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] ll The handle from [`lowlat_host_create`].
 /// @param[in] timeout_ms How long to wait for a packet. Zero polls without waiting.
 /// @param[out] samples Where the packet is written. Must hold
 /// [`LOWLAT_MICROPHONE_SAMPLES_MAX`].
@@ -2720,7 +2432,7 @@ pub const LOWLAT_MICROPHONE_CHANNELS: u32 = 1;
 /// `dropped` are readable and writable. `guest` and `dropped` may be null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_poll_microphone(
-    ll: *mut lowlat,
+    ll: *mut lowlat_host,
     timeout_ms: u32,
     samples: *mut i16,
     count: *mut u32,
@@ -2754,11 +2466,11 @@ pub unsafe extern "C" fn lowlat_host_poll_microphone(
                 .heard
                 .recv_timeout_into(Duration::from_millis(u64::from(timeout_ms)), buffer)
             {
-                crate::microphone::Taken::Empty => {
+                ::lowlat_host::microphone::Taken::Empty => {
                     count.write(0);
                     LOWLAT_TIMEOUT
                 }
-                crate::microphone::Taken::Took {
+                ::lowlat_host::microphone::Taken::Took {
                     guest: from,
                     samples: written,
                     dropped: lost,
@@ -2791,7 +2503,7 @@ pub unsafe extern "C" fn lowlat_host_poll_microphone(
 /// answered, `body_len` is set to what the body needs, and the same event is
 /// delivered by the next call with room for it.
 ///
-/// @param[in] ll The handle from [`lowlat_create`].
+/// @param[in] ll The handle from [`lowlat_host_create`].
 /// @param[in] timeout_ms How long to wait for an event. Zero polls without waiting.
 /// @param[out] out One [`lowlat_event`].
 /// @param[out] body Receives an application message's body, or `NULL` to be delivered
@@ -2809,7 +2521,7 @@ pub unsafe extern "C" fn lowlat_host_poll_microphone(
 /// writable.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_host_poll_events(
-    ll: *mut lowlat,
+    ll: *mut lowlat_host,
     timeout_ms: u32,
     out: *mut lowlat_event,
     body: *mut c_void,
@@ -2871,16 +2583,16 @@ pub unsafe extern "C" fn lowlat_host_poll_events(
 /// too: the handle is poisoned, every later call on it is refused, and
 /// destroying it still works.
 ///
-/// @param[in] ll The handle from [`lowlat_create`]. It is poisoned afterwards: every
+/// @param[in] ll The handle from [`lowlat_host_create`]. It is poisoned afterwards: every
 /// later call on it is refused and destroying it still works.
 /// @returns [`LOWLAT_ERR_INTERNAL`], the panic having been caught. Every later call on
 /// `ll` answers [`LOWLAT_ERR_POISONED`].
 ///
 /// # Safety
 ///
-/// `ll` came from [`lowlat_create`].
+/// `ll` came from [`lowlat_host_create`].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lowlat_debug_panic(ll: *mut lowlat) -> lowlat_status {
+pub unsafe extern "C" fn lowlat_debug_panic(ll: *mut lowlat_host) -> lowlat_status {
     unsafe {
         entered(ll, |_| {
             panic!("deliberate panic, to prove the boundary contains one")
@@ -2918,7 +2630,7 @@ fn put_address(into: &mut [c_char], port: &mut u16, addr: &std::net::SocketAddr)
 }
 
 /// Describe one event in the shape the boundary publishes.
-fn described(received: &crate::events::Received) -> lowlat_event {
+fn described(received: &::lowlat_host::events::Received) -> lowlat_event {
     let dropped = received.dropped;
     match &received.event {
         Event::Candidate {
@@ -3053,8 +2765,11 @@ fn described(received: &crate::events::Received) -> lowlat_event {
 ///
 /// # Safety
 ///
-/// `ll` is null or came from [`lowlat_create`].
-unsafe fn entered(ll: *mut lowlat, call: impl FnOnce(&lowlat) -> lowlat_status) -> lowlat_status {
+/// `ll` is null or came from [`lowlat_host_create`].
+unsafe fn entered(
+    ll: *mut lowlat_host,
+    call: impl FnOnce(&lowlat_host) -> lowlat_status,
+) -> lowlat_status {
     let Some(handle) = (unsafe { ll.as_ref() }) else {
         return LOWLAT_ERR_INVALID_ARGUMENT;
     };
@@ -3071,77 +2786,9 @@ unsafe fn entered(ll: *mut lowlat, call: impl FnOnce(&lowlat) -> lowlat_status) 
     }
 }
 
-/// Run one entry point's body with unwinding contained.
-///
-/// A panic crossing an `extern "C"` boundary is undefined behaviour and this
-/// library loads into processes we do not control, so every entry point that
-/// runs any of our code goes through here.
-///
-/// **Unwind safety is asserted rather than proven**, and what makes that sound
-/// is the poisoning that arrives with the handle: state a panic may have left
-/// half-written is never read again, because every later call on that handle
-/// is refused before it reaches this point.
-fn guard<T>(contained: T, call: impl FnOnce() -> T) -> T {
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(call)) {
-        Ok(value) => value,
-        Err(_) => {
-            lowlat_common::log_error!("abi: a call panicked, contained at the boundary");
-            contained
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// **The version is packed, not added.** A minor of 1 and a major of 1 are
-    /// different versions, and a loader that compares a sum accepts one for
-    /// the other.
-    #[test]
-    fn the_version_packs_major_above_minor() {
-        let packed = lowlat_abi_version();
-        assert_eq!(packed >> 16, LOWLAT_ABI_MAJOR);
-        assert_eq!(packed & 0xffff, LOWLAT_ABI_MINOR);
-    }
-
-    /// **Every status describes itself, and an undefined one still answers.**
-    /// A caller reaches for this while something is already wrong, so a null
-    /// pointer here costs the diagnosis it was called for.
-    #[test]
-    fn every_status_describes_itself_and_so_does_one_we_never_defined() {
-        for status in [
-            LOWLAT_OK,
-            LOWLAT_TIMEOUT,
-            LOWLAT_ERR_INTERNAL,
-            LOWLAT_ERR_INVALID_ARGUMENT,
-            LOWLAT_ERR_TOO_SMALL,
-            LOWLAT_ERR_POISONED,
-            LOWLAT_ERR_ALREADY_STARTED,
-            LOWLAT_ERR_NOT_STARTED,
-            LOWLAT_ERR_AT_CAPACITY,
-            LOWLAT_ERR_UNKNOWN_ATTEMPT,
-            LOWLAT_ERR_ALREADY_BEGUN,
-            LOWLAT_ERR_WITHDRAWN,
-            LOWLAT_ERR_IO,
-            LOWLAT_ERR_CRYPTO,
-            LOWLAT_ERR_UNKNOWN_GUEST,
-            LOWLAT_ERR_NO_DISPLAY,
-            LOWLAT_ERR_DISPLAY_UNREACHABLE,
-        ] {
-            let text = lowlat_status_string(status as i32);
-            assert!(!text.is_null());
-            // Safe: the pointer is to a literal with static storage.
-            let text = unsafe { CStr::from_ptr(text) };
-            assert_ne!(
-                text.to_bytes(),
-                b"unknown status",
-                "{status:?} is missing from the description table"
-            );
-        }
-        let unknown = unsafe { CStr::from_ptr(lowlat_status_string(-31337)) };
-        assert_eq!(unknown.to_bytes(), b"unknown status");
-    }
 
     /// **A panic is contained, and what follows it is refused.** The test
     /// that matters runs against the built shared object, in `tests/abi.rs`;
@@ -3149,9 +2796,9 @@ mod tests {
     /// poisoned handle still works, which is the half a C harness cannot see.
     #[test]
     fn a_panic_poisons_the_handle_and_destroying_it_still_works() {
-        let mut handle: *mut lowlat = core::ptr::null_mut();
+        let mut handle: *mut lowlat_host = core::ptr::null_mut();
         assert_eq!(
-            unsafe { lowlat_create(core::ptr::null(), &raw mut handle) },
+            unsafe { lowlat_host_create(core::ptr::null(), &raw mut handle) },
             LOWLAT_OK
         );
         assert!(!handle.is_null());
@@ -3173,7 +2820,7 @@ mod tests {
             LOWLAT_ERR_POISONED
         );
 
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 
     /// **A null handle is refused rather than dereferenced**, which is the
@@ -3186,7 +2833,7 @@ mod tests {
         );
         // And destroying nothing is allowed, so an application's cleanup path
         // needs no branch of its own.
-        unsafe { lowlat_destroy(core::ptr::null_mut()) };
+        unsafe { lowlat_host_destroy(core::ptr::null_mut()) };
     }
 
     /// **Polling a host that has not started waits on a real queue.** An
@@ -3196,9 +2843,9 @@ mod tests {
     /// is nothing to special-case.
     #[test]
     fn polling_before_hosting_waits_and_then_times_out() {
-        let mut handle: *mut lowlat = core::ptr::null_mut();
+        let mut handle: *mut lowlat_host = core::ptr::null_mut();
         assert_eq!(
-            unsafe { lowlat_create(core::ptr::null(), &raw mut handle) },
+            unsafe { lowlat_host_create(core::ptr::null(), &raw mut handle) },
             LOWLAT_OK
         );
         let mut event = core::mem::MaybeUninit::<lowlat_event>::uninit();
@@ -3217,7 +2864,7 @@ mod tests {
         );
         let waited = lowlat_common::clock::elapsed_ms(began);
         assert!(waited >= 50.0, "returned after {waited:.1} ms, so it spun");
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 }
 
@@ -3274,10 +2921,10 @@ mod start_tests {
         }
     }
 
-    pub(super) fn handle() -> *mut lowlat {
-        let mut handle: *mut lowlat = core::ptr::null_mut();
+    pub(super) fn handle() -> *mut lowlat_host {
+        let mut handle: *mut lowlat_host = core::ptr::null_mut();
         assert_eq!(
-            unsafe { lowlat_create(core::ptr::null(), &raw mut handle) },
+            unsafe { lowlat_host_create(core::ptr::null(), &raw mut handle) },
             LOWLAT_OK
         );
         handle
@@ -3304,7 +2951,7 @@ mod start_tests {
             unsafe { lowlat_host_start(handle, &raw const cfg) },
             LOWLAT_OK
         );
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 
     /// **What a caller sets at start is what it reads back.** A field the
@@ -3330,7 +2977,7 @@ mod start_tests {
         );
         assert!(back.full_fps, "a permission set at start was dropped");
         assert_eq!(back.fps, 45);
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 
     /// **A configuration nobody filled in is not a zeroed one.**
@@ -3365,7 +3012,9 @@ mod start_tests {
         );
         // **One figure, two types.** The field is whole milliseconds and the
         // arbitration's constant is not, so this is what catches a drift.
-        assert!((f64::from(cfg.exclusive_hold_ms) - crate::floor::HOLD_MS).abs() < f64::EPSILON);
+        assert!(
+            (f64::from(cfg.exclusive_hold_ms) - ::lowlat_host::floor::HOLD_MS).abs() < f64::EPSILON
+        );
         // And the whole of it survives the validation an application's own
         // structure would face.
         assert!(
@@ -3387,7 +3036,7 @@ mod start_tests {
             LOWLAT_ERR_INVALID_ARGUMENT,
             "a null configuration was refused instead of meaning the defaults"
         );
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 
     /// **Every enumerated field is checked, not transmuted.** The application
@@ -3430,7 +3079,7 @@ mod start_tests {
             unsafe { lowlat_host_start(handle, &raw const good) },
             LOWLAT_OK
         );
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 
     /// **Both families of a dual-stack reflexive server are asked.**
@@ -3495,7 +3144,7 @@ mod start_tests {
             unsafe { lowlat_host_start(handle, &raw const cfg) },
             LOWLAT_OK
         );
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 
     /// **The queue outlives the host on it.** It exists from creation, so a
@@ -3541,7 +3190,7 @@ mod start_tests {
             after == LOWLAT_OK || after == LOWLAT_TIMEOUT,
             "the queue went away with the host that was raising into it"
         );
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 }
 
@@ -3549,6 +3198,8 @@ mod start_tests {
 mod seam_tests {
     use super::start_tests::{config, handle};
     use super::*;
+    use crate::abi::lowlat_status_string;
+    use core::ffi::CStr;
 
     fn attempt(id: &str) -> lowlat_attempt_info {
         let mut info = lowlat_attempt_info {
@@ -3631,7 +3282,7 @@ mod seam_tests {
             LOWLAT_ERR_INVALID_ARGUMENT
         );
         unsafe { lowlat_host_stop(handle) };
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 
     /// A browser is trusted by its digest and nothing else, so an attempt
@@ -3657,7 +3308,7 @@ mod seam_tests {
             "the offer's certificate digest is missing or malformed"
         );
         unsafe { lowlat_host_stop(handle) };
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 
     /// A browser's answer carries the process certificate's digest with its
@@ -3688,11 +3339,11 @@ mod seam_tests {
         assert_eq!(taken(&ours.aes256), Some(""));
         assert_ne!(ours.port, 0);
         unsafe { lowlat_host_stop(handle) };
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 
     /// Register and approve one attempt, which is what gives it a number.
-    pub(super) fn approved(handle: *mut lowlat, id: &str) {
+    pub(super) fn approved(handle: *mut lowlat_host, id: &str) {
         let info = attempt(id);
         assert_eq!(
             unsafe { lowlat_host_new_attempt(handle, &raw const info) },
@@ -3706,7 +3357,7 @@ mod seam_tests {
         );
     }
 
-    pub(super) fn started() -> *mut lowlat {
+    pub(super) fn started() -> *mut lowlat_host {
         let handle = handle();
         let cfg = config();
         assert_eq!(
@@ -3780,7 +3431,7 @@ mod seam_tests {
             "a legacy answer carried a media key"
         );
         unsafe { lowlat_host_end_connection(handle, c"old".as_ptr()) };
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 
     /// **Every refusal is its own status.** An application declines an offer
@@ -3835,7 +3486,7 @@ mod seam_tests {
                     unsafe { lowlat_host_end_connection(handle, id.as_ptr()) };
                 }
                 unsafe { lowlat_host_end_connection(handle, c"a".as_ptr()) };
-                unsafe { lowlat_destroy(handle) };
+                unsafe { lowlat_host_destroy(handle) };
                 return;
             }
             assert_eq!(status, LOWLAT_OK);
@@ -3870,7 +3521,7 @@ mod seam_tests {
                 LOWLAT_ERR_INVALID_ARGUMENT
             );
         }
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 
     /// **A readiness marker carries no address and is still forwarded**, while
@@ -3905,7 +3556,7 @@ mod seam_tests {
         unsafe { lowlat_host_add_candidate(handle, c"gone".as_ptr(), &raw const cand) };
 
         unsafe { lowlat_host_end_connection(handle, c"a".as_ptr()) };
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 
     /// The seam needs a host. Registering against one that never started is a
@@ -3918,7 +3569,7 @@ mod seam_tests {
             unsafe { lowlat_host_new_attempt(handle, &raw const info) },
             LOWLAT_ERR_NOT_STARTED
         );
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 }
 
@@ -3928,7 +3579,7 @@ mod roster_tests {
     use super::*;
 
     /// Read the whole roster, which several tests need.
-    pub(super) fn roster_of(handle: *mut lowlat) -> Vec<lowlat_guest> {
+    pub(super) fn roster_of(handle: *mut lowlat_host) -> Vec<lowlat_guest> {
         let mut count = 0u32;
         assert_eq!(
             unsafe { lowlat_host_get_guests(handle, core::ptr::null_mut(), &raw mut count) },
@@ -4002,7 +3653,7 @@ mod roster_tests {
         assert!(room[0].number < room[1].number);
         assert!(room[0].permissions.keyboard && room[0].permissions.pointer);
 
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 
     /// **A buffer too small is filled as far as it goes and says what it
@@ -4034,7 +3685,7 @@ mod roster_tests {
         assert_eq!(count, 2, "it did not say how many there really were");
         assert_ne!(room[0].number, 0, "the room it had was left unfilled");
 
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 
     /// **The roster reaches everybody and is not a message.** A peer has no way
@@ -4091,7 +3742,7 @@ mod roster_tests {
             LOWLAT_ERR_INVALID_ARGUMENT
         );
 
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 
     /// A message aimed at nobody in particular reaches everyone, and one aimed
@@ -4145,7 +3796,7 @@ mod roster_tests {
             LOWLAT_OK
         );
 
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 }
 
@@ -4185,7 +3836,7 @@ mod guest_tests {
             unsafe { lowlat_host_set_permissions(handle, 4242, &raw const perms) },
             LOWLAT_ERR_UNKNOWN_GUEST
         );
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 
     /// **A guest is kicked with a reason, and zero is not one.** A peer carries
@@ -4210,14 +3861,14 @@ mod guest_tests {
             unsafe { lowlat_host_kick_guest(handle, guest, -15000) },
             LOWLAT_OK
         );
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 }
 
 #[cfg(test)]
 mod preflight_tests {
     use super::*;
-    use crate::display::Capturable;
+    use ::lowlat_host::display::Capturable;
 
     /// **Each way of not being able to capture keeps its own status.** The two
     /// are indistinguishable once hosting has failed, which is the whole
@@ -4308,101 +3959,7 @@ mod status_tests {
         assert!(!status.audio_active);
         assert_eq!(taken(&status.audio_device), Some(""));
 
-        unsafe { lowlat_destroy(handle) };
-    }
-}
-
-#[cfg(test)]
-mod logging_tests {
-    use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    /// **Only this test's own lines are counted.** The sink is process-wide
-    /// and every other test in this binary logs into it, so counting
-    /// everything would make this pass or fail on what else happened to be
-    /// running.
-    const MARK: &str = "logtest:";
-
-    static SEEN: AtomicU32 = AtomicU32::new(0);
-    static LEVEL_SEEN: AtomicU32 = AtomicU32::new(99);
-    static TERMINATED: AtomicU32 = AtomicU32::new(0);
-    static OPAQUE_KEPT: AtomicU32 = AtomicU32::new(0);
-
-    unsafe extern "C" fn counted(level: u32, message: *const c_char, opaque: *mut c_void) {
-        if message.is_null() {
-            return;
-        }
-        // **Read as a C string, which is the whole reason for the copy.** A
-        // message that was not terminated would run off the end here rather
-        // than parse, so reaching this at all is half the assertion.
-        let text = unsafe { CStr::from_ptr(message) };
-        let Ok(text) = text.to_str() else {
-            return;
-        };
-        if !text.starts_with(MARK) {
-            return;
-        }
-        TERMINATED.fetch_add(1, Ordering::Relaxed);
-        if opaque as usize == 0x1234 {
-            OPAQUE_KEPT.fetch_add(1, Ordering::Relaxed);
-        }
-        LEVEL_SEEN.store(level, Ordering::Relaxed);
-        SEEN.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Forward to standard error, so clearing the callback at the end of this
-    /// test does not silence every test that runs after it.
-    unsafe extern "C" fn to_stderr(level: u32, message: *const c_char, _opaque: *mut c_void) {
-        if message.is_null() {
-            return;
-        }
-        let text = unsafe { CStr::from_ptr(message) };
-        eprintln!("[{level}] {}", text.to_string_lossy());
-    }
-
-    /// **The line reaches the application terminated, with its own pointer
-    /// handed back**, and the level still decides what is formatted at all.
-    #[test]
-    fn a_registered_callback_receives_lines_and_its_own_pointer() {
-        assert_eq!(
-            unsafe { lowlat_set_log_callback(Some(counted), 0x1234 as *mut c_void) },
-            LOWLAT_OK
-        );
-        SEEN.store(0, Ordering::Relaxed);
-        lowlat_common::log_warn!("{MARK} a line, key=value");
-        assert_eq!(SEEN.load(Ordering::Relaxed), 1);
-        assert_eq!(TERMINATED.load(Ordering::Relaxed), 1);
-        assert_eq!(
-            OPAQUE_KEPT.load(Ordering::Relaxed),
-            1,
-            "the opaque pointer did not survive the round trip"
-        );
-        assert_eq!(
-            LEVEL_SEEN.load(Ordering::Relaxed),
-            lowlat_log_level::LOWLAT_LOG_WARN as u32
-        );
-
-        // **Replaceable**, which the sink underneath is not: clearing stops
-        // delivery rather than being refused because something is installed.
-        assert_eq!(
-            unsafe { lowlat_set_log_callback(None, core::ptr::null_mut()) },
-            LOWLAT_OK
-        );
-        lowlat_common::log_warn!("{MARK} after clearing");
-        assert_eq!(
-            SEEN.load(Ordering::Relaxed),
-            1,
-            "a line arrived after the callback was cleared"
-        );
-
-        // A level nothing defines is refused rather than quietly clamped.
-        assert_eq!(lowlat_set_log_level(99), LOWLAT_ERR_INVALID_ARGUMENT);
-        assert_eq!(
-            lowlat_set_log_level(lowlat_log_level::LOWLAT_LOG_INFO as u32),
-            LOWLAT_OK
-        );
-
-        unsafe { lowlat_set_log_callback(Some(to_stderr), core::ptr::null_mut()) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 }
 
@@ -4445,7 +4002,7 @@ mod metrics_tests {
             taken(&roster[0].attempt).unwrap_or_default(),
             "an-attempt-with-a-name"
         );
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 
     /// **Never is not zero milliseconds ago.** An application kicking idle
@@ -4483,6 +4040,6 @@ mod metrics_tests {
             LOWLAT_ERR_INVALID_ARGUMENT
         );
 
-        unsafe { lowlat_destroy(handle) };
+        unsafe { lowlat_host_destroy(handle) };
     }
 }

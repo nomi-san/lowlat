@@ -1,0 +1,52 @@
+[package]
+name = "lowlat-sdk"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# The one shared object and the one header. Everything an application links
+# is here; the host and the client are its two halves, each a feature, so a
+# platform that can only be a client builds a library with no host in it.
+[lib]
+name = "lowlat"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["host", "client"]
+# The host half: capture, encode, delivery and input, and every
+# `lowlat_host_*` entry point. Off, none of the Linux display stack is compiled.
+host = [
+    "dep:lowlat-host",
+    "dep:lowlat-core",
+    "dep:lowlat-crypto",
+    "dep:lowlat-audio",
+    "dep:lowlat-encode",
+    "dep:lowlat-inject",
+]
+# The client half: decode and present. Nothing yet; the feature exists so the
+# header, the build and `lowlat_features` already say which half is which.
+client = []
+
+[dependencies]
+lowlat-common.workspace = true
+lowlat-host = { workspace = true, optional = true }
+lowlat-core = { workspace = true, optional = true }
+lowlat-crypto = { workspace = true, optional = true }
+lowlat-audio = { workspace = true, optional = true }
+lowlat-encode = { workspace = true, optional = true }
+lowlat-inject = { workspace = true, optional = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+# Generates the C header from these definitions, so the two cannot drift
+# (docs/06-api.md 12). A dev-dependency rather than a build one: the header is
+# committed, nothing on a build machine regenerates it, and a test is what
+# fails when it is stale. Default features off drops the command-line parser,
+# which is ten crates we would carry to call a library function.
+cbindgen = { version = "0.29.4", default-features = false }

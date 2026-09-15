@@ -16,8 +16,8 @@
 
 use std::io::Write;
 
-use lowlat::display::{Display, Register, Registration};
 use lowlat_encode::{Poll, vaapi};
+use lowlat_host::display::{Display, Register, Registration};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -35,7 +35,7 @@ fn main() {
     let Some((width, height, refresh_hz)) = Display::shape_of_display(wanted.as_deref()) else {
         fail("no output of that name is lit");
     };
-    let backend = Some(lowlat::capture::Backend::requested());
+    let backend = Some(lowlat_host::capture::Backend::requested());
     println!("{width}x{height}@{refresh_hz}, converting on {backend:?}");
 
     let api = vaapi::Vaapi::load().unwrap_or_else(|e| fail(&format!("encoder: {e}")));

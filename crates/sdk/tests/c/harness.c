@@ -62,38 +62,49 @@ int main(int argc, char **argv)
     }
 
     uint32_t (*abi_version)(void);
+    uint32_t (*features)(void);
     const char *(*status_string)(lowlat_status);
-    lowlat_status (*debug_panic)(lowlat *);
-    lowlat_status (*create)(const lowlat_create_info *, lowlat **);
-    void (*destroy)(lowlat *);
-    lowlat_status (*poll_events)(lowlat *, uint32_t, lowlat_event *, void *, uint32_t *);
-    lowlat_status (*host_start)(lowlat *, const lowlat_host_config *);
-    lowlat_status (*host_stop)(lowlat *);
-    lowlat_status (*set_video)(lowlat *, const lowlat_host_video_config *);
-    lowlat_status (*get_video)(lowlat *, lowlat_host_video_config *);
-    lowlat_status (*set_audio)(lowlat *, const lowlat_host_audio_config *);
-    lowlat_status (*get_audio)(lowlat *, lowlat_host_audio_config *);
+    lowlat_status (*debug_panic)(lowlat_host *);
+    lowlat_status (*create)(const lowlat_host_create_info *, lowlat_host **);
+    void (*destroy)(lowlat_host *);
+    lowlat_status (*poll_events)(lowlat_host *, uint32_t, lowlat_event *, void *, uint32_t *);
+    lowlat_status (*host_start)(lowlat_host *, const lowlat_host_config *);
+    lowlat_status (*host_stop)(lowlat_host *);
+    lowlat_status (*set_video)(lowlat_host *, const lowlat_host_video_config *);
+    lowlat_status (*get_video)(lowlat_host *, lowlat_host_video_config *);
+    lowlat_status (*set_audio)(lowlat_host *, const lowlat_host_audio_config *);
+    lowlat_status (*get_audio)(lowlat_host *, lowlat_host_audio_config *);
     lowlat_status (*get_audio_outputs)(lowlat_audio_output *, uint32_t *);
-    lowlat_status (*new_attempt)(lowlat *, const lowlat_attempt_info *);
-    void (*add_candidate)(lowlat *, const char *, const lowlat_candidate *);
-    lowlat_status (*begin_p2p)(lowlat *, const char *, uint16_t, lowlat_credentials *);
-    void (*end_connection)(lowlat *, const char *);
-    lowlat_status (*get_guests)(lowlat *, lowlat_guest *, uint32_t *);
-    lowlat_status (*send_user_data)(lowlat *, uint32_t, uint32_t, const void *, uint32_t);
-    lowlat_status (*send_roster)(lowlat *, const void *, uint32_t, uint32_t *);
-    lowlat_status (*get_metrics)(lowlat *, uint32_t, lowlat_metrics *);
-    lowlat_status (*set_permissions)(lowlat *, uint32_t, const lowlat_permissions *);
-    lowlat_status (*kick_guest)(lowlat *, uint32_t, int32_t);
+    lowlat_status (*new_attempt)(lowlat_host *, const lowlat_attempt_info *);
+    void (*add_candidate)(lowlat_host *, const char *, const lowlat_candidate *);
+    lowlat_status (*begin_p2p)(lowlat_host *, const char *, uint16_t, lowlat_credentials *);
+    void (*end_connection)(lowlat_host *, const char *);
+    lowlat_status (*get_guests)(lowlat_host *, lowlat_guest *, uint32_t *);
+    lowlat_status (*send_user_data)(lowlat_host *, uint32_t, uint32_t, const void *, uint32_t);
+    lowlat_status (*send_roster)(lowlat_host *, const void *, uint32_t, uint32_t *);
+    lowlat_status (*get_metrics)(lowlat_host *, uint32_t, lowlat_metrics *);
+    lowlat_status (*set_permissions)(lowlat_host *, uint32_t, const lowlat_permissions *);
+    lowlat_status (*kick_guest)(lowlat_host *, uint32_t, int32_t);
     lowlat_status (*can_host)(void);
     lowlat_status (*get_outputs)(lowlat_output *, uint32_t *);
-    lowlat_status (*get_status)(lowlat *, lowlat_host_status *);
+    lowlat_status (*get_status)(lowlat_host *, lowlat_host_status *);
     lowlat_status (*set_log_callback)(void (*)(uint32_t, const char *, void *), void *);
 
     RESOLVE(abi_version, lib, "lowlat_abi_version");
+    RESOLVE(features, lib, "lowlat_features");
+    /* Said before anything of the host half is looked up. The object at this
+     * path is whatever the last build put there, and a build of the client
+     * half alone leaves one with the same name and none of these symbols; an
+     * unresolved name would then be the first the loop happened to reach. */
+    if ((features() & LOWLAT_FEATURE_HOST) == 0) {
+        fprintf(stderr, "harness: the object was built without the host half (features 0x%x)\n",
+                (unsigned) features());
+        return 1;
+    }
     RESOLVE(status_string, lib, "lowlat_status_string");
     RESOLVE(debug_panic, lib, "lowlat_debug_panic");
-    RESOLVE(create, lib, "lowlat_create");
-    RESOLVE(destroy, lib, "lowlat_destroy");
+    RESOLVE(create, lib, "lowlat_host_create");
+    RESOLVE(destroy, lib, "lowlat_host_destroy");
     RESOLVE(poll_events, lib, "lowlat_host_poll_events");
     RESOLVE(host_start, lib, "lowlat_host_start");
     RESOLVE(host_stop, lib, "lowlat_host_stop");
@@ -156,9 +167,9 @@ int main(int argc, char **argv)
         }
     }
 
-    lowlat_create_info info;
+    lowlat_host_create_info info;
     info.size = (uint32_t) sizeof info;
-    lowlat *ll = NULL;
+    lowlat_host *ll = NULL;
     if (create(&info, &ll) != LOWLAT_OK || ll == NULL) {
         fprintf(stderr, "harness: a handle could not be created\n");
         return 1;

@@ -12,7 +12,7 @@
 
 use std::net::SocketAddr;
 
-use lowlat::admission::{Admission, Config, Event, Peer, Transport};
+use lowlat_host::admission::{Admission, Config, Event, Peer, Transport};
 use lowlat_kessel::message::{
     Answer, AnswerData, CancelRelay, Candex, CandexRelay, CandidateData, ConnUpdate, Credentials,
     HostDataBase, OfferRelay, Relayed, no_credentials,
@@ -201,7 +201,7 @@ fn flag_set(name: &str) -> bool {
 /// **A count and a rate rather than every packet.** A hundred lines a second
 /// says nothing that one line a second does not, and it buries the rest of the
 /// log while it does it.
-fn report_microphone(heard: &lowlat::microphone::Receiver) {
+fn report_microphone(heard: &lowlat_host::microphone::Receiver) {
     let mut samples = [0i16; 960];
     let mut packets = 0u64;
     let mut lost = 0u64;
@@ -209,8 +209,8 @@ fn report_microphone(heard: &lowlat::microphone::Receiver) {
     let mut said = lowlat_common::clock::Time::now();
     loop {
         match heard.recv_timeout_into(std::time::Duration::from_millis(500), &mut samples) {
-            lowlat::microphone::Taken::Empty => {}
-            lowlat::microphone::Taken::Took {
+            lowlat_host::microphone::Taken::Empty => {}
+            lowlat_host::microphone::Taken::Took {
                 guest,
                 samples: count,
                 dropped,
@@ -356,7 +356,7 @@ fn session() -> ! {
     // and announces one that appears, but only to a client that is still
     // connected; a query that opens, reads and closes learns the layout once
     // and can never learn that it changed.
-    let watching = lowlat::capture::Watch::open();
+    let watching = lowlat_host::capture::Watch::open();
     // **Whether the session takes mode requests is a property of the
     // compositor**, asked once here and announced, so a desktop without the
     // mechanism refuses a request at the service rather than here.
@@ -364,7 +364,7 @@ fn session() -> ! {
         idle: screen.is_some(),
         clipboard: clip.is_some(),
         layout: watching.is_some(),
-        mode: lowlat::capture::mode::offered(),
+        mode: lowlat_host::capture::mode::offered(),
         ..channel::Can::default()
     };
     // **A thread of its own, because owning a clipboard is a wait.** The
@@ -617,10 +617,10 @@ const SEAT_MS: f64 = 1000.0;
 /// axis spans the picture alone rather than a desktop that is no longer there.
 fn adopt_layout(
     seam: &mut Admission,
-    layout: &mut Option<Vec<lowlat::capture::Output>>,
-    chosen: Option<Vec<lowlat::capture::Output>>,
-) -> Option<lowlat::capture::Placement> {
-    lowlat::capture::tell(chosen.clone());
+    layout: &mut Option<Vec<lowlat_host::capture::Output>>,
+    chosen: Option<Vec<lowlat_host::capture::Output>>,
+) -> Option<lowlat_host::capture::Placement> {
+    lowlat_host::capture::tell(chosen.clone());
     *layout = chosen;
     let placed = situate(seam, layout.as_deref());
     if placed.is_none() {
@@ -636,12 +636,12 @@ fn adopt_layout(
 /// alongside, and the two are the same name with a prefix.
 fn situate(
     seam: &mut Admission,
-    layout: Option<&[lowlat::capture::Output]>,
-) -> Option<lowlat::capture::Placement> {
+    layout: Option<&[lowlat_host::capture::Output]>,
+) -> Option<lowlat_host::capture::Placement> {
     let outputs = layout?;
-    let listed = lowlat::display::Display::outputs();
-    let capturing = lowlat::display::captured(&listed, seam.captured())?;
-    let place = lowlat::capture::place(outputs, &capturing.connector);
+    let listed = lowlat_host::display::Display::outputs();
+    let capturing = lowlat_host::display::captured(&listed, seam.captured())?;
+    let place = lowlat_host::capture::place(outputs, &capturing.connector);
     match place {
         Some(place) => lowlat_common::log_info!(
             "lowlatd: {} is {}x{} at {},{} of a {}x{} desktop, rotation={}",
@@ -669,12 +669,12 @@ fn situate(
 /// a helper connected read the layout once for itself; saying it again costs a
 /// frame and covers the case where it read nothing at all.
 fn watch_layout(
-    mut watch: lowlat::capture::Watch,
-    first: Vec<lowlat::capture::Output>,
+    mut watch: lowlat_host::capture::Watch,
+    first: Vec<lowlat_host::capture::Output>,
     writer: &Writer,
     latest: &Latest,
 ) {
-    let say = |outputs: &[lowlat::capture::Output]| {
+    let say = |outputs: &[lowlat_host::capture::Output]| {
         lowlat_common::log_info!("session: the desktop has {} output(s)", outputs.len());
         // **Kept, for the next connection.** A service that restarts has
         // read nothing, and the layout is only ever sent on change; the
@@ -717,9 +717,9 @@ fn watch_layout(
 fn change_mode(output: &str, size: Option<(u32, u32)>, rotation: Option<u8>) -> Result<(), String> {
     // The wire's code is one-based and the session's transform is not.
     let transform = rotation.map(|rotation| u32::from(rotation.saturating_sub(1)));
-    let outcome = lowlat::capture::mode::set(
+    let outcome = lowlat_host::capture::mode::set(
         output,
-        lowlat::capture::mode::Change { size, transform },
+        lowlat_host::capture::mode::Change { size, transform },
         std::time::Duration::from_millis(MODE_MS),
     );
     match &outcome {
@@ -757,7 +757,7 @@ struct Introduced {
 type Writer = std::sync::Arc<std::sync::Mutex<Option<std::os::unix::net::UnixStream>>>;
 
 /// The layout last reported, for a service that connects after it was.
-type Latest = std::sync::Arc<std::sync::Mutex<Option<Vec<lowlat::capture::Output>>>>;
+type Latest = std::sync::Arc<std::sync::Mutex<Option<Vec<lowlat_host::capture::Output>>>>;
 
 /// Own the desktop's clipboard: report what it becomes, and set what a guest
 /// sent.
@@ -870,7 +870,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // to be answered before --output can be used at all, and a machine being
     // asked what it has is not a machine about to host.
     if flag_set("--outputs") {
-        for output in lowlat::display::Display::outputs() {
+        for output in lowlat_host::display::Display::outputs() {
             match output.place {
                 Some(place) => println!(
                     "{}  {}x{} at {},{} of a {}x{} desktop",
@@ -894,14 +894,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // advertised a stream it could never produce. Nothing lit is not refused:
     // the session may not have started yet, and the stream waits for one.
     if !flag_set("--synth") {
-        match lowlat::display::Display::capturable() {
-            lowlat::display::Capturable::Yes => {}
-            lowlat::display::Capturable::NothingLit => {
+        match lowlat_host::display::Display::capturable() {
+            lowlat_host::display::Capturable::Yes => {}
+            lowlat_host::display::Capturable::NothingLit => {
                 lowlat_common::log_warn!(
                     "lowlatd: nothing is scanning out yet, waiting for a display"
                 );
             }
-            lowlat::display::Capturable::NotReachable => {
+            lowlat_host::display::Capturable::NotReachable => {
                 return Err(
                     "a display is lit and its framebuffer cannot be reached; this needs the \
                             capture privilege, or --synth to generate pictures instead"
@@ -958,13 +958,13 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .map(str::trim)
         .filter(|t| !t.is_empty())
     {
-        let found = lowlat::admission::resolve_server(name);
+        let found = lowlat_host::admission::resolve_server(name);
         if found.is_empty() {
             lowlat_common::log_warn!("lowlatd: reflexive server did not resolve, skipped: {name}");
             continue;
         }
         for addr in found {
-            if stun.len() < lowlat::abi::LOWLAT_SERVERS_MAX {
+            if stun.len() < lowlat_host::admission::SERVERS_MAX {
                 stun.push(addr);
             } else {
                 lowlat_common::log_warn!("lowlatd: reflexive servers full, dropped {addr}");
@@ -1013,7 +1013,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(MAX_GUESTS)
         .clamp(
             1,
-            u32::try_from(lowlat::stream::MAX_SEATS).unwrap_or(MAX_GUESTS),
+            u32::try_from(lowlat_host::stream::MAX_SEATS).unwrap_or(MAX_GUESTS),
         );
     // **One-based, because zero means unspecified rather than upright.** The
     // coded picture stays landscape whatever this says; a quarter turn changes
@@ -1022,15 +1022,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // negotiated per guest. A peer that cannot decode it has to be refused
     // rather than accommodated, which is the phase 6 refusal path.
     let codec = match flag("--codec").as_deref() {
-        Some("hevc" | "h265") => lowlat::stream::Codec::H265,
-        _ => lowlat::stream::Codec::H264,
+        Some("hevc" | "h265") => lowlat_host::stream::Codec::H265,
+        _ => lowlat_host::stream::Codec::H264,
     };
     // **Absent means follow the display**, which is the right answer on a
     // machine with more than one card: the encoder has to be on the device the
     // display is on, and which device that is can change while this runs.
     let backend = match flag("--encoder").as_deref() {
-        Some("vendor" | "nvenc") => Some(lowlat::stream::Backend::Vendor),
-        Some("open" | "vaapi") => Some(lowlat::stream::Backend::Open),
+        Some("vendor" | "nvenc") => Some(lowlat_host::stream::Backend::Vendor),
+        Some("open" | "vaapi") => Some(lowlat_host::stream::Backend::Open),
         _ => None,
     };
     // **A name pins the interface; absent follows the device** -- the compute
@@ -1041,8 +1041,8 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let convert =
         flag("--convert")
             .as_deref()
-            .map_or_else(lowlat::capture::Backend::asked, |named| {
-                let parsed = lowlat::capture::Backend::parse(named);
+            .map_or_else(lowlat_host::capture::Backend::asked, |named| {
+                let parsed = lowlat_host::capture::Backend::parse(named);
                 if parsed.is_none() {
                     eprintln!("--convert {named} names no interface; following the device");
                 }
@@ -1063,9 +1063,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // **Named rather than numbered.** The values are a person's words for a
     // trade, and a number here would be a code somebody has to look up.
     let quality = match flag("--quality").as_deref() {
-        None | Some("latency" | "lowest-latency") => lowlat::stream::Quality::LowestLatency,
-        Some("balanced") => lowlat::stream::Quality::Balanced,
-        Some("quality" | "highest") => lowlat::stream::Quality::Highest,
+        None | Some("latency" | "lowest-latency") => lowlat_host::stream::Quality::LowestLatency,
+        Some("balanced") => lowlat_host::stream::Quality::Balanced,
+        Some("quality" | "highest") => lowlat_host::stream::Quality::Highest,
         Some(other) => {
             eprintln!("lowlatd: --quality {other} is not one of latency, balanced, quality");
             std::process::exit(2);
@@ -1080,7 +1080,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // **Drained by a thread of its own, which is what an application does with
     // it.** The daemon has nothing to play a guest's microphone into, so it
     // reports what arrived: that is the whole of what a live run needs to see.
-    let (hear, heard) = lowlat::microphone::queue();
+    let (hear, heard) = lowlat_host::microphone::queue();
     if flag_set("--accept-microphone") {
         std::thread::Builder::new()
             .name("lowlat-mic".to_owned())
@@ -1099,14 +1099,14 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         // two-guest run can try another without a rebuild.
         exclusive_hold_ms: flag("--pointer-hold-ms")
             .and_then(|text| text.parse().ok())
-            .unwrap_or(lowlat::floor::HOLD_MS),
+            .unwrap_or(lowlat_host::floor::HOLD_MS),
         cg_level,
         rumble_probe,
         base_port,
         max_guests: max_guests as usize,
         servers: stun,
         shared_address_space: flag_set("--shared-address-space"),
-        stream: Some(lowlat::stream::Config {
+        stream: Some(lowlat_host::stream::Config {
             // **Not a flag.** The depth is what the seated guests declare, so
             // the daemon starts eight-bit and the encoder is rebuilt if one
             // asks for ten; a switch here would choose for guests whose
@@ -1301,11 +1301,11 @@ async fn session_loop(
     );
     // The layout in force, which output the stream was pointed at when it was
     // last acted on, and where the picture sits in that layout.
-    let mut layout: Option<Vec<lowlat::capture::Output>> = None;
+    let mut layout: Option<Vec<lowlat_host::capture::Output>> = None;
     let mut situated = 0u32;
-    let mut placed: Option<lowlat::capture::Placement> = None;
+    let mut placed: Option<lowlat_host::capture::Placement> = None;
     // The last layout a helper pushed, and whose session it describes.
-    let mut helper_layout: Option<(u32, Vec<lowlat::capture::Output>)> = None;
+    let mut helper_layout: Option<(u32, Vec<lowlat_host::capture::Output>)> = None;
     // When the seat was last asked who owns the display.
     let mut seated = lowlat_common::clock::Time::now();
     let mut rostered = lowlat_common::clock::Time::now();
@@ -1351,7 +1351,7 @@ async fn session_loop(
                                 aes256: offer.data.creds.aes256,
                                 transport,
                                 fingerprint: offer.data.creds.fingerprint,
-                                permissions: lowlat::inject::Permissions {
+                                permissions: lowlat_host::inject::Permissions {
                                     keyboard: offer.permissions.keyboard,
                                     pointer: offer.permissions.mouse,
                                     gamepad: offer.permissions.gamepad,
@@ -1410,13 +1410,13 @@ async fn session_loop(
                                     &relay.attempt_id,
                                     UNREAD_MARKER_ADDRESS,
                                     true,
-                                    lowlat::admission::Kind::Direct,
+                                    lowlat_host::admission::Kind::Direct,
                                 );
                             }
                             Relayed::Probe(addr) => {
                                 // Both of the peer's markings, classified in
                                 // one place for every caller of the seam.
-                                let kind = lowlat::admission::Kind::marked(
+                                let kind = lowlat_host::admission::Kind::marked(
                                     relay.data.lan,
                                     relay.data.from_stun,
                                 );
@@ -1551,7 +1551,7 @@ async fn session_loop(
                     Some((uid, outputs)) if *uid == active && channel::helper_for(active) => {
                         Some(outputs.clone())
                     }
-                    _ => lowlat::capture::layout_of(active),
+                    _ => lowlat_host::capture::layout_of(active),
                 },
                 None => layout.clone(),
             };

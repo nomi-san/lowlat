@@ -47,7 +47,7 @@ jobs:
           key: ${{ runner.os }}-cargo-release-${{ hashFiles('**/Cargo.lock') }}
 
       - name: Build
-        run: cargo build --release -p lowlatd -p lowlat-host
+        run: cargo build --release -p lowlatd -p lowlat-sdk
 
       # **The header ships as committed, not regenerated here.** The ABI gate
       # in ci.yml is what proves the committed header matches the definitions

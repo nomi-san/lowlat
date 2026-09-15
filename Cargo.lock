@@ -810,7 +810,6 @@ dependencies = [
 name = "lowlat-host"
 version = "0.0.0"
 dependencies = [
- "cbindgen",
  "drm",
  "libc",
  "loom",
@@ -857,6 +856,20 @@ dependencies = [
  "lowlat-common",
  "lowlat-core",
  "lowlat-crypto",
+]
+
+[[package]]
+name = "lowlat-sdk"
+version = "0.0.0"
+dependencies = [
+ "cbindgen",
+ "lowlat-audio",
+ "lowlat-common",
+ "lowlat-core",
+ "lowlat-crypto",
+ "lowlat-encode",
+ "lowlat-host",
+ "lowlat-inject",
 ]
 
 [[package]]

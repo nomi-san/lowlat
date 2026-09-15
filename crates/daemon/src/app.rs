@@ -21,8 +21,8 @@
 //! A client asks 9 and 10 on connecting and again after it acts, so both
 //! answers have to be cheap and neither may block.
 
-use lowlat::admission::Admission;
-use lowlat::display::{Display, Selectable};
+use lowlat_host::admission::Admission;
+use lowlat_host::display::{Display, Selectable};
 
 /// Sub-identifiers, as the client that speaks this uses them.
 mod id {
@@ -175,9 +175,9 @@ fn describe(
     listed: &[Selectable],
     preferred: Option<&str>,
     captured: u32,
-    rotation: lowlat::video::Rotation,
+    rotation: lowlat_host::video::Rotation,
     settings: &Settings,
-    live: Option<lowlat::stream::LiveVideo>,
+    live: Option<lowlat_host::stream::LiveVideo>,
 ) -> Video {
     // **What is being captured beats what was asked for.** A guest can switch
     // outputs and a display can move to another card by itself, and a reader
@@ -187,8 +187,8 @@ fn describe(
     // **The turn is the display's, as the session told the stream.** Reported
     // as the one flag a reader has for it, which is whether the picture is on
     // its side at all.
-    let rotated = rotation != lowlat::video::Rotation::None;
-    let running = lowlat::display::captured(listed, captured).map(|output| output.id.clone());
+    let rotated = rotation != lowlat_host::video::Rotation::None;
+    let running = lowlat_host::display::captured(listed, captured).map(|output| output.id.clone());
     let output = if let Some(running) = running {
         running
     } else if settings.output.is_empty() {
@@ -245,7 +245,7 @@ fn describe(
     // different output -- reporting a rate the stream is not running at, which
     // is the one thing this whole field exists to avoid.
     let fps = if fps == 0 {
-        lowlat::stream::paced(0, refresh_of(listed, &output))
+        lowlat_host::stream::paced(0, refresh_of(listed, &output))
     } else {
         fps
     };
@@ -325,7 +325,7 @@ pub(crate) fn on_message(
         // for it means. In front of a text console the terminal translates it
         // itself and the machine restarts, which is not.
         id::SECURE_ATTENTION => {
-            if lowlat::inject::console_takes_the_chord() {
+            if lowlat_host::inject::console_takes_the_chord() {
                 lowlat_common::log_warn!(
                     "lowlatd: guest {guest} asked for the attention chord, refused=console"
                 );
@@ -433,7 +433,7 @@ pub(crate) fn state(
     let captured = seam.captured();
     if captured != shown.captured {
         shown.captured = captured;
-        shown.output = lowlat::display::captured(&Display::outputs(), captured)
+        shown.output = lowlat_host::display::captured(&Display::outputs(), captured)
             .map(|output| output.connector.clone())
             .unwrap_or_default();
     }
@@ -447,8 +447,8 @@ pub(crate) fn state(
         (live.fps, live.bitrate_mbps.round().max(0.0) as u32)
     });
     let codec = seam.colour().map_or("", |(codec, _, _)| match codec {
-        lowlat::stream::Codec::H264 => "h264",
-        lowlat::stream::Codec::H265 => "h265",
+        lowlat_host::stream::Codec::H264 => "h264",
+        lowlat_host::stream::Codec::H265 => "h265",
     });
     // **Seated is not connected.** A guest has a number from the answer
     // onward, before its media path exists, and a tray telling somebody that
@@ -563,7 +563,7 @@ pub(crate) fn announce_guests(seam: &mut Admission) {
 /// whole reason it exists: what a reader does with one of these is invisible
 /// from here -- it parses it or falls back to its own defaults, and both look
 /// like silence.
-fn roster(guests: &[lowlat::admission::GuestInfo]) -> String {
+fn roster(guests: &[lowlat_host::admission::GuestInfo]) -> String {
     let guests: Vec<serde_json::Value> = guests
         .iter()
         .map(|guest| {
@@ -613,7 +613,7 @@ fn roster(guests: &[lowlat::admission::GuestInfo]) -> String {
 /// because only the video channel is rate controlled and a count reported
 /// against sound or control would be a number with no meaning behind it.
 fn block(
-    channel: &lowlat::admission::ChannelMetrics,
+    channel: &lowlat_host::admission::ChannelMetrics,
     network_ms: f32,
     cg_events: u32,
 ) -> serde_json::Value {
@@ -775,9 +775,9 @@ fn outputs(fake: bool) -> String {
 fn asked_fps(first: &serde_json::Value, current: u32, refresh_hz: u32) -> u32 {
     match first.get("encoderFPS").and_then(serde_json::Value::as_u64) {
         Some(0) | None => current,
-        Some(asked) => {
-            u32::try_from(asked).map_or(current, |asked| lowlat::stream::paced(asked, refresh_hz))
-        }
+        Some(asked) => u32::try_from(asked).map_or(current, |asked| {
+            lowlat_host::stream::paced(asked, refresh_hz)
+        }),
     }
 }
 
@@ -876,13 +876,15 @@ fn apply(seam: &mut Admission, body: &[u8], video: &Video, listed: &[Selectable]
         first.get("rotated").and_then(serde_json::Value::as_bool),
         turned,
     ) {
-        (Some(true), lowlat::video::Rotation::None) => Some(lowlat::video::Rotation::Deg90 as u8),
-        (Some(false), lowlat::video::Rotation::None) | (None, _) => None,
-        (Some(false), _) => Some(lowlat::video::Rotation::None as u8),
+        (Some(true), lowlat_host::video::Rotation::None) => {
+            Some(lowlat_host::video::Rotation::Deg90 as u8)
+        }
+        (Some(false), lowlat_host::video::Rotation::None) | (None, _) => None,
+        (Some(false), _) => Some(lowlat_host::video::Rotation::None as u8),
         (Some(true), _) => None,
     };
     if asked_size.is_some() || asked_rotation.is_some() {
-        let output = lowlat::display::captured(listed, seam.captured())
+        let output = lowlat_host::display::captured(listed, seam.captured())
             .map(|output| output.connector.clone())
             .unwrap_or_default();
         match crate::channel::ask_mode(crate::channel::ModeAsk {
@@ -958,16 +960,16 @@ fn apply(seam: &mut Admission, body: &[u8], video: &Video, listed: &[Selectable]
 mod tests {
     use super::*;
 
-    fn one_guest() -> lowlat::admission::GuestInfo {
-        lowlat::admission::GuestInfo {
+    fn one_guest() -> lowlat_host::admission::GuestInfo {
+        lowlat_host::admission::GuestInfo {
             number: 3,
             attempt: "an-attempt".to_string(),
-            permissions: lowlat::inject::Permissions::default(),
+            permissions: lowlat_host::inject::Permissions::default(),
             owner: false,
-            metrics: lowlat::admission::Metrics {
+            metrics: lowlat_host::admission::Metrics {
                 cg_events: 7,
                 network_ms: 12.5,
-                video: lowlat::admission::ChannelMetrics {
+                video: lowlat_host::admission::ChannelMetrics {
                     packets_sent: 900,
                     fast_rts: 5,
                     slow_rts: 2,
@@ -975,7 +977,7 @@ mod tests {
                     encode_ms: 4.25,
                     decode_ms: 1.75,
                 },
-                audio: lowlat::admission::ChannelMetrics {
+                audio: lowlat_host::admission::ChannelMetrics {
                     packets_sent: 120,
                     fast_rts: 1,
                     slow_rts: 0,
@@ -983,14 +985,14 @@ mod tests {
                     encode_ms: 0.05,
                     decode_ms: 0.5,
                 },
-                control: lowlat::admission::ChannelMetrics {
+                control: lowlat_host::admission::ChannelMetrics {
                     packets_sent: 40,
                     fast_rts: 0,
                     slow_rts: 1,
                     bitrate_mbps: 0.01,
-                    ..lowlat::admission::ChannelMetrics::default()
+                    ..lowlat_host::admission::ChannelMetrics::default()
                 },
-                ..lowlat::admission::Metrics::default()
+                ..lowlat_host::admission::Metrics::default()
             },
         }
     }
@@ -1144,7 +1146,7 @@ mod tests {
     #[test]
     fn a_stream_is_described_by_what_it_runs_at_and_not_by_what_it_started_at() {
         let started = settings();
-        let running = lowlat::stream::LiveVideo {
+        let running = lowlat_host::stream::LiveVideo {
             fps: 120,
             bitrate_mbps: 7.0,
             min_mbps: 1.0,
@@ -1156,7 +1158,7 @@ mod tests {
             &listed(),
             Some("card0:DP-2"),
             0,
-            lowlat::video::Rotation::None,
+            lowlat_host::video::Rotation::None,
             &started,
             Some(running),
         );
@@ -1171,7 +1173,7 @@ mod tests {
             &listed(),
             Some("card0:DP-2"),
             0,
-            lowlat::video::Rotation::None,
+            lowlat_host::video::Rotation::None,
             &started,
             None,
         );
@@ -1194,7 +1196,7 @@ mod tests {
             &listed(),
             Some("card0:DP-2"),
             0,
-            lowlat::video::Rotation::None,
+            lowlat_host::video::Rotation::None,
             &settings(),
             None,
         );
@@ -1208,7 +1210,7 @@ mod tests {
             &listed(),
             Some("card0:DP-2"),
             0,
-            lowlat::video::Rotation::None,
+            lowlat_host::video::Rotation::None,
             &settings(),
             None,
         );
@@ -1252,7 +1254,7 @@ mod tests {
             &listed,
             Some("card1:DP-4"),
             0,
-            lowlat::video::Rotation::None,
+            lowlat_host::video::Rotation::None,
             &asked,
             None,
         );
@@ -1274,7 +1276,7 @@ mod tests {
                 &listed,
                 Some("card1:DP-4"),
                 0,
-                lowlat::video::Rotation::None,
+                lowlat_host::video::Rotation::None,
                 &told,
                 None
             )
@@ -1301,7 +1303,7 @@ mod tests {
                 &listed(),
                 Some("card0:DP-2"),
                 0,
-                lowlat::video::Rotation::None,
+                lowlat_host::video::Rotation::None,
                 &asked,
                 None
             )
@@ -1314,7 +1316,7 @@ mod tests {
                 &listed(),
                 Some("card0:DP-2"),
                 0,
-                lowlat::video::Rotation::None,
+                lowlat_host::video::Rotation::None,
                 &settings(),
                 None
             )
@@ -1329,7 +1331,7 @@ mod tests {
                 &[],
                 None,
                 0,
-                lowlat::video::Rotation::None,
+                lowlat_host::video::Rotation::None,
                 &asked,
                 None
             )
@@ -1530,11 +1532,11 @@ mod tests {
     /// unhandled rather than swallowed.
     #[test]
     fn an_unknown_sub_identifier_is_not_claimed() {
-        let mut seam = super::Admission::new(lowlat::admission::Config {
+        let mut seam = super::Admission::new(lowlat_host::admission::Config {
             microphone: None,
             exclusive_pointer: false,
             rumble_probe: false,
-            exclusive_hold_ms: lowlat::floor::HOLD_MS,
+            exclusive_hold_ms: lowlat_host::floor::HOLD_MS,
             cg_level: 1,
             base_port: 0,
             shared_address_space: false,

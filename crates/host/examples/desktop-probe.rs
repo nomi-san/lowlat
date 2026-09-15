@@ -17,8 +17,8 @@
 
 use std::io::Write;
 
-use lowlat::display::{Display, Registration};
 use lowlat_encode::{Poll, cuda, nvenc};
+use lowlat_host::display::{Display, Registration};
 
 fn main() {
     let mut args = std::env::args().skip(1);
@@ -76,8 +76,8 @@ fn main() {
         lowlat_capture::convert::Depth::Eight,
         false,
         wanted.as_deref(),
-        Some(lowlat::capture::Backend::requested()),
-        lowlat::display::Register::Vendor(&encoder),
+        Some(lowlat_host::capture::Backend::requested()),
+        lowlat_host::display::Register::Vendor(&encoder),
     )
     .unwrap_or_else(|e| fail(&format!("display: {e}")));
     println!("{desktop:?}, encoding {frames} pictures");

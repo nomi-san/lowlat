@@ -20,7 +20,7 @@ internal sealed class Host
         {
             var info = new CreateInfo { Size = (uint)sizeof(CreateInfo) };
             IntPtr created;
-            var made = Native.lowlat_create(&info, &created);
+            var made = Native.lowlat_host_create(&info, &created);
             if (made != Status.Ok)
             {
                 throw new InvalidOperationException($"create: {Text.Describe(made)}");
@@ -94,7 +94,7 @@ internal sealed class Host
 
     public void Destroy()
     {
-        Native.lowlat_destroy(handle);
+        Native.lowlat_host_destroy(handle);
         handle = IntPtr.Zero;
     }
 

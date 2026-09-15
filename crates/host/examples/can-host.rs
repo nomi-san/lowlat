@@ -8,5 +8,8 @@
 //! their absence in a way that looks exactly like an empty desktop.
 
 fn main() {
-    println!("capturable: {:?}", lowlat::display::Display::capturable());
+    println!(
+        "capturable: {:?}",
+        lowlat_host::display::Display::capturable()
+    );
 }

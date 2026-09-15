@@ -88,7 +88,7 @@ fn without_sanitizer(flags: &str) -> String {
 fn shared_object() -> PathBuf {
     let profile = artifacts();
     let mut build = Command::new(env!("CARGO"));
-    build.args(["build", "--quiet", "-p", "lowlat-host"]);
+    build.args(["build", "--quiet", "-p", "lowlat-sdk"]);
     // The test profile decides which directory this is running from, and the
     // build has to land in the same one.
     if profile.file_name().is_some_and(|name| name == "release") {
@@ -134,25 +134,89 @@ fn scratch(name: &str) -> PathBuf {
 
 /// Generate the header from the definitions, exactly as the committed one was.
 ///
-/// **From the ABI module alone, not from the crate.** Generating from the
-/// crate publishes every `pub const` in it -- `MAX_GUESTS`, `HOLD_MS` and the
-/// rest arrived in the header on the first run -- and an application that
-/// includes this header would collide with names it never asked for. Naming
-/// the file makes publishing a decision rather than a default, and it forces
-/// the other half of the rule: a type crossing the boundary is defined in the
-/// ABI layer, because a type from anywhere else cannot be seen from here.
+/// **From this crate, which holds nothing but the boundary.** Generating from
+/// a crate publishes every `pub const` in it, which is why the orchestration
+/// lives in `lowlat-host` and not here: a type crossing the boundary is
+/// defined in this crate, because a type from anywhere else cannot be seen
+/// from the generator. Parsing the crate rather than one file is what carries
+/// the feature on a module down to every item in it, so the host half comes
+/// out under `LOWLAT_HOST`.
 fn generate() -> String {
     let crate_dir = env!("CARGO_MANIFEST_DIR");
     let config = cbindgen::Config::from_root_or_default(crate_dir);
     let bindings = cbindgen::Builder::new()
-        .with_src(Path::new(crate_dir).join("src/abi.rs"))
+        .with_crate(crate_dir)
         .with_config(config)
         .generate()
         .expect("the definitions parse");
     let mut out = Vec::new();
     bindings.write(&mut out);
     let header = String::from_utf8(out).expect("the generated header is text");
-    to_doxygen(&realign_wrapped_arguments(&use_typedef_names(&header)))
+    to_doxygen(&realign_wrapped_arguments(&use_typedef_names(
+        &merge_feature_guards(&header),
+    )))
+}
+
+/// One guard around a run of items, not one around each.
+///
+/// **The generator guards every item it derives a feature for, members
+/// included**, so a half comes out as a hundred `#if`/`#endif` pairs, one per
+/// constant, and each enumerator inside an already guarded enumeration wears
+/// its own. This drops a guard opened inside the same guard, and closes and
+/// reopens nothing between two neighbours under the same one, so the header
+/// reads as the two halves it is. Only the feature guards are touched; the
+/// `#pragma`, the C++ fences and the `noexcept` block go through untouched.
+fn merge_feature_guards(header: &str) -> String {
+    const GUARDS: [&str; 2] = ["#if defined(LOWLAT_HOST)", "#if defined(LOWLAT_CLIENT)"];
+    let lines: Vec<&str> = header.lines().collect();
+    let mut out: Vec<&str> = Vec::with_capacity(lines.len());
+    // Every open `#if`, feature or not; a feature guard remembers whether it
+    // was emitted (the outermost of its kind) so its `#endif` follows suit.
+    let mut open: Vec<(Option<&str>, bool)> = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        if let Some(guard) = GUARDS.iter().find(|g| line == **g).copied() {
+            let already = open.iter().any(|(g, _)| *g == Some(guard));
+            open.push((Some(guard), !already));
+            if !already {
+                out.push(line);
+            }
+        } else if line == "#endif" {
+            let (guard, emitted) = open.pop().unwrap_or((None, true));
+            match guard {
+                Some(guard) if emitted => {
+                    // Reopened by the next item under the same guard: keep
+                    // the run open instead of closing and reopening it.
+                    let mut j = i + 1;
+                    while j < lines.len() && lines[j].trim().is_empty() {
+                        j += 1;
+                    }
+                    if j < lines.len() && lines[j] == guard {
+                        open.push((Some(guard), true));
+                        // Keep exactly one blank line between the neighbours.
+                        out.push("");
+                        i = j + 1;
+                        continue;
+                    }
+                    out.push(line);
+                }
+                Some(_) => {}
+                None => out.push(line),
+            }
+        } else if line.starts_with("#if") {
+            open.push((None, true));
+            out.push(line);
+        } else {
+            out.push(line);
+        }
+        i += 1;
+    }
+    let mut merged = out.join("\n");
+    if header.ends_with('\n') {
+        merged.push('\n');
+    }
+    merged
 }
 
 /// Spell a type by the name its `typedef` gave it, everywhere it is used.
@@ -161,7 +225,7 @@ fn generate() -> String {
 /// without the other.** It writes `struct` or `enum` in front of every use of
 /// a type whose tag it emitted, so keeping the tags -- which is what lets an
 /// application forward-declare a handle -- also means `enum lowlat_status
-/// lowlat_create(const struct lowlat_create_info *)` at every signature and
+/// lowlat_host_create(const struct lowlat_host_create_info *)` at every signature and
 /// every field. Both spellings name the same type in C and neither is one in
 /// C++, so the tags stay and the keyword goes wherever the typedef already
 /// says it: everywhere except the `typedef` that introduces it.
@@ -328,7 +392,7 @@ fn compile(compiler: &str, args: &[&str]) -> Result<(), String> {
 /// **The header is generated, so it cannot describe something the library does
 /// not do** -- but only if a stale one fails the build, which is this.
 ///
-/// Regenerate with `LOWLAT_BLESS_HEADER=1 cargo test -p lowlat-host --test abi`.
+/// Regenerate with `LOWLAT_BLESS_HEADER=1 cargo test -p lowlat-sdk --test abi`.
 #[test]
 fn the_header_matches_the_definitions() {
     let committed = root().join("include/lowlat.h");
@@ -345,7 +409,7 @@ fn the_header_matches_the_definitions() {
     assert_eq!(
         found,
         generated,
-        "{} is stale. Regenerate it: LOWLAT_BLESS_HEADER=1 cargo test -p lowlat-host --test abi",
+        "{} is stale. Regenerate it: LOWLAT_BLESS_HEADER=1 cargo test -p lowlat-sdk --test abi",
         committed.display()
     );
 }
@@ -357,7 +421,7 @@ fn the_header_matches_the_definitions() {
 #[test]
 fn the_header_compiles_alone_as_c_and_as_c_plus_plus() {
     let include = root().join("include");
-    let source = root().join("crates/host/tests/c/alone.c");
+    let source = root().join("crates/sdk/tests/c/alone.c");
     let dir = scratch("alone");
     let warnings = ["-Wall", "-Wextra", "-Werror"];
 
@@ -393,7 +457,7 @@ fn the_header_compiles_alone_as_c_and_as_c_plus_plus() {
 #[test]
 fn a_deliberate_panic_returns_a_status_from_the_shared_object() {
     let include = root().join("include");
-    let source = root().join("crates/host/tests/c/harness.c");
+    let source = root().join("crates/sdk/tests/c/harness.c");
     let dir = scratch("harness");
     let program = dir.join("harness");
 

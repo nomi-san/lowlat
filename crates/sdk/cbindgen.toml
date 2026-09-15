@@ -31,6 +31,20 @@ after_includes = """
 #define LOWLAT_NOEXCEPT noexcept
 #else
 #define LOWLAT_NOEXCEPT
+#endif
+
+/// The two halves, declared unless the application says otherwise.
+///
+/// **A plain include declares everything.** An application built against a
+/// library that carries one half defines `LOWLAT_NO_HOST` or
+/// `LOWLAT_NO_CLIENT` before including this, and a call into the missing half
+/// fails to compile rather than to link. `lowlat_features()` reports the same
+/// two halves for the library that was actually loaded.
+#if !defined(LOWLAT_NO_HOST) && !defined(LOWLAT_HOST)
+#define LOWLAT_HOST
+#endif
+#if !defined(LOWLAT_NO_CLIENT) && !defined(LOWLAT_CLIENT)
+#define LOWLAT_CLIENT
 #endif"""
 line_length = 88
 tab_width = 4
@@ -44,11 +58,16 @@ header = """
 /** @file
  * lowlat - the public C ABI.
  *
- * Generated from the Rust definitions. Do not edit; see crates/host/cbindgen.toml.
+ * Generated from the Rust definitions. Do not edit; see crates/sdk/cbindgen.toml.
  */"""
 
 [parse]
 parse_deps = false
+
+# The cargo features become the header's guards, under the same names.
+[defines]
+"feature = host" = "LOWLAT_HOST"
+"feature = client" = "LOWLAT_CLIENT"
 
 [export]
 prefix = ""

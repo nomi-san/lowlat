@@ -120,12 +120,20 @@ const PROBE_MS: f64 = 500.0;
 /// How often a streaming guest says how it is doing, in milliseconds.
 const PROGRESS_MS: f64 = 2000.0;
 
+/// How many reflexive servers a host may be given. Four is already more
+/// than any host here has ever been configured with, and the boundary
+/// carries them as a fixed array of this size.
+pub const SERVERS_MAX: usize = 4;
+
 /// A 256-bit key and the four-byte nonce prefix that follows it.
 const MATERIAL_LEN: usize = 36;
 
 /// What the application must forward to the peer, or act on.
+///
+/// Exhaustive on purpose, as are `Outcome` and `Error`: the C boundary in
+/// `lowlat-sdk` translates every variant, and a variant added here must fail
+/// to compile there rather than fall through a wildcard.
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Event {
     /// A local candidate, to be sent to the peer as it is found. Trickled, not
     /// batched: batching adds the slowest interface to every setup.
@@ -185,7 +193,6 @@ pub enum Event {
 
 /// Why an attempt finished.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Outcome {
     /// Negotiated, but no path was found. The only outcome that justifies
     /// escalating to a relay.
@@ -315,7 +322,6 @@ pub struct HostCredentials {
 
 /// What went wrong.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
 pub enum Error {
     /// No attempt with that identifier. A race with teardown rather than a
     /// fault, and callers treat it as one.
@@ -386,7 +392,8 @@ pub struct Config {
     pub base_port: u16,
     /// Advertised capacity, and the only policy this seam applies.
     pub max_guests: usize,
-    /// Reflexive servers, consulted for our own mapped address.
+    /// Reflexive servers, consulted for our own mapped address. At most
+    /// [`SERVERS_MAX`]; the boundary's array is that size.
     pub servers: Vec<SocketAddr>,
     /// Whether shared address space counts as a host candidate.
     ///

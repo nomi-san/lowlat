@@ -433,10 +433,10 @@ internal static partial class Native
     internal static unsafe partial Status lowlat_get_outputs(Output* outputs, uint* count);
 
     [LibraryImport(Library)]
-    internal static unsafe partial Status lowlat_create(CreateInfo* info, IntPtr* handle);
+    internal static unsafe partial Status lowlat_host_create(CreateInfo* info, IntPtr* handle);
 
     [LibraryImport(Library)]
-    internal static partial void lowlat_destroy(IntPtr handle);
+    internal static partial void lowlat_host_destroy(IntPtr handle);
 
     [LibraryImport(Library)]
     internal static unsafe partial Status lowlat_host_start(IntPtr handle, HostConfig* cfg);

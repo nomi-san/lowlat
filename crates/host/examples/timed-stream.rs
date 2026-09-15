@@ -9,8 +9,8 @@
 //! seat receives for the duration. Prints the stage report the loop
 //! publishes.
 
-use lowlat::stream::{Backend, Codec, Config, Stream};
-use lowlat::timing::Report;
+use lowlat_host::stream::{Backend, Codec, Config, Stream};
+use lowlat_host::timing::Report;
 
 fn main() {
     let seconds: u64 = std::env::args()
@@ -61,7 +61,7 @@ fn main() {
         // stage percentiles measured over a handful of samples. Asking for
         // every picture is what makes a timing run comparable.
         full_fps: std::env::var("LOWLAT_FULL_FPS").is_ok_and(|v| v != "0"),
-        quality: lowlat::stream::Quality::default(),
+        quality: lowlat_host::stream::Quality::default(),
         codec: match std::env::var("LOWLAT_CODEC").as_deref() {
             Ok("h265" | "hevc") => Codec::H265,
             _ => Codec::H264,

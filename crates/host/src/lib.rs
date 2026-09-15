@@ -1,11 +1,8 @@
-//! Orchestration and the public C ABI.
+//! The host: orchestration of capture, encode, delivery and input.
 //!
-//! The C ABI is the only public surface. Every extern "C" entry point catches
-//! unwinding; see docs/06-api.md section 9.
+//! The public surface is the C ABI in `lowlat-sdk`, which is the only crate
+//! that depends on this one for its boundary; the daemon uses it directly.
 
-// Phase 8 lands the ABI. Phases 4 through 7 land the orchestration.
-
-pub mod abi;
 pub mod admission;
 pub(crate) mod audio;
 pub mod cursor;
