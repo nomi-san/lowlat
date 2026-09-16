@@ -8,18 +8,26 @@
 //! 0  4  frame identifier, little endian
 //! 4  2  width, little endian
 //! 6  2  height, little endian
-//! 8  1  reserved, 0x01
+//! 8  1  codec, 1 for H.264 and 2 for HEVC
 //! 9  1  flags
 //! ```
 //!
 //! The endianness flips relative to the rest of the protocol, where sequences
 //! and lengths are big endian. Getting it backwards yields a plausible frame
 //! with absurd dimensions.
+//!
+//! A message with bit 6 of the flags set is keyframe metadata rather than a
+//! picture: eleven more bytes after the header, and the keyframe it describes
+//! follows as the next message. A peer that declared the video protocol in
+//! its initialization is sent one before every keyframe, and the keyframe
+//! itself carries bit 5; a peer that did not is sent neither.
 
 use crate::error::{Error, Result};
 
 /// Bytes of header ahead of the bitstream.
 pub const VIDEO_HEADER_LEN: usize = 10;
+/// The whole of a keyframe-metadata message: the header and its body.
+pub const METADATA_LEN: usize = 21;
 
 const ROTATION_MASK: u8 = 0x07;
 /// **Ten-bit colour, and it is not a keyframe marker.**
@@ -35,10 +43,23 @@ const ROTATION_MASK: u8 = 0x07;
 /// every message including its own keyframes, which is inexplicable for a
 /// keyframe marker and exactly right for a depth that stream does not use.
 const FLAG_TEN_BIT: u8 = 0x08;
-/// Believed to be full screen. **Never set by us and never observed set**, so
-/// it carries the same doubt the bit above turned out to deserve.
-const FLAG_FULLSCREEN: u8 = 0x10;
-const RESERVED_BYTE: u8 = 0x01;
+/// The host's session is locked, or is not the one at its console. A receiver
+/// hands it to its application; nothing else turns on it. Never set by us.
+const FLAG_LOCKED: u8 = 0x10;
+/// This picture was announced by a metadata message. A receiver with a
+/// decoder feeds the picture to it whatever it is led by, and does not apply
+/// its generation rule; a receiver with none builds one from it.
+const FLAG_ANNOUNCED: u8 = 0x20;
+/// This message is keyframe metadata, not a picture.
+const FLAG_METADATA: u8 = 0x40;
+/// The word that opens the metadata body. Not read by any receiver.
+const METADATA_LEAD: u32 = 1;
+/// Bits of the metadata word.
+const META_REBUILT: u32 = 0x01;
+const META_KEYFRAME: u32 = 0x02;
+/// The chroma byte of the metadata body says 4:2:0 as 2 and 4:4:4 as 0.
+const CHROMA_420: u8 = 2;
+const CHROMA_444: u8 = 0;
 
 /// Display orientation.
 ///
@@ -80,6 +101,21 @@ pub enum Codec {
     H265,
 }
 
+impl Codec {
+    const fn wire(self) -> u8 {
+        match self {
+            Codec::H264 => 1,
+            Codec::H265 => 2,
+        }
+    }
+
+    /// Older hosts write `1` whatever they code, so anything but `2` is the
+    /// first codec, and a receiver classifies from the bitstream regardless.
+    const fn from_wire(byte: u8) -> Self {
+        if byte == 2 { Codec::H265 } else { Codec::H264 }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VideoHeader {
     /// Encoder **generation** counter, not a frame counter. It stays constant
@@ -88,12 +124,31 @@ pub struct VideoHeader {
     pub frame_id: u32,
     pub width: u16,
     pub height: u16,
+    pub codec: Codec,
     pub rotation: Rotation,
     /// **Ten-bit colour.** A receiver builds its decoder for this depth before
     /// parsing any bitstream, so it must describe the stream and nothing else.
-    /// We emit eight-bit and therefore never set it.
     pub ten_bit: bool,
-    pub fullscreen: bool,
+    /// The host's session is locked.
+    pub locked: bool,
+    /// Announced by a metadata message; see [`FLAG_ANNOUNCED`].
+    pub announced: bool,
+    /// Keyframe metadata rather than a picture; see [`parse_metadata`].
+    pub metadata: bool,
+}
+
+/// What a keyframe-metadata message says about the keyframe after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyframeMetadata {
+    /// The encoder was rebuilt: new parameter sets and a new reference chain.
+    /// A receiver tears its decoder down on this, before the keyframe.
+    pub rebuilt: bool,
+    /// A keyframe follows. What a receiver behind on the channel looks ahead
+    /// for.
+    pub keyframe: bool,
+    pub ten_bit: bool,
+    pub chroma_444: bool,
+    pub rotation: Rotation,
 }
 
 impl VideoHeader {
@@ -127,14 +182,18 @@ pub fn parse(content: &[u8]) -> Result<VideoHeader> {
         .ok_or(Error::ShortPacket)?;
     let width = le16(content, 4)?;
     let height = le16(content, 6)?;
+    let &codec = content.get(8).ok_or(Error::ShortPacket)?;
     let &flags = content.get(9).ok_or(Error::ShortPacket)?;
     Ok(VideoHeader {
         frame_id,
         width,
         height,
+        codec: Codec::from_wire(codec),
         rotation: Rotation::from_bits(flags),
         ten_bit: flags & FLAG_TEN_BIT != 0,
-        fullscreen: flags & FLAG_FULLSCREEN != 0,
+        locked: flags & FLAG_LOCKED != 0,
+        announced: flags & FLAG_ANNOUNCED != 0,
+        metadata: flags & FLAG_METADATA != 0,
     })
 }
 
@@ -147,15 +206,88 @@ pub fn encode(out: &mut [u8], header: &VideoHeader) -> Result<usize> {
     if header.ten_bit {
         flags |= FLAG_TEN_BIT;
     }
-    if header.fullscreen {
-        flags |= FLAG_FULLSCREEN;
+    if header.locked {
+        flags |= FLAG_LOCKED;
+    }
+    if header.announced {
+        flags |= FLAG_ANNOUNCED;
+    }
+    if header.metadata {
+        flags |= FLAG_METADATA;
     }
     let [f0, f1, f2, f3] = header.frame_id.to_le_bytes();
     let [w0, w1] = header.width.to_le_bytes();
     let [h0, h1] = header.height.to_le_bytes();
-    let bytes = [f0, f1, f2, f3, w0, w1, h0, h1, RESERVED_BYTE, flags];
+    let bytes = [f0, f1, f2, f3, w0, w1, h0, h1, header.codec.wire(), flags];
     out.copy_from_slice(&bytes);
     Ok(VIDEO_HEADER_LEN)
+}
+
+/// Write a whole keyframe-metadata message: `header` with both protocol bits
+/// set, then the eleven bytes that describe the keyframe after it.
+pub fn encode_metadata(
+    out: &mut [u8],
+    header: &VideoHeader,
+    metadata: &KeyframeMetadata,
+) -> Result<usize> {
+    let announced = VideoHeader {
+        announced: true,
+        metadata: true,
+        ..*header
+    };
+    encode(out, &announced)?;
+    let body = out
+        .get_mut(VIDEO_HEADER_LEN..METADATA_LEN)
+        .ok_or(Error::BufferTooSmall)?;
+    let mut word = 0u32;
+    if metadata.rebuilt {
+        word |= META_REBUILT;
+    }
+    if metadata.keyframe {
+        word |= META_KEYFRAME;
+    }
+    let [l0, l1, l2, l3] = METADATA_LEAD.to_le_bytes();
+    let [m0, m1, m2, m3] = word.to_le_bytes();
+    let depth = if metadata.ten_bit { 2 } else { 1 };
+    let chroma = if metadata.chroma_444 {
+        CHROMA_444
+    } else {
+        CHROMA_420
+    };
+    body.copy_from_slice(&[
+        l0,
+        l1,
+        l2,
+        l3,
+        m0,
+        m1,
+        m2,
+        m3,
+        depth,
+        chroma,
+        metadata.rotation as u8,
+    ]);
+    Ok(METADATA_LEN)
+}
+
+/// Read the body of a keyframe-metadata message, one whose header parsed
+/// with [`VideoHeader::metadata`] set.
+pub fn parse_metadata(content: &[u8]) -> Result<KeyframeMetadata> {
+    let word = content
+        .get(14..18)
+        .and_then(|s| <[u8; 4]>::try_from(s).ok())
+        .map(u32::from_le_bytes)
+        .ok_or(Error::ShortPacket)?;
+    let &depth = content.get(18).ok_or(Error::ShortPacket)?;
+    let &chroma = content.get(19).ok_or(Error::ShortPacket)?;
+    let &rotation = content.get(20).ok_or(Error::ShortPacket)?;
+    Ok(KeyframeMetadata {
+        rebuilt: word & META_REBUILT != 0,
+        keyframe: word & META_KEYFRAME != 0,
+        ten_bit: depth == 2,
+        chroma_444: chroma == CHROMA_444,
+        rotation: Rotation::from_bits(rotation),
+    })
 }
 
 /// Classify a video message as a keyframe.
@@ -203,9 +335,12 @@ mod tests {
             frame_id: 1,
             width: 1920,
             height: 1080,
+            codec: Codec::H264,
             rotation: Rotation::from_bits(flags),
             ten_bit: flags & FLAG_TEN_BIT != 0,
-            fullscreen: flags & FLAG_FULLSCREEN != 0,
+            locked: flags & FLAG_LOCKED != 0,
+            announced: flags & FLAG_ANNOUNCED != 0,
+            metadata: flags & FLAG_METADATA != 0,
         };
         encode(&mut buf, &header).unwrap();
         buf[VIDEO_HEADER_LEN..VIDEO_HEADER_LEN + bitstream.len()].copy_from_slice(bitstream);
@@ -218,18 +353,98 @@ mod tests {
             frame_id: 0x0403_0201,
             width: 1920,
             height: 1080,
+            codec: Codec::H265,
             rotation: Rotation::None,
             ten_bit: true,
-            fullscreen: false,
+            locked: false,
+            announced: false,
+            metadata: false,
         };
         let mut buf = [0u8; 16];
         assert_eq!(encode(&mut buf, &header).unwrap(), VIDEO_HEADER_LEN);
         assert_eq!(&buf[0..4], &[0x01, 0x02, 0x03, 0x04]);
         assert_eq!(&buf[4..6], &1920u16.to_le_bytes());
         assert_eq!(&buf[6..8], &1080u16.to_le_bytes());
-        assert_eq!(buf[8], RESERVED_BYTE);
+        assert_eq!(buf[8], 2);
         assert_eq!(buf[9], Rotation::None as u8 | FLAG_TEN_BIT);
         assert_eq!(parse(&buf).unwrap(), header);
+    }
+
+    /// The codec byte was a constant `1` on every recorded host, so it read as
+    /// reserved; a receiver must not refuse the values it never saw.
+    #[test]
+    fn the_codec_byte_reads_two_as_hevc_and_everything_else_as_h264() {
+        let mut buf = content(Rotation::None as u8, &[0, 0, 0, 1, 0x65]);
+        assert_eq!(parse(&buf).unwrap().codec, Codec::H264);
+        buf[8] = 2;
+        assert_eq!(parse(&buf).unwrap().codec, Codec::H265);
+        buf[8] = 0;
+        assert_eq!(parse(&buf).unwrap().codec, Codec::H264);
+    }
+
+    /// **The metadata message is 21 bytes and it is not a picture.** Both
+    /// protocol bits are set on it, the keyframe bit and the rebuilt bit sit in
+    /// the word at 14, and the classifier never mistakes its body for a start
+    /// code.
+    #[test]
+    fn keyframe_metadata_round_trips_and_never_classifies_as_a_keyframe() {
+        let header = VideoHeader {
+            frame_id: 7,
+            width: 2560,
+            height: 1440,
+            codec: Codec::H264,
+            rotation: Rotation::Deg90,
+            ten_bit: true,
+            locked: false,
+            announced: false,
+            metadata: false,
+        };
+        let metadata = KeyframeMetadata {
+            rebuilt: true,
+            keyframe: true,
+            ten_bit: true,
+            chroma_444: false,
+            rotation: Rotation::Deg90,
+        };
+        let mut buf = [0u8; 32];
+        assert_eq!(
+            encode_metadata(&mut buf, &header, &metadata).unwrap(),
+            METADATA_LEN
+        );
+        let parsed = parse(&buf).unwrap();
+        assert!(parsed.metadata && parsed.announced);
+        assert_eq!(
+            (parsed.frame_id, parsed.width, parsed.height),
+            (7, 2560, 1440)
+        );
+        assert!(parsed.ten_bit);
+        assert_eq!(buf[9], Rotation::Deg90 as u8 | FLAG_TEN_BIT | 0x60);
+        assert_eq!(&buf[10..14], &[1, 0, 0, 0]);
+        assert_eq!(&buf[14..18], &[3, 0, 0, 0]);
+        assert_eq!(&buf[18..21], &[2, CHROMA_420, Rotation::Deg90 as u8]);
+        assert_eq!(parse_metadata(&buf[..METADATA_LEN]).unwrap(), metadata);
+        assert!(!is_keyframe(&buf[..METADATA_LEN], Codec::H264));
+        assert!(!is_keyframe(&buf[..METADATA_LEN], Codec::H265));
+
+        // A keyframe that was not a rebuild, on a full-chroma eight-bit stream.
+        let plain = KeyframeMetadata {
+            rebuilt: false,
+            keyframe: true,
+            ten_bit: false,
+            chroma_444: true,
+            rotation: Rotation::None,
+        };
+        encode_metadata(&mut buf, &header, &plain).unwrap();
+        assert_eq!(&buf[14..18], &[2, 0, 0, 0]);
+        assert_eq!(&buf[18..21], &[1, CHROMA_444, Rotation::None as u8]);
+        assert_eq!(parse_metadata(&buf[..METADATA_LEN]).unwrap(), plain);
+
+        // Short of the body, it is refused rather than read past.
+        assert_eq!(parse_metadata(&buf[..20]), Err(Error::ShortPacket));
+        assert_eq!(
+            encode_metadata(&mut buf[..20], &header, &plain),
+            Err(Error::BufferTooSmall)
+        );
     }
 
     /// Upright is 1, not 0. Emitting 0 says "unspecified".
@@ -251,9 +466,12 @@ mod tests {
             frame_id: 0,
             width: 1920,
             height: 1080,
+            codec: Codec::H264,
             rotation: Rotation::None,
             ten_bit: false,
-            fullscreen: false,
+            locked: false,
+            announced: false,
+            metadata: false,
         };
         assert_eq!(header.display_dimensions(), (1920, 1080));
         header.rotation = Rotation::Deg90;
@@ -337,9 +555,12 @@ mod tests {
             frame_id: 1,
             width: 1920,
             height: 1080,
+            codec: Codec::H264,
             rotation: Rotation::None,
             ten_bit: false,
-            fullscreen: false,
+            locked: false,
+            announced: false,
+            metadata: false,
         };
         encode(&mut buf, &header).expect("encode");
         assert_eq!(

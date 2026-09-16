@@ -159,12 +159,36 @@ fn video_headers_round_trip() {
             frame_id: rng.interesting_u32(),
             width: rng.below(0xFFFF) as u16,
             height: rng.below(0xFFFF) as u16,
+            codec: if rng.next() & 1 == 0 {
+                video::Codec::H264
+            } else {
+                video::Codec::H265
+            },
             rotation: video::Rotation::from_bits(rng.byte()),
             ten_bit: rng.next() & 1 == 0,
-            fullscreen: rng.next() & 1 == 0,
+            locked: rng.next() & 1 == 0,
+            announced: rng.next() & 1 == 0,
+            metadata: rng.next() & 1 == 0,
         };
         video::encode(&mut buf, &header).expect("encode");
         assert_eq!(video::parse(&buf).expect("parse"), header, "case {case}");
+
+        // The metadata message the same header would open.
+        let metadata = video::KeyframeMetadata {
+            rebuilt: rng.next() & 1 == 0,
+            keyframe: rng.next() & 1 == 0,
+            ten_bit: rng.next() & 1 == 0,
+            chroma_444: rng.next() & 1 == 0,
+            rotation: video::Rotation::from_bits(rng.byte()),
+        };
+        video::encode_metadata(&mut buf, &header, &metadata).expect("encode metadata");
+        let opened = video::parse(&buf).expect("parse metadata header");
+        assert!(opened.metadata && opened.announced, "case {case}");
+        assert_eq!(
+            video::parse_metadata(&buf).expect("parse metadata"),
+            metadata,
+            "case {case}"
+        );
     }
 }
 

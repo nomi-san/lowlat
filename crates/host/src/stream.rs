@@ -2025,13 +2025,7 @@ fn run(
         // status read from the configuration says what was asked for; a guest
         // can move the codec and the depth underneath it, and only the loop
         // knows which it is coding right now.
-        shared.colour.store(
-            u32::from(config.codec == Codec::H265) << 1
-                | u32::from(config.codec == Codec::H264)
-                | u32::from(config.ten_bit) << 8
-                | u32::from(config.chroma_444) << 9,
-            Ordering::Release,
-        );
+        publish_colour(shared, &config);
         let vulkan_exit = if prefer_vulkan {
             run_vulkan(shared, arrivals, config.clone(), &mut roster)
         } else {
@@ -2175,17 +2169,30 @@ fn run(
                     guest.mark_skipping();
                 }
                 // Set before the epoch, so a guest that notices the epoch
-                // reads a depth that already belongs to it.
+                // reads a depth, and a codec, that already belong to it.
                 shared
                     .ten_bit
                     .store(u32::from(config.ten_bit), Ordering::Release);
                 shared
                     .chroma_444
                     .store(u32::from(config.chroma_444), Ordering::Release);
+                publish_colour(shared, &config);
                 shared.epoch.fetch_add(1, Ordering::Release);
             }
         }
     }
+}
+
+/// Publish what the loop codes: the codec in the low byte as the boundary
+/// numbers it, the depth and the chroma above it.
+fn publish_colour(shared: &Shared, config: &Config) {
+    shared.colour.store(
+        u32::from(config.codec == Codec::H265) << 1
+            | u32::from(config.codec == Codec::H264)
+            | u32::from(config.ten_bit) << 8
+            | u32::from(config.chroma_444) << 9,
+        Ordering::Release,
+    );
 }
 
 /// Why the encode loop handed the encoder back.

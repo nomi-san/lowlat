@@ -8,10 +8,18 @@
 //! dimensions, the rotation and the generation counter are fixed for a stream
 //! and only the keyframe flag moves, which is why this is a value that
 //! outlives a frame rather than a function that takes six arguments.
+//!
+//! **A peer that declared the video protocol is sent a keyframe-metadata
+//! message before every keyframe, and the keyframe carries the announced
+//! bit.** The message says whether the encoder was rebuilt, which is what
+//! such a peer tears its decoder down on; a peer that did not declare it
+//! rebuilds on the parameter sets instead, so it is sent neither.
 
 use lowlat_core::message::Message;
-pub use lowlat_core::video::Rotation;
-use lowlat_core::video::{VIDEO_HEADER_LEN, VideoHeader, encode};
+pub use lowlat_core::video::{Codec, Rotation};
+use lowlat_core::video::{
+    KeyframeMetadata, METADATA_LEN, VIDEO_HEADER_LEN, VideoHeader, encode, encode_metadata,
+};
 
 /// One stream's fixed facts, and the header buffer they are written into.
 #[derive(Debug)]
@@ -20,18 +28,38 @@ pub struct Packetiser {
     /// Written once per frame and lent to the message, so the header costs no
     /// allocation and no per-frame arithmetic beyond the flags.
     bytes: [u8; VIDEO_HEADER_LEN],
+    /// The metadata message, written once per announced keyframe.
+    announcement: [u8; METADATA_LEN],
+    /// What the metadata says beyond the header.
+    chroma_444: bool,
+    /// Whether this guest declared the video protocol. Nothing is announced
+    /// and the announced bit is never set until it has.
+    announces: bool,
+    /// True from construction and from every reconfiguration until a keyframe
+    /// has gone out: that keyframe's parameter sets are new to the peer, and
+    /// its announcement says so.
+    rebuilt: bool,
 }
 
 impl Packetiser {
-    /// Say what depth the pictures now are.
+    /// Say what the pictures now are.
     ///
-    /// **Called when the encoder is rebuilt, which is the only time it can
-    /// change.** The header is written once here and lent to every frame, so
-    /// a stale value would describe every picture until the next rebuild.
-    pub fn set_ten_bit(&mut self, ten_bit: bool) {
+    /// **Called when the encoder is rebuilt, and when a guest takes its seat
+    /// on a stream that already runs.** The header is written once here and
+    /// lent to every frame, so a stale value would describe every picture
+    /// until the next rebuild -- and the depth is the one field a receiver
+    /// acts on before parsing any bitstream.
+    pub fn set_colour(&mut self, codec: Codec, ten_bit: bool, chroma_444: bool) {
         // The bytes are rewritten from the header on the next frame, so
         // recording it here is the whole of the change.
+        self.header.codec = codec;
         self.header.ten_bit = ten_bit;
+        self.chroma_444 = chroma_444;
+    }
+
+    /// Whether this guest reads the video protocol, from its initialization.
+    pub fn set_announces(&mut self, announces: bool) {
+        self.announces = announces;
     }
 
     /// Begin a stream.
@@ -48,6 +76,9 @@ impl Packetiser {
                 frame_id: 1,
                 width,
                 height,
+                // Until the stream says otherwise, in the same call that
+                // settles the depth.
+                codec: Codec::H264,
                 rotation,
                 // **What the pictures really are, and it must be exactly
                 // that.** The bit next to the rotation names ten-bit colour
@@ -58,12 +89,18 @@ impl Packetiser {
                 // the same fault. It is told rather than decided here because
                 // the encoder settled the depth.
                 ten_bit,
-                // Not set: this stream is a desktop, not a fullscreen capture
-                // of one application, and the flag is the peer's cue to change
-                // how it presents.
-                fullscreen: false,
+                // Not set: this host has no lock state to report, and clear
+                // reads as unlocked.
+                locked: false,
+                // Per frame, below.
+                announced: false,
+                metadata: false,
             },
             bytes: [0; VIDEO_HEADER_LEN],
+            announcement: [0; METADATA_LEN],
+            chroma_444: false,
+            announces: false,
+            rebuilt: true,
         }
     }
 
@@ -80,6 +117,28 @@ impl Packetiser {
     /// generation alone.
     pub fn reconfigured(&mut self) {
         self.header.frame_id = self.header.frame_id.wrapping_add(1);
+        self.rebuilt = true;
+    }
+
+    /// The metadata message that precedes a keyframe, for a guest that reads
+    /// the protocol; `None` for any other picture or any other guest.
+    ///
+    /// **Sent whole and first.** It says whether the encoder was rebuilt since
+    /// the peer's last keyframe, which is what the peer tears its decoder down
+    /// on, so the picture must not go out ahead of it.
+    pub fn announcement(&mut self, keyframe: bool) -> Option<&[u8]> {
+        if !(self.announces && keyframe) {
+            return None;
+        }
+        let metadata = KeyframeMetadata {
+            rebuilt: self.rebuilt,
+            keyframe: true,
+            ten_bit: self.header.ten_bit,
+            chroma_444: self.chroma_444,
+            rotation: self.header.rotation,
+        };
+        encode_metadata(&mut self.announcement, &self.header, &metadata).ok()?;
+        Some(&self.announcement)
     }
 
     /// The header for one coded access unit, ready to precede it on the wire.
@@ -92,11 +151,24 @@ impl Packetiser {
     /// first submission. A receiver classifies keyframes from the bitstream,
     /// which is what ours does and what every recorded host requires.
     ///
-    /// The argument is kept so callers read as they did; it names the picture
-    /// for the caller's sake and changes nothing in the bytes.
-    pub fn header(&mut self, _keyframe: bool) -> Option<&[u8]> {
+    /// What a keyframe does carry, for a guest that reads the protocol, is
+    /// the announced bit: this picture had a metadata message ahead of it.
+    pub fn header(&mut self, keyframe: bool) -> Option<&[u8]> {
+        self.header.announced = self.announces && keyframe;
         encode(&mut self.bytes, &self.header).ok()?;
         Some(&self.bytes)
+    }
+
+    /// Note that a framed picture went out.
+    ///
+    /// **After the send, not before it.** A keyframe that was refused never
+    /// reached the peer, so the next one still has to say the encoder was
+    /// rebuilt; clearing the latch on framing alone would say it once to
+    /// nobody.
+    pub fn sent(&mut self, keyframe: bool) {
+        if keyframe {
+            self.rebuilt = false;
+        }
     }
 
     /// Frame a coded access unit for sending.
@@ -163,7 +235,8 @@ mod tests {
             !header.ten_bit,
             "an eight-bit stream claimed ten-bit colour"
         );
-        assert!(!header.fullscreen);
+        assert!(!header.locked && !header.announced && !header.metadata);
+        assert_eq!(header.codec, Codec::H264);
         assert_eq!(header.frame_id, 1);
     }
 
@@ -208,7 +281,7 @@ mod tests {
             "an eight-bit stream described itself as ten"
         );
 
-        packetiser.set_ten_bit(true);
+        packetiser.set_colour(Codec::H264, true, false);
         packetiser.reconfigured();
         let second = packetiser.frame(&unit, false).expect("framed");
         assert!(
@@ -258,6 +331,91 @@ mod tests {
         let header = header_as_a_peer_sees_it(&message);
         assert_eq!((header.width, header.height), (1920, 1080));
         assert_eq!(header.display_dimensions(), (1080, 1920));
+    }
+
+    /// **A guest that did not declare the protocol is sent the older framing
+    /// exactly**: no metadata message, and no announced bit on anything.
+    /// *Named regression test.*
+    #[test]
+    fn a_guest_that_did_not_declare_the_protocol_gets_no_announcement_and_no_bit() {
+        let mut packetiser = Packetiser::new(1920, 1080, Rotation::None, false);
+        let unit = coded(64);
+        for keyframe in [true, false, true] {
+            assert!(packetiser.announcement(keyframe).is_none());
+            let message = packetiser.frame(&unit, keyframe).expect("framed");
+            let header = header_as_a_peer_sees_it(&message);
+            assert!(!header.announced && !header.metadata);
+            packetiser.sent(keyframe);
+        }
+    }
+
+    /// **A guest that declared it is sent the pair, and only on keyframes.**
+    /// The message goes ahead of the keyframe with the rebuilt bit set until a
+    /// keyframe has gone out, and the keyframe carries the announced bit; a
+    /// predicted picture carries neither.
+    #[test]
+    fn a_declared_guest_is_announced_every_keyframe_and_told_of_a_rebuild_once() {
+        let mut packetiser = Packetiser::new(1920, 1080, Rotation::Deg90, false);
+        packetiser.set_announces(true);
+        packetiser.set_colour(Codec::H265, true, false);
+        let unit = coded(64);
+
+        // A predicted picture: nothing.
+        assert!(packetiser.announcement(false).is_none());
+        let predicted = packetiser.frame(&unit, false).expect("framed");
+        assert!(!header_as_a_peer_sees_it(&predicted).announced);
+        packetiser.sent(false);
+
+        // The first keyframe says the encoder is new to this peer.
+        let first = packetiser.announcement(true).expect("announced").to_vec();
+        assert_eq!(first.len(), METADATA_LEN);
+        let opened = parse(&first).expect("header");
+        assert!(opened.metadata && opened.announced);
+        assert_eq!(opened.codec, Codec::H265);
+        assert!(opened.ten_bit);
+        assert_eq!(opened.frame_id, 1);
+        let told = lowlat_core::video::parse_metadata(&first).expect("metadata");
+        assert!(told.rebuilt && told.keyframe && told.ten_bit && !told.chroma_444);
+        assert_eq!(told.rotation, Rotation::Deg90);
+        let keyframe = packetiser.frame(&unit, true).expect("framed");
+        let header = header_as_a_peer_sees_it(&keyframe);
+        assert!(header.announced && !header.metadata);
+        assert_eq!(header.codec, Codec::H265);
+        packetiser.sent(true);
+
+        // The next keyframe is announced again, with nothing rebuilt.
+        let again = packetiser.announcement(true).expect("announced").to_vec();
+        assert!(
+            !lowlat_core::video::parse_metadata(&again)
+                .expect("metadata")
+                .rebuilt
+        );
+        packetiser.sent(true);
+
+        // A reconfiguration arms it again, and a refused keyframe does not
+        // spend it: only a keyframe that went out does.
+        packetiser.reconfigured();
+        let rebuilt = packetiser.announcement(true).expect("announced").to_vec();
+        assert!(
+            lowlat_core::video::parse_metadata(&rebuilt)
+                .expect("metadata")
+                .rebuilt
+        );
+        assert_eq!(parse(&rebuilt).expect("header").frame_id, 2);
+        // Not sent: the transport refused the picture.
+        let still = packetiser.announcement(true).expect("announced").to_vec();
+        assert!(
+            lowlat_core::video::parse_metadata(&still)
+                .expect("metadata")
+                .rebuilt
+        );
+        packetiser.sent(true);
+        let spent = packetiser.announcement(true).expect("announced").to_vec();
+        assert!(
+            !lowlat_core::video::parse_metadata(&spent)
+                .expect("metadata")
+                .rebuilt
+        );
     }
 
     /// The framing arithmetic a peer's reassembler depends on: the length

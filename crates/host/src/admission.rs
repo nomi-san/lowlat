@@ -1863,17 +1863,34 @@ fn follow_epoch(
         return;
     }
     *seen = epoch;
-    // **The depth is taken from the encoder that just replaced the old one**,
+    // **The colour is taken from the encoder that just replaced the old one**,
     // not from what this guest was admitted with. A reinitialisation is
     // exactly when it can change, and the header a peer builds its decoder
     // from is the only place it is said.
-    packetiser.set_ten_bit(seat.ten_bit());
+    let (codec, ten_bit, chroma_444) = colour_of(seat);
+    packetiser.set_colour(codec, ten_bit, chroma_444);
     packetiser.reconfigured();
     negotiation.encoder_initialised(packetiser.generation());
     lowlat_common::log_info!(
         "guest: encoder reinitialised, generation={}",
         packetiser.generation()
     );
+}
+
+/// What the running encoder codes, in the header's own terms.
+///
+/// Nothing is coded before an encoder exists, and the header's default is the
+/// honest description of nothing: the first codec at eight bits.
+fn colour_of(seat: &SeatHold) -> (lowlat_core::video::Codec, bool, bool) {
+    match seat.colour() {
+        Some((crate::stream::Codec::H264, ten_bit, chroma_444)) => {
+            (lowlat_core::video::Codec::H264, ten_bit, chroma_444)
+        }
+        Some((crate::stream::Codec::H265, ten_bit, chroma_444)) => {
+            (lowlat_core::video::Codec::H265, ten_bit, chroma_444)
+        }
+        None => (lowlat_core::video::Codec::H264, false, false),
+    }
 }
 
 /// Queue everything the stream has published to this guest.
@@ -1884,6 +1901,13 @@ fn follow_epoch(
 /// rather than truncated, so the next predicted frame would reference a
 /// picture the peer never received. Only the gate may latch, and the gate is
 /// on the stream's thread, so the guest says so and the stream acts on it.
+///
+/// **A keyframe's announcement is part of the keyframe.** For a guest that
+/// reads the protocol it goes out first, whole, and a refusal of it is the
+/// refusal of the picture: a peer that got the picture without the message
+/// would rebuild its decoder on the parameter sets like an older one, which
+/// is harmless once, and a peer that got the message without the picture is
+/// owed the next keyframe anyway.
 fn send_frames<M: Media>(
     session: &mut M,
     seat: &SeatHold,
@@ -1893,6 +1917,14 @@ fn send_frames<M: Media>(
     let mut sent = 0u64;
     while let Some(frame) = seat.next_frame() {
         let keyframe = frame.keyframe();
+        if let Some(announcement) = packetiser.announcement(keyframe)
+            && session
+                .send_message(VIDEO_CHANNEL, announcement, &[])
+                .is_err()
+        {
+            seat.missed_frame();
+            continue;
+        }
         let Some(header) = packetiser.header(keyframe) else {
             seat.missed_frame();
             continue;
@@ -1904,6 +1936,7 @@ fn send_frames<M: Media>(
             seat.missed_frame();
             continue;
         }
+        packetiser.sent(keyframe);
 
         // What the frame owes the peer beyond the picture: the generation,
         // once after an initialisation. The latency figure is on the clock
@@ -2153,7 +2186,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 return;
             }
             let shell = Shell::new(socket, wake, Endpoint::new(conn, session));
-            drive(driven, shell, running);
+            drive(driven, shell, running, true);
         }
         Keying::Web { expect } => {
             let session = match WebSession::client(expect, 1, 0.0) {
@@ -2167,7 +2200,7 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
                 }
             };
             let shell = Shell::new(socket, wake, Endpoint::new(conn, session));
-            drive(driven, shell, running);
+            drive(driven, shell, running, false);
         }
     }
 }
@@ -2177,7 +2210,16 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
 /// Everything here is written against the media seam and nothing else, so
 /// the loop that drives a native session and the loop that drives a
 /// browser's are this one function instantiated twice.
-fn drive<M: Media>(args: Driven, mut shell: Shell<'_, M>, running: &lowlat_net::Running) {
+///
+/// `framed` says whether this pipe carries the video header: the native one
+/// does, and the browser one strips every channel but control to its payload,
+/// so nothing that lives in the header can be sent over it.
+fn drive<M: Media>(
+    args: Driven,
+    mut shell: Shell<'_, M>,
+    running: &lowlat_net::Running,
+    framed: bool,
+) {
     let mut inbound = vec![0u8; MAX_INBOUND];
     args.telemetry.began();
     let mut reported: Vec<SocketAddr> = Vec::new();
@@ -2236,6 +2278,10 @@ fn drive<M: Media>(args: Driven, mut shell: Shell<'_, M>, running: &lowlat_net::
     // What this guest has been told about the pointer, and what it holds.
     let mut pointer = crate::cursor::Sender::new();
     let mut declared = false;
+    // Whether this guest is sent keyframe announcements: it declared the
+    // protocol, over a pipe that carries them. Kept beside the packetiser
+    // because the packetiser is rebuilt when the picture's size settles.
+    let mut announces = false;
     // What was last published to the seat, so a declaration that has not moved
     // is not republished on every pass.
     let mut declared_flags = 0u32;
@@ -2324,6 +2370,11 @@ fn drive<M: Media>(args: Driven, mut shell: Shell<'_, M>, running: &lowlat_net::
                     turned as u8
                 );
                 let mut framing = Packetiser::new(width, height, turned, false);
+                if let Some(seat) = seat.as_ref() {
+                    let (codec, ten_bit, chroma_444) = colour_of(seat);
+                    framing.set_colour(codec, ten_bit, chroma_444);
+                }
+                framing.set_announces(announces);
                 framing.reconfigured();
                 if let Some(negotiation) = negotiation.as_mut() {
                     negotiation.encoder_initialised(framing.generation());
@@ -2568,15 +2619,25 @@ fn drive<M: Media>(args: Driven, mut shell: Shell<'_, M>, running: &lowlat_net::
             // **Read once, here, and never assumed.** A peer that did not say
             // it keeps pointer pictures is sent the picture every time.
             pointer.caches(asked.caches_cursor);
+            // **And a peer that did not say it reads the video protocol is
+            // sent the older framing**, which is every peer over the browser
+            // pipe whatever it said: that pipe carries no video header.
+            announces = asked.announces_keyframes() && framed;
+            if let Some(packetiser) = packetiser.as_mut() {
+                packetiser.set_announces(announces);
+            }
             lowlat_common::log_info!(
-                "guest: declared attempt={} max_w={} max_h={} res={}x{} fps={} flags={:#x}",
+                "guest: declared attempt={} max_w={} max_h={} res={}x{} fps={} flags={:#x} \
+                 video_protocol={} announced={}",
                 args.attempt_id,
                 asked.max_width,
                 asked.max_height,
                 asked.resolution_x,
                 asked.resolution_y,
                 asked.refresh_rate,
-                asked.flags
+                asked.flags,
+                asked.video_protocol_version,
+                u8::from(announces)
             );
             // **What a peer declares is a preference, not a requirement**, and
             // every bit here is one: a client offers the codec and the two
@@ -2635,15 +2696,21 @@ fn drive<M: Media>(args: Driven, mut shell: Shell<'_, M>, running: &lowlat_net::
                     }
                 );
             }
-            match (seat.is_some(), negotiation.as_mut(), packetiser.as_ref()) {
-                (true, Some(negotiation), Some(packetiser)) => {
+            match (seat.as_ref(), negotiation.as_mut(), packetiser.as_mut()) {
+                (Some(seat), Some(negotiation), Some(packetiser)) => {
+                    // **What the stream codes right now, not what this guest
+                    // was admitted describing.** A guest seated on a stream
+                    // another guest already moved to ten bits sees no
+                    // reinitialisation to follow, and the header it builds
+                    // from the admission defaults would call that stream
+                    // eight-bit in the one field a peer acts on first.
+                    let (codec, ten_bit, chroma_444) = colour_of(seat);
+                    packetiser.set_colour(codec, ten_bit, chroma_444);
                     // **The generation goes out on the frame after this**, so
                     // a peer learns the reference chain started rather than
                     // inferring it from the stream.
                     negotiation.encoder_initialised(packetiser.generation());
-                    if let Some(seat) = seat.as_ref() {
-                        seen_epoch = seat.epoch();
-                    }
+                    seen_epoch = seat.epoch();
                     // Free insurance: thirteen bytes, no body, and a stock
                     // host sends it before its first frame. The peer stores it
                     // and nothing gates on it, so the cost of sending it is
@@ -2663,7 +2730,7 @@ fn drive<M: Media>(args: Driven, mut shell: Shell<'_, M>, running: &lowlat_net::
                 // offer was accepted and the path was built, and then the
                 // guest sat connected receiving nothing until its own liveness
                 // deadline noticed, minutes later.
-                (false, _, _) => {
+                (None, _, _) => {
                     lowlat_common::log_warn!("guest: every seat is taken");
                     send_disconnect(shell.endpoint().session(), status::NO_ROOM);
                     kicked = Some((status::NO_ROOM, now));
@@ -4711,6 +4778,86 @@ mod geometry {
             "an eight-bit stream claimed ten-bit colour on the wire"
         );
         assert_eq!(body, unit, "the bitstream did not arrive intact");
+    }
+
+    /// **A keyframe announced to a peer arrives as two messages, in order:
+    /// the metadata whole, then the picture with the announced bit.** Read
+    /// back through a real session pair rather than from the packetiser, so
+    /// the message boundary a peer's reader sees is the one this checks: a
+    /// peer looks ahead for a metadata message *whose next message is the
+    /// picture*, and a metadata message that shared a message with its
+    /// picture, or followed it, would be one it never fast-forwards to.
+    #[test]
+    fn an_announced_keyframe_reaches_a_peer_as_the_metadata_then_the_picture() {
+        let mut ours = Arena::new();
+        let mut ours = ours.session();
+        let mut theirs = Arena::new();
+        let mut video = VideoRecv::new();
+        let mut theirs = theirs.peer(&mut video);
+
+        let unit: Vec<u8> = [0u8, 0, 0, 1, 0x67]
+            .into_iter()
+            .chain((0..3000u32).map(|at| (at % 251) as u8))
+            .collect();
+        let mut packetiser = Packetiser::new(1920, 1080, lowlat_core::video::Rotation::None, false);
+        packetiser.set_announces(true);
+        // As send_frames does it: the announcement first, then the picture.
+        let announcement = packetiser.announcement(true).expect("announced").to_vec();
+        ours.send_message(VIDEO_CHANNEL, &announcement, &[])
+            .expect("queue the announcement");
+        let header = packetiser.header(true).expect("header").to_vec();
+        ours.send_message(VIDEO_CHANNEL, &header, &unit)
+            .expect("queue the picture");
+        packetiser.sent(true);
+
+        let mut taken: Vec<Vec<u8>> = Vec::new();
+        for round in 0..64 {
+            let now = f64::from(round) * 20.0;
+            pump(&mut ours, &mut theirs, now);
+            pump(&mut theirs, &mut ours, now);
+            let mut out = vec![0u8; 64 * 1024];
+            while let Some(Ok(len)) = theirs.take_message(VIDEO_CHANNEL, &mut out) {
+                out.truncate(len);
+                taken.push(out.clone());
+                out = vec![0u8; 64 * 1024];
+            }
+            if taken.len() == 2 {
+                break;
+            }
+        }
+        assert_eq!(taken.len(), 2, "the pair did not arrive as two messages");
+
+        let first = lowlat_core::video::parse(&taken[0]).expect("a video header");
+        assert!(
+            first.metadata && first.announced,
+            "the first message is not the metadata"
+        );
+        assert_eq!(taken[0].len(), lowlat_core::video::METADATA_LEN);
+        let told = lowlat_core::video::parse_metadata(&taken[0]).expect("metadata");
+        assert!(
+            told.keyframe && told.rebuilt,
+            "a first keyframe did not say the encoder was new"
+        );
+        assert!(
+            !lowlat_core::video::is_keyframe(&taken[0], lowlat_core::video::Codec::H264),
+            "the metadata classified as a picture"
+        );
+
+        let (head, body) = taken[1].split_at(lowlat_core::video::VIDEO_HEADER_LEN);
+        let second = lowlat_core::video::parse(head).expect("a video header");
+        assert!(
+            second.announced && !second.metadata,
+            "the picture does not carry the bit"
+        );
+        assert_eq!(
+            second.frame_id, first.frame_id,
+            "the two disagree about the generation"
+        );
+        assert_eq!(body, unit, "the bitstream did not arrive intact");
+        assert!(lowlat_core::video::is_keyframe(
+            &taken[1],
+            lowlat_core::video::Codec::H264
+        ));
     }
 
     /// **The generation a peer is told is the generation its frames carry.**

@@ -68,6 +68,13 @@ pub struct Init {
     /// header. A client offers this as a choice between quality and the
     /// bandwidth it costs.
     pub raw_audio: bool,
+    /// The peer reads the video protocol: keyframe-metadata messages and the
+    /// announced bit ([`crate::video`]).
+    ///
+    /// **A flag, not a version.** Every client that reads them sends `1`, a
+    /// host tests it for nonzero and nothing finer, and absent is zero. It
+    /// gates what this host sends to this peer and nothing about the room.
+    pub video_protocol_version: u32,
 }
 
 impl Init {
@@ -81,6 +88,11 @@ impl Init {
 
     pub const fn ten_bit(&self) -> bool {
         self.flags & FLAG_10BIT != 0
+    }
+
+    /// True when keyframes are to be announced to this peer.
+    pub const fn announces_keyframes(&self) -> bool {
+        self.video_protocol_version != 0
     }
 
     /// True when the peer stated a size it wants rather than leaving it to us.
@@ -203,6 +215,7 @@ pub fn parse(body: &[u8]) -> Result<Init> {
         refresh_rate: field(body, "refreshRate", 60),
         caches_cursor: truth(body, "_cache_cursor"),
         raw_audio: truth(body, "rawAudio"),
+        video_protocol_version: field(body, "_VideoProtocolVersion", 0),
     })
 }
 
@@ -233,6 +246,7 @@ mod tests {
             refresh_rate: 60,
             caches_cursor: false,
             raw_audio: false,
+            video_protocol_version: 0,
         };
         assert!(!none.has_size_limit(), "zero was read as a ceiling");
 
@@ -293,6 +307,7 @@ mod tests {
             refresh_rate: 60,
             caches_cursor: false,
             raw_audio: false,
+            video_protocol_version: 0,
         };
         assert!(!with(0x04).ten_bit(), "bit two was read as ten-bit");
         assert!(with(0x10).ten_bit());
@@ -387,6 +402,25 @@ mod tests {
         assert!(!of(b"{\"_version\":1}"));
         // A key that merely begins the same way is a different key.
         assert!(!of(b"{\"_version\":1,\"_cache_cursors\":true}"));
+    }
+
+    /// **The value is a flag.** The current client generation sends `1` and
+    /// nothing sends anything else; absent, zero, or not a number all mean
+    /// the older framing, and any nonzero number means the newer one.
+    #[test]
+    fn the_video_protocol_is_declared_by_any_nonzero_version() {
+        let of = |body: &[u8]| parse(body).expect("parsed").announces_keyframes();
+        assert!(of(b"{\"_version\":1,\"_VideoProtocolVersion\":1}"));
+        assert!(of(b"{\"_version\":1, \"_VideoProtocolVersion\" : 2 }"));
+        assert!(!of(b"{\"_version\":1,\"_VideoProtocolVersion\":0}"));
+        assert!(!of(b"{\"_version\":1}"));
+        assert!(!of(b"{\"_version\":1,\"_VideoProtocolVersion\":true}"));
+        assert_eq!(
+            parse(b"{\"_version\":1,\"_VideoProtocolVersion\":1}")
+                .expect("parsed")
+                .video_protocol_version,
+            1
+        );
     }
 
     #[test]
