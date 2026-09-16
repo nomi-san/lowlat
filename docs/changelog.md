@@ -3,6 +3,40 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-16 - The video protocol, read from both ends and sent to a guest that reads it
+
+### Changed
+- **A guest that declared the video protocol is sent a keyframe-metadata message before every
+  keyframe, and the keyframe carries the announced bit** ([05 §6.1a](05-host.md),
+  [01 §11.3](01-protocol.md)). Per guest, from the initialization's `_VideoProtocolVersion`,
+  and never over the browser pipe, which carries no video header; a guest that did not declare
+  it is sent the older framing exactly. The rebuilt bit is a latch per guest cleared by the
+  first keyframe that reaches the peer, so a refused keyframe does not spend it. Without the
+  pair every keyframe is a decoder rebuild on the current client generation, since parameter
+  sets are repeated on every one.
+- The video header's byte 8 carries the codec, and a guest seated on a running stream is
+  described by what the stream codes rather than by the admission defaults: a guest joining
+  after another moved the stream to ten bits was told eight, in the one field a decoder is
+  built from before any bitstream is parsed.
+
+### Corrected
+- [01 §11.3](01-protocol.md), [§11.5](01-protocol.md): `_VideoProtocolVersion` carries the
+  literal `1` and a host tests it for nonzero, nothing finer; the established host applies it
+  room-wide and rebuilds its encoder when the room's answer flips, while a host writing the
+  header per guest may decide per guest. What the declaration switches on, all of it or none:
+  a 21-byte metadata message before every keyframe (its layout is now written down), whose
+  rebuild bit replaces the parameter-set rule on the client; bit 5 on every keyframe and no
+  other picture; and the host's configured keyframe interval, ignored otherwise. Bit 5 alone
+  is safe but is nobody's protocol. `resolutions` is the size request per stream, its first
+  entry taking precedence over `resolutionX` and `resolutionY`, not a list of what the client
+  can display.
+- [01 §11.3](01-protocol.md): byte 8 of the video header is the codec, `1` H.264 and `2` HEVC,
+  which older hosts wrote as a constant `1`; bit 4 is the lock state of the host's session,
+  not full screen.
+- [10 §5](10-client.md), [impl-plan-client.md](impl-plan-client.md) C2: the decoder is also
+  torn down by a metadata message's rebuild bit, and bit 5 exempts a picture from the
+  generation rule.
+
 ## 2026-09-15 - The client, designed
 
 The client half is planned: [10-client.md](10-client.md) is the design,

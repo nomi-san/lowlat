@@ -114,10 +114,14 @@ it belongs to.
 **A decoder is built from the stream, not from the configuration.** The first access unit led
 by a sequence or video parameter set builds it, for the codec the unit names, at the depth the
 video header's bit 3 names, and any later unit led by parameter sets rebuilds it -- unless the
-header's bit 5 says the sets are unchanged, in which case the unit is fed to the decoder that
-exists ([01 §11.3](01-protocol.md)). A host that repeats parameter sets on every keyframe
-without setting that bit costs a rebuild per keyframe, and the two hosts compared here both
-repeat them; the bit is the host's cheap improvement and this host owes it.
+header's bit 5 is set, in which case the unit is fed to the decoder that exists and the
+generation rule below is not applied to it ([01 §11.3](01-protocol.md)). A host that repeats
+parameter sets on every keyframe without setting that bit costs a rebuild per keyframe, and
+the two hosts compared here both repeat them. **Under the video protocol the rebuild is
+explicit instead**: a keyframe-metadata message whose rebuild bit is set tears the decoder
+down before the keyframe it announces, and every keyframe carries bit 5; a metadata message
+is consumed and never decoded (*amended 2026-09-16*). This host sends the pair to a guest
+that declares the protocol ([05 §6.1a](05-host.md)).
 
 **A client asks a host for a keyframe in exactly two cases**, and both are sent as opcode 13
 with the reinitialisation argument set:

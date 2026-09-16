@@ -470,6 +470,38 @@ Putting the output back instead leaves it on the screen it asked to leave, over 
 and from the guest's side the request simply appears to have done nothing. The screen is what
 was asked for; the colour is what was preferred.
 
+### §6.1a What each guest is told about a keyframe
+
+One encode serves every seat, but the video header is written per guest, so what travels
+with a keyframe is decided per guest and not for the room (*added 2026-09-16*). A guest that
+declared the video protocol in its initialization ([01 §11.5](01-protocol.md)) is sent the
+pair of [01 §11.3](01-protocol.md): a keyframe-metadata message ahead of every keyframe, and
+the announced bit on the keyframe itself. A guest that did not is sent the older framing
+exactly, and so is every guest over the browser pipe whatever it declared, because that pipe
+carries no video header at all.
+
+```
+per guest, on a frame the stream published:
+    if the guest reads the protocol and the frame is a keyframe:
+        send the metadata message first, whole; a refusal is the frame's refusal
+    send the picture, its announced bit set iff the metadata went ahead of it
+    a keyframe that went out clears the guest's "rebuilt" latch
+```
+
+**The rebuilt bit is a latch per guest, set at seating and at every reinitialisation and
+cleared by the first keyframe that reaches the peer.** It is what a peer tears its decoder
+down on, so it has to describe what the peer has rather than what the encoder did: a
+keyframe refused by the transport never reached the peer, and the next one still has to say
+the parameter sets are new. The older host rule -- every parameter-set-led unit rebuilds --
+stays in force for a peer that reads the bit as absent, which is why a peer that got the
+picture without its announcement loses nothing but a rebuild.
+
+**A guest joining a running stream is described by what the stream codes, not by what the
+guest was admitted with.** The header a peer builds its decoder from carries the codec and
+the depth, and a guest seated after another moved the stream to ten bits sees no
+reinitialisation to follow; its header is filled from the running encoder at seating and
+again at every reinitialisation.
+
 ### §6.2 Ending a session, and saying why
 
 Two mechanisms, and which one applies is fixed by when the host learns it cannot serve the

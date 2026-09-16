@@ -716,10 +716,11 @@ channel, with a 10-byte header ahead of the bitstream:
 | 0 | 4 | frame identifier, **little endian** |
 | 4 | 2 | width, little endian |
 | 6 | 2 | height, little endian |
-| 8 | 1 | reserved, `0x01` |
+| 8 | 1 | codec: `1` H.264, `2` HEVC (*corrected 2026-09-16*; older hosts wrote `1` for both) |
 | 9 | 1 | flags |
 
-Flags: bits 0 to 2 rotation, **bit 3 ten-bit colour**, bit 4 believed to be full screen.
+Flags: bits 0 to 2 rotation, **bit 3 ten-bit colour**, bit 4 the host session is locked
+(*corrected 2026-09-16*; below), bits 5 and 6 the video protocol (below).
 
 Note the endianness change. Sequence numbers and message lengths are big endian; these fields
 are little endian. Getting this backwards produces a plausible-looking frame with absurd
@@ -755,32 +756,58 @@ its decoder from this before parsing any bitstream, so a bit that disagrees with
 fails every picture whichever way it disagrees. An eight-bit stream still clears it, which is
 every stream until a guest asks otherwise.
 
-Bit 4, called full screen above, has never been observed set either, and now carries the same
-doubt. Nothing turns on it while we leave it clear.
+**Bit 4 was called full screen here until 2026-09-16, and is the lock state of the host's
+session**: set while the desktop is locked or the session the host runs in is not the active
+one, sampled every frame, and handed by a newer client to its application with the picture.
+Nothing turns on it; a host with no such state leaves it clear, which reads as unlocked.
 
-**Amended 2026-09-15: bits 5 and 6 exist, and a newer client generation reads them.** Neither
-is set by any host generation this host has been compared against, and this host does not set
-them yet; a client that understands them treats their absence as the older behaviour.
+**Amended 2026-09-15: bits 5 and 6 exist, and a newer client generation reads them.** The
+established host of the same generation sets both when the declaration below holds, and so
+does this one, per guest (*2026-09-16*, [05 §6.1a](05-host.md)); a client that understands
+them treats their absence as the older behaviour.
 
-- **Bit 5 (`0x20`): the parameter sets in this access unit need no decoder rebuild.** The rule
-  a client has always applied is that an access unit led by a sequence or video parameter set
-  tears its decoder down and builds it again -- that is how a codec or size change has always
-  been carried. Since parameter sets are repeated on every keyframe (this host does so, and so
-  does the established one), every keyframe is a decoder rebuild for every client that does not
-  see this bit. A host that sets it on a keyframe whose parameter sets are unchanged spares a
-  newer client the rebuild; an older client ignores it.
-- **Bit 6 (`0x40`): this message is keyframe metadata, not a picture.** After the ten-byte
-  header, a four-byte word at offset 14 carries bit 0 = reinitialised and bit 1 = keyframe; the
-  picture follows as the next message on the channel. A client that has fallen behind on the
-  channel looks ahead through the messages it holds for one of these whose picture has already
-  arrived and **skips forward to it** -- a catch-up over data that has all arrived, aligned to a
-  keyframe, which is what makes a lagging reader recover in one step instead of decoding its
-  way through the backlog. Nothing is skipped over a gap: the channel is reliable and a missing
-  fragment is retransmitted, never abandoned ([§9](#9-acknowledgement-retransmission-and-recovery)).
+- **Bit 5 (`0x20`): this picture was announced by a metadata message, and its parameter
+  sets rebuild nothing.** The rule a client has always applied is that an access unit led by a
+  sequence or video parameter set tears its decoder down and builds it again -- that is how a
+  codec or size change has always been carried. Since parameter sets are repeated on every
+  keyframe (this host does so, and so does the established one), every keyframe is a decoder
+  rebuild for every client that does not see this bit. With it set, a client that has a
+  decoder feeds the unit to it and skips the generation check as well; a client with none
+  builds one from the unit whatever the bit says. An older client ignores it.
+- **Bit 6 (`0x40`): this message is keyframe metadata, not a picture.** It is 21 bytes: the
+  ten-byte header with the same identifier, size and codec as the picture it announces and
+  bits 5 and 6 both set, then a four-byte word of `1`, a four-byte word at offset 14 whose
+  **bit 0 says the encoder was rebuilt** and **bit 1 says a keyframe follows**, the colour
+  depth as one byte at 18 (`1` eight-bit, `2` ten-bit), the chroma layout at 19 (`2` for
+  4:2:0, `0` for 4:4:4), and the rotation at 20. The picture follows as the next message on
+  the channel. **The rebuild bit is what replaces the parameter-set rule**: a client tears
+  its decoder down on it, before the keyframe arrives. A client that has fallen behind on
+  the channel looks ahead through the messages it holds for one of these whose keyframe has
+  already arrived and **skips forward to it** -- a catch-up over data that has all arrived,
+  aligned to a keyframe, which is what makes a lagging reader recover in one step instead of
+  decoding its way through the backlog. Nothing is skipped over a gap: the channel is
+  reliable and a missing fragment is retransmitted, never abandoned
+  ([§9](#9-acknowledgement-retransmission-and-recovery)).
 
 Whether a host emits them is negotiated by the `_VideoProtocolVersion` key of the
-initialization ([§11.5](#115-session-initialization)); what its values mean is not yet read
-and is an open item.
+initialization ([§11.5](#115-session-initialization)). **Corrected 2026-09-16: the value is
+read, and so is what a host does with it.** Every client generation that understands the bits
+sends the literal `1`; a host treats any nonzero value as that declaration and zero or
+absence as the older framing. No other value exists. The established host applies the
+declaration to the room as a whole -- every seated guest must have declared it -- and
+rebuilds its encoder whenever that answer changes, so a guest without the key leaving a room
+that had one costs the others a rebuild. A host that writes the header per guest, as this
+one does, may decide per guest instead and owes no rebuild on either edge.
+
+**What a host does when the declaration holds, and it is all-or-nothing:** a metadata message
+before every keyframe, with bit 0 set on the first keyframe after an encoder build and clear
+on every other; bit 5 on every keyframe and on no other picture; and, where the host is
+configured with a keyframe interval, a periodic keyframe at that interval, which is what the
+catch-up lands on -- without the declaration the interval is ignored and the stream has no
+keyframes but those a rebuild or a request produces. When it does not hold, none of this is
+sent and the framing is the older one exactly. Setting bit 5 without the metadata is safe (a
+client with no decoder builds one from any parameter-set-led unit, and a client with one is
+only wrong if the sets changed), but no host does it; the pair is the protocol.
 
 **The frame identifier is not a frame counter.** It is an encoder generation counter and stays
 constant across a whole session's frames, incrementing only when the encoder is reconfigured.
@@ -788,7 +815,7 @@ It went from 1 to 2 across the same 112 second recording. Anything using it to o
 deduplicate frames is broken.
 
 Within the first fragment's body, and remembering the four-byte length prefix from §5.3, the
-absolute offsets are: length at 0, frame identifier at 4, dimensions at 8 and 10, reserved at
+absolute offsets are: length at 0, frame identifier at 4, dimensions at 8 and 10, the codec at
 12, flags at 13, start code at 14, and the first unit's type byte at 18.
 
 ### §11.4 Audio framing
@@ -937,11 +964,14 @@ _VideoProtocolVersion   resolutions [ {width, height} x 3 ]
 
 `channels` and `channelMask` describe the sound the client wants (two channels, front left and
 right); `rawAudio` asks for uncompressed sound; `_cache_cursor` says the client keeps cursor
-shapes by identifier; `resolutions` lists what the client can display, one entry per stream,
-which is what the host's display-size request is answered against; `_VideoProtocolVersion`
-selects the video framing extensions of [§11.3](#113-video-framing), and its values are not yet
-read. **A client of ours sends the fourteen**, because the host generation that reads them
-behaves differently when they are absent; a host of ours accepts either shape.
+shapes by identifier; `resolutions` is the size request per stream, `{width, height}` for each
+of the three, and its first entry repeats `resolutionX` and `resolutionY` and takes precedence
+over them (*corrected 2026-09-16: it is a request, not a list of what the client can
+display*); `_VideoProtocolVersion` declares the video framing extensions of
+[§11.3](#113-video-framing), and its value is `1` -- a host reads it as an integer, treats
+nonzero as the declaration and zero or absence as its lack, and no other value exists
+(*corrected 2026-09-16*). **A client of ours sends the fourteen**, because the host generation
+that reads them behaves differently when they are absent; a host of ours accepts either shape.
 
 **Do not add keys beyond those.** Peers exist that behave differently when the object carries
 keys they do not know, taking different encoder-warmup or session-setup paths, so a host must

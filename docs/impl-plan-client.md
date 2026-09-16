@@ -92,7 +92,8 @@ plays both roles.
   the two-held rule and the fence. Named regression tests: the producer never blocks without
   a consumer; a held slot is never overwritten; a third acquire is refused.
 - [ ] The decoder built from the stream ([10 §5](10-client.md)): parameter sets build it, bit
-  5 keeps it, a stale generation tears it down, a fault destroys it before the request.
+  5 keeps it, a metadata message's rebuild bit or a stale generation tears it down, a fault
+  destroys it before the request.
 - [ ] **`examples/client`**: the C demo on the toolkit, one file for signaling, one for the
   session; window, present, nothing else. It logs in with the same tool the host uses.
 
