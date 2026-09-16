@@ -36,6 +36,13 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - [10 §5](10-client.md), [impl-plan-client.md](impl-plan-client.md) C2: the decoder is also
   torn down by a metadata message's rebuild bit, and bit 5 exempts a picture from the
   generation rule.
+- [10 §5](10-client.md), [§7](10-client.md), [impl-plan-client.md](impl-plan-client.md) C1:
+  a client's keyframe request is one act with its decoder teardown and there is at most one
+  per fault, because a decoder that has no picture to fault on asks for nothing; the earlier
+  "ask on the first fault, rebuild when faults persist" would have asked per bad unit, which
+  on the established host is an encoder rebuild each. At start a client declares stream 0
+  through the initialization and sends opcode 13 for the two secondary streams only, waiting
+  on no acknowledgement; the first keyframe is the host's to send.
 
 ## 2026-09-15 - The client, designed
 

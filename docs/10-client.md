@@ -141,9 +141,15 @@ every one, with a rate reset and a keyframe after ([01 §11.5](01-protocol.md)).
 answers a request that changes nothing with a keyframe alone; a client cannot assume that of
 any other host, so it asks only when it must.
 
-A decoder fault that is broader than "unrecoverable" -- a corrupt access unit that a software
-decoder rejects and the next one it accepts -- is not case 2; the request goes out on the first
-fault and the rebuild waits for the faults to persist, so one bad unit never costs a teardown.
+**The request and the teardown are one act, and there is at most one per fault** (*corrected
+2026-09-16*). A decoder that reports a fault is destroyed and the request goes out once; after
+that, every access unit that cannot build a decoder -- anything not led by a parameter set --
+is ignored without a request, and an access unit that decodes to nothing is not a fault. So a
+burst of bad units costs one request, which on the established host is one encoder rebuild,
+never a storm; and a request is never sent while there is no decoder to be at fault. An
+earlier draft here asked on the first fault and rebuilt only when faults persisted, which
+sends a request per bad unit; against a host that rebuilds its encoder on every request that
+is the storm, and it is not what any client does.
 
 **A picture whose generation is older than the one the host last announced (opcode 29) is
 stale**, from an encoder that no longer exists; the decoder is torn down before it is fed, so
@@ -181,9 +187,14 @@ tries by resampling to the device makes a feedback loop.
 
 ## §7 Initialization and the control vocabulary
 
-The client sends the fourteen-key initialization of [01 §11.5](01-protocol.md), then opcode 13
-for each of the three streams with its flags -- which is what the host stores per stream --
-then the diagnostics opcode with every bit clear. From then on it reads channel 0 for:
+The client sends the fourteen-key initialization of [01 §11.5](01-protocol.md), whose `_flags`
+is stream 0's declaration, then the diagnostics opcode with every bit clear, then opcode 13
+for **streams 1 and 2 only**, with the same flags and the reinitialisation argument clear --
+which is what the host stores per stream; stream 0 never sends one at start (*corrected
+2026-09-16*; an earlier draft said all three). Nothing waits on an acknowledgement: the
+secondary declarations follow the initialization in order on the same reliable channel, and
+the host's own seating of the guest produces the first keyframe. From then on the client
+reads channel 0 for:
 
 | opcode | what the client does |
 |---|---|

@@ -59,14 +59,16 @@ plays both roles.
   the offer's credentials and certificate digest produced for the application, candidates
   out as events, the answer's credentials in), the session's receive half with the video
   ring at 4000 fragments and a 16 MiB read buffer, the initialization of
-  [01 §11.5](01-protocol.md) with fourteen keys, opcode 13 per stream, the diagnostics
-  message, and the control vocabulary of [10 §7](10-client.md) as events.
+  [01 §11.5](01-protocol.md) with fourteen keys, the diagnostics message, opcode 13 for the
+  two secondary streams (stream 0 declares through the initialization), and the control
+  vocabulary of [10 §7](10-client.md) as events.
 - [ ] The **catch-up over arrived messages** ([10 §3](10-client.md)): keyframe metadata found
   ahead is skipped to; nothing is ever skipped over a gap. Named regression test for the
   second half.
 - [ ] The **keyframe policy** ([10 §5](10-client.md)): two triggers, no timer, no start-up
-  kick. Named regression test that a decoder starved of a keyframe never fires a request and
-  that a fault fires one immediately.
+  kick, one request per fault paired with the teardown. Named regression test that a decoder
+  starved of a keyframe never fires a request, that a fault fires one immediately, and that
+  a burst of bad units after it fires no second one until a decoder exists again.
 - [ ] The C ABI: `lowlat_client_create/destroy`, the four-call seam mirrored, events, status.
   The client half of the header behind `LOWLAT_CLIENT`; the C# mirror gains the client.
 - [ ] **A hermetic full session under the simulator**: this host's session against this
