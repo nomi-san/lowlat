@@ -76,6 +76,17 @@ client generation's behaviour and it is the transport-level form of §4's latest
 reader recovers in one step rather than decoding a backlog it will never show. Against a host
 that sends no metadata messages the look-ahead finds nothing and the reader decodes in order.
 
+**The catch-up is a mechanism, not a remedy: it needs a keyframe in the backlog** (*added
+2026-09-16*). This host announces every keyframe it sends, and those are the seating
+keyframe, the ones a request or the gate's cascade produce, and no periodic ones; the
+established host's periodic keyframes exist only when it is configured with an interval. So a
+reader that is behind because its decoder is slower than the stream ordinarily finds nothing
+ahead and decodes in order, the case [§4.1](#41-what-latest-wins-costs-and-what-it-cannot-do)
+describes and the deferred request of [§5](#5-the-decoder-and-when-a-client-asks-for-a-keyframe)
+would answer. What the receive path owes those decisions is the measurement: how many
+messages the reader is behind, and how long the oldest of them has waited, both reported
+([§9](#9-events-status-and-metrics)) rather than acted on.
+
 ## §4 Pictures: the queue, and acquire and release
 
 **Depth two, latest wins, the producer never blocks.** The decode thread publishes into a ring

@@ -63,8 +63,12 @@ plays both roles.
   two secondary streams (stream 0 declares through the initialization), and the control
   vocabulary of [10 §7](10-client.md) as events.
 - [ ] The **catch-up over arrived messages** ([10 §3](10-client.md)): keyframe metadata found
-  ahead is skipped to; nothing is ever skipped over a gap. Named regression test for the
-  second half.
+  ahead is skipped to; nothing is ever skipped over a gap; and nothing is skipped when no
+  keyframe is ahead, so a slow reader against a host without periodic keyframes decodes in
+  order. Named regression tests for the last two. The reader's lag -- messages behind, and
+  the age of the oldest -- is a metric from here, because the deferred decisions are decided
+  on it. The hermetic census below counts a picture the catch-up discarded as skipped, not
+  lost: it is the one thing that legitimately drops arrived data.
 - [ ] The **keyframe policy** ([10 §5](10-client.md)): two triggers, no timer, no start-up
   kick, one request per fault paired with the teardown. Named regression test that a decoder
   starved of a keyframe never fires a request, that a fault fires one immediately, and that
