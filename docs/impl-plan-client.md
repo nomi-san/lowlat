@@ -102,7 +102,11 @@ plays both roles.
 **Gate:**
 
 1. **The demo shows this host's desktop**, on this machine, through VA-API on the second card,
-   at the display's rate for ten minutes; decode time and queue depth on the log.
+   at the display's rate for ten minutes; decode time and queue depth on the log, and the
+   presentation cadence recorded as numbers rather than judged: repeats and skips per second
+   between consecutive presents with the stream at the display's rate, above it and below
+   it, and the lag the picture reaches with the decoder slowed to half the stream's rate
+   under the simulator ([10 §4.1](10-client.md)). The deferred decisions below wait on them.
 2. **The demo shows an established host's desktop** on the second machine for ten minutes from
    a cold connect, with the initialization and the per-stream declaration accepted as the
    established client's are, and a clean departure read as such on both sides.
@@ -182,8 +186,32 @@ plays both roles.
 - **A second stream, the browser pipe, pen and touch, the microphone uplink.** Each is known
   and none is needed for a client that streams.
 
+### Deferred decisions, recorded 2026-09-16
+
+Each is written up in [10-client.md](10-client.md) and decided on the numbers the C2 gate
+records, not before; none is in v1.
+
+- **A decode-lag keyframe request** ([10 §5](10-client.md)): a third trigger for the request,
+  when the reader is behind by more than a threshold with no announced keyframe ahead, rate
+  limited; the catch-up then lands on it. A divergence from the established client, correct
+  on a reliable channel, an encoder rebuild every two seconds on the established host while
+  the lag lasts. Thresholds measured, not picked.
+- **A presentation-rate hint and a sustainability event** ([10 §9](10-client.md)): the
+  application's display rate in `lowlat_client_set_config`, the sustainable rate in status,
+  an event when the decoder cannot keep up with the rate the library recommends; the
+  application relays it as `encoderFPS` in its own protocol, which is the one lever every
+  host honours. The library never sends that message.
+- **A presentation pacer in the application** ([10 §4.1](10-client.md)): a deeper hold count
+  on acquire for an application that wants evenness over currency, as Moonlight offers
+  pacing as an option beside a client-set frame rate. The library stays latest-wins.
+- **Temporal layering on the host** is the only per-guest frame-rate lever, and belongs to a
+  host phase; noted here because every client-side answer above ends at it.
+
 ## Change log
 
 Newest first.
 
+- 2026-09-16: the keyframe request is one act with the teardown, stream 0 declares through
+  the initialization, C2 records the cadence and lag numbers, and four deferred decisions are
+  written down with what decides each.
 - 2026-09-15: the plan is written, after C0 landed the same day.

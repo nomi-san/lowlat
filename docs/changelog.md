@@ -43,6 +43,12 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   on the established host is an encoder rebuild each. At start a client declares stream 0
   through the initialization and sends opcode 13 for the two secondary streams only, waiting
   on no acknowledgement; the first keyframe is the host's to send.
+- [10 §4.1](10-client.md), [§5](10-client.md), [§9](10-client.md), the client plan: what
+  latest-wins costs (uneven motion under a rate mismatch, never accumulated delay) and what
+  it cannot do (thin an undecoded backlog), with four decisions deferred to the numbers C2
+  records -- a decode-lag keyframe request, a presentation-rate hint with a sustainability
+  event relayed by the application as `encoderFPS`, a pacer in the application, and temporal
+  layering on the host as the only per-guest frame-rate lever.
 
 ## 2026-09-15 - The client, designed
 

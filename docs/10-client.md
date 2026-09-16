@@ -109,6 +109,41 @@ by the renderer, not the decoder -- the picture arrives as the display was encod
 quarter turn is a transform at present time), colour depth, chroma layout, and the generation
 it belongs to.
 
+### §4.1 What latest-wins costs, and what it cannot do
+
+**Latest-wins trades motion evenness for currency, and the trade is deliberate** (*added
+2026-09-16*). The application presents on every refresh whatever it is shown; what moves is
+the source-time step between consecutive presents. With the stream above the display's rate
+the step is two frames with a jitter of one, from the phase between decode completion and
+the poll; with the two rates equal and their clocks unsynchronised, their beat skips or
+repeats one picture per beat period, a periodic hitch; below the display's rate there are
+only repeats. A burst -- a decode stall followed by three pictures in three milliseconds --
+shows the last and drops two. A first-in-first-out queue would smooth every one of these by
+holding pictures, and would then be that many frames late for the rest of the session. The
+wire carries no presentation timestamps (the header has size, rotation and generation), so
+any pacer here can only pace on arrival time, which the network jitters; it would buy
+evenness with latency and nothing else. The rates are the real lever: a stream at the
+display's rate, or an integer multiple above it, is the smoothest a client without a pacer
+gets.
+
+**And it cannot help a decoder that is slower than the stream.** A predicted picture needs
+the one before it, so an undecoded backlog cannot be thinned; it sits in the receive ring,
+grows until the ring is full, and from then on the picture is the ring's depth in the past
+while input acts on the present. No client generation compared here has a remedy: the
+established client warns the user when its queue stays above thirty messages and leaves the
+rate to the host's panel; the newest one can fast-forward only to a keyframe that is already
+in the backlog, which without a periodic keyframe on the host is never there.
+
+**Deferred decisions, recorded here so they are decided once** (the plan lists them):
+
+- *A presentation pacer in the application, not the library.* Moonlight, an open client for
+  a different protocol, sets the frame rate from the client and offers frame pacing as an
+  option with its trade-off named -- lowest latency or smoothest motion; the same shape fits
+  here as a deeper hold count on acquire, so an application that wants evenness over
+  currency can buffer. Decided on the cadence numbers Phase C2 records, not before.
+- *A decode-lag keyframe request*, §5 below.
+- *A presentation-rate hint and a sustainability event*, §9 below.
+
 ## §5 The decoder, and when a client asks for a keyframe
 
 **A decoder is built from the stream, not from the configuration.** The first access unit led
@@ -150,6 +185,20 @@ never a storm; and a request is never sent while there is no decoder to be at fa
 earlier draft here asked on the first fault and rebuilt only when faults persisted, which
 sends a request per bad unit; against a host that rebuilds its encoder on every request that
 is the storm, and it is not what any client does.
+
+**Deferred: a third trigger, for a reader that has fallen behind** (*recorded 2026-09-16*,
+not in v1). The two cases above are the established rule and they leave the slow-decoder
+case of [§4.1](#41-what-latest-wins-costs-and-what-it-cannot-do) without a way out: the
+backlog has all arrived, the decoder is sound, and nothing in it is a keyframe to skip to. A
+request sent when the reader is more than a threshold behind, no announced keyframe is ahead
+in the ring, and none went out in the last two seconds, gives the catch-up of
+[§3](#3-the-receive-path) something to land on: the picture snaps to the present at the cost
+of a keyframe from this host and of an encoder rebuild, every two seconds while the lag
+lasts, from the established one. It is a divergence, and a correct one on this protocol --
+an instantaneous refresh resets references, so nothing is lost by abandoning arrived
+pictures -- but it does not cure a decoder that is slower than the stream; only fewer frames
+do, which is §9's event. Decided when the C2 lag numbers exist, with the thresholds measured
+rather than picked.
 
 **A picture whose generation is older than the one the host last announced (opcode 29) is
 stale**, from an encoder that no longer exists; the decoder is torn down before it is fed, so
@@ -244,6 +293,21 @@ what the session is doing and what the decoder is; metrics carry the client's si
 same named channels the host reports ([06 §3](06-api.md)) -- what arrived, what was
 retransmitted to it, its decode time, its queue depth -- so an application can draw the same
 panel either side.
+
+**Deferred: a presentation-rate hint, and an event when the decoder cannot sustain the
+stream** (*recorded 2026-09-16*, not in v1). There is no wire-level channel for the rate a
+client can take that any host honours: the initialization's `refreshRate` is a literal 60
+from every established client and no host reads it, the decode time of opcode 21 is only
+re-published, and one encode serves every seat, so a host cannot thin frames for one guest
+without breaking its reference chain -- temporal layering in the encoder is the only
+per-guest frame-rate lever, and that is a host phase of its own. The lever every host
+honours is `encoderFPS` in the application protocol, which is the application's message
+([01 §11.2a](01-protocol.md)) and stays so. What the library can own is the decision:
+`lowlat_client_set_config` takes the application's presentation rate (its display's refresh,
+or zero for unknown), status carries the rate the decoder can sustain, and an event says when
+it cannot sustain the stream, with the rate the library recommends; the application relays
+that as `encoderFPS` in one line, and it works against an established host exactly as it
+does against this one. Decided with the lag trigger of [§5](#5-the-decoder-and-when-a-client-asks-for-a-keyframe).
 
 ## §10 Threads
 
