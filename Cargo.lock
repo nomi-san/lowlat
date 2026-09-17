@@ -876,12 +876,14 @@ version = "0.0.0"
 dependencies = [
  "cbindgen",
  "lowlat-audio",
+ "lowlat-client",
  "lowlat-common",
  "lowlat-core",
  "lowlat-crypto",
  "lowlat-encode",
  "lowlat-host",
  "lowlat-inject",
+ "lowlat-net",
 ]
 
 [[package]]

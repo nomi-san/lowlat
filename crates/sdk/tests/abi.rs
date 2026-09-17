@@ -167,7 +167,11 @@ fn generate() -> String {
 /// reads as the two halves it is. Only the feature guards are touched; the
 /// `#pragma`, the C++ fences and the `noexcept` block go through untouched.
 fn merge_feature_guards(header: &str) -> String {
-    const GUARDS: [&str; 2] = ["#if defined(LOWLAT_HOST)", "#if defined(LOWLAT_CLIENT)"];
+    const GUARDS: [&str; 3] = [
+        "#if defined(LOWLAT_HOST)",
+        "#if defined(LOWLAT_CLIENT)",
+        "#if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))",
+    ];
     let lines: Vec<&str> = header.lines().collect();
     let mut out: Vec<&str> = Vec::with_capacity(lines.len());
     // Every open `#if`, feature or not; a feature guard remembers whether it
@@ -445,6 +449,23 @@ fn the_header_compiles_alone_as_c_and_as_c_plus_plus() {
     args.extend(["-I", &include, "-c", &source, "-o", &object]);
     if let Err(why) = compile("c++", &args) {
         panic!("the header does not compile as C++:\n{why}");
+    }
+
+    // **And with either half hidden**, which is what an application built
+    // against a library carrying one half does: the shared types must still
+    // be there, and nothing of the hidden half may be.
+    for (hidden, name) in [
+        ("-DLOWLAT_NO_HOST", "no-host"),
+        ("-DLOWLAT_NO_CLIENT", "no-client"),
+    ] {
+        let object = dir.join(format!("alone-{name}.o"));
+        let object = object.to_string_lossy().to_string();
+        let mut args: Vec<&str> = vec!["-std=c11", hidden];
+        args.extend(warnings);
+        args.extend(["-I", &include, "-c", &source, "-o", &object]);
+        if let Err(why) = compile("cc", &args) {
+            panic!("the header does not compile with {hidden}:\n{why}");
+        }
     }
 }
 

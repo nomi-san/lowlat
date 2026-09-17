@@ -41,6 +41,19 @@ static_assert(sizeof(lowlat_outcome) == 4, "lowlat_outcome is not four bytes");
  * identical type, in C11 and in C++ alike, which is what this asks. */
 typedef enum lowlat_status lowlat_status;
 
+/* **The shared types are there whichever half is hidden**, and a half that is
+ * hidden declares nothing: the seam's credentials and events belong to both,
+ * the handles to one each. */
+static_assert(sizeof(lowlat_credentials) > 0, "the credentials are missing");
+static_assert(sizeof(lowlat_event) > 0, "the event is missing");
+#if defined(LOWLAT_HOST)
+typedef lowlat_host *lowlat_host_handle_is_declared;
+#endif
+#if defined(LOWLAT_CLIENT)
+typedef lowlat_client *lowlat_client_handle_is_declared;
+static_assert(sizeof(lowlat_client_status) > 0, "the client status is missing");
+#endif
+
 /* Twice on purpose. Including a header a second time is the only thing a guard
  * has to survive, and this one uses `#pragma once` rather than a macro name an
  * application could collide with. */

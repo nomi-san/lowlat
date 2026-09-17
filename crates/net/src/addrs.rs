@@ -19,7 +19,7 @@
 //!   and offering all three makes the peer spend checks discovering which of
 //!   them answers.
 
-use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::net::UdpSocket;
 
 /// Private address space, always offered.
@@ -155,6 +155,33 @@ pub fn host_addresses(shared: bool) -> Vec<IpAddr> {
     found.truncate(MAX_HOST_ADDRESSES);
     found.extend(probed_v6());
     found
+}
+
+/// One reflexive server name, resolved to one address per address family.
+///
+/// **One of each, not whichever the resolver put first.** A dual-stack name
+/// answers with both, ordered by what this machine's own addressing prefers, so
+/// taking the head alone gives a host with global IPv6 a v6 reflexive address
+/// and no v4 one -- and a v4-only peer is then offered nothing from us that it
+/// can reach.
+///
+/// Empty when the name does not resolve at all. What to do about that is the
+/// caller's: a configuration call refuses while the caller can still fix it, a
+/// service carries on, because an attempt with no reflexive server still
+/// punches on whatever it gathered locally.
+pub fn resolve_server(name: &str) -> Vec<SocketAddr> {
+    let Ok(resolved) = std::net::ToSocketAddrs::to_socket_addrs(name) else {
+        return Vec::new();
+    };
+    let resolved: Vec<SocketAddr> = resolved.collect();
+    [
+        resolved.iter().find(|addr| addr.is_ipv4()),
+        resolved.iter().find(|addr| addr.is_ipv6()),
+    ]
+    .into_iter()
+    .flatten()
+    .copied()
+    .collect()
 }
 
 #[cfg(test)]

@@ -34,13 +34,14 @@ fn host() -> Admission {
 /// message comes back through the client. Returns whether it did.
 fn session_under(legacy: bool) {
     let mut host = host();
-    let mut client = Client::new(Config {
+    let mut client = Client::new();
+    let config = Config {
         legacy_cipher: legacy,
         ..Config::default()
-    });
+    };
 
     let ours = client
-        .new_attempt("a", Transport::Bud)
+        .new_attempt("a", config, Transport::Bud)
         .expect("credentials");
     assert_eq!(
         ours.aes256.is_empty(),

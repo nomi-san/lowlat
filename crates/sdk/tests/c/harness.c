@@ -606,6 +606,48 @@ int main(int argc, char **argv)
 
     destroy(ll);
 
+    /* The client half, when the object carries it: a handle, an attempt
+     * minted through the boundary, and the whole of it torn down without a
+     * session. The credentials come out as usable C strings. */
+    if ((features() & LOWLAT_FEATURE_CLIENT) != 0) {
+        lowlat_status (*client_create)(const lowlat_client_create_info *, lowlat_client **);
+        void (*client_destroy)(lowlat_client *);
+        lowlat_status (*client_new_attempt)(lowlat_client *, const lowlat_client_config *,
+                                            const char *, uint32_t, lowlat_credentials *);
+        void (*client_end)(lowlat_client *);
+        lowlat_status (*client_status)(lowlat_client *, lowlat_client_status *);
+        RESOLVE(client_create, lib, "lowlat_client_create");
+        RESOLVE(client_destroy, lib, "lowlat_client_destroy");
+        RESOLVE(client_new_attempt, lib, "lowlat_client_new_attempt");
+        RESOLVE(client_end, lib, "lowlat_client_end_connection");
+        RESOLVE(client_status, lib, "lowlat_client_get_status");
+
+        lowlat_client *cl = NULL;
+        if (client_create(NULL, &cl) != LOWLAT_OK || cl == NULL) {
+            fprintf(stderr, "harness: a client handle could not be created\n");
+            return 1;
+        }
+        lowlat_credentials ours;
+        memset(&ours, 0, sizeof ours);
+        ours.size = (uint32_t) sizeof ours;
+        if (client_new_attempt(cl, NULL, "attempt", LOWLAT_TRANSPORT_BUD, &ours) != LOWLAT_OK
+            || strlen(ours.ufrag) != 8 || strlen(ours.pwd) != 32
+            || strlen(ours.fingerprint) != 64 || strlen(ours.aes256) != 254) {
+            fprintf(stderr, "harness: a client attempt produced no credentials\n");
+            return 1;
+        }
+        lowlat_client_status standing;
+        memset(&standing, 0, sizeof standing);
+        standing.size = (uint32_t) sizeof standing;
+        if (client_status(cl, &standing) != LOWLAT_OK
+            || standing.state != LOWLAT_CLIENT_CONNECTING) {
+            fprintf(stderr, "harness: a client with an attempt is not connecting\n");
+            return 1;
+        }
+        client_end(cl);
+        client_destroy(cl);
+    }
+
     if (log_lines == 0) {
         fprintf(stderr, "harness: a whole session produced no log lines\n");
         return 1;

@@ -130,6 +130,7 @@ pub(crate) enum Ask {
 
 struct Attempt {
     id: String,
+    config: Config,
     ours: Credentials,
     pending: Vec<Arrival>,
     inject: Option<mpsc::Sender<Arrival>>,
@@ -144,7 +145,6 @@ pub(crate) const LEAVE_GRACE_MS: f64 = 250.0;
 /// The client. One attempt at a time, one session.
 #[derive(Debug)]
 pub struct Client {
-    config: Config,
     attempt: Option<Attempt>,
     emit: events::Sender<Event>,
     events: Option<events::Receiver<Event>>,
@@ -158,11 +158,16 @@ impl std::fmt::Debug for Attempt {
     }
 }
 
+impl Default for Client {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Client {
-    pub fn new(config: Config) -> Self {
+    pub fn new() -> Self {
         let (emit, events) = events::queue();
         Self {
-            config,
             attempt: None,
             emit,
             events: Some(events),
@@ -177,7 +182,12 @@ impl Client {
     /// tells the host both sides can take the 256-bit cipher; the key that
     /// actually seals the session is the host's, from its answer. Leaving it
     /// out is how a client asks for the legacy cipher.
-    pub fn new_attempt(&mut self, id: &str, transport: Transport) -> Result<Credentials, Error> {
+    pub fn new_attempt(
+        &mut self,
+        id: &str,
+        config: Config,
+        transport: Transport,
+    ) -> Result<Credentials, Error> {
         if transport == Transport::Web {
             return Err(Error::Transport);
         }
@@ -185,11 +195,12 @@ impl Client {
             return Err(Error::Busy);
         }
         let mut ours = lowlat_crypto::credentials().map_err(|_| Error::Crypto)?;
-        if self.config.legacy_cipher {
+        if config.legacy_cipher {
             ours.aes256 = String::new();
         }
         self.attempt = Some(Attempt {
             id: id.to_string(),
+            config,
             ours: ours.clone(),
             pending: Vec::new(),
             inject: None,
@@ -272,13 +283,13 @@ impl Client {
 
         let args = crate::shell::Attached {
             socket,
-            servers: self.config.servers.clone(),
+            servers: attempt.config.servers.clone(),
             ours: (attempt.ours.ufrag.clone(), attempt.ours.pwd.clone()),
             theirs: (theirs.ufrag.clone(), theirs.pwd.clone()),
             material,
             cipher,
             seed,
-            init: self.config.init(),
+            init: attempt.config.init(),
             arrivals,
             asked,
             emit: self.emit.clone(),
@@ -293,7 +304,8 @@ impl Client {
         attempt.ask = Some(ask);
         attempt.thread = Some(thread);
 
-        for ip in lowlat_net::host_addresses(self.config.shared_address_space) {
+        let shared = attempt.config.shared_address_space;
+        for ip in lowlat_net::host_addresses(shared) {
             self.emit.send(Event::Candidate {
                 addr: SocketAddr::new(ip, bound),
                 from_stun: false,

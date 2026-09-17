@@ -27,13 +27,15 @@ host = [
     "dep:lowlat-encode",
     "dep:lowlat-inject",
 ]
-# The client half: decode and present. Nothing yet; the feature exists so the
-# header, the build and `lowlat_features` already say which half is which.
-client = []
+# The client half: the connecting side, decode and present, and every
+# `lowlat_client_*` entry point.
+client = ["dep:lowlat-client", "dep:lowlat-core", "dep:lowlat-net"]
 
 [dependencies]
 lowlat-common.workspace = true
 lowlat-host = { workspace = true, optional = true }
+lowlat-client = { workspace = true, optional = true }
+lowlat-net = { workspace = true, optional = true }
 lowlat-core = { workspace = true, optional = true }
 lowlat-crypto = { workspace = true, optional = true }
 lowlat-audio = { workspace = true, optional = true }

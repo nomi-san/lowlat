@@ -11,10 +11,20 @@ use core::ffi::{CStr, c_char, c_void};
 
 use lowlat_status::*;
 
+#[cfg(any(feature = "host", feature = "client"))]
+pub mod shared;
+#[cfg(any(feature = "host", feature = "client"))]
+pub use shared::*;
+
 #[cfg(feature = "host")]
 pub mod host;
 #[cfg(feature = "host")]
 pub use host::*;
+
+#[cfg(feature = "client")]
+pub mod client;
+#[cfg(feature = "client")]
+pub use client::*;
 
 /// A status code.
 ///
@@ -103,7 +113,7 @@ pub enum lowlat_status {
 /// The major version, raised only when something already published changes.
 pub const LOWLAT_ABI_MAJOR: u32 = 0;
 /// The minor version, raised when surface is appended.
-pub const LOWLAT_ABI_MINOR: u32 = 3;
+pub const LOWLAT_ABI_MINOR: u32 = 4;
 
 /// Major and minor, packed.
 ///

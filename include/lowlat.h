@@ -42,7 +42,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 3
+#define LOWLAT_ABI_MINOR 4
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 #define LOWLAT_FEATURE_HOST 1
@@ -50,7 +50,17 @@
 /// The client half is in this build: every `lowlat_client_*` entry point exists.
 #define LOWLAT_FEATURE_CLIENT 2
 
-#if defined(LOWLAT_HOST)
+#if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
+/// How many reflexive servers a seam may be given, and how long each may be.
+///
+/// **A fixed array rather than a pointer and a count**, so the structure stays
+/// one blittable block with nothing in it to free. Four is already more than
+/// any host here has ever been configured with.
+#define LOWLAT_SERVERS_MAX 4
+
+/// The longest textual `host:port` for one of them.
+#define LOWLAT_SERVER_MAX 64
+
 /// The longest attempt identifier carried across this boundary.
 ///
 /// **A fixed array rather than a pointer**, because nothing crosses here that
@@ -75,20 +85,6 @@
 /// the bound is set by the worst case rather than by the observed one.
 #define LOWLAT_OUTPUT_MAX 260
 
-/// How many reflexive servers a host may be given, and how long each may be.
-///
-/// **A fixed array rather than a pointer and a count**, so the structure stays
-/// one blittable block with nothing in it to free. Four is already more than
-/// any host here has ever been configured with.
-#define LOWLAT_SERVERS_MAX 4
-
-/// The longest textual `host:port` for one of them.
-#define LOWLAT_SERVER_MAX 64
-
-/// The most guests a host may advertise, which is what the ring memory per
-/// guest is sized against.
-#define LOWLAT_GUESTS_MAX 16
-
 /// The longest credential this boundary carries.
 ///
 /// **Sized by the largest of them, which is the media key.** It travels as
@@ -98,6 +94,12 @@
 
 /// The longest fingerprint.
 #define LOWLAT_FINGERPRINT_MAX 112
+#endif
+
+#if defined(LOWLAT_HOST)
+/// The most guests a host may advertise, which is what the ring memory per
+/// guest is sized against.
+#define LOWLAT_GUESTS_MAX 16
 
 /// Every guest at once, where a guest number is taken.
 ///
@@ -124,6 +126,20 @@
 
 /// How many channels it carries.
 #define LOWLAT_MICROPHONE_CHANNELS 1
+#endif
+
+#if defined(LOWLAT_CLIENT)
+/// No attempt has been made.
+#define LOWLAT_CLIENT_IDLE 0
+
+/// Connectivity is running.
+#define LOWLAT_CLIENT_CONNECTING 1
+
+/// The session is up.
+#define LOWLAT_CLIENT_ESTABLISHED 2
+
+/// The session is over; the ended event says why.
+#define LOWLAT_CLIENT_OVER 3
 #endif
 
 /// A status code.
@@ -197,7 +213,7 @@ typedef enum lowlat_status {
     LOWLAT_ERR_DISPLAY_UNREACHABLE = -201,
 } lowlat_status;
 
-#if defined(LOWLAT_HOST)
+#if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
 /// Which member of an event is the valid one.
 typedef enum lowlat_event_type {
     /// A local candidate, to be sent to the peer as it is found.
@@ -218,6 +234,12 @@ typedef enum lowlat_event_type {
     /// The host cannot continue. **Never dropped**, whatever the queue is
     /// doing, because it is the only explanation for everything that stopped.
     LOWLAT_EVENT_FATAL = 8,
+    /// The host blocked this client's input, or unblocked it. Client only.
+    LOWLAT_EVENT_BLOCKED = 9,
+    /// The host ended one stream and not the session. Client only.
+    LOWLAT_EVENT_STREAM_ENDED = 10,
+    /// The host said which mode it is in. Client only.
+    LOWLAT_EVENT_HOST_MODE = 11,
 } lowlat_event_type;
 
 /// Why an attempt finished.
@@ -242,8 +264,13 @@ typedef enum lowlat_outcome {
     /// The browser pipe's security handshake did not complete, the peer was
     /// not the one the offer named, or its association ended with an error.
     LOWLAT_OUTCOME_HANDSHAKE_FAILED = 9,
+    /// The host ended the session, and `reason` carries the status it gave.
+    /// Client only.
+    LOWLAT_OUTCOME_DISCONNECTED = 10,
 } lowlat_outcome;
+#endif
 
+#if defined(LOWLAT_HOST)
 /// Which codec the stream is encoded with.
 ///
 /// **Named by an enumeration and carried as an integer**, for the reason
@@ -340,7 +367,9 @@ typedef enum lowlat_quality {
     LOWLAT_QUALITY_BALANCED = 1,
     LOWLAT_QUALITY_HIGHEST = 2,
 } lowlat_quality;
+#endif
 
+#if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
 /// Which pipe an attempt speaks.
 typedef enum lowlat_transport {
     /// Authenticated records on the attempt socket. The default.
@@ -348,7 +377,17 @@ typedef enum lowlat_transport {
     /// A browser's data channel on the same socket.
     LOWLAT_TRANSPORT_WEB = 1,
 } lowlat_transport;
+#endif
 
+#if defined(LOWLAT_CLIENT)
+/// One client, as the application holds it.
+///
+/// Opaque: the application holds a pointer it cannot look inside, so what is
+/// in here changes freely.
+typedef struct lowlat_client lowlat_client;
+#endif
+
+#if defined(LOWLAT_HOST)
 /// One host session, as the application holds it.
 ///
 /// Opaque: the application holds a pointer it cannot look inside, so what is
@@ -566,7 +605,9 @@ typedef struct lowlat_attempt_info {
     /// ignored on the native one.
     char fingerprint[LOWLAT_FINGERPRINT_MAX];
 } lowlat_attempt_info;
+#endif
 
+#if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
 /// One address a peer might be reachable at.
 typedef struct lowlat_candidate {
     /// Set by the caller to `sizeof(lowlat_candidate)`.
@@ -592,11 +633,13 @@ typedef struct lowlat_candidate {
     char address[LOWLAT_ADDRESS_MAX];
 } lowlat_candidate;
 
-/// What this host answers an offer with.
+/// One side's credentials for an attempt: what a host answers an offer with,
+/// and what a client puts in its offer.
 ///
-/// **Generated at approval, not at registration.** They are bound to the
-/// socket that was just opened for this attempt, so producing them earlier
-/// binds them to nothing.
+/// **A host's are generated at approval, not at registration.** They are
+/// bound to the socket that was just opened for this attempt, so producing
+/// them earlier binds them to nothing. A client's are minted with the attempt,
+/// before it has a socket, so its `port` is zero.
 typedef struct lowlat_credentials {
     /// Set by the caller to `sizeof(lowlat_credentials)`.
     uint32_t size;
@@ -617,7 +660,9 @@ typedef struct lowlat_credentials {
     char fingerprint[LOWLAT_FINGERPRINT_MAX];
     char aes256[LOWLAT_ICE_MAX];
 } lowlat_credentials;
+#endif
 
+#if defined(LOWLAT_HOST)
 /// One connected guest.
 ///
 /// **No leading `size` field, and it is the one structure that cannot have
@@ -797,7 +842,9 @@ typedef struct lowlat_metrics {
     lowlat_channel_metrics audio;
     lowlat_channel_metrics video;
 } lowlat_metrics;
+#endif
 
+#if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
 /// A local candidate for the application to forward.
 typedef struct lowlat_candidate_event {
     char attempt[LOWLAT_ATTEMPT_MAX];
@@ -839,8 +886,10 @@ typedef struct lowlat_ended_event {
     int32_t reason;
 } lowlat_ended_event;
 
-/// An application message from a guest.
+/// An application message from a guest, or from the host on the client's side.
 typedef struct lowlat_user_data_event {
+    /// The guest that sent it. **Zero on a client**, whose messages all come
+    /// from the host.
     uint32_t guest;
     /// The sub-identifier, which means whatever the application and its
     /// clients agreed it means. Nothing here reads it.
@@ -872,6 +921,23 @@ typedef struct lowlat_fatal_event {
     int32_t reason;
 } lowlat_fatal_event;
 
+/// The host blocked this client's input, or unblocked it.
+typedef struct lowlat_blocked_event {
+    bool blocked;
+} lowlat_blocked_event;
+
+/// The host ended one stream and left the session up.
+typedef struct lowlat_stream_ended_event {
+    uint32_t stream;
+    /// The status the host gave, in the protocol's own numbering.
+    int32_t status;
+} lowlat_stream_ended_event;
+
+/// Which mode the host is in.
+typedef struct lowlat_host_mode_event {
+    uint32_t mode;
+} lowlat_host_mode_event;
+
 /// Whichever event this is.
 ///
 /// A union cannot describe itself, and the tag beside it is what says which
@@ -885,6 +951,9 @@ typedef union lowlat_event_body {
     lowlat_capture_changed_event capture_changed;
     lowlat_input_owner_event input_owner;
     lowlat_fatal_event fatal;
+    lowlat_blocked_event blocked;
+    lowlat_stream_ended_event stream_ended;
+    lowlat_host_mode_event host_mode;
 } lowlat_event_body;
 
 /// One event.
@@ -902,6 +971,67 @@ typedef struct lowlat_event {
     uint32_t dropped;
     lowlat_event_body body;
 } lowlat_event;
+#endif
+
+#if defined(LOWLAT_CLIENT)
+/// What a client is created with.
+typedef struct lowlat_client_create_info {
+    /// Set by the caller to `sizeof(lowlat_client_create_info)`.
+    uint32_t size;
+} lowlat_client_create_info;
+
+/// What a client asks of a host, per attempt.
+///
+/// **Zeroed is the sensible default**: no size request, compressed sound, the
+/// current cipher, no reflexive servers.
+typedef struct lowlat_client_config {
+    /// Set by the caller to `sizeof(lowlat_client_config)`.
+    uint32_t size;
+    /// The picture size asked of the host, or zero for no preference.
+    ///
+    /// **A request to change the host's display, not a description of this
+    /// one.** An established host takes the owner's figure as a mode request,
+    /// so set it only to change the person's monitor.
+    uint32_t resolution_x;
+    uint32_t resolution_y;
+    /// Whether uncompressed sound is acceptable.
+    bool raw_audio;
+    /// Offer no media key, so the host answers without one and both ends key
+    /// the legacy 128-bit cipher from its certificate digest.
+    bool legacy_cipher;
+    /// Offer addresses from the carrier-grade shared range as candidates.
+    bool shared_address_space;
+    uint8_t reserved;
+    /// How many of `servers` are set.
+    uint32_t server_count;
+    /// Reflexive servers, consulted for this client's own mapped address,
+    /// each as `host:port`, NUL-terminated.
+    char servers[LOWLAT_SERVERS_MAX][LOWLAT_SERVER_MAX];
+} lowlat_client_config;
+
+/// The session as it stands.
+typedef struct lowlat_client_status {
+    /// Set by the caller to `sizeof(lowlat_client_status)`.
+    uint32_t size;
+    /// `LOWLAT_CLIENT_CONNECTING`, `LOWLAT_CLIENT_ESTABLISHED` or
+    /// `LOWLAT_CLIENT_OVER`; `LOWLAT_CLIENT_IDLE` with no attempt.
+    uint32_t state;
+    /// The status the host's disconnect carried, or zero.
+    int32_t disconnect;
+    /// The smoothed round trip to the host, in milliseconds.
+    uint32_t rtt_ms;
+    /// Messages arrived on the video channel and not yet consumed: what the
+    /// reader is behind by.
+    uint32_t behind;
+    /// How long there has been anything unconsumed, in milliseconds.
+    uint32_t behind_ms;
+    /// Pictures taken off the video channel.
+    uint64_t pictures;
+    /// Pictures the catch-up discarded to land on a keyframe.
+    uint64_t skipped;
+    /// Sound packets taken off the audio channel.
+    uint64_t audio_packets;
+} lowlat_client_status;
 #endif
 
 #ifdef __cplusplus
@@ -1512,6 +1642,148 @@ lowlat_status lowlat_host_poll_events(lowlat_host *ll,
 ///
 /// @attention `ll` came from `lowlat_host_create`.
 lowlat_status lowlat_debug_panic(lowlat_host *ll) LOWLAT_NOEXCEPT;
+#endif
+
+#if defined(LOWLAT_CLIENT)
+/// Create a handle.
+///
+/// @param[in] info One `lowlat_client_create_info` whose `size` says how much of it is set.
+/// May be null, which takes every default.
+/// @param[out] out Receives the handle.
+/// @returns `LOWLAT_OK`, or an error and `out` left untouched.
+///
+/// @attention `out` must point to storage for one pointer. `info` may be null.
+lowlat_status lowlat_client_create(const lowlat_client_create_info *info,
+                                   lowlat_client **out) LOWLAT_NOEXCEPT;
+
+/// Destroy a handle, leaving any session it holds.
+///
+/// **Works on a poisoned handle**, which is the point of poisoning.
+///
+/// @param[in] cl The handle from `lowlat_client_create`, not used again. Null is accepted
+/// and does nothing.
+///
+/// @attention `cl` came from `lowlat_client_create` and is not used again.
+void lowlat_client_destroy(lowlat_client *cl) LOWLAT_NOEXCEPT;
+
+/// Begin an attempt: mint the credentials the offer carries.
+///
+/// **Nothing is sent and no socket is opened.** The application puts what
+/// comes back into its offer over its own signaling and calls
+/// `lowlat_client_begin_p2p` with the answer. One attempt at a time; a second
+/// while one exists is refused with `LOWLAT_ERR_ALREADY_STARTED`.
+///
+/// @param[in] cl The handle from `lowlat_client_create`.
+/// @param[in] cfg What to ask of the host. May be null, which takes every default.
+/// @param[in] attempt_id The identifier every later call and event names, NUL-terminated.
+/// @param[in] transport A `lowlat_transport` value. Only the native one is accepted.
+/// @param[out] ours Filled with the credentials for the offer. `port` is zero: the socket
+/// does not exist yet.
+/// @returns `LOWLAT_OK`, `LOWLAT_ERR_ALREADY_STARTED`, `LOWLAT_ERR_INVALID_ARGUMENT`
+/// for the browser pipe or a server that does not resolve, or `LOWLAT_ERR_CRYPTO`.
+///
+/// @attention `cl` came from `lowlat_client_create`; `attempt_id` is NUL-terminated;
+/// `cfg` is null or points to one `lowlat_client_config` whose `size` says
+/// how much of it is set; `ours` points to one `lowlat_credentials` whose
+/// `size` is set.
+lowlat_status lowlat_client_new_attempt(lowlat_client *cl,
+                                        const lowlat_client_config *cfg,
+                                        const char *attempt_id,
+                                        uint32_t transport,
+                                        lowlat_credentials *ours) LOWLAT_NOEXCEPT;
+
+/// Offer one address the host might be reachable at.
+///
+/// **An unknown attempt is accepted silently**: a candidate can arrive after
+/// the attempt was ended, and that is a race rather than a fault.
+///
+/// @param[in] cl The handle from `lowlat_client_create`.
+/// @param[in] attempt_id The attempt this address belongs to, NUL-terminated.
+/// @param[in] cand The candidate, `size` set.
+///
+/// @attention `cl` came from `lowlat_client_create`; `attempt_id` is NUL-terminated;
+/// `cand` points to one `lowlat_candidate` whose `size` is set.
+void lowlat_client_add_candidate(lowlat_client *cl,
+                                 const char *attempt_id,
+                                 const lowlat_candidate *cand) LOWLAT_NOEXCEPT;
+
+/// The answer arrived: bind, start connectivity, and begin trickling
+/// candidates as events.
+///
+/// @param[in] cl The handle from `lowlat_client_create`.
+/// @param[in] attempt_id The attempt the answer is for, NUL-terminated.
+/// @param[in] theirs The host's credentials from the answer, `size` set. An empty `aes256`
+/// selects the legacy cipher, keyed from `fingerprint`.
+/// @returns `LOWLAT_OK`, `LOWLAT_ERR_UNKNOWN_ATTEMPT`, `LOWLAT_ERR_ALREADY_BEGUN`,
+/// `LOWLAT_ERR_INVALID_ARGUMENT` for credentials that cannot key a session,
+/// `LOWLAT_ERR_IO` or `LOWLAT_ERR_CRYPTO`.
+///
+/// @attention `cl` came from `lowlat_client_create`; `attempt_id` is NUL-terminated;
+/// `theirs` points to one `lowlat_credentials` whose `size` is set.
+lowlat_status lowlat_client_begin_p2p(lowlat_client *cl,
+                                      const char *attempt_id,
+                                      const lowlat_credentials *theirs) LOWLAT_NOEXCEPT;
+
+/// Leave the session, or abandon an attempt that never began.
+///
+/// A session that is up is told, on the control channel, that this client is
+/// leaving cleanly; the message is given a moment to arrive. **No event is
+/// raised**: the application caused this. A handle with no attempt is left as
+/// it is.
+///
+/// @param[in] cl The handle from `lowlat_client_create`.
+///
+/// @attention `cl` came from `lowlat_client_create`.
+void lowlat_client_end_connection(lowlat_client *cl) LOWLAT_NOEXCEPT;
+
+/// Send the host's application a message.
+///
+/// @param[in] cl The handle from `lowlat_client_create`.
+/// @param[in] id The sub-identifier, which means whatever the two applications agreed.
+/// @param[in] data The body. A terminator is added; one already there is not doubled.
+/// @param[in] len How many bytes of `data`.
+/// @returns `LOWLAT_OK`, `LOWLAT_ERR_NOT_STARTED` with no session up, or
+/// `LOWLAT_ERR_INVALID_ARGUMENT` past the message ceiling.
+///
+/// @attention `cl` came from `lowlat_client_create`; `data` points to `len` readable
+/// bytes, or is null with `len` zero.
+lowlat_status lowlat_client_send_user_data(lowlat_client *cl,
+                                           uint32_t id,
+                                           const void *data,
+                                           uint32_t len) LOWLAT_NOEXCEPT;
+
+/// Where the session stands.
+///
+/// @param[in] cl The handle from `lowlat_client_create`.
+/// @param[out] out One `lowlat_client_status` with `size` set, filled.
+/// @returns `LOWLAT_OK`, or `LOWLAT_ERR_INVALID_ARGUMENT`.
+///
+/// @attention `cl` came from `lowlat_client_create`; `out` points to one
+/// `lowlat_client_status` whose `size` is set.
+lowlat_status lowlat_client_get_status(lowlat_client *cl,
+                                       lowlat_client_status *out) LOWLAT_NOEXCEPT;
+
+/// Take the next event, waiting up to `timeout_ms` for one.
+///
+/// The shape is `lowlat_host_poll_events`'s: a user-data body is copied into
+/// `body` when one is offered, and one that does not fit is left where it was
+/// with the length it needed written back.
+///
+/// @param[in] cl The handle from `lowlat_client_create`.
+/// @param[in] timeout_ms How long to wait. Zero polls.
+/// @param[out] out The event.
+/// @param[out] body Room for a body, or null to drop it.
+/// @param[in,out] body_len How much room; on return, how much was written or needed.
+/// @returns `LOWLAT_OK`, `LOWLAT_TIMEOUT`, `LOWLAT_ERR_TOO_SMALL`, or
+/// `LOWLAT_ERR_INVALID_ARGUMENT`.
+///
+/// @attention `cl` came from `lowlat_client_create`; `out` points to one
+/// `lowlat_event`; `body` is null or points to `*body_len` writable bytes.
+lowlat_status lowlat_client_poll_events(lowlat_client *cl,
+                                        uint32_t timeout_ms,
+                                        lowlat_event *out,
+                                        void *body,
+                                        uint32_t *body_len) LOWLAT_NOEXCEPT;
 #endif
 
 #ifdef __cplusplus
