@@ -1,0 +1,19 @@
+[package]
+name = "lowlat-decode"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+lowlat-common.workspace = true
+# The video header the decoder is built from, and the codec it names.
+lowlat-core.workspace = true
+# The device interface, resolved at runtime.
+lowlat-drivers.workspace = true
+
+[lints]
+workspace = true

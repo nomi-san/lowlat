@@ -12,6 +12,7 @@ members = [
     "crates/encode",
     "crates/inject",
     "crates/host",
+    "crates/decode",
     "crates/client",
     "crates/sdk",
     "crates/kessel",
@@ -38,6 +39,7 @@ lowlat-audio = { path = "crates/audio" }
 lowlat-encode = { path = "crates/encode" }
 lowlat-inject = { path = "crates/inject" }
 lowlat-host = { path = "crates/host" }
+lowlat-decode = { path = "crates/decode" }
 lowlat-client = { path = "crates/client" }
 lowlat-sdk = { path = "crates/sdk" }
 lowlat-kessel = { path = "crates/kessel" }
