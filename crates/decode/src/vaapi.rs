@@ -140,6 +140,8 @@ pub struct Backend<'a> {
     surfaces: [VASurfaceID; SURFACES],
     coded_width: u32,
     coded_height: u32,
+    /// The slot of the last picture taken, for the mapping hook.
+    last_taken: Option<usize>,
     h264: Box<h264::Stream>,
     hevc: Box<hevc::Stream>,
     staging: Box<Staging>,
@@ -177,6 +179,7 @@ impl<'a> Backend<'a> {
             surfaces: [VA_INVALID_SURFACE; SURFACES],
             coded_width: 0,
             coded_height: 0,
+            last_taken: None,
             h264: Box::new(h264::Stream::new()),
             hevc: Box::new(hevc::Stream::new()),
             staging: Box::new(Staging {
@@ -207,6 +210,40 @@ impl<'a> Backend<'a> {
     pub fn drain(&mut self) {
         self.h264.drain();
         self.hevc.drain();
+    }
+
+    /// Map the surface of the last picture taken and hand `f` the mapping,
+    /// for a measurement of the copy out of it; a test's need, since a
+    /// stream's pictures leave through [`Decoder::take`]. Valid until the
+    /// next unit is fed, which may reuse the surface.
+    pub fn with_taken_mapped<R>(&mut self, f: impl FnOnce(&VAImage, *const u8) -> R) -> Result<R> {
+        let Some(slot) = self.last_taken else {
+            return Err(Error::Status(-1));
+        };
+        let surface = self.surface(slot);
+        let mut image: VAImage = zeroed();
+        // SAFETY: the image is a live local the driver fills.
+        let status =
+            unsafe { (self.va().derive_image)(self.display.raw(), surface, &raw mut image) };
+        self.check(status)?;
+        let mut mapped: *mut c_void = core::ptr::null_mut();
+        // SAFETY: the image's buffer is the driver's; the mapping lives until
+        // the unmap below.
+        let status =
+            unsafe { (self.va().map_buffer)(self.display.raw(), image.buf, &raw mut mapped) };
+        if let Err(e) = self.check(status) {
+            // SAFETY: derived above, destroyed once.
+            unsafe { (self.va().destroy_image)(self.display.raw(), image.image_id) };
+            return Err(e);
+        }
+        let result = f(&image, mapped.cast_const().cast::<u8>());
+        // SAFETY: mapped above; unmapped once, then the derived image is
+        // destroyed once.
+        unsafe {
+            (self.va().unmap_buffer)(self.display.raw(), image.buf);
+            (self.va().destroy_image)(self.display.raw(), image.image_id);
+        }
+        Ok(result)
     }
 
     /// The layout pictures come back in.
@@ -1143,6 +1180,7 @@ impl Decoder for Backend<'_> {
             },
         };
         let read = self.read_back(slot, out);
+        self.last_taken = Some(slot);
         match self.codec {
             Codec::H264 => self.h264.dpb.taken(slot),
             Codec::H265 => self.hevc.dpb.taken(slot),

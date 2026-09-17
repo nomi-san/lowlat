@@ -180,3 +180,177 @@ fn every_hevc_fixture_decodes_to_the_reference_pictures() {
         check(&clip, &sums, Codec::H265, ten_bit);
     }
 }
+
+/// One plane copied a row at a time, as the backend copies it.
+fn copy_rows(src: &[u8], src_pitch: usize, dst: &mut [u8], dst_pitch: usize, w: usize, h: usize) {
+    for row in 0..h {
+        dst[row * dst_pitch..row * dst_pitch + w]
+            .copy_from_slice(&src[row * src_pitch..row * src_pitch + w]);
+    }
+}
+
+/// One plane copied with streaming loads, which read a whole line at a time
+/// from memory the cache does not cover; the unaligned tail of a row goes
+/// the plain way. `store` says whether the writes bypass the cache too.
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn copy_rows_streaming(
+    src: &[u8],
+    src_pitch: usize,
+    dst: &mut [u8],
+    dst_pitch: usize,
+    w: usize,
+    h: usize,
+    stream_store: bool,
+) {
+    use core::arch::x86_64::{
+        __m256i, _mm256_storeu_si256, _mm256_stream_load_si256, _mm256_stream_si256,
+    };
+    for row in 0..h {
+        let from = &src[row * src_pitch..row * src_pitch + w];
+        let to = &mut dst[row * dst_pitch..row * dst_pitch + w];
+        let mut at = 0;
+        // Only an aligned source can be stream-loaded.
+        if from.as_ptr() as usize % 32 == 0 {
+            while at + 32 <= w {
+                // SAFETY: 32 bytes in bounds on both sides, the source aligned.
+                unsafe {
+                    let v = _mm256_stream_load_si256(from.as_ptr().add(at).cast::<__m256i>());
+                    let out = to.as_mut_ptr().add(at).cast::<__m256i>();
+                    if stream_store && out as usize % 32 == 0 {
+                        _mm256_stream_si256(out, v);
+                    } else {
+                        _mm256_storeu_si256(out, v);
+                    }
+                }
+                at += 32;
+            }
+        }
+        to[at..].copy_from_slice(&from[at..]);
+    }
+}
+
+/// The `p` percentile, `p` in hundredths.
+fn percentile(samples: &mut [u128], p: usize) -> u128 {
+    samples.sort_unstable();
+    let at = (samples.len().saturating_sub(1) * p).div_ceil(100);
+    samples[at.min(samples.len().saturating_sub(1))]
+}
+
+/// **The read-back copy, three ways, timed on this device.** The row copy the
+/// backend uses, a streaming-load copy, and a streaming-load copy with
+/// streaming stores, over the same mapping of each decoded surface, so the
+/// choice is a number from this driver's memory rather than what
+/// write-combined memory usually does. `LOWLAT_PROBE_CLIP` names another
+/// clip by path (a 1080p one, if there is one at hand).
+#[test]
+#[ignore = "requires the open-stack driver"]
+fn read_back_copy_probe() {
+    let clip =
+        std::env::var("LOWLAT_PROBE_CLIP").unwrap_or_else(|_| "synthetic-720p-h264.bin".into());
+    let va = Vaapi::load().expect("runtime");
+    let display = va.open(&node()).expect("render node");
+    let mut backend = Backend::new(&display, (4096, 4096));
+    backend.build(&header(Codec::H264, false)).expect("build");
+    let units = common::units(&clip);
+    let pitch = 4096;
+    let mut y = vec![0u8; pitch * 2160];
+    let mut uv = vec![0u8; pitch * 1080];
+    let mut dst_rows = vec![0u8; pitch * 3240];
+    let mut dst_stream = vec![0u8; pitch * 3240];
+    let (mut rows_us, mut stream_us, mut stream_store_us, mut taken_us, mut hook_us) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut size = (0usize, 0usize);
+    let mut loops = 0;
+    while rows_us.len() < 300 {
+        for unit in &units {
+            backend.feed(unit).expect("feed");
+            loop {
+                let mut planes = Planes {
+                    y: &mut y,
+                    y_pitch: pitch,
+                    uv: &mut uv,
+                    uv_pitch: pitch,
+                };
+                let Some(picture) = backend.take(&mut planes).expect("take") else {
+                    break;
+                };
+                taken_us.push(u128::from(backend.readback_us));
+                let started = std::time::Instant::now();
+                backend.with_taken_mapped(|_, _| {}).expect("mapping");
+                hook_us.push(started.elapsed().as_micros());
+                let sample = picture.format.sample();
+                let (dst_rows, dst_stream) = (&mut dst_rows, &mut dst_stream);
+                backend
+                    .with_taken_mapped(|image, mapped| {
+                        let w = image.width as usize * sample;
+                        let h = image.height as usize;
+                        size = (w / sample, h);
+                        // SAFETY: the driver mapped `data_size` bytes.
+                        let src = unsafe {
+                            core::slice::from_raw_parts(mapped, image.data_size as usize)
+                        };
+                        let (yo, uvo) = (image.offsets[0] as usize, image.offsets[1] as usize);
+                        let (yp, uvp) = (image.pitches[0] as usize, image.pitches[1] as usize);
+                        let (dy, duv) = dst_rows.split_at_mut(pitch * h);
+                        let started = std::time::Instant::now();
+                        copy_rows(&src[yo..], yp, dy, pitch, w, h);
+                        copy_rows(&src[uvo..], uvp, duv, pitch, w, h / 2);
+                        rows_us.push(started.elapsed().as_micros());
+                        for stream_store in [false, true] {
+                            let (sy, suv) = dst_stream.split_at_mut(pitch * h);
+                            let started = std::time::Instant::now();
+                            // SAFETY: this device has AVX2 (checked below).
+                            unsafe {
+                                copy_rows_streaming(&src[yo..], yp, sy, pitch, w, h, stream_store);
+                                copy_rows_streaming(
+                                    &src[uvo..],
+                                    uvp,
+                                    suv,
+                                    pitch,
+                                    w,
+                                    h / 2,
+                                    stream_store,
+                                );
+                            }
+                            let took = started.elapsed().as_micros();
+                            if stream_store {
+                                stream_store_us.push(took);
+                            } else {
+                                stream_us.push(took);
+                            }
+                            for row in 0..h + h / 2 {
+                                assert_eq!(
+                                    &dst_rows[row * pitch..row * pitch + w],
+                                    &dst_stream[row * pitch..row * pitch + w],
+                                    "the streaming copy differs at row {row}"
+                                );
+                            }
+                        }
+                    })
+                    .expect("mapping");
+            }
+        }
+        loops += 1;
+        assert!(loops < 20, "no pictures came out of {clip}");
+    }
+    assert!(is_x86_feature_detected!("avx2"));
+    let n = rows_us.len();
+    println!(
+        "read-back copy probe: {clip} {}x{} NV12, {n} pictures; backend read-back p50 {} us p95 {}; \
+         derive, map, unmap and destroy alone p50 {} us p95 {}; \
+         row copy p50 {} us p95 {}; streaming loads p50 {} us p95 {}; streaming loads and stores p50 {} us p95 {}",
+        size.0,
+        size.1,
+        percentile(&mut taken_us, 50),
+        percentile(&mut taken_us, 95),
+        percentile(&mut hook_us, 50),
+        percentile(&mut hook_us, 95),
+        percentile(&mut rows_us, 50),
+        percentile(&mut rows_us, 95),
+        percentile(&mut stream_us, 50),
+        percentile(&mut stream_us, 95),
+        percentile(&mut stream_store_us, 50),
+        percentile(&mut stream_store_us, 95),
+    );
+}
