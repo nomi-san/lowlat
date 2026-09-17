@@ -335,6 +335,31 @@ impl<'a> Session<'a> {
             .take_message(out)
     }
 
+    /// Complete messages waiting on `channel`.
+    pub fn pending_messages(&self, channel: u8) -> u32 {
+        self.recv
+            .get(channel as usize)
+            .and_then(Option::as_ref)
+            .map_or(0, RecvRing::pending_messages)
+    }
+
+    /// The leading bytes of the `n`th pending message on `channel`, taken
+    /// from nothing.
+    pub fn peek_message(&self, channel: u8, n: u32, out: &mut [u8]) -> Option<usize> {
+        self.recv
+            .get(channel as usize)
+            .and_then(Option::as_ref)?
+            .peek_message(n, out)
+    }
+
+    /// Discard the first `n` complete messages on `channel`.
+    pub fn skip_messages(&mut self, channel: u8, n: u32) -> u32 {
+        self.recv
+            .get_mut(channel as usize)
+            .and_then(Option::as_mut)
+            .map_or(0, |ring| ring.skip_messages(n))
+    }
+
     /// True if `channel` is missing a fragment below what has arrived.
     pub fn has_gap(&self, channel: u8) -> bool {
         self.recv

@@ -296,20 +296,17 @@ impl<'a> RecvRing<'a> {
         Some(target)
     }
 
-    /// Take the next complete message, writing its **content** into `out`.
-    ///
-    /// The four-byte length prefix is consumed here and does not appear in the
-    /// output. Returns `None` when no complete message is available, which
-    /// covers both an empty channel and a message whose tail has not arrived.
+    /// Where the message starting at `start` ends, if all of it has arrived:
+    /// its content length and the fragments it spans.
     ///
     /// Completeness is decided by accumulating fragment lengths until they
     /// reach the declared total. That needs no knowledge of the sender's
     /// fragment size, and it is why the last-fragment flag plays no part.
-    pub fn take_message(&mut self, out: &mut [u8]) -> Option<Result<usize>> {
-        if self.delivered == self.cumulative {
+    fn locate(&self, start: u32) -> Option<Result<(usize, u32)>> {
+        if start == self.cumulative {
             return None;
         }
-        let first = self.slot_body(self.delivered)?;
+        let first = self.slot_body(start)?;
         let total = match message::parse_length_prefix(first) {
             Ok(total) => total as usize,
             Err(error) => return Some(Err(error)),
@@ -318,7 +315,7 @@ impl<'a> RecvRing<'a> {
 
         let mut collected = 0usize;
         let mut fragments = 0u32;
-        let mut cursor = self.delivered;
+        let mut cursor = start;
         while collected < stream {
             if cursor == self.cumulative {
                 // The tail has not arrived yet. Not an error.
@@ -332,6 +329,112 @@ impl<'a> RecvRing<'a> {
         if collected != stream {
             return Some(Err(Error::BadLength));
         }
+        Some(Ok((total, fragments)))
+    }
+
+    /// The `n`th complete message ahead of the reader: where it starts, its
+    /// content length and its fragments. `None` when fewer than `n + 1` have
+    /// arrived whole.
+    fn nth(&self, n: u32) -> Option<(u32, usize, u32)> {
+        let mut start = self.delivered;
+        let mut behind = 0u32;
+        loop {
+            let (total, fragments) = match self.locate(start)? {
+                Ok(located) => located,
+                Err(_) => return None,
+            };
+            if behind == n {
+                return Some((start, total, fragments));
+            }
+            behind = behind.wrapping_add(1);
+            start = start.wrapping_add(fragments);
+        }
+    }
+
+    /// Complete messages waiting for the reader.
+    ///
+    /// **A count of what has arrived whole, not of fragments.** A reader that
+    /// is behind by more than one has a backlog it could look ahead through;
+    /// a fragment count says nothing about that, since one message may be
+    /// most of the ring.
+    pub fn pending_messages(&self) -> u32 {
+        let mut start = self.delivered;
+        let mut count = 0u32;
+        while let Some(Ok((_, fragments))) = self.locate(start) {
+            count = count.wrapping_add(1);
+            start = start.wrapping_add(fragments);
+        }
+        count
+    }
+
+    /// Copy the leading bytes of the `n`th pending message's content into
+    /// `out`, without taking it. Returns how many were copied: `out.len()` or
+    /// the content length, whichever is shorter. `None` when that message has
+    /// not arrived whole.
+    ///
+    /// **A look, not a consumption.** A reader deciding whether to skip
+    /// forward reads a header from each message ahead of it and takes nothing
+    /// until it has decided; the messages stay where they are, in order.
+    pub fn peek_message(&self, n: u32, out: &mut [u8]) -> Option<usize> {
+        let (start, total, _) = self.nth(n)?;
+        let wanted = total.min(out.len());
+        let mut written = 0usize;
+        let mut skip = LENGTH_PREFIX_LEN;
+        let mut cursor = start;
+        while written < wanted {
+            let body = self.slot_body(cursor)?;
+            let src = body.get(skip..).unwrap_or(&[]);
+            let take = src.len().min(wanted - written);
+            let (dst, src) = (out.get_mut(written..written + take)?, src.get(..take)?);
+            dst.copy_from_slice(src);
+            written += take;
+            skip = 0;
+            cursor = cursor.wrapping_add(1);
+        }
+        Some(written)
+    }
+
+    /// Discard the first `n` complete messages, releasing their slots so the
+    /// sender's window opens by that much. Returns how many were discarded,
+    /// which is fewer than `n` only when fewer had arrived whole.
+    ///
+    /// **Never past an incomplete message.** A message whose tail is still in
+    /// flight stays, and so does everything after it; this skips over data
+    /// that has arrived and is no longer wanted, never over a gap.
+    pub fn skip_messages(&mut self, n: u32) -> u32 {
+        let mut skipped = 0u32;
+        while skipped < n {
+            let Some(Ok((_, fragments))) = self.locate(self.delivered) else {
+                break;
+            };
+            self.release(fragments);
+            skipped = skipped.wrapping_add(1);
+        }
+        skipped
+    }
+
+    /// Free `fragments` slots from the reader's position and move it past
+    /// them.
+    fn release(&mut self, fragments: u32) {
+        for step in 0..fragments {
+            let index = self.index(self.delivered.wrapping_add(step));
+            if let Some(meta) = self.meta.get_mut(index) {
+                *meta = SlotMeta::default();
+            }
+        }
+        self.delivered = self.delivered.wrapping_add(fragments);
+    }
+
+    /// Take the next complete message, writing its **content** into `out`.
+    ///
+    /// The four-byte length prefix is consumed here and does not appear in the
+    /// output. Returns `None` when no complete message is available, which
+    /// covers both an empty channel and a message whose tail has not arrived.
+    pub fn take_message(&mut self, out: &mut [u8]) -> Option<Result<usize>> {
+        let (total, fragments) = match self.locate(self.delivered)? {
+            Ok(located) => located,
+            Err(error) => return Some(Err(error)),
+        };
         if out.len() < total {
             return Some(Err(Error::BufferTooSmall));
         }
@@ -355,14 +458,7 @@ impl<'a> RecvRing<'a> {
             cursor = cursor.wrapping_add(1);
         }
 
-        for step in 0..fragments {
-            let index = self.index(self.delivered.wrapping_add(step));
-            if let Some(meta) = self.meta.get_mut(index) {
-                *meta = SlotMeta::default();
-            }
-        }
-        self.delivered = self.delivered.wrapping_add(fragments);
-
+        self.release(fragments);
         Some(Ok(total))
     }
 }
@@ -580,6 +676,103 @@ mod tests {
         ring.store(0, &[1, 2, 3]);
         let mut out = [0u8; 32];
         assert_eq!(ring.take_message(&mut out), Some(Err(Error::BadLength)));
+    }
+
+    /// Three messages ahead of the reader, one of them in two fragments: a
+    /// peek reads each one where it stands and takes nothing.
+    #[test]
+    fn a_peek_sees_what_a_take_would_return_and_consumes_nothing() {
+        let mut storage = Storage::new();
+        let mut ring = storage.ring();
+        let long: Vec<u8> = (0..100u32).map(|i| i as u8).collect();
+        for part in fragments(b"first", SLOT)
+            .iter()
+            .chain(fragments(&long, SLOT).iter())
+            .chain(fragments(b"third", SLOT).iter())
+        {
+            ring.store_next(part);
+        }
+        assert_eq!(ring.pending_messages(), 3);
+
+        let mut head = [0u8; 8];
+        assert_eq!(ring.peek_message(0, &mut head), Some(5));
+        assert_eq!(&head[..5], b"first");
+        assert_eq!(
+            ring.peek_message(1, &mut head),
+            Some(8),
+            "clipped to the buffer"
+        );
+        assert_eq!(&head, &long[..8]);
+        let mut whole = [0u8; 128];
+        assert_eq!(ring.peek_message(1, &mut whole), Some(100));
+        assert_eq!(&whole[..100], &long[..]);
+        assert_eq!(ring.peek_message(2, &mut head), Some(5));
+        assert_eq!(&head[..5], b"third");
+        assert_eq!(ring.peek_message(3, &mut head), None, "peeked past the end");
+
+        // Nothing moved.
+        assert_eq!(ring.delivered(), 0);
+        assert_eq!(ring.pending_messages(), 3);
+        let mut out = [0u8; 128];
+        assert_eq!(ring.take_message(&mut out).unwrap().unwrap(), 5);
+        assert_eq!(&out[..5], b"first");
+    }
+
+    /// Skipping releases the slots, so the window the sender sees opens by
+    /// exactly what was discarded, and the next take is the message after.
+    #[test]
+    fn skipping_opens_the_window_and_lands_on_the_next_message() {
+        let mut storage = Storage::new();
+        let mut ring = storage.ring();
+        let long: Vec<u8> = (0..100u32).map(|i| i as u8).collect();
+        for part in fragments(b"first", SLOT)
+            .iter()
+            .chain(fragments(&long, SLOT).iter())
+            .chain(fragments(b"third", SLOT).iter())
+        {
+            ring.store_next(part);
+        }
+        assert_eq!(ring.window_used(), 4);
+        assert_eq!(ring.skip_messages(2), 2);
+        assert_eq!(ring.window_used(), 1, "the skipped slots were not released");
+        assert_eq!(ring.delivered(), 3);
+        assert_eq!(ring.pending_messages(), 1);
+        let mut out = [0u8; 64];
+        assert_eq!(ring.take_message(&mut out).unwrap().unwrap(), 5);
+        assert_eq!(&out[..5], b"third");
+        assert_eq!(
+            ring.skip_messages(1),
+            0,
+            "skipped something that was not there"
+        );
+    }
+
+    /// **Never over a gap.** A message whose tail is in flight, and everything
+    /// after it, stays put: the count stops there, a peek past it finds
+    /// nothing, and a skip asked for more discards only what had arrived.
+    #[test]
+    fn nothing_is_counted_peeked_or_skipped_past_an_incomplete_message() {
+        let mut storage = Storage::new();
+        let mut ring = storage.ring();
+        let long: Vec<u8> = (0..100u32).map(|i| i as u8).collect();
+        ring.store_next(&fragments(b"first", SLOT)[0]);
+        let parts = fragments(&long, SLOT);
+        ring.store_next(&parts[0]);
+        // Slot 2 is the missing tail; the third message lands beyond it.
+        ring.store(3, &fragments(b"third", SLOT)[0]);
+        assert!(ring.has_gap());
+
+        assert_eq!(ring.pending_messages(), 1);
+        let mut head = [0u8; 8];
+        assert_eq!(ring.peek_message(1, &mut head), None);
+        assert_eq!(ring.peek_message(2, &mut head), None);
+        assert_eq!(ring.skip_messages(3), 1, "skipped over the gap");
+        assert_eq!(ring.delivered(), 1);
+
+        ring.store(2, &parts[1]);
+        assert_eq!(ring.pending_messages(), 2);
+        assert_eq!(ring.skip_messages(3), 2);
+        assert_eq!(ring.delivered(), 4);
     }
 
     #[test]

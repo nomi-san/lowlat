@@ -52,6 +52,10 @@ pub struct Init {
     pub resolution_y: u32,
     pub media_container: u32,
     pub refresh_rate: u32,
+    /// The sound the peer wants: how many channels, and which ones as a mask.
+    /// Two channels, front left and right, from every peer seen.
+    pub channels: u32,
+    pub channel_mask: u32,
     /// The peer keeps pointer images it has been sent and will accept one
     /// named by its checksum instead of resent.
     ///
@@ -213,10 +217,115 @@ pub fn parse(body: &[u8]) -> Result<Init> {
         resolution_y: field(body, "resolutionY", 0),
         media_container: field(body, "mediaContainer", 0),
         refresh_rate: field(body, "refreshRate", 60),
+        channels: field(body, "channels", 2),
+        channel_mask: field(body, "channelMask", 3),
         caches_cursor: truth(body, "_cache_cursor"),
         raw_audio: truth(body, "rawAudio"),
         video_protocol_version: field(body, "_VideoProtocolVersion", 0),
     })
+}
+
+/// Write an initialization body: the fourteen keys the current client
+/// generation sends, compact, NUL-terminated, into `out`.
+///
+/// Returns the length written, NUL included, which is what the message's
+/// first argument carries. **Fourteen keys and no others**: peers exist that
+/// take a different setup path when the object carries keys they do not
+/// know, so a client neither adds one nor leaves one out.
+///
+/// `resolutions` is the size request per stream; only the first stream is
+/// ever asked for, so it repeats `resolutionX` and `resolutionY` and the other
+/// two entries are zero.
+pub fn encode(out: &mut [u8], init: &Init) -> Result<usize> {
+    let mut w = Writer { out, at: 0 };
+    w.put(b"{")?;
+    w.number("_version", init.version)?;
+    w.number(",_max_w", init.max_width)?;
+    w.number(",_max_h", init.max_height)?;
+    w.number(",_flags", init.flags)?;
+    w.number(",resolutionX", init.resolution_x)?;
+    w.number(",resolutionY", init.resolution_y)?;
+    w.number(",mediaContainer", init.media_container)?;
+    w.number(",refreshRate", init.refresh_rate)?;
+    w.number(",channels", init.channels)?;
+    w.number(",channelMask", init.channel_mask)?;
+    w.truth(",rawAudio", init.raw_audio)?;
+    w.truth(",_cache_cursor", init.caches_cursor)?;
+    w.number(",_VideoProtocolVersion", init.video_protocol_version)?;
+    w.put(b",\"resolutions\":[")?;
+    for (stream, (width, height)) in [(init.resolution_x, init.resolution_y), (0, 0), (0, 0)]
+        .into_iter()
+        .enumerate()
+    {
+        if stream != 0 {
+            w.put(b",")?;
+        }
+        w.put(b"{")?;
+        w.number("width", width)?;
+        w.number(",height", height)?;
+        w.put(b"}")?;
+    }
+    w.put(b"]}\0")?;
+    Ok(w.at)
+}
+
+/// A cursor over the output, refusing rather than truncating.
+struct Writer<'a> {
+    out: &'a mut [u8],
+    at: usize,
+}
+
+impl Writer<'_> {
+    fn put(&mut self, bytes: &[u8]) -> Result<()> {
+        let end = self
+            .at
+            .checked_add(bytes.len())
+            .ok_or(Error::BufferTooSmall)?;
+        self.out
+            .get_mut(self.at..end)
+            .ok_or(Error::BufferTooSmall)?
+            .copy_from_slice(bytes);
+        self.at = end;
+        Ok(())
+    }
+
+    /// `"key":` with any leading comma the key string carries.
+    fn key(&mut self, key: &str) -> Result<()> {
+        let (comma, name) = match key.strip_prefix(',') {
+            Some(name) => (true, name),
+            None => (false, key),
+        };
+        if comma {
+            self.put(b",")?;
+        }
+        self.put(b"\"")?;
+        self.put(name.as_bytes())?;
+        self.put(b"\":")
+    }
+
+    fn number(&mut self, key: &str, value: u32) -> Result<()> {
+        self.key(key)?;
+        // Ten digits at most; written from the end of a scratch buffer.
+        let mut digits = [0u8; 10];
+        let mut start = digits.len();
+        let mut rest = value;
+        loop {
+            start -= 1;
+            if let Some(slot) = digits.get_mut(start) {
+                *slot = b'0' + (rest % 10) as u8;
+            }
+            rest /= 10;
+            if rest == 0 {
+                break;
+            }
+        }
+        self.put(digits.get(start..).unwrap_or(&[]))
+    }
+
+    fn truth(&mut self, key: &str, value: bool) -> Result<()> {
+        self.key(key)?;
+        self.put(if value { b"true" } else { b"false" })
+    }
 }
 
 #[cfg(test)]
@@ -244,6 +353,8 @@ mod tests {
             resolution_y: 1440,
             media_container: 0,
             refresh_rate: 60,
+            channels: 2,
+            channel_mask: 3,
             caches_cursor: false,
             raw_audio: false,
             video_protocol_version: 0,
@@ -305,6 +416,8 @@ mod tests {
             resolution_y: 0,
             media_container: 0,
             refresh_rate: 60,
+            channels: 2,
+            channel_mask: 3,
             caches_cursor: false,
             raw_audio: false,
             video_protocol_version: 0,
@@ -438,5 +551,60 @@ mod tests {
         let without = parse(b"{\"_version\":1,\"refreshRate\":30}").expect("without NUL");
         assert_eq!(with, without);
         assert_eq!(with.refresh_rate, 30);
+    }
+
+    /// The fourteen-key body a current client sends, with the values one
+    /// really sent. The peer's own serialiser orders keys by hash, so the
+    /// order is not comparable; the length is, and the parse is.
+    #[test]
+    fn the_fourteen_key_body_round_trips_and_is_the_recorded_length() {
+        let init = Init {
+            version: VERSION,
+            max_width: 4096,
+            max_height: 4096,
+            flags: FLAG_BASE,
+            resolution_x: 2560,
+            resolution_y: 1440,
+            media_container: 0,
+            refresh_rate: 60,
+            channels: 2,
+            channel_mask: 3,
+            caches_cursor: true,
+            raw_audio: false,
+            video_protocol_version: 1,
+        };
+        let mut out = [0u8; 512];
+        let len = encode(&mut out, &init).expect("encoded");
+        assert_eq!(len, 312, "not the length a client sent for these values");
+        assert_eq!(out[len - 1], 0, "no terminating NUL");
+        let body = &out[..len];
+        assert!(core::str::from_utf8(&body[..len - 1]).is_ok());
+        assert_eq!(
+            parse(body).expect("our own body was refused"),
+            init,
+            "the writer and the reader disagree"
+        );
+        assert_eq!(body.iter().filter(|b| **b == b'{').count(), 4);
+        let text = core::str::from_utf8(&body[..len - 1]).unwrap();
+        assert!(text.contains("\"resolutions\":[{\"width\":2560,\"height\":1440},{\"width\":0,\"height\":0},{\"width\":0,\"height\":0}]"));
+        assert!(text.contains("\"_VideoProtocolVersion\":1"));
+        assert!(text.contains("\"rawAudio\":false"));
+    }
+
+    #[test]
+    fn a_body_that_does_not_fit_is_refused_rather_than_cut() {
+        let init = parse(RECORDED).expect("parsed");
+        let mut small = [0u8; 100];
+        assert_eq!(encode(&mut small, &init), Err(Error::BufferTooSmall));
+        let mut room = [0u8; 400];
+        let len = encode(&mut room, &init).expect("encoded");
+        assert_eq!(
+            parse(&room[..len]).expect("parsed"),
+            Init {
+                channels: 2,
+                channel_mask: 3,
+                ..init
+            }
+        );
     }
 }

@@ -107,6 +107,57 @@ fn ring_store_and_reassembly_do_not_allocate() {
     });
 }
 
+/// The reader's look-ahead: counting, peeking and skipping over messages that
+/// have arrived, which a client runs on its receive thread whenever its
+/// decoder falls behind.
+#[test]
+fn ring_look_ahead_does_not_allocate() {
+    let mut bodies = vec![0u8; SLOT * SLOTS];
+    let mut meta = vec![SlotMeta::default(); SLOTS];
+    let mut ring = RecvRing::new(&mut bodies, &mut meta, SLOT).unwrap();
+
+    let payload = [0x7Fu8; 3000];
+    let message = Message::new(&[], &payload).unwrap();
+    let mut fragment = [0u8; SLOT];
+    let mut head = [0u8; 21];
+
+    alloc_counter::assert_no_alloc(|| {
+        let mut seq = 0u32;
+        for _ in 0..16 {
+            for _ in 0..4 {
+                let mut index = 0;
+                while let Some(result) = message.fragment(index, SLOT, &mut fragment) {
+                    let written = result.unwrap();
+                    ring.store(seq, &fragment[..written.len]);
+                    seq = seq.wrapping_add(1);
+                    index += 1;
+                }
+            }
+            assert_eq!(ring.pending_messages(), 4);
+            for n in 0..4 {
+                std::hint::black_box(ring.peek_message(n, &mut head).unwrap());
+            }
+            assert_eq!(ring.skip_messages(4), 4);
+        }
+    });
+}
+
+/// The initialization body, written on the connecting side.
+#[test]
+fn init_encode_does_not_allocate() {
+    let init = lowlat_core::init::parse(
+        b"{\"_version\":1,\"_max_w\":4096,\"_max_h\":4096,\"_flags\":8,\"_VideoProtocolVersion\":1}",
+    )
+    .unwrap();
+    let mut out = [0u8; 512];
+    alloc_counter::assert_no_alloc(|| {
+        for _ in 0..64 {
+            let len = lowlat_core::init::encode(&mut out, &init).unwrap();
+            std::hint::black_box(len);
+        }
+    });
+}
+
 #[test]
 fn send_ring_enqueue_and_drain_do_not_allocate() {
     let mut bodies = vec![0u8; SLOT * SLOTS];
