@@ -19,6 +19,9 @@ lowlat-audio = { path = "../crates/audio" }
 # sends, and both are reached through the session that owns them.
 lowlat-net = { path = "../crates/net" }
 lowlat-crypto = { path = "../crates/crypto" }
+# The video readers: everything a host's bitstream says is read here before
+# the device sees any of it.
+lowlat-decode = { path = "../crates/decode" }
 
 [[bin]]
 name = "envelope"
@@ -79,6 +82,20 @@ bench = false
 [[bin]]
 name = "web_session"
 path = "fuzz_targets/web_session.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_h264"
+path = "fuzz_targets/decode_h264.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "decode_hevc"
+path = "fuzz_targets/decode_hevc.rs"
 test = false
 doc = false
 bench = false

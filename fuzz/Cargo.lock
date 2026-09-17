@@ -572,6 +572,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "lowlat-decode"
+version = "0.0.0"
+dependencies = [
+ "lowlat-common",
+ "lowlat-core",
+ "lowlat-drivers",
+]
+
+[[package]]
+name = "lowlat-drivers"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "lowlat-common",
+]
+
+[[package]]
 name = "lowlat-fuzz"
 version = "0.0.0"
 dependencies = [
@@ -579,6 +596,7 @@ dependencies = [
  "lowlat-audio",
  "lowlat-core",
  "lowlat-crypto",
+ "lowlat-decode",
  "lowlat-net",
 ]
 
