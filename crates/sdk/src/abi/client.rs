@@ -11,6 +11,7 @@ use core::ffi::{c_char, c_void};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 
+use ::lowlat_client::config::{Backend, Decoding, FrameKind};
 use ::lowlat_client::{Client, Event, Outcome};
 use lowlat_common::events::Delivery;
 use lowlat_event_type::*;
@@ -20,12 +21,54 @@ use super::guard;
 use super::lowlat_status::{self, *};
 use super::shared::*;
 
+/// Which decoder a client is built on.
+///
+/// **The choice is by index, as the host's encoder is; unset, the first
+/// that opens on the device named.** A machine without any is refused at
+/// creation with the stage named, exactly as a host without an encoder is.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_decoder {
+    LOWLAT_DECODER_AUTO = 0,
+    LOWLAT_DECODER_OPEN = 1,
+    LOWLAT_DECODER_VENDOR = 2,
+    /// No decoder: the session carries control and sound, and every picture
+    /// is taken off the wire and dropped. A client with nowhere to draw.
+    LOWLAT_DECODER_NONE = 3,
+}
+
+/// How pictures leave the library.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_frame_kind {
+    /// Planes in memory the library owns for the lease.
+    LOWLAT_FRAME_PLANES = 0,
+    /// A device-level handle the application imports into its own device.
+    /// No decoder exports one yet: refused at creation.
+    LOWLAT_FRAME_HANDLE = 1,
+}
+
 /// What a client is created with.
+///
+/// **Zeroed is the sensible default**: the first decoder that opens, planes,
+/// the largest picture the generation declares.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct lowlat_client_create_info {
     /// Set by the caller to `sizeof(lowlat_client_create_info)`.
     pub size: u32,
+    /// One of [`lowlat_decoder`].
+    pub decoder: u32,
+    /// One of [`lowlat_frame_kind`].
+    pub frame_kind: u32,
+    /// The largest picture the client takes: what its picture slots are
+    /// sized for. Zero for the generation's declared maximum, 4096 square.
+    /// Nothing is backed until the first picture is decoded.
+    pub max_width: u32,
+    pub max_height: u32,
+    /// The render node the decoder opens, NUL-terminated; empty for the
+    /// first that decodes.
+    pub device: [c_char; LOWLAT_OUTPUT_MAX],
 }
 
 /// What a client asks of a host, per attempt.
@@ -83,6 +126,93 @@ pub struct lowlat_client_status {
     pub skipped: u64,
     /// Sound packets taken off the audio channel.
     pub audio_packets: u64,
+    /// [`LOWLAT_DECODER_NONE_YET`], [`LOWLAT_DECODER_BUILT`] or
+    /// [`LOWLAT_DECODER_FAILED`].
+    pub decoder: u32,
+    /// Pictures decoded and published, not yet taken by the application.
+    pub queue_depth: u32,
+    /// The last picture's decode and read-back, in microseconds.
+    pub decode_us: u32,
+    pub readback_us: u32,
+    /// Pictures decoded.
+    pub decoded: u64,
+}
+
+/// No decoder has been built yet: no parameter set has arrived.
+pub const LOWLAT_DECODER_NONE_YET: u32 = 0;
+/// A decoder exists and is being fed.
+pub const LOWLAT_DECODER_BUILT: u32 = 1;
+/// No decoder can serve the stream; the ended event said so.
+pub const LOWLAT_DECODER_FAILED: u32 = 2;
+
+/// One plane of a picture.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_plane {
+    /// The first sample of the first row, or null for a plane the layout
+    /// does not have.
+    pub data: *const u8,
+    /// Bytes from one row to the next.
+    pub pitch: u32,
+}
+
+/// Eight bits: a luma plane and an interleaved chroma plane at half the
+/// rows.
+pub const LOWLAT_FORMAT_NV12: u32 = 1;
+/// Ten bits in sixteen-bit samples, the value in the high bits; the same
+/// two planes.
+pub const LOWLAT_FORMAT_P010: u32 = 2;
+
+/// A decoded picture, lent to the application.
+///
+/// Valid from the acquire that filled it until the release that names it.
+/// Every field the renderer needs is here: nothing is read from the stream.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_frame {
+    /// Set by the caller to `sizeof(lowlat_frame)`.
+    pub size: u32,
+    /// One of [`lowlat_frame_kind`]: what the picture is handed out as.
+    pub kind: u32,
+    /// One of `LOWLAT_FORMAT_*`.
+    pub format: u32,
+    pub width: u32,
+    pub height: u32,
+    /// One of [`lowlat_rotation`], applied at present time.
+    pub rotation: u32,
+    /// The encoder generation the picture belongs to.
+    pub generation: u32,
+    /// The picture's order in its stream: a later picture has a higher
+    /// number, and a gap between two consecutive presents is a skip.
+    pub sequence: u64,
+    /// Luma, then chroma. A layout with fewer planes leaves the rest null.
+    pub planes: [lowlat_plane; 3],
+    /// Which slot this is, for the release.
+    pub slot: u32,
+}
+
+/// A synchronisation object the application's device signals when it has
+/// finished reading a picture.
+///
+/// **None is the only kind in this version**, because every picture leaves
+/// as planes that were copied; the shape is fixed so a handle path adds a
+/// kind rather than a call.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_fence {
+    /// One of [`lowlat_fence_kind`].
+    pub kind: u32,
+    /// The descriptor or handle, as the kind says.
+    pub handle: u64,
+    /// The value to wait for, as the kind says.
+    pub value: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_fence_kind {
+    /// Reusable now.
+    LOWLAT_FENCE_NONE = 0,
 }
 
 /// No attempt has been made.
@@ -143,12 +273,46 @@ pub unsafe extern "C" fn lowlat_client_create(
         if out.is_null() {
             return LOWLAT_ERR_INVALID_ARGUMENT;
         }
-        if let Some(info) = (unsafe { info.as_ref() })
-            && (info.size as usize) < core::mem::size_of::<u32>()
+        let info = unsafe { info.as_ref() };
+        if let Some(info) = info
+            && (info.size as usize) < core::mem::size_of::<lowlat_client_create_info>()
         {
             return LOWLAT_ERR_INVALID_ARGUMENT;
         }
-        let mut seam = Client::new();
+        let decoding = match info {
+            None => Decoding::default(),
+            Some(info) => {
+                let backend = match info.decoder {
+                    code if code == lowlat_decoder::LOWLAT_DECODER_AUTO as u32 => Backend::Auto,
+                    code if code == lowlat_decoder::LOWLAT_DECODER_OPEN as u32 => Backend::Vaapi,
+                    code if code == lowlat_decoder::LOWLAT_DECODER_VENDOR as u32 => Backend::Nvdec,
+                    code if code == lowlat_decoder::LOWLAT_DECODER_NONE as u32 => Backend::None,
+                    _ => return LOWLAT_ERR_INVALID_ARGUMENT,
+                };
+                let kind = match info.frame_kind {
+                    code if code == lowlat_frame_kind::LOWLAT_FRAME_PLANES as u32 => {
+                        FrameKind::Planes
+                    }
+                    code if code == lowlat_frame_kind::LOWLAT_FRAME_HANDLE as u32 => {
+                        FrameKind::Handle
+                    }
+                    _ => return LOWLAT_ERR_INVALID_ARGUMENT,
+                };
+                let Some(device) = taken(&info.device) else {
+                    return LOWLAT_ERR_INVALID_ARGUMENT;
+                };
+                Decoding {
+                    backend,
+                    device: device.to_string(),
+                    kind,
+                    ceiling: (info.max_width, info.max_height),
+                }
+            }
+        };
+        let mut seam = match Client::new(&decoding) {
+            Ok(seam) => seam,
+            Err(error) => return refused(error),
+        };
         let Some(events) = seam.take_events() else {
             return LOWLAT_ERR_INTERNAL;
         };
@@ -222,6 +386,17 @@ fn refused(error: ::lowlat_client::Error) -> lowlat_status {
         Error::Transport | Error::Credentials => LOWLAT_ERR_INVALID_ARGUMENT,
         Error::Crypto => LOWLAT_ERR_CRYPTO,
         Error::Io => LOWLAT_ERR_IO,
+        Error::Decoder(stage) => {
+            use ::lowlat_client::seam::DecoderStage;
+            match stage {
+                DecoderStage::Runtime => LOWLAT_ERR_NO_DECODER_RUNTIME,
+                DecoderStage::Device => LOWLAT_ERR_NO_DECODER_DEVICE,
+                DecoderStage::Profile => LOWLAT_ERR_NO_DECODER_PROFILE,
+                DecoderStage::Unsupported => LOWLAT_ERR_DECODER_UNSUPPORTED,
+            }
+        }
+        Error::TooManyHeld => LOWLAT_ERR_TOO_MANY_HELD,
+        Error::NoSession => LOWLAT_ERR_NOT_STARTED,
     }
 }
 
@@ -521,7 +696,144 @@ pub unsafe extern "C" fn lowlat_client_get_status(
                 pictures: t.pictures.load(Ordering::Relaxed),
                 skipped: t.skipped.load(Ordering::Relaxed),
                 audio_packets: t.audio_packets.load(Ordering::Relaxed),
+                decoder: t.decoder.load(Ordering::Relaxed),
+                queue_depth: t.queue_depth.load(Ordering::Relaxed),
+                decode_us: t.decode_us.load(Ordering::Relaxed),
+                readback_us: t.readback_us.load(Ordering::Relaxed),
+                decoded: t.decoded.load(Ordering::Relaxed),
             };
+            LOWLAT_OK
+        })
+    }
+}
+
+/// Take the newest picture, waiting up to `timeout_ms` for one newer than
+/// the last one taken.
+///
+/// **Acquire is the poll.** Older pictures that were ready are discarded on
+/// the way: the newest is what a renderer wants, and a picture it never
+/// looked at is the one nothing will miss. A picture stays valid until it is
+/// released and may be presented as often as the application likes in
+/// between. At most two are held at once -- the one being presented and the
+/// one just acquired, so a swap has no gap -- and a third acquire is refused
+/// with [`LOWLAT_ERR_TOO_MANY_HELD`] rather than dropping one silently.
+///
+/// **Outside the handle's lock**, like the event poll: a wait here leaves
+/// every other call answerable.
+///
+/// @param[in] cl The handle.
+/// @param[in] stream The stream, zero in this version.
+/// @param[in] timeout_ms How long to wait. Zero polls.
+/// @param[out] frame The picture, when [`LOWLAT_OK`].
+/// @returns [`LOWLAT_OK`], [`LOWLAT_TIMEOUT`] with nothing newer in time,
+/// [`LOWLAT_ERR_TOO_MANY_HELD`], [`LOWLAT_ERR_NOT_STARTED`] with no session, or
+/// [`LOWLAT_ERR_INVALID_ARGUMENT`].
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`]; `frame` points to one
+/// [`lowlat_frame`] whose `size` is set.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_acquire_frame(
+    cl: *mut lowlat_client,
+    stream: u8,
+    timeout_ms: u32,
+    frame: *mut lowlat_frame,
+) -> lowlat_status {
+    unsafe {
+        entered(cl, |handle| {
+            let Some(frame) = frame.as_mut() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            if (frame.size as usize) < core::mem::size_of::<lowlat_frame>() || stream != 0 {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            // The queue and the last sequence are read under the lock and
+            // the wait happens outside it.
+            let (frames, after, session) = {
+                let held = handle.held();
+                (
+                    std::sync::Arc::clone(held.seam.frames()),
+                    held.seam.last_seq(),
+                    held.attempt.is_some(),
+                )
+            };
+            if !session {
+                return LOWLAT_ERR_NOT_STARTED;
+            }
+            let taken = match frames.acquire(after, Duration::from_millis(u64::from(timeout_ms))) {
+                Ok(Some(taken)) => taken,
+                Ok(None) => return LOWLAT_TIMEOUT,
+                Err(_) => return LOWLAT_ERR_TOO_MANY_HELD,
+            };
+            handle.held().seam.set_last_seq(taken.seq);
+            *frame = lowlat_frame {
+                size: frame.size,
+                kind: lowlat_frame_kind::LOWLAT_FRAME_PLANES as u32,
+                format: ::lowlat_client::decode::format_code(taken.frame.format),
+                width: taken.frame.width,
+                height: taken.frame.height,
+                rotation: match taken.frame.rotation {
+                    ::lowlat_core::video::Rotation::Deg90 => lowlat_rotation::LOWLAT_ROTATION_90,
+                    ::lowlat_core::video::Rotation::Deg180 => lowlat_rotation::LOWLAT_ROTATION_180,
+                    ::lowlat_core::video::Rotation::Deg270 => lowlat_rotation::LOWLAT_ROTATION_270,
+                    _ => lowlat_rotation::LOWLAT_ROTATION_NONE,
+                } as u32,
+                generation: taken.frame.generation,
+                sequence: taken.seq,
+                planes: [
+                    lowlat_plane {
+                        data: taken.y,
+                        pitch: u32::try_from(taken.pitch).unwrap_or(u32::MAX),
+                    },
+                    lowlat_plane {
+                        data: taken.uv,
+                        pitch: u32::try_from(taken.pitch).unwrap_or(u32::MAX),
+                    },
+                    lowlat_plane {
+                        data: core::ptr::null(),
+                        pitch: 0,
+                    },
+                ],
+                slot: u32::try_from(taken.index).unwrap_or(u32::MAX),
+            };
+            LOWLAT_OK
+        })
+    }
+}
+
+/// Give a picture back.
+///
+/// @param[in] cl The handle.
+/// @param[in] frame The picture, as acquired.
+/// @param[in] done A fence the application's device signals when it has
+/// finished reading, or null for reusable now. **Null is the only value this
+/// version takes**: every picture leaves as copied planes.
+/// @returns [`LOWLAT_OK`] or [`LOWLAT_ERR_INVALID_ARGUMENT`].
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`]; `frame` points to a
+/// [`lowlat_frame`] an acquire filled; `done` is null or points to one
+/// [`lowlat_fence`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_release_frame(
+    cl: *mut lowlat_client,
+    frame: *const lowlat_frame,
+    done: *const lowlat_fence,
+) -> lowlat_status {
+    unsafe {
+        entered(cl, |handle| {
+            let Some(frame) = frame.as_ref() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            if let Some(done) = done.as_ref()
+                && done.kind != lowlat_fence_kind::LOWLAT_FENCE_NONE as u32
+            {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let frames = std::sync::Arc::clone(handle.held().seam.frames());
+            frames.release(frame.slot as usize);
             LOWLAT_OK
         })
     }
@@ -654,6 +966,7 @@ fn described(attempt: &str, received: &lowlat_common::events::Received<Event>) -
                 Outcome::TransportFailed => (LOWLAT_OUTCOME_TRANSPORT_FAILED, 0),
                 Outcome::Disconnected(status) => (LOWLAT_OUTCOME_DISCONNECTED, *status),
                 Outcome::Unreadable => (LOWLAT_OUTCOME_CONTROL_STALLED, 0),
+                Outcome::DecoderFailed => (LOWLAT_OUTCOME_DECODER_FAILED, 0),
             };
             lowlat_event {
                 kind: LOWLAT_EVENT_ENDED,
@@ -737,14 +1050,62 @@ unsafe fn entered(
 mod tests {
     use super::*;
 
+    /// A creation with no decoder, which is what a machine without a device
+    /// can still do.
+    fn no_decoder() -> lowlat_client_create_info {
+        lowlat_client_create_info {
+            size: core::mem::size_of::<lowlat_client_create_info>() as u32,
+            decoder: lowlat_decoder::LOWLAT_DECODER_NONE as u32,
+            frame_kind: lowlat_frame_kind::LOWLAT_FRAME_PLANES as u32,
+            max_width: 0,
+            max_height: 0,
+            device: [0; LOWLAT_OUTPUT_MAX],
+        }
+    }
+
     /// The whole seam through the boundary against nothing: an attempt is
     /// minted, a second is refused, the status says connecting, and ending
     /// with no session is harmless.
     #[test]
     fn an_attempt_is_minted_once_and_ended_without_a_session() {
         let mut handle: *mut lowlat_client = core::ptr::null_mut();
+        let info = no_decoder();
         assert_eq!(
-            unsafe { lowlat_client_create(core::ptr::null(), &raw mut handle) },
+            unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
+            LOWLAT_OK
+        );
+        // No session: nothing to acquire from.
+        let mut frame = lowlat_frame {
+            size: core::mem::size_of::<lowlat_frame>() as u32,
+            kind: 0,
+            format: 0,
+            width: 0,
+            height: 0,
+            rotation: 0,
+            generation: 0,
+            sequence: 0,
+            planes: [lowlat_plane {
+                data: core::ptr::null(),
+                pitch: 0,
+            }; 3],
+            slot: 0,
+        };
+        assert_eq!(
+            unsafe { lowlat_client_acquire_frame(handle, 0, 0, &raw mut frame) },
+            LOWLAT_ERR_NOT_STARTED
+        );
+        let fence = lowlat_fence {
+            kind: 7,
+            handle: 0,
+            value: 0,
+        };
+        assert_eq!(
+            unsafe { lowlat_client_release_frame(handle, &raw const frame, &raw const fence) },
+            LOWLAT_ERR_INVALID_ARGUMENT,
+            "a fence kind this version does not take was accepted"
+        );
+        assert_eq!(
+            unsafe { lowlat_client_release_frame(handle, &raw const frame, core::ptr::null()) },
             LOWLAT_OK
         );
         let mut ours = lowlat_credentials {
@@ -766,6 +1127,11 @@ mod tests {
             pictures: 0,
             skipped: 0,
             audio_packets: 0,
+            decoder: 0,
+            queue_depth: 0,
+            decode_us: 0,
+            readback_us: 0,
+            decoded: 0,
         };
         assert_eq!(
             unsafe { lowlat_client_get_status(handle, &raw mut status) },
@@ -908,5 +1274,31 @@ mod tests {
             LOWLAT_ERR_INVALID_ARGUMENT
         );
         unsafe { lowlat_client_destroy(handle) };
+    }
+
+    /// A decoder that is not built is refused at creation, with the stage,
+    /// and so is a frame kind nothing exports.
+    #[test]
+    fn what_is_not_built_is_refused_at_creation() {
+        let mut handle: *mut lowlat_client = core::ptr::null_mut();
+        let mut info = no_decoder();
+        info.decoder = lowlat_decoder::LOWLAT_DECODER_VENDOR as u32;
+        assert_eq!(
+            unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
+            LOWLAT_ERR_DECODER_UNSUPPORTED
+        );
+        let mut info = no_decoder();
+        info.frame_kind = lowlat_frame_kind::LOWLAT_FRAME_HANDLE as u32;
+        assert_eq!(
+            unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
+            LOWLAT_ERR_DECODER_UNSUPPORTED
+        );
+        let mut info = no_decoder();
+        info.decoder = 42;
+        assert_eq!(
+            unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        assert!(handle.is_null());
     }
 }

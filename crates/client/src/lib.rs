@@ -30,6 +30,7 @@
 )]
 
 pub mod config;
+pub mod decode;
 pub mod driver;
 pub mod feed;
 pub mod frames;

@@ -816,6 +816,7 @@ dependencies = [
  "lowlat-common",
  "lowlat-core",
  "lowlat-drivers",
+ "lowlat-encode",
 ]
 
 [[package]]

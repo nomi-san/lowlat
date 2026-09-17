@@ -622,10 +622,35 @@ int main(int argc, char **argv)
         RESOLVE(client_end, lib, "lowlat_client_end_connection");
         RESOLVE(client_status, lib, "lowlat_client_get_status");
 
+        /* Without a decoder, which is what a machine without a device can
+         * still do; a creation that asks for the first decoder either opens
+         * one or refuses with the stage named, and both are right here. */
+        lowlat_client_create_info info;
+        memset(&info, 0, sizeof info);
+        info.size = (uint32_t) sizeof info;
+        info.decoder = LOWLAT_DECODER_NONE;
         lowlat_client *cl = NULL;
-        if (client_create(NULL, &cl) != LOWLAT_OK || cl == NULL) {
+        if (client_create(&info, &cl) != LOWLAT_OK || cl == NULL) {
             fprintf(stderr, "harness: a client handle could not be created\n");
             return 1;
+        }
+        {
+            lowlat_client_create_info any;
+            memset(&any, 0, sizeof any);
+            any.size = (uint32_t) sizeof any;
+            lowlat_client *probe = NULL;
+            lowlat_status opened = client_create(&any, &probe);
+            if (opened == LOWLAT_OK) {
+                printf("harness: a decoder opened\n");
+                client_destroy(probe);
+            } else if (opened == LOWLAT_ERR_NO_DECODER_RUNTIME
+                       || opened == LOWLAT_ERR_NO_DECODER_DEVICE
+                       || opened == LOWLAT_ERR_NO_DECODER_PROFILE) {
+                printf("harness: no decoder here: %s\n", status_string(opened));
+            } else {
+                fprintf(stderr, "harness: the decoder probe answered %d\n", (int) opened);
+                return 1;
+            }
         }
         lowlat_credentials ours;
         memset(&ours, 0, sizeof ours);

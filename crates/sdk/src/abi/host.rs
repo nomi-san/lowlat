@@ -62,19 +62,6 @@ pub enum lowlat_encoder {
     LOWLAT_ENCODER_VENDOR = 2,
 }
 
-/// How the display this stream shows is oriented.
-///
-/// **The coded picture never rotates.** This travels to the peer, which is what
-/// presents the picture and what maps pointer coordinates against it.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum lowlat_rotation {
-    LOWLAT_ROTATION_NONE = 1,
-    LOWLAT_ROTATION_90 = 2,
-    LOWLAT_ROTATION_180 = 3,
-    LOWLAT_ROTATION_270 = 4,
-}
-
 /// Which congestion control level a session runs at.
 ///
 /// **Zero is the most aggressive, not "off".** Its thresholds are all zero, so

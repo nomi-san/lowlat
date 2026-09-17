@@ -6,19 +6,24 @@
 //! `begin_p2p` takes what the answer carried. Nothing here speaks to a
 //! signaling service.
 
+use std::ffi::CString;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
 use lowlat_common::events::{self, Queued};
 use lowlat_core::conn::Kind;
 use lowlat_core::envelope::Cipher;
 use lowlat_crypto::Credentials;
+use lowlat_decode::vaapi;
 use lowlat_net::{Guest, Wake};
 
-use crate::config::Config;
+use crate::config::{Backend, Config, Decoding, FrameKind};
 use crate::driver::{Telemetry, Units};
+use crate::frames::{Frames, Held};
 
 /// Which pipe an attempt asks for. A client of this library uses the native
 /// one; the browser's exists so a page can be a guest, and a native client
@@ -93,6 +98,9 @@ pub enum Outcome {
     /// A message arrived that this client cannot take: larger than any
     /// buffer, or unreadable. The channel cannot advance past it.
     Unreadable,
+    /// No decoder can serve the stream: the device is gone, was never
+    /// usable, or the stream is one it cannot decode.
+    DecoderFailed,
 }
 
 /// What a seam call can refuse.
@@ -113,6 +121,25 @@ pub enum Error {
     Crypto,
     /// A socket or thread could not be had.
     Io,
+    /// No decoder, with the stage that refused.
+    Decoder(DecoderStage),
+    /// The application holds as many pictures as it may.
+    TooManyHeld,
+    /// No session to take pictures from.
+    NoSession,
+}
+
+/// Where building a decoder stopped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecoderStage {
+    /// The runtime library is not on the machine.
+    Runtime,
+    /// No render node opened.
+    Device,
+    /// The device decodes none of the profiles a stream could use.
+    Profile,
+    /// A backend or a frame kind that is not built.
+    Unsupported,
 }
 
 /// What reaches the loop from outside it.
@@ -136,6 +163,7 @@ struct Attempt {
     inject: Option<mpsc::Sender<Arrival>>,
     ask: Option<mpsc::Sender<Ask>>,
     thread: Option<Guest>,
+    decode: Option<(JoinHandle<()>, Arc<AtomicBool>)>,
 }
 
 /// How long a departure is given to reach the host before the loop stops.
@@ -150,7 +178,36 @@ pub struct Client {
     events: Option<events::Receiver<Event>>,
     telemetry: Arc<Telemetry>,
     units: Units,
+    /// The render node the decoder opens, settled at creation; none for a
+    /// client without a decoder.
+    node: Option<CString>,
+    frames: Arc<Frames>,
+    /// The newest picture handed out, so the next acquire waits for newer.
+    last_seq: u64,
 }
+
+/// Which stage a probe's refusal names.
+fn stage_of(error: &vaapi::Error) -> DecoderStage {
+    match error {
+        vaapi::Error::Runtime(
+            vaapi::RuntimeError::Unavailable | vaapi::RuntimeError::MissingSymbol,
+        ) => DecoderStage::Runtime,
+        vaapi::Error::NoProfile => DecoderStage::Profile,
+        _ => DecoderStage::Device,
+    }
+}
+
+/// Where the first render node that decodes is looked for.
+const RENDER_NODES: [&str; 8] = [
+    "/dev/dri/renderD128",
+    "/dev/dri/renderD129",
+    "/dev/dri/renderD130",
+    "/dev/dri/renderD131",
+    "/dev/dri/renderD132",
+    "/dev/dri/renderD133",
+    "/dev/dri/renderD134",
+    "/dev/dri/renderD135",
+];
 
 impl std::fmt::Debug for Attempt {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -158,22 +215,98 @@ impl std::fmt::Debug for Attempt {
     }
 }
 
-impl Default for Client {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Client {
-    pub fn new() -> Self {
+    /// Create a client, opening its decoder's device once to see that it
+    /// decodes: a machine without one is refused here, with the stage named,
+    /// rather than after it has connected.
+    pub fn new(decoding: &Decoding) -> Result<Self, Error> {
+        if decoding.backend == Backend::Nvdec || decoding.kind == FrameKind::Handle {
+            return Err(Error::Decoder(DecoderStage::Unsupported));
+        }
+        let node = if decoding.backend == Backend::None {
+            None
+        } else if decoding.device.is_empty() {
+            let mut found = None;
+            let mut last = DecoderStage::Device;
+            for candidate in RENDER_NODES {
+                let Ok(path) = CString::new(candidate) else {
+                    continue;
+                };
+                match vaapi::probe(&path) {
+                    Ok(caps) if caps.any() => {
+                        found = Some(path);
+                        break;
+                    }
+                    Ok(_) => last = DecoderStage::Profile,
+                    Err(e) => {
+                        if stage_of(&e) == DecoderStage::Runtime {
+                            last = DecoderStage::Runtime;
+                        }
+                    }
+                }
+            }
+            Some(found.ok_or(Error::Decoder(last))?)
+        } else {
+            let path = CString::new(decoding.device.as_str())
+                .map_err(|_| Error::Decoder(DecoderStage::Device))?;
+            let caps = vaapi::probe(&path).map_err(|e| Error::Decoder(stage_of(&e)))?;
+            if !caps.any() {
+                return Err(Error::Decoder(DecoderStage::Profile));
+            }
+            Some(path)
+        };
         let (emit, events) = events::queue();
-        Self {
+        Ok(Self {
             attempt: None,
             emit,
             events: Some(events),
             telemetry: Arc::new(Telemetry::default()),
             units: Units::new(),
+            node,
+            frames: Arc::new(Frames::new(decoding.ceiling())),
+            last_seq: 0,
+        })
+    }
+
+    /// The render node the decoder opens, if there is a decoder.
+    pub fn node(&self) -> Option<&CString> {
+        self.node.as_ref()
+    }
+
+    /// The picture queue.
+    pub fn frames(&self) -> &Arc<Frames> {
+        &self.frames
+    }
+
+    /// The newest picture, newer than the last one handed out, waiting up
+    /// to `timeout`. `Ok(None)` when none came in time.
+    pub fn acquire_frame(&mut self, timeout: Duration) -> Result<Option<Held>, Error> {
+        if self.attempt.is_none() {
+            return Err(Error::NoSession);
         }
+        match self.frames.acquire(self.last_seq, timeout) {
+            Ok(Some(held)) => {
+                self.last_seq = held.seq;
+                Ok(Some(held))
+            }
+            Ok(None) => Ok(None),
+            Err(crate::frames::TooManyHeld) => Err(Error::TooManyHeld),
+        }
+    }
+
+    /// The sequence of the newest picture handed out, for a caller that
+    /// waits on the queue itself and reports back what it took.
+    pub fn last_seq(&self) -> u64 {
+        self.last_seq
+    }
+
+    pub fn set_last_seq(&mut self, seq: u64) {
+        self.last_seq = self.last_seq.max(seq);
+    }
+
+    /// The application is done with a picture.
+    pub fn release_frame(&mut self, index: usize) {
+        self.frames.release(index);
     }
 
     /// Mint the credentials the offer carries.
@@ -206,6 +339,7 @@ impl Client {
             inject: None,
             ask: None,
             thread: None,
+            decode: None,
         });
         Ok(ours)
     }
@@ -274,6 +408,7 @@ impl Client {
         let socket = lowlat_net::Socket::open_or_any_port(0).map_err(|_| Error::Io)?;
         let bound = socket.local_addr().map_err(|_| Error::Io)?.port();
         let wake = Wake::new().map_err(|_| Error::Io)?;
+        let shell_wake = wake.handle().map_err(|_| Error::Io)?;
 
         let (inject, arrivals) = mpsc::channel::<Arrival>();
         for arrival in attempt.pending.drain(..) {
@@ -303,6 +438,26 @@ impl Client {
         attempt.inject = Some(inject);
         attempt.ask = Some(ask);
         attempt.thread = Some(thread);
+
+        // The decode thread, beside it. It opens the device itself and
+        // holds it for its life. Without a decoder the units are dropped
+        // where they land, so the pool never fills.
+        let stopping = Arc::new(AtomicBool::new(false));
+        let decode_args = crate::decode::Attached {
+            node: self.node.clone(),
+            units: self.units.clone(),
+            frames: Arc::clone(&self.frames),
+            telemetry: Arc::clone(&self.telemetry),
+            emit: self.emit.clone(),
+            shell: shell_wake,
+            stopping: Arc::clone(&stopping),
+        };
+        let decode = std::thread::Builder::new()
+            .name("lowlat-decode".into())
+            .spawn(move || crate::decode::run(decode_args))
+            .map_err(|_| Error::Io)?;
+        attempt.decode = Some((decode, stopping));
+        self.last_seq = 0;
 
         let shared = attempt.config.shared_address_space;
         for ip in lowlat_net::host_addresses(shared) {
@@ -337,6 +492,14 @@ impl Client {
                 }
             }
             thread.stop();
+        }
+        if let Some((decode, stopping)) = attempt.decode.take() {
+            // Teardown wakes before it joins: the flag, then the word the
+            // thread waits on, then the picture queue's waiters.
+            stopping.store(true, Ordering::Release);
+            self.units.wake();
+            self.frames.close();
+            let _ = decode.join();
         }
     }
 

@@ -6,8 +6,67 @@ use lowlat_core::init::{self, FLAG_BASE, Init};
 
 /// The largest picture the current client generation declares it will take.
 /// Not a decoder limit read from anything: it is the figure every peer of
-/// that generation sends, and a host clamps a size request against it.
+/// that generation sends, and a host clamps a size request against it. It is
+/// also what the picture slots are sized for, unless the application says
+/// smaller.
 pub const MAX_DIMENSION: u32 = 4096;
+
+/// Which decoder to build.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Backend {
+    /// The first that opens on the device named.
+    #[default]
+    Auto,
+    /// The open-stack interface.
+    Vaapi,
+    /// The vendor interface. Not built yet: refused at creation.
+    Nvdec,
+    /// No decoder at all: the session carries control and sound, and every
+    /// picture is taken off the wire and dropped. A test peer, or a client
+    /// with nowhere to draw.
+    None,
+}
+
+/// How pictures leave the library.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FrameKind {
+    /// Planes in memory the library owns for the lease.
+    #[default]
+    Planes,
+    /// A device-level handle. No backend exports one yet: refused at
+    /// creation.
+    Handle,
+}
+
+/// What the decoder is built on, settled at creation.
+#[derive(Debug, Clone, Default)]
+pub struct Decoding {
+    pub backend: Backend,
+    /// The render node, or empty for the first that opens.
+    pub device: String,
+    pub kind: FrameKind,
+    /// The largest picture the slots take; zero for the generation's
+    /// declared maximum.
+    pub ceiling: (u32, u32),
+}
+
+impl Decoding {
+    /// The ceiling in force.
+    pub fn ceiling(&self) -> (u32, u32) {
+        (
+            if self.ceiling.0 == 0 {
+                MAX_DIMENSION
+            } else {
+                self.ceiling.0
+            },
+            if self.ceiling.1 == 0 {
+                MAX_DIMENSION
+            } else {
+                self.ceiling.1
+            },
+        )
+    }
+}
 
 /// A client's settings.
 #[derive(Debug, Clone)]

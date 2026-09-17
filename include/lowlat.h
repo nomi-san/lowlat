@@ -42,7 +42,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 4
+#define LOWLAT_ABI_MINOR 5
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 #define LOWLAT_FEATURE_HOST 1
@@ -74,8 +74,6 @@
 /// signaling to forward has to be anyway.
 #define LOWLAT_ADDRESS_MAX 46
 
-/// The longest output identity carried across this boundary.
-///
 /// **Sized for the longest kind of identity, which is a device path.** These
 /// are not display connector names, which are short: the same bound carries
 /// the sound server's own name for a device, where a USB output's serial and
@@ -129,6 +127,23 @@
 #endif
 
 #if defined(LOWLAT_CLIENT)
+/// No decoder has been built yet: no parameter set has arrived.
+#define LOWLAT_DECODER_NONE_YET 0
+
+/// A decoder exists and is being fed.
+#define LOWLAT_DECODER_BUILT 1
+
+/// No decoder can serve the stream; the ended event said so.
+#define LOWLAT_DECODER_FAILED 2
+
+/// Eight bits: a luma plane and an interleaved chroma plane at half the
+/// rows.
+#define LOWLAT_FORMAT_NV12 1
+
+/// Ten bits in sixteen-bit samples, the value in the high bits; the same
+/// two planes.
+#define LOWLAT_FORMAT_P010 2
+
 /// No attempt has been made.
 #define LOWLAT_CLIENT_IDLE 0
 
@@ -161,6 +176,7 @@
 ///   -200 to -299   capture
 ///   -300 to -399   encode
 ///   -400 to -499   transport
+///   -500 to -599   decode
 /// ```
 ///
 /// A value is assigned once and never reused, including for a condition that
@@ -186,6 +202,9 @@ typedef enum lowlat_status {
     LOWLAT_ERR_ALREADY_STARTED = -5,
     /// This handle is not hosting, so there is nothing for the call to act on.
     LOWLAT_ERR_NOT_STARTED = -6,
+    /// The application already holds as many pictures as it may; one has to
+    /// be released before another is acquired.
+    LOWLAT_ERR_TOO_MANY_HELD = -7,
     /// Every seat is taken. **The offer should be declined**, not left
     /// unanswered: silence reads to a peer as a host still thinking about it.
     LOWLAT_ERR_AT_CAPACITY = -100,
@@ -211,6 +230,15 @@ typedef enum lowlat_status {
     /// A display is lit and its framebuffer cannot be reached, which is what
     /// this process is allowed to do rather than what the machine has.
     LOWLAT_ERR_DISPLAY_UNREACHABLE = -201,
+    /// The decoder's runtime library is not on the machine.
+    LOWLAT_ERR_NO_DECODER_RUNTIME = -500,
+    /// No render node opened for the decoder: none named opens, or none at
+    /// all does.
+    LOWLAT_ERR_NO_DECODER_DEVICE = -501,
+    /// The device opened and decodes none of the profiles a stream could use.
+    LOWLAT_ERR_NO_DECODER_PROFILE = -502,
+    /// The decoder or the frame kind asked for is not in this build.
+    LOWLAT_ERR_DECODER_UNSUPPORTED = -503,
 } lowlat_status;
 
 #if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
@@ -267,6 +295,9 @@ typedef enum lowlat_outcome {
     /// The host ended the session, and `reason` carries the status it gave.
     /// Client only.
     LOWLAT_OUTCOME_DISCONNECTED = 10,
+    /// No decoder can serve the stream: the device is gone, was never
+    /// usable, or the stream is one it cannot decode. Client only.
+    LOWLAT_OUTCOME_DECODER_FAILED = 11,
 } lowlat_outcome;
 #endif
 
@@ -308,18 +339,26 @@ typedef enum lowlat_encoder {
     LOWLAT_ENCODER_OPEN = 1,
     LOWLAT_ENCODER_VENDOR = 2,
 } lowlat_encoder;
+#endif
 
-/// How the display this stream shows is oriented.
+#if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
+/// The longest output identity carried across this boundary.
 ///
-/// **The coded picture never rotates.** This travels to the peer, which is what
-/// presents the picture and what maps pointer coordinates against it.
+/// How a picture is oriented.
+///
+/// **The coded picture never rotates.** A host sends the display's
+/// orientation with its stream, and the peer presents the picture turned and
+/// maps pointer coordinates against it; a client hands the same word out with
+/// every picture.
 typedef enum lowlat_rotation {
     LOWLAT_ROTATION_NONE = 1,
     LOWLAT_ROTATION_90 = 2,
     LOWLAT_ROTATION_180 = 3,
     LOWLAT_ROTATION_270 = 4,
 } lowlat_rotation;
+#endif
 
+#if defined(LOWLAT_HOST)
 /// Which congestion control level a session runs at.
 ///
 /// **Zero is the most aggressive, not "off".** Its thresholds are all zero, so
@@ -380,6 +419,34 @@ typedef enum lowlat_transport {
 #endif
 
 #if defined(LOWLAT_CLIENT)
+/// Which decoder a client is built on.
+///
+/// **The choice is by index, as the host's encoder is; unset, the first
+/// that opens on the device named.** A machine without any is refused at
+/// creation with the stage named, exactly as a host without an encoder is.
+typedef enum lowlat_decoder {
+    LOWLAT_DECODER_AUTO = 0,
+    LOWLAT_DECODER_OPEN = 1,
+    LOWLAT_DECODER_VENDOR = 2,
+    /// No decoder: the session carries control and sound, and every picture
+    /// is taken off the wire and dropped. A client with nowhere to draw.
+    LOWLAT_DECODER_NONE = 3,
+} lowlat_decoder;
+
+/// How pictures leave the library.
+typedef enum lowlat_frame_kind {
+    /// Planes in memory the library owns for the lease.
+    LOWLAT_FRAME_PLANES = 0,
+    /// A device-level handle the application imports into its own device.
+    /// No decoder exports one yet: refused at creation.
+    LOWLAT_FRAME_HANDLE = 1,
+} lowlat_frame_kind;
+
+typedef enum lowlat_fence_kind {
+    /// Reusable now.
+    LOWLAT_FENCE_NONE = 0,
+} lowlat_fence_kind;
+
 /// One client, as the application holds it.
 ///
 /// Opaque: the application holds a pointer it cannot look inside, so what is
@@ -975,9 +1042,24 @@ typedef struct lowlat_event {
 
 #if defined(LOWLAT_CLIENT)
 /// What a client is created with.
+///
+/// **Zeroed is the sensible default**: the first decoder that opens, planes,
+/// the largest picture the generation declares.
 typedef struct lowlat_client_create_info {
     /// Set by the caller to `sizeof(lowlat_client_create_info)`.
     uint32_t size;
+    /// One of `lowlat_decoder`.
+    uint32_t decoder;
+    /// One of `lowlat_frame_kind`.
+    uint32_t frame_kind;
+    /// The largest picture the client takes: what its picture slots are
+    /// sized for. Zero for the generation's declared maximum, 4096 square.
+    /// Nothing is backed until the first picture is decoded.
+    uint32_t max_width;
+    uint32_t max_height;
+    /// The render node the decoder opens, NUL-terminated; empty for the
+    /// first that decodes.
+    char device[LOWLAT_OUTPUT_MAX];
 } lowlat_client_create_info;
 
 /// What a client asks of a host, per attempt.
@@ -1031,7 +1113,67 @@ typedef struct lowlat_client_status {
     uint64_t skipped;
     /// Sound packets taken off the audio channel.
     uint64_t audio_packets;
+    /// `LOWLAT_DECODER_NONE_YET`, `LOWLAT_DECODER_BUILT` or
+    /// `LOWLAT_DECODER_FAILED`.
+    uint32_t decoder;
+    /// Pictures decoded and published, not yet taken by the application.
+    uint32_t queue_depth;
+    /// The last picture's decode and read-back, in microseconds.
+    uint32_t decode_us;
+    uint32_t readback_us;
+    /// Pictures decoded.
+    uint64_t decoded;
 } lowlat_client_status;
+
+/// One plane of a picture.
+typedef struct lowlat_plane {
+    /// The first sample of the first row, or null for a plane the layout
+    /// does not have.
+    const uint8_t *data;
+    /// Bytes from one row to the next.
+    uint32_t pitch;
+} lowlat_plane;
+
+/// A decoded picture, lent to the application.
+///
+/// Valid from the acquire that filled it until the release that names it.
+/// Every field the renderer needs is here: nothing is read from the stream.
+typedef struct lowlat_frame {
+    /// Set by the caller to `sizeof(lowlat_frame)`.
+    uint32_t size;
+    /// One of `lowlat_frame_kind`: what the picture is handed out as.
+    uint32_t kind;
+    /// One of `LOWLAT_FORMAT_*`.
+    uint32_t format;
+    uint32_t width;
+    uint32_t height;
+    /// One of `lowlat_rotation`, applied at present time.
+    uint32_t rotation;
+    /// The encoder generation the picture belongs to.
+    uint32_t generation;
+    /// The picture's order in its stream: a later picture has a higher
+    /// number, and a gap between two consecutive presents is a skip.
+    uint64_t sequence;
+    /// Luma, then chroma. A layout with fewer planes leaves the rest null.
+    lowlat_plane planes[3];
+    /// Which slot this is, for the release.
+    uint32_t slot;
+} lowlat_frame;
+
+/// A synchronisation object the application's device signals when it has
+/// finished reading a picture.
+///
+/// **None is the only kind in this version**, because every picture leaves
+/// as planes that were copied; the shape is fixed so a handle path adds a
+/// kind rather than a call.
+typedef struct lowlat_fence {
+    /// One of `lowlat_fence_kind`.
+    uint32_t kind;
+    /// The descriptor or handle, as the kind says.
+    uint64_t handle;
+    /// The value to wait for, as the kind says.
+    uint64_t value;
+} lowlat_fence;
 #endif
 
 #ifdef __cplusplus
@@ -1762,6 +1904,51 @@ lowlat_status lowlat_client_send_user_data(lowlat_client *cl,
 /// `lowlat_client_status` whose `size` is set.
 lowlat_status lowlat_client_get_status(lowlat_client *cl,
                                        lowlat_client_status *out) LOWLAT_NOEXCEPT;
+
+/// Take the newest picture, waiting up to `timeout_ms` for one newer than
+/// the last one taken.
+///
+/// **Acquire is the poll.** Older pictures that were ready are discarded on
+/// the way: the newest is what a renderer wants, and a picture it never
+/// looked at is the one nothing will miss. A picture stays valid until it is
+/// released and may be presented as often as the application likes in
+/// between. At most two are held at once -- the one being presented and the
+/// one just acquired, so a swap has no gap -- and a third acquire is refused
+/// with `LOWLAT_ERR_TOO_MANY_HELD` rather than dropping one silently.
+///
+/// **Outside the handle's lock**, like the event poll: a wait here leaves
+/// every other call answerable.
+///
+/// @param[in] cl The handle.
+/// @param[in] stream The stream, zero in this version.
+/// @param[in] timeout_ms How long to wait. Zero polls.
+/// @param[out] frame The picture, when `LOWLAT_OK`.
+/// @returns `LOWLAT_OK`, `LOWLAT_TIMEOUT` with nothing newer in time,
+/// `LOWLAT_ERR_TOO_MANY_HELD`, `LOWLAT_ERR_NOT_STARTED` with no session, or
+/// `LOWLAT_ERR_INVALID_ARGUMENT`.
+///
+/// @attention `cl` came from `lowlat_client_create`; `frame` points to one
+/// `lowlat_frame` whose `size` is set.
+lowlat_status lowlat_client_acquire_frame(lowlat_client *cl,
+                                          uint8_t stream,
+                                          uint32_t timeout_ms,
+                                          lowlat_frame *frame) LOWLAT_NOEXCEPT;
+
+/// Give a picture back.
+///
+/// @param[in] cl The handle.
+/// @param[in] frame The picture, as acquired.
+/// @param[in] done A fence the application's device signals when it has
+/// finished reading, or null for reusable now. **Null is the only value this
+/// version takes**: every picture leaves as copied planes.
+/// @returns `LOWLAT_OK` or `LOWLAT_ERR_INVALID_ARGUMENT`.
+///
+/// @attention `cl` came from `lowlat_client_create`; `frame` points to a
+/// `lowlat_frame` an acquire filled; `done` is null or points to one
+/// `lowlat_fence`.
+lowlat_status lowlat_client_release_frame(lowlat_client *cl,
+                                          const lowlat_frame *frame,
+                                          const lowlat_fence *done) LOWLAT_NOEXCEPT;
 
 /// Take the next event, waiting up to `timeout_ms` for one.
 ///

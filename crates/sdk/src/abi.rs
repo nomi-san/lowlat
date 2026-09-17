@@ -45,6 +45,7 @@ pub use client::*;
 ///   -200 to -299   capture
 ///   -300 to -399   encode
 ///   -400 to -499   transport
+///   -500 to -599   decode
 /// ```
 ///
 /// A value is assigned once and never reused, including for a condition that
@@ -81,6 +82,9 @@ pub enum lowlat_status {
     LOWLAT_ERR_ALREADY_STARTED = -5,
     /// This handle is not hosting, so there is nothing for the call to act on.
     LOWLAT_ERR_NOT_STARTED = -6,
+    /// The application already holds as many pictures as it may; one has to
+    /// be released before another is acquired.
+    LOWLAT_ERR_TOO_MANY_HELD = -7,
 
     /// Every seat is taken. **The offer should be declined**, not left
     /// unanswered: silence reads to a peer as a host still thinking about it.
@@ -108,12 +112,22 @@ pub enum lowlat_status {
     /// A display is lit and its framebuffer cannot be reached, which is what
     /// this process is allowed to do rather than what the machine has.
     LOWLAT_ERR_DISPLAY_UNREACHABLE = -201,
+
+    /// The decoder's runtime library is not on the machine.
+    LOWLAT_ERR_NO_DECODER_RUNTIME = -500,
+    /// No render node opened for the decoder: none named opens, or none at
+    /// all does.
+    LOWLAT_ERR_NO_DECODER_DEVICE = -501,
+    /// The device opened and decodes none of the profiles a stream could use.
+    LOWLAT_ERR_NO_DECODER_PROFILE = -502,
+    /// The decoder or the frame kind asked for is not in this build.
+    LOWLAT_ERR_DECODER_UNSUPPORTED = -503,
 }
 
 /// The major version, raised only when something already published changes.
 pub const LOWLAT_ABI_MAJOR: u32 = 0;
 /// The minor version, raised when surface is appended.
-pub const LOWLAT_ABI_MINOR: u32 = 4;
+pub const LOWLAT_ABI_MINOR: u32 = 5;
 
 /// Major and minor, packed.
 ///
@@ -156,7 +170,7 @@ pub extern "C" fn lowlat_features() -> u32 {
 ///
 /// A table rather than a match, because the value arriving is an integer and
 /// not necessarily one of these.
-const DESCRIPTIONS: [(lowlat_status, &CStr); 18] = [
+const DESCRIPTIONS: [(lowlat_status, &CStr); 23] = [
     (LOWLAT_OK, c"ok"),
     (LOWLAT_TIMEOUT, c"no event within the timeout"),
     (
@@ -171,6 +185,10 @@ const DESCRIPTIONS: [(lowlat_status, &CStr); 18] = [
         c"this handle is already hosting",
     ),
     (LOWLAT_ERR_NOT_STARTED, c"this handle is not hosting"),
+    (
+        LOWLAT_ERR_TOO_MANY_HELD,
+        c"as many pictures are held as may be",
+    ),
     (LOWLAT_ERR_AT_CAPACITY, c"every seat is taken"),
     (
         LOWLAT_ERR_UNKNOWN_ATTEMPT,
@@ -195,6 +213,22 @@ const DESCRIPTIONS: [(lowlat_status, &CStr); 18] = [
     (
         LOWLAT_ERR_DISPLAY_UNREACHABLE,
         c"a display is lit and its framebuffer cannot be reached",
+    ),
+    (
+        LOWLAT_ERR_NO_DECODER_RUNTIME,
+        c"the decoder's runtime library is not on the machine",
+    ),
+    (
+        LOWLAT_ERR_NO_DECODER_DEVICE,
+        c"no render node opened for the decoder",
+    ),
+    (
+        LOWLAT_ERR_NO_DECODER_PROFILE,
+        c"the device decodes none of the profiles a stream could use",
+    ),
+    (
+        LOWLAT_ERR_DECODER_UNSUPPORTED,
+        c"the decoder or frame kind asked for is not in this build",
     ),
 ];
 

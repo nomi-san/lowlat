@@ -34,7 +34,11 @@ fn host() -> Admission {
 /// message comes back through the client. Returns whether it did.
 fn session_under(legacy: bool) {
     let mut host = host();
-    let mut client = Client::new();
+    let mut client = Client::new(&lowlat_client::config::Decoding {
+        backend: lowlat_client::config::Backend::None,
+        ..Default::default()
+    })
+    .expect("a client without a decoder");
     let config = Config {
         legacy_cipher: legacy,
         ..Config::default()

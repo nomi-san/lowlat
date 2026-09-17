@@ -88,6 +88,9 @@ pub enum lowlat_outcome {
     /// The host ended the session, and `reason` carries the status it gave.
     /// Client only.
     LOWLAT_OUTCOME_DISCONNECTED = 10,
+    /// No decoder can serve the stream: the device is gone, was never
+    /// usable, or the stream is one it cannot decode. Client only.
+    LOWLAT_OUTCOME_DECODER_FAILED = 11,
 }
 
 /// A local candidate for the application to forward.
@@ -247,6 +250,21 @@ pub struct lowlat_event {
 
 /// The longest output identity carried across this boundary.
 ///
+/// How a picture is oriented.
+///
+/// **The coded picture never rotates.** A host sends the display's
+/// orientation with its stream, and the peer presents the picture turned and
+/// maps pointer coordinates against it; a client hands the same word out with
+/// every picture.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_rotation {
+    LOWLAT_ROTATION_NONE = 1,
+    LOWLAT_ROTATION_90 = 2,
+    LOWLAT_ROTATION_180 = 3,
+    LOWLAT_ROTATION_270 = 4,
+}
+
 /// **Sized for the longest kind of identity, which is a device path.** These
 /// are not display connector names, which are short: the same bound carries
 /// the sound server's own name for a device, where a USB output's serial and

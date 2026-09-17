@@ -165,6 +165,9 @@ struct Host {
     refused: u64,
     /// Whether the stream is producing at all.
     streaming: bool,
+    /// A real stream's access units in place of the synthetic ones, looped;
+    /// its first unit is the keyframe.
+    clip: Option<Vec<Vec<u8>>>,
 }
 
 impl Host {
@@ -188,6 +191,24 @@ impl Host {
             inbound: vec![0u8; control::USER_DATA_MAX + control::CONTROL_HEADER_LEN],
             refused: 0,
             streaming: true,
+            clip: None,
+        }
+    }
+
+    /// Frames between keyframes: the clip's length, or the synthetic
+    /// source's cadence.
+    fn period(&self) -> u64 {
+        self.clip
+            .as_ref()
+            .map_or(KEYFRAME_EVERY, |clip| clip.len() as u64)
+    }
+
+    /// The access unit for one frame number.
+    fn unit(&self, frame: u64) -> (Vec<u8>, bool) {
+        let keyframe = frame % self.period() == 0;
+        match &self.clip {
+            Some(clip) => (clip[(frame % self.period()) as usize].clone(), keyframe),
+            None => (bitstream(frame, keyframe), keyframe),
         }
     }
 
@@ -239,7 +260,7 @@ impl Host {
                 // A request is an encoder rebuild: new sets, new generation.
                 self.packetiser.reconfigured();
                 negotiation.encoder_initialised(self.packetiser.generation());
-                self.frames -= self.frames % KEYFRAME_EVERY;
+                self.frames -= self.frames % self.period();
             }
         }
         if negotiation.ready() && self.streaming {
@@ -259,8 +280,7 @@ impl Host {
     }
 
     fn send_frame(&mut self, negotiation: &mut Negotiation) {
-        let keyframe = self.frames % KEYFRAME_EVERY == 0;
-        let bitstream = bitstream(self.frames, keyframe);
+        let (bitstream, keyframe) = self.unit(self.frames);
         if let Some(announcement) = self.packetiser.announcement(keyframe)
             && self
                 .endpoint
@@ -368,22 +388,31 @@ impl Decoder for Recorder {
 }
 
 /// The client's half: the driver, its units, and the consumer.
-struct Guest {
+struct Guest<D: Decoder> {
     id: HostId,
     addr: SocketAddr,
     endpoint: Endpoint<'static, Session<'static>>,
     driver: Driver,
     units: Units,
-    feed: Feed<Recorder>,
+    feed: Feed<D>,
     events: events::Receiver<Event>,
     /// What the consumer is doing: taking every unit, or none.
     consuming: bool,
+    /// How much simulated time one unit costs the consumer, so a decoder
+    /// slower than the stream can be modelled; zero takes them as they come.
+    cost_ms: f64,
+    next_consume_ms: f64,
     metadata_seen: u64,
     audio_seen: u64,
+    /// Plane checksums of the pictures a real decoder produced, in order.
+    pictures: Vec<(u32, u32)>,
+    planes: (Vec<u8>, Vec<u8>),
+    /// The deepest lag the reader reached.
+    deepest_lag: lowlat_client::Lag,
 }
 
-impl Guest {
-    fn new(sim: &mut Sim) -> Self {
+impl<D: Decoder> Guest<D> {
+    fn new(sim: &mut Sim, decoder: D) -> Self {
         let addr = addr(10);
         let id = sim.add_host(addr, &[]);
         let (emit, events) = events::queue();
@@ -400,50 +429,121 @@ impl Guest {
             endpoint: Endpoint::new(conn(LEFT, RIGHT, 0xA1), client_session()),
             driver,
             units,
-            feed: Feed::new(Recorder::default()),
+            feed: Feed::new(decoder),
             events,
             consuming: true,
+            cost_ms: 0.0,
+            next_consume_ms: 0.0,
             metadata_seen: 0,
             audio_seen: 0,
+            pictures: Vec::new(),
+            planes: (vec![0u8; 1280 * 720 * 2], vec![0u8; 1280 * 360 * 2]),
+            deepest_lag: lowlat_client::Lag::default(),
         }
     }
 
     fn turn(&mut self, now: f64) -> Option<Outcome> {
         let outcome = self.driver.turn(&mut self.endpoint, now);
         self.audio_seen = self.driver.audio_packets();
+        let lag = self.driver.lag();
+        if lag.behind > self.deepest_lag.behind {
+            self.deepest_lag = lag;
+        }
         if self.consuming {
-            self.consume();
+            self.consume(now);
         }
         outcome
     }
 
-    fn consume(&mut self) {
-        while let Some(unit) = self.units.take() {
+    fn consume(&mut self, now: f64) {
+        loop {
+            if self.cost_ms > 0.0 && now < self.next_consume_ms {
+                return;
+            }
+            let Some(unit) = self.units.take() else {
+                return;
+            };
+            if self.cost_ms > 0.0 {
+                self.next_consume_ms = now.max(self.next_consume_ms) + self.cost_ms;
+            }
             if unit.metadata() {
                 self.metadata_seen += 1;
             }
             if let Some(generation) = self.driver.generation(0) {
                 self.feed.announce_generation(generation);
             }
-            match self.feed.feed(unit.bytes()) {
+            let decision = self.feed.feed(unit.bytes());
+            drop(unit);
+            match decision {
                 Decision::Fed(_) | Decision::Built(_) | Decision::Consumed(_) => {}
                 other => panic!("the feed refused a unit the host sent: {other:?}"),
+            }
+            // A real decoder has pictures to take; the fake has none.
+            loop {
+                let mut planes = lowlat_decode::Planes {
+                    y: &mut self.planes.0,
+                    y_pitch: 1280 * 2,
+                    uv: &mut self.planes.1,
+                    uv_pitch: 1280 * 2,
+                };
+                let Ok(Some(picture)) = self.feed.decoder_mut().take(&mut planes) else {
+                    break;
+                };
+                let sample = picture.format.sample();
+                let w = picture.width as usize * sample;
+                let mut y = Vec::with_capacity(w * picture.height as usize);
+                for row in 0..picture.height as usize {
+                    y.extend_from_slice(&self.planes.0[row * 2560..row * 2560 + w]);
+                }
+                let mut uv = Vec::with_capacity(w * picture.height as usize / 2);
+                for row in 0..picture.height as usize / 2 {
+                    uv.extend_from_slice(&self.planes.1[row * 2560..row * 2560 + w]);
+                }
+                self.pictures.push((crc32(&y), crc32(&uv)));
             }
         }
     }
 }
 
-struct Pair {
-    sim: Sim,
-    host: Host,
-    guest: Guest,
+/// CRC-32 as the reference decoder's checksum tool computes it.
+fn crc32(data: &[u8]) -> u32 {
+    let mut table = [0u32; 256];
+    for (i, entry) in table.iter_mut().enumerate() {
+        let mut c = i as u32;
+        for _ in 0..8 {
+            c = if c & 1 != 0 {
+                0xEDB8_8320 ^ (c >> 1)
+            } else {
+                c >> 1
+            };
+        }
+        *entry = c;
+    }
+    let mut crc = 0xFFFF_FFFFu32;
+    for &b in data {
+        crc = table[((crc ^ u32::from(b)) & 0xFF) as usize] ^ (crc >> 8);
+    }
+    crc ^ 0xFFFF_FFFF
 }
 
-impl Pair {
+struct Pair<D: Decoder> {
+    sim: Sim,
+    host: Host,
+    guest: Guest<D>,
+}
+
+impl Pair<Recorder> {
     fn new(seed: u64, link: Link) -> Self {
+        Self::with(seed, link, Recorder::default(), None)
+    }
+}
+
+impl<D: Decoder> Pair<D> {
+    fn with(seed: u64, link: Link, decoder: D, clip: Option<Vec<Vec<u8>>>) -> Self {
         let mut sim = Sim::new(seed).with_link(link);
-        let host = Host::new(&mut sim);
-        let guest = Guest::new(&mut sim);
+        let mut host = Host::new(&mut sim);
+        host.clip = clip;
+        let guest = Guest::new(&mut sim, decoder);
         let mut pair = Self { sim, host, guest };
         pair.guest
             .endpoint
@@ -842,4 +942,128 @@ fn a_departure_reaches_the_host_as_a_zero_disconnect() {
     assert!(pair.guest.driver.left(pair.sim.now_ms()));
     assert_eq!(pair.host.received[usize::from(op::DISCONNECT)], 1);
     let _ = pair.guest.events.try_recv();
+}
+
+/// The committed clips, as the decode crate's tests read them.
+fn clip(name: &str) -> Vec<Vec<u8>> {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../decode/tests/data")
+        .join(name);
+    let bytes = std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let mut out = Vec::new();
+    let mut at = 0;
+    while at + 4 <= bytes.len() {
+        let len =
+            u32::from_le_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]) as usize;
+        at += 4;
+        out.push(bytes[at..at + len].to_vec());
+        at += len;
+    }
+    out
+}
+
+fn sums(name: &str) -> Vec<(u32, u32)> {
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../decode/tests/data")
+        .join(name);
+    std::fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let mut f = l
+                .split_whitespace()
+                .skip(1)
+                .map(|v| v.parse::<u32>().unwrap());
+            (f.next().unwrap(), f.next().unwrap())
+        })
+        .collect()
+}
+
+/// **The hermetic session decodes.** This host's own framing carries a real
+/// stream to a real decoder, and every picture out is the picture the
+/// reference decoder produced, frame for frame, at zero loss. Needs the
+/// open-stack driver on a render node, so it is off by default:
+/// `cargo test -p lowlat-client --test hermetic -- --ignored`.
+#[test]
+#[ignore = "requires the open-stack driver"]
+fn the_session_decodes_the_clip_frame_for_frame() {
+    let node = std::env::var("LOWLAT_VAAPI_NODE").unwrap_or_else(|_| "/dev/dri/renderD128".into());
+    let node = std::ffi::CString::new(node).unwrap();
+    let va = lowlat_decode::vaapi::Vaapi::load().expect("runtime");
+    let display = va.open(&node).expect("render node");
+    let backend = lowlat_decode::vaapi::Backend::new(&display, (1280, 720));
+    let units = clip("synthetic-720p-h264.bin");
+    let expected = sums("synthetic-720p-h264.sums");
+    let period = units.len() as u64;
+
+    let mut pair = Pair::with(9, clean(), backend, Some(units));
+    pair.run_for(2000.0);
+    assert!(pair.established());
+    // Three loops of the clip: three keyframes, two of them announced
+    // mid-stream.
+    pair.run_for(FRAME_MS * period as f64 * 3.0);
+    pair.host.streaming = false;
+    pair.run_for(2000.0);
+
+    let frames = pair.host.frames;
+    assert_eq!(pair.host.refused, 0);
+    assert_eq!(
+        pair.guest.driver.skipped(),
+        0,
+        "the reader fell behind a real decoder"
+    );
+    assert_eq!(
+        pair.guest.pictures.len() as u64,
+        frames,
+        "a picture in did not come out"
+    );
+    for (n, got) in pair.guest.pictures.iter().enumerate() {
+        let want = expected[n % expected.len()];
+        assert_eq!(
+            *got, want,
+            "picture {n} differs from the reference decoder's"
+        );
+    }
+    assert!(pair.guest.feed.decoder().decode_us > 0, "no decode was timed");
+    println!(
+        "hermetic decode: {frames} pictures frame-for-frame, last decode {} us, readback {} us",
+        pair.guest.feed.decoder().decode_us,
+        pair.guest.feed.decoder().readback_us
+    );
+}
+
+/// **The lag a reader reaches when its decoder is half the stream's rate**,
+/// recorded rather than judged (docs/impl-plan-client.md C2 gate 1). Against
+/// a host that announces every keyframe the catch-up bounds the backlog at
+/// one keyframe interval; the figures are what the deferred decisions are
+/// decided on.
+#[test]
+fn a_decoder_at_half_the_rate_reaches_a_lag_the_keyframes_bound() {
+    let mut pair = Pair::new(10, clean());
+    pair.guest.cost_ms = FRAME_MS * 2.0;
+    pair.run_for(2000.0);
+    assert!(pair.established());
+    pair.run_for(FRAME_MS * KEYFRAME_EVERY as f64 * 4.0);
+    let deepest = pair.guest.deepest_lag;
+    let skipped = pair.guest.driver.skipped();
+    println!(
+        "half-rate decoder: deepest lag {} messages / {} ms, {skipped} pictures skipped by the catch-up over {} frames",
+        deepest.behind, deepest.behind_ms, pair.host.frames
+    );
+    // The backlog never grows past one keyframe interval plus the pool.
+    assert!(
+        u64::from(deepest.behind) <= KEYFRAME_EVERY + lowlat_client::UNIT_SLOTS as u64 + 2,
+        "the lag grew past a keyframe interval: {deepest:?}"
+    );
+    assert!(skipped > 0, "a reader at half rate never caught up");
+    // And a reader that keeps up reaches no lag worth the name.
+    let mut pair = Pair::new(11, clean());
+    pair.run_for(2000.0);
+    pair.run_for(FRAME_MS * KEYFRAME_EVERY as f64 * 2.0);
+    assert!(
+        pair.guest.deepest_lag.behind <= 2,
+        "{:?}",
+        pair.guest.deepest_lag
+    );
 }

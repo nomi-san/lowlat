@@ -53,6 +53,8 @@ pub const TAG_METADATA: u32 = 1;
 pub struct Units {
     pool: Arc<Pool>,
     ring: Arc<Ring<u32, UNIT_SLOTS>>,
+    /// The consumer's wait word: bumped on every unit handed over.
+    word: Arc<AtomicU32>,
 }
 
 impl Default for Units {
@@ -66,7 +68,24 @@ impl Units {
         Self {
             pool: Arc::new(Pool::new(UNIT_SLOTS, UNIT_BYTES)),
             ring: Arc::new(Ring::new()),
+            word: Arc::new(AtomicU32::new(0)),
         }
+    }
+
+    /// Wait up to `timeout` for a unit to be handed over, or for a wake.
+    /// The consumer's; it rechecks `take` after.
+    pub fn wait(&self, timeout: core::time::Duration) {
+        let word = self.word.load(Ordering::Acquire);
+        if self.ring.is_empty() {
+            lowlat_common::wait::wait(&self.word, word, timeout);
+        }
+    }
+
+    /// Wake the consumer without a unit: teardown, or something else to
+    /// look at.
+    pub fn wake(&self) {
+        self.word.fetch_add(1, Ordering::Release);
+        lowlat_common::wait::notify_all(&self.word);
     }
 
     /// The next unit, in order, or `None` while nothing waits. Held until
@@ -132,6 +151,15 @@ pub struct Telemetry {
     /// Set by the decoder's consumer when its feed asked for a keyframe; the
     /// loop sends the request on its next pass and clears it.
     pub request: AtomicBool,
+    /// The decoder: 0 none yet, 1 built, 2 failed for good.
+    pub decoder: AtomicU32,
+    /// The last picture's decode and read-back, in microseconds.
+    pub decode_us: AtomicU32,
+    pub readback_us: AtomicU32,
+    /// Pictures decoded and handed to the queue.
+    pub decoded: AtomicU64,
+    /// Pictures published and not yet taken by the application.
+    pub queue_depth: AtomicU32,
 }
 
 /// One session's driver.
@@ -590,6 +618,8 @@ impl Driver {
                 self.skipped = self.skipped.saturating_add(1);
                 continue;
             }
+            self.units.word.fetch_add(1, Ordering::Release);
+            lowlat_common::wait::notify_one(&self.units.word);
             self.video_bytes = self.video_bytes.saturating_add(len as u64);
             if is_metadata {
                 self.metadata = self.metadata.saturating_add(1);
