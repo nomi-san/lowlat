@@ -14,11 +14,20 @@ service prints it. `LOWLAT_DEVICE` names a render node for the decoder (the
 first that decodes by default), `LOWLAT_DECODER` picks `auto`, `open` or
 `none`, and `LOWLAT_SERVER` names the signaling service.
 
+Three more are for measuring rather than watching. `LOWLAT_FPS` asks the
+host for that frame rate through the application protocol once the first
+picture is in, the way a settings panel does. `LOWLAT_PRESENT_HZ` caps how
+often a new picture is taken: the cached one is still drawn on every refresh,
+so on a display faster than the cap the stream is above the presentation
+rate with both clocks still the display's. `LOWLAT_SECONDS` leaves cleanly
+after that long, as closing the window does.
+
 Once a second a line goes to stdout with the presentation cadence as numbers:
-presents and new pictures in the second, repeats (a present with no new
-picture) and skips (pictures published and never shown, a newer one having
-arrived), the decoder's decode and read-back times, the reader's lag, and the
-process's resident set. Nothing is judged; the figures are what the deferred
-decisions of [docs/10-client.md](../../docs/10-client.md) are decided on.
+presents and polls in the second (equal without a cap), new pictures, repeats
+(a poll with no new picture) and skips (pictures published and never shown, a
+newer one having arrived), the decoder's decode and read-back times, the
+reader's lag, and the process's resident set. Nothing is judged; the figures
+are what the deferred decisions of [docs/10-client.md](../../docs/10-client.md)
+are decided on.
 
 Picture only. Input, sound and the cursor come with their phases.

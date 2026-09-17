@@ -9,6 +9,11 @@
 // `LOWLAT_SERVER` names the signaling service (kessel-ws.parsec.app by
 // default), `LOWLAT_DEVICE` a render node for the decoder (the first that
 // decodes by default), `LOWLAT_DECODER` one of `auto`, `open`, `none`.
+// `LOWLAT_FPS` asks the host for that rate through the application
+// protocol once the first picture is in; `LOWLAT_PRESENT_HZ` caps how often
+// a new picture is taken (the cached one is still drawn every refresh), so
+// a stream faster than the presentation can be measured on one display;
+// `LOWLAT_SECONDS` leaves cleanly after that long.
 //
 // Once a second a line goes to stdout with the presentation cadence as
 // numbers rather than a judgement: presents and pictures in the second,
@@ -41,9 +46,17 @@ struct demo {
 	bool showing;
 	uint64_t last_sequence;
 
+	// The knobs: the rate asked of the host, the presentation cap, the leave.
+	uint32_t ask_fps;
+	bool asked;
+	double poll_period_ms;
+	double last_poll_ms;
+	double leave_at_ms;
+
 	// The second's figures.
 	double second_began;
 	uint32_t presents;
+	uint32_t polls;
 	uint32_t pictures;
 	uint32_t repeats;
 	uint32_t skips;
@@ -159,6 +172,18 @@ static void pump_signaling(struct demo *d)
 	}
 }
 
+// The rate is a change to a running stream, so it is asked for once the
+// first picture proves there is one. The same message a settings panel
+// sends; the library adds the terminator.
+static void ask_rate(struct demo *d)
+{
+	char body[64];
+	int n = snprintf(body, sizeof body, "{\"video\":[{\"encoderFPS\":%u}]}", d->ask_fps);
+	lowlat_status s = lowlat_client_send_user_data(d->client, 11, body, (uint32_t) n);
+	printf("demo: asked the host for %u fps%s\n", d->ask_fps,
+		s == LOWLAT_OK ? "" : ", refused");
+}
+
 static void report(struct demo *d)
 {
 	lowlat_client_status st;
@@ -166,14 +191,15 @@ static void report(struct demo *d)
 	st.size = (uint32_t) sizeof st;
 	lowlat_client_get_status(d->client, &st);
 	d->seconds++;
-	printf("demo: t=%" PRIu64 " presents=%u pictures=%u repeats=%u skips=%u "
+	printf("demo: t=%" PRIu64 " presents=%u polls=%u pictures=%u repeats=%u skips=%u "
 		"decode_us=%u readback_us=%u queue=%u behind=%u behind_ms=%u rtt_ms=%u "
 		"decoded=%" PRIu64 " rss_mb=%" PRIu64 "\n",
-		d->seconds, d->presents, d->pictures, d->repeats, d->skips, st.decode_us,
+		d->seconds, d->presents, d->polls, d->pictures, d->repeats, d->skips, st.decode_us,
 		st.readback_us, st.queue_depth, st.behind, st.behind_ms, st.rtt_ms, st.decoded,
 		resident_mb());
 	fflush(stdout);
 	d->presents = 0;
+	d->polls = 0;
 	d->pictures = 0;
 	d->repeats = 0;
 	d->skips = 0;
@@ -184,25 +210,41 @@ static bool app_func(void *opaque)
 	struct demo *d = opaque;
 	pump_signaling(d);
 	pump_library(d);
+	double t = now_ms();
+	if (d->leave_at_ms > 0.0 && t >= d->leave_at_ms) {
+		printf("demo: leaving after %" PRIu64 " s\n", d->seconds);
+		d->quit = true;
+	}
 	if (d->quit)
 		return false;
 
-	// The poll: the newest picture, or nothing new.
-	lowlat_frame fresh;
-	memset(&fresh, 0, sizeof fresh);
-	fresh.size = (uint32_t) sizeof fresh;
-	lowlat_status s = lowlat_client_acquire_frame(d->client, 0, 0, &fresh);
-	if (s == LOWLAT_OK) {
-		if (d->showing)
-			lowlat_client_release_frame(d->client, &d->shown, NULL);
-		if (d->showing && fresh.sequence > d->last_sequence + 1)
-			d->skips += (uint32_t) (fresh.sequence - d->last_sequence - 1);
-		d->last_sequence = fresh.sequence;
-		d->shown = fresh;
-		d->showing = true;
-		d->pictures++;
-	} else {
-		d->repeats++;
+	// The poll: the newest picture, or nothing new. Under a cap it runs on
+	// the first refresh at or past the cap's period (three quarters of it,
+	// so a refresh a little early still counts), so the display shows every
+	// refresh and the picture changes at the cap's cadence.
+	if (d->poll_period_ms <= 0.0 || t - d->last_poll_ms >= d->poll_period_ms * 0.75) {
+		d->last_poll_ms = t;
+		d->polls++;
+		lowlat_frame fresh;
+		memset(&fresh, 0, sizeof fresh);
+		fresh.size = (uint32_t) sizeof fresh;
+		lowlat_status s = lowlat_client_acquire_frame(d->client, 0, 0, &fresh);
+		if (s == LOWLAT_OK) {
+			if (d->showing)
+				lowlat_client_release_frame(d->client, &d->shown, NULL);
+			if (d->showing && fresh.sequence > d->last_sequence + 1)
+				d->skips += (uint32_t) (fresh.sequence - d->last_sequence - 1);
+			d->last_sequence = fresh.sequence;
+			d->shown = fresh;
+			d->showing = true;
+			d->pictures++;
+			if (d->ask_fps != 0 && !d->asked) {
+				d->asked = true;
+				ask_rate(d);
+			}
+		} else {
+			d->repeats++;
+		}
 	}
 
 	// Drawn every iteration, new or not: a renderer that re-presents the
@@ -237,7 +279,6 @@ static bool app_func(void *opaque)
 	MTY_WindowPresent(d->app, d->window);
 	d->presents++;
 
-	double t = now_ms();
 	if (t - d->second_began >= 1000.0) {
 		d->second_began = t;
 		report(d);
@@ -262,6 +303,9 @@ int main(void)
 	const char *server = env_or("LOWLAT_SERVER", "kessel-ws.parsec.app");
 	const char *device = env_or("LOWLAT_DEVICE", "");
 	const char *decoder = env_or("LOWLAT_DECODER", "auto");
+	unsigned long ask_fps = strtoul(env_or("LOWLAT_FPS", "0"), NULL, 10);
+	unsigned long present_hz = strtoul(env_or("LOWLAT_PRESENT_HZ", "0"), NULL, 10);
+	unsigned long seconds = strtoul(env_or("LOWLAT_SECONDS", "0"), NULL, 10);
 
 	if ((lowlat_features() & LOWLAT_FEATURE_CLIENT) == 0) {
 		fprintf(stderr, "demo: this library carries no client half\n");
@@ -272,6 +316,8 @@ int main(void)
 
 	struct demo d;
 	memset(&d, 0, sizeof d);
+	d.ask_fps = (uint32_t) ask_fps;
+	d.poll_period_ms = present_hz > 0 ? 1000.0 / (double) present_hz : 0.0;
 
 	lowlat_client_create_info info;
 	memset(&info, 0, sizeof info);
@@ -317,6 +363,7 @@ int main(void)
 	MTY_WindowSetGFX(d.app, d.window, MTY_GFX_GL, true);
 	MTY_AppSetTimeout(d.app, 1);
 	d.second_began = now_ms();
+	d.leave_at_ms = seconds > 0 ? d.second_began + (double) seconds * 1000.0 : 0.0;
 
 	MTY_AppRun(d.app);
 
