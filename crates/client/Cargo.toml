@@ -1,0 +1,25 @@
+[package]
+name = "lowlat-client"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+lowlat-common.workspace = true
+lowlat-core.workspace = true
+lowlat-net.workspace = true
+# The offer's credentials are generated here; the core owns no generator.
+lowlat-crypto.workspace = true
+
+[dev-dependencies]
+# The hermetic session's other end: the host crate's own framing and
+# negotiation, driven under the simulator against this client.
+lowlat-host.workspace = true
+lowlat-sim.workspace = true
+
+[lints]
+workspace = true

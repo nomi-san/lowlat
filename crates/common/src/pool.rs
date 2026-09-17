@@ -217,6 +217,22 @@ impl Writer<'_> {
         })
     }
 
+    /// What has been written so far. The producer's own view of its slot,
+    /// which is what lets it classify a unit it took straight off the wire
+    /// before publishing it.
+    pub fn written(&self) -> &[u8] {
+        let Some(slot) = self.pool.slots.get(self.index) else {
+            return &[];
+        };
+        // SAFETY: the slot is held by this writer alone, as in `fill_with`,
+        // and nothing else reads or writes it until it is published.
+        slot.bytes.with(|bytes| {
+            // SAFETY: as above; the pointer is to a live boxed slice.
+            let storage = unsafe { &*bytes };
+            storage.get(..self.len).unwrap_or(&[])
+        })
+    }
+
     /// Publish to every ring that will take it, and report **which ones did**,
     /// as a bit per ring in the order they were given.
     ///

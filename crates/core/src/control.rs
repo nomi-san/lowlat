@@ -52,6 +52,9 @@ pub mod op {
     // Sent by a host.
     pub const CURSOR: u8 = 9;
     pub const DISCONNECT: u8 = 10;
+    /// One stream is over and the session is not: the disconnect at the scope
+    /// of a secondary stream.
+    pub const STREAM_ENDED: u8 = 27;
     pub const BLOCKED: u8 = 16;
     pub const RUMBLE: u8 = 20;
     pub const ENCODE_LATENCY: u8 = 21;
@@ -76,6 +79,7 @@ pub mod op {
             GAMEPAD_UNPLUG => "gamepad-unplug",
             CURSOR => "cursor",
             DISCONNECT => "disconnect",
+            STREAM_ENDED => "stream-ended",
             INIT => "init",
             ENCODER_CONFIG => "encoder-config",
             BLOCKED => "blocked",

@@ -314,6 +314,22 @@ pub fn is_keyframe(content: &[u8], codec: Codec) -> bool {
     }
 }
 
+/// Whether a video message's bitstream is led by a parameter set: the unit a
+/// receiver builds a decoder from, and the one that rebuilds an existing
+/// decoder when the header does not say otherwise.
+///
+/// Narrower than [`is_keyframe`]: an instantaneous refresh without parameter
+/// sets ahead of it is a keyframe, but nothing can be built from it.
+pub fn leads_with_parameter_set(content: &[u8], codec: Codec) -> bool {
+    let Some(unit) = content.get(VIDEO_HEADER_LEN..).and_then(first_unit_byte) else {
+        return false;
+    };
+    match codec {
+        Codec::H264 => unit & 0x1F == 7,
+        Codec::H265 => (unit >> 1) & 0x3F == 32,
+    }
+}
+
 /// The byte following the first start code, if the bitstream begins with one.
 fn first_unit_byte(bitstream: &[u8]) -> Option<u8> {
     match bitstream.get(..4) {
@@ -586,5 +602,29 @@ mod tests {
         // Header present, no bitstream.
         assert!(!is_keyframe(&[0u8; VIDEO_HEADER_LEN], Codec::H264));
         assert!(parse(&[0u8; 9]).is_err());
+    }
+
+    /// A refresh picture is a keyframe and builds nothing; a parameter set is
+    /// both.
+    #[test]
+    fn a_parameter_set_leads_and_a_refresh_alone_does_not() {
+        let mut sps = [0u8; VIDEO_HEADER_LEN + 5];
+        sps[VIDEO_HEADER_LEN..].copy_from_slice(&[0, 0, 0, 1, 0x67]);
+        assert!(leads_with_parameter_set(&sps, Codec::H264));
+        assert!(is_keyframe(&sps, Codec::H264));
+
+        let mut idr = sps;
+        idr[VIDEO_HEADER_LEN + 4] = 0x65;
+        assert!(!leads_with_parameter_set(&idr, Codec::H264));
+        assert!(is_keyframe(&idr, Codec::H264));
+
+        let mut vps = sps;
+        vps[VIDEO_HEADER_LEN + 4] = 32 << 1;
+        assert!(leads_with_parameter_set(&vps, Codec::H265));
+        let mut cra = sps;
+        cra[VIDEO_HEADER_LEN + 4] = 21 << 1;
+        assert!(!leads_with_parameter_set(&cra, Codec::H265));
+        assert!(is_keyframe(&cra, Codec::H265));
+        assert!(!leads_with_parameter_set(&[0u8; 4], Codec::H264));
     }
 }

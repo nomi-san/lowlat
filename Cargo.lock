@@ -767,6 +767,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "lowlat-client"
+version = "0.0.0"
+dependencies = [
+ "lowlat-common",
+ "lowlat-core",
+ "lowlat-crypto",
+ "lowlat-host",
+ "lowlat-net",
+ "lowlat-sim",
+]
+
+[[package]]
 name = "lowlat-common"
 version = "0.0.0"
 dependencies = [
