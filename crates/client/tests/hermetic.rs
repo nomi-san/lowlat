@@ -168,6 +168,10 @@ struct Host {
     /// A real stream's access units in place of the synthetic ones, looped;
     /// its first unit is the keyframe.
     clip: Option<Vec<Vec<u8>>>,
+    /// Whether keyframes are announced: `None` follows the guest's
+    /// declaration, as this host does; `Some(false)` is a host that ignores
+    /// it, which is what an older host is.
+    announces: Option<bool>,
 }
 
 impl Host {
@@ -192,6 +196,7 @@ impl Host {
             refused: 0,
             streaming: true,
             clip: None,
+            announces: None,
         }
     }
 
@@ -251,7 +256,8 @@ impl Host {
                 // Seated: the packetiser's first keyframe is the encoder's
                 // first, and the generation goes out with it.
                 let asked = negotiation.asked().unwrap();
-                self.packetiser.set_announces(asked.announces_keyframes());
+                self.packetiser
+                    .set_announces(self.announces.unwrap_or(asked.announces_keyframes()));
                 negotiation.encoder_initialised(self.packetiser.generation());
                 self.next_frame_ms = now;
                 self.next_audio_ms = now;
@@ -404,6 +410,8 @@ struct Guest<D: Decoder> {
     next_consume_ms: f64,
     metadata_seen: u64,
     audio_seen: u64,
+    /// Decoders built, as the feed reported them.
+    builds: u64,
     /// Plane checksums of the pictures a real decoder produced, in order.
     pictures: Vec<(u32, u32)>,
     planes: (Vec<u8>, Vec<u8>),
@@ -436,6 +444,7 @@ impl<D: Decoder> Guest<D> {
             next_consume_ms: 0.0,
             metadata_seen: 0,
             audio_seen: 0,
+            builds: 0,
             pictures: Vec::new(),
             planes: (vec![0u8; 1280 * 720 * 2], vec![0u8; 1280 * 360 * 2]),
             deepest_lag: lowlat_client::Lag::default(),
@@ -475,7 +484,8 @@ impl<D: Decoder> Guest<D> {
             let decision = self.feed.feed(unit.bytes());
             drop(unit);
             match decision {
-                Decision::Fed(_) | Decision::Built(_) | Decision::Consumed(_) => {}
+                Decision::Built(_) => self.builds += 1,
+                Decision::Fed(_) | Decision::Consumed(_) => {}
                 other => panic!("the feed refused a unit the host sent: {other:?}"),
             }
             // A real decoder has pictures to take; the fake has none.
@@ -1025,12 +1035,68 @@ fn the_session_decodes_the_clip_frame_for_frame() {
             "picture {n} differs from the reference decoder's"
         );
     }
-    assert!(pair.guest.feed.decoder().decode_us > 0, "no decode was timed");
+    assert_eq!(
+        pair.guest.builds, 1,
+        "an announced keyframe rebuilt the decoder"
+    );
+    assert!(
+        pair.guest.feed.decoder().decode_us > 0,
+        "no decode was timed"
+    );
     println!(
         "hermetic decode: {frames} pictures frame-for-frame, last decode {} us, readback {} us",
         pair.guest.feed.decoder().decode_us,
         pair.guest.feed.decoder().readback_us
     );
+}
+
+/// **Under the older framing every keyframe rebuilds the decoder and the
+/// picture continues** (docs/impl-plan-client.md C2 gate 3): the same clip
+/// from a host that ignores the declaration and announces nothing, so each
+/// parameter-set-led unit tears the decoder down and builds afresh, and every
+/// picture across those rebuilds still matches the reference decoder's.
+#[test]
+#[ignore = "requires the open-stack driver"]
+fn the_session_decodes_the_clip_under_the_older_framing() {
+    let node = std::env::var("LOWLAT_VAAPI_NODE").unwrap_or_else(|_| "/dev/dri/renderD128".into());
+    let node = std::ffi::CString::new(node).unwrap();
+    let va = lowlat_decode::vaapi::Vaapi::load().expect("runtime");
+    let display = va.open(&node).expect("render node");
+    let backend = lowlat_decode::vaapi::Backend::new(&display, (1280, 720));
+    let units = clip("synthetic-720p-h264.bin");
+    let expected = sums("synthetic-720p-h264.sums");
+    let period = units.len() as u64;
+
+    let mut pair = Pair::with(12, clean(), backend, Some(units));
+    pair.host.announces = Some(false);
+    pair.run_for(2000.0);
+    assert!(pair.established());
+    pair.run_for(FRAME_MS * period as f64 * 3.0);
+    pair.host.streaming = false;
+    pair.run_for(2000.0);
+
+    let frames = pair.host.frames;
+    let keyframes = frames.div_ceil(period);
+    assert_eq!(pair.host.refused, 0);
+    assert_eq!(pair.guest.metadata_seen, 0, "an older host announced");
+    assert_eq!(
+        pair.guest.builds, keyframes,
+        "a keyframe under the older framing did not rebuild"
+    );
+    assert_eq!(pair.guest.driver.skipped(), 0);
+    assert_eq!(
+        pair.guest.pictures.len() as u64,
+        frames,
+        "a picture was lost across a rebuild"
+    );
+    for (n, got) in pair.guest.pictures.iter().enumerate() {
+        let want = expected[n % expected.len()];
+        assert_eq!(
+            *got, want,
+            "picture {n} differs from the reference decoder's"
+        );
+    }
+    println!("older framing: {frames} pictures frame-for-frame across {keyframes} rebuilds");
 }
 
 /// **The lag a reader reaches when its decoder is half the stream's rate**,

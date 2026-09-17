@@ -83,7 +83,7 @@ impl<D: Decoder> Feed<D> {
     /// so the next keyframe builds one for the new declaration, and the host
     /// is asked for that keyframe.
     pub fn reconfigure(&mut self) -> Decision {
-        self.teardown();
+        self.teardown("configuration change");
         Decision::Request
     }
 
@@ -100,7 +100,7 @@ impl<D: Decoder> Feed<D> {
             // parameter sets on that keyframe are new, and the announced bit
             // it carries would otherwise keep the old decoder.
             if metadata.rebuilt {
-                self.teardown();
+                self.teardown("announced rebuild");
             }
             return Decision::Consumed(metadata);
         }
@@ -129,11 +129,11 @@ impl<D: Decoder> Feed<D> {
                 .announced
                 .is_some_and(|announced| header.frame_id < announced)
         {
-            self.teardown();
+            self.teardown("stale generation");
         }
         if leads {
             if self.present {
-                self.teardown();
+                self.teardown("parameter set");
             }
             self.build_and_feed(&header, unit, leads)
         } else if self.present {
@@ -150,12 +150,22 @@ impl<D: Decoder> Feed<D> {
             // an established host.
             return Decision::Failed;
         }
-        self.present = true;
-        self.built_for = Some((header.codec, header.ten_bit));
+        self.built(header);
         match self.feed_present(header, unit, leads) {
             Decision::Fed(fed) => Decision::Built(fed),
             other => other,
         }
+    }
+
+    fn built(&mut self, header: &VideoHeader) {
+        self.present = true;
+        self.built_for = Some((header.codec, header.ten_bit));
+        lowlat_common::log_info!(
+            "client: decoder built, codec={:?} ten_bit={} generation={}",
+            header.codec,
+            header.ten_bit,
+            header.frame_id
+        );
     }
 
     fn feed_present(&mut self, header: &VideoHeader, unit: &[u8], leads: bool) -> Decision {
@@ -163,7 +173,7 @@ impl<D: Decoder> Feed<D> {
         // whatever the header's bit says about parameter sets; the bit
         // promises the sets are known, not that the stream is the same.
         if leads && self.built_for != Some((header.codec, header.ten_bit)) {
-            self.teardown();
+            self.teardown("codec change");
             return self.build_and_feed(header, unit, leads);
         }
         match self.decoder.feed(unit) {
@@ -171,12 +181,11 @@ impl<D: Decoder> Feed<D> {
                 // **Once.** The unit that reported the change is fed to the
                 // fresh decoder; a second report on the same unit is a fault
                 // in the backend rather than a change in the stream.
-                self.teardown();
+                self.teardown("format change");
                 if self.decoder.build(header).is_err() {
                     return Decision::Failed;
                 }
-                self.present = true;
-                self.built_for = Some((header.codec, header.ten_bit));
+                self.built(header);
                 match self.decoder.feed(unit) {
                     Ok(Fed::FormatChanged) => self.fault(Fault::Unrecoverable),
                     Ok(fed) => Decision::Built(fed),
@@ -193,18 +202,19 @@ impl<D: Decoder> Feed<D> {
     /// rather than faulting again; that is what bounds requests to one per
     /// fault, whatever a burst of bad units after it looks like.
     fn fault(&mut self, fault: Fault) -> Decision {
-        self.teardown();
+        self.teardown("fault");
         match fault {
             Fault::Unrecoverable => Decision::Request,
             Fault::Fatal => Decision::Failed,
         }
     }
 
-    fn teardown(&mut self) {
+    fn teardown(&mut self, why: &str) {
         if self.present {
             self.decoder.destroy();
             self.present = false;
             self.built_for = None;
+            lowlat_common::log_info!("client: decoder torn down, why={why}");
         }
     }
 }
