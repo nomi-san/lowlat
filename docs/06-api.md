@@ -318,9 +318,10 @@ have moved by itself; an application that kept its own copy would mark the wrong
 
 ## §3b Client
 
-**Planned, 2026-09-15; built by [impl-plan-client.md](impl-plan-client.md).** The shape is
-fixed here so the header and the mirror can grow into it; a signature below that has not
-landed is not in the header yet, and the header is the truth.
+**Planned 2026-09-15, built from 2026-09-17 by [impl-plan-client.md](impl-plan-client.md).**
+The first block below is in the header (minor 4); the second is the shape the rest will take,
+fixed here so the header can grow into it. A signature that has not landed is not in the
+header yet, and the header is the truth.
 
 ```c
 lowlat_status lowlat_client_create(const lowlat_client_create_info *info, lowlat_client **out);
@@ -335,6 +336,14 @@ lowlat_status lowlat_client_begin_p2p(lowlat_client *cl, const char *attempt_id,
                                       const lowlat_credentials *theirs);
 void          lowlat_client_end_connection(lowlat_client *cl);
 
+lowlat_status lowlat_client_send_user_data(lowlat_client *cl, uint32_t id,
+                                           const void *data, uint32_t len);
+lowlat_status lowlat_client_get_status(lowlat_client *cl, lowlat_client_status *out);
+lowlat_status lowlat_client_poll_events(lowlat_client *cl, uint32_t timeout_ms,
+                                        lowlat_event *out, void *body, uint32_t *body_len);
+```
+
+```c
 lowlat_status lowlat_client_acquire_frame(lowlat_client *cl, uint8_t stream, uint32_t timeout_ms,
                                           lowlat_frame *out);
 lowlat_status lowlat_client_release_frame(lowlat_client *cl, const lowlat_frame *frame,
@@ -342,20 +351,30 @@ lowlat_status lowlat_client_release_frame(lowlat_client *cl, const lowlat_frame 
 lowlat_status lowlat_client_acquire_audio(lowlat_client *cl, uint32_t timeout_ms,
                                           int16_t *samples, uint32_t *count);
 lowlat_status lowlat_client_send_input(lowlat_client *cl, const lowlat_input *msg);
-lowlat_status lowlat_client_send_user_data(lowlat_client *cl, uint32_t id,
-                                           const void *data, uint32_t len);
-
 lowlat_status lowlat_client_set_video_config(lowlat_client *cl, const lowlat_client_video_config *cfg);
-lowlat_status lowlat_client_get_status(lowlat_client *cl, lowlat_client_status *out);
 lowlat_status lowlat_client_get_metrics(lowlat_client *cl, lowlat_metrics *out);
-lowlat_status lowlat_client_poll_events(lowlat_client *cl, uint32_t timeout_ms,
-                                        lowlat_event *out, void *body, uint32_t *body_len);
 ```
 
 **The seam is the host's, mirrored.** A client makes the offer: `new_attempt` produces the
-credentials and certificate digest the application puts in it, candidates come out as events
-for the application to relay, and `begin_p2p` takes what the answer carried. Nothing in the
-library speaks to a signaling service (D3); the example client does, itself.
+credentials and certificate digest the application puts in it (its `port` is zero -- the
+socket does not exist until the answer), candidates come out as events for the application to
+relay, and `begin_p2p` takes what the answer carried. One attempt at a time. The
+configuration is the attempt's, given with it: the size asked of the host (zero for none,
+and it is a request to change the host's display, not a description of this one),
+uncompressed sound, reflexive servers, and `legacy_cipher`, which leaves the media key out of
+the offer so both ends key the older 128-bit cipher from the host's certificate digest; with
+it clear the session is keyed from the host's media key in the answer, and an answer without
+one takes the legacy path regardless. Nothing in the library speaks to a signaling service
+(D3); the example client does, itself. `end_connection` says goodbye on the control channel
+and gives the message a moment to arrive; it raises no event, because the application caused
+it.
+
+**The seam's types are shared.** `lowlat_candidate`, `lowlat_credentials`,
+`lowlat_transport`, `lowlat_event` and its bodies are declared for either half, so an
+application built against a library carrying one half sees the same types as one built
+against the other. `lowlat_client_status` says where the session stands -- idle, connecting,
+established, over -- with the host's disconnect status, the round trip, how far behind the
+reader is and for how long, and what has been taken off each channel.
 
 **Pictures are acquired and released, never called back with.** `acquire_frame` is the poll:
 it waits up to its timeout for a picture newer than the last one lent, discards older ready
@@ -526,6 +545,9 @@ ignores it, which is why the type field is first.
 | capture changed | a different output, or the same one at a different size |
 | input owner changed | the guest holding the pointer changed |
 | fatal | the host could not serve anyone and every guest was told |
+| blocked | the host blocked this client's input, or unblocked it (client) |
+| stream ended | the host ended one stream and not the session (client) |
+| host mode | the host said which mode it is in (client) |
 
 **A guest's state changes are the four attempt events**, not one event with a
 state field: candidate and ready while it negotiates, established when a path is found, ended
@@ -699,6 +721,13 @@ and `lowlat_destroy` are `lowlat_host_create` and `lowlat_host_destroy` ([§2](#
 A rename before the first major version, under the rule below, taken before the first
 pre-release so that the header it ships is the one that lasts; nothing moved and nothing
 changed meaning.
+
+**Minor 4** (2026-09-17) added the client half ([§3b](#3b-client)): `lowlat_client` and its
+create, destroy, seam, status, user data and poll calls, `lowlat_client_create_info`,
+`lowlat_client_config` and `lowlat_client_status`; the event types `BLOCKED`, `STREAM_ENDED`
+and `HOST_MODE` with their bodies and the outcome `LOWLAT_OUTCOME_DISCONNECTED`. The seam's
+types moved out of the host's guard into one both halves share; nothing moved in memory and
+nothing changed meaning.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected

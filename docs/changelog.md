@@ -3,6 +3,58 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-17 - Phase C1: the client core, and a hermetic session
+
+### Added
+- **`lowlat-client`, the connecting side of the protocol below the media**
+  ([10](10-client.md), [impl-plan-client.md](impl-plan-client.md) C1). The seam mirrored: the
+  offer's credentials out, the answer's in, one socket, the session keyed from the host's
+  block under either cipher, with a setting that asks for the legacy one. The session logic
+  is a sans-IO driver the shell thread runs one pass at a time: the start-up sequence (the
+  fourteen-key initialization, the diagnostics message, a declaration for each secondary
+  stream and none for the first), the control vocabulary of [10 §7](10-client.md) as events,
+  access units off the video channel into a pool for the decoder's thread, sound packets
+  counted, a clean departure as a zero disconnect, and the reader's lag as a number.
+- **The keyframe-aligned catch-up over arrived messages**, on the receive thread: when the
+  reader is more than one message behind, keyframe metadata ahead whose picture has arrived
+  is skipped to and the pictures before it are discarded and counted. Nothing is skipped over
+  a gap and nothing is skipped when no keyframe is ahead; both have named tests. The core's
+  receive ring can now count, peek at and skip the complete messages ahead of the reader.
+- **The decode policy as a state machine over a decoder interface** ([10 §5](10-client.md)),
+  with only a test fake behind it until the first backend: a decoder is built from the
+  stream, every parameter-set-led unit rebuilds it unless the announced bit is set, a stale
+  generation and a rebuild bit tear it down, a fault destroys it and asks the host for a
+  keyframe exactly once, a decoder waiting for a keyframe asks for nothing, a format change
+  rebuilds and re-feeds the unit once, and a backend that cannot be built ends the stream.
+  Each rule has a named test and each was broken once to see it fail.
+- **The client half of the C ABI**, minor 4 ([06 §3b](06-api.md)): `lowlat_client` with
+  create, destroy, the four-call seam, status, user data out and the event poll; the seam's
+  types shared by both halves; the header compiles alone with either half hidden.
+- **A hermetic session under the simulator**: this host's own framing and negotiation
+  against the client's driver, at zero loss, one percent loss and five milliseconds of
+  reorder, thirty simulated seconds each and three hundred for the lossy two, every access
+  unit whole and in order with keyframes where the host said, the census agreeing opcode for
+  opcode in both directions. And the real threads against this host's own admission over
+  loopback, under both ciphers.
+- The connecting side writes the initialization; a body with a real client's values comes
+  out the length that client sent.
+
+### Changed
+- The frame pool and the event queue moved from the host crate to the common one, where
+  both halves reach them; the pool's keyframe flag became a tag word, the queue took the
+  seam's event type, and the pool's model check now runs in CI.
+
+### Corrected
+- [10 §3](10-client.md): the access-unit buffer is sized from the ring, not at 16 MiB. A
+  message has to sit entirely in the receive ring before it can be taken, and the ring
+  refuses a fragment further than its depth past the reader, so nothing larger than the
+  ring's depth times a fragment's body -- about 4.8 MB -- can ever complete, on this ring or
+  on an established client's. The 16 MiB that client allocates is room nothing fills.
+- [10 §10](10-client.md): the receive thread owns the ring and hands access units to the
+  decode thread; the decode thread does not drain the ring. The catch-up therefore runs on
+  the receive side, and it runs whether or not the decoder keeps up, which bounds a stalled
+  reader's backlog at one keyframe interval.
+
 ## 2026-09-16 - The video protocol, read from both ends and sent to a guest that reads it
 
 ### Changed

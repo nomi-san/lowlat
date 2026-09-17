@@ -50,44 +50,56 @@ Recorded once, here; the reasoning is in [10-client.md](10-client.md) and [00 D1
 builds a library of the shared entry points alone; the gate's harness names a half-built
 object. *Passed 2026-09-15.*
 
-## Phase C1 - The client core, and a hermetic session
+## Phase C1 - The client core, and a hermetic session (closed 2026-09-17)
 
 The connecting side of everything below the media, written against the core that already
 plays both roles.
 
-- [ ] `lowlat-client`: the client session -- the offering side of connectivity (one socket,
+- [x] `lowlat-client`: the client session -- the offering side of connectivity (one socket,
   the offer's credentials and certificate digest produced for the application, candidates
-  out as events, the answer's credentials in), the session's receive half with the video
-  ring at 4000 fragments and a 16 MiB read buffer, the initialization of
-  [01 §11.5](01-protocol.md) with fourteen keys, the diagnostics message, opcode 13 for the
-  two secondary streams (stream 0 declares through the initialization), and the control
-  vocabulary of [10 §7](10-client.md) as events.
-- [ ] The **catch-up over arrived messages** ([10 §3](10-client.md)): keyframe metadata found
-  ahead is skipped to; nothing is ever skipped over a gap; and nothing is skipped when no
-  keyframe is ahead, so a slow reader against a host without periodic keyframes decodes in
-  order. Named regression tests for the last two. The reader's lag -- messages behind, and
-  the age of the oldest -- is a metric from here, because the deferred decisions are decided
-  on it. The hermetic census below counts a picture the catch-up discarded as skipped, not
-  lost: it is the one thing that legitimately drops arrived data.
-- [ ] The **keyframe policy** ([10 §5](10-client.md)): two triggers, no timer, no start-up
-  kick, one request per fault paired with the teardown. Named regression test that a decoder
-  starved of a keyframe never fires a request, that a fault fires one immediately, and that
-  a burst of bad units after it fires no second one until a decoder exists again.
-- [ ] The C ABI: `lowlat_client_create/destroy`, the four-call seam mirrored, events, status.
-  The client half of the header behind `LOWLAT_CLIENT`; the C# mirror gains the client.
-- [ ] **A hermetic full session under the simulator**: this host's session against this
-  client's, fake clock, scripted loss, reorder and duplication, sound and a synthetic picture
-  crossing both ways, the client reporting what it received. The picture is not decoded here
-  -- there is no decoder yet -- so the check is on access units: every one the host sent
-  arrives whole, in order, keyframes where the host said.
+  out as events, the answer's credentials in, the session keyed from the answer under either
+  cipher with a setting that asks for the legacy one), the session's receive half with the
+  video ring at 4000 fragments and an access-unit buffer sized from it (the ring bounds a
+  message at its depth times a fragment's body, about 4.8 MB; nothing larger can ever
+  complete, so the 16 MiB an established client allocates is room nothing fills), the
+  initialization of [01 §11.5](01-protocol.md) with fourteen keys, the diagnostics message,
+  opcode 13 for the two secondary streams (stream 0 declares through the initialization),
+  and the control vocabulary of [10 §7](10-client.md) as events.
+- [x] The **catch-up over arrived messages** ([10 §3](10-client.md)), on the receive thread,
+  which owns the ring: keyframe metadata found ahead is skipped to; nothing is ever skipped
+  over a gap; and nothing is skipped when no keyframe is ahead, so a slow reader against a
+  host without periodic keyframes decodes in order. Named regression tests for the last two.
+  The reader's lag -- messages behind, and how long there has been anything unconsumed -- is
+  a metric from here, because the deferred decisions are decided on it. The hermetic census
+  counts a picture the catch-up discarded as skipped, not lost.
+- [x] The **keyframe policy** ([10 §5](10-client.md)) as a state machine over a decoder
+  interface, with only a test fake behind it until C2: two triggers, no timer, no start-up
+  kick, one request per fault paired with the teardown. Named regression tests that a decoder
+  starved of a keyframe never fires a request, that a fault fires one immediately, and that a
+  burst of bad units after it fires no second one until a decoder exists again; also the
+  announced bit, the stale generation, the rebuild bit and the format-change re-feed.
+- [x] The C ABI: `lowlat_client_create/destroy`, the four-call seam mirrored, events, status,
+  user data out. The seam's types leave the host's guard for one both halves share; the
+  client half of the header behind `LOWLAT_CLIENT`. Minor 4. Pictures, sound, input, the
+  video configuration and the metrics panel arrive with their phases.
+- [x] **A hermetic full session under the simulator**: this host's own framing and
+  negotiation against this client's driver, fake clock, scripted loss, reorder and
+  duplication, sound and a synthetic picture from the host, the client reporting what it
+  received. The picture is not decoded here -- there is no decoder yet -- so the check is on
+  access units: every one the host sent arrives whole, in order, keyframes where the host
+  said. And the real threads against this host's own admission over loopback, under both
+  ciphers.
 
 **Gate:**
 
 1. The workspace tests, the lints, the dependency policy and the ABI gate pass; the zero
    allocation checks on the native transport still read zero, from the client's side too.
+   *Passed 2026-09-17.*
 2. The hermetic session runs clean at zero loss, one percent loss, and five milliseconds of
-   reorder, and the client's control census matches the host's log message for message.
-3. `lowlat_features()` reports both halves; the header compiles alone with `LOWLAT_NO_HOST`.
+   reorder, and the client's control census matches the host's message for message. *Passed
+   2026-09-17, thirty simulated seconds each; the lossy two also at three hundred.*
+3. `lowlat_features()` reports both halves; the header compiles alone with `LOWLAT_NO_HOST`
+   and with `LOWLAT_NO_CLIENT`. *Passed 2026-09-17.*
 
 ## Phase C2 - A picture from a real host
 
@@ -215,6 +227,10 @@ records, not before; none is in v1.
 
 Newest first.
 
+- 2026-09-17: C1 closed. The receive thread owns the ring and therefore the catch-up; the
+  access-unit buffer is sized from the ring rather than at 16 MiB; the keyframe policy is a
+  state machine tested against a fake until C2 brings a decoder; both ciphers, with a setting
+  for the legacy one; no C# client, ever -- the demo is C on the toolkit.
 - 2026-09-16: the keyframe request is one act with the teardown, stream 0 declares through
   the initialization, C2 records the cadence and lag numbers, and four deferred decisions are
   written down with what decides each.

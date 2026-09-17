@@ -1,6 +1,6 @@
 # 10 - The client
 
-**Status:** designed 2026-09-15, interview of the same day. Built by
+**Status:** designed 2026-09-15, interview of the same day; C1 built 2026-09-17. Built by
 [impl-plan-client.md](impl-plan-client.md).
 
 The client is the other half of the same protocol: it receives what [05](05-host.md) produces.
@@ -54,10 +54,15 @@ the client's to choose, and both follow from what a host is allowed to have outs
   *is* the flow-control window: a ring smaller than the ceiling drops arriving fragments whose
   slots still hold undelivered data, which stalls the cumulative count on a healthy link and
   reads as loss. Shrinking it to save memory has been measured to cut throughput threefold.
-- **The read buffer holds a whole keyframe: 16 MiB.** A message is one access unit and it
-  arrives whole or not at all; a buffer smaller than the largest keyframe refuses the message
-  without consuming it and the stream is over. Older client generations hold two megabytes,
-  which is the ceiling a host must keep its keyframes under for them.
+- **The access-unit buffer holds the largest message the ring can complete: its depth times
+  a fragment's body, about 4.8 MB** (*corrected 2026-09-17*). A message is one access unit
+  and it arrives whole or not at all; a buffer smaller than the largest keyframe refuses the
+  message without consuming it and the stream is over. But the ring bounds that keyframe: a
+  message has to sit entirely in the ring before it can be taken, and the ring refuses a
+  fragment further than its depth past the reader, so nothing larger than the ring can ever
+  complete. The 16 MiB an established client allocates is room nothing fills, on its ring as
+  on this one. Older client generations hold two megabytes, which is the ceiling a host must
+  keep its keyframes under for them.
 
 **There is no skip.** A gap in the ring is a fragment in flight or in retransmission, and the
 reader waits for it; the sender never frees an unacknowledged fragment short of ending the
@@ -68,13 +73,18 @@ rebuild its encoder to recover -- the expensive request of §5 -- to repair dama
 itself. The core's stall-escape mechanism stays available to the caller and the client's policy
 is to leave it unused.
 
-**Catch-up is over messages that have arrived, and it is keyframe-aligned.** When the decode
-thread is more than one message behind on channel 1, it looks ahead through the messages the
-ring holds for keyframe metadata ([01 §11.3](01-protocol.md), bit 6) whose picture has also
-arrived, and skips to that picture, discarding the pictures before it. That is the newest
-client generation's behaviour and it is the transport-level form of §4's latest-wins: the
-reader recovers in one step rather than decoding a backlog it will never show. Against a host
-that sends no metadata messages the look-ahead finds nothing and the reader decodes in order.
+**Catch-up is over messages that have arrived, and it is keyframe-aligned.** When the reader
+is more than one message behind on channel 1, the receive thread looks ahead through the
+messages the ring holds for keyframe metadata ([01 §11.3](01-protocol.md), bit 6) whose
+picture has also arrived, and skips to the latest such picture, discarding the pictures before
+it. That is the newest client generation's behaviour and it is the transport-level form of
+§4's latest-wins: the reader recovers in one step rather than decoding a backlog it will never
+show. Against a host that sends no metadata messages the look-ahead finds nothing and the
+reader decodes in order. **It runs where the ring is** (*2026-09-17*): the receive thread owns
+the ring and takes access units off it for the decoder's thread, so it is the receive thread
+that looks ahead, and it does so whether or not the decoder is keeping up -- a backlog the
+decoder has not taken never grows past one keyframe interval, because each keyframe's
+arrival discards what came before it.
 
 **The catch-up is a mechanism, not a remedy: it needs a keyframe in the backlog** (*added
 2026-09-16*). This host announces every keyframe it sends, and those are the seating
@@ -215,6 +225,13 @@ rather than picked.
 stale**, from an encoder that no longer exists; the decoder is torn down before it is fed, so
 that the new generation's keyframe, which carries its own parameter sets, builds a fresh one.
 
+**A format change is a rebuild that re-feeds the unit once** (*2026-09-17*). A decoder that
+reports the stream's format changed under it has not decoded that unit; it is torn down, a
+fresh one is built for what the header names, and the same unit is fed again, so the picture
+that changed the format is not lost. A second report on the same unit is a fault in the
+backend, not a change in the stream. A backend that cannot be built at all ends the stream
+with the stage named rather than asking the host for keyframes it would fail on the same way.
+
 ### §5.1 Backends, Linux, in order
 
 | backend | reached through | hands out |
@@ -270,7 +287,9 @@ reads channel 0 for:
 | 29 encoder generation | stores it per stream, for §5's staleness rule |
 
 Anything else is ignored. The client sends opcode 21 every two seconds with its decode time,
-in the argument order a client uses ([01 §11.1](01-protocol.md)).
+in the argument order a client uses ([01 §11.1](01-protocol.md)). **A clean departure is
+opcode 10 with a zero status**, given a moment on the reliable channel before the session goes
+away; a client that breaks sends nothing, and a host learns it from its delivery deadline.
 
 ## §8 Input
 
@@ -322,7 +341,12 @@ does against this one. Decided with the lag trigger of [§5](#5-the-decoder-and-
 
 ## §10 Threads
 
-One receive loop (the shell's), one decode thread per stream that also drains that stream's
-ring, one sound thread, and nothing that presents: presentation is the application's thread
-calling acquire. Every rule of [02](02-io-shell.md) applies -- raw wakes for raw waits, no
-elevated priority inside the library, teardown that wakes every waiter.
+One receive loop (the shell's), which owns the session and its rings and hands access units
+to a decode thread per stream through a pool by index -- one copy, off the ring, and never
+another; one sound thread; and nothing that presents: presentation is the application's
+thread calling acquire (*corrected 2026-09-17*: an earlier draft had the decode thread
+draining the ring, which is the established client's shape and needs a lock on the session
+that nothing here takes). The decode thread never blocks the receive loop: a full pool leaves
+the backlog in the receive ring, where the catch-up of §3 sees it. Every rule of
+[02](02-io-shell.md) applies -- raw wakes for raw waits, no elevated priority inside the
+library, teardown that wakes every waiter.
