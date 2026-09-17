@@ -15,5 +15,10 @@ lowlat-core.workspace = true
 # The device interface, resolved at runtime.
 lowlat-drivers.workspace = true
 
+[dev-dependencies]
+# The parameter-set writers, so what the encoders write is checked to parse
+# back to what they were told.
+lowlat-encode.workspace = true
+
 [lints]
 workspace = true
