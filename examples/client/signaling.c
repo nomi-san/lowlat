@@ -87,6 +87,9 @@ bool signaling_offer(struct signaling *sig, const lowlat_credentials *ours)
 	MTY_JSON *data = MTY_JSONObjCreate();
 	MTY_JSONObjSetInt(data, "ver_data", 1);
 	MTY_JSONObjSetItem(data, "creds", creds);
+	// The pipe, named: 1 is the native transport. An established host reads
+	// this as a required integer and refuses the whole offer without it.
+	MTY_JSONObjSetInt(data, "mode", 1);
 	MTY_JSONObjSetItem(data, "versions", versions());
 
 	MTY_JSON *payload = MTY_JSONObjCreate();
