@@ -32,6 +32,7 @@
 pub mod config;
 pub mod driver;
 pub mod feed;
+pub mod frames;
 pub mod seam;
 mod shell;
 
