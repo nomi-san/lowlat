@@ -87,11 +87,20 @@ pub(crate) fn run(args: Attached) {
                 fail(&telemetry, &emit, &frames);
                 return;
             }
-            Decision::Fed(Fed::Picture) | Decision::Built(Fed::Picture) => {
+            Decision::Fed(Fed::Picture) => {
                 telemetry.decoder.store(1, Ordering::Relaxed);
                 take_pictures(&mut feed, &frames, &telemetry, header.as_ref());
             }
-            Decision::Built(_) => telemetry.decoder.store(1, Ordering::Relaxed),
+            Decision::Built(fed) => {
+                telemetry.decoder.store(1, Ordering::Relaxed);
+                telemetry.codec.store(
+                    header.as_ref().map_or(0, |h| u32::from(h.codec.wire())),
+                    Ordering::Relaxed,
+                );
+                if fed == Fed::Picture {
+                    take_pictures(&mut feed, &frames, &telemetry, header.as_ref());
+                }
+            }
             _ => {}
         }
         telemetry.queue_depth.store(

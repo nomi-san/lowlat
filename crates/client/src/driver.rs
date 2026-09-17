@@ -160,6 +160,12 @@ pub struct Telemetry {
     pub decoded: AtomicU64,
     /// Pictures published and not yet taken by the application.
     pub queue_depth: AtomicU32,
+    /// The host's own encode time for the stream, as it last reported it,
+    /// in microseconds.
+    pub encode_us: AtomicU32,
+    /// The codec the decoder was built for, on the wire's numbering: 0
+    /// none yet, 1 the first codec, 2 the second.
+    pub codec: AtomicU32,
 }
 
 /// One session's driver.
@@ -751,6 +757,8 @@ impl Driver {
         );
         t.behind.store(self.lag.behind, Ordering::Relaxed);
         t.behind_ms.store(self.lag.behind_ms, Ordering::Relaxed);
+        t.encode_us
+            .store(self.encode_latency_us(0), Ordering::Relaxed);
         #[allow(
             clippy::cast_possible_truncation,
             clippy::cast_sign_loss,

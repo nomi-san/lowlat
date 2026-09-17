@@ -299,10 +299,11 @@ typedef enum lowlat_outcome {
     /// usable, or the stream is one it cannot decode. Client only.
     LOWLAT_OUTCOME_DECODER_FAILED = 11,
 } lowlat_outcome;
-#endif
 
-#if defined(LOWLAT_HOST)
-/// Which codec the stream is encoded with.
+/// The longest output identity carried across this boundary.
+///
+/// Which codec a stream is coded with: what a host is asked to encode, and
+/// what a client reports its decoder was built for.
 ///
 /// **Named by an enumeration and carried as an integer**, for the reason
 /// `lowlat_status` is: the application writes this field, so the value
@@ -311,7 +312,9 @@ typedef enum lowlat_codec {
     LOWLAT_CODEC_H264 = 1,
     LOWLAT_CODEC_HEVC = 2,
 } lowlat_codec;
+#endif
 
+#if defined(LOWLAT_HOST)
 /// How much colour the stream carries, relative to its luma.
 ///
 /// **Named by an enumeration and carried as an integer**, the same way
@@ -342,8 +345,6 @@ typedef enum lowlat_encoder {
 #endif
 
 #if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
-/// The longest output identity carried across this boundary.
-///
 /// How a picture is oriented.
 ///
 /// **The coded picture never rotates.** A host sends the display's
@@ -1123,6 +1124,18 @@ typedef struct lowlat_client_status {
     uint32_t readback_us;
     /// Pictures decoded.
     uint64_t decoded;
+    /// Bytes taken off the video channel, so a rate can be read as a
+    /// difference over time.
+    uint64_t video_bytes;
+    /// The host's own encode time for the stream, as it last reported it,
+    /// in microseconds; zero until it has.
+    uint32_t encode_us;
+    /// The codec the decoder was built for, one of `lowlat_codec`; zero
+    /// before a build.
+    uint32_t codec;
+    /// The decoder backend in use, one of `lowlat_decoder` as resolved at
+    /// creation: never `LOWLAT_DECODER_AUTO`.
+    uint32_t backend;
 } lowlat_client_status;
 
 /// One plane of a picture.

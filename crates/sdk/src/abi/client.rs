@@ -136,6 +136,18 @@ pub struct lowlat_client_status {
     pub readback_us: u32,
     /// Pictures decoded.
     pub decoded: u64,
+    /// Bytes taken off the video channel, so a rate can be read as a
+    /// difference over time.
+    pub video_bytes: u64,
+    /// The host's own encode time for the stream, as it last reported it,
+    /// in microseconds; zero until it has.
+    pub encode_us: u32,
+    /// The codec the decoder was built for, one of [`lowlat_codec`]; zero
+    /// before a build.
+    pub codec: u32,
+    /// The decoder backend in use, one of `lowlat_decoder` as resolved at
+    /// creation: never `LOWLAT_DECODER_AUTO`.
+    pub backend: u32,
 }
 
 /// No decoder has been built yet: no parameter set has arrived.
@@ -701,6 +713,14 @@ pub unsafe extern "C" fn lowlat_client_get_status(
                 decode_us: t.decode_us.load(Ordering::Relaxed),
                 readback_us: t.readback_us.load(Ordering::Relaxed),
                 decoded: t.decoded.load(Ordering::Relaxed),
+                video_bytes: t.video_bytes.load(Ordering::Relaxed),
+                encode_us: t.encode_us.load(Ordering::Relaxed),
+                codec: t.codec.load(Ordering::Relaxed),
+                backend: if held.seam.node().is_some() {
+                    lowlat_decoder::LOWLAT_DECODER_OPEN as u32
+                } else {
+                    lowlat_decoder::LOWLAT_DECODER_NONE as u32
+                },
             };
             LOWLAT_OK
         })
@@ -1132,6 +1152,10 @@ mod tests {
             decode_us: 0,
             readback_us: 0,
             decoded: 0,
+            video_bytes: 0,
+            encode_us: 0,
+            codec: 0,
+            backend: 0,
         };
         assert_eq!(
             unsafe { lowlat_client_get_status(handle, &raw mut status) },

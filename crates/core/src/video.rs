@@ -102,7 +102,8 @@ pub enum Codec {
 }
 
 impl Codec {
-    const fn wire(self) -> u8 {
+    /// The codec's number on the wire: 1 the first, 2 the second.
+    pub const fn wire(self) -> u8 {
         match self {
             Codec::H264 => 1,
             Codec::H265 => 2,

@@ -61,6 +61,8 @@ struct demo {
 	uint32_t repeats;
 	uint32_t skips;
 	uint64_t seconds;
+	uint64_t last_video_bytes;
+	bool established;
 };
 
 static double now_ms(void)
@@ -184,6 +186,8 @@ static void ask_rate(struct demo *d)
 		s == LOWLAT_OK ? "" : ", refused");
 }
 
+// Once a second: the figures on the log, and the same in the title bar so
+// a session can be read at a glance.
 static void report(struct demo *d)
 {
 	lowlat_client_status st;
@@ -191,13 +195,40 @@ static void report(struct demo *d)
 	st.size = (uint32_t) sizeof st;
 	lowlat_client_get_status(d->client, &st);
 	d->seconds++;
+	double mbit = (double) (st.video_bytes - d->last_video_bytes) * 8.0 / 1.0e6;
+	d->last_video_bytes = st.video_bytes;
+	uint64_t rss = resident_mb();
+	const char *codec = st.codec == LOWLAT_CODEC_HEVC ? "HEVC"
+		: st.codec == LOWLAT_CODEC_H264 ? "H264" : "-";
 	printf("demo: t=%" PRIu64 " presents=%u polls=%u pictures=%u repeats=%u skips=%u "
-		"decode_us=%u readback_us=%u queue=%u behind=%u behind_ms=%u rtt_ms=%u "
-		"decoded=%" PRIu64 " rss_mb=%" PRIu64 "\n",
-		d->seconds, d->presents, d->polls, d->pictures, d->repeats, d->skips, st.decode_us,
-		st.readback_us, st.queue_depth, st.behind, st.behind_ms, st.rtt_ms, st.decoded,
-		resident_mb());
+		"codec=%s decode_us=%u readback_us=%u encode_us=%u queue=%u behind=%u behind_ms=%u "
+		"rtt_ms=%u mbit=%.1f decoded=%" PRIu64 " rss_mb=%" PRIu64 "\n",
+		d->seconds, d->presents, d->polls, d->pictures, d->repeats, d->skips, codec,
+		st.decode_us, st.readback_us, st.encode_us, st.queue_depth, st.behind, st.behind_ms,
+		st.rtt_ms, mbit, st.decoded, rss);
 	fflush(stdout);
+
+	char title[256];
+	if (d->showing) {
+		const lowlat_frame *f = &d->shown;
+		snprintf(title, sizeof title,
+			"lowlat | %ux%u %s %s%s | %s | %u fps | rtt %u ms | enc %.1f ms | dec %.1f ms | "
+			"rb %.1f ms | q %u behind %u | skips %u | %.1f Mbit/s | rss %" PRIu64 " MB",
+			f->width, f->height, codec, f->format == LOWLAT_FORMAT_P010 ? "10bit" : "8bit",
+			f->rotation == LOWLAT_ROTATION_90 ? " 90deg"
+				: f->rotation == LOWLAT_ROTATION_180 ? " 180deg"
+				: f->rotation == LOWLAT_ROTATION_270 ? " 270deg" : "",
+			st.backend == LOWLAT_DECODER_OPEN ? "open CPU" : "no decoder",
+			d->pictures, st.rtt_ms, (double) st.encode_us / 1000.0,
+			(double) st.decode_us / 1000.0, (double) st.readback_us / 1000.0, st.queue_depth,
+			st.behind, d->skips, mbit, rss);
+	} else {
+		snprintf(title, sizeof title, "lowlat | %s",
+			st.state == LOWLAT_CLIENT_ESTABLISHED ? "established, no picture yet"
+			: st.state == LOWLAT_CLIENT_OVER ? "over" : "connecting...");
+	}
+	MTY_WindowSetTitle(d->app, d->window, title);
+
 	d->presents = 0;
 	d->polls = 0;
 	d->pictures = 0;

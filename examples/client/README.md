@@ -25,9 +25,10 @@ after that long, as closing the window does.
 Once a second a line goes to stdout with the presentation cadence as numbers:
 presents and polls in the second (equal without a cap), new pictures, repeats
 (a poll with no new picture) and skips (pictures published and never shown, a
-newer one having arrived), the decoder's decode and read-back times, the
-reader's lag, and the process's resident set. Nothing is judged; the figures
-are what the deferred decisions of [docs/10-client.md](../../docs/10-client.md)
-are decided on.
+newer one having arrived), the codec, the decoder's decode and read-back times
+and the host's own encode time, the reader's lag, the round trip, the video
+rate, and the process's resident set. The same figures go in the window's
+title bar. Nothing is judged; the figures are what the deferred decisions of
+[docs/10-client.md](../../docs/10-client.md) are decided on.
 
 Picture only. Input, sound and the cursor come with their phases.

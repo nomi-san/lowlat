@@ -250,6 +250,19 @@ pub struct lowlat_event {
 
 /// The longest output identity carried across this boundary.
 ///
+/// Which codec a stream is coded with: what a host is asked to encode, and
+/// what a client reports its decoder was built for.
+///
+/// **Named by an enumeration and carried as an integer**, for the reason
+/// [`lowlat_status`] is: the application writes this field, so the value
+/// arriving is whatever it wrote.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_codec {
+    LOWLAT_CODEC_H264 = 1,
+    LOWLAT_CODEC_HEVC = 2,
+}
+
 /// How a picture is oriented.
 ///
 /// **The coded picture never rotates.** A host sends the display's

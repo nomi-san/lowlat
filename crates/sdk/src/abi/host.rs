@@ -36,18 +36,6 @@ pub enum lowlat_chroma {
     LOWLAT_CHROMA_444 = 2,
 }
 
-/// Which codec the stream is encoded with.
-///
-/// **Named by an enumeration and carried as an integer**, for the reason
-/// [`lowlat_status`] is: the application writes this field, so the value
-/// arriving is whatever it wrote.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum lowlat_codec {
-    LOWLAT_CODEC_H264 = 1,
-    LOWLAT_CODEC_HEVC = 2,
-}
-
 /// Which encoder to build.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
