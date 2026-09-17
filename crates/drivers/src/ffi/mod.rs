@@ -1,4 +1,4 @@
-//! Generated bindings for the vendored encoder headers.
+//! Generated bindings for the vendored device headers.
 //!
 //! Produced by `scripts/gen-nvenc-bindings.sh` and committed rather than built,
 //! so no build machine needs a C toolchain. Regenerate only when the vendored
@@ -37,7 +37,7 @@
     clippy::float_cmp,
     clippy::useless_transmute
 )]
-pub(crate) mod nvenc;
+pub mod nvenc;
 
 #[allow(
     dead_code,
@@ -54,13 +54,13 @@ pub(crate) mod nvenc;
     clippy::float_cmp,
     clippy::useless_transmute
 )]
-pub(crate) mod cuda;
+pub mod cuda;
 
 #[allow(dead_code, non_upper_case_globals, unreachable_pub)]
-pub(crate) mod guids;
+pub mod guids;
 
 #[allow(dead_code, non_upper_case_globals, unreachable_pub)]
-pub(crate) mod versions;
+pub mod versions;
 
 #[allow(
     dead_code,
@@ -77,4 +77,4 @@ pub(crate) mod versions;
     clippy::float_cmp,
     clippy::useless_transmute
 )]
-pub(crate) mod va;
+pub mod va;

@@ -6,8 +6,8 @@
 // Phase 5 lands the hardware backend; Phase 11 the software one.
 
 pub mod bitstream;
-pub mod cuda;
-mod ffi;
+pub use lowlat_drivers::cuda;
+pub(crate) use lowlat_drivers::ffi;
 pub mod h264;
 pub mod h265;
 pub mod nvenc;
@@ -386,7 +386,7 @@ mod tests {
         );
 
         let va = vaapi::Vaapi::load().expect("display runtime");
-        let display = va.open(c"/dev/dri/renderD128").expect("render node");
+        let display = vaapi::Display::open(&va, c"/dev/dri/renderD128").expect("render node");
         let caps = display.caps(vaapi::Codec::H264).expect("caps");
         let context = display
             .create_context(caps, WIDTH, HEIGHT, DEPTH)
@@ -570,7 +570,7 @@ mod tests {
         );
 
         let va = vaapi::Vaapi::load().expect("display runtime");
-        let display = va.open(c"/dev/dri/renderD128").expect("render node");
+        let display = vaapi::Display::open(&va, c"/dev/dri/renderD128").expect("render node");
         let caps = display.caps(vaapi::Codec::H264).expect("caps");
         let context = display
             .create_context(caps, WIDTH, HEIGHT, DEPTH)

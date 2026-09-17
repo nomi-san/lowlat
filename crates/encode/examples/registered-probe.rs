@@ -129,8 +129,7 @@ fn main() {
     );
 
     let va = vaapi::Vaapi::load().unwrap_or_else(|error| fail(&format!("runtime: {error:?}")));
-    let display = va
-        .open(RENDER)
+    let display = vaapi::Display::open(&va, RENDER)
         .unwrap_or_else(|error| fail(&format!("render node: {error:?}")));
     let caps = display
         .caps(vaapi::Codec::H265)

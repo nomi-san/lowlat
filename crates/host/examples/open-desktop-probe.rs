@@ -39,8 +39,7 @@ fn main() {
     println!("{width}x{height}@{refresh_hz}, converting on {backend:?}");
 
     let api = vaapi::Vaapi::load().unwrap_or_else(|e| fail(&format!("encoder: {e}")));
-    let display = api
-        .open(c"/dev/dri/renderD128")
+    let display = vaapi::Display::open(&api, c"/dev/dri/renderD128")
         .unwrap_or_else(|e| fail(&format!("render node: {e}")));
     let caps = display
         .caps(vaapi::Codec::H264)

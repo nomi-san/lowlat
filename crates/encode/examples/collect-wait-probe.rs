@@ -161,8 +161,7 @@ fn main() {
     }
 
     let va = vaapi::Vaapi::load().unwrap_or_else(|error| fail(&format!("runtime: {error:?}")));
-    let display = va
-        .open(&render)
+    let display = vaapi::Display::open(&va, &render)
         .unwrap_or_else(|error| fail(&format!("render node: {error:?}")));
     let caps = display
         .caps(codec)

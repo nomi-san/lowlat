@@ -2534,7 +2534,7 @@ fn open_census(ten_bit: bool) -> Result<(), &'static str> {
         let Ok(asked) = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) else {
             continue;
         };
-        let Ok(display) = runtime.open(&asked) else {
+        let Ok(display) = lowlat_encode::vaapi::Display::open(&runtime, &asked) else {
             continue;
         };
         // **A node without the second codec at this depth cannot serve the
@@ -2879,7 +2879,7 @@ fn run_open(
             "which is the default; no display to follow"
         }
     );
-    let Ok(display) = display.open(asked) else {
+    let Ok(display) = lowlat_encode::vaapi::Display::open(&display, asked) else {
         lowlat_common::log_error!("stream: render node could not be opened");
         return Exit::Failed(status::ENCODER_UNAVAILABLE);
     };

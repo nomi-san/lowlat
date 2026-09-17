@@ -17,7 +17,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 inc="$root/third_party/nvcodec/include"
-out="$root/crates/encode/src/ffi"
+out="$root/crates/drivers/src/ffi"
 enc_h="$inc/ffnvcodec/nvEncodeAPI.h"
 cuda_h="$inc/ffnvcodec/dynlink_cuda.h"
 

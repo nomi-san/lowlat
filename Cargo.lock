@@ -773,6 +773,7 @@ dependencies = [
  "lowlat-common",
  "lowlat-core",
  "lowlat-crypto",
+ "lowlat-decode",
  "lowlat-host",
  "lowlat-net",
  "lowlat-sim",
@@ -809,13 +810,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "lowlat-decode"
+version = "0.0.0"
+dependencies = [
+ "lowlat-common",
+ "lowlat-core",
+ "lowlat-drivers",
+ "lowlat-encode",
+]
+
+[[package]]
+name = "lowlat-drivers"
+version = "0.0.0"
+dependencies = [
+ "libc",
+ "lowlat-common",
+]
+
+[[package]]
 name = "lowlat-encode"
 version = "0.0.0"
 dependencies = [
  "ash",
- "libc",
  "lowlat-capture",
  "lowlat-common",
+ "lowlat-drivers",
 ]
 
 [[package]]

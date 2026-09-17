@@ -95,8 +95,7 @@ fn main() {
         })
         .unwrap_or_else(|| "/dev/dri/renderD128".into());
     let va = vaapi::Vaapi::load().unwrap_or_else(|e| fail(&format!("runtime: {e:?}")));
-    let display = va
-        .open(&std::ffi::CString::new(render.clone()).unwrap())
+    let display = vaapi::Display::open(&va, &std::ffi::CString::new(render.clone()).unwrap())
         .unwrap_or_else(|e| fail(&format!("render node {render}: {e:?}")));
     let codec = if hevc {
         vaapi::Codec::H265

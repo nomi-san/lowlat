@@ -14,113 +14,26 @@
 //! Loaded at runtime like everything else here, so a machine without the
 //! driver has a missing backend rather than a process that will not start.
 
-use core::ffi::{CStr, c_char, c_int, c_uint};
+use core::ffi::{CStr, c_int, c_uint};
 
-use lowlat_common::dynlib::Library;
+pub use lowlat_drivers::va::Vaapi;
+use lowlat_drivers::va::count;
 
 use crate::{Encoder as EncoderTrait, Poll};
 
 use crate::ffi::va::{
     VA_ATTRIB_NOT_SUPPORTED, VA_ENC_PACKED_HEADER_PICTURE, VA_ENC_PACKED_HEADER_SEQUENCE,
-    VA_PROGRESSIVE, VA_RC_CBR, VA_RC_CQP, VA_RC_VBR, VA_RT_FORMAT_YUV420, VA_STATUS_SUCCESS,
-    VABufferID, VABufferType, VAConfigAttrib, VAConfigAttribEncPackedHeaders,
-    VAConfigAttribRTFormat, VAConfigAttribRateControl, VAConfigID, VAContextID, VADisplay,
-    VAEntrypoint, VAEntrypointEncSlice, VAEntrypointEncSliceLP, VAProfile, VAProfileH264High,
-    VAProfileH264Main, VAProfileHEVCMain, VAProfileHEVCMain10, VAStatus, VASurfaceID,
+    VA_PROGRESSIVE, VA_RC_CBR, VA_RC_CQP, VA_RC_VBR, VA_RT_FORMAT_YUV420, VABufferID, VABufferType,
+    VAConfigAttrib, VAConfigAttribEncPackedHeaders, VAConfigAttribRTFormat,
+    VAConfigAttribRateControl, VAConfigID, VAContextID, VADisplay, VAEntrypoint,
+    VAEntrypointEncSlice, VAEntrypointEncSliceLP, VAProfile, VAProfileH264High, VAProfileH264Main,
+    VAProfileHEVCMain, VAProfileHEVCMain10, VAStatus, VASurfaceID,
 };
 use crate::ffi::va::{
     VA_FOURCC_NV12, VA_SURFACE_ATTRIB_SETTABLE, VAGenericValue, VAGenericValueTypeInteger,
     VAGenericValueTypePointer, VASurfaceAttrib, VASurfaceAttribExternalBufferDescriptor,
     VASurfaceAttribMemoryType,
 };
-
-/// The core interface and its display binding, versioned.
-const LIBVA: [&CStr; 2] = [c"libva.so.2", c"libva.so"];
-const LIBVA_DRM: [&CStr; 2] = [c"libva-drm.so.2", c"libva-drm.so"];
-
-type GetDisplayDrm = unsafe extern "C" fn(c_int) -> VADisplay;
-type Initialize = unsafe extern "C" fn(VADisplay, *mut c_int, *mut c_int) -> VAStatus;
-type Terminate = unsafe extern "C" fn(VADisplay) -> VAStatus;
-type MaxNumProfiles = unsafe extern "C" fn(VADisplay) -> c_int;
-type QueryConfigProfiles = unsafe extern "C" fn(VADisplay, *mut VAProfile, *mut c_int) -> VAStatus;
-type MaxNumEntrypoints = unsafe extern "C" fn(VADisplay) -> c_int;
-type QueryConfigEntrypoints =
-    unsafe extern "C" fn(VADisplay, VAProfile, *mut VAEntrypoint, *mut c_int) -> VAStatus;
-type ErrorStr = unsafe extern "C" fn(VAStatus) -> *const c_char;
-type GetConfigAttributes = unsafe extern "C" fn(
-    VADisplay,
-    VAProfile,
-    VAEntrypoint,
-    *mut VAConfigAttrib,
-    c_int,
-) -> VAStatus;
-/// What layouts a configuration will bind as a surface, asked of the driver
-/// rather than read off a support matrix. The count is in/out: a null list
-/// makes the call report the number of entries, and the second call fills
-/// them.
-///
-/// **Probe-only.** The live full-chroma path imports a descriptor rather than
-/// asking the driver to allocate, so the layouts it would report are settled
-/// by what the conversion writes; this is what established that, and nothing
-/// in a shipped build calls it.
-#[cfg(test)]
-type QuerySurfaceAttributes =
-    unsafe extern "C" fn(VADisplay, VAConfigID, *mut VASurfaceAttrib, *mut c_uint) -> VAStatus;
-type CreateConfig = unsafe extern "C" fn(
-    VADisplay,
-    VAProfile,
-    VAEntrypoint,
-    *mut VAConfigAttrib,
-    c_int,
-    *mut VAConfigID,
-) -> VAStatus;
-type DestroyConfig = unsafe extern "C" fn(VADisplay, VAConfigID) -> VAStatus;
-type CreateSurfaces = unsafe extern "C" fn(
-    VADisplay,
-    c_uint,
-    c_uint,
-    c_uint,
-    *mut VASurfaceID,
-    c_uint,
-    *mut core::ffi::c_void,
-    c_uint,
-) -> VAStatus;
-type DestroySurfaces = unsafe extern "C" fn(VADisplay, *mut VASurfaceID, c_int) -> VAStatus;
-type CreateContext = unsafe extern "C" fn(
-    VADisplay,
-    VAConfigID,
-    c_int,
-    c_int,
-    c_int,
-    *mut VASurfaceID,
-    c_int,
-    *mut VAContextID,
-) -> VAStatus;
-type DestroyContext = unsafe extern "C" fn(VADisplay, VAContextID) -> VAStatus;
-type CreateBuffer = unsafe extern "C" fn(
-    VADisplay,
-    VAContextID,
-    VABufferType,
-    c_uint,
-    c_uint,
-    *mut core::ffi::c_void,
-    *mut VABufferID,
-) -> VAStatus;
-type DestroyBuffer = unsafe extern "C" fn(VADisplay, VABufferID) -> VAStatus;
-type MapBuffer =
-    unsafe extern "C" fn(VADisplay, VABufferID, *mut *mut core::ffi::c_void) -> VAStatus;
-type UnmapBuffer = unsafe extern "C" fn(VADisplay, VABufferID) -> VAStatus;
-type BeginPicture = unsafe extern "C" fn(VADisplay, VAContextID, VASurfaceID) -> VAStatus;
-type RenderPicture =
-    unsafe extern "C" fn(VADisplay, VAContextID, *mut VABufferID, c_int) -> VAStatus;
-type EndPicture = unsafe extern "C" fn(VADisplay, VAContextID) -> VAStatus;
-type SyncSurface = unsafe extern "C" fn(VADisplay, VASurfaceID) -> VAStatus;
-/// Address a surface's own storage rather than allocating a second copy of
-/// it. The alternative pair creates an image and copies into the surface,
-/// which is a whole frame of memory traffic per picture to avoid asking.
-type DeriveImage =
-    unsafe extern "C" fn(VADisplay, VASurfaceID, *mut crate::ffi::va::VAImage) -> VAStatus;
-type DestroyImage = unsafe extern "C" fn(VADisplay, crate::ffi::va::VAImageID) -> VAStatus;
 
 /// Why the backend could not be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,16 +87,20 @@ impl core::fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
-type Result<T> = core::result::Result<T, Error>;
-
-/// A count the interface reported, as a length.
-///
-/// These are signed and the interface is entitled to report a negative on
-/// failure, so a cast would turn one into an enormous length. Converted rather
-/// than cast, with the failure folded into zero.
-fn count(reported: c_int) -> usize {
-    usize::try_from(reported).unwrap_or(0)
+impl From<lowlat_drivers::va::Error> for Error {
+    fn from(error: lowlat_drivers::va::Error) -> Self {
+        use lowlat_drivers::va::Error as Runtime;
+        match error {
+            Runtime::Unavailable => Self::Unavailable,
+            Runtime::MissingSymbol => Self::MissingSymbol,
+            Runtime::NoDevice => Self::NoDevice,
+            Runtime::Status(status) => Self::Status(status),
+            _ => Self::Unavailable,
+        }
+    }
 }
+
+type Result<T> = core::result::Result<T, Error>;
 
 /// Which bitstream, in this interface's terms.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -294,200 +211,33 @@ impl Params {
     }
 }
 
-/// The loaded runtime.
-#[derive(Debug)]
-pub struct Vaapi {
-    initialize: Initialize,
-    terminate: Terminate,
-    max_num_profiles: MaxNumProfiles,
-    query_config_profiles: QueryConfigProfiles,
-    max_num_entrypoints: MaxNumEntrypoints,
-    query_config_entrypoints: QueryConfigEntrypoints,
-    error_str: ErrorStr,
-    get_config_attributes: GetConfigAttributes,
-    /// Probe-only, like the type: loaded because the 4:4:4 surface question
-    /// exists, not because anything shipped asks it.
-    #[cfg(test)]
-    query_surface_attributes: QuerySurfaceAttributes,
-    create_config: CreateConfig,
-    destroy_config: DestroyConfig,
-    create_surfaces: CreateSurfaces,
-    destroy_surfaces: DestroySurfaces,
-    create_context: CreateContext,
-    destroy_context: DestroyContext,
-    create_buffer: CreateBuffer,
-    destroy_buffer: DestroyBuffer,
-    map_buffer: MapBuffer,
-    unmap_buffer: UnmapBuffer,
-    begin_picture: BeginPicture,
-    render_picture: RenderPicture,
-    end_picture: EndPicture,
-    sync_surface: SyncSurface,
-    derive_image: DeriveImage,
-    destroy_image: DestroyImage,
-    get_display_drm: GetDisplayDrm,
-    /// Last, so both outlive the addresses taken from them.
-    _libva_drm: Library,
-    _libva: Library,
-}
-
-/// An initialised display bound to one render node.
+/// A display bound to one render node, seen by the encoder.
+///
+/// The binding itself is the runtime's; this is the encode half's view of
+/// it, with the encode entry points, the capability questions and the
+/// context built on top.
 #[derive(Debug)]
 pub struct Display<'a> {
     va: &'a Vaapi,
     raw: VADisplay,
-    /// Closed after the display is terminated, never before: the driver holds
-    /// this descriptor for as long as the display lives.
-    fd: c_int,
-    version: (i32, i32),
+    /// Owns the binding; the display is terminated when this is dropped.
+    _bound: lowlat_drivers::va::Display<'a>,
 }
 
-impl Vaapi {
-    /// Open the runtime.
-    pub fn load() -> Result<Self> {
-        let libva = Library::open_first(&LIBVA).ok_or(Error::Unavailable)?;
-        let libva_drm = Library::open_first(&LIBVA_DRM).ok_or(Error::Unavailable)?;
-
-        // SAFETY: every signature is transcribed from the vendored headers.
-        // These names carry no version suffix, unlike the compute runtime's.
-        unsafe {
-            Ok(Self {
-                initialize: libva.symbol(c"vaInitialize").ok_or(Error::MissingSymbol)?,
-                terminate: libva.symbol(c"vaTerminate").ok_or(Error::MissingSymbol)?,
-                max_num_profiles: libva
-                    .symbol(c"vaMaxNumProfiles")
-                    .ok_or(Error::MissingSymbol)?,
-                query_config_profiles: libva
-                    .symbol(c"vaQueryConfigProfiles")
-                    .ok_or(Error::MissingSymbol)?,
-                max_num_entrypoints: libva
-                    .symbol(c"vaMaxNumEntrypoints")
-                    .ok_or(Error::MissingSymbol)?,
-                query_config_entrypoints: libva
-                    .symbol(c"vaQueryConfigEntrypoints")
-                    .ok_or(Error::MissingSymbol)?,
-                error_str: libva.symbol(c"vaErrorStr").ok_or(Error::MissingSymbol)?,
-                get_config_attributes: libva
-                    .symbol(c"vaGetConfigAttributes")
-                    .ok_or(Error::MissingSymbol)?,
-                #[cfg(test)]
-                query_surface_attributes: libva
-                    .symbol(c"vaQuerySurfaceAttributes")
-                    .ok_or(Error::MissingSymbol)?,
-                create_config: libva
-                    .symbol(c"vaCreateConfig")
-                    .ok_or(Error::MissingSymbol)?,
-                destroy_config: libva
-                    .symbol(c"vaDestroyConfig")
-                    .ok_or(Error::MissingSymbol)?,
-                create_surfaces: libva
-                    .symbol(c"vaCreateSurfaces")
-                    .ok_or(Error::MissingSymbol)?,
-                destroy_surfaces: libva
-                    .symbol(c"vaDestroySurfaces")
-                    .ok_or(Error::MissingSymbol)?,
-                create_context: libva
-                    .symbol(c"vaCreateContext")
-                    .ok_or(Error::MissingSymbol)?,
-                destroy_context: libva
-                    .symbol(c"vaDestroyContext")
-                    .ok_or(Error::MissingSymbol)?,
-                create_buffer: libva
-                    .symbol(c"vaCreateBuffer")
-                    .ok_or(Error::MissingSymbol)?,
-                destroy_buffer: libva
-                    .symbol(c"vaDestroyBuffer")
-                    .ok_or(Error::MissingSymbol)?,
-                map_buffer: libva.symbol(c"vaMapBuffer").ok_or(Error::MissingSymbol)?,
-                unmap_buffer: libva.symbol(c"vaUnmapBuffer").ok_or(Error::MissingSymbol)?,
-                begin_picture: libva
-                    .symbol(c"vaBeginPicture")
-                    .ok_or(Error::MissingSymbol)?,
-                render_picture: libva
-                    .symbol(c"vaRenderPicture")
-                    .ok_or(Error::MissingSymbol)?,
-                end_picture: libva.symbol(c"vaEndPicture").ok_or(Error::MissingSymbol)?,
-                sync_surface: libva.symbol(c"vaSyncSurface").ok_or(Error::MissingSymbol)?,
-                derive_image: libva.symbol(c"vaDeriveImage").ok_or(Error::MissingSymbol)?,
-                destroy_image: libva
-                    .symbol(c"vaDestroyImage")
-                    .ok_or(Error::MissingSymbol)?,
-                get_display_drm: libva_drm
-                    .symbol(c"vaGetDisplayDRM")
-                    .ok_or(Error::MissingSymbol)?,
-                _libva_drm: libva_drm,
-                _libva: libva,
-            })
-        }
-    }
-
-    /// What the runtime says a status means. Diagnostic only.
-    pub fn status_text(&self, status: VAStatus) -> &str {
-        // SAFETY: the interface returns a pointer to a static string it owns.
-        let text = unsafe { (self.error_str)(status) };
-        if text.is_null() {
-            return "unknown";
-        }
-        // SAFETY: non-null and NUL terminated by contract.
-        unsafe { CStr::from_ptr(text) }
-            .to_str()
-            .unwrap_or("unknown")
-    }
-
-    fn check(&self, status: VAStatus) -> Result<()> {
-        if status == VA_STATUS_SUCCESS as VAStatus {
-            Ok(())
-        } else {
-            Err(Error::Status(status))
-        }
-    }
-
+impl<'a> Display<'a> {
     /// Bind a display to a render node, by path.
-    ///
-    /// The **render** node rather than the card node: encoding needs no
-    /// display control, and the card node additionally needs a privilege this
-    /// process should not hold for a job that does not require it.
-    pub fn open(&self, node: &CStr) -> Result<Display<'_>> {
-        // SAFETY: the path is NUL terminated. No mode is needed without
-        // O_CREAT. Closed on the error paths below and in `Drop`.
-        let fd = unsafe { libc::open(node.as_ptr(), libc::O_RDWR | libc::O_CLOEXEC) };
-        if fd < 0 {
-            return Err(Error::NoDevice);
-        }
-
-        // SAFETY: the descriptor is open for the duration.
-        let raw = unsafe { (self.get_display_drm)(fd) };
-        if raw.is_null() {
-            // SAFETY: the descriptor was opened above and is not yet owned by
-            // anything else.
-            unsafe { libc::close(fd) };
-            return Err(Error::NoDevice);
-        }
-
-        let mut major: c_int = 0;
-        let mut minor: c_int = 0;
-        // SAFETY: both out pointers are to live locals.
-        let status = unsafe { (self.initialize)(raw, &raw mut major, &raw mut minor) };
-        if let Err(error) = self.check(status) {
-            // SAFETY: initialise failed, so the display owns nothing; the
-            // descriptor is still ours to close.
-            unsafe { libc::close(fd) };
-            return Err(error);
-        }
-
-        Ok(Display {
-            va: self,
-            raw,
-            fd,
-            version: (major, minor),
+    pub fn open(va: &'a Vaapi, node: &CStr) -> Result<Self> {
+        let bound = va.open(node)?;
+        Ok(Self {
+            va,
+            raw: bound.raw(),
+            _bound: bound,
         })
     }
-}
 
-impl Display<'_> {
     /// The interface version the driver implements.
     pub fn version(&self) -> (i32, i32) {
-        self.version
+        self._bound.version()
     }
 
     /// The raw handle, for the calls that take one.
@@ -717,7 +467,7 @@ impl Display<'_> {
         if let Err(error) = self.va.check(status) {
             // SAFETY: created above and owned by this scope until the destroy.
             unsafe { (self.va.destroy_config)(self.raw, config) };
-            return Err(error);
+            return Err(error.into());
         }
 
         let mut list = vec![
@@ -737,18 +487,6 @@ impl Display<'_> {
         result?;
         list.truncate(usize::try_from(count).unwrap_or(0));
         Ok(list)
-    }
-}
-
-impl Drop for Display<'_> {
-    fn drop(&mut self) {
-        // SAFETY: the display came from a successful initialise and is
-        // terminated once. The descriptor is closed after, never before: the
-        // driver holds it for the display's life.
-        unsafe {
-            (self.va.terminate)(self.raw);
-            libc::close(self.fd);
-        }
     }
 }
 
@@ -798,7 +536,7 @@ mod tests {
     #[ignore = "requires the open-stack driver"]
     fn the_driver_reports_what_it_will_do_and_a_context_builds() {
         let va = Vaapi::load().expect("runtime");
-        let display = va.open(&node()).expect("render node");
+        let display = Display::open(&va, &node()).expect("render node");
 
         for codec in [Codec::H264, Codec::H265] {
             let caps = display.caps(codec).expect("caps");
@@ -861,7 +599,7 @@ mod tests {
         use std::time::Instant;
 
         let va = Vaapi::load().expect("runtime");
-        let display = va.open(&node()).expect("render node");
+        let display = Display::open(&va, &node()).expect("render node");
         let caps = display.caps(Codec::H264).expect("caps");
         let context = display
             .create_context(caps, 1920, 1080, 4)
@@ -994,7 +732,7 @@ mod tests {
     #[ignore = "requires the open-stack driver"]
     fn the_second_codec_encodes_and_the_driver_takes_our_sets() {
         let va = Vaapi::load().expect("runtime");
-        let display = va.open(&node()).expect("render node");
+        let display = Display::open(&va, &node()).expect("render node");
         // **A knob for the same reason the height is one**: the depth changes
         // the profile, the runtime layout and two fields of the sequence set
         // together, and the only way to know they agree is to encode at both
@@ -1116,7 +854,7 @@ mod tests {
     #[ignore = "requires the open-stack driver"]
     fn a_set_never_declares_a_deeper_transform_tree_than_the_device_codes() {
         let va = Vaapi::load().expect("runtime");
-        let display = va.open(&node()).expect("render node");
+        let display = Display::open(&va, &node()).expect("render node");
         let caps = display.caps(Codec::H265).expect("caps");
         let Some(device) = display.transform_depth(caps) else {
             println!("  this device does not report a depth; nothing to clamp against");
@@ -1165,7 +903,7 @@ mod tests {
     #[ignore = "requires the open-stack driver and its display interface"]
     fn the_packed_444_export_imports_and_encodes() {
         let va = Vaapi::load().expect("runtime");
-        let display = va.open(&node()).expect("render node");
+        let display = Display::open(&va, &node()).expect("render node");
         let ten_bit = std::env::var("LOWLAT_PROBE_TEN_BIT").is_ok_and(|v| v != "0");
         // **The subsampled layout through this same path is the control.**
         // Everything else -- the content, the conversion, the export, the
@@ -1435,10 +1173,12 @@ mod tests {
     fn the_display_opens_and_reports_an_encoder() {
         let va = match Vaapi::load() {
             Ok(va) => va,
-            Err(Error::Unavailable) => panic!("no runtime present; this test needs the driver"),
+            Err(lowlat_drivers::va::Error::Unavailable) => {
+                panic!("no runtime present; this test needs the driver")
+            }
             Err(error) => panic!("{error}"),
         };
-        let display = va.open(&node()).expect("render node did not open");
+        let display = Display::open(&va, &node()).expect("render node did not open");
         let (major, minor) = display.version();
         println!("display interface {major}.{minor}");
         assert!(major >= 1);
@@ -1491,7 +1231,7 @@ mod tests {
 
         for node in nodes {
             let path = CString::new(node.as_str()).expect("a node path with no interior nul");
-            let Ok(display) = va.open(&path) else {
+            let Ok(display) = Display::open(&va, &path) else {
                 println!("{node}: does not open");
                 continue;
             };
@@ -1935,7 +1675,7 @@ impl Display<'_> {
             // SAFETY: the configuration was created above and nothing else
             // owns it.
             unsafe { (self.va.destroy_config)(self.raw, config) };
-            return Err(error);
+            return Err(error.into());
         }
 
         Ok(Context {
@@ -2450,7 +2190,7 @@ impl<'a> Context<'a> {
                     // SAFETY: each was created above.
                     unsafe { (va.destroy_buffer)(display, *done) };
                 }
-                return Err(error);
+                return Err(error.into());
             }
             coded.push(id);
         }

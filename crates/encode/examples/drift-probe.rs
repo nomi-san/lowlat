@@ -45,9 +45,8 @@ fn main() {
         .unwrap_or(1080);
 
     let va = vaapi::Vaapi::load().expect("no open-stack runtime");
-    let display = va
-        .open(&CString::new(node.clone()).unwrap())
-        .expect("render node");
+    let display =
+        vaapi::Display::open(&va, &CString::new(node.clone()).unwrap()).expect("render node");
     let codec = if hevc {
         vaapi::Codec::H265
     } else {
