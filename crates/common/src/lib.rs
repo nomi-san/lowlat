@@ -8,6 +8,7 @@ pub mod bytes;
 pub mod clock;
 pub mod dynlib;
 pub mod events;
+pub mod latest;
 pub mod log;
 pub mod pool;
 // RFC 1982 sequence arithmetic lives in `lowlat-core`: it is protocol
