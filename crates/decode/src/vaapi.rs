@@ -218,6 +218,16 @@ impl<'a> Backend<'a> {
         }
     }
 
+    /// The size and layout the pictures [`Decoder::take`] hands out have,
+    /// once the stream has said: the active parameter set's visible size.
+    pub fn output(&self) -> Option<(u32, u32, Format)> {
+        let (width, height) = match self.codec {
+            Codec::H264 => self.h264.active_sps()?.visible(),
+            Codec::H265 => self.hevc.active_sps()?.visible(),
+        };
+        (width > 0 && height > 0).then_some((width, height, self.format()))
+    }
+
     fn create_config(&mut self) -> Result<()> {
         let profile = profile_for(self.codec, self.ten_bit);
         let mut attrib = VAConfigAttrib {

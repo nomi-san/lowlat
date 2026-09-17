@@ -8,6 +8,13 @@
 //! at an attempt, and the working set is the pictures actually written,
 //! never the reserve. A rebuild never reallocates, so a slot the application
 //! holds is never pulled from under it.
+//!
+//! **A picture is laid out at its own pitch, not the ceiling's.** The slot
+//! is the reserve; the planes lent to the decoder are `width` samples a
+//! row, aligned, with the chroma plane straight after the luma rows, so the
+//! pages a picture touches are its own size and nothing more. The layout
+//! travels with the published picture, so a held slot keeps its own across
+//! anything decoded after it.
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -34,6 +41,12 @@ pub struct Frame {
     pub generation: u32,
     /// The picture's order in its stream, from the bitstream.
     pub order: i32,
+    /// Bytes a row, both planes. **The queue's, set at publish** from the
+    /// planes it lent; whatever is given here is replaced.
+    pub pitch: usize,
+    /// Where the chroma plane begins, in bytes from the slot. The queue's,
+    /// as `pitch`.
+    pub uv_offset: usize,
 }
 
 impl Frame {
@@ -45,6 +58,8 @@ impl Frame {
         chroma_444: false,
         generation: 0,
         order: 0,
+        pitch: 0,
+        uv_offset: 0,
     };
 }
 
@@ -103,6 +118,9 @@ pub struct Filling<'a> {
     index: usize,
     /// Set once the slot is published, so the drop does not give it back.
     published: bool,
+    /// The layout lent by `planes_for`, published with the picture.
+    pitch: usize,
+    uv_offset: usize,
 }
 
 /// The application already holds as many pictures as it may.
@@ -177,6 +195,8 @@ impl Frames {
             frames: self,
             index,
             published: false,
+            pitch: 0,
+            uv_offset: 0,
         })
     }
 
@@ -196,16 +216,16 @@ impl Frames {
         };
         self.held.fetch_add(1, Ordering::AcqRel);
         let y = self.slot_ptr(index).cast_const();
-        let rows = usize::try_from(self.rows).unwrap_or(16);
-        // SAFETY: inside the slot.
-        let uv = unsafe { y.add(self.pitch * rows) };
+        // SAFETY: the offset is the layout `publish` wrote from `planes_for`,
+        // which kept it inside the slot.
+        let uv = unsafe { y.add(payload.uv_offset) };
         Ok(Some(Held {
             index,
             seq,
             frame: payload,
             y,
             uv,
-            pitch: self.pitch,
+            pitch: payload.pitch,
         }))
     }
 
@@ -240,30 +260,47 @@ impl Frames {
 }
 
 impl Filling<'_> {
-    /// The planes to decode into, at the queue's pitch.
-    pub fn planes(&mut self) -> Planes<'_> {
-        let rows = usize::try_from(self.frames.rows).unwrap_or(16);
-        let pitch = self.frames.pitch;
+    /// The planes to decode a `width` x `height` picture of `format` into:
+    /// rows of the picture's own width, aligned to a cache line, the chroma
+    /// plane straight after the luma rows. `None` if the picture does not
+    /// fit the slot -- refused whole, never truncated.
+    pub fn planes_for(&mut self, width: u32, height: u32, format: Format) -> Option<Planes<'_>> {
+        let width = usize::try_from(width).ok()?;
+        let height = usize::try_from(height).ok()?;
+        if width == 0 || height == 0 {
+            return None;
+        }
+        let pitch = (width * format.sample()).div_ceil(64) * 64;
+        let luma = pitch.checked_mul(height)?;
+        let chroma = pitch.checked_mul(height.div_ceil(2))?;
+        if luma.checked_add(chroma)? > self.frames.slot_bytes() {
+            return None;
+        }
+        self.pitch = pitch;
+        self.uv_offset = luma;
         let base = self.frames.slot_ptr(self.index);
         // SAFETY: the slot is lent to this producer alone until it is
         // published or abandoned; the two ranges are disjoint and inside the
-        // slot.
+        // slot, checked above.
         let (y, uv) = unsafe {
             (
-                core::slice::from_raw_parts_mut(base, pitch * rows),
-                core::slice::from_raw_parts_mut(base.add(pitch * rows), pitch * rows.div_ceil(2)),
+                core::slice::from_raw_parts_mut(base, luma),
+                core::slice::from_raw_parts_mut(base.add(luma), chroma),
             )
         };
-        Planes {
+        Some(Planes {
             y,
             y_pitch: pitch,
             uv,
             uv_pitch: pitch,
-        }
+        })
     }
 
-    /// The picture is in the slot: publish it as the newest.
-    pub fn publish(mut self, frame: Frame) {
+    /// The picture is in the slot: publish it as the newest, with the layout
+    /// it was decoded into.
+    pub fn publish(mut self, mut frame: Frame) {
+        frame.pitch = self.pitch;
+        frame.uv_offset = self.uv_offset;
         self.frames.ring.set(self.index, frame);
         self.frames.ring.publish(self.index);
         self.published = true;
@@ -298,9 +335,70 @@ mod tests {
         assert!(!frames.backed());
         assert_eq!(frames.reserve_bytes(), 4 * (8192 * 4096 + 8192 * 2048));
         let mut filling = frames.fill().unwrap();
-        let planes = filling.planes();
-        assert_eq!(planes.y_pitch, 8192);
+        let planes = filling.planes_for(1920, 1080, Format::Nv12).unwrap();
+        assert_eq!(planes.y_pitch, 1920);
         assert!(frames.backed());
+    }
+
+    /// The planes are the picture's own size: what a picture touches in a
+    /// slot at the ceiling is the picture, not the ceiling.
+    #[test]
+    fn the_planes_are_laid_out_at_the_pictures_own_pitch() {
+        let frames = Frames::new((4096, 4096));
+        let mut filling = frames.fill().unwrap();
+        {
+            let planes = filling.planes_for(64, 64, Format::Nv12).unwrap();
+            assert_eq!(
+                (planes.y_pitch, planes.y.len(), planes.uv.len()),
+                (64, 64 * 64, 64 * 32)
+            );
+        }
+        {
+            let planes = filling.planes_for(1366, 768, Format::Nv12).unwrap();
+            assert_eq!(planes.y_pitch, 1408, "rows are aligned to a cache line");
+        }
+        {
+            let planes = filling.planes_for(1920, 1080, Format::P010).unwrap();
+            assert_eq!((planes.y_pitch, planes.uv.len()), (3840, 3840 * 540));
+        }
+        assert!(
+            filling.planes_for(4096, 4098, Format::P010).is_none(),
+            "a picture past the slot is refused, not truncated"
+        );
+        assert!(filling.planes_for(0, 16, Format::Nv12).is_none());
+    }
+
+    /// A slot the application holds keeps the layout it was published with
+    /// while smaller pictures are decoded and handed out after it.
+    #[test]
+    fn a_held_slot_keeps_its_layout_across_a_smaller_picture() {
+        let frames = Frames::new((4096, 4096));
+        let mut filling = frames.fill().unwrap();
+        {
+            let planes = filling.planes_for(1920, 1080, Format::Nv12).unwrap();
+            planes.uv[0] = 0x11;
+        }
+        filling.publish(Frame {
+            width: 1920,
+            height: 1080,
+            ..Frame::BLANK
+        });
+        let big = frames.acquire(0, Duration::ZERO).unwrap().unwrap();
+        assert_eq!((big.pitch, big.frame.uv_offset), (1920, 1920 * 1080));
+
+        let mut filling = frames.fill().unwrap();
+        {
+            let planes = filling.planes_for(64, 64, Format::Nv12).unwrap();
+            planes.uv[0] = 0x22;
+        }
+        filling.publish(frame(2));
+        let small = frames.acquire(big.seq, Duration::ZERO).unwrap().unwrap();
+        assert_eq!((small.pitch, small.frame.uv_offset), (64, 64 * 64));
+        // SAFETY: both slots are held.
+        unsafe {
+            assert_eq!(*big.uv, 0x11);
+            assert_eq!(*small.uv, 0x22);
+        }
     }
 
     #[test]
@@ -347,7 +445,7 @@ mod tests {
         let frames = Frames::new((64, 64));
         {
             let mut filling = frames.fill().unwrap();
-            let _ = filling.planes();
+            let _ = filling.planes_for(64, 64, Format::Nv12);
         }
         assert_eq!(frames.ready(), 0);
         assert!(frames.acquire(0, Duration::ZERO).unwrap().is_none());
@@ -358,7 +456,7 @@ mod tests {
         let frames = Frames::new((64, 64));
         let mut filling = frames.fill().unwrap();
         {
-            let planes = filling.planes();
+            let planes = filling.planes_for(64, 64, Format::Nv12).unwrap();
             planes.y[0] = 0xAB;
             planes.uv[0] = 0xCD;
         }

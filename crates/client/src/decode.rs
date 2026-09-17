@@ -110,10 +110,16 @@ fn take_pictures(
     header: Option<&video::VideoHeader>,
 ) {
     loop {
+        // The layout before the take: the planes are the picture's own size.
+        let Some((width, height, format)) = feed.decoder().output() else {
+            return;
+        };
         let Some(mut filling) = frames.fill() else {
             return;
         };
-        let mut planes = filling.planes();
+        let Some(mut planes) = filling.planes_for(width, height, format) else {
+            return;
+        };
         match lowlat_decode::Decoder::take(feed.decoder_mut(), &mut planes) {
             Ok(Some(picture)) => {
                 let backend = feed.decoder();
@@ -131,6 +137,9 @@ fn take_pictures(
                     chroma_444: false,
                     generation: header.map_or(0, |h| h.frame_id),
                     order: picture.order,
+                    // The queue's, written at publish.
+                    pitch: 0,
+                    uv_offset: 0,
                 });
                 telemetry.decoded.fetch_add(1, Ordering::Relaxed);
             }
