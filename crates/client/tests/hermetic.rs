@@ -356,6 +356,12 @@ impl Decoder for Recorder {
         self.units.push((frame, keyframe));
         Ok(Fed::Picture)
     }
+    fn take(
+        &mut self,
+        _out: &mut lowlat_decode::Planes<'_>,
+    ) -> Result<Option<lowlat_decode::Picture>, Fault> {
+        Ok(None)
+    }
     fn destroy(&mut self) {
         self.torn += 1;
     }

@@ -14,45 +14,7 @@
 //! that differs.
 
 use lowlat_core::video::{self, Codec, KeyframeMetadata, VIDEO_HEADER_LEN, VideoHeader};
-
-/// What a backend reports for one unit it was fed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Fed {
-    /// A picture came out.
-    Picture,
-    /// Nothing came out this time, and nothing is wrong: the unit was
-    /// consumed and a later one completes it.
-    NeedMoreData,
-    /// The stream's format changed under a decoder built for another. The
-    /// unit was not decoded; a fresh decoder takes it.
-    FormatChanged,
-}
-
-/// A backend failure.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Fault {
-    /// This decoder cannot continue, and a fresh one built from the next
-    /// keyframe can. The one case a client asks the host for that keyframe.
-    Unrecoverable,
-    /// No decoder can continue: the device is gone or was never usable. The
-    /// stream ends, with this named.
-    Fatal,
-}
-
-/// A video decoder, as the feed drives one.
-///
-/// **Built and destroyed by the feed, never by itself.** The feed owns the
-/// decision of when a decoder exists, because the one request a client may
-/// make of a host is paired with that decision and must be made exactly once.
-pub trait Decoder {
-    /// Create the backend for what the header names. Called only while none
-    /// exists.
-    fn build(&mut self, header: &VideoHeader) -> Result<(), Fault>;
-    /// Decode one access unit: the bitstream after the video header.
-    fn feed(&mut self, unit: &[u8]) -> Result<Fed, Fault>;
-    /// Tear the backend down. Called only while one exists.
-    fn destroy(&mut self);
-}
+pub use lowlat_decode::{Decoder, Fault, Fed};
 
 /// What the feed did with one message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +62,12 @@ impl<D: Decoder> Feed<D> {
 
     pub fn decoder(&self) -> &D {
         &self.decoder
+    }
+
+    /// The backend, for what the feed does not decide: taking the pictures
+    /// it has ready.
+    pub fn decoder_mut(&mut self) -> &mut D {
+        &mut self.decoder
     }
 
     pub fn present(&self) -> bool {
@@ -268,6 +236,12 @@ mod tests {
         fn feed(&mut self, unit: &[u8]) -> Result<Fed, Fault> {
             self.fed.push(unit.to_vec());
             self.script.pop_front().unwrap_or(Ok(Fed::Picture))
+        }
+        fn take(
+            &mut self,
+            _out: &mut lowlat_decode::Planes<'_>,
+        ) -> Result<Option<lowlat_decode::Picture>, Fault> {
+            Ok(None)
         }
         fn destroy(&mut self) {
             self.destroyed += 1;
