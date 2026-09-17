@@ -43,9 +43,9 @@ use lowlat_encode::{Encoder, Poll};
 use lowlat_net::WakeHandle;
 
 use crate::display::Display;
-use crate::frames::{self, Pool};
 use crate::gate::{self, Gate, Keyframe};
 use crate::timing::{Report, Stages};
+use lowlat_common::pool::{self, Pool};
 use lowlat_core::congestion::Controller;
 use lowlat_core::control::status;
 
@@ -860,9 +860,9 @@ impl Shared {
                 n += 1;
             }
         }
-        // The keyframe flag means nothing to sound; the pool carries one for
+        // The keyframe tag means nothing to sound; the pool carries one for
         // pictures and this path leaves it clear.
-        let _ = writer.publish(false, rings.get(..n).unwrap_or(&[]));
+        let _ = writer.publish(0, rings.get(..n).unwrap_or(&[]));
         for index in waking.get(..n).unwrap_or(&[]) {
             if let Some(seat) = self.seats.get(*index)
                 && let Ok(held) = seat.audio_wake.lock()
@@ -1510,6 +1510,12 @@ impl Drop for Stream {
     }
 }
 
+/// Whether a published picture was tagged a keyframe. The pool carries a
+/// word; a picture's is one for a keyframe and zero otherwise.
+pub fn is_keyframe(frame: &pool::Frame<'_>) -> bool {
+    frame.tag() != 0
+}
+
 /// A guest thread's way onto the stream.
 #[derive(Debug, Clone)]
 pub struct Seats {
@@ -1587,7 +1593,7 @@ impl SeatHold {
     ///
     /// The frame releases its hold on the pool slot when it is dropped, so a
     /// path that returns early cannot leak one.
-    pub fn next_frame(&self) -> Option<frames::Frame<'_>> {
+    pub fn next_frame(&self) -> Option<pool::Frame<'_>> {
         let seat = self.shared.seats.get(self.index)?;
         let index = seat.ring.pop()?;
         self.shared.pool.claim(index)
@@ -1597,7 +1603,7 @@ impl SeatHold {
     ///
     /// Releases its hold on the pool slot when it is dropped, exactly as a
     /// picture does.
-    pub fn next_audio(&self) -> Option<frames::Frame<'_>> {
+    pub fn next_audio(&self) -> Option<pool::Frame<'_>> {
         let seat = self.shared.seats.get(self.index)?;
         let index = seat.audio.pop()?;
         self.shared.audio.claim(index)
@@ -4859,7 +4865,7 @@ fn deliver(
     picked: &[usize; MAX_SEATS],
     count: usize,
     guests: &mut [gate::Guest],
-    writer: frames::Writer<'_>,
+    writer: pool::Writer<'_>,
     keyframe: bool,
 ) {
     // Something real to fill the array with, so the publish takes a slice of
@@ -4883,7 +4889,7 @@ fn deliver(
         }
     }
 
-    let taken = writer.publish(keyframe, rings.get(..n).unwrap_or(&[]));
+    let taken = writer.publish(u32::from(keyframe), rings.get(..n).unwrap_or(&[]));
 
     // **A ring that refused is a guest that missed a frame**, and a guest that
     // misses one frame must miss every frame until a keyframe. The pool gives
@@ -7142,7 +7148,7 @@ mod tests {
         let mut sizes = Vec::new();
         until_within(30_000.0, "frames", || {
             while let Some(frame) = seat.next_frame() {
-                sizes.push((frame.bytes().len(), frame.keyframe()));
+                sizes.push((frame.bytes().len(), is_keyframe(&frame)));
                 out.extend_from_slice(frame.bytes());
             }
             sizes.len() >= 400
@@ -7201,7 +7207,7 @@ mod tests {
             until_within(30_000.0, "the calm window to report", || {
                 while let Some(frame) = seat.next_frame() {
                     received += 1;
-                    if frame.keyframe() {
+                    if is_keyframe(&frame) {
                         keyframes += 1;
                     }
                 }

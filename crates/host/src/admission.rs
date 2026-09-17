@@ -1916,7 +1916,7 @@ fn send_frames<M: Media>(
 ) -> u64 {
     let mut sent = 0u64;
     while let Some(frame) = seat.next_frame() {
-        let keyframe = frame.keyframe();
+        let keyframe = crate::stream::is_keyframe(&frame);
         if let Some(announcement) = packetiser.announcement(keyframe)
             && session
                 .send_message(VIDEO_CHANNEL, announcement, &[])

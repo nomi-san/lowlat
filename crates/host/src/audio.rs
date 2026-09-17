@@ -263,8 +263,8 @@ pub(crate) fn header(raw: bool) -> [u8; AUDIO_HEADER_LEN] {
 ///
 /// One slot holds a payload of either kind, so it is sized by the larger: the
 /// uncompressed frame, which is exactly what capture delivers.
-pub(crate) fn pool() -> crate::frames::Pool {
-    crate::frames::Pool::new(POOL_SLOTS, FRAME_BYTES)
+pub(crate) fn pool() -> lowlat_common::pool::Pool {
+    lowlat_common::pool::Pool::new(POOL_SLOTS, FRAME_BYTES)
 }
 
 #[cfg(test)]

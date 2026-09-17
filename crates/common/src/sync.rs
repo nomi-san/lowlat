@@ -12,10 +12,10 @@
 #[cfg(loom)]
 pub use loom::cell::UnsafeCell;
 #[cfg(loom)]
-pub use loom::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+pub use loom::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 #[cfg(not(loom))]
-pub use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+pub use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 
 #[cfg(not(loom))]
 #[derive(Debug)]

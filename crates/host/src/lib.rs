@@ -9,7 +9,6 @@ pub mod cursor;
 pub mod display;
 pub mod events;
 pub mod floor;
-pub mod frames;
 pub mod gate;
 pub mod microphone;
 pub mod rate;
