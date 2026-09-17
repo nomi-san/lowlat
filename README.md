@@ -85,11 +85,14 @@ lowlat-core      no_std sans-IO: wire, channels, rings, crypto, recovery, NAT, I
 lowlat-crypto    credentials, key material, and the only source of randomness
 lowlat-net       IO shell: sockets, threads, timers, wakeups; the browser transport
 lowlat-sim       deterministic simulator and network namespace fixtures
+lowlat-drivers   the device interfaces reached at runtime, shared by encode and decode
 lowlat-capture   scanout capture, the desktop's layout, and the display's own modes
 lowlat-encode    NVENC, VA-API, Vulkan Video
+lowlat-decode    the H.264 and HEVC readers and the picture buffer; VA-API decode
 lowlat-audio     sound capture, encode, and decode
 lowlat-inject    uinput
 lowlat-host      host orchestration
+lowlat-client    the connecting side: the receive path, the decode thread, the frame queue
 lowlat-sdk       the C ABI shared library, host and client halves as features
 lowlat-kessel    signaling client
 lowlatd          system service; also the session helper and the tray, as its
@@ -193,8 +196,8 @@ onto a Wayland compositor.
 MIT. See [LICENSE](LICENSE).
 
 Third-party components retain their own licenses. No copyleft library is linked or loaded:
-the encoders are reached through the drivers' own interfaces, and the check is made against
-the running process rather than the link graph.
+the encoders and the decoders are reached through the drivers' own interfaces, and the
+check is made against the running process rather than the link graph.
 
 ## Disclaimer
 

@@ -1,7 +1,7 @@
 # 10 - The client
 
-**Status:** designed 2026-09-15, interview of the same day; C1 built 2026-09-17. Built by
-[impl-plan-client.md](impl-plan-client.md).
+**Status:** designed 2026-09-15, interview of the same day; C1 and C2 built 2026-09-17.
+Built by [impl-plan-client.md](impl-plan-client.md).
 
 The client is the other half of the same protocol: it receives what [05](05-host.md) produces.
 Everything below the media -- the wire, the rings, acknowledgement and recovery, connectivity,
@@ -108,6 +108,16 @@ decode thread is also what drains the transport, so a decode thread that waited 
 application would back the whole session up into the receive ring; a minimised window must
 cost nothing but the pictures it does not show.
 
+**The slots are sized once and backed late** (*built 2026-09-17*). Each is sized at the
+configuration's ceiling (4096 square by default, lowerable at creation) in the deepest layout
+a decoder here produces, so a rebuild never reallocates and a slot the application holds is
+never pulled from under it; but nothing is allocated at creation or at an attempt -- the
+backing is made on the decode thread at the first picture, demand-zero, and each picture is
+laid out in its slot at its own pitch, so the working set is the pictures actually written
+and never the reserve. An earlier implementation initialised its slots at creation and paid
+a quarter of a gigabyte resident before a picture existed. Here a client at 1080p is about
+140 MB above its resident set at creation, most of it the driver's.
+
 **Acquire is the poll.** `lowlat_client_acquire_frame` waits up to its timeout for a picture
 newer than the last one handed out, discards any older ready pictures on the way, and lends
 the newest. A picture stays valid until it is released; the application presents it as often
@@ -165,6 +175,21 @@ in the backlog, which without a periodic keyframe on the host is never there.
 - *A decode-lag keyframe request*, §5 below.
 - *A presentation-rate hint and a sustainability event*, §9 below.
 
+**The numbers, recorded 2026-09-17** (this machine, this host, 1080p H.264 at 120 pictures a
+second, a 120 Hz display, independent motion on the desktop; the C demo's own count of
+presents, new pictures, repeats and skips a second, decided on at C5's planning):
+
+| stream against presentation | pictures | repeats | skips |
+|---|---|---|---|
+| 120 against 120, ten minutes | 118 (mean 116) | 3, ninety-fifth percentile 11, at most 38 | the same |
+| 60 against 120 | 60 | 60 | 0 |
+| 120 against a 60-a-second poll | 60 | 0 | 60 |
+
+The equal case is the beat above: two clocks at the same nominal rate slip one picture
+against each other a few times a second, and each slip is one repeat and one skip. The
+other two are exactly what the paragraph predicts, and neither drops a picture it did not
+have to. The decoder's own time is [§9](#9-events-status-and-metrics)'s.
+
 ## §5 The decoder, and when a client asks for a keyframe
 
 **A decoder is built from the stream, not from the configuration.** The first access unit led
@@ -219,7 +244,12 @@ lasts, from the established one. It is a divergence, and a correct one on this p
 an instantaneous refresh resets references, so nothing is lost by abandoning arrived
 pictures -- but it does not cure a decoder that is slower than the stream; only fewer frames
 do, which is §9's event. Decided when the C2 lag numbers exist, with the thresholds measured
-rather than picked.
+rather than picked. **The lag number, recorded 2026-09-17**: under the simulator, against
+this host's framing with a keyframe every 300 pictures, a decoder at half the stream's rate
+falls 159 messages behind at the deepest and the catch-up discards 611 pictures over 1317
+frames to land on each keyframe; a decoder that keeps up is never more than two behind.
+Live against this host (which announces its keyframes and sends none periodically) the
+reader was at most one message behind for ten minutes.
 
 **A picture whose generation is older than the one the host last announced (opcode 29) is
 stale**, from an encoder that no longer exists; the decoder is torn down before it is fed, so
@@ -244,6 +274,26 @@ that opens on the device the application named. Nothing is linked: a machine wit
 interface refuses with the stage named, exactly as a host without an encoder does. **Software
 decode is a decision deferred**, with its licence question attached ([09 §9](09-compatibility.md));
 v1 is hardware or nothing.
+
+**The library reads the bitstream itself** (*built 2026-09-17*). The device interfaces on this
+platform decode a picture from its parameters and its slices; reading those out of the stream
+is not theirs. So the library parses both codecs' parameter sets and slice headers in full,
+derives the picture order, keeps the decoded picture buffer, builds the reference lists, and
+hands the driver the picture, quantisation-matrix and slice parameters it asks for, with the
+slice data beside them. That is most of the decoder; the backend beneath it is the device's
+context, a fixed pool of surfaces the picture buffer indexes, and the read-back. Nothing is
+allocated per unit: the parser's state, the picture buffer and the parameter staging are
+fixed arrays sized by the standards, and a unit that needs more than they hold is refused,
+never truncated. A stream that declares nothing about its reordering is held back only as
+far as it proves it must: a bidirectional slice or a jump in the picture order holds one
+picture, a picture that arrives late holds one more.
+
+**The read-back is the cost of planes** (*measured 2026-09-17*, this machine, 1080p, the
+open-stack driver): about 2 ms a picture live, as much as the decode itself, and nearly all
+of it the driver's own mapping of the surface rather than the copy out of it -- the copy is a
+quarter of a millisecond, and a streaming-load copy that makes it a twentieth moves the live
+figure six percent, so it was measured and not taken. The lever is the handle path of §4,
+which has no copy; it arrives with the second backend.
 
 ## §6 Sound
 
@@ -338,15 +388,21 @@ or zero for unknown), status carries the rate the decoder can sustain, and an ev
 it cannot sustain the stream, with the rate the library recommends; the application relays
 that as `encoderFPS` in one line, and it works against an established host exactly as it
 does against this one. Decided with the lag trigger of [§5](#5-the-decoder-and-when-a-client-asks-for-a-keyframe).
+**The decoder's own numbers, recorded 2026-09-17** (this machine's open-stack decoder,
+1080p H.264): decode about 2.0 ms a picture at the median and 2.3 at the ninety-fifth
+percentile, read-back about the same, so a 120-picture stream costs the decode thread about
+half its time; the demo's cadence is the display's whatever the stream does.
 
 ## §10 Threads
 
 One receive loop (the shell's), which owns the session and its rings and hands access units
 to a decode thread per stream through a pool by index -- one copy, off the ring, and never
-another; one sound thread; and nothing that presents: presentation is the application's
-thread calling acquire (*corrected 2026-09-17*: an earlier draft had the decode thread
-draining the ring, which is the established client's shape and needs a lock on the session
-that nothing here takes). The decode thread never blocks the receive loop: a full pool leaves
-the backlog in the receive ring, where the catch-up of §3 sees it. Every rule of
-[02](02-io-shell.md) applies -- raw wakes for raw waits, no elevated priority inside the
-library, teardown that wakes every waiter.
+another by the library (the driver's interface takes the slice data as a buffer of its own,
+which is a second copy inside the driver and not one this design can remove); one sound
+thread; and nothing that presents: presentation is the application's thread calling acquire
+(*corrected 2026-09-17*: an earlier draft had the decode thread draining the ring, which is
+the established client's shape and needs a lock on the session that nothing here takes). The
+decode thread never blocks the receive loop: a full pool leaves the backlog in the receive
+ring, where the catch-up of §3 sees it. Every rule of [02](02-io-shell.md) applies -- raw
+wakes for raw waits, no elevated priority inside the library, teardown that wakes every
+waiter.

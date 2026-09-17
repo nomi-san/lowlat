@@ -3,6 +3,66 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-17 - Phase C2: a picture from a real host
+
+### Added
+- **`lowlat-decode`: the library reads the bitstream itself, the device decodes it**
+  ([10 §5.1](10-client.md), [impl-plan-client.md](impl-plan-client.md) C2). The device
+  interfaces on this platform decode a picture from its parameters and slices, so the
+  parameter sets, slice headers, picture order, reference lists and the decoded picture
+  buffer are the library's: H.264 in full syntax (fields and MBAFF, B slices, reference-list
+  modification, weighted prediction, the marking process with long-term references, gaps
+  in the frame count) and HEVC (short- and long-term reference sets, dependent slices,
+  tiles and wavefront entry points, leading pictures dropped after a stream-starting random
+  access point), eight and ten bit, scaling lists from the sets or the defaults. The VA-API
+  backend beneath: one configuration and context, a fixed pool of surfaces the picture
+  buffer indexes, every parameter staged in storage allocated once, the picture read back
+  through the surface's own mapping. Nothing is allocated per unit; a unit that needs more
+  than the fixed arrays hold is refused, never truncated. A stream that declares nothing
+  about its reordering is held back only as far as it proves it must.
+- **Eighteen committed clips with an independent decoder's checksums** ([08 §10](08-testing.md)):
+  three from this host's synthetic source at 720p and fifteen from two other encoders at
+  128 and 256 square -- B pyramids, MBAFF, CAVLC, slices, scaling lists, ten bit -- every one
+  decoding bit-exact on the device. Both readers are fuzzed; the two crash inputs the first
+  minutes found are regression tests.
+- **`lowlat-drivers`**: the device interfaces reached at runtime -- the generated bindings,
+  the loaders, the display and the device context -- in one crate shared by the encoders
+  and the decoder, so a client-only build carries neither pipeline.
+- **The frame queue and the decode thread** ([10 §4](10-client.md), [10 §10](10-client.md)):
+  a latest-wins ring of four slots, model checked, the producer stealing the oldest ready
+  slot and never a held one; the slots sized at the configuration's ceiling, backed on the
+  decode thread at the first picture, demand-zero, each picture laid out at its own pitch;
+  the decode thread taking units from the receive thread's pool, running the C1 policy
+  over the real backend and carrying the one keyframe request to the session thread. The
+  decoder is opened at creation, so a machine without one is refused there with the stage
+  named; a client with nowhere to draw may ask for none.
+- **The pictures at the boundary, minor 5** ([06 §3b](06-api.md)): `lowlat_client_acquire_frame`
+  outside the handle's lock, `lowlat_client_release_frame` with a none-only fence, the
+  frame, plane and fence types, the decoder and frame-kind choices at creation, the ceiling
+  and the device, the decoder's state and its times in status, the decoder statuses and
+  the decoder-failed outcome.
+- **`examples/client`**: the C demo on the application toolkit -- one file for signaling,
+  one for the session and the window; a line of figures a second and the same in the title
+  bar; three knobs for measuring (the rate asked of the host, a presentation cap, a timed
+  leave).
+- The hermetic session decodes: 477 pictures through this host's own framing to the real
+  decoder, frame for frame the reference decoder's, with the keyframes announced and with
+  them not; a decoder at half the stream's rate records its lag.
+
+### Measured
+- On this machine's open-stack decoder, 1080p H.264 at 120 pictures a second: decode 2.0 ms
+  a picture at the median and 2.3 at the ninety-fifth percentile, read-back 2.0 and 2.2,
+  the queue at one, the reader at most one message behind, 208 MB resident (63 at
+  creation; the slots are 12 MB of it, the rest the two drivers' code and buffers). Ten
+  minutes against this host with one decoder build and no keyframe request; ten minutes
+  against an established host on another machine with a clean departure on both logs and
+  no copyleft library in the process map. The cadence at the three rate ratios and the
+  half-rate lag are in [10 §4.1](10-client.md) and [10 §5](10-client.md).
+- The read-back copy: the driver's own mapping of the surface is most of the 2 ms, the
+  copy out of it a quarter of a millisecond; a streaming-load copy makes the copy four
+  times faster and the live figure six percent better, and was not taken.
+- An established host requires the offer's `mode` ([04 §4](04-signaling.md)).
+
 ## 2026-09-17 - Phase C1: the client core, and a hermetic session
 
 ### Added

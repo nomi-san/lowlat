@@ -150,8 +150,11 @@ Carried in the offer and the answer:
 **The key travels over the signaling transport's TLS and nowhere else.** It is never logged,
 never persisted, and zeroized on session teardown.
 
-**The offer also names its pipe**, in `data.mode`: absent or 1 is the native transport, 2 is
-the browser's ([01 §14](01-protocol.md)). The same four fields serve both, and what changes is
+**The offer also names its pipe**, in `data.mode`: 1 is the native transport, 2 is the
+browser's ([01 §14](01-protocol.md)). This host reads an absent `mode` as the native pipe;
+**an established host reads it as a required integer and refuses the whole offer without
+it**, with no answer and nothing on the wire but a parse error on its own log (*found
+2026-09-17*, the first offer from the C demo), so a peer always sends it. The same four fields serve both, and what changes is
 what two of them mean. On the native pipe the fingerprint is random material the legacy cipher
 keys from, and the media key is real. On the browser pipe **the fingerprint is a real
 certificate digest** -- `sha-256` followed by a space and the colon-separated uppercase pairs,

@@ -61,13 +61,17 @@ lowlat-crypto    credentials, key material, the process certificate, and the onl
 lowlat-net       IO shell: sockets, threads, timers, wakeups; the browser transport's
                  record layer and association, driven by the same loop
 lowlat-sim       deterministic simulator and network namespace fixtures (dev-dependency)
+lowlat-drivers   the device interfaces reached at runtime: the generated bindings,
+                 the loaders, the display and the device context; shared by
+                 encode and decode, nothing above the seam
 lowlat-capture   frame trait plus synthetic source; real backends at Gate B
 lowlat-encode    NVENC, then FFmpeg software, then VAAPI
 lowlat-audio     sound capture, encode, and decode; no display stack, no vendor runtime
 lowlat-inject    uinput
 lowlat-host      host orchestration: capture, encode, delivery, input
-lowlat-decode    hardware decode, reached through the drivers' interfaces at
-                 runtime; planes or device handles out
+lowlat-decode    the H.264 and HEVC readers and the picture buffer, and the
+                 hardware decode beneath them, reached through the drivers'
+                 interfaces at runtime; planes or device handles out
 lowlat-client    client orchestration: the receive path, the frame queue, the
                  keyframe policy, sound, input encoding
 lowlat-sdk       the C ABI cdylib and its header; the host and the client are

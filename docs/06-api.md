@@ -319,9 +319,9 @@ have moved by itself; an application that kept its own copy would mark the wrong
 ## §3b Client
 
 **Planned 2026-09-15, built from 2026-09-17 by [impl-plan-client.md](impl-plan-client.md).**
-The first block below is in the header (minor 4); the second is the shape the rest will take,
-fixed here so the header can grow into it. A signature that has not landed is not in the
-header yet, and the header is the truth.
+The first block below is in the header (minor 4 the session, minor 5 the pictures); the
+second is the shape the rest will take, fixed here so the header can grow into it. A
+signature that has not landed is not in the header yet, and the header is the truth.
 
 ```c
 lowlat_status lowlat_client_create(const lowlat_client_create_info *info, lowlat_client **out);
@@ -341,19 +341,28 @@ lowlat_status lowlat_client_send_user_data(lowlat_client *cl, uint32_t id,
 lowlat_status lowlat_client_get_status(lowlat_client *cl, lowlat_client_status *out);
 lowlat_status lowlat_client_poll_events(lowlat_client *cl, uint32_t timeout_ms,
                                         lowlat_event *out, void *body, uint32_t *body_len);
-```
 
-```c
 lowlat_status lowlat_client_acquire_frame(lowlat_client *cl, uint8_t stream, uint32_t timeout_ms,
                                           lowlat_frame *out);
 lowlat_status lowlat_client_release_frame(lowlat_client *cl, const lowlat_frame *frame,
                                           const lowlat_fence *done);
+```
+
+```c
 lowlat_status lowlat_client_acquire_audio(lowlat_client *cl, uint32_t timeout_ms,
                                           int16_t *samples, uint32_t *count);
 lowlat_status lowlat_client_send_input(lowlat_client *cl, const lowlat_input *msg);
 lowlat_status lowlat_client_set_video_config(lowlat_client *cl, const lowlat_client_video_config *cfg);
 lowlat_status lowlat_client_get_metrics(lowlat_client *cl, lowlat_metrics *out);
 ```
+
+**Creation names the decoder** (minor 5). `lowlat_client_create_info` carries the backend by
+index (`LOWLAT_DECODER_AUTO`, the open interface, the vendor's when it lands, or
+`LOWLAT_DECODER_NONE` for a client with nowhere to draw -- a test peer, a probe), the frame
+kind asked for, a ceiling on the picture the slots are sized for (4096 square when zero),
+and a render node (the first that decodes when empty). The decoder is opened here, not at
+the attempt, so a machine without one is refused at creation with the stage named:
+`LOWLAT_ERR_NO_DECODER_RUNTIME`, `_DEVICE` or `_PROFILE`.
 
 **The seam is the host's, mirrored.** A client makes the offer: `new_attempt` produces the
 credentials and certificate digest the application puts in it (its `port` is zero -- the
@@ -378,20 +387,24 @@ reader is and for how long, and what has been taken off each channel.
 
 **Pictures are acquired and released, never called back with.** `acquire_frame` is the poll:
 it waits up to its timeout for a picture newer than the last one lent, discards older ready
-ones, and lends the newest. At most two are held per stream -- the one being presented and
-the one just acquired, so a swap has no gap -- and a third acquire is refused with
-`LOWLAT_ERR_INVALID_ARGUMENT` rather than silently dropping one. `release_frame` may carry a
+ones, and lends the newest. It waits outside the handle's lock, as the event poll does, so
+status stays answerable meanwhile. At most two are held per stream -- the one being presented
+and the one just acquired, so a swap has no gap -- and a third acquire is refused with
+`LOWLAT_ERR_TOO_MANY_HELD` rather than silently dropping one. `release_frame` may carry a
 fence the application's device signals when it has finished reading, which is what lets a
 decoder write into shared memory without waiting on the application's CPU; a null fence
-means reusable now. The rule 5 of §1 holds: no callback fires from inside the library.
+means reusable now, and **in this minor it is the only fence**: every picture leaves as
+planes that were copied, so `lowlat_fence` has one kind, none, and a fence of any other kind
+is refused. The rule 5 of §1 holds: no callback fires from inside the library.
 
 **`lowlat_frame` carries either planes or a handle**, and says which. Planes are pointers,
-pitches and a format into memory valid for the lease; a handle is a device-level reference --
-a buffer descriptor and layout modifier, or a shared texture and fence -- the application
-imports into its own device. The application names the kind it wants in
-`lowlat_client_create_info` and is told the kind it got; a decoder that cannot export lends
-planes. Every picture also carries size, rotation, depth, chroma and generation, so a renderer
-needs nothing from the stream itself.
+pitches and a format (`LOWLAT_FORMAT_NV12`, `LOWLAT_FORMAT_P010`) into memory valid for the
+lease; a handle is a device-level reference -- a buffer descriptor and layout modifier, or a
+shared texture and fence -- the application imports into its own device. The application
+names the kind it wants in `lowlat_client_create_info` and is told the kind it got; a decoder
+that cannot export lends planes, and in this minor every decoder does. Every picture also
+carries size, rotation, generation and a sequence number -- a gap between two consecutive
+presents is a skip -- so a renderer needs nothing from the stream itself.
 
 **Sound is decoded, not played.** `acquire_audio` hands out signed sixteen-bit stereo at
 48 kHz, up to 960 frames a call, in order and already paced by the playback window
@@ -402,7 +415,12 @@ pad button, pad axis, pad state and release-all, in window coordinates; the libr
 guards and encodes ([10 §8](10-client.md)).
 
 **Status and metrics mirror the host's** (§3): the same named channels, seen from the
-receiving side, plus the decoder in use and the queue depth, so one panel serves both ends.
+receiving side, plus the decoder's state (none yet, built, failed), the backend in use, the
+codec the decoder was built for, the queue depth, the last picture's decode and read-back
+times, the host's own encode time as it last reported it, the count decoded and the bytes
+taken off the video channel (a rate is a difference over time, the application's clock), so
+one panel serves both ends. A decoder that fails past recovery ends the session with
+`LOWLAT_OUTCOME_DECODER_FAILED`.
 
 **Events** add to §5's set: cursor (image in the body, hotspot, suppressed), relative mode,
 blocked and unblocked, rumble, stream ended with a reason, host mode.
@@ -728,6 +746,17 @@ create, destroy, seam, status, user data and poll calls, `lowlat_client_create_i
 and `HOST_MODE` with their bodies and the outcome `LOWLAT_OUTCOME_DISCONNECTED`. The seam's
 types moved out of the host's guard into one both halves share; nothing moved in memory and
 nothing changed meaning.
+
+**Minor 5** (2026-09-17) added the pictures ([§3b](#3b-client)): `lowlat_client_acquire_frame`
+and `lowlat_client_release_frame`, `lowlat_frame`, `lowlat_plane` and `lowlat_fence`, the
+`lowlat_decoder`, `lowlat_frame_kind` and `lowlat_fence_kind` enumerations and the picture
+formats; `lowlat_client_create_info` gained the decoder, the frame kind, the ceiling and the
+device, and `lowlat_client_status` the decoder's state and backend, the codec, the queue
+depth, the decode, read-back and reported encode times, the count decoded and the video
+bytes; the statuses `LOWLAT_ERR_TOO_MANY_HELD` and the `LOWLAT_ERR_NO_DECODER_*` range with
+`LOWLAT_ERR_DECODER_UNSUPPORTED`, and the outcome `LOWLAT_OUTCOME_DECODER_FAILED`.
+`lowlat_rotation` and `lowlat_codec` moved from the host's guard to the shared block, their
+values unchanged.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected

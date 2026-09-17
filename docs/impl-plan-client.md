@@ -101,19 +101,37 @@ plays both roles.
 3. `lowlat_features()` reports both halves; the header compiles alone with `LOWLAT_NO_HOST`
    and with `LOWLAT_NO_CLIENT`. *Passed 2026-09-17.*
 
-## Phase C2 - A picture from a real host
+## Phase C2 - A picture from a real host (closed 2026-09-17)
 
-- [ ] `lowlat-decode`: the decoder trait and the **VA-API backend** -- the driver's interface
-  loaded at runtime, H.264 and HEVC, eight and ten bit, planes by read-back first.
-- [ ] The **frame queue** of [10 §4](10-client.md): four slots, latest wins, the producer
+- [x] `lowlat-decode`: the decoder trait and the **VA-API backend**, and beneath it **the
+  library's own reading of both bitstreams** -- the device interfaces here decode a picture
+  from its parameters and its slices, so the parameter sets, the slice headers, the picture
+  order, the reference lists and the picture buffer that holds them are the library's job,
+  in full syntax for H.264 (fields and MBAFF, B slices, reference-list modification,
+  weighted prediction, the marking process with long-term references, gaps in the frame
+  count) and HEVC (short- and long-term reference sets, dependent slices, tiles and
+  wavefront entry points, the leading pictures dropped after a stream-starting random
+  access point); eight and ten bit; planes by read-back. The driver's interface is loaded at
+  runtime through `lowlat-drivers`, one crate for every interface reached that way, shared
+  with the encoders. Every committed clip -- three from this host's synthetic source and
+  fifteen from two other encoders at 128 and 256 square, B pyramids, MBAFF, CAVLC, slices,
+  scaling lists, ten bit -- decodes bit-exact against an independent decoder's per-picture
+  checksums; both readers are fuzzed, with two crash inputs kept as regression tests.
+- [x] The **frame queue** of [10 §4](10-client.md): four slots, latest wins, the producer
   steals the oldest ready slot and never a held one, `acquire_frame` / `release_frame` with
-  the two-held rule and the fence. Named regression tests: the producer never blocks without
-  a consumer; a held slot is never overwritten; a third acquire is refused.
-- [ ] The decoder built from the stream ([10 §5](10-client.md)): parameter sets build it, bit
-  5 keeps it, a metadata message's rebuild bit or a stale generation tears it down, a fault
-  destroys it before the request.
-- [ ] **`examples/client`**: the C demo on the toolkit, one file for signaling, one for the
-  session; window, present, nothing else. It logs in with the same tool the host uses.
+  the two-held rule and the fence (planes only in this minor, so the fence is null-only).
+  The slots are sized at the configuration's ceiling and backed on the decode thread at the
+  first picture, demand-zero; each picture is laid out at its own pitch. The ring is model
+  checked; named regression tests: the producer never blocks without a consumer; a held
+  slot is never overwritten; a third acquire is refused; a held slot keeps its layout.
+- [x] The decoder built from the stream ([10 §5](10-client.md)) on **the decode thread**,
+  which takes access units from the receive thread's pool, runs the policy of C1 over the
+  real backend, publishes pictures into the queue, and carries the one keyframe request to
+  the session thread. The decoder is opened at creation, so a machine without one is refused
+  there with the stage named; a client with nowhere to draw may ask for none.
+- [x] **`examples/client`**: the C demo on the toolkit, one file for signaling, one for the
+  session; window, present, nothing else, and a line of figures a second. It logs in with
+  the same tool the host uses.
 
 **Gate:**
 
@@ -123,13 +141,39 @@ plays both roles.
    between consecutive presents with the stream at the display's rate, above it and below
    it, and the lag the picture reaches with the decoder slowed to half the stream's rate
    under the simulator ([10 §4.1](10-client.md)). The deferred decisions below wait on them.
+   *Passed 2026-09-17, on the open-stack decoder of the second card, 1080p H.264 at 120
+   pictures a second, the desktop moving independently of the demo's own window: ten
+   minutes at the display's rate with 120.6 pictures decoded a second, decode 2.0 ms at the
+   median and 2.3 at the ninety-fifth percentile, read-back 2.0 and 2.2, the queue at one,
+   the reader at most one message behind (8 ms at the ninety-fifth percentile, 25 at most),
+   6.2 Mbit/s, 208 MB resident, one decoder build and no keyframe request. Cadence, per
+   second between consecutive presents: at the display's rate 118 new pictures, 3 repeats
+   and 3 skips at the median (11 and 11 at the ninety-fifth percentile) -- the beat of two
+   unsynchronised clocks; with the stream below the display's rate (60 against 120) 60
+   pictures, 60 repeats, no skips; with the stream above the presentation rate (120 against
+   a 60-a-second poll) 60 pictures, 60 skips, no repeats. The half-rate lag under the
+   simulator: 159 messages at the deepest, 611 pictures discarded by the catch-up over 1317
+   frames at a keyframe every 300.*
 2. **The demo shows an established host's desktop** on the second machine for ten minutes from
    a cold connect, with the initialization and the per-stream declaration accepted as the
    established client's are, and a clean departure read as such on both sides.
+   *Passed 2026-09-17: ten minutes from a cold connect to an established host on the second
+   machine, over the wide area under the current cipher, the initialization accepted with
+   the video protocol honoured (the host's own log reads the guest as connected with
+   `vp_supported = 1` and the encoder built for it), one decoder build over the ten minutes,
+   the host's encode time read at 3.7 ms, 30 pictures a second from a mostly still desktop,
+   and the departure read as a clean disconnect on both logs. The process map during the
+   run held 89 libraries and no copyleft codec. The first offer was refused outright: an
+   established host requires the offer's `mode` ([04 §4](04-signaling.md)).*
 3. A keyframe with unchanged parameter sets from a host that marks it does not rebuild the
-   decoder; from a host that does not, it does, and the picture continues.
+   decoder; from a host that does not, it does, and the picture continues. *Passed
+   2026-09-17: one build over the ten minutes of item 1, this host marking every keyframe;
+   the other half hermetically, this host's own framing with the marking off against the
+   real decoder -- a rebuild per keyframe, 477 pictures across four of them, every one the
+   reference decoder's.*
 4. The hermetic session of C1 now decodes: the picture out matches the synthetic picture in,
-   frame for frame, at zero loss.
+   frame for frame, at zero loss. *Passed 2026-09-17: 477 pictures, three loops of the clip
+   with two announced keyframes, every picture the reference decoder's, one decoder build.*
 
 ## Phase C3 - Input
 
@@ -205,7 +249,9 @@ plays both roles.
 ### Deferred decisions, recorded 2026-09-16
 
 Each is written up in [10-client.md](10-client.md) and decided on the numbers the C2 gate
-records, not before; none is in v1.
+records, not before; none is in v1. **The numbers are recorded** (2026-09-17, in 10 §4.1, §5
+and §9); the decisions are taken at C5's planning, where the surface two of them need is
+built.
 
 - **A decode-lag keyframe request** ([10 §5](10-client.md)): a third trigger for the request,
   when the reader is behind by more than a threshold with no announced keyframe ahead, rate
@@ -227,6 +273,15 @@ records, not before; none is in v1.
 
 Newest first.
 
+- 2026-09-17, later: C2 closed. The library reads both bitstreams itself in full syntax and
+  hands the device the picture and slice parameters, because the interfaces here decode from
+  those and the licence rule keeps every other reader out; the clips are checked against an
+  independent decoder, never against ourselves; the slots are sized at the ceiling, backed at
+  the first picture and laid out at the picture's own pitch; the read-back's cost is the
+  driver's mapping and was measured rather than optimised; the gate's cadence figures were
+  taken with the demo's own knobs on one display, the old-framing half of item 3 hermetically,
+  and an established host turned out to require the offer's `mode`. The deferred decisions
+  carry their numbers and are decided at C5's planning.
 - 2026-09-17: C1 closed. The receive thread owns the ring and therefore the catch-up; the
   access-unit buffer is sized from the ring rather than at 16 MiB; the keyframe policy is a
   state machine tested against a fake until C2 brings a decoder; both ciphers, with a setting

@@ -316,6 +316,21 @@ decodes none of it, and a client meeting a 4:4:4 stream there falls back to soft
 by disconnecting with a decode status rather than by degrading quietly. A host reads that
 status and reports it; it cannot detect the condition itself and does not guess.
 
+### §7a The client library, on Linux
+
+The above is any guest. **A guest running the client library of [10](10-client.md) does have
+a requirement**: a hardware decoder reached through the open interface, because the library
+decodes in hardware or refuses ([10 §5.1](10-client.md)). What it needs of the part is the
+decode entry point for the stream's profile -- H.264 High, HEVC Main, HEVC Main 10 -- which
+on the open stack every part that encodes in §3 to §5 also has, and many older ones besides.
+
+| Part | Interface | H.264 High | HEVC Main | HEVC Main 10 | Evidence |
+|---|---|---|---|---|---|
+| AMD RDNA 2 (discrete) | VA-API, open stack 25.0.7 | yes | yes | yes | **measured**: eighteen clips from three encoders, every picture the reference decoder's; a 1080p stream at 120 pictures a second decodes in about 2 ms and reads back in about 2 ms |
+| Other AMD from Fiji (GCN 3) | VA-API | yes | yes | Polaris and later | from the driver's published profile tables; the same code path, not run here |
+| Intel from Broadwell | VA-API | yes | Skylake and later | Kaby Lake and later | from the driver's published profile tables; not run here |
+| NVIDIA | the vendor's decode interface | -- | -- | -- | the second backend, a later phase; the open interface has no driver for this vendor |
+
 ---
 
 ## §8 Windows

@@ -128,6 +128,11 @@ Every byte that arrives from the network is parsed by a fuzz target:
   a hostile browser. Both run seeded so the same bytes walk the same path twice, and both
   are slow by the standards of the parsers above -- a handshake is a few signatures -- so
   their bounded runs are counted in tens of seconds rather than millions of executions.
+- **the client's two bitstream readers** ([10 §5.1](10-client.md)), each fed an access unit
+  of its codec and run through the parameter sets, the slice headers and the picture
+  buffer with no device behind them, seeded from the committed clips' units. Both found a
+  crash in their first minutes -- a signed delta overflowing a scaling list, a reference
+  index underflowing a list -- and both inputs are regression tests.
 
 Rules:
 
@@ -197,6 +202,16 @@ what keeps the exemption from spreading.
   than failing. A skip that reads as a failure trains people to ignore failures.
 - **Continuous integration has no GPU**, so it runs the software encoder path end to end. That
   is the second reason the software backend exists ([05 §4](05-host.md)).
+- **The decoder is checked against an independent decoder, never against itself.** The
+  committed clips under `crates/decode/tests/data` -- three from this host's synthetic source
+  and fifteen from two other encoders, small pictures covering B pyramids, field coding,
+  entropy coders, slices, scaling lists and ten bit -- each carry a list of per-picture plane
+  checksums produced by a separate decoder run as a separate process, so the readers and the
+  device are held to what another implementation made of the same bytes. The hardware-labelled
+  tests decode every clip on the render node and compare picture for picture; the hermetic
+  session of [10](10-client.md) runs the same clip through this host's framing to the real
+  decoder, with the keyframes announced and with them not; and a labelled probe times the
+  read-back copy three ways so that choice is a number from the device rather than a guess.
 - **The browser pipe has two live rows and neither can be replaced by a hermetic one.** A
   stock browser client, unmodified, streaming from the service; and `examples/web-client` on
   two browser families, driven through their developer-tools protocols so a run is scripted
