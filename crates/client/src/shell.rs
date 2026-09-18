@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::mpsc;
 
 use lowlat_common::events;
+use lowlat_common::spsc::Ring;
 use lowlat_core::channel::{RecvRing, SlotMeta};
 use lowlat_core::conn::{Conn, Credentials};
 use lowlat_core::control::CONTROL_CHANNEL;
@@ -21,6 +22,7 @@ use lowlat_net::{Running, Shell, Socket, Wake};
 use std::sync::atomic::Ordering;
 
 use crate::driver::{Driver, Telemetry, Units};
+use crate::input::{RING_DEPTH, Request};
 use crate::seam::{Arrival, Ask, Event, Outcome};
 use crate::{
     AUDIO_CHANNEL, AUDIO_RECV_SLOTS, BODY, CONTROL_RECV_SLOTS, CONTROL_SEND_SLOTS, VIDEO_CHANNEL,
@@ -42,6 +44,8 @@ pub(crate) struct Attached {
     pub init: Init,
     pub arrivals: mpsc::Receiver<Arrival>,
     pub asked: mpsc::Receiver<Ask>,
+    /// The consumer end of the input ring; the seam holds the producer.
+    pub requests: Arc<Ring<Request, RING_DEPTH>>,
     pub emit: events::Sender<Event>,
     pub telemetry: Arc<Telemetry>,
     pub units: Units,
@@ -83,6 +87,7 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
         init,
         arrivals,
         asked,
+        requests,
         emit,
         telemetry,
         units,
@@ -154,6 +159,7 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
     while !running.stopping() {
         let arrivals = &arrivals;
         let asked = &asked;
+        let requests = &requests;
         let driving = &mut driver;
         let mut leaving = false;
         let mut ended: Option<Outcome> = None;
@@ -173,6 +179,14 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
                         driving.send_user_data(endpoint.session(), id, &text);
                     }
                     Ask::Leave => leaving = true,
+                }
+            }
+            // Input in the order the application gave it, the viewport
+            // taking effect for what follows it.
+            while let Some(request) = requests.pop() {
+                match request {
+                    Request::Input(input) => driving.send_input(endpoint.session(), &input),
+                    Request::Viewport(viewport) => driving.set_viewport(viewport),
                 }
             }
         }) {

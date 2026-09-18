@@ -152,6 +152,51 @@ fn session_under(legacy: bool) {
         1
     );
 
+    // Input crosses the ring to the session thread and goes out: two key
+    // messages, none dropped. The viewport is a request like any other.
+    let before = client
+        .telemetry()
+        .control_out
+        .load(std::sync::atomic::Ordering::Relaxed);
+    assert!(client.set_viewport(lowlat_client::input::Viewport {
+        x: 0,
+        y: 0,
+        w: 100,
+        h: 100,
+    }));
+    for pressed in [true, false] {
+        assert!(client.send_input(lowlat_client::input::Input::Key {
+            code: 4,
+            mods: 0,
+            pressed,
+        }));
+    }
+    let began = Instant::now();
+    while began.elapsed() < Duration::from_secs(2)
+        && client
+            .telemetry()
+            .control_out
+            .load(std::sync::atomic::Ordering::Relaxed)
+            < before + 2
+    {
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(
+        client
+            .telemetry()
+            .control_out
+            .load(std::sync::atomic::Ordering::Relaxed),
+        before + 2,
+        "the key messages did not go out"
+    );
+    assert_eq!(
+        client
+            .telemetry()
+            .input_dropped
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+
     client.end_connection("a");
     // The host reads the departure and reports it.
     let began = Instant::now();

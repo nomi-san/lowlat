@@ -59,6 +59,9 @@ pub enum lowlat_event_type {
     LOWLAT_EVENT_STREAM_ENDED = 10,
     /// The host said which mode it is in. Client only.
     LOWLAT_EVENT_HOST_MODE = 11,
+    /// The host put this client into relative mode, or took it out. Client
+    /// only.
+    LOWLAT_EVENT_RELATIVE = 12,
 }
 
 /// Why an attempt finished.
@@ -193,6 +196,19 @@ pub struct lowlat_host_mode_event {
     pub mode: u32,
 }
 
+/// Relative mode entered or left.
+///
+/// On the way out, where the pointer reappears, in the window's units through
+/// the viewport the application set; the application warps its pointer there
+/// once, on this transition, and not on every update.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_relative_event {
+    pub relative: bool,
+    pub x: i32,
+    pub y: i32,
+}
+
 /// An application message from a guest, or from the host on the client's side.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -227,6 +243,7 @@ pub union lowlat_event_body {
     pub blocked: lowlat_blocked_event,
     pub stream_ended: lowlat_stream_ended_event,
     pub host_mode: lowlat_host_mode_event,
+    pub relative: lowlat_relative_event,
 }
 
 /// One event.

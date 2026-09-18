@@ -42,7 +42,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 5
+#define LOWLAT_ABI_MINOR 6
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 #define LOWLAT_FEATURE_HOST 1
@@ -127,6 +127,120 @@
 #endif
 
 #if defined(LOWLAT_CLIENT)
+/// Modifier bits for `lowlat_key_input`. The lock bits are the toggles'
+/// state, which a host reads to keep its own locks in step.
+#define LOWLAT_MOD_LSHIFT 1
+
+#define LOWLAT_MOD_RSHIFT 2
+
+#define LOWLAT_MOD_LCTRL 64
+
+#define LOWLAT_MOD_RCTRL 128
+
+#define LOWLAT_MOD_LALT 256
+
+#define LOWLAT_MOD_RALT 512
+
+#define LOWLAT_MOD_LGUI 1024
+
+#define LOWLAT_MOD_RGUI 2048
+
+#define LOWLAT_MOD_NUM 4096
+
+#define LOWLAT_MOD_CAPS 8192
+
+/// Mouse buttons for `lowlat_mouse_button_input`.
+#define LOWLAT_MOUSE_LEFT 1
+
+#define LOWLAT_MOUSE_MIDDLE 2
+
+#define LOWLAT_MOUSE_RIGHT 3
+
+#define LOWLAT_MOUSE_X1 4
+
+#define LOWLAT_MOUSE_X2 5
+
+/// Pad buttons for `lowlat_pad_button_input`, by index.
+///
+/// **Not the bits of `lowlat_pad_state_input`**: the two forms number the
+/// buttons differently and neither is derivable from the other.
+#define LOWLAT_PAD_A 0
+
+#define LOWLAT_PAD_B 1
+
+#define LOWLAT_PAD_X 2
+
+#define LOWLAT_PAD_Y 3
+
+#define LOWLAT_PAD_BACK 4
+
+#define LOWLAT_PAD_GUIDE 5
+
+#define LOWLAT_PAD_START 6
+
+#define LOWLAT_PAD_LSTICK 7
+
+#define LOWLAT_PAD_RSTICK 8
+
+#define LOWLAT_PAD_LSHOULDER 9
+
+#define LOWLAT_PAD_RSHOULDER 10
+
+#define LOWLAT_PAD_DPAD_UP 11
+
+#define LOWLAT_PAD_DPAD_DOWN 12
+
+#define LOWLAT_PAD_DPAD_LEFT 13
+
+#define LOWLAT_PAD_DPAD_RIGHT 14
+
+/// Pad axes for `lowlat_pad_axis_input`. Sticks span the signed range;
+/// triggers run from zero.
+#define LOWLAT_PAD_AXIS_LX 0
+
+#define LOWLAT_PAD_AXIS_LY 1
+
+#define LOWLAT_PAD_AXIS_RX 2
+
+#define LOWLAT_PAD_AXIS_RY 3
+
+#define LOWLAT_PAD_AXIS_LT 4
+
+#define LOWLAT_PAD_AXIS_RT 5
+
+/// Button bits for `lowlat_pad_state_input`.
+#define LOWLAT_PAD_STATE_DPAD_UP 1
+
+#define LOWLAT_PAD_STATE_DPAD_DOWN 2
+
+#define LOWLAT_PAD_STATE_DPAD_LEFT 4
+
+#define LOWLAT_PAD_STATE_DPAD_RIGHT 8
+
+#define LOWLAT_PAD_STATE_START 16
+
+#define LOWLAT_PAD_STATE_BACK 32
+
+#define LOWLAT_PAD_STATE_LSTICK 64
+
+#define LOWLAT_PAD_STATE_RSTICK 128
+
+#define LOWLAT_PAD_STATE_LSHOULDER 256
+
+#define LOWLAT_PAD_STATE_RSHOULDER 512
+
+#define LOWLAT_PAD_STATE_GUIDE 1024
+
+#define LOWLAT_PAD_STATE_TOUCHPAD 2048
+
+#define LOWLAT_PAD_STATE_A 4096
+
+#define LOWLAT_PAD_STATE_B 8192
+
+#define LOWLAT_PAD_STATE_X 16384
+
+#define LOWLAT_PAD_STATE_Y 32768
+
 /// No decoder has been built yet: no parameter set has arrived.
 #define LOWLAT_DECODER_NONE_YET 0
 
@@ -268,6 +382,9 @@ typedef enum lowlat_event_type {
     LOWLAT_EVENT_STREAM_ENDED = 10,
     /// The host said which mode it is in. Client only.
     LOWLAT_EVENT_HOST_MODE = 11,
+    /// The host put this client into relative mode, or took it out. Client
+    /// only.
+    LOWLAT_EVENT_RELATIVE = 12,
 } lowlat_event_type;
 
 /// Why an attempt finished.
@@ -447,6 +564,31 @@ typedef enum lowlat_fence_kind {
     /// Reusable now.
     LOWLAT_FENCE_NONE = 0,
 } lowlat_fence_kind;
+
+/// What one input report is.
+///
+/// **Named by an enumeration and carried as an integer** in `lowlat_input`,
+/// for the reason `lowlat_status` is: the application writes the field.
+typedef enum lowlat_input_kind {
+    /// `key`: a physical key by its usage code.
+    LOWLAT_INPUT_KEY = 1,
+    /// `mouse_button`.
+    LOWLAT_INPUT_MOUSE_BUTTON = 2,
+    /// `mouse_wheel`.
+    LOWLAT_INPUT_MOUSE_WHEEL = 3,
+    /// `mouse_motion`: a position, or a delta.
+    LOWLAT_INPUT_MOUSE_MOTION = 4,
+    /// `pad_button`: one button of a pad.
+    LOWLAT_INPUT_PAD_BUTTON = 5,
+    /// `pad_axis`: one axis of a pad.
+    LOWLAT_INPUT_PAD_AXIS = 6,
+    /// `pad_state`: a whole pad at once.
+    LOWLAT_INPUT_PAD_STATE = 7,
+    /// `pad_unplug`: the pad is gone.
+    LOWLAT_INPUT_PAD_UNPLUG = 8,
+    /// No body. Everything held comes up; sent on losing focus.
+    LOWLAT_INPUT_RELEASE_ALL = 9,
+} lowlat_input_kind;
 
 /// One client, as the application holds it.
 ///
@@ -1006,6 +1148,17 @@ typedef struct lowlat_host_mode_event {
     uint32_t mode;
 } lowlat_host_mode_event;
 
+/// Relative mode entered or left.
+///
+/// On the way out, where the pointer reappears, in the window's units through
+/// the viewport the application set; the application warps its pointer there
+/// once, on this transition, and not on every update.
+typedef struct lowlat_relative_event {
+    bool relative;
+    int32_t x;
+    int32_t y;
+} lowlat_relative_event;
+
 /// Whichever event this is.
 ///
 /// A union cannot describe itself, and the tag beside it is what says which
@@ -1022,6 +1175,7 @@ typedef union lowlat_event_body {
     lowlat_blocked_event blocked;
     lowlat_stream_ended_event stream_ended;
     lowlat_host_mode_event host_mode;
+    lowlat_relative_event relative;
 } lowlat_event_body;
 
 /// One event.
@@ -1092,6 +1246,94 @@ typedef struct lowlat_client_config {
     char servers[LOWLAT_SERVERS_MAX][LOWLAT_SERVER_MAX];
 } lowlat_client_config;
 
+/// A key. Zero is no key and is not sent.
+typedef struct lowlat_key_input {
+    /// The usage code of the physical key.
+    uint32_t code;
+    /// `LOWLAT_MOD_*` bits in effect, lock state included.
+    uint32_t mods;
+    bool pressed;
+} lowlat_key_input;
+
+/// A mouse button, with where the pointer was in the window's units. A press
+/// outside the picture's rectangle is not sent; a release always is.
+typedef struct lowlat_mouse_button_input {
+    /// One of `LOWLAT_MOUSE_*`.
+    uint32_t button;
+    bool pressed;
+    int32_t x;
+    int32_t y;
+} lowlat_mouse_button_input;
+
+/// Wheel movement, 120 to a detent.
+typedef struct lowlat_mouse_wheel_input {
+    int32_t x;
+    int32_t y;
+} lowlat_mouse_wheel_input;
+
+/// A position in the window's units, mapped into the picture through the
+/// viewport; or a delta when relative, scaled by the picture's size against
+/// the viewport's.
+typedef struct lowlat_mouse_motion_input {
+    int32_t x;
+    int32_t y;
+    bool relative;
+} lowlat_mouse_motion_input;
+
+/// One button of a pad. The pad identifier is the application's and is
+/// arbitrary; a host maps it to a slot.
+typedef struct lowlat_pad_button_input {
+    uint32_t pad;
+    /// One of `LOWLAT_PAD_*`, the index form.
+    uint32_t button;
+    bool pressed;
+} lowlat_pad_button_input;
+
+/// One axis of a pad.
+typedef struct lowlat_pad_axis_input {
+    uint32_t pad;
+    /// One of `LOWLAT_PAD_AXIS_*`.
+    uint32_t axis;
+    int16_t value;
+} lowlat_pad_axis_input;
+
+/// A whole pad. An unchanged state for the same pad is not sent again.
+typedef struct lowlat_pad_state_input {
+    uint32_t pad;
+    /// `LOWLAT_PAD_STATE_*` bits.
+    uint16_t buttons;
+    int16_t lx;
+    int16_t ly;
+    int16_t rx;
+    int16_t ry;
+    uint8_t lt;
+    uint8_t rt;
+} lowlat_pad_state_input;
+
+/// The pad is gone. The host destroys its device, which releases everything.
+typedef struct lowlat_pad_unplug_input {
+    uint32_t pad;
+} lowlat_pad_unplug_input;
+
+/// Whichever report this is; `kind` says which member is valid.
+typedef union lowlat_input_body {
+    lowlat_key_input key;
+    lowlat_mouse_button_input mouse_button;
+    lowlat_mouse_wheel_input mouse_wheel;
+    lowlat_mouse_motion_input mouse_motion;
+    lowlat_pad_button_input pad_button;
+    lowlat_pad_axis_input pad_axis;
+    lowlat_pad_state_input pad_state;
+    lowlat_pad_unplug_input pad_unplug;
+} lowlat_input_body;
+
+/// One input report from the application.
+typedef struct lowlat_input {
+    /// One of `lowlat_input_kind`.
+    uint32_t kind;
+    lowlat_input_body body;
+} lowlat_input;
+
 /// The session as it stands.
 typedef struct lowlat_client_status {
     /// Set by the caller to `sizeof(lowlat_client_status)`.
@@ -1136,6 +1378,9 @@ typedef struct lowlat_client_status {
     /// The decoder backend in use, one of `lowlat_decoder` as resolved at
     /// creation: never `LOWLAT_DECODER_AUTO`.
     uint32_t backend;
+    /// Input reports dropped because the session thread was not keeping up.
+    /// Nonzero means the loop is not running, not that input is fast.
+    uint32_t input_dropped;
 } lowlat_client_status;
 
 /// One plane of a picture.
@@ -1890,6 +2135,50 @@ lowlat_status lowlat_client_begin_p2p(lowlat_client *cl,
 ///
 /// @attention `cl` came from `lowlat_client_create`.
 void lowlat_client_end_connection(lowlat_client *cl) LOWLAT_NOEXCEPT;
+
+/// Say where the picture is drawn.
+///
+/// The rectangle is in the same units as the positions the application
+/// reports, and that is all the library knows about the window: no fit is
+/// computed here, so stretching, shrinking, a percent scale and a rotated
+/// picture are the application's ways of producing one rectangle, and a
+/// display scale factor never enters. The picture's own size comes from the
+/// stream. A zero rectangle means there is nothing to aim at, and absolute
+/// motion is not sent until one is set.
+///
+/// @param[in] cl The handle from `lowlat_client_create`.
+/// @param[in] x The rectangle's left edge in the window.
+/// @param[in] y Its top edge.
+/// @param[in] w Its width; zero for no picture area.
+/// @param[in] h Its height.
+/// @returns `LOWLAT_OK`, or `LOWLAT_ERR_NOT_STARTED` with no session up.
+///
+/// @attention `cl` came from `lowlat_client_create`.
+lowlat_status lowlat_client_set_viewport(lowlat_client *cl,
+                                         int32_t x,
+                                         int32_t y,
+                                         int32_t w,
+                                         int32_t h) LOWLAT_NOEXCEPT;
+
+/// Report one input event.
+///
+/// The library applies the rules every client applies (docs/10-client.md
+/// section 8): positions are mapped into the picture through the viewport
+/// with the far edge reachable, a press outside the picture is dropped and a
+/// release never is, a key of code zero is dropped, an unchanged pad state is
+/// not repeated. **Never blocks.** A session thread that has stopped taking
+/// input fills a fixed ring, after which reports are dropped and counted in
+/// `lowlat_client_status`.
+///
+/// @param[in] cl The handle from `lowlat_client_create`.
+/// @param[in] input The report, its `kind` one of `lowlat_input_kind`.
+/// @returns `LOWLAT_OK`, `LOWLAT_ERR_NOT_STARTED` with no session up, or
+/// `LOWLAT_ERR_INVALID_ARGUMENT` for a kind this library does not know.
+///
+/// @attention `cl` came from `lowlat_client_create`; `input` points to one
+/// `lowlat_input` whose member named by `kind` is set.
+lowlat_status lowlat_client_send_input(lowlat_client *cl,
+                                       const lowlat_input *input) LOWLAT_NOEXCEPT;
 
 /// Send the host's application a message.
 ///

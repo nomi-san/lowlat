@@ -669,6 +669,25 @@ int main(int argc, char **argv)
             fprintf(stderr, "harness: a client with an attempt is not connecting\n");
             return 1;
         }
+        // Input before a session is refused as not started, never taken; a
+        // kind the library does not know is an argument error.
+        lowlat_status (*client_send_input)(lowlat_client *, const lowlat_input *);
+        RESOLVE(client_send_input, lib, "lowlat_client_send_input");
+        lowlat_input report;
+        memset(&report, 0, sizeof report);
+        report.kind = LOWLAT_INPUT_KEY;
+        report.body.key.code = 4;
+        report.body.key.mods = LOWLAT_MOD_LSHIFT | LOWLAT_MOD_CAPS;
+        report.body.key.pressed = true;
+        if (client_send_input(cl, &report) != LOWLAT_ERR_NOT_STARTED) {
+            fprintf(stderr, "harness: input before a session was not refused\n");
+            return 1;
+        }
+        report.kind = 999;
+        if (client_send_input(cl, &report) != LOWLAT_ERR_INVALID_ARGUMENT) {
+            fprintf(stderr, "harness: an unknown input kind was not refused\n");
+            return 1;
+        }
         client_end(cl);
         client_destroy(cl);
     }

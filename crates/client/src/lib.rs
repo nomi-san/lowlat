@@ -34,6 +34,7 @@ pub mod decode;
 pub mod driver;
 pub mod feed;
 pub mod frames;
+pub mod input;
 pub mod seam;
 mod shell;
 

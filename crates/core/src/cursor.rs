@@ -208,6 +208,87 @@ fn put(out: &mut [u8], at: &mut usize, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// One update as a receiver reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Message<'a> {
+    pub update: Update,
+    pub flags: Flags,
+    /// The picture's size, when one travels; zero otherwise.
+    pub width: u16,
+    pub height: u16,
+    /// The checksum a cached picture is named by; zero when none was.
+    pub checksum: u32,
+    /// The picture itself, empty unless the image bit is set.
+    pub image: &'a [u8],
+}
+
+fn be16(body: &[u8], at: usize) -> Result<u16> {
+    body.get(at..at + 2)
+        .and_then(|s| <[u8; 2]>::try_from(s).ok())
+        .map(u16::from_be_bytes)
+        .ok_or(Error::ShortPacket)
+}
+
+/// Read an update off a control message.
+///
+/// **The two forms are told apart by their bits, read independently.** With
+/// the image bit the hotspot is in the body and the picture follows it, as
+/// many bytes as the declared size; with the cached bit the hotspot is in the
+/// header's arguments and the checksum sits where the hotspot would have
+/// been. A body shorter than the fixed part is refused; a declared image
+/// longer than what arrived is taken at what arrived.
+pub fn parse<'a>(message: &Control<'a>) -> Result<Message<'a>> {
+    if message.opcode != op::CURSOR {
+        return Err(Error::ShortPacket);
+    }
+    let body = message.body;
+    let size = body
+        .get(3..7)
+        .and_then(|s| <[u8; 4]>::try_from(s).ok())
+        .map(u32::from_be_bytes)
+        .ok_or(Error::ShortPacket)?;
+    let width = be16(body, 7)?;
+    let height = be16(body, 9)?;
+    let x = be16(body, 11)?;
+    let y = be16(body, 13)?;
+    let at15 = be16(body, 15)?;
+    let at17 = be16(body, 17)?;
+    let flags = Flags::from_bits(be16(body, 19)?);
+    let (hot_x, hot_y, checksum) = if flags.contains(Flags::CACHED) {
+        (
+            u16::try_from(message.a0 & 0xFFFF).unwrap_or(0),
+            u16::try_from(message.a1 & 0xFFFF).unwrap_or(0),
+            u32::from(at15) | (u32::from(at17) << 16),
+        )
+    } else {
+        (at15, at17, 0)
+    };
+    let image = if flags.contains(Flags::IMAGE) {
+        let rest = body.get(BODY_LEN..).unwrap_or(&[]);
+        rest.get(..usize::try_from(size).unwrap_or(usize::MAX))
+            .unwrap_or(rest)
+    } else {
+        &[]
+    };
+    Ok(Message {
+        update: Update {
+            stream: u8::try_from(message.a2 & 0xFF).unwrap_or(0),
+            x,
+            y,
+            hot_x,
+            hot_y,
+            hidden: flags.contains(Flags::HIDDEN),
+            relative: flags.contains(Flags::RELATIVE),
+            suppressed: flags.contains(Flags::SUPPRESSED),
+        },
+        flags,
+        width,
+        height,
+        checksum,
+        image,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::vec;
@@ -362,5 +443,58 @@ mod tests {
     fn a_short_buffer_is_refused() {
         let mut out = [0u8; 20];
         assert!(encode(&mut out, &Update::default(), Image::Unchanged, false).is_err());
+    }
+
+    /// Both forms read back as they were written: the hotspot from the body
+    /// with a picture, from the header when the picture is named.
+    #[test]
+    fn a_receiver_reads_both_forms_back() {
+        let update = Update {
+            stream: 1,
+            x: 640,
+            y: 360,
+            hot_x: 3,
+            hot_y: 5,
+            hidden: true,
+            relative: false,
+            suppressed: true,
+        };
+        let png = [9u8, 8, 7];
+        let mut out = vec![0u8; encoded_len(png.len())];
+        let used = encode(
+            &mut out,
+            &update,
+            Image::Fresh {
+                png: &png,
+                width: 7,
+                height: 21,
+                checksum: 0,
+            },
+            false,
+        )
+        .expect("encode");
+        let fresh = parse(&control::parse(&out[..used]).unwrap()).unwrap();
+        assert_eq!(fresh.update, update);
+        assert_eq!((fresh.width, fresh.height), (7, 21));
+        assert_eq!(fresh.image, &png);
+
+        let used = encode(
+            &mut out,
+            &update,
+            Image::Cached {
+                checksum: 0xDEAD_BEEF,
+            },
+            false,
+        )
+        .expect("encode");
+        let cached = parse(&control::parse(&out[..used]).unwrap()).unwrap();
+        assert_eq!(cached.update, update);
+        assert_eq!(cached.checksum, 0xDEAD_BEEF);
+        assert!(cached.image.is_empty());
+        assert!(cached.flags.contains(Flags::CACHED));
+
+        // Nineteen bytes of body is one short of the flags.
+        let short = control::parse(&out[..13 + 20]).unwrap();
+        assert!(parse(&short).is_err());
     }
 }

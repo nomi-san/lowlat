@@ -21,12 +21,14 @@ use lowlat_common::pool::{self, Pool};
 use lowlat_common::spsc::Ring;
 use lowlat_core::audio;
 use lowlat_core::control::{self, CONTROL_CHANNEL, Control, op};
+use lowlat_core::cursor;
 use lowlat_core::endpoint::Endpoint;
 use lowlat_core::init::{self, Init};
 use lowlat_core::session::{Health, Session};
 use lowlat_core::video::{self, METADATA_LEN, VIDEO_HEADER_LEN};
 use lowlat_core::{Error, conn};
 
+use crate::input::{Input, Mapper, Viewport};
 use crate::seam::{Event, Outcome};
 use crate::{AUDIO_CHANNEL, UNIT_BYTES, UNIT_SLOTS, VIDEO_CHANNEL};
 
@@ -166,6 +168,9 @@ pub struct Telemetry {
     /// The codec the decoder was built for, on the wire's numbering: 0
     /// none yet, 1 the first codec, 2 the second.
     pub codec: AtomicU32,
+    /// Input reports refused because the ring to the session thread was
+    /// full, counted where they were dropped.
+    pub input_dropped: AtomicU32,
 }
 
 /// One session's driver.
@@ -199,6 +204,13 @@ pub struct Driver {
     audio_packets: u64,
     audio_bytes: u64,
     last_audio: Option<audio::AudioHeader>,
+    /// The window-to-picture mapping the application's input goes through.
+    mapper: Mapper,
+    /// The picture's size and turn as last seen, so the mapper is told only
+    /// on a change.
+    picture: (u16, u16, video::Rotation),
+    /// Whether the host has this client in relative mode.
+    relative: bool,
 }
 
 impl Driver {
@@ -232,7 +244,30 @@ impl Driver {
             audio_packets: 0,
             audio_bytes: 0,
             last_audio: None,
+            mapper: Mapper::default(),
+            picture: (0, 0, video::Rotation::Unknown),
+            relative: false,
         }
+    }
+
+    /// Where the application drew the picture.
+    pub fn set_viewport(&mut self, viewport: Viewport) {
+        self.mapper.set_viewport(viewport);
+    }
+
+    /// One report from the application, onto the wire if the rules allow it.
+    pub fn send_input(&mut self, session: &mut Session<'_>, input: &Input) {
+        if !self.established {
+            return;
+        }
+        if let Some(wire) = self.mapper.encode(input) {
+            self.send_control(session, &wire.control());
+        }
+    }
+
+    /// Whether the host has put this client in relative mode.
+    pub fn relative(&self) -> bool {
+        self.relative
     }
 
     pub fn established(&self) -> bool {
@@ -533,9 +568,27 @@ impl Driver {
             reason = "a status is signed and travels in an unsigned argument"
         )]
         match message.opcode {
-            // The pointer, rumble and the roster's body are read by later
-            // phases; here they are counted.
-            op::CURSOR | op::RUMBLE | op::FRAME_TIMING => {}
+            // **Either bit puts a client into relative mode**, and the event
+            // is raised on the transition alone, carrying the position the
+            // pointer reappears at when leaving. The image and the hotspot
+            // are a later phase's.
+            op::CURSOR => {
+                if let Ok(pointer) = cursor::parse(message) {
+                    let want = pointer.update.relative || pointer.update.hidden;
+                    if want != self.relative {
+                        self.relative = want;
+                        let (x, y) = self.mapper.to_window(pointer.update.x, pointer.update.y);
+                        self.emit.send(Event::Relative {
+                            relative: want,
+                            x,
+                            y,
+                        });
+                    }
+                }
+            }
+            // Rumble and the roster's body are read by later phases; here
+            // they are counted.
+            op::RUMBLE | op::FRAME_TIMING => {}
             op::DISCONNECT => {
                 let status = message.a0 as i32;
                 self.telemetry
@@ -616,7 +669,18 @@ impl Driver {
             }
             let content = writer.written();
             let len = content.len();
-            let is_metadata = video::parse(content).is_ok_and(|header| header.metadata);
+            let header = video::parse(content).ok();
+            let is_metadata = header.is_some_and(|header| header.metadata);
+            // The picture's size is the coordinate space the host expects
+            // absolute input in, so the mapper follows the stream itself.
+            if let Some(header) = header.filter(|header| !header.metadata) {
+                let seen = (header.width, header.height, header.rotation);
+                if seen != self.picture {
+                    self.picture = seen;
+                    self.mapper
+                        .set_picture(header.width, header.height, header.rotation);
+                }
+            }
             let tag = if is_metadata { TAG_METADATA } else { 0 };
             // **The pool never refuses here.** The ring is as deep as the
             // pool has slots, so a slot that was free has a place in it.

@@ -148,6 +148,213 @@ pub struct lowlat_client_status {
     /// The decoder backend in use, one of `lowlat_decoder` as resolved at
     /// creation: never `LOWLAT_DECODER_AUTO`.
     pub backend: u32,
+    /// Input reports dropped because the session thread was not keeping up.
+    /// Nonzero means the loop is not running, not that input is fast.
+    pub input_dropped: u32,
+}
+
+/// What one input report is.
+///
+/// **Named by an enumeration and carried as an integer** in [`lowlat_input`],
+/// for the reason [`lowlat_status`] is: the application writes the field.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_input_kind {
+    /// `key`: a physical key by its usage code.
+    LOWLAT_INPUT_KEY = 1,
+    /// `mouse_button`.
+    LOWLAT_INPUT_MOUSE_BUTTON = 2,
+    /// `mouse_wheel`.
+    LOWLAT_INPUT_MOUSE_WHEEL = 3,
+    /// `mouse_motion`: a position, or a delta.
+    LOWLAT_INPUT_MOUSE_MOTION = 4,
+    /// `pad_button`: one button of a pad.
+    LOWLAT_INPUT_PAD_BUTTON = 5,
+    /// `pad_axis`: one axis of a pad.
+    LOWLAT_INPUT_PAD_AXIS = 6,
+    /// `pad_state`: a whole pad at once.
+    LOWLAT_INPUT_PAD_STATE = 7,
+    /// `pad_unplug`: the pad is gone.
+    LOWLAT_INPUT_PAD_UNPLUG = 8,
+    /// No body. Everything held comes up; sent on losing focus.
+    LOWLAT_INPUT_RELEASE_ALL = 9,
+}
+
+/// Modifier bits for [`lowlat_key_input`]. The lock bits are the toggles'
+/// state, which a host reads to keep its own locks in step.
+pub const LOWLAT_MOD_LSHIFT: u32 = 0x0001;
+pub const LOWLAT_MOD_RSHIFT: u32 = 0x0002;
+pub const LOWLAT_MOD_LCTRL: u32 = 0x0040;
+pub const LOWLAT_MOD_RCTRL: u32 = 0x0080;
+pub const LOWLAT_MOD_LALT: u32 = 0x0100;
+pub const LOWLAT_MOD_RALT: u32 = 0x0200;
+pub const LOWLAT_MOD_LGUI: u32 = 0x0400;
+pub const LOWLAT_MOD_RGUI: u32 = 0x0800;
+pub const LOWLAT_MOD_NUM: u32 = 0x1000;
+pub const LOWLAT_MOD_CAPS: u32 = 0x2000;
+
+/// Mouse buttons for [`lowlat_mouse_button_input`].
+pub const LOWLAT_MOUSE_LEFT: u32 = 1;
+pub const LOWLAT_MOUSE_MIDDLE: u32 = 2;
+pub const LOWLAT_MOUSE_RIGHT: u32 = 3;
+pub const LOWLAT_MOUSE_X1: u32 = 4;
+pub const LOWLAT_MOUSE_X2: u32 = 5;
+
+/// Pad buttons for [`lowlat_pad_button_input`], by index.
+///
+/// **Not the bits of [`lowlat_pad_state_input`]**: the two forms number the
+/// buttons differently and neither is derivable from the other.
+pub const LOWLAT_PAD_A: u32 = 0;
+pub const LOWLAT_PAD_B: u32 = 1;
+pub const LOWLAT_PAD_X: u32 = 2;
+pub const LOWLAT_PAD_Y: u32 = 3;
+pub const LOWLAT_PAD_BACK: u32 = 4;
+pub const LOWLAT_PAD_GUIDE: u32 = 5;
+pub const LOWLAT_PAD_START: u32 = 6;
+pub const LOWLAT_PAD_LSTICK: u32 = 7;
+pub const LOWLAT_PAD_RSTICK: u32 = 8;
+pub const LOWLAT_PAD_LSHOULDER: u32 = 9;
+pub const LOWLAT_PAD_RSHOULDER: u32 = 10;
+pub const LOWLAT_PAD_DPAD_UP: u32 = 11;
+pub const LOWLAT_PAD_DPAD_DOWN: u32 = 12;
+pub const LOWLAT_PAD_DPAD_LEFT: u32 = 13;
+pub const LOWLAT_PAD_DPAD_RIGHT: u32 = 14;
+
+/// Pad axes for [`lowlat_pad_axis_input`]. Sticks span the signed range;
+/// triggers run from zero.
+pub const LOWLAT_PAD_AXIS_LX: u32 = 0;
+pub const LOWLAT_PAD_AXIS_LY: u32 = 1;
+pub const LOWLAT_PAD_AXIS_RX: u32 = 2;
+pub const LOWLAT_PAD_AXIS_RY: u32 = 3;
+pub const LOWLAT_PAD_AXIS_LT: u32 = 4;
+pub const LOWLAT_PAD_AXIS_RT: u32 = 5;
+
+/// Button bits for [`lowlat_pad_state_input`].
+pub const LOWLAT_PAD_STATE_DPAD_UP: u16 = 0x0001;
+pub const LOWLAT_PAD_STATE_DPAD_DOWN: u16 = 0x0002;
+pub const LOWLAT_PAD_STATE_DPAD_LEFT: u16 = 0x0004;
+pub const LOWLAT_PAD_STATE_DPAD_RIGHT: u16 = 0x0008;
+pub const LOWLAT_PAD_STATE_START: u16 = 0x0010;
+pub const LOWLAT_PAD_STATE_BACK: u16 = 0x0020;
+pub const LOWLAT_PAD_STATE_LSTICK: u16 = 0x0040;
+pub const LOWLAT_PAD_STATE_RSTICK: u16 = 0x0080;
+pub const LOWLAT_PAD_STATE_LSHOULDER: u16 = 0x0100;
+pub const LOWLAT_PAD_STATE_RSHOULDER: u16 = 0x0200;
+pub const LOWLAT_PAD_STATE_GUIDE: u16 = 0x0400;
+pub const LOWLAT_PAD_STATE_TOUCHPAD: u16 = 0x0800;
+pub const LOWLAT_PAD_STATE_A: u16 = 0x1000;
+pub const LOWLAT_PAD_STATE_B: u16 = 0x2000;
+pub const LOWLAT_PAD_STATE_X: u16 = 0x4000;
+pub const LOWLAT_PAD_STATE_Y: u16 = 0x8000;
+
+/// A key. Zero is no key and is not sent.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_key_input {
+    /// The usage code of the physical key.
+    pub code: u32,
+    /// `LOWLAT_MOD_*` bits in effect, lock state included.
+    pub mods: u32,
+    pub pressed: bool,
+}
+
+/// A mouse button, with where the pointer was in the window's units. A press
+/// outside the picture's rectangle is not sent; a release always is.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_mouse_button_input {
+    /// One of `LOWLAT_MOUSE_*`.
+    pub button: u32,
+    pub pressed: bool,
+    pub x: i32,
+    pub y: i32,
+}
+
+/// Wheel movement, 120 to a detent.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_mouse_wheel_input {
+    pub x: i32,
+    pub y: i32,
+}
+
+/// A position in the window's units, mapped into the picture through the
+/// viewport; or a delta when relative, scaled by the picture's size against
+/// the viewport's.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_mouse_motion_input {
+    pub x: i32,
+    pub y: i32,
+    pub relative: bool,
+}
+
+/// One button of a pad. The pad identifier is the application's and is
+/// arbitrary; a host maps it to a slot.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_pad_button_input {
+    pub pad: u32,
+    /// One of `LOWLAT_PAD_*`, the index form.
+    pub button: u32,
+    pub pressed: bool,
+}
+
+/// One axis of a pad.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_pad_axis_input {
+    pub pad: u32,
+    /// One of `LOWLAT_PAD_AXIS_*`.
+    pub axis: u32,
+    pub value: i16,
+}
+
+/// A whole pad. An unchanged state for the same pad is not sent again.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_pad_state_input {
+    pub pad: u32,
+    /// `LOWLAT_PAD_STATE_*` bits.
+    pub buttons: u16,
+    pub lx: i16,
+    pub ly: i16,
+    pub rx: i16,
+    pub ry: i16,
+    pub lt: u8,
+    pub rt: u8,
+}
+
+/// The pad is gone. The host destroys its device, which releases everything.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_pad_unplug_input {
+    pub pad: u32,
+}
+
+/// Whichever report this is; `kind` says which member is valid.
+#[repr(C)]
+#[derive(Clone, Copy)]
+#[allow(missing_debug_implementations)]
+pub union lowlat_input_body {
+    pub key: lowlat_key_input,
+    pub mouse_button: lowlat_mouse_button_input,
+    pub mouse_wheel: lowlat_mouse_wheel_input,
+    pub mouse_motion: lowlat_mouse_motion_input,
+    pub pad_button: lowlat_pad_button_input,
+    pub pad_axis: lowlat_pad_axis_input,
+    pub pad_state: lowlat_pad_state_input,
+    pub pad_unplug: lowlat_pad_unplug_input,
+}
+
+/// One input report from the application.
+#[repr(C)]
+#[derive(Clone, Copy)]
+#[allow(missing_debug_implementations)]
+pub struct lowlat_input {
+    /// One of [`lowlat_input_kind`].
+    pub kind: u32,
+    pub body: lowlat_input_body,
 }
 
 /// No decoder has been built yet: no parameter set has arrived.
@@ -614,6 +821,154 @@ pub unsafe extern "C" fn lowlat_client_end_connection(cl: *mut lowlat_client) {
     }
 }
 
+/// Say where the picture is drawn.
+///
+/// The rectangle is in the same units as the positions the application
+/// reports, and that is all the library knows about the window: no fit is
+/// computed here, so stretching, shrinking, a percent scale and a rotated
+/// picture are the application's ways of producing one rectangle, and a
+/// display scale factor never enters. The picture's own size comes from the
+/// stream. A zero rectangle means there is nothing to aim at, and absolute
+/// motion is not sent until one is set.
+///
+/// @param[in] cl The handle from [`lowlat_client_create`].
+/// @param[in] x The rectangle's left edge in the window.
+/// @param[in] y Its top edge.
+/// @param[in] w Its width; zero for no picture area.
+/// @param[in] h Its height.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_NOT_STARTED`] with no session up.
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_set_viewport(
+    cl: *mut lowlat_client,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+) -> lowlat_status {
+    unsafe {
+        entered(cl, |handle| {
+            let viewport = ::lowlat_client::input::Viewport { x, y, w, h };
+            if handle.held().seam.set_viewport(viewport) {
+                LOWLAT_OK
+            } else {
+                LOWLAT_ERR_NOT_STARTED
+            }
+        })
+    }
+}
+
+/// Report one input event.
+///
+/// The library applies the rules every client applies (docs/10-client.md
+/// section 8): positions are mapped into the picture through the viewport
+/// with the far edge reachable, a press outside the picture is dropped and a
+/// release never is, a key of code zero is dropped, an unchanged pad state is
+/// not repeated. **Never blocks.** A session thread that has stopped taking
+/// input fills a fixed ring, after which reports are dropped and counted in
+/// [`lowlat_client_status`].
+///
+/// @param[in] cl The handle from [`lowlat_client_create`].
+/// @param[in] input The report, its `kind` one of [`lowlat_input_kind`].
+/// @returns [`LOWLAT_OK`], [`LOWLAT_ERR_NOT_STARTED`] with no session up, or
+/// [`LOWLAT_ERR_INVALID_ARGUMENT`] for a kind this library does not know.
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`]; `input` points to one
+/// [`lowlat_input`] whose member named by `kind` is set.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_send_input(
+    cl: *mut lowlat_client,
+    input: *const lowlat_input,
+) -> lowlat_status {
+    use ::lowlat_client::input::{Input, PadState};
+    use lowlat_input_kind::*;
+    unsafe {
+        entered(cl, |handle| {
+            let Some(input) = input.as_ref() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            // SAFETY (each arm): the caller set the member `kind` names.
+            let report = match input.kind {
+                k if k == LOWLAT_INPUT_KEY as u32 => {
+                    let b = input.body.key;
+                    Input::Key {
+                        code: b.code,
+                        mods: b.mods,
+                        pressed: b.pressed,
+                    }
+                }
+                k if k == LOWLAT_INPUT_MOUSE_BUTTON as u32 => {
+                    let b = input.body.mouse_button;
+                    Input::Button {
+                        button: b.button,
+                        pressed: b.pressed,
+                        x: b.x,
+                        y: b.y,
+                    }
+                }
+                k if k == LOWLAT_INPUT_MOUSE_WHEEL as u32 => {
+                    let b = input.body.mouse_wheel;
+                    Input::Wheel { x: b.x, y: b.y }
+                }
+                k if k == LOWLAT_INPUT_MOUSE_MOTION as u32 => {
+                    let b = input.body.mouse_motion;
+                    Input::Motion {
+                        x: b.x,
+                        y: b.y,
+                        relative: b.relative,
+                    }
+                }
+                k if k == LOWLAT_INPUT_PAD_BUTTON as u32 => {
+                    let b = input.body.pad_button;
+                    Input::PadButton {
+                        pad: b.pad,
+                        button: b.button,
+                        pressed: b.pressed,
+                    }
+                }
+                k if k == LOWLAT_INPUT_PAD_AXIS as u32 => {
+                    let b = input.body.pad_axis;
+                    Input::PadAxis {
+                        pad: b.pad,
+                        axis: b.axis,
+                        value: b.value,
+                    }
+                }
+                k if k == LOWLAT_INPUT_PAD_STATE as u32 => {
+                    let b = input.body.pad_state;
+                    Input::PadState {
+                        pad: b.pad,
+                        state: PadState {
+                            buttons: b.buttons,
+                            lx: b.lx,
+                            ly: b.ly,
+                            rx: b.rx,
+                            ry: b.ry,
+                            lt: b.lt,
+                            rt: b.rt,
+                        },
+                    }
+                }
+                k if k == LOWLAT_INPUT_PAD_UNPLUG as u32 => Input::PadUnplug {
+                    pad: input.body.pad_unplug.pad,
+                },
+                k if k == LOWLAT_INPUT_RELEASE_ALL as u32 => Input::ReleaseAll,
+                _ => return LOWLAT_ERR_INVALID_ARGUMENT,
+            };
+            if handle.held().seam.send_input(report) {
+                LOWLAT_OK
+            } else {
+                LOWLAT_ERR_NOT_STARTED
+            }
+        })
+    }
+}
+
 /// Send the host's application a message.
 ///
 /// @param[in] cl The handle from [`lowlat_client_create`].
@@ -721,6 +1076,7 @@ pub unsafe extern "C" fn lowlat_client_get_status(
                 } else {
                     lowlat_decoder::LOWLAT_DECODER_NONE as u32
                 },
+                input_dropped: t.input_dropped.load(Ordering::Relaxed),
             };
             LOWLAT_OK
         })
@@ -1024,6 +1380,17 @@ fn described(attempt: &str, received: &lowlat_common::events::Received<Event>) -
                 host_mode: lowlat_host_mode_event { mode: *mode },
             },
         },
+        Event::Relative { relative, x, y } => lowlat_event {
+            kind: LOWLAT_EVENT_RELATIVE,
+            dropped,
+            body: lowlat_event_body {
+                relative: lowlat_relative_event {
+                    relative: *relative,
+                    x: *x,
+                    y: *y,
+                },
+            },
+        },
         Event::UserData { id, text } => lowlat_event {
             kind: LOWLAT_EVENT_USER_DATA,
             dropped,
@@ -1156,6 +1523,7 @@ mod tests {
             encode_us: 0,
             codec: 0,
             backend: 0,
+            input_dropped: 0,
         };
         assert_eq!(
             unsafe { lowlat_client_get_status(handle, &raw mut status) },

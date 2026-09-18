@@ -21,6 +21,9 @@ lowlat-decode.workspace = true
 # The hermetic session's other end: the host crate's own framing and
 # negotiation, driven under the simulator against this client.
 lowlat-host.workspace = true
+# The host's own expansion of input into device events, so what the client
+# sends is checked as the host would inject it.
+lowlat-inject.workspace = true
 lowlat-sim.workspace = true
 
 [lints]

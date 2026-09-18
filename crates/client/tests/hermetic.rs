@@ -38,6 +38,7 @@ use lowlat_core::session::Session;
 use lowlat_core::video::{Codec, Rotation, VideoHeader};
 use lowlat_host::session::Negotiation;
 use lowlat_host::video::Packetiser;
+use lowlat_inject::event::{Device, Extents, Injector, Sink};
 use lowlat_sim::{HostId, Link, Sim};
 
 const LEFT: (&str, &str) = ("aaaaaaaa", "passwordforaaaaaaaaaaaaa");
@@ -172,6 +173,27 @@ struct Host {
     /// declaration, as this host does; `Some(false)` is a host that ignores
     /// it, which is what an older host is.
     announces: Option<bool>,
+    /// The host's own expansion of the client's input, and what it produced.
+    injector: Injector,
+    injected: Injected,
+}
+
+/// Every device event the host's injector produced, in order.
+#[derive(Default)]
+struct Injected {
+    events: Vec<(Device, lowlat_inject::event::Event)>,
+    unplugged: Vec<u32>,
+}
+
+impl Sink for Injected {
+    fn emit(&mut self, device: Device, events: &[lowlat_inject::event::Event]) {
+        self.events
+            .extend(events.iter().map(|event| (device, *event)));
+    }
+
+    fn unplug(&mut self, pad: u32) {
+        self.unplugged.push(pad);
+    }
 }
 
 impl Host {
@@ -197,6 +219,8 @@ impl Host {
             streaming: true,
             clip: None,
             announces: None,
+            injector: Injector::new(Extents::alone(1920, 1080)),
+            injected: Injected::default(),
         }
     }
 
@@ -250,6 +274,7 @@ impl Host {
             let message =
                 control::parse(&self.inbound[..len]).expect("a malformed control message");
             self.received[usize::from(message.opcode)] += 1;
+            self.injector.on_control(&message, &mut self.injected);
             let was_ready = negotiation.ready();
             negotiation.on_control(&message);
             if negotiation.ready() && !was_ready {
@@ -952,6 +977,152 @@ fn a_departure_reaches_the_host_as_a_zero_disconnect() {
     assert!(pair.guest.driver.left(pair.sim.now_ms()));
     assert_eq!(pair.host.received[usize::from(op::DISCONNECT)], 1);
     let _ = pair.guest.events.try_recv();
+}
+
+/// **Input crosses as the host reads it.** The rectangle is the picture's
+/// own size, so the far window pixel bumps onto the far edge and the host's
+/// injector puts the pointer at the end of its axis; a press outside is not
+/// sent and its release is; a repeated pad state is sent once; the census
+/// still agrees message for message. And the host's pointer message moves
+/// the client into relative mode and back, once each, with the warp position
+/// on the way out.
+#[test]
+fn input_reaches_the_host_in_the_pictures_pixels() {
+    use lowlat_client::input::{Input, PadState, Viewport};
+    use lowlat_core::cursor;
+
+    let mut pair = Pair::new(21, clean());
+    pair.run_for(2000.0);
+    assert!(pair.established());
+    // A picture has to have arrived for the mapper to know its size.
+    pair.run_for(200.0);
+    assert!(pair.guest.driver.pictures() > 0);
+    pair.guest.driver.set_viewport(Viewport {
+        x: 0,
+        y: 0,
+        w: 1920,
+        h: 1080,
+    });
+
+    let pad = PadState {
+        buttons: 0x1001,
+        lx: 100,
+        ly: -100,
+        rx: 0,
+        ry: 0,
+        lt: 0,
+        rt: 255,
+    };
+    let reports = [
+        Input::Key {
+            code: 0,
+            mods: 0,
+            pressed: true,
+        },
+        Input::Key {
+            code: 4,
+            mods: 0x2000,
+            pressed: true,
+        },
+        Input::Key {
+            code: 4,
+            mods: 0x2000,
+            pressed: false,
+        },
+        Input::Motion {
+            x: 1919,
+            y: 1079,
+            relative: false,
+        },
+        Input::Button {
+            button: 1,
+            pressed: true,
+            x: 5000,
+            y: 5,
+        },
+        Input::Button {
+            button: 1,
+            pressed: true,
+            x: 5,
+            y: 5,
+        },
+        Input::Button {
+            button: 1,
+            pressed: false,
+            x: 5000,
+            y: 5,
+        },
+        Input::Wheel { x: 0, y: -120 },
+        Input::PadState { pad: 7, state: pad },
+        Input::PadState { pad: 7, state: pad },
+        Input::PadUnplug { pad: 7 },
+        Input::ReleaseAll,
+    ];
+    for report in &reports {
+        pair.guest
+            .driver
+            .send_input(pair.guest.endpoint.session(), report);
+    }
+    pair.run_for(300.0);
+
+    let host = &pair.host;
+    assert_eq!(host.received[usize::from(op::KEYBOARD)], 2);
+    assert_eq!(host.received[usize::from(op::MOUSE_MOTION)], 1);
+    assert_eq!(host.received[usize::from(op::MOUSE_BUTTON)], 2);
+    assert_eq!(host.received[usize::from(op::MOUSE_WHEEL)], 1);
+    assert_eq!(host.received[usize::from(op::GAMEPAD_STATE)], 1);
+    assert_eq!(host.received[usize::from(op::GAMEPAD_UNPLUG)], 1);
+    assert_eq!(host.received[usize::from(op::RELEASE)], 1);
+    for opcode in 0..=255u8 {
+        assert_eq!(
+            pair.guest.driver.sent()[usize::from(opcode)],
+            host.received[usize::from(opcode)],
+            "opcode {opcode} ({})",
+            op::name(opcode)
+        );
+    }
+    // The host's injector put the pointer at the end of both axes: the
+    // window's last pixel was bumped onto the picture's edge.
+    let absolute: Vec<(u16, i32)> = host
+        .injected
+        .events
+        .iter()
+        .filter(|(device, event)| *device == Device::PointerAbsolute && event.kind == 0x03)
+        .map(|(_, event)| (event.code, event.value))
+        .collect();
+    assert_eq!(absolute, vec![(0x00, 65535), (0x01, 65535)]);
+    assert_eq!(host.injected.unplugged, vec![7]);
+    assert_eq!(host.injector.tally().pads, 2);
+
+    // The host hides the pointer: relative mode, once, on the transition;
+    // then shows it at the picture's centre, and the warp position comes
+    // back in the window's units.
+    let mut out = vec![0u8; cursor::encoded_len(0)];
+    let hidden = cursor::Update {
+        hidden: true,
+        ..cursor::Update::default()
+    };
+    let used = cursor::encode(&mut out, &hidden, cursor::Image::Unchanged, false).unwrap();
+    let message = control::parse(&out[..used]).unwrap();
+    pair.host.send_control(&message);
+    pair.host.send_control(&message);
+    pair.run_for(100.0);
+    let shown = cursor::Update {
+        x: 960,
+        y: 540,
+        ..cursor::Update::default()
+    };
+    let used = cursor::encode(&mut out, &shown, cursor::Image::Unchanged, false).unwrap();
+    let message = control::parse(&out[..used]).unwrap();
+    pair.host.send_control(&message);
+    pair.run_for(100.0);
+    let mut transitions = Vec::new();
+    while let Some(event) = pair.guest.events.try_recv() {
+        if let Event::Relative { relative, x, y } = event.event {
+            transitions.push((relative, x, y));
+        }
+    }
+    assert_eq!(transitions, vec![(true, 0, 0), (false, 960, 540)]);
 }
 
 /// The committed clips, as the decode crate's tests read them.

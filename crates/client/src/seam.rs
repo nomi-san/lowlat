@@ -15,6 +15,7 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use lowlat_common::events::{self, Queued};
+use lowlat_common::spsc::Ring;
 use lowlat_core::conn::Kind;
 use lowlat_core::envelope::Cipher;
 use lowlat_crypto::Credentials;
@@ -24,6 +25,7 @@ use lowlat_net::{Guest, Wake};
 use crate::config::{Backend, Config, Decoding, FrameKind};
 use crate::driver::{Telemetry, Units};
 use crate::frames::{Frames, Held};
+use crate::input::{Input, RING_DEPTH, Request, Viewport};
 
 /// Which pipe an attempt asks for. A client of this library uses the native
 /// one; the browser's exists so a page can be a guest, and a native client
@@ -71,6 +73,9 @@ pub enum Event {
     HostMode { mode: u32 },
     /// The host's application sent a message. Opaque here.
     UserData { id: u32, text: Vec<u8> },
+    /// The host put this client into relative mode, or took it out; on the
+    /// way out, where the pointer reappears, in the window's units.
+    Relative { relative: bool, x: i32, y: i32 },
 }
 
 impl Queued for Event {
@@ -162,6 +167,9 @@ struct Attempt {
     pending: Vec<Arrival>,
     inject: Option<mpsc::Sender<Arrival>>,
     ask: Option<mpsc::Sender<Ask>>,
+    /// Input and the viewport, in order, to the session thread. Fixed depth;
+    /// a full ring drops the newest and counts it, never blocks the caller.
+    requests: Option<Arc<Ring<Request, RING_DEPTH>>>,
     thread: Option<Guest>,
     decode: Option<(JoinHandle<()>, Arc<AtomicBool>)>,
 }
@@ -338,6 +346,7 @@ impl Client {
             pending: Vec::new(),
             inject: None,
             ask: None,
+            requests: None,
             thread: None,
             decode: None,
         });
@@ -415,6 +424,7 @@ impl Client {
             let _ = inject.send(arrival);
         }
         let (ask, asked) = mpsc::channel::<Ask>();
+        let requests: Arc<Ring<Request, RING_DEPTH>> = Arc::new(Ring::new());
 
         let args = crate::shell::Attached {
             socket,
@@ -427,6 +437,7 @@ impl Client {
             init: attempt.config.init(),
             arrivals,
             asked,
+            requests: Arc::clone(&requests),
             emit: self.emit.clone(),
             telemetry: Arc::clone(&self.telemetry),
             units: self.units.clone(),
@@ -437,6 +448,7 @@ impl Client {
         .map_err(|_| Error::Io)?;
         attempt.inject = Some(inject);
         attempt.ask = Some(ask);
+        attempt.requests = Some(requests);
         attempt.thread = Some(thread);
 
         // The decode thread, beside it. It opens the device itself and
@@ -501,6 +513,42 @@ impl Client {
             self.frames.close();
             let _ = decode.join();
         }
+    }
+
+    /// Hand the session thread one request and wake it.
+    ///
+    /// **A full ring drops the request and counts it.** The caller is the
+    /// application's thread and is never blocked; a ring that fills is a
+    /// session thread that is not running.
+    fn request(&mut self, request: Request) -> bool {
+        let Some(attempt) = self.attempt.as_ref() else {
+            return false;
+        };
+        let (Some(requests), Some(thread)) = (attempt.requests.as_ref(), attempt.thread.as_ref())
+        else {
+            return false;
+        };
+        if requests.push(request).is_err() {
+            self.telemetry.input_dropped.fetch_add(1, Ordering::Relaxed);
+        } else {
+            // Every push wakes the loop. Waking only when the ring was empty
+            // loses the wake that lands between the consumer's last pop and
+            // its sleep, and the report then waits for the next timer.
+            let _ = thread.wake_handle().notify();
+        }
+        true
+    }
+
+    /// Where the application drew the picture, in the units its positions
+    /// use. False if there is no session.
+    pub fn set_viewport(&mut self, viewport: Viewport) -> bool {
+        self.request(Request::Viewport(viewport))
+    }
+
+    /// One input report. False if there is no session; a full ring drops it
+    /// and counts it rather than saying so here.
+    pub fn send_input(&mut self, input: Input) -> bool {
+        self.request(Request::Input(input))
     }
 
     /// Send the host's application a message. False if there is no session.
