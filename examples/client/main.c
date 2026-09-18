@@ -97,6 +97,12 @@ struct demo {
 	uint32_t pad_events;
 	uint32_t pad_sent;
 	bool trace_pads;
+	// What went to the library in the second, by kind, so the host's own
+	// count of what it received can be read against this.
+	uint32_t keys_sent;
+	uint32_t buttons_sent;
+	uint32_t wheels_sent;
+	uint32_t motions_sent;
 
 	// The second's figures; the presenting thread counts, the main thread
 	// reads and clears.
@@ -165,7 +171,15 @@ static uint32_t mods_of(MTY_Mod m)
 
 static void send(struct demo *d, const lowlat_input *in)
 {
-	lowlat_client_send_input(d->client, in);
+	if (lowlat_client_send_input(d->client, in) != LOWLAT_OK)
+		return;
+	switch (in->kind) {
+		case LOWLAT_INPUT_KEY: d->keys_sent++; break;
+		case LOWLAT_INPUT_MOUSE_BUTTON: d->buttons_sent++; break;
+		case LOWLAT_INPUT_MOUSE_WHEEL: d->wheels_sent++; break;
+		case LOWLAT_INPUT_MOUSE_MOTION: d->motions_sent++; break;
+		default: break;
+	}
 }
 
 // The host's pointer mode, as the toolkit is told it. The chord can let go
@@ -591,11 +605,16 @@ static void report(struct demo *d)
 	uint32_t skips = atomic_exchange(&d->skips, 0);
 	printf("demo: t=%" PRIu64 " presents=%u polls=%u pictures=%u repeats=%u skips=%u "
 		"codec=%s decode_us=%u readback_us=%u encode_us=%u queue=%u behind=%u behind_ms=%u "
-		"rtt_ms=%u mbit=%.1f decoded=%" PRIu64 " rss_mb=%" PRIu64 " pad_events=%u pad_sent=%u "
-		"input_dropped=%u\n",
+		"rtt_ms=%u mbit=%.1f decoded=%" PRIu64 " rss_mb=%" PRIu64 " keys=%u btn=%u wheel=%u "
+		"motion=%u pad=%u pad_events=%u input_dropped=%u\n",
 		d->seconds, presents, polls, pictures, repeats, skips, codec,
 		st.decode_us, st.readback_us, st.encode_us, st.queue_depth, st.behind, st.behind_ms,
-		st.rtt_ms, mbit, st.decoded, rss, d->pad_events, d->pad_sent, st.input_dropped);
+		st.rtt_ms, mbit, st.decoded, rss, d->keys_sent, d->buttons_sent, d->wheels_sent,
+		d->motions_sent, d->pad_sent, d->pad_events, st.input_dropped);
+	d->keys_sent = 0;
+	d->buttons_sent = 0;
+	d->wheels_sent = 0;
+	d->motions_sent = 0;
 	d->pad_events = 0;
 	d->pad_sent = 0;
 	fflush(stdout);
