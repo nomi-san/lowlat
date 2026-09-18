@@ -9,8 +9,10 @@
 //! where the host said, and the two ends' counts of what they said to each
 //! other have to agree opcode for opcode.
 //!
-//! No decoder exists yet, so the consumer is the feed over a recording fake:
-//! it checks the units rather than the pictures.
+//! The picture consumer is the feed over a recording fake by default: it
+//! checks the units rather than the pictures; the clip tests put the real
+//! decoder behind it. Sound is real both ways: the host encodes a tone, or
+//! sends it uncompressed, and the client's own consumer decodes it.
 //!
 //! Thirty simulated seconds by default; `LOWLAT_HERMETIC_MS` runs longer.
 
@@ -22,10 +24,12 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use lowlat_client::driver::{Driver, Telemetry, Units};
 use lowlat_client::feed::{Decision, Decoder, Fault, Fed, Feed};
-use lowlat_client::sound::Packets;
+use lowlat_client::sound::{Packets, Sound};
 use lowlat_client::{AUDIO_CHANNEL, BODY, Config, Event, Outcome, VIDEO_CHANNEL};
 use lowlat_common::events;
 use lowlat_core::audio::{self, AudioHeader};
@@ -49,11 +53,14 @@ const KEY: [u8; 32] = [0x5Au8; 32];
 /// How often the loop wakes, in simulated milliseconds.
 const TICK_MS: f64 = 1.0;
 const FRAME_MS: f64 = 1000.0 / 60.0;
-const AUDIO_MS: f64 = 10.0;
+/// The host's real cadence: one frame of sound a packet.
+const AUDIO_MS: f64 = 20.0;
 const KEYFRAME_EVERY: u64 = 300;
 const KEYFRAME_BYTES: usize = 300 * 1024;
 const DELTA_BYTES: usize = 2048;
-const AUDIO_BYTES: usize = 120;
+/// The tone the host sends: a different pitch and level per channel, so a
+/// decoder that swapped or mixed them would read wrong.
+const TONE: [(f64, f64); 2] = [(440.0, 12000.0), (660.0, 6000.0)];
 
 const CONTROL_SLOTS: usize = 1024;
 const VIDEO_SLOTS: usize = 4000;
@@ -177,6 +184,11 @@ struct Host {
     /// The host's own expansion of the client's input, and what it produced.
     injector: Injector,
     injected: Injected,
+    /// The sound encoder, and whether packets go out uncompressed instead.
+    encoder: lowlat_audio::Encoder,
+    raw_audio: bool,
+    /// Every sample sent, in order, for the uncompressed comparison.
+    sent_pcm: Vec<i16>,
 }
 
 /// Every device event the host's injector produced, in order.
@@ -222,6 +234,10 @@ impl Host {
             announces: None,
             injector: Injector::new(Extents::alone(1920, 1080)),
             injected: Injected::default(),
+            encoder: lowlat_audio::Encoder::new(lowlat_audio::encode::DEFAULT_BITRATE_KBPS)
+                .unwrap(),
+            raw_audio: false,
+            sent_pcm: Vec::new(),
         }
     }
 
@@ -344,18 +360,48 @@ impl Host {
     }
 
     fn send_audio(&mut self) {
+        let frame = tone_frame(self.audio);
+        let codec = if self.raw_audio {
+            audio::Codec::Pcm
+        } else {
+            audio::Codec::Opus
+        };
         let mut header = [0u8; audio::AUDIO_HEADER_LEN];
-        audio::encode(&mut header, &AudioHeader::stereo(480, audio::Codec::Opus)).unwrap();
-        let packet = sound(self.audio);
+        audio::encode(
+            &mut header,
+            &AudioHeader::stereo(lowlat_audio::FRAME as u32, codec),
+        )
+        .unwrap();
+        let encoded = self.encoder.encode(&frame).unwrap().to_vec();
+        let payload = lowlat_audio::encode::payload_of(codec, &frame, &encoded);
         if self
             .endpoint
             .session()
-            .send_message(AUDIO_CHANNEL, &header, &packet)
+            .send_message(AUDIO_CHANNEL, &header, payload)
             .is_ok()
         {
             self.audio += 1;
+            self.sent_pcm.extend(
+                frame
+                    .chunks_exact(2)
+                    .map(|pair| i16::from_le_bytes([pair[0], pair[1]])),
+            );
         }
     }
+}
+
+/// One 20 ms frame of the tone, as capture would deliver it: interleaved
+/// sixteen-bit stereo, continuous across frames.
+fn tone_frame(packet: u64) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(lowlat_audio::FRAME_BYTES);
+    for i in 0..lowlat_audio::FRAME {
+        let t = (packet as usize * lowlat_audio::FRAME + i) as f64 / 48000.0;
+        for (hz, amplitude) in TONE {
+            let sample = ((2.0 * std::f64::consts::PI * hz * t).sin() * amplitude) as i16;
+            frame.extend_from_slice(&sample.to_le_bytes());
+        }
+    }
+    frame
 }
 
 /// A synthetic access unit: a parameter-set-led keyframe or a predicted
@@ -373,12 +419,6 @@ fn bitstream(frame: u64, keyframe: bool) -> Vec<u8> {
         *byte = (frame as usize + at) as u8;
     }
     unit
-}
-
-fn sound(packet: u64) -> Vec<u8> {
-    let mut out = vec![0u8; AUDIO_BYTES];
-    out[..8].copy_from_slice(&packet.to_le_bytes());
-    out
 }
 
 /// What the feed's fake saw: every unit, in order, with what it was.
@@ -436,6 +476,12 @@ struct Guest<D: Decoder> {
     next_consume_ms: f64,
     metadata_seen: u64,
     audio_seen: u64,
+    /// The sound consumer, drained after every pass as an application's
+    /// thread would, and everything it handed over, in order.
+    sound: Sound,
+    telemetry: Arc<Telemetry>,
+    heard: Vec<i16>,
+    audio_acquired: u64,
     /// Decoders built, as the feed reported them.
     builds: u64,
     /// Plane checksums of the pictures a real decoder produced, in order.
@@ -451,12 +497,14 @@ impl<D: Decoder> Guest<D> {
         let id = sim.add_host(addr, &[]);
         let (emit, events) = events::queue();
         let units = Units::new();
+        let packets = Packets::new();
+        let telemetry = Arc::new(Telemetry::default());
         let driver = Driver::new(
             Config::default().init(),
             units.clone(),
-            Packets::new(),
+            packets.clone(),
             emit,
-            Arc::new(Telemetry::default()),
+            Arc::clone(&telemetry),
         );
         Self {
             id,
@@ -471,6 +519,10 @@ impl<D: Decoder> Guest<D> {
             next_consume_ms: 0.0,
             metadata_seen: 0,
             audio_seen: 0,
+            sound: Sound::new(packets, Arc::clone(&telemetry)),
+            telemetry,
+            heard: Vec::new(),
+            audio_acquired: 0,
             builds: 0,
             pictures: Vec::new(),
             planes: (vec![0u8; 1280 * 720 * 2], vec![0u8; 1280 * 360 * 2]),
@@ -481,6 +533,11 @@ impl<D: Decoder> Guest<D> {
     fn turn(&mut self, now: f64) -> Option<Outcome> {
         let outcome = self.driver.turn(&mut self.endpoint, now);
         self.audio_seen = self.driver.audio_packets();
+        let mut pcm = [0i16; lowlat_client::sound::FRAMES_MAX * 2];
+        while let Ok(Some(acquired)) = self.sound.acquire(now, Duration::ZERO, &mut pcm) {
+            self.audio_acquired += 1;
+            self.heard.extend_from_slice(&pcm[..acquired.frames * 2]);
+        }
         let lag = self.driver.lag();
         if lag.behind > self.deepest_lag.behind {
             self.deepest_lag = lag;
@@ -676,7 +733,12 @@ fn reordering() -> Link {
 
 /// The session end to end, and what has to be true at the end of it.
 fn session_is_clean(seed: u64, link: Link) {
+    session_is_clean_with(seed, link, false);
+}
+
+fn session_is_clean_with(seed: u64, link: Link, raw_audio: bool) {
     let mut pair = Pair::new(seed, link);
+    pair.host.raw_audio = raw_audio;
     pair.run_for(2000.0);
     assert!(pair.established(), "the pair did not establish");
     pair.run_for(duration_ms());
@@ -737,6 +799,8 @@ fn session_is_clean(seed: u64, link: Link) {
 
     // **Every access unit arrived, whole, in order, keyframes where the host
     // said.** Nothing was skipped: the reader was never behind.
+    let host = &pair.host;
+    let guest = &pair.guest;
     let units = &guest.feed.decoder().units;
     assert_eq!(host.refused, 0, "the host's window refused frames");
     assert_eq!(units.len() as u64, host.frames, "not every frame arrived");
@@ -757,12 +821,54 @@ fn session_is_clean(seed: u64, link: Link) {
     assert_eq!(guest.driver.skipped(), 0);
     assert_eq!(guest.driver.pictures(), host.frames);
 
-    // Every sound packet, in order: the channel is reliable and the counts
-    // are the check, since the payload is not decoded here.
+    // **Every sound packet arrived, was decoded, and was handed over**, none
+    // dropped by the pool or refused by the decoder.
     assert_eq!(
         guest.audio_seen, host.audio,
         "not every sound packet arrived"
     );
+    assert_eq!(
+        guest.audio_acquired, host.audio,
+        "not every sound packet was handed over"
+    );
+    let telemetry = &guest.telemetry;
+    assert_eq!(telemetry.audio_dropped.load(Ordering::Relaxed), 0);
+    assert_eq!(telemetry.audio_refused.load(Ordering::Relaxed), 0);
+    assert_eq!(telemetry.audio_decoded.load(Ordering::Relaxed), host.audio);
+    assert_eq!(
+        guest.heard.len(),
+        host.sent_pcm.len(),
+        "the sound handed over is not the length of the sound sent"
+    );
+    if host.raw_audio {
+        assert_eq!(
+            telemetry.audio_codec.load(Ordering::Relaxed),
+            u32::from(audio::Codec::Pcm as u8)
+        );
+        // Sample for sample, the whole run.
+        assert!(guest.heard == host.sent_pcm, "uncompressed sound differs");
+    } else {
+        assert_eq!(
+            telemetry.audio_codec.load(Ordering::Relaxed),
+            u32::from(audio::Codec::Opus as u8)
+        );
+        // Compressed sound is not the samples that went in; it is the tone
+        // at its level, per channel, over the last second once the codec
+        // has settled -- a swapped or mixed channel reads wrong here.
+        let last_second = &guest.heard[guest.heard.len() - 48000 * 2..];
+        for (channel, (_, amplitude)) in TONE.iter().enumerate() {
+            let energy: f64 = last_second
+                .chunks_exact(2)
+                .map(|pair| f64::from(pair[channel]) * f64::from(pair[channel]))
+                .sum();
+            let mean_square = energy / 48000.0;
+            let expected = amplitude.powi(2) / 2.0;
+            assert!(
+                mean_square > expected * 0.8 && mean_square < expected * 1.25,
+                "channel {channel}: mean square {mean_square}, expected about {expected}"
+            );
+        }
+    }
 
     // Nothing was refused by either ring, and nothing is left behind.
     for channel in [CONTROL_CHANNEL, VIDEO_CHANNEL, AUDIO_CHANNEL] {
@@ -796,6 +902,13 @@ fn a_session_is_clean_at_one_percent_loss() {
 #[test]
 fn a_session_is_clean_under_five_milliseconds_of_reorder() {
     session_is_clean(3, reordering());
+}
+
+/// The other codec: uncompressed sound comes out sample for sample, under
+/// the lossy link so the retransmissions are in the path too.
+#[test]
+fn uncompressed_sound_arrives_sample_for_sample() {
+    session_is_clean_with(2, lossy(), true);
 }
 
 /// **The catch-up lands on an announced keyframe, and it runs on the
