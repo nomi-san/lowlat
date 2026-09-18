@@ -388,6 +388,14 @@ full ring drops the newest message and counts it, and never blocks the caller. A
 fills is a session thread that is not running, and by then what the host holds is its own
 release-all problem.
 
+**The application's event loop must not be paced by its display** (*found at C3's gate*). A
+toolkit that reads one pad event per pass of its loop delivers a moving stick at the loop's
+rate, and a loop that presents with vsync runs at the display's; the kernel's queue then
+fills and plays on for seconds after the hand stops. Presentation belongs on a thread of its
+own, paced by the display through `acquire_frame` and present, while the event loop runs at
+the toolkit's own cadence -- the shape every established client has, and the shape the sound
+thread takes in the next phase.
+
 ## §9 Events, status and metrics
 
 Events are polled ([06 §5](06-api.md)): candidate found, established, ended with an outcome,

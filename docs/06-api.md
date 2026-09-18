@@ -319,9 +319,10 @@ have moved by itself; an application that kept its own copy would mark the wrong
 ## §3b Client
 
 **Planned 2026-09-15, built from 2026-09-17 by [impl-plan-client.md](impl-plan-client.md).**
-The first block below is in the header (minor 4 the session, minor 5 the pictures); the
-second is the shape the rest will take, fixed here so the header can grow into it. A
-signature that has not landed is not in the header yet, and the header is the truth.
+The first block below is in the header (minor 4 the session, minor 5 the pictures, minor 6
+the input); the second is the shape the rest will take, fixed here so the header can grow
+into it. A signature that has not landed is not in the header yet, and the header is the
+truth.
 
 ```c
 lowlat_status lowlat_client_create(const lowlat_client_create_info *info, lowlat_client **out);
@@ -346,12 +347,15 @@ lowlat_status lowlat_client_acquire_frame(lowlat_client *cl, uint8_t stream, uin
                                           lowlat_frame *out);
 lowlat_status lowlat_client_release_frame(lowlat_client *cl, const lowlat_frame *frame,
                                           const lowlat_fence *done);
+
+lowlat_status lowlat_client_set_viewport(lowlat_client *cl, int32_t x, int32_t y,
+                                         int32_t w, int32_t h);
+lowlat_status lowlat_client_send_input(lowlat_client *cl, const lowlat_input *input);
 ```
 
 ```c
 lowlat_status lowlat_client_acquire_audio(lowlat_client *cl, uint32_t timeout_ms,
                                           int16_t *samples, uint32_t *count);
-lowlat_status lowlat_client_send_input(lowlat_client *cl, const lowlat_input *msg);
 lowlat_status lowlat_client_set_video_config(lowlat_client *cl, const lowlat_client_video_config *cfg);
 lowlat_status lowlat_client_get_metrics(lowlat_client *cl, lowlat_metrics *out);
 ```
@@ -410,9 +414,22 @@ presents is a skip -- so a renderer needs nothing from the stream itself.
 48 kHz, up to 960 frames a call, in order and already paced by the playback window
 ([10 §6](10-client.md)); the device is the application's.
 
-**Input is one tagged structure**, `lowlat_input`, for keyboard, mouse button, wheel, motion,
-pad button, pad axis, pad state and release-all, in window coordinates; the library transforms,
-guards and encodes ([10 §8](10-client.md)).
+**Input is one tagged structure** (minor 6), `lowlat_input`, for keyboard, mouse button,
+wheel, motion, pad button, pad axis, pad state, pad unplug and release-all, its `kind` one of
+`lowlat_input_kind` carried as an integer because the application writes it; the library
+transforms, guards and encodes ([10 §8](10-client.md)). **The application says where it drew
+the picture** with `set_viewport`, a rectangle in the same units as the positions it reports,
+and that is all the library knows about the window: no fit is computed, so stretching,
+shrinking, a percent scale and a rotated picture are the application's ways of producing one
+rectangle, and a display scale factor never enters; the picture's own size is the stream's.
+Keys are usage codes with the modifier mask in the wire's bits (`LOWLAT_MOD_*`), the lock
+bits included because a host keeps its own locks in step from them; mouse buttons, pad
+buttons by index, pad axes and pad state bits have their `LOWLAT_*` names, and the two pad
+forms number the buttons differently on purpose, as the wire does. A press outside the
+rectangle is not sent and a release always is; a key of code zero is not sent; an unchanged
+pad state is not repeated. **The call never blocks**: reports cross a fixed ring to the
+session thread, and a ring that fills -- a thread that is not running -- drops the newest and
+counts it in `lowlat_client_status.input_dropped`.
 
 **Status and metrics mirror the host's** (§3): the same named channels, seen from the
 receiving side, plus the decoder's state (none yet, built, failed), the backend in use, the
@@ -422,8 +439,11 @@ taken off the video channel (a rate is a difference over time, the application's
 one panel serves both ends. A decoder that fails past recovery ends the session with
 `LOWLAT_OUTCOME_DECODER_FAILED`.
 
-**Events** add to §5's set: cursor (image in the body, hotspot, suppressed), relative mode,
-blocked and unblocked, rumble, stream ended with a reason, host mode.
+**Events** add to §5's set: cursor (image in the body, hotspot, suppressed), relative mode
+(`LOWLAT_EVENT_RELATIVE`, on the transition alone, with the position the pointer reappears
+at on the way out in the window's units, so the application confines and hides its pointer
+on entry and warps it once on exit), blocked and unblocked, rumble, stream ended with a
+reason, host mode.
 
 ## §4 Signaling seam
 

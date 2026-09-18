@@ -3,6 +3,36 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-18 - Phase C3: input
+
+### Added
+- **`lowlat_client_set_viewport` and `lowlat_client_send_input`** ([06 §3b](06-api.md),
+  [10 §8](10-client.md), minor 6). The application says where it drew the picture, in the
+  units its positions use, and reports what happened in its window; the library maps
+  positions into the picture's own pixels on the session thread, where the stream's size is
+  known -- the far edge bumped, the clamp, the extents swapped for a quarter turn, relative
+  deltas scaled by the picture against the rectangle -- and applies the rules every client
+  applies: a press outside the picture dropped and its release sent, a key of code zero
+  dropped, an unchanged pad state not repeated, release-all on the application's word. No
+  fit is computed and no display scale factor enters. Reports cross a fixed ring from the
+  handle to the loop, dropped and counted when it is full, never blocking the caller.
+- **The relative-mode event** (`LOWLAT_EVENT_RELATIVE`): the pointer message read for its
+  two mode bits, the event raised on the transition alone with the position to warp to on
+  the way out, put back through the same rectangle.
+- **The demo drives a host**: keyboard, mouse and both attached pads from the toolkit, the
+  key table generated from the toolkit's own map crossed with the kernel's usage table,
+  presenting on a thread of its own so the event loop runs at the toolkit's cadence, chords
+  for the fit, for letting go of a captured pointer, and for cycling the streamed output
+  through the application protocol.
+
+### Verified
+- Against an established host with two monitors over the wide area: typing, aiming on both
+  outputs switched from the demo, aiming stretched and at the picture's own size, a drag out
+  of the window, both pads in a game, mouselook in and out; against this host, a minute of
+  scripted input with the two ends' counts agreeing by kind and the census naming every
+  opcode an established client sends and no other ([impl-plan-client.md](impl-plan-client.md)
+  C3). The hermetic session runs this host's own input expansion over what the client sends.
+
 ## 2026-09-17 - Phase C2: a picture from a real host
 
 ### Added

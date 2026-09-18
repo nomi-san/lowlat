@@ -175,12 +175,12 @@ plays both roles.
    frame for frame, at zero loss. *Passed 2026-09-17: 477 pictures, three loops of the clip
    with two announced keyframes, every picture the reference decoder's, one decoder build.*
 
-## Phase C3 - Input
+## Phase C3 - Input (closed 2026-09-18)
 
 **Planned 2026-09-18, interview of the same day.** The decisions are recorded once, here;
 the rules are [10 §8](10-client.md).
 
-- [ ] `lowlat_client_set_viewport(x, y, w, h)`: the rectangle the application drew the
+- [x] `lowlat_client_set_viewport(x, y, w, h)`: the rectangle the application drew the
   picture into, in the same units as the positions it reports. The library never computes a
   fit: stretch, shrink, a percent scale and rotation are all the application's ways of
   producing one rectangle, and DPI does not enter because the rectangle and the positions
@@ -188,7 +188,7 @@ the rules are [10 §8](10-client.md).
   is not sent until one is set; the picture's size comes from the stream's own header, so
   the two ends of the ratio come from different owners and the application cannot describe
   the picture wrongly.
-- [ ] `lowlat_client_send_input` and the rules of [10 §8](10-client.md): the transform into
+- [x] `lowlat_client_send_input` and the rules of [10 §8](10-client.md): the transform into
   the picture's pixels with the edge bump and the clamp, the rotation swapped back, relative
   deltas scaled by the picture-to-drawn ratio, the press-outside guard evaluated at the
   press's own position, the keyboard code guard, pad state deduplicated per identifier,
@@ -196,21 +196,27 @@ the rules are [10 §8](10-client.md).
   mask is the event's own, in the wire's bit numbering (`LOWLAT_MOD_*`); the application
   supplies both, because only its toolkit knows the lock state. The path from the handle to
   the session thread is a fixed ring of 1024 entries; a full ring drops the newest message
-  and counts it in metrics, and never blocks the application's thread.
-- [ ] The relative-mode event on the cursor message's transition (either the relative or
+  and counts it in status, and never blocks the application's thread. Every push wakes the
+  loop: a wake only when the ring was empty loses the one that lands between the consumer's
+  last pop and its sleep. Minor 6.
+- [x] The relative-mode event on the cursor message's transition (either the relative or
   the hidden bit), carrying the position to warp to on the way out, in window coordinates
   through the inverse of the same viewport mapping. The cursor body is read for that alone
   here; the image, the hotspot and the suppressed flag are C5's.
-- [ ] The demo takes keyboard, mouse and pad from the toolkit and sends them: the key table
+- [x] The demo takes keyboard, mouse and pad from the toolkit and sends them: the key table
   generated from the toolkit's own map crossed with the kernel's usage table (two
   directions, so a disagreement shows); a bare GUI key is dropped, as a chord modifier it
   is sent; repeats are forwarded as presses; both attached pads as the standard state,
   unplug on removal. Ctrl+Alt chords are the demo's own: stretch or shrink (the rectangle
-  re-sent), leaving the pointer grab, and cycling the streamed output through the
-  application protocol -- id 10 asked, the id-12 list read from the user-data event, id 11
-  sent with the next `output`, which is what makes gate item 1's two-monitor case
-  drivable from the demo against either host.
-- [ ] Relative mode in the demo: confine and hide on the event, warp on the way out if
+  re-sent), letting go of the pointer, and cycling the streamed output through the
+  application protocol -- ids 10 and 9 asked, the answers 12 and 11 read from the user-data
+  events, 11 sent back with the next `output` in the host's own configuration, whole, as a
+  host reads it. **Presenting is on a thread of its own, paced by the display; the
+  toolkit's event loop runs at its own cadence** (*added at the gate*): the toolkit reads
+  one pad event per pass of its loop, so a loop bound to the display's rate drained a
+  moving stick slower than it moved and the kernel's queue played on for seconds after the
+  hand stopped. The shape every established client has, and the shape sound will take.
+- [x] Relative mode in the demo: confine and hide on the event, warp on the way out if
   focused.
 
 **Gate:**
@@ -218,10 +224,25 @@ the rules are [10 §8](10-client.md).
 1. Against an established host with two monitors, one of them streamed: typing lands, the
    pointer lands where it is aimed on whichever output is streamed, switched from the demo
    both ways; a drag that leaves the window releases on the host; each of the two attached
-   pads drives a game; mouselook works through relative mode.
+   pads drives a game; mouselook works through relative mode. *Passed 2026-09-18, the
+   Windows host on the second machine over the wide area (8 ms round trip): typing, aiming
+   on both outputs through the chord (`803140-2315383105` and `803140-4239277026`, each way
+   twice), aiming stretched and at the picture's own size, the drag out of the window, both
+   pads in a game, and mouselook entered and left seven times in the first run -- the host
+   captures the pointer for a window drag too, which the toolkit reports as relative motion.
+   The first pad run found the event-loop cadence above: the sticks lagged and drained for
+   seconds; with presenting on its own thread the toolkit delivered up to 610 pad reports
+   a second and none were late. The stick's vertical sign is the wire's up-is-positive, read
+   live: a stick pushed down arrived from the toolkit as +32767 and left as -32767.*
 2. Against this host: the host's own input log agrees with the demo's, message for message,
    for one minute of mixed input; the census shows every opcode the established client sends
-   and nothing it does not.
+   and nothing it does not. *Passed 2026-09-18, sixty seconds of scripted keys, clicks, wheel,
+   motion and a drag out of the window: keys 321 = 321, buttons 150 = 150, wheel 30 = 30,
+   pad states 56 handed over and 55 received (one unchanged state not repeated), and motion
+   340 handed over against 150 received, the 190 being the second before the first picture,
+   when the rule drops absolute motion -- from the first picture on the two lines agree
+   second by second. The host's census: init, diagnostics, the encoder configuration, then
+   keyboard, mouse button, wheel, motion, gamepad state and release, and nothing else.*
 
 **Not in C3, recorded here so it is not re-decided:** the DualSense pair -- touchpad
 contacts, motion, lightbar, adaptive triggers and haptics -- is its own phase after C5 on
@@ -310,6 +331,10 @@ built.
 
 Newest first.
 
+- 2026-09-18, later: C3 closed. The gate found the demo's event loop bound to the display,
+  which is the wrong cadence for a toolkit that reads one pad event a pass; presenting moved
+  to its own thread, as every established client has it. The wire's vertical stick sign was
+  read live rather than argued.
 - 2026-09-18: C3 planned. The application hands over the rectangle it drew into and the
   library computes no fit; keys are usage codes with the event's own modifier mask; the
   input ring drops and counts rather than blocks; the relative-mode event carries the warp

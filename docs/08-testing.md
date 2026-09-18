@@ -212,6 +212,12 @@ what keeps the exemption from spreading.
   session of [10](10-client.md) runs the same clip through this host's framing to the real
   decoder, with the keyframes announced and with them not; and a labelled probe times the
   read-back copy three ways so that choice is a number from the device rather than a guess.
+- **The client's input is checked as the host would inject it.** The hermetic session runs
+  this host's own input expansion over what the client sends, so the far window pixel is
+  held to land at the end of the host's absolute axis, a press outside the picture to arrive
+  nowhere and its release to arrive, a repeated pad state to arrive once, and the census to
+  agree message for message; the pointer message moves the client in and out of relative mode
+  and the warp position comes back through the same rectangle ([10 §8](10-client.md)).
 - **The browser pipe has two live rows and neither can be replaced by a hermetic one.** A
   stock browser client, unmodified, streaming from the service; and `examples/web-client` on
   two browser families, driven through their developer-tools protocols so a run is scripted
