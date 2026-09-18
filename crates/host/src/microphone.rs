@@ -196,7 +196,7 @@ impl core::fmt::Debug for Ear {
 impl Ear {
     /// Build one, or nothing if the codec will not start.
     pub(crate) fn new(guest: u32, out: Sender) -> Option<Self> {
-        match lowlat_audio::Decoder::new() {
+        match lowlat_audio::Decoder::new(microphone::CHANNELS, SAMPLES_MAX) {
             Ok(decoder) => Some(Self {
                 guest,
                 decoder,
@@ -239,7 +239,11 @@ impl Ear {
                 return;
             }
         };
-        let Ok(count) = self.decoder.decode(&packet, self.samples.as_mut_slice()) else {
+        let compressed = packet.encoding == microphone::Encoding::Compressed;
+        let Ok(count) =
+            self.decoder
+                .decode(packet.payload, compressed, self.samples.as_mut_slice())
+        else {
             return;
         };
         let Some(samples) = self.samples.get(..count) else {

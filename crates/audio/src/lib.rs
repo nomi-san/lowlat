@@ -1,5 +1,6 @@
-//! Sound: capture from the desktop's own output, encode it, and later decode
-//! what a guest sends back.
+//! Sound: capture from the desktop's own output, encode it, and decode what a
+//! peer sends -- a guest's microphone on the host, the host's stream on the
+//! client.
 //!
 //! **Separate from `lowlat-capture` and `lowlat-encode` on purpose.** Those two
 //! carry a display stack and two vendor runtimes between them, and none of it
@@ -16,13 +17,13 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod capture;
+pub mod decode;
 pub mod encode;
-pub mod microphone;
 mod pulse;
 
 pub use capture::{Capture, Config, Live, Output, Wanted, outputs};
+pub use decode::Decoder;
 pub use encode::Encoder;
-pub use microphone::Decoder;
 
 /// Samples a second, per channel. **The only rate the protocol carries**, so
 /// it comes from there rather than being declared again here.
