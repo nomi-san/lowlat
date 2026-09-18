@@ -320,8 +320,8 @@ have moved by itself; an application that kept its own copy would mark the wrong
 
 **Planned 2026-09-15, built from 2026-09-17 by [impl-plan-client.md](impl-plan-client.md).**
 The first block below is in the header (minor 4 the session, minor 5 the pictures, minor 6
-the input); the second is the shape the rest will take, fixed here so the header can grow
-into it. A signature that has not landed is not in the header yet, and the header is the
+the input, minor 7 the sound); the second is the shape the rest will take, fixed here so the
+header can grow into it. A signature that has not landed is not in the header yet, and the header is the
 truth.
 
 ```c
@@ -365,11 +365,12 @@ lowlat_status lowlat_client_send_pad_state(lowlat_client *cl, uint32_t pad,
                                            const lowlat_pad_state *state);
 lowlat_status lowlat_client_send_pad_unplug(lowlat_client *cl, uint32_t pad);
 lowlat_status lowlat_client_send_release_all(lowlat_client *cl);
+
+lowlat_status lowlat_client_acquire_audio(lowlat_client *cl, uint32_t timeout_ms,
+                                          int16_t *samples, uint32_t *count);
 ```
 
 ```c
-lowlat_status lowlat_client_acquire_audio(lowlat_client *cl, uint32_t timeout_ms,
-                                          int16_t *samples, uint32_t *count);
 lowlat_status lowlat_client_set_video_config(lowlat_client *cl, const lowlat_client_video_config *cfg);
 lowlat_status lowlat_client_get_metrics(lowlat_client *cl, lowlat_metrics *out);
 ```
@@ -424,9 +425,18 @@ that cannot export lends planes, and in this minor every decoder does. Every pic
 carries size, rotation, generation and a sequence number -- a gap between two consecutive
 presents is a skip -- so a renderer needs nothing from the stream itself.
 
-**Sound is decoded, not played.** `acquire_audio` hands out signed sixteen-bit stereo at
-48 kHz, up to 960 frames a call, in order and already paced by the playback window
-([10 §6](10-client.md)); the device is the application's.
+**Sound is decoded, not played** (minor 7). `acquire_audio` hands out one packet a call,
+signed sixteen-bit stereo at 48 kHz, in the order the host sent them, as many frames as the
+packet held -- 960 for a host at 20 ms, at most 8000; `count` is the room in frames going in
+and the frames written coming out, and a buffer too short is told the need with
+`LOWLAT_ERR_TOO_SMALL` and the packet kept for the next call. The decode runs on the caller's
+thread, inside the call, and the wait for a packet is outside the handle's lock, as the
+picture's is; two threads calling at once take turns. Nothing paces it: the device is the
+application's and its buffer is the playback window ([10 §6](10-client.md)). Packets the
+application has not taken wait in a pool of 32, past which the newest is dropped and counted
+in status, which is a caller that stopped calling. Status carries the packets decoded,
+dropped and refused, those waiting, the last packet's age between the wire and the call, and
+the codec the decoder was built for (`LOWLAT_AUDIO_OPUS`, `LOWLAT_AUDIO_PCM`).
 
 **Input is one call per kind** (minor 6): key, mouse button, wheel, motion, pad button, pad
 axis, pad state, pad unplug and release-all, each with its arguments in the signature rather
@@ -791,6 +801,15 @@ bytes; the statuses `LOWLAT_ERR_TOO_MANY_HELD` and the `LOWLAT_ERR_NO_DECODER_*`
 `LOWLAT_ERR_DECODER_UNSUPPORTED`, and the outcome `LOWLAT_OUTCOME_DECODER_FAILED`.
 `lowlat_rotation` and `lowlat_codec` moved from the host's guard to the shared block, their
 values unchanged.
+
+**Minor 6** (2026-09-18) added the input ([§3b](#3b-client)): `lowlat_client_set_viewport`,
+the nine `lowlat_client_send_*` calls with `lowlat_pad_state`, the `LOWLAT_MOD_*`,
+`LOWLAT_MOUSE_*` and `LOWLAT_PAD_*` vocabulary, `LOWLAT_EVENT_RELATIVE` with its body, and
+`input_dropped` in `lowlat_client_status`.
+
+**Minor 7** (2026-09-18) added the sound ([§3b](#3b-client)): `lowlat_client_acquire_audio`,
+`LOWLAT_AUDIO_OPUS` and `LOWLAT_AUDIO_PCM`, and in `lowlat_client_status` the packets decoded,
+dropped, refused and queued, the last packet's age and the codec.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected

@@ -218,6 +218,16 @@ what keeps the exemption from spreading.
   nowhere and its release to arrive, a repeated pad state to arrive once, and the census to
   agree message for message; the pointer message moves the client in and out of relative mode
   and the warp position comes back through the same rectangle ([10 §8](10-client.md)).
+- **Sound crosses the hermetic session as sound, in both codecs.** The harness host encodes
+  a real stereo tone at its own 20 ms cadence, or sends it uncompressed, and the client's own
+  consumer decodes what arrives after every pass; every packet is handed over and none dropped
+  or refused under the three network scripts. Uncompressed sound is compared sample for sample
+  across the run; compressed sound is held to each channel's level once the codec has
+  settled, because a lossy codec's output is not its input and a swapped or mixed channel
+  reads wrong on level alone. The decoder's containment is proved by a test that first makes
+  the codec panic and then decodes again, and the fuzz target feeds one input to a mono and a
+  stereo decoder as a sequence of packets with the harness's abort-on-panic hook silenced, so
+  a contained panic is not reported as a crash and an escaping one still is.
 - **The browser pipe has two live rows and neither can be replaced by a hermetic one.** A
   stock browser client, unmodified, streaming from the service; and `examples/web-client` on
   two browser families, driven through their developer-tools protocols so a run is scripted

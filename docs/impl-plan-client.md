@@ -250,19 +250,51 @@ both plans, host `uhid` backend first, and the touchpad already has a wire the c
 have to learn there; a Unicode key message for an input method needs a host half that is
 not a key injection, and is owed with it; pen and touch stay deferred.
 
-## Phase C4 - Sound
+## Phase C4 - Sound (built 2026-09-18; gate 1 owed)
 
-- [ ] Opus decode to PCM, the raw-PCM pass-through, the playback window with the 40 ms cap and
-  the flush at either edge, `lowlat_client_acquire_audio`.
-- [ ] The demo plays it through the toolkit's audio device.
-- [ ] The microphone the other way is **deferred**: the enable and the uplink are known, the
+**Planned 2026-09-18, interview of the same day.** The decisions are recorded once, here;
+the rules are [10 §6](10-client.md).
+
+- [x] **The library orders and decodes; the device paces.** No playback window in the
+  library (*an earlier draft had one, with a 40 ms cap and a flush at either edge*): every
+  reference keeps the window in the application's device, where the clock is, and a second
+  window over it would only flush against it. The receive loop stamps each packet and parks
+  it in a pool of 32; a full pool drops the newest and counts it. **Decode on acquire, no
+  sound thread**: `lowlat_client_acquire_audio` takes the next packet in order and decodes it
+  on the caller's thread into the caller's buffer -- one packet a call, stereo at 48 kHz, up
+  to 8000 frames (the uncompressed ceiling; the 40 ms figure was one client build's slot),
+  the need reported and the packet kept when the buffer is short, the packet's age at
+  hand-over in status. The decoder is the one the host reads a microphone through,
+  generalised over channels and capacity, contained and rebuilt after a caught panic, fuzzed
+  with a stereo decoder beside the mono one (the target's own panic hook had aborted before
+  unwinding, so it had never run); a stream that is not stereo at the protocol's rate is
+  refused per packet; a change of mask, codec or channel count rebuilds. Minor 7.
+- [x] The demo plays it through the toolkit's device at the desktop client's window, 75 ms
+  to 150, from a listening thread beside the presenter; a resync is read from the device's
+  own queue and logged the moment it is seen; the second's line carries the packets, the
+  device's queue, the packet age, the pool's drops and the decoder's refusals; a knob traces
+  every packet, another asks for uncompressed. Against a host on the same machine the demo
+  plays into a sink the host does not capture, or it echoes.
+- [x] The microphone the other way is **deferred**: the enable and the uplink are known, the
   capture device is the application's, and nothing in v1 needs it.
 
 **Gate:**
 
 1. Thirty minutes of sound from an established host with no audible gap and at most one
-   resync, then the same from this host.
-2. The hermetic session carries sound both ways and the samples out match the samples in.
+   resync, then the same from this host. *The resync figure is read from the run, not
+   picked: the demo logs the device's queue every second and its slope is the drift; the
+   desktop window drifts 75 ms to an edge, which is 25 minutes at 50 ppm and 12.5 at 100,
+   so if the crystals give two the gate's number follows the crystals.* **Owed:** the user
+   drives the run.
+2. The hermetic session carries sound both codecs and the samples out match the samples in
+   (*"both ways" was the wording; the uplink is deferred in the same phase*). *Passed
+   2026-09-18: the harness host encodes a real stereo tone at 20 ms and sends it
+   uncompressed in a second configuration; every packet acquired, none dropped or refused,
+   at zero loss, one percent loss and five milliseconds of reorder over thirty simulated
+   seconds; uncompressed sound equal sample for sample across the run (three hundred seconds
+   too), compressed sound at each channel's level over the last second. A smoke run against
+   this host: 50 packets a second, the age between the wire and the call 0 to 1 ms, the
+   device's queue 56 to 76 ms, no drop, refusal or resync in twenty-five seconds.*
 
 ## Phase C5 - The rest of the client, and NVDEC
 
@@ -331,6 +363,12 @@ built.
 
 Newest first.
 
+- 2026-09-18, evening: C4 planned and built. The playback window leaves the library for the
+  application's device, where every reference keeps it and where the clock is; sound is
+  decoded on the application's call rather than on a thread of its own; the pool drops and
+  counts; the demo reads resyncs from its device's own queue and logs them at once; "both
+  ways" in the hermetic gate is read as both codecs, the uplink being deferred in the same
+  phase. Gate 2 passed; gate 1 is the user's thirty minutes.
 - 2026-09-18, later: C3 closed. The gate found the demo's event loop bound to the display,
   which is the wrong cadence for a toolkit that reads one pad event a pass; presenting moved
   to its own thread, as every established client has it. The wire's vertical stick sign was

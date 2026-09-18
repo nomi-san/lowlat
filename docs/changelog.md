@@ -3,6 +3,35 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-18 - Phase C4: sound
+
+### Added
+- **`lowlat_client_acquire_audio`** ([06 §3b](06-api.md), [10 §6](10-client.md), minor 7):
+  one packet a call, signed sixteen-bit stereo at 48 kHz, in the order the host sent them,
+  decoded on the caller's thread into the caller's buffer -- the uncompressed form passed
+  through, the compressed one decoded through the same contained decoder the host reads a
+  microphone with, generalised over channels. The receive loop stamps each packet and parks
+  it in a pool of 32; a full pool drops the newest and counts it. There is no playback window
+  in the library: the application's device has the clock and its buffer is the window, so the
+  library orders and decodes and the device paces. Status gains the packets decoded, dropped,
+  refused and queued, the last packet's age between the wire and the call, and the codec.
+- **The demo plays sound** through the toolkit's device from a listening thread, at the
+  window a desktop client runs (75 ms to 150); a resync is read from the device's own queue
+  and logged as it happens; the second's line carries the sound figures; `LOWLAT_AUDIO_TRACE`
+  prints every packet and `LOWLAT_RAW_AUDIO` asks the host for uncompressed.
+
+### Changed
+- The sound decoder moved from the microphone's module to `lowlat-audio`'s `decode`, taking
+  its channel count and capacity; the fuzz target feeds a stereo decoder beside the mono one,
+  with the harness's own panic hook silenced -- it aborted before unwinding, so a contained
+  panic read as a crash and the target had never run.
+
+### Verified
+- The hermetic session carries a real tone in both codecs under the three network scripts:
+  every packet handed over, uncompressed sound equal sample for sample, compressed sound at
+  each channel's level ([impl-plan-client.md](impl-plan-client.md) C4). The thirty-minute
+  runs against an established host and this host are owed.
+
 ## 2026-09-18 - Phase C3: input
 
 ### Added

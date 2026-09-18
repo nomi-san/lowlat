@@ -1,6 +1,7 @@
 # 10 - The client
 
-**Status:** designed 2026-09-15, interview of the same day; C1 and C2 built 2026-09-17.
+**Status:** designed 2026-09-15, interview of the same day; C1 and C2 built 2026-09-17, C3
+and C4 2026-09-18.
 Built by [impl-plan-client.md](impl-plan-client.md).
 
 The client is the other half of the same protocol: it receives what [05](05-host.md) produces.
@@ -37,7 +38,7 @@ piece of shared code that changes.
 | reference-chain repair | the host's job: a guest that misses one frame is cascaded to the next keyframe ([05 §5](05-host.md)) | none: a client never sees a gap that retransmission will not fill |
 | keyframe requests | answered | sent in exactly two cases (§5) |
 | input | injected | encoded from the application's events (§8) |
-| threads | capture, encode, one guest loop per seat, audio | one receive loop, one decode thread per stream, one sound thread |
+| threads | capture, encode, one guest loop per seat, audio | one receive loop, one decode thread per stream; sound is decoded on the application's call |
 
 The row that matters most is the fourth: **the client has no pacer.** Every client generation
 compared here decodes as fast as pictures arrive, keeps a queue two deep, hands out the newest
@@ -302,15 +303,30 @@ channel, the rate, a codec byte, and the channel count ([01 §11.4](01-protocol.
 codec byte is read: **2 is uncompressed PCM and is handed out as it is; anything else is Opus**
 and is decoded. A change in mask, codec or count rebuilds the decoder.
 
-**The library decodes; the application owns the device.** `lowlat_client_acquire_audio` hands
-out signed sixteen-bit stereo at 48 kHz, in order, up to 20 ms at a time; playing it is the
-application's, on whatever device and clock it has. What sits between the decoder and that
-call is the **playback window**, which is the thing that decides whether sound stutters: a
-bounded queue that is flushed at either edge -- too empty is a gap, too full is latency -- with
-a cap of 40 ms on any one decoded packet. The host's source is the clock ([05 §9](05-host.md)),
-so the window drifts against the device's clock at the rate of their difference and resyncs on
-the order of once every twelve to fifty minutes; no client can remove that, and a client that
-tries by resampling to the device makes a feedback loop.
+**The library orders and decodes; the device paces** (*revised 2026-09-18*, at C4's
+planning; an earlier draft put a playback window in the library). The receive loop copies
+each packet once, off its ring into a pool of 32 slots, and stamps it with its arrival;
+`lowlat_client_acquire_audio` takes the next one in order and decodes it **on the caller's
+thread** into the caller's buffer -- one packet a call, signed sixteen-bit stereo at 48 kHz,
+as many frames as the packet held (960 for a host at 20 ms; at most 8000, the uncompressed
+ceiling), with the packet's age at hand-over reported in status. A full pool drops the
+newest packet and counts it, which is a reader that has stopped calling; nothing here
+waits for the right moment, because nothing here has the clock that decides it.
+
+That clock is the application's device, and its buffer is the **playback window**: sound
+is queued on it as packets arrive and it plays from a floor and flushes at a ceiling --
+too empty is a gap, too full is latency -- so the floor is the latency and the pair is the
+budget against drift and jitter, in each direction. A desktop client runs about 75 ms to
+150; a phone or a browser about twice that, paying latency for coarser periods and worse
+paths. The host's source is the clock ([05 §9](05-host.md)), so the window drifts against
+the device's at the rate of their difference and resyncs on the order of once every twelve
+to fifty minutes; no client can remove that, a client that tries by resampling to the
+device makes a feedback loop, and a library that ran a second window over the device's
+would only flush against it. A decoder is built from the stream's own header and rebuilt
+when its mask, codec or channel count changes; a stream that is not stereo at the
+protocol's rate is refused per packet and counted. The pipeline hop between the wire and
+the device -- one wake and one decode, a fraction of a millisecond -- is not where the
+latency is.
 
 ## §7 Initialization and the control vocabulary
 
@@ -393,8 +409,9 @@ toolkit that reads one pad event per pass of its loop delivers a moving stick at
 rate, and a loop that presents with vsync runs at the display's; the kernel's queue then
 fills and plays on for seconds after the hand stops. Presentation belongs on a thread of its
 own, paced by the display through `acquire_frame` and present, while the event loop runs at
-the toolkit's own cadence -- the shape every established client has, and the shape the sound
-thread takes in the next phase.
+the toolkit's own cadence -- the shape every established client has, and the shape the
+application's sound thread takes too (§6): a long wait on `acquire_audio`, the packet straight
+onto the device.
 
 ## §9 Events, status and metrics
 
@@ -429,11 +446,14 @@ half its time; the demo's cadence is the display's whatever the stream does.
 One receive loop (the shell's), which owns the session and its rings and hands access units
 to a decode thread per stream through a pool by index -- one copy, off the ring, and never
 another by the library (the driver's interface takes the slice data as a buffer of its own,
-which is a second copy inside the driver and not one this design can remove); one sound
-thread; and nothing that presents: presentation is the application's thread calling acquire
+which is a second copy inside the driver and not one this design can remove); and nothing
+that presents or plays: presentation is the application's thread calling acquire
 (*corrected 2026-09-17*: an earlier draft had the decode thread draining the ring, which is
-the established client's shape and needs a lock on the session that nothing here takes). The
-decode thread never blocks the receive loop: a full pool leaves the backlog in the receive
-ring, where the catch-up of §3 sees it. Every rule of [02](02-io-shell.md) applies -- raw
-wakes for raw waits, no elevated priority inside the library, teardown that wakes every
-waiter.
+the established client's shape and needs a lock on the session that nothing here takes), and
+sound is decoded on the application's thread inside `acquire_audio` (*corrected 2026-09-18*:
+an earlier draft had a sound thread; a decode of a twentieth of a millisecond earns no
+thread, and the second hand-off it would need is the one wake and copy the design saves).
+The decode thread never blocks the receive loop: a full pool leaves the backlog in the
+receive ring, where the catch-up of §3 sees it; the sound pool never blocks it either, it
+drops. Every rule of [02](02-io-shell.md) applies -- raw wakes for raw waits, no elevated
+priority inside the library, teardown that wakes every waiter.
