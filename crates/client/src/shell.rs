@@ -5,9 +5,10 @@
 //! shell's loop with the driver as its application.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::mpsc;
+use std::sync::{Arc, OnceLock};
 
+use lowlat_common::clock::Time;
 use lowlat_common::events;
 use lowlat_common::spsc::Ring;
 use lowlat_core::channel::{RecvRing, SlotMeta};
@@ -24,6 +25,7 @@ use std::sync::atomic::Ordering;
 use crate::driver::{Driver, Telemetry, Units};
 use crate::input::{RING_DEPTH, Request};
 use crate::seam::{Arrival, Ask, Event, Outcome};
+use crate::sound::Packets;
 use crate::{
     AUDIO_CHANNEL, AUDIO_RECV_SLOTS, BODY, CONTROL_RECV_SLOTS, CONTROL_SEND_SLOTS, VIDEO_CHANNEL,
     VIDEO_RECV_SLOTS,
@@ -49,6 +51,10 @@ pub(crate) struct Attached {
     pub emit: events::Sender<Event>,
     pub telemetry: Arc<Telemetry>,
     pub units: Units,
+    pub packets: Packets,
+    /// Set to the loop's epoch once it has one, so the application's
+    /// thread can read the arrival stamps sound packets carry.
+    pub epoch: Arc<OnceLock<Time>>,
 }
 
 fn attach_recv<'a>(
@@ -91,6 +97,8 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
         emit,
         telemetry,
         units,
+        packets,
+        epoch,
     } = args;
     let mut conn = Conn::new(
         Credentials {
@@ -152,7 +160,8 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
         return;
     }
     let mut shell = Shell::new(socket, wake, Endpoint::new(conn, session));
-    let mut driver = Driver::new(init, units, emit.clone(), Arc::clone(&telemetry));
+    let _ = epoch.set(shell.base());
+    let mut driver = Driver::new(init, units, packets, emit.clone(), Arc::clone(&telemetry));
     let mut reported: Vec<SocketAddr> = Vec::new();
     let mut pass: u32 = 0;
 

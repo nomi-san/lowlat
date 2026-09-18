@@ -8,9 +8,9 @@
 
 use std::ffi::CString;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -26,6 +26,7 @@ use crate::config::{Backend, Config, Decoding, FrameKind};
 use crate::driver::{Telemetry, Units};
 use crate::frames::{Frames, Held};
 use crate::input::{Input, RING_DEPTH, Request, Viewport};
+use crate::sound::{self, Packets, Sound};
 
 /// Which pipe an attempt asks for. A client of this library uses the native
 /// one; the browser's exists so a page can be a guest, and a native client
@@ -132,6 +133,9 @@ pub enum Error {
     TooManyHeld,
     /// No session to take pictures from.
     NoSession,
+    /// The buffer given holds fewer frames than the sound packet; carries
+    /// how many it needs. The packet waits for the next call.
+    TooSmall(usize),
 }
 
 /// Where building a decoder stopped.
@@ -172,6 +176,9 @@ struct Attempt {
     requests: Option<Arc<Ring<Request, RING_DEPTH>>>,
     thread: Option<Guest>,
     decode: Option<(JoinHandle<()>, Arc<AtomicBool>)>,
+    /// The session thread's epoch, once it is running: the clock the sound
+    /// packets' arrival stamps are on.
+    epoch: Arc<OnceLock<lowlat_common::clock::Time>>,
 }
 
 /// How long a departure is given to reach the host before the loop stops.
@@ -192,6 +199,12 @@ pub struct Client {
     frames: Arc<Frames>,
     /// The newest picture handed out, so the next acquire waits for newer.
     last_seq: u64,
+    /// The producer's handle on the sound pool, given to each session thread.
+    packets: Packets,
+    /// The consumer: decoded on the application's thread, behind a lock held
+    /// for the decode alone and never for the wait, so two callers serialise
+    /// and each takes the next packet.
+    sound: Arc<Mutex<Sound>>,
 }
 
 /// Which stage a probe's refusal names.
@@ -264,15 +277,19 @@ impl Client {
             Some(path)
         };
         let (emit, events) = events::queue();
+        let telemetry = Arc::new(Telemetry::default());
+        let packets = Packets::new();
         Ok(Self {
             attempt: None,
             emit,
             events: Some(events),
-            telemetry: Arc::new(Telemetry::default()),
+            telemetry: Arc::clone(&telemetry),
             units: Units::new(),
             node,
             frames: Arc::new(Frames::new(decoding.ceiling())),
             last_seq: 0,
+            sound: Arc::new(Mutex::new(Sound::new(packets.clone(), telemetry))),
+            packets,
         })
     }
 
@@ -317,6 +334,76 @@ impl Client {
         self.frames.release(index);
     }
 
+    /// What a caller waits on for sound outside the handle's lock: the
+    /// consumer, the pool's handle, and the session thread's epoch for the
+    /// age. `None` without a session.
+    pub fn sound(&self) -> Option<Listening> {
+        let attempt = self
+            .attempt
+            .as_ref()
+            .filter(|attempt| attempt.thread.is_some())?;
+        Some(Listening {
+            sound: Arc::clone(&self.sound),
+            packets: self.packets.clone(),
+            epoch: Arc::clone(&attempt.epoch),
+        })
+    }
+
+    /// Sound packets handed over by the session thread and not yet taken.
+    pub fn sound_queued(&self) -> usize {
+        self.packets.queued()
+    }
+}
+
+/// The handles an `acquire_audio` needs, taken from the seam under its lock
+/// and used outside it.
+#[derive(Debug, Clone)]
+pub struct Listening {
+    sound: Arc<Mutex<Sound>>,
+    packets: Packets,
+    epoch: Arc<OnceLock<lowlat_common::clock::Time>>,
+}
+
+impl Listening {
+    /// The next sound packet into `out`, waiting up to `timeout`. The lock
+    /// on the consumer is taken for the decode and not for the wait.
+    pub fn acquire(
+        &self,
+        timeout: Duration,
+        out: &mut [i16],
+    ) -> Result<Option<sound::Acquired>, Error> {
+        let began = lowlat_common::clock::Time::now();
+        let mut remaining = timeout;
+        loop {
+            let now_ms = self
+                .epoch
+                .get()
+                .map_or(0.0, |base| lowlat_common::clock::elapsed_ms(*base));
+            let taken = {
+                let mut guard = self.sound.lock().map_err(|_| Error::NoSession)?;
+                guard.acquire(now_ms, Duration::ZERO, out)
+            };
+            match taken {
+                Ok(Some(acquired)) => return Ok(Some(acquired)),
+                Ok(None) => {}
+                Err(sound::TooSmall(frames)) => return Err(Error::TooSmall(frames)),
+            }
+            if remaining.is_zero() {
+                return Ok(None);
+            }
+            self.packets.wait(remaining);
+            let elapsed = lowlat_common::clock::elapsed_ms(began);
+            let total = timeout.as_secs_f64() * 1000.0;
+            remaining = if elapsed >= total {
+                Duration::ZERO
+            } else {
+                Duration::from_secs_f64((total - elapsed) / 1000.0)
+            };
+        }
+    }
+}
+
+impl Client {
     /// Mint the credentials the offer carries.
     ///
     /// **The media key is a capability signal.** An offer that carries one
@@ -349,6 +436,7 @@ impl Client {
             requests: None,
             thread: None,
             decode: None,
+            epoch: Arc::new(OnceLock::new()),
         });
         Ok(ours)
     }
@@ -441,6 +529,8 @@ impl Client {
             emit: self.emit.clone(),
             telemetry: Arc::clone(&self.telemetry),
             units: self.units.clone(),
+            packets: self.packets.clone(),
+            epoch: Arc::clone(&attempt.epoch),
         };
         let thread = Guest::spawn(wake, move |wake, running| {
             crate::shell::run(args, wake, running)
@@ -513,6 +603,12 @@ impl Client {
             self.frames.close();
             let _ = decode.join();
         }
+        // What the session left in the sound pool is its own; the next
+        // session's first packet is not to wait behind it.
+        if let Ok(mut sound) = self.sound.lock() {
+            sound.clear();
+        }
+        self.packets.wake();
     }
 
     /// Hand the session thread one request and wake it.

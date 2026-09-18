@@ -770,6 +770,7 @@ dependencies = [
 name = "lowlat-client"
 version = "0.0.0"
 dependencies = [
+ "lowlat-audio",
  "lowlat-common",
  "lowlat-core",
  "lowlat-crypto",

@@ -37,10 +37,12 @@ pub mod frames;
 pub mod input;
 pub mod seam;
 mod shell;
+pub mod sound;
 
 pub use config::Config;
 pub use driver::{Driver, Lag, Telemetry};
 pub use seam::{Client, Error, Event, Outcome, Peer, Transport};
+pub use sound::Sound;
 
 /// Video, stream 0; sound (docs/01-protocol.md section 6).
 pub const VIDEO_CHANNEL: u8 = 1;

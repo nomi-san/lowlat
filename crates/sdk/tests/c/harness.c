@@ -685,6 +685,15 @@ int main(int argc, char **argv)
             fprintf(stderr, "harness: a pad state without its size was not refused\n");
             return 1;
         }
+        // Sound before a session: refused as not started, the count untouched.
+        lowlat_status (*acquire_audio)(lowlat_client *, uint32_t, int16_t *, uint32_t *);
+        RESOLVE(acquire_audio, lib, "lowlat_client_acquire_audio");
+        int16_t samples[16];
+        uint32_t count = 8;
+        if (acquire_audio(cl, 0, samples, &count) != LOWLAT_ERR_NOT_STARTED || count != 8) {
+            fprintf(stderr, "harness: sound before a session was not refused\n");
+            return 1;
+        }
         client_end(cl);
         client_destroy(cl);
     }

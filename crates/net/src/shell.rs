@@ -148,6 +148,12 @@ impl<'a, M: Media> Shell<'a, M> {
         }
     }
 
+    /// The loop's epoch, for a thread that reads the stamps this loop
+    /// writes in its own milliseconds.
+    pub fn base(&self) -> lowlat_common::clock::Time {
+        self.base
+    }
+
     /// The endpoint, for candidates and messages.
     pub fn endpoint(&mut self) -> &mut Endpoint<'a, M> {
         &mut self.endpoint

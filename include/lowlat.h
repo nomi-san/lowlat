@@ -42,7 +42,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 6
+#define LOWLAT_ABI_MINOR 7
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 #define LOWLAT_FEATURE_HOST 1
@@ -127,6 +127,12 @@
 #endif
 
 #if defined(LOWLAT_CLIENT)
+/// The sound codec on the wire, as `lowlat_client_status.audio_codec`
+/// reports it.
+#define LOWLAT_AUDIO_OPUS 1
+
+#define LOWLAT_AUDIO_PCM 2
+
 /// Modifier bits for `lowlat_client_send_key`. The lock bits are the toggles'
 /// state, which a host reads to keep its own locks in step.
 #define LOWLAT_MOD_LSHIFT 1
@@ -1282,6 +1288,22 @@ typedef struct lowlat_client_status {
     /// Input reports dropped because the session thread was not keeping up.
     /// Nonzero means the loop is not running, not that input is fast.
     uint32_t input_dropped;
+    /// Sound packets decoded and handed out by `lowlat_client_acquire_audio`.
+    uint64_t audio_decoded;
+    /// Sound packets dropped because the application had not taken the
+    /// ones before them: the pool holds 32.
+    uint32_t audio_dropped;
+    /// Sound packets the decoder refused, or that describe a stream this
+    /// library does not decode.
+    uint32_t audio_refused;
+    /// Sound packets taken off the wire and not yet acquired.
+    uint32_t audio_queued;
+    /// How long the last acquired packet waited between the wire and the
+    /// call, in milliseconds.
+    uint32_t audio_age_ms;
+    /// What the sound decoder was built for: `LOWLAT_AUDIO_OPUS`,
+    /// `LOWLAT_AUDIO_PCM`, or zero before a build.
+    uint32_t audio_codec;
 } lowlat_client_status;
 
 /// One plane of a picture.
@@ -2262,6 +2284,39 @@ lowlat_status lowlat_client_acquire_frame(lowlat_client *cl,
 lowlat_status lowlat_client_release_frame(lowlat_client *cl,
                                           const lowlat_frame *frame,
                                           const lowlat_fence *done) LOWLAT_NOEXCEPT;
+
+/// Take the next sound packet, decoded, waiting up to `timeout_ms` for one.
+///
+/// **One packet a call, in the order the host sent them, and the device
+/// paces.** Signed sixteen-bit stereo at 48 kHz, interleaved, as many frames
+/// as the packet held (960 for a host sending 20 ms; at most 8000). Nothing
+/// here waits for the right moment to hand a packet out: the application
+/// queues it on its device, whose own buffer is what turns a stream of
+/// packets into continuous sound and absorbs the drift between the host's
+/// clock and the device's. Packets the application has not taken wait in a
+/// pool of 32; past that the newest is dropped and counted in
+/// `lowlat_client_status.audio_dropped`, which is a caller that stopped
+/// calling.
+///
+/// The wait is outside the handle's lock, as the event poll's is. Two
+/// threads calling at once take turns, each getting the next packet.
+///
+/// @param[in] cl The handle from `lowlat_client_create`.
+/// @param[in] timeout_ms How long to wait. Zero polls.
+/// @param[out] samples Room for `*count` frames of two samples each.
+/// @param[in,out] count How many frames there is room for; on return, how
+/// many were written, or how many the waiting packet needs.
+/// @returns `LOWLAT_OK`, `LOWLAT_TIMEOUT`, `LOWLAT_ERR_TOO_SMALL` with
+/// the need in `*count` and the packet kept for the next call,
+/// `LOWLAT_ERR_NOT_STARTED` with no session, or
+/// `LOWLAT_ERR_INVALID_ARGUMENT`.
+///
+/// @attention `cl` came from `lowlat_client_create`; `samples` points to at least
+/// `2 * *count` values; `count` points to one `uint32_t`.
+lowlat_status lowlat_client_acquire_audio(lowlat_client *cl,
+                                          uint32_t timeout_ms,
+                                          int16_t *samples,
+                                          uint32_t *count) LOWLAT_NOEXCEPT;
 
 /// Take the next event, waiting up to `timeout_ms` for one.
 ///

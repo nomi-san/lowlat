@@ -16,6 +16,8 @@ lowlat-net.workspace = true
 lowlat-crypto.workspace = true
 # The decoders, and the trait the feed drives one through.
 lowlat-decode.workspace = true
+# The sound decoder, the same one the host reads a microphone through.
+lowlat-audio.workspace = true
 
 [dev-dependencies]
 # The hermetic session's other end: the host crate's own framing and

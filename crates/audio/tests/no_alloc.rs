@@ -9,7 +9,7 @@
 //! obvious here.
 
 use lowlat_audio::encode::{self, DEFAULT_BITRATE_KBPS};
-use lowlat_audio::{Encoder, FRAME, FRAME_BYTES, SAMPLE_RATE};
+use lowlat_audio::{CHANNELS, Decoder, Encoder, FRAME, FRAME_BYTES, SAMPLE_RATE};
 use lowlat_common::alloc_counter::{self, Counting};
 
 #[global_allocator]
@@ -46,6 +46,34 @@ fn encoding_a_frame_does_not_allocate() {
             let packet = encoder.encode(frame).expect("encodes");
             std::hint::black_box(packet.len());
         }
+    });
+}
+
+/// The other direction: a client decodes fifty of these a second on the
+/// thread that feeds its device.
+#[test]
+fn decoding_a_packet_does_not_allocate() {
+    let mut encoder = Encoder::new(DEFAULT_BITRATE_KBPS).expect("an encoder");
+    let packets: Vec<Vec<u8>> = frames(64)
+        .iter()
+        .map(|frame| encoder.encode(frame).expect("encodes").to_vec())
+        .collect();
+    let mut decoder = Decoder::new(CHANNELS, FRAME).expect("a decoder");
+    let mut out = vec![0i16; FRAME * CHANNELS];
+    let raw = frames(1);
+    let _ = decoder
+        .decode(&packets[0], true, &mut out)
+        .expect("decodes");
+
+    alloc_counter::assert_no_alloc(|| {
+        for packet in &packets {
+            let frames = decoder.decode(packet, true, &mut out).expect("decodes");
+            std::hint::black_box(frames);
+        }
+        let frames = decoder
+            .decode(&raw[0], false, &mut out)
+            .expect("passes through");
+        std::hint::black_box(frames);
     });
 }
 

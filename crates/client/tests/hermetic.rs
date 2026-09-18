@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 use lowlat_client::driver::{Driver, Telemetry, Units};
 use lowlat_client::feed::{Decision, Decoder, Fault, Fed, Feed};
+use lowlat_client::sound::Packets;
 use lowlat_client::{AUDIO_CHANNEL, BODY, Config, Event, Outcome, VIDEO_CHANNEL};
 use lowlat_common::events;
 use lowlat_core::audio::{self, AudioHeader};
@@ -453,6 +454,7 @@ impl<D: Decoder> Guest<D> {
         let driver = Driver::new(
             Config::default().init(),
             units.clone(),
+            Packets::new(),
             emit,
             Arc::new(Telemetry::default()),
         );

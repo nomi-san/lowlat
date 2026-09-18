@@ -30,15 +30,13 @@ use lowlat_core::{Error, conn};
 
 use crate::input::{Input, Mapper, Viewport};
 use crate::seam::{Event, Outcome};
+use crate::sound::{self, Packets};
 use crate::{AUDIO_CHANNEL, UNIT_BYTES, UNIT_SLOTS, VIDEO_CHANNEL};
 
 /// The longest inbound control message that will be taken: the user-data
 /// ceiling plus its header. A longer one cannot be consumed and the channel
 /// cannot advance past it, so it ends the session.
 const MAX_INBOUND: usize = control::USER_DATA_MAX + control::CONTROL_HEADER_LEN;
-
-/// The longest sound packet: the uncompressed ceiling plus its header.
-const MAX_SOUND: usize = audio::PCM_PAYLOAD_MAX + audio::AUDIO_HEADER_LEN;
 
 /// The streams a peer holds. Only the first is ever sent pictures.
 const STREAMS: usize = 3;
@@ -171,6 +169,14 @@ pub struct Telemetry {
     /// Input reports refused because the ring to the session thread was
     /// full, counted where they were dropped.
     pub input_dropped: AtomicU32,
+    /// Sound: packets decoded and handed over; dropped because the pool
+    /// was full; refused by the decoder; the last hand-over's age; the codec
+    /// the decoder was built for on the wire's numbering, 0 for none.
+    pub audio_decoded: AtomicU64,
+    pub audio_dropped: AtomicU32,
+    pub audio_refused: AtomicU32,
+    pub audio_age_ms: AtomicU32,
+    pub audio_codec: AtomicU32,
 }
 
 /// One session's driver.
@@ -185,7 +191,10 @@ pub struct Driver {
     /// When the departure went out, if it has.
     leaving: Option<f64>,
     inbound: Vec<u8>,
-    sound: Vec<u8>,
+    /// Sound packets on their way to the application, and the scratch a
+    /// packet is taken into when the pool has no room for it.
+    packets: Packets,
+    dropped_sound: Vec<u8>,
     /// What this peer has sent and been sent, one count per opcode.
     received: [u32; 256],
     sent: [u32; 256],
@@ -203,7 +212,8 @@ pub struct Driver {
     video_bytes: u64,
     audio_packets: u64,
     audio_bytes: u64,
-    last_audio: Option<audio::AudioHeader>,
+    audio_dropped: u32,
+    first_audio_said: bool,
     /// The window-to-picture mapping the application's input goes through.
     mapper: Mapper,
     /// The picture's size and turn as last seen, so the mapper is told only
@@ -217,19 +227,21 @@ impl Driver {
     pub fn new(
         init: Init,
         units: Units,
+        packets: Packets,
         emit: events::Sender<Event>,
         telemetry: Arc<Telemetry>,
     ) -> Self {
         Self {
             init,
             units,
+            packets,
             emit,
             telemetry,
             established: false,
             stalled_said: false,
             leaving: None,
             inbound: vec![0u8; MAX_INBOUND],
-            sound: vec![0u8; MAX_SOUND],
+            dropped_sound: vec![0u8; sound::PACKET_BYTES],
             received: [0; 256],
             sent: [0; 256],
             generation: [None; STREAMS],
@@ -243,7 +255,8 @@ impl Driver {
             video_bytes: 0,
             audio_packets: 0,
             audio_bytes: 0,
-            last_audio: None,
+            audio_dropped: 0,
+            first_audio_said: false,
             mapper: Mapper::default(),
             picture: (0, 0, video::Rotation::Unknown),
             relative: false,
@@ -344,7 +357,7 @@ impl Driver {
         if let Some(outcome) = self.drain_video(endpoint.session()) {
             return Some(outcome);
         }
-        if let Some(outcome) = self.drain_audio(endpoint.session()) {
+        if let Some(outcome) = self.drain_audio(endpoint.session(), now_ms) {
             return Some(outcome);
         }
         self.measure_lag(endpoint.session(), now_ms);
@@ -750,31 +763,68 @@ impl Driver {
         }
     }
 
-    /// Every sound packet, counted and described. Decoding and the playback
-    /// window come with the sound phase.
-    fn drain_audio(&mut self, session: &mut Session<'_>) -> Option<Outcome> {
+    /// Every sound packet, into the pool for the application, stamped with
+    /// when it arrived.
+    ///
+    /// **A full pool drops the packet rather than leaving it.** Left in the
+    /// receive ring it would sit behind everything the host sends after it,
+    /// and a reader that is not calling would play it late when it did; the
+    /// packet is taken off the ring and counted instead.
+    fn drain_audio(&mut self, session: &mut Session<'_>, now_ms: f64) -> Option<Outcome> {
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "milliseconds since the loop's epoch, wrapping as a stamp"
+        )]
+        let arrived = now_ms.max(0.0) as u32;
         loop {
-            let len = match session.take_message(AUDIO_CHANNEL, &mut self.sound) {
-                None => return None,
-                Some(Ok(len)) => len,
+            let mut refused: Option<Error> = None;
+            let mut take = |slot: &mut [u8]| match session.take_message(AUDIO_CHANNEL, slot) {
+                Some(Ok(len)) => Some(len),
                 Some(Err(error)) => {
-                    lowlat_common::log_warn!("client: sound packet refused, error={error:?}");
-                    return Some(Outcome::Unreadable);
+                    refused = Some(error);
+                    None
                 }
+                None => None,
             };
-            if let Ok(header) = audio::parse(self.sound.get(..len).unwrap_or(&[])) {
-                if self.last_audio.is_none() {
-                    lowlat_common::log_info!(
-                        "client: sound mask={} samples={} rate={} codec={:?} channels={}",
-                        header.mask,
-                        header.samples,
-                        header.rate,
-                        header.codec,
-                        header.channels
-                    );
+            let len = if let Some(mut writer) = self.packets.writer() {
+                if !writer.fill_with(&mut take) {
+                    if let Some(error) = refused {
+                        lowlat_common::log_warn!("client: sound packet refused, error={error:?}");
+                        return Some(Outcome::Unreadable);
+                    }
+                    return None;
                 }
-                self.last_audio = Some(header);
-            }
+                let len = writer.written().len();
+                if !self.first_audio_said {
+                    self.first_audio_said = true;
+                    if let Ok(header) = audio::parse(writer.written()) {
+                        lowlat_common::log_info!(
+                            "client: sound mask={} samples={} rate={} codec={:?} channels={}",
+                            header.mask,
+                            header.samples,
+                            header.rate,
+                            header.codec,
+                            header.channels
+                        );
+                    }
+                }
+                self.packets.publish(writer, arrived);
+                len
+            } else {
+                let Some(len) = take(&mut self.dropped_sound) else {
+                    if let Some(error) = refused {
+                        lowlat_common::log_warn!("client: sound packet refused, error={error:?}");
+                        return Some(Outcome::Unreadable);
+                    }
+                    return None;
+                };
+                self.audio_dropped = self.audio_dropped.saturating_add(1);
+                if self.audio_dropped == 1 {
+                    lowlat_common::log_warn!("client: sound pool full, packet dropped");
+                }
+                len
+            };
             self.audio_packets = self.audio_packets.saturating_add(1);
             self.audio_bytes = self.audio_bytes.saturating_add(len as u64);
         }
@@ -811,6 +861,7 @@ impl Driver {
         t.video_bytes.store(self.video_bytes, Ordering::Relaxed);
         t.audio_packets.store(self.audio_packets, Ordering::Relaxed);
         t.audio_bytes.store(self.audio_bytes, Ordering::Relaxed);
+        t.audio_dropped.store(self.audio_dropped, Ordering::Relaxed);
         t.control_in.store(
             self.received.iter().map(|c| u64::from(*c)).sum(),
             Ordering::Relaxed,

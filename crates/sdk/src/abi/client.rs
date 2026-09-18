@@ -151,7 +151,28 @@ pub struct lowlat_client_status {
     /// Input reports dropped because the session thread was not keeping up.
     /// Nonzero means the loop is not running, not that input is fast.
     pub input_dropped: u32,
+    /// Sound packets decoded and handed out by `lowlat_client_acquire_audio`.
+    pub audio_decoded: u64,
+    /// Sound packets dropped because the application had not taken the
+    /// ones before them: the pool holds 32.
+    pub audio_dropped: u32,
+    /// Sound packets the decoder refused, or that describe a stream this
+    /// library does not decode.
+    pub audio_refused: u32,
+    /// Sound packets taken off the wire and not yet acquired.
+    pub audio_queued: u32,
+    /// How long the last acquired packet waited between the wire and the
+    /// call, in milliseconds.
+    pub audio_age_ms: u32,
+    /// What the sound decoder was built for: [`LOWLAT_AUDIO_OPUS`],
+    /// [`LOWLAT_AUDIO_PCM`], or zero before a build.
+    pub audio_codec: u32,
 }
+
+/// The sound codec on the wire, as `lowlat_client_status.audio_codec`
+/// reports it.
+pub const LOWLAT_AUDIO_OPUS: u32 = 1;
+pub const LOWLAT_AUDIO_PCM: u32 = 2;
 
 /// Modifier bits for [`lowlat_client_send_key`]. The lock bits are the toggles'
 /// state, which a host reads to keep its own locks in step.
@@ -495,6 +516,7 @@ fn refused(error: ::lowlat_client::Error) -> lowlat_status {
         }
         Error::TooManyHeld => LOWLAT_ERR_TOO_MANY_HELD,
         Error::NoSession => LOWLAT_ERR_NOT_STARTED,
+        Error::TooSmall(_) => LOWLAT_ERR_TOO_SMALL,
     }
 }
 
@@ -1099,6 +1121,12 @@ pub unsafe extern "C" fn lowlat_client_get_status(
                     lowlat_decoder::LOWLAT_DECODER_NONE as u32
                 },
                 input_dropped: t.input_dropped.load(Ordering::Relaxed),
+                audio_decoded: t.audio_decoded.load(Ordering::Relaxed),
+                audio_dropped: t.audio_dropped.load(Ordering::Relaxed),
+                audio_refused: t.audio_refused.load(Ordering::Relaxed),
+                audio_queued: u32::try_from(held.seam.sound_queued()).unwrap_or(u32::MAX),
+                audio_age_ms: t.audio_age_ms.load(Ordering::Relaxed),
+                audio_codec: t.audio_codec.load(Ordering::Relaxed),
             };
             LOWLAT_OK
         })
@@ -1233,6 +1261,81 @@ pub unsafe extern "C" fn lowlat_client_release_frame(
             let frames = std::sync::Arc::clone(handle.held().seam.frames());
             frames.release(frame.slot as usize);
             LOWLAT_OK
+        })
+    }
+}
+
+/// Take the next sound packet, decoded, waiting up to `timeout_ms` for one.
+///
+/// **One packet a call, in the order the host sent them, and the device
+/// paces.** Signed sixteen-bit stereo at 48 kHz, interleaved, as many frames
+/// as the packet held (960 for a host sending 20 ms; at most 8000). Nothing
+/// here waits for the right moment to hand a packet out: the application
+/// queues it on its device, whose own buffer is what turns a stream of
+/// packets into continuous sound and absorbs the drift between the host's
+/// clock and the device's. Packets the application has not taken wait in a
+/// pool of 32; past that the newest is dropped and counted in
+/// `lowlat_client_status.audio_dropped`, which is a caller that stopped
+/// calling.
+///
+/// The wait is outside the handle's lock, as the event poll's is. Two
+/// threads calling at once take turns, each getting the next packet.
+///
+/// @param[in] cl The handle from [`lowlat_client_create`].
+/// @param[in] timeout_ms How long to wait. Zero polls.
+/// @param[out] samples Room for `*count` frames of two samples each.
+/// @param[in,out] count How many frames there is room for; on return, how
+/// many were written, or how many the waiting packet needs.
+/// @returns [`LOWLAT_OK`], [`LOWLAT_TIMEOUT`], [`LOWLAT_ERR_TOO_SMALL`] with
+/// the need in `*count` and the packet kept for the next call,
+/// [`LOWLAT_ERR_NOT_STARTED`] with no session, or
+/// [`LOWLAT_ERR_INVALID_ARGUMENT`].
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`]; `samples` points to at least
+/// `2 * *count` values; `count` points to one `uint32_t`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_acquire_audio(
+    cl: *mut lowlat_client,
+    timeout_ms: u32,
+    samples: *mut i16,
+    count: *mut u32,
+) -> lowlat_status {
+    unsafe {
+        entered(cl, |handle| {
+            let Some(count) = count.as_mut() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            if samples.is_null() && *count != 0 {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let Some(listening) = handle.held().seam.sound() else {
+                return LOWLAT_ERR_NOT_STARTED;
+            };
+            let room = (*count as usize).saturating_mul(2);
+            // SAFETY: the caller promised `2 * *count` values at `samples`,
+            // and a null pointer arrives here only with a count of zero.
+            let out = if room == 0 {
+                &mut [][..]
+            } else {
+                core::slice::from_raw_parts_mut(samples, room)
+            };
+            match listening.acquire(Duration::from_millis(u64::from(timeout_ms)), out) {
+                Ok(Some(acquired)) => {
+                    *count = u32::try_from(acquired.frames).unwrap_or(u32::MAX);
+                    LOWLAT_OK
+                }
+                Ok(None) => {
+                    *count = 0;
+                    LOWLAT_TIMEOUT
+                }
+                Err(::lowlat_client::Error::TooSmall(need)) => {
+                    *count = u32::try_from(need).unwrap_or(u32::MAX);
+                    LOWLAT_ERR_TOO_SMALL
+                }
+                Err(error) => refused(error),
+            }
         })
     }
 }
@@ -1546,12 +1649,30 @@ mod tests {
             codec: 0,
             backend: 0,
             input_dropped: 0,
+            audio_decoded: 0,
+            audio_dropped: 0,
+            audio_refused: 0,
+            audio_queued: 0,
+            audio_age_ms: 0,
+            audio_codec: 0,
         };
         assert_eq!(
             unsafe { lowlat_client_get_status(handle, &raw mut status) },
             LOWLAT_OK
         );
         assert_eq!(status.state, LOWLAT_CLIENT_IDLE);
+        let mut samples = [0i16; 4];
+        let mut count: u32 = 2;
+        assert_eq!(
+            unsafe { lowlat_client_acquire_audio(handle, 0, samples.as_mut_ptr(), &raw mut count) },
+            LOWLAT_ERR_NOT_STARTED
+        );
+        assert_eq!(
+            unsafe {
+                lowlat_client_acquire_audio(handle, 0, samples.as_mut_ptr(), core::ptr::null_mut())
+            },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
 
         assert_eq!(
             unsafe {
