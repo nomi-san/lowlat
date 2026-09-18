@@ -46,7 +46,7 @@ lowlat_status lowlat_set_log_callback(lowlat_log_fn fn, void *opaque);
 lowlat_status lowlat_set_log_level(uint32_t level);
 
 lowlat_status lowlat_host_create(const lowlat_host_create_info *info, lowlat_host **out);
-void          lowlat_host_destroy(lowlat_host *ll);
+void          lowlat_host_destroy(lowlat_host *hl);
 ```
 
 **One library, one header, two halves, and a handle type per half.** A host session is a
@@ -100,28 +100,28 @@ timezone to mean something.
 ## §3 Host
 
 ```c
-lowlat_status lowlat_host_start(lowlat_host *ll, const lowlat_host_config *cfg);
-lowlat_status lowlat_host_stop(lowlat_host *ll);
-lowlat_status lowlat_host_get_status(lowlat_host *ll, lowlat_host_status *out);
-lowlat_status lowlat_host_poll_microphone(lowlat_host *ll, uint32_t timeout_ms, int16_t *samples,
+lowlat_status lowlat_host_start(lowlat_host *hl, const lowlat_host_config *cfg);
+lowlat_status lowlat_host_stop(lowlat_host *hl);
+lowlat_status lowlat_host_get_status(lowlat_host *hl, lowlat_host_status *out);
+lowlat_status lowlat_host_poll_microphone(lowlat_host *hl, uint32_t timeout_ms, int16_t *samples,
                                           uint32_t *count, uint32_t *guest, uint32_t *dropped);
 
-lowlat_status lowlat_host_set_video_config(lowlat_host *ll, const lowlat_host_video_config *cfg);
-lowlat_status lowlat_host_get_video_config(lowlat_host *ll, lowlat_host_video_config *out);
+lowlat_status lowlat_host_set_video_config(lowlat_host *hl, const lowlat_host_video_config *cfg);
+lowlat_status lowlat_host_get_video_config(lowlat_host *hl, lowlat_host_video_config *out);
 
-lowlat_status lowlat_host_set_audio_config(lowlat_host *ll, const lowlat_host_audio_config *cfg);
-lowlat_status lowlat_host_get_audio_config(lowlat_host *ll, lowlat_host_audio_config *out);
+lowlat_status lowlat_host_set_audio_config(lowlat_host *hl, const lowlat_host_audio_config *cfg);
+lowlat_status lowlat_host_get_audio_config(lowlat_host *hl, lowlat_host_audio_config *out);
 
-uint32_t      lowlat_host_get_guests(lowlat_host *ll, lowlat_guest *out, uint32_t *count);
-lowlat_status lowlat_host_kick_guest(lowlat_host *ll, uint32_t guest_id, int32_t reason);
-lowlat_status lowlat_host_set_permissions(lowlat_host *ll, uint32_t guest_id,
+uint32_t      lowlat_host_get_guests(lowlat_host *hl, lowlat_guest *out, uint32_t *count);
+lowlat_status lowlat_host_kick_guest(lowlat_host *hl, uint32_t guest_id, int32_t reason);
+lowlat_status lowlat_host_set_permissions(lowlat_host *hl, uint32_t guest_id,
                                           const lowlat_permissions *perms);
 
-lowlat_status lowlat_host_send_user_data(lowlat_host *ll, uint32_t guest_id, uint32_t id,
+lowlat_status lowlat_host_send_user_data(lowlat_host *hl, uint32_t guest_id, uint32_t id,
                                          const void *data, uint32_t len);
-lowlat_status lowlat_host_send_roster(lowlat_host *ll, const void *data, uint32_t len,
+lowlat_status lowlat_host_send_roster(lowlat_host *hl, const void *data, uint32_t len,
                                       uint32_t *reached);
-lowlat_status lowlat_host_get_metrics(lowlat_host *ll, uint32_t guest_id, lowlat_metrics *out);
+lowlat_status lowlat_host_get_metrics(lowlat_host *hl, uint32_t guest_id, lowlat_metrics *out);
 ```
 
 **The roster is not a variant of an application message.** It travels on its own opcode, it is
@@ -350,7 +350,21 @@ lowlat_status lowlat_client_release_frame(lowlat_client *cl, const lowlat_frame 
 
 lowlat_status lowlat_client_set_viewport(lowlat_client *cl, int32_t x, int32_t y,
                                          int32_t w, int32_t h);
-lowlat_status lowlat_client_send_input(lowlat_client *cl, const lowlat_input *input);
+lowlat_status lowlat_client_send_key(lowlat_client *cl, uint32_t code, uint32_t mods,
+                                     bool pressed);
+lowlat_status lowlat_client_send_mouse_button(lowlat_client *cl, uint32_t button,
+                                              bool pressed, int32_t x, int32_t y);
+lowlat_status lowlat_client_send_mouse_wheel(lowlat_client *cl, int32_t x, int32_t y);
+lowlat_status lowlat_client_send_mouse_motion(lowlat_client *cl, int32_t x, int32_t y,
+                                              bool relative);
+lowlat_status lowlat_client_send_pad_button(lowlat_client *cl, uint32_t pad, uint32_t button,
+                                            bool pressed);
+lowlat_status lowlat_client_send_pad_axis(lowlat_client *cl, uint32_t pad, uint32_t axis,
+                                          int16_t value);
+lowlat_status lowlat_client_send_pad_state(lowlat_client *cl, uint32_t pad,
+                                           const lowlat_pad_state *state);
+lowlat_status lowlat_client_send_pad_unplug(lowlat_client *cl, uint32_t pad);
+lowlat_status lowlat_client_send_release_all(lowlat_client *cl);
 ```
 
 ```c
@@ -414,10 +428,10 @@ presents is a skip -- so a renderer needs nothing from the stream itself.
 48 kHz, up to 960 frames a call, in order and already paced by the playback window
 ([10 §6](10-client.md)); the device is the application's.
 
-**Input is one tagged structure** (minor 6), `lowlat_input`, for keyboard, mouse button,
-wheel, motion, pad button, pad axis, pad state, pad unplug and release-all, its `kind` one of
-`lowlat_input_kind` carried as an integer because the application writes it; the library
-transforms, guards and encodes ([10 §8](10-client.md)). **The application says where it drew
+**Input is one call per kind** (minor 6): key, mouse button, wheel, motion, pad button, pad
+axis, pad state, pad unplug and release-all, each with its arguments in the signature rather
+than in a tagged structure, so a call site is checked where it is written and a binding
+needs no union; the library transforms, guards and encodes ([10 §8](10-client.md)). **The application says where it drew
 the picture** with `set_viewport`, a rectangle in the same units as the positions it reports,
 and that is all the library knows about the window: no fit is computed, so stretching,
 shrinking, a percent scale and a rotated picture are the application's ways of producing one
@@ -451,12 +465,12 @@ The four calls from [04 §9](04-signaling.md). This is the entire contact surfac
 signaling implementation and the SDK.
 
 ```c
-lowlat_status lowlat_host_new_attempt(lowlat_host *ll, const lowlat_attempt_info *info);
-void          lowlat_host_add_candidate(lowlat_host *ll, const char *attempt_id,
+lowlat_status lowlat_host_new_attempt(lowlat_host *hl, const lowlat_attempt_info *info);
+void          lowlat_host_add_candidate(lowlat_host *hl, const char *attempt_id,
                                         const lowlat_candidate *cand);
-lowlat_status lowlat_host_begin_p2p(lowlat_host *ll, const char *attempt_id,
+lowlat_status lowlat_host_begin_p2p(lowlat_host *hl, const char *attempt_id,
                                     uint16_t port, lowlat_credentials *out);
-void          lowlat_host_end_connection(lowlat_host *ll, const char *attempt_id);
+void          lowlat_host_end_connection(lowlat_host *hl, const char *attempt_id);
 ```
 
 **Registering is not approving.** `lowlat_host_new_attempt` takes a seat's worth of
@@ -543,7 +557,7 @@ on the way down yet.
 ## §5 Events
 
 ```c
-lowlat_status lowlat_host_poll_events(lowlat_host *ll, uint32_t timeout_ms, lowlat_event *out,
+lowlat_status lowlat_host_poll_events(lowlat_host *hl, uint32_t timeout_ms, lowlat_event *out,
                                       void *body, uint32_t *body_len);
 ```
 
