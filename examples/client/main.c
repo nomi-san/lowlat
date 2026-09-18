@@ -2,8 +2,8 @@
 //
 // Pure C on the application toolkit. The library decodes and encodes input;
 // this presents and reports what happened in its window. One file for the
-// session and the window, one for signaling. Sound and the cursor come with
-// their phases.
+// session and the window, one for signaling. Sound goes to the toolkit's
+// device from a thread of its own; the cursor comes with its phase.
 //
 //   LOWLAT_PEER=<the host's peer id> LOWLAT_SESSION=<a session token> ./client
 //
@@ -23,7 +23,12 @@
 // protocol once the first picture is in; `LOWLAT_PRESENT_HZ` caps how often
 // a new picture is taken (the cached one is still drawn every refresh), so
 // a stream faster than the presentation can be measured on one display;
-// `LOWLAT_SECONDS` leaves cleanly after that long.
+// `LOWLAT_SECONDS` leaves cleanly after that long. `LOWLAT_RAW_AUDIO` asks
+// the host for uncompressed sound; `LOWLAT_AUDIO_TRACE` prints a line per
+// sound packet with its age and what the device held. Against a host on
+// this same machine the sound must go to an output the host does not
+// capture, or it is captured again and echoes: a null sink named through
+// the sound server's own environment (`PIPEWIRE_NODE`) is one.
 //
 // Once a second a line goes to stdout with the presentation cadence as
 // numbers rather than a judgement: presents and pictures in the second,
@@ -65,6 +70,22 @@ struct demo {
 	atomic_uint picture_rotation;
 	atomic_uint picture_format;
 	pthread_t presenter;
+
+	// Sound: the device, on a thread of its own that acquires and queues.
+	// The device's own buffer paces playback and absorbs the drift; a
+	// resync is the device flushing, seen here as its queue at zero after
+	// it had been fed, or past the ceiling before a queue.
+	MTY_Audio *audio;
+	pthread_t listener;
+	bool trace_audio;
+	bool audio_fed;
+	atomic_uint snd_packets;
+	atomic_uint snd_frames;
+	atomic_uint snd_q_ms;
+	atomic_uint snd_q_min;
+	atomic_uint snd_q_max;
+	atomic_uint snd_age_max;
+	atomic_uint snd_resyncs;
 
 	// The knobs: the rate asked of the host, the presentation cap, the leave.
 	uint32_t ask_fps;
@@ -108,6 +129,8 @@ struct demo {
 	// The second's figures; the presenting thread counts, the main thread
 	// reads and clears.
 	double second_began;
+	// When the demo started, for the sound lines' timestamps.
+	double started_ms;
 	atomic_uint presents;
 	atomic_uint polls;
 	atomic_uint pictures;
@@ -580,14 +603,27 @@ static void report(struct demo *d)
 	uint32_t pictures = atomic_exchange(&d->pictures, 0);
 	uint32_t repeats = atomic_exchange(&d->repeats, 0);
 	uint32_t skips = atomic_exchange(&d->skips, 0);
+	uint32_t snd = atomic_exchange(&d->snd_packets, 0);
+	uint32_t snd_frames = atomic_exchange(&d->snd_frames, 0);
+	uint32_t snd_q_min = atomic_exchange(&d->snd_q_min, UINT32_MAX);
+	uint32_t snd_q_max = atomic_exchange(&d->snd_q_max, 0);
+	uint32_t snd_age_max = atomic_exchange(&d->snd_age_max, 0);
+	if (snd == 0)
+		snd_q_min = 0;
 	printf("demo: t=%" PRIu64 " presents=%u polls=%u pictures=%u repeats=%u skips=%u "
 		"codec=%s decode_us=%u readback_us=%u encode_us=%u queue=%u behind=%u behind_ms=%u "
 		"rtt_ms=%u mbit=%.1f decoded=%" PRIu64 " rss_mb=%" PRIu64 " keys=%u btn=%u wheel=%u "
-		"motion=%u pad=%u pad_events=%u input_dropped=%u\n",
+		"motion=%u pad=%u pad_events=%u input_dropped=%u "
+		"snd=%u snd_frames=%u snd_q_ms=%u snd_q_min=%u snd_q_max=%u snd_age_ms=%u "
+		"snd_queued=%u snd_dropped=%u snd_refused=%u snd_resync=%u snd_codec=%s\n",
 		d->seconds, presents, polls, pictures, repeats, skips, codec,
 		st.decode_us, st.readback_us, st.encode_us, st.queue_depth, st.behind, st.behind_ms,
 		st.rtt_ms, mbit, st.decoded, rss, d->keys_sent, d->buttons_sent, d->wheels_sent,
-		d->motions_sent, d->pad_sent, d->pad_events, st.input_dropped);
+		d->motions_sent, d->pad_sent, d->pad_events, st.input_dropped,
+		snd, snd_frames, atomic_load(&d->snd_q_ms), snd_q_min, snd_q_max, snd_age_max,
+		st.audio_queued, st.audio_dropped, st.audio_refused, atomic_load(&d->snd_resyncs),
+		st.audio_codec == LOWLAT_AUDIO_OPUS ? "opus"
+			: st.audio_codec == LOWLAT_AUDIO_PCM ? "pcm" : "-");
 	d->keys_sent = 0;
 	d->buttons_sent = 0;
 	d->wheels_sent = 0;
@@ -602,7 +638,8 @@ static void report(struct demo *d)
 		uint32_t rotation = atomic_load(&d->picture_rotation);
 		snprintf(title, sizeof title,
 			"lowlat | %ux%u %s %s%s | %s | %u fps | rtt %u ms | enc %.1f ms | dec %.1f ms | "
-			"rb %.1f ms | q %u behind %u | skips %u | %.1f Mbit/s | rss %" PRIu64 " MB",
+			"rb %.1f ms | q %u behind %u | skips %u | %.1f Mbit/s | snd %u ms | rss %" PRIu64
+			" MB",
 			width, atomic_load(&d->picture_height), codec,
 			atomic_load(&d->picture_format) == LOWLAT_FORMAT_P010 ? "10bit" : "8bit",
 			rotation == LOWLAT_ROTATION_90 ? " 90deg"
@@ -611,7 +648,7 @@ static void report(struct demo *d)
 			st.backend == LOWLAT_DECODER_OPEN ? "open CPU" : "no decoder",
 			pictures, st.rtt_ms, (double) st.encode_us / 1000.0,
 			(double) st.decode_us / 1000.0, (double) st.readback_us / 1000.0, st.queue_depth,
-			st.behind, skips, mbit, rss);
+			st.behind, skips, mbit, atomic_load(&d->snd_q_ms), rss);
 	} else {
 		snprintf(title, sizeof title, "lowlat | %s",
 			st.state == LOWLAT_CLIENT_ESTABLISHED ? "established, no picture yet"
@@ -709,6 +746,58 @@ static void *present_loop(void *opaque)
 	return NULL;
 }
 
+// The listening thread: one packet at a time from the library, straight
+// onto the device. The wait is the library's, long, so the thread costs
+// nothing between packets; without a device it still acquires, so the
+// figures are there on a box with no sound.
+static void *sound_loop(void *opaque)
+{
+	struct demo *d = opaque;
+	static int16_t pcm[8000 * 2];
+	while (!atomic_load(&d->quit)) {
+		uint32_t count = 8000;
+		lowlat_status s = lowlat_client_acquire_audio(d->client, 100, pcm, &count);
+		if (s != LOWLAT_OK)
+			continue;
+		lowlat_client_status st;
+		memset(&st, 0, sizeof st);
+		st.size = (uint32_t) sizeof st;
+		lowlat_client_get_status(d->client, &st);
+		uint32_t queued = 0;
+		if (d->audio != NULL) {
+			queued = MTY_AudioGetQueued(d->audio);
+			const char *reason = NULL;
+			if (d->audio_fed && queued == 0)
+				reason = "empty";
+			else if (queued > 150)
+				reason = "over";
+			if (reason != NULL) {
+				uint32_t n = atomic_fetch_add(&d->snd_resyncs, 1) + 1;
+				printf("demo: sound resync t=%.1f n=%u queued_ms=%u age_ms=%u reason=%s\n",
+					(now_ms() - d->started_ms) / 1000.0, n, queued, st.audio_age_ms, reason);
+				fflush(stdout);
+				d->audio_fed = false;
+			}
+			MTY_AudioQueue(d->audio, pcm, count);
+			if (queued > 0)
+				d->audio_fed = true;
+		}
+		atomic_fetch_add(&d->snd_packets, 1);
+		atomic_fetch_add(&d->snd_frames, count);
+		atomic_store(&d->snd_q_ms, queued);
+		if (queued < atomic_load(&d->snd_q_min))
+			atomic_store(&d->snd_q_min, queued);
+		if (queued > atomic_load(&d->snd_q_max))
+			atomic_store(&d->snd_q_max, queued);
+		if (st.audio_age_ms > atomic_load(&d->snd_age_max))
+			atomic_store(&d->snd_age_max, st.audio_age_ms);
+		if (d->trace_audio)
+			printf("demo: snd t_ms=%.1f frames=%u age_ms=%u queued_ms=%u\n",
+				now_ms() - d->started_ms, count, st.audio_age_ms, queued);
+	}
+	return NULL;
+}
+
 // The main thread: the toolkit's events, the two pumps, the pads, the
 // rectangle and the figures, at the toolkit's own cadence.
 static bool app_func(void *opaque)
@@ -766,6 +855,8 @@ int main(void)
 	d.poll_period_ms = present_hz > 0 ? 1000.0 / (double) present_hz : 0.0;
 	atomic_store(&d.stretch, true);
 	d.trace_pads = getenv("LOWLAT_PAD_TRACE") != NULL;
+	d.trace_audio = getenv("LOWLAT_AUDIO_TRACE") != NULL;
+	atomic_store(&d.snd_q_min, UINT32_MAX);
 
 	lowlat_client_create_info info;
 	memset(&info, 0, sizeof info);
@@ -785,7 +876,13 @@ int main(void)
 	lowlat_credentials ours;
 	memset(&ours, 0, sizeof ours);
 	ours.size = (uint32_t) sizeof ours;
-	s = lowlat_client_new_attempt(d.client, NULL, d.attempt, LOWLAT_TRANSPORT_BUD, &ours);
+	// The attempt's configuration: the defaults, but for sound asked
+	// uncompressed when the knob says so.
+	lowlat_client_config cfg;
+	memset(&cfg, 0, sizeof cfg);
+	cfg.size = (uint32_t) sizeof cfg;
+	cfg.raw_audio = getenv("LOWLAT_RAW_AUDIO") != NULL;
+	s = lowlat_client_new_attempt(d.client, &cfg, d.attempt, LOWLAT_TRANSPORT_BUD, &ours);
 	if (s != LOWLAT_OK) {
 		fprintf(stderr, "demo: no attempt: %s\n", lowlat_status_string(s));
 		return 1;
@@ -810,9 +907,26 @@ int main(void)
 	}
 	MTY_AppSetTimeout(d.app, 1);
 	d.second_began = now_ms();
+	d.started_ms = d.second_began;
 	d.leave_at_ms = seconds > 0 ? d.second_began + (double) seconds * 1000.0 : 0.0;
 	if (pthread_create(&d.presenter, NULL, present_loop, &d) != 0) {
 		fprintf(stderr, "demo: no presenting thread\n");
+		return 1;
+	}
+	// The device: stereo sixteen-bit at 48 kHz, 75 ms queued before it
+	// plays and a flush past 150, which is the window a desktop client
+	// runs. Without one the demo runs silent and still counts.
+	MTY_AudioFormat format;
+	memset(&format, 0, sizeof format);
+	format.sampleFormat = MTY_AUDIO_SAMPLE_FORMAT_INT16;
+	format.sampleRate = 48000;
+	format.channels = 2;
+	format.channelMask = MTY_AUDIO_CHANNEL_CFG_STEREO;
+	d.audio = MTY_AudioCreate(format, 75, 150, NULL, true);
+	if (d.audio == NULL)
+		fprintf(stderr, "demo: no sound device, running silent\n");
+	if (pthread_create(&d.listener, NULL, sound_loop, &d) != 0) {
+		fprintf(stderr, "demo: no listening thread\n");
 		return 1;
 	}
 
@@ -820,6 +934,9 @@ int main(void)
 
 	atomic_store(&d.quit, true);
 	pthread_join(d.presenter, NULL);
+	pthread_join(d.listener, NULL);
+	if (d.audio != NULL)
+		MTY_AudioDestroy(&d.audio);
 	lowlat_client_end_connection(d.client);
 	signaling_close(&d.sig);
 	lowlat_client_destroy(d.client);
