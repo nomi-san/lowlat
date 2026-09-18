@@ -33,6 +33,8 @@
 
 #include <inttypes.h>
 #include <math.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,12 +53,18 @@ struct demo {
 	MTY_App *app;
 	MTY_Window window;
 	bool begun;
-	bool quit;
+	atomic_bool quit;
 
-	// The picture on the screen, held until the next replaces it.
+	// The picture on the screen, held until the next replaces it. The
+	// presenting thread's; what the rest reads of it is published beside.
 	lowlat_frame shown;
 	bool showing;
 	uint64_t last_sequence;
+	atomic_uint picture_width;
+	atomic_uint picture_height;
+	atomic_uint picture_rotation;
+	atomic_uint picture_format;
+	pthread_t presenter;
 
 	// The knobs: the rate asked of the host, the presentation cap, the leave.
 	uint32_t ask_fps;
@@ -67,7 +75,7 @@ struct demo {
 
 	// Where the picture is drawn: stretched to the window, or at its own
 	// size when it fits. The rectangle last told to the library.
-	bool stretch;
+	atomic_bool stretch;
 	int32_t viewport[4];
 
 	// The host's pointer mode, and whether the chord let go of it.
@@ -79,13 +87,25 @@ struct demo {
 	MTY_JSON *outputs;
 	MTY_JSON *config;
 
-	// The second's figures.
+	// Pads are sent once per iteration, the latest state of each: the
+	// toolkit reports on every axis event, which is several hundred a
+	// second from a moving stick.
+	struct {
+		lowlat_pad_state_input state;
+		bool pending;
+	} pads[8];
+	uint32_t pad_events;
+	uint32_t pad_sent;
+	bool trace_pads;
+
+	// The second's figures; the presenting thread counts, the main thread
+	// reads and clears.
 	double second_began;
-	uint32_t presents;
-	uint32_t polls;
-	uint32_t pictures;
-	uint32_t repeats;
-	uint32_t skips;
+	atomic_uint presents;
+	atomic_uint polls;
+	atomic_uint pictures;
+	atomic_uint repeats;
+	atomic_uint skips;
 	uint64_t seconds;
 	uint64_t last_video_bytes;
 	bool established;
@@ -167,7 +187,7 @@ static void on_key(struct demo *d, const MTY_KeyEvent *k)
 		&& (k->mod & (MTY_MOD_LALT | MTY_MOD_RALT))) {
 		switch (k->key) {
 			case MTY_KEY_F:
-				d->stretch = !d->stretch;
+				atomic_store(&d->stretch, !atomic_load(&d->stretch));
 				printf("demo: %s\n", d->stretch ? "stretched to the window" : "at its own size");
 				return;
 			case MTY_KEY_R:
@@ -216,16 +236,27 @@ static int32_t scaled(const MTY_Axis *a, int32_t lo, int32_t hi)
 	return (int32_t) (lo + (v + span / 2) / span);
 }
 
-// A whole pad from the toolkit's report. Axes are found by their usage
-// rather than their slot, because the toolkit numbers slots in the order the
-// device lists its axes; a pad's sticks are X, Y, Z and Rz and its triggers
-// Rx and Ry on that page. The vertical axes are inverted: a pad's own
-// protocol reports a stick pushed away as positive, a device reports it as
-// negative.
+// A whole pad from the toolkit's report, kept as the latest state for the
+// pad and sent on the next iteration. Axes are found by their usage rather
+// than their slot, because the toolkit numbers slots in the order the device
+// lists its axes; a pad's sticks are X, Y, Z and Rz and its triggers Rx and
+// Ry on that page. The vertical axes are inverted: a pad's own protocol
+// reports a stick pushed away as positive, a device reports it as negative.
 static void on_controller(struct demo *d, const MTY_ControllerEvent *c)
 {
-	lowlat_input in = {.kind = LOWLAT_INPUT_PAD_STATE};
-	lowlat_pad_state_input *p = &in.body.pad_state;
+	d->pad_events++;
+	size_t slot = sizeof d->pads / sizeof d->pads[0];
+	for (size_t i = 0; i < sizeof d->pads / sizeof d->pads[0]; i++) {
+		if (d->pads[i].state.pad == c->id)
+			slot = i;
+		else if (slot == sizeof d->pads / sizeof d->pads[0] && d->pads[i].state.pad == 0)
+			slot = i;
+	}
+	if (slot == sizeof d->pads / sizeof d->pads[0])
+		return;
+	lowlat_pad_state_input fresh;
+	memset(&fresh, 0, sizeof fresh);
+	lowlat_pad_state_input *p = &fresh;
 	p->pad = c->id;
 	static const struct { MTY_CButton from; uint16_t to; } BITS[] = {
 		{MTY_CBUTTON_A, LOWLAT_PAD_STATE_A}, {MTY_CBUTTON_B, LOWLAT_PAD_STATE_B},
@@ -263,7 +294,30 @@ static void on_controller(struct demo *d, const MTY_ControllerEvent *c)
 		p->lt = 255;
 	if (c->buttons[MTY_CBUTTON_RIGHT_TRIGGER] && p->rt == 0)
 		p->rt = 255;
-	send(d, &in);
+	d->pads[slot].state = fresh;
+	d->pads[slot].pending = true;
+	if (d->trace_pads) {
+		printf("pad %u:", c->id);
+		for (uint8_t i = 0; i < c->numAxes && i < MTY_CAXIS_MAX; i++)
+			printf(" u%02x=%d[%d..%d]", c->axes[i].usage, c->axes[i].value, c->axes[i].min,
+				c->axes[i].max);
+		printf(" -> lx=%d ly=%d rx=%d ry=%d lt=%u rt=%u buttons=%04x\n", p->lx, p->ly, p->rx,
+			p->ry, p->lt, p->rt, p->buttons);
+	}
+}
+
+// The latest state of each pad that reported since the last iteration.
+static void flush_pads(struct demo *d)
+{
+	for (size_t i = 0; i < sizeof d->pads / sizeof d->pads[0]; i++) {
+		if (!d->pads[i].pending)
+			continue;
+		d->pads[i].pending = false;
+		lowlat_input in = {.kind = LOWLAT_INPUT_PAD_STATE};
+		in.body.pad_state = d->pads[i].state;
+		send(d, &in);
+		d->pad_sent++;
+	}
 }
 
 static void event_func(const MTY_Event *evt, void *opaque)
@@ -274,7 +328,7 @@ static void event_func(const MTY_Event *evt, void *opaque)
 	switch (evt->type) {
 		case MTY_EVENT_CLOSE:
 		case MTY_EVENT_QUIT:
-			d->quit = true;
+			atomic_store(&d->quit, true);
 			break;
 		case MTY_EVENT_KEY:
 			on_key(d, &evt->key);
@@ -305,6 +359,9 @@ static void event_func(const MTY_Event *evt, void *opaque)
 			on_controller(d, &evt->controller);
 			break;
 		case MTY_EVENT_DISCONNECT:
+			for (size_t i = 0; i < sizeof d->pads / sizeof d->pads[0]; i++)
+				if (d->pads[i].state.pad == evt->controller.id)
+					memset(&d->pads[i], 0, sizeof d->pads[i]);
 			in.kind = LOWLAT_INPUT_PAD_UNPLUG;
 			in.body.pad_unplug.pad = evt->controller.id;
 			send(d, &in);
@@ -329,14 +386,17 @@ static void event_func(const MTY_Event *evt, void *opaque)
 static void place_picture(struct demo *d)
 {
 	int32_t rect[4] = {0, 0, 0, 0};
-	if (d->showing) {
+	uint32_t width = atomic_load(&d->picture_width);
+	if (width != 0) {
 		MTY_Size size = MTY_WindowGetSize(d->app, d->window);
-		const lowlat_frame *f = &d->shown;
-		bool turned = f->rotation == LOWLAT_ROTATION_90 || f->rotation == LOWLAT_ROTATION_270;
-		double w = turned ? f->height : f->width;
-		double h = turned ? f->width : f->height;
+		uint32_t height = atomic_load(&d->picture_height);
+		uint32_t rotation = atomic_load(&d->picture_rotation);
+		bool turned = rotation == LOWLAT_ROTATION_90 || rotation == LOWLAT_ROTATION_270;
+		double w = turned ? height : width;
+		double h = turned ? width : height;
 		double ar = w / h;
-		double vw = d->stretch || w > size.w || h > size.h ? size.w : w;
+		bool stretch = atomic_load(&d->stretch);
+		double vw = stretch || w > size.w || h > size.h ? size.w : w;
 		double vh = round(vw / ar);
 		if (vw > size.w) {
 			vw = size.w;
@@ -455,7 +515,7 @@ static void pump_library(struct demo *d)
 			case LOWLAT_EVENT_ENDED:
 				printf("demo: ended, outcome %d reason %d\n", (int) e.body.ended.outcome,
 					(int) e.body.ended.reason);
-				d->quit = true;
+				atomic_store(&d->quit, true);
 				break;
 			case LOWLAT_EVENT_BLOCKED:
 				printf("demo: input %s\n", e.body.blocked.blocked ? "blocked" : "unblocked");
@@ -481,14 +541,14 @@ static void pump_signaling(struct demo *d)
 			break;
 		if (e == SIGNALING_CLOSED) {
 			if (!d->begun)
-				d->quit = true;
+				atomic_store(&d->quit, true);
 			break;
 		}
 		if (e == SIGNALING_ANSWER && !d->begun) {
 			lowlat_status s = lowlat_client_begin_p2p(d->client, d->attempt, &theirs);
 			if (s != LOWLAT_OK) {
 				fprintf(stderr, "demo: begin refused: %s\n", lowlat_status_string(s));
-				d->quit = true;
+				atomic_store(&d->quit, true);
 				break;
 			}
 			d->begun = true;
@@ -524,42 +584,137 @@ static void report(struct demo *d)
 	uint64_t rss = resident_mb();
 	const char *codec = st.codec == LOWLAT_CODEC_HEVC ? "HEVC"
 		: st.codec == LOWLAT_CODEC_H264 ? "H264" : "-";
+	uint32_t presents = atomic_exchange(&d->presents, 0);
+	uint32_t polls = atomic_exchange(&d->polls, 0);
+	uint32_t pictures = atomic_exchange(&d->pictures, 0);
+	uint32_t repeats = atomic_exchange(&d->repeats, 0);
+	uint32_t skips = atomic_exchange(&d->skips, 0);
 	printf("demo: t=%" PRIu64 " presents=%u polls=%u pictures=%u repeats=%u skips=%u "
 		"codec=%s decode_us=%u readback_us=%u encode_us=%u queue=%u behind=%u behind_ms=%u "
-		"rtt_ms=%u mbit=%.1f decoded=%" PRIu64 " rss_mb=%" PRIu64 "\n",
-		d->seconds, d->presents, d->polls, d->pictures, d->repeats, d->skips, codec,
+		"rtt_ms=%u mbit=%.1f decoded=%" PRIu64 " rss_mb=%" PRIu64 " pad_events=%u pad_sent=%u "
+		"input_dropped=%u\n",
+		d->seconds, presents, polls, pictures, repeats, skips, codec,
 		st.decode_us, st.readback_us, st.encode_us, st.queue_depth, st.behind, st.behind_ms,
-		st.rtt_ms, mbit, st.decoded, rss);
+		st.rtt_ms, mbit, st.decoded, rss, d->pad_events, d->pad_sent, st.input_dropped);
+	d->pad_events = 0;
+	d->pad_sent = 0;
 	fflush(stdout);
 
 	char title[256];
-	if (d->showing) {
-		const lowlat_frame *f = &d->shown;
+	uint32_t width = atomic_load(&d->picture_width);
+	if (width != 0) {
+		uint32_t rotation = atomic_load(&d->picture_rotation);
 		snprintf(title, sizeof title,
 			"lowlat | %ux%u %s %s%s | %s | %u fps | rtt %u ms | enc %.1f ms | dec %.1f ms | "
 			"rb %.1f ms | q %u behind %u | skips %u | %.1f Mbit/s | rss %" PRIu64 " MB",
-			f->width, f->height, codec, f->format == LOWLAT_FORMAT_P010 ? "10bit" : "8bit",
-			f->rotation == LOWLAT_ROTATION_90 ? " 90deg"
-				: f->rotation == LOWLAT_ROTATION_180 ? " 180deg"
-				: f->rotation == LOWLAT_ROTATION_270 ? " 270deg" : "",
+			width, atomic_load(&d->picture_height), codec,
+			atomic_load(&d->picture_format) == LOWLAT_FORMAT_P010 ? "10bit" : "8bit",
+			rotation == LOWLAT_ROTATION_90 ? " 90deg"
+				: rotation == LOWLAT_ROTATION_180 ? " 180deg"
+				: rotation == LOWLAT_ROTATION_270 ? " 270deg" : "",
 			st.backend == LOWLAT_DECODER_OPEN ? "open CPU" : "no decoder",
-			d->pictures, st.rtt_ms, (double) st.encode_us / 1000.0,
+			pictures, st.rtt_ms, (double) st.encode_us / 1000.0,
 			(double) st.decode_us / 1000.0, (double) st.readback_us / 1000.0, st.queue_depth,
-			st.behind, d->skips, mbit, rss);
+			st.behind, skips, mbit, rss);
 	} else {
 		snprintf(title, sizeof title, "lowlat | %s",
 			st.state == LOWLAT_CLIENT_ESTABLISHED ? "established, no picture yet"
 			: st.state == LOWLAT_CLIENT_OVER ? "over" : "connecting...");
 	}
 	MTY_WindowSetTitle(d->app, d->window, title);
-
-	d->presents = 0;
-	d->polls = 0;
-	d->pictures = 0;
-	d->repeats = 0;
-	d->skips = 0;
 }
 
+// The presenting thread: the toolkit's graphics context is created here and
+// stays here, and the loop is paced by the display through vsync. The main
+// thread is the toolkit's event loop and must not be: the pads are read one
+// event per iteration of it, so a loop bound to the display's rate drains a
+// stick slower than it moves.
+static void *present_loop(void *opaque)
+{
+	struct demo *d = opaque;
+	if (!MTY_WindowSetGFX(d->app, d->window, MTY_GFX_GL, true)) {
+		fprintf(stderr, "demo: no graphics context\n");
+		atomic_store(&d->quit, true);
+		return NULL;
+	}
+	while (!atomic_load(&d->quit)) {
+		double t = now_ms();
+		// The poll: the newest picture, or nothing new. Under a cap it runs
+		// on the first refresh at or past the cap's period (three quarters
+		// of it, so a refresh a little early still counts), so the display
+		// shows every refresh and the picture changes at the cap's cadence.
+		if (d->poll_period_ms <= 0.0 || t - d->last_poll_ms >= d->poll_period_ms * 0.75) {
+			d->last_poll_ms = t;
+			atomic_fetch_add(&d->polls, 1);
+			lowlat_frame fresh;
+			memset(&fresh, 0, sizeof fresh);
+			fresh.size = (uint32_t) sizeof fresh;
+			lowlat_status s = lowlat_client_acquire_frame(d->client, 0, 0, &fresh);
+			if (s == LOWLAT_OK) {
+				if (d->showing)
+					lowlat_client_release_frame(d->client, &d->shown, NULL);
+				if (d->showing && fresh.sequence > d->last_sequence + 1)
+					atomic_fetch_add(&d->skips, (uint32_t) (fresh.sequence - d->last_sequence - 1));
+				d->last_sequence = fresh.sequence;
+				d->shown = fresh;
+				d->showing = true;
+				atomic_store(&d->picture_height, fresh.height);
+				atomic_store(&d->picture_rotation, fresh.rotation);
+				atomic_store(&d->picture_format, fresh.format);
+				atomic_store(&d->picture_width, fresh.width);
+				atomic_fetch_add(&d->pictures, 1);
+				if (d->ask_fps != 0 && !d->asked) {
+					d->asked = true;
+					ask_rate(d);
+				}
+			} else {
+				atomic_fetch_add(&d->repeats, 1);
+			}
+		}
+
+		// Drawn every iteration, new or not: a renderer that re-presents
+		// the cached picture on every refresh is what keeps the window's
+		// cadence the display's rather than the stream's.
+		if (d->showing) {
+			const lowlat_frame *f = &d->shown;
+			uint32_t sample = f->format == LOWLAT_FORMAT_P010 ? 2 : 1;
+			MTY_RenderDesc desc;
+			memset(&desc, 0, sizeof desc);
+			desc.format = f->format == LOWLAT_FORMAT_P010 ? MTY_COLOR_FORMAT_2PLANES_16
+				: MTY_COLOR_FORMAT_2PLANES;
+			desc.chroma = MTY_CHROMA_420;
+			desc.filter = MTY_FILTER_LINEAR;
+			// The toolkit takes one image with the planes in sequence and
+			// the row length as a width; the second plane's offset is the
+			// first's rows times that width, which is how the slot is laid
+			// out.
+			desc.imageWidth = f->planes[0].pitch / sample;
+			desc.imageHeight = (uint32_t) ((f->planes[1].data - f->planes[0].data)
+				/ f->planes[0].pitch);
+			desc.cropWidth = f->width;
+			desc.cropHeight = f->height;
+			desc.rotation = f->rotation == LOWLAT_ROTATION_90 ? MTY_ROTATION_90
+				: f->rotation == LOWLAT_ROTATION_180 ? MTY_ROTATION_180
+				: f->rotation == LOWLAT_ROTATION_270 ? MTY_ROTATION_270 : MTY_ROTATION_NONE;
+			desc.aspectRatio = (float) f->width / (float) f->height;
+			// Fitted to the window, or at its own size when it fits.
+			desc.scale = atomic_load(&d->stretch) ? 0.0f : 1.0f;
+			desc.multiplyYUV = sample == 2;
+			MTY_WindowDrawQuad(d->app, d->window, f->planes[0].data, &desc);
+		} else {
+			MTY_WindowClear(d->app, d->window, 0.0f, 0.0f, 0.0f, 1.0f);
+		}
+		MTY_WindowPresent(d->app, d->window);
+		atomic_fetch_add(&d->presents, 1);
+	}
+	if (d->showing)
+		lowlat_client_release_frame(d->client, &d->shown, NULL);
+	MTY_WindowSetGFX(d->app, d->window, MTY_GFX_NONE, false);
+	return NULL;
+}
+
+// The main thread: the toolkit's events, the two pumps, the pads, the
+// rectangle and the figures, at the toolkit's own cadence.
 static bool app_func(void *opaque)
 {
 	struct demo *d = opaque;
@@ -568,75 +723,12 @@ static bool app_func(void *opaque)
 	double t = now_ms();
 	if (d->leave_at_ms > 0.0 && t >= d->leave_at_ms) {
 		printf("demo: leaving after %" PRIu64 " s\n", d->seconds);
-		d->quit = true;
+		atomic_store(&d->quit, true);
 	}
-	if (d->quit)
+	if (atomic_load(&d->quit))
 		return false;
-
-	// The poll: the newest picture, or nothing new. Under a cap it runs on
-	// the first refresh at or past the cap's period (three quarters of it,
-	// so a refresh a little early still counts), so the display shows every
-	// refresh and the picture changes at the cap's cadence.
-	if (d->poll_period_ms <= 0.0 || t - d->last_poll_ms >= d->poll_period_ms * 0.75) {
-		d->last_poll_ms = t;
-		d->polls++;
-		lowlat_frame fresh;
-		memset(&fresh, 0, sizeof fresh);
-		fresh.size = (uint32_t) sizeof fresh;
-		lowlat_status s = lowlat_client_acquire_frame(d->client, 0, 0, &fresh);
-		if (s == LOWLAT_OK) {
-			if (d->showing)
-				lowlat_client_release_frame(d->client, &d->shown, NULL);
-			if (d->showing && fresh.sequence > d->last_sequence + 1)
-				d->skips += (uint32_t) (fresh.sequence - d->last_sequence - 1);
-			d->last_sequence = fresh.sequence;
-			d->shown = fresh;
-			d->showing = true;
-			d->pictures++;
-			if (d->ask_fps != 0 && !d->asked) {
-				d->asked = true;
-				ask_rate(d);
-			}
-		} else {
-			d->repeats++;
-		}
-	}
-
-	// Drawn every iteration, new or not: a renderer that re-presents the
-	// cached picture on every refresh is what keeps the window's cadence
-	// the display's rather than the stream's.
-	if (d->showing) {
-		const lowlat_frame *f = &d->shown;
-		uint32_t sample = f->format == LOWLAT_FORMAT_P010 ? 2 : 1;
-		MTY_RenderDesc desc;
-		memset(&desc, 0, sizeof desc);
-		desc.format = f->format == LOWLAT_FORMAT_P010 ? MTY_COLOR_FORMAT_2PLANES_16
-			: MTY_COLOR_FORMAT_2PLANES;
-		desc.chroma = MTY_CHROMA_420;
-		desc.filter = MTY_FILTER_LINEAR;
-		// The toolkit takes one image with the planes in sequence and the
-		// row length as a width; the second plane's offset is the first's
-		// rows times that width, which is how the slot is laid out.
-		desc.imageWidth = f->planes[0].pitch / sample;
-		desc.imageHeight = (uint32_t) ((f->planes[1].data - f->planes[0].data)
-			/ f->planes[0].pitch);
-		desc.cropWidth = f->width;
-		desc.cropHeight = f->height;
-		desc.rotation = f->rotation == LOWLAT_ROTATION_90 ? MTY_ROTATION_90
-			: f->rotation == LOWLAT_ROTATION_180 ? MTY_ROTATION_180
-			: f->rotation == LOWLAT_ROTATION_270 ? MTY_ROTATION_270 : MTY_ROTATION_NONE;
-		desc.aspectRatio = (float) f->width / (float) f->height;
-		// Fitted to the window, or at its own size when it fits.
-		desc.scale = d->stretch ? 0.0f : 1.0f;
-		desc.multiplyYUV = sample == 2;
-		MTY_WindowDrawQuad(d->app, d->window, f->planes[0].data, &desc);
-	} else {
-		MTY_WindowClear(d->app, d->window, 0.0f, 0.0f, 0.0f, 1.0f);
-	}
-	MTY_WindowPresent(d->app, d->window);
-	d->presents++;
+	flush_pads(d);
 	place_picture(d);
-
 	if (t - d->second_began >= 1000.0) {
 		d->second_began = t;
 		report(d);
@@ -676,7 +768,8 @@ int main(void)
 	memset(&d, 0, sizeof d);
 	d.ask_fps = (uint32_t) ask_fps;
 	d.poll_period_ms = present_hz > 0 ? 1000.0 / (double) present_hz : 0.0;
-	d.stretch = true;
+	atomic_store(&d.stretch, true);
+	d.trace_pads = getenv("LOWLAT_PAD_TRACE") != NULL;
 
 	lowlat_client_create_info info;
 	memset(&info, 0, sizeof info);
@@ -719,15 +812,18 @@ int main(void)
 		fprintf(stderr, "demo: no window\n");
 		return 1;
 	}
-	MTY_WindowSetGFX(d.app, d.window, MTY_GFX_GL, true);
 	MTY_AppSetTimeout(d.app, 1);
 	d.second_began = now_ms();
 	d.leave_at_ms = seconds > 0 ? d.second_began + (double) seconds * 1000.0 : 0.0;
+	if (pthread_create(&d.presenter, NULL, present_loop, &d) != 0) {
+		fprintf(stderr, "demo: no presenting thread\n");
+		return 1;
+	}
 
 	MTY_AppRun(d.app);
 
-	if (d.showing)
-		lowlat_client_release_frame(d.client, &d.shown, NULL);
+	atomic_store(&d.quit, true);
+	pthread_join(d.presenter, NULL);
 	lowlat_client_end_connection(d.client);
 	signaling_close(&d.sig);
 	lowlat_client_destroy(d.client);
