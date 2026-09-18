@@ -1,10 +1,20 @@
-// The client demo: a window that shows a host's desktop.
+// The client demo: a window that shows a host's desktop and drives it.
 //
-// Pure C on the application toolkit. The library decodes; this presents.
-// One file for the session and the window, one for signaling. Nothing else:
-// input, sound and the cursor come with their phases.
+// Pure C on the application toolkit. The library decodes and encodes input;
+// this presents and reports what happened in its window. One file for the
+// session and the window, one for signaling. Sound and the cursor come with
+// their phases.
 //
 //   LOWLAT_PEER=<the host's peer id> LOWLAT_SESSION=<a session token> ./client
+//
+// Keyboard, mouse and pads go to the host as the toolkit reports them; the
+// rectangle the picture is drawn into is told to the library, which maps
+// positions into the picture. Chords the demo keeps for itself, never sent:
+// Ctrl+Alt+F switches between the picture stretched to the window and shown
+// at its own size, Ctrl+Alt+R lets go of a pointer the host has captured
+// (and takes it again), Ctrl+Alt+O asks the host to stream its next output.
+// A bare Windows key is not sent, because the desktop here takes it and the
+// host would be left with the modifier held; it reaches the host on chords.
 //
 // `LOWLAT_SERVER` names the signaling service (kessel-ws.parsec.app by
 // default), `LOWLAT_DEVICE` a render node for the decoder (the first that
@@ -22,6 +32,7 @@
 // reader's lag, and the process's resident set.
 
 #include <inttypes.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +41,7 @@
 
 #include "lowlat.h"
 #include "matoya.h"
+#include "keys.h"
 #include "signaling.h"
 
 struct demo {
@@ -52,6 +64,20 @@ struct demo {
 	double poll_period_ms;
 	double last_poll_ms;
 	double leave_at_ms;
+
+	// Where the picture is drawn: stretched to the window, or at its own
+	// size when it fits. The rectangle last told to the library.
+	bool stretch;
+	int32_t viewport[4];
+
+	// The host's pointer mode, and whether the chord let go of it.
+	bool relative;
+	bool released;
+
+	// Switching the streamed output: the host's outputs and its current
+	// configuration, both asked for on the chord and acted on together.
+	MTY_JSON *outputs;
+	MTY_JSON *config;
 
 	// The second's figures.
 	double second_began;
@@ -100,23 +126,321 @@ static void attempt_id(char *out, size_t size)
 		"-%08" PRIx32, words[0], words[1], words[2], words[3], words[4], words[5]);
 }
 
+// The toolkit's modifier bits, in the wire's numbering.
+static uint32_t mods_of(MTY_Mod m)
+{
+	uint32_t out = 0;
+	if (m & MTY_MOD_LSHIFT) out |= LOWLAT_MOD_LSHIFT;
+	if (m & MTY_MOD_RSHIFT) out |= LOWLAT_MOD_RSHIFT;
+	if (m & MTY_MOD_LCTRL)  out |= LOWLAT_MOD_LCTRL;
+	if (m & MTY_MOD_RCTRL)  out |= LOWLAT_MOD_RCTRL;
+	if (m & MTY_MOD_LALT)   out |= LOWLAT_MOD_LALT;
+	if (m & MTY_MOD_RALT)   out |= LOWLAT_MOD_RALT;
+	if (m & MTY_MOD_LWIN)   out |= LOWLAT_MOD_LGUI;
+	if (m & MTY_MOD_RWIN)   out |= LOWLAT_MOD_RGUI;
+	if (m & MTY_MOD_CAPS)   out |= LOWLAT_MOD_CAPS;
+	if (m & MTY_MOD_NUM)    out |= LOWLAT_MOD_NUM;
+	return out;
+}
+
+static void send(struct demo *d, const lowlat_input *in)
+{
+	lowlat_client_send_input(d->client, in);
+}
+
+// The host's pointer mode, as the toolkit is told it. The chord can let go
+// of a captured pointer; the host's next transition takes it back.
+static void apply_relative(struct demo *d)
+{
+	bool want = d->relative && !d->released;
+	if (MTY_AppGetRelativeMouse(d->app) != want)
+		MTY_AppSetRelativeMouse(d->app, want);
+}
+
+static void ask_outputs(struct demo *d);
+
+static void on_key(struct demo *d, const MTY_KeyEvent *k)
+{
+	// The demo's own chords, never sent. The release that follows one is
+	// sent and names a key the host never saw down, which it drops.
+	if (k->pressed && (k->mod & (MTY_MOD_LCTRL | MTY_MOD_RCTRL))
+		&& (k->mod & (MTY_MOD_LALT | MTY_MOD_RALT))) {
+		switch (k->key) {
+			case MTY_KEY_F:
+				d->stretch = !d->stretch;
+				printf("demo: %s\n", d->stretch ? "stretched to the window" : "at its own size");
+				return;
+			case MTY_KEY_R:
+				d->released = !d->released;
+				apply_relative(d);
+				printf("demo: pointer %s\n", d->released ? "let go" : "taken");
+				return;
+			case MTY_KEY_O:
+				ask_outputs(d);
+				return;
+			default:
+				break;
+		}
+	}
+	if (k->key == MTY_KEY_LWIN || k->key == MTY_KEY_RWIN)
+		return;
+	if (k->key >= MTY_KEY_MAX || KEY_USAGE[k->key] == 0)
+		return;
+	lowlat_input in = {.kind = LOWLAT_INPUT_KEY};
+	in.body.key.code = KEY_USAGE[k->key];
+	in.body.key.mods = mods_of(k->mod);
+	in.body.key.pressed = k->pressed;
+	send(d, &in);
+}
+
+static uint32_t button_of(MTY_Button b)
+{
+	switch (b) {
+		case MTY_BUTTON_LEFT: return LOWLAT_MOUSE_LEFT;
+		case MTY_BUTTON_MIDDLE: return LOWLAT_MOUSE_MIDDLE;
+		case MTY_BUTTON_RIGHT: return LOWLAT_MOUSE_RIGHT;
+		case MTY_BUTTON_X1: return LOWLAT_MOUSE_X1;
+		case MTY_BUTTON_X2: return LOWLAT_MOUSE_X2;
+		default: return 0;
+	}
+}
+
+// An axis scaled from the range the device reports to the wire's: sticks
+// signed sixteen bit, triggers a byte.
+static int32_t scaled(const MTY_Axis *a, int32_t lo, int32_t hi)
+{
+	int32_t span = (int32_t) a->max - (int32_t) a->min;
+	if (span <= 0)
+		return 0;
+	int64_t v = ((int64_t) a->value - a->min) * (hi - lo);
+	return (int32_t) (lo + (v + span / 2) / span);
+}
+
+// A whole pad from the toolkit's report. Axes are found by their usage
+// rather than their slot, because the toolkit numbers slots in the order the
+// device lists its axes; a pad's sticks are X, Y, Z and Rz and its triggers
+// Rx and Ry on that page. The vertical axes are inverted: a pad's own
+// protocol reports a stick pushed away as positive, a device reports it as
+// negative.
+static void on_controller(struct demo *d, const MTY_ControllerEvent *c)
+{
+	lowlat_input in = {.kind = LOWLAT_INPUT_PAD_STATE};
+	lowlat_pad_state_input *p = &in.body.pad_state;
+	p->pad = c->id;
+	static const struct { MTY_CButton from; uint16_t to; } BITS[] = {
+		{MTY_CBUTTON_A, LOWLAT_PAD_STATE_A}, {MTY_CBUTTON_B, LOWLAT_PAD_STATE_B},
+		{MTY_CBUTTON_X, LOWLAT_PAD_STATE_X}, {MTY_CBUTTON_Y, LOWLAT_PAD_STATE_Y},
+		{MTY_CBUTTON_BACK, LOWLAT_PAD_STATE_BACK}, {MTY_CBUTTON_START, LOWLAT_PAD_STATE_START},
+		{MTY_CBUTTON_LEFT_THUMB, LOWLAT_PAD_STATE_LSTICK},
+		{MTY_CBUTTON_RIGHT_THUMB, LOWLAT_PAD_STATE_RSTICK},
+		{MTY_CBUTTON_LEFT_SHOULDER, LOWLAT_PAD_STATE_LSHOULDER},
+		{MTY_CBUTTON_RIGHT_SHOULDER, LOWLAT_PAD_STATE_RSHOULDER},
+		{MTY_CBUTTON_GUIDE, LOWLAT_PAD_STATE_GUIDE},
+		{MTY_CBUTTON_TOUCHPAD, LOWLAT_PAD_STATE_TOUCHPAD},
+		{MTY_CBUTTON_DPAD_UP, LOWLAT_PAD_STATE_DPAD_UP},
+		{MTY_CBUTTON_DPAD_DOWN, LOWLAT_PAD_STATE_DPAD_DOWN},
+		{MTY_CBUTTON_DPAD_LEFT, LOWLAT_PAD_STATE_DPAD_LEFT},
+		{MTY_CBUTTON_DPAD_RIGHT, LOWLAT_PAD_STATE_DPAD_RIGHT},
+	};
+	for (size_t i = 0; i < sizeof BITS / sizeof BITS[0]; i++)
+		if (c->buttons[BITS[i].from])
+			p->buttons |= BITS[i].to;
+	for (uint8_t i = 0; i < c->numAxes && i < MTY_CAXIS_MAX; i++) {
+		const MTY_Axis *a = &c->axes[i];
+		switch (a->usage) {
+			case 0x30: p->lx = (int16_t) scaled(a, -32768, 32767); break;
+			case 0x31: p->ly = (int16_t) -scaled(a, -32767, 32767); break;
+			case 0x32: p->rx = (int16_t) scaled(a, -32768, 32767); break;
+			case 0x35: p->ry = (int16_t) -scaled(a, -32767, 32767); break;
+			case 0x33: p->lt = (uint8_t) scaled(a, 0, 255); break;
+			case 0x34: p->rt = (uint8_t) scaled(a, 0, 255); break;
+			default: break;
+		}
+	}
+	// A trigger pulled far enough is a button on some pads and only an axis
+	// on others; the wire carries the axis.
+	if (c->buttons[MTY_CBUTTON_LEFT_TRIGGER] && p->lt == 0)
+		p->lt = 255;
+	if (c->buttons[MTY_CBUTTON_RIGHT_TRIGGER] && p->rt == 0)
+		p->rt = 255;
+	send(d, &in);
+}
+
 static void event_func(const MTY_Event *evt, void *opaque)
 {
 	struct demo *d = opaque;
-	if (evt->type == MTY_EVENT_CLOSE || evt->type == MTY_EVENT_QUIT)
-		d->quit = true;
+	lowlat_input in;
+	memset(&in, 0, sizeof in);
+	switch (evt->type) {
+		case MTY_EVENT_CLOSE:
+		case MTY_EVENT_QUIT:
+			d->quit = true;
+			break;
+		case MTY_EVENT_KEY:
+			on_key(d, &evt->key);
+			break;
+		case MTY_EVENT_BUTTON:
+			in.kind = LOWLAT_INPUT_MOUSE_BUTTON;
+			in.body.mouse_button.button = button_of(evt->button.button);
+			in.body.mouse_button.pressed = evt->button.pressed;
+			in.body.mouse_button.x = evt->button.x;
+			in.body.mouse_button.y = evt->button.y;
+			if (in.body.mouse_button.button != 0)
+				send(d, &in);
+			break;
+		case MTY_EVENT_SCROLL:
+			in.kind = LOWLAT_INPUT_MOUSE_WHEEL;
+			in.body.mouse_wheel.x = evt->scroll.x;
+			in.body.mouse_wheel.y = evt->scroll.y;
+			send(d, &in);
+			break;
+		case MTY_EVENT_MOTION:
+			in.kind = LOWLAT_INPUT_MOUSE_MOTION;
+			in.body.mouse_motion.x = evt->motion.x;
+			in.body.mouse_motion.y = evt->motion.y;
+			in.body.mouse_motion.relative = evt->motion.relative;
+			send(d, &in);
+			break;
+		case MTY_EVENT_CONTROLLER:
+			on_controller(d, &evt->controller);
+			break;
+		case MTY_EVENT_DISCONNECT:
+			in.kind = LOWLAT_INPUT_PAD_UNPLUG;
+			in.body.pad_unplug.pad = evt->controller.id;
+			send(d, &in);
+			break;
+		case MTY_EVENT_FOCUS:
+			// Nothing stays held on a host whose window is no longer in
+			// front.
+			if (!evt->focus) {
+				in.kind = LOWLAT_INPUT_RELEASE_ALL;
+				send(d, &in);
+			}
+			apply_relative(d);
+			break;
+		default:
+			break;
+	}
+}
+
+// The rectangle the picture is drawn into, as the toolkit computes it:
+// fitted to the window keeping its shape, or at its own size when it fits;
+// centred either way. Told to the library when it changes.
+static void place_picture(struct demo *d)
+{
+	int32_t rect[4] = {0, 0, 0, 0};
+	if (d->showing) {
+		MTY_Size size = MTY_WindowGetSize(d->app, d->window);
+		const lowlat_frame *f = &d->shown;
+		bool turned = f->rotation == LOWLAT_ROTATION_90 || f->rotation == LOWLAT_ROTATION_270;
+		double w = turned ? f->height : f->width;
+		double h = turned ? f->width : f->height;
+		double ar = w / h;
+		double vw = d->stretch || w > size.w || h > size.h ? size.w : w;
+		double vh = round(vw / ar);
+		if (vw > size.w) {
+			vw = size.w;
+			vh = round(vw / ar);
+		}
+		if (vh > size.h) {
+			vh = size.h;
+			vw = round(vh * ar);
+		}
+		rect[0] = (int32_t) round((size.w - vw) / 2);
+		rect[1] = (int32_t) round((size.h - vh) / 2);
+		rect[2] = (int32_t) vw;
+		rect[3] = (int32_t) vh;
+	}
+	if (memcmp(rect, d->viewport, sizeof rect) != 0) {
+		memcpy(d->viewport, rect, sizeof rect);
+		lowlat_client_set_viewport(d->client, rect[0], rect[1], rect[2], rect[3]);
+	}
+}
+
+// The chord: ask the host what it can stream and what it streams now.
+static void ask_outputs(struct demo *d)
+{
+	MTY_JSONDestroy(&d->outputs);
+	MTY_JSONDestroy(&d->config);
+	lowlat_client_send_user_data(d->client, 10, "", 0);
+	lowlat_client_send_user_data(d->client, 9, "", 0);
+}
+
+// Both answers in: the output after the current one, in the host's own
+// configuration sent back whole, because a host reads the element whole.
+static void cycle_output(struct demo *d)
+{
+	if (d->outputs == NULL || d->config == NULL)
+		return;
+	const MTY_JSON *video = MTY_JSONObjGetItem(d->config, "video");
+	const MTY_JSON *first = video != NULL ? MTY_JSONArrayGetItem(video, 0) : NULL;
+	const char *current = first != NULL ? MTY_JSONStringPtr(MTY_JSONObjGetItem(first, "output")) : NULL;
+	uint32_t n = MTY_JSONArrayGetLength(d->outputs);
+	if (first == NULL || n == 0)
+		return;
+	uint32_t at = 0;
+	for (uint32_t i = 0; i < n && current != NULL; i++) {
+		const char *id = MTY_JSONStringPtr(MTY_JSONObjGetItem(MTY_JSONArrayGetItem(d->outputs, i), "id"));
+		if (id != NULL && strcmp(id, current) == 0)
+			at = (i + 1) % n;
+	}
+	const char *next = MTY_JSONStringPtr(MTY_JSONObjGetItem(MTY_JSONArrayGetItem(d->outputs, at), "id"));
+	if (next == NULL)
+		return;
+	// The lookup above borrows from the object the set replaces, so the
+	// name is copied first.
+	char chosen[256];
+	snprintf(chosen, sizeof chosen, "%s", next);
+	MTY_JSONObjSetItem((MTY_JSON *) first, "output", MTY_JSONStringCreate(chosen));
+	char *body = MTY_JSONSerialize(d->config);
+	lowlat_status s = lowlat_client_send_user_data(d->client, 11, body, (uint32_t) strlen(body));
+	printf("demo: asked for output %s%s\n", chosen, s == LOWLAT_OK ? "" : ", refused");
+	MTY_Free(body);
+	MTY_JSONDestroy(&d->outputs);
+	MTY_JSONDestroy(&d->config);
 }
 
 // Forward what the library found to the host, and act on what ended.
 static void pump_library(struct demo *d)
 {
+	static char body[65536];
 	for (;;) {
 		lowlat_event e;
-		uint32_t body_len = 0;
-		lowlat_status s = lowlat_client_poll_events(d->client, 0, &e, NULL, &body_len);
+		uint32_t body_len = sizeof body - 1;
+		lowlat_status s = lowlat_client_poll_events(d->client, 0, &e, body, &body_len);
+		if (s == LOWLAT_ERR_TOO_SMALL) {
+			// Too long to be one of the two answers the demo reads; taken
+			// off the queue and dropped.
+			uint32_t none = 0;
+			lowlat_client_poll_events(d->client, 0, &e, NULL, &none);
+			continue;
+		}
 		if (s != LOWLAT_OK)
 			break;
 		switch (e.kind) {
+			case LOWLAT_EVENT_USER_DATA:
+				body[body_len] = '\0';
+				if (e.body.user_data.id == 12) {
+					MTY_JSONDestroy(&d->outputs);
+					d->outputs = MTY_JSONParse(body);
+					cycle_output(d);
+				} else if (e.body.user_data.id == 11) {
+					MTY_JSONDestroy(&d->config);
+					d->config = MTY_JSONParse(body);
+					cycle_output(d);
+				}
+				break;
+			case LOWLAT_EVENT_RELATIVE:
+				// The host took the pointer, or gave it back: on the way
+				// out it reappears where the host says, once.
+				d->relative = e.body.relative.relative;
+				d->released = false;
+				apply_relative(d);
+				if (!d->relative && e.body.relative.x >= 0 && e.body.relative.y >= 0)
+					MTY_WindowWarpCursor(d->app, d->window, (uint32_t) e.body.relative.x,
+						(uint32_t) e.body.relative.y);
+				printf("demo: pointer %s\n", d->relative ? "captured by the host" : "returned");
+				break;
 			case LOWLAT_EVENT_CANDIDATE:
 				signaling_candidate(&d->sig, e.body.candidate.address, e.body.candidate.port,
 					e.body.candidate.lan, e.body.candidate.from_stun, false);
@@ -302,6 +626,8 @@ static bool app_func(void *opaque)
 			: f->rotation == LOWLAT_ROTATION_180 ? MTY_ROTATION_180
 			: f->rotation == LOWLAT_ROTATION_270 ? MTY_ROTATION_270 : MTY_ROTATION_NONE;
 		desc.aspectRatio = (float) f->width / (float) f->height;
+		// Fitted to the window, or at its own size when it fits.
+		desc.scale = d->stretch ? 0.0f : 1.0f;
 		desc.multiplyYUV = sample == 2;
 		MTY_WindowDrawQuad(d->app, d->window, f->planes[0].data, &desc);
 	} else {
@@ -309,6 +635,7 @@ static bool app_func(void *opaque)
 	}
 	MTY_WindowPresent(d->app, d->window);
 	d->presents++;
+	place_picture(d);
 
 	if (t - d->second_began >= 1000.0) {
 		d->second_began = t;
@@ -349,6 +676,7 @@ int main(void)
 	memset(&d, 0, sizeof d);
 	d.ask_fps = (uint32_t) ask_fps;
 	d.poll_period_ms = present_hz > 0 ? 1000.0 / (double) present_hz : 0.0;
+	d.stretch = true;
 
 	lowlat_client_create_info info;
 	memset(&info, 0, sizeof info);
@@ -403,6 +731,8 @@ int main(void)
 	lowlat_client_end_connection(d.client);
 	signaling_close(&d.sig);
 	lowlat_client_destroy(d.client);
+	MTY_JSONDestroy(&d.outputs);
+	MTY_JSONDestroy(&d.config);
 	MTY_AppDestroy(&d.app);
 	return 0;
 }
