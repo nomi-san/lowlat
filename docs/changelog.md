@@ -6,7 +6,7 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 ## 2026-09-18 - Phase C3: input
 
 ### Added
-- **`lowlat_client_set_viewport` and `lowlat_client_send_input`** ([06 §3b](06-api.md),
+- **`lowlat_client_set_viewport` and the `lowlat_client_send_*` calls**, one per kind ([06 §3b](06-api.md),
   [10 §8](10-client.md), minor 6). The application says where it drew the picture, in the
   units its positions use, and reports what happened in its window; the library maps
   positions into the picture's own pixels on the session thread, where the stream's size is

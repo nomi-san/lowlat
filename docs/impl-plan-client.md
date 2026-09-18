@@ -188,7 +188,7 @@ the rules are [10 §8](10-client.md).
   is not sent until one is set; the picture's size comes from the stream's own header, so
   the two ends of the ratio come from different owners and the application cannot describe
   the picture wrongly.
-- [x] `lowlat_client_send_input` and the rules of [10 §8](10-client.md): the transform into
+- [x] The `lowlat_client_send_*` calls, one per kind (*a tagged structure until C3.5, split so a call site is checked where it is written*), and the rules of [10 §8](10-client.md): the transform into
   the picture's pixels with the edge bump and the clamp, the rotation swapped back, relative
   deltas scaled by the picture-to-drawn ratio, the press-outside guard evaluated at the
   press's own position, the keyboard code guard, pad state deduplicated per identifier,
