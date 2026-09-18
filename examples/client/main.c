@@ -78,7 +78,8 @@ struct demo {
 	MTY_Audio *audio;
 	pthread_t listener;
 	bool trace_audio;
-	bool audio_fed;
+	bool audio_playing;
+	bool audio_just_started;
 	atomic_uint snd_packets;
 	atomic_uint snd_frames;
 	atomic_uint snd_q_ms;
@@ -766,21 +767,31 @@ static void *sound_loop(void *opaque)
 		uint32_t queued = 0;
 		if (d->audio != NULL) {
 			queued = MTY_AudioGetQueued(d->audio);
+			// The device's queue reads zero once more right after playback
+			// (re)starts, before the device has reported anything; that
+			// read is not a resync, and neither is the zero that follows a
+			// flush this already counted. So a resync is counted while the
+			// device is playing: the queue past the ceiling (the device
+			// flushes on this call), or at zero (it ran dry), and then the
+			// device is priming again until the floor is reached.
 			const char *reason = NULL;
-			if (d->audio_fed && queued == 0)
+			if (d->audio_playing && !d->audio_just_started && queued == 0)
 				reason = "empty";
-			else if (queued > 150)
+			else if (d->audio_playing && queued > 150)
 				reason = "over";
 			if (reason != NULL) {
 				uint32_t n = atomic_fetch_add(&d->snd_resyncs, 1) + 1;
 				printf("demo: sound resync t=%.1f n=%u queued_ms=%u age_ms=%u reason=%s\n",
 					(now_ms() - d->started_ms) / 1000.0, n, queued, st.audio_age_ms, reason);
 				fflush(stdout);
-				d->audio_fed = false;
+				d->audio_playing = false;
+			}
+			d->audio_just_started = false;
+			if (!d->audio_playing && queued + count / 48 >= 75) {
+				d->audio_playing = true;
+				d->audio_just_started = true;
 			}
 			MTY_AudioQueue(d->audio, pcm, count);
-			if (queued > 0)
-				d->audio_fed = true;
 		}
 		atomic_fetch_add(&d->snd_packets, 1);
 		atomic_fetch_add(&d->snd_frames, count);
