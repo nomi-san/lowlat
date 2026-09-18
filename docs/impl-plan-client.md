@@ -250,7 +250,7 @@ both plans, host `uhid` backend first, and the touchpad already has a wire the c
 have to learn there; a Unicode key message for an input method needs a host half that is
 not a key injection, and is owed with it; pen and touch stay deferred.
 
-## Phase C4 - Sound (built 2026-09-18; gate 1 passed on the established host, this host's run owed)
+## Phase C4 - Sound (closed 2026-09-18)
 
 **Planned 2026-09-18, interview of the same day.** The decisions are recorded once, here;
 the rules are [10 §6](10-client.md).
@@ -295,8 +295,14 @@ the rules are [10 §6](10-client.md).
    host's. The first eleven seconds carried a seven-second hole in the host's own sound at
    the session's start, which ran the device dry once; that is the host starting, not
    drift. The run also found the demo counting one flush three times (the device's queue
-   reads zero once more after playback restarts), fixed after it. The same from this host
-   is owed: both ends share a clock there, so it can show a gap and not drift.*
+   reads zero once more after playback restarts), fixed after it. From this host, thirty
+   minutes the same day: 89,941 packets, none dropped or refused, the age 0 to 1 ms, one
+   build, and one resync at 1710 s -- the device running dry. But that figure is the rig's,
+   not the clocks': the demo on the same machine as the host has to play into a sink the
+   host does not capture, so its device was a null sink on a software timer while the host
+   read the sound card, and the queue wandered by fifteen milliseconds either way before it
+   emptied. The run passes the gate's letter and measures nothing about drift; the
+   established host's run is the one that does.*
 2. The hermetic session carries sound both codecs and the samples out match the samples in
    (*"both ways" was the wording; the uplink is deferred in the same phase*). *Passed
    2026-09-18: the harness host encodes a real stereo tone at 20 ms and sends it
@@ -382,7 +388,8 @@ Newest first.
   phase. Gate 2 passed; gate 1 passed on the established host over eighty-five minutes (40 ppm
   of drift read from the device's queue, a flush every 35 minutes, nothing dropped or
   refused); the demo's resync counter was counting one flush three times and was fixed after
-  the run. This host's run is owed.
+  the run. The run from this host passed the letter and measured a null sink's timer, not
+  drift. C4 closed.
 - 2026-09-18, later: C3 closed. The gate found the demo's event loop bound to the display,
   which is the wrong cadence for a toolkit that reads one pad event a pass; presenting moved
   to its own thread, as every established client has it. The wire's vertical stick sign was

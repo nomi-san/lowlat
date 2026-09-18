@@ -33,7 +33,9 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   established host on the second machine, eighty-five minutes with sound playing there: a
   quarter of a million packets, none dropped or refused, the packet's age at hand-over 0 to
   1 ms, the device's queue drifting at 40 ppm and flushing every 35 minutes -- at most one
-  resync in any thirty. The run from this host is owed.
+  resync in any thirty. From this host, thirty minutes with nothing dropped or refused and one
+  resync, on a device that was a null sink so the host would not re-capture the demo -- which
+  measures the sink's timer, not drift.
 
 ## 2026-09-18 - Phase C3: input
 
