@@ -91,7 +91,8 @@ struct demo {
 	// toolkit reports on every axis event, which is several hundred a
 	// second from a moving stick.
 	struct {
-		lowlat_pad_state_input state;
+		uint32_t id;
+		lowlat_pad_state state;
 		bool pending;
 	} pads[8];
 	uint32_t pad_events;
@@ -169,17 +170,12 @@ static uint32_t mods_of(MTY_Mod m)
 	return out;
 }
 
-static void send(struct demo *d, const lowlat_input *in)
+// What went to the library, by kind, so the host's own count of what it
+// received can be read against this.
+static void sent(struct demo *d, lowlat_status s, uint32_t *counter)
 {
-	if (lowlat_client_send_input(d->client, in) != LOWLAT_OK)
-		return;
-	switch (in->kind) {
-		case LOWLAT_INPUT_KEY: d->keys_sent++; break;
-		case LOWLAT_INPUT_MOUSE_BUTTON: d->buttons_sent++; break;
-		case LOWLAT_INPUT_MOUSE_WHEEL: d->wheels_sent++; break;
-		case LOWLAT_INPUT_MOUSE_MOTION: d->motions_sent++; break;
-		default: break;
-	}
+	if (s == LOWLAT_OK)
+		(*counter)++;
 }
 
 // The host's pointer mode, as the toolkit is told it. The chord can let go
@@ -220,11 +216,8 @@ static void on_key(struct demo *d, const MTY_KeyEvent *k)
 		return;
 	if (k->key >= MTY_KEY_MAX || KEY_USAGE[k->key] == 0)
 		return;
-	lowlat_input in = {.kind = LOWLAT_INPUT_KEY};
-	in.body.key.code = KEY_USAGE[k->key];
-	in.body.key.mods = mods_of(k->mod);
-	in.body.key.pressed = k->pressed;
-	send(d, &in);
+	sent(d, lowlat_client_send_key(d->client, KEY_USAGE[k->key], mods_of(k->mod), k->pressed),
+		&d->keys_sent);
 }
 
 static uint32_t button_of(MTY_Button b)
@@ -261,17 +254,17 @@ static void on_controller(struct demo *d, const MTY_ControllerEvent *c)
 	d->pad_events++;
 	size_t slot = sizeof d->pads / sizeof d->pads[0];
 	for (size_t i = 0; i < sizeof d->pads / sizeof d->pads[0]; i++) {
-		if (d->pads[i].state.pad == c->id)
+		if (d->pads[i].id == c->id)
 			slot = i;
-		else if (slot == sizeof d->pads / sizeof d->pads[0] && d->pads[i].state.pad == 0)
+		else if (slot == sizeof d->pads / sizeof d->pads[0] && d->pads[i].id == 0)
 			slot = i;
 	}
 	if (slot == sizeof d->pads / sizeof d->pads[0])
 		return;
-	lowlat_pad_state_input fresh;
+	lowlat_pad_state fresh;
 	memset(&fresh, 0, sizeof fresh);
-	lowlat_pad_state_input *p = &fresh;
-	p->pad = c->id;
+	fresh.size = (uint32_t) sizeof fresh;
+	lowlat_pad_state *p = &fresh;
 	static const struct { MTY_CButton from; uint16_t to; } BITS[] = {
 		{MTY_CBUTTON_A, LOWLAT_PAD_STATE_A}, {MTY_CBUTTON_B, LOWLAT_PAD_STATE_B},
 		{MTY_CBUTTON_X, LOWLAT_PAD_STATE_X}, {MTY_CBUTTON_Y, LOWLAT_PAD_STATE_Y},
@@ -308,6 +301,7 @@ static void on_controller(struct demo *d, const MTY_ControllerEvent *c)
 		p->lt = 255;
 	if (c->buttons[MTY_CBUTTON_RIGHT_TRIGGER] && p->rt == 0)
 		p->rt = 255;
+	d->pads[slot].id = c->id;
 	d->pads[slot].state = fresh;
 	d->pads[slot].pending = true;
 	if (d->trace_pads) {
@@ -327,18 +321,14 @@ static void flush_pads(struct demo *d)
 		if (!d->pads[i].pending)
 			continue;
 		d->pads[i].pending = false;
-		lowlat_input in = {.kind = LOWLAT_INPUT_PAD_STATE};
-		in.body.pad_state = d->pads[i].state;
-		send(d, &in);
-		d->pad_sent++;
+		sent(d, lowlat_client_send_pad_state(d->client, d->pads[i].id, &d->pads[i].state),
+			&d->pad_sent);
 	}
 }
 
 static void event_func(const MTY_Event *evt, void *opaque)
 {
 	struct demo *d = opaque;
-	lowlat_input in;
-	memset(&in, 0, sizeof in);
 	switch (evt->type) {
 		case MTY_EVENT_CLOSE:
 		case MTY_EVENT_QUIT:
@@ -348,45 +338,32 @@ static void event_func(const MTY_Event *evt, void *opaque)
 			on_key(d, &evt->key);
 			break;
 		case MTY_EVENT_BUTTON:
-			in.kind = LOWLAT_INPUT_MOUSE_BUTTON;
-			in.body.mouse_button.button = button_of(evt->button.button);
-			in.body.mouse_button.pressed = evt->button.pressed;
-			in.body.mouse_button.x = evt->button.x;
-			in.body.mouse_button.y = evt->button.y;
-			if (in.body.mouse_button.button != 0)
-				send(d, &in);
+			if (button_of(evt->button.button) != 0)
+				sent(d, lowlat_client_send_mouse_button(d->client, button_of(evt->button.button),
+					evt->button.pressed, evt->button.x, evt->button.y), &d->buttons_sent);
 			break;
 		case MTY_EVENT_SCROLL:
-			in.kind = LOWLAT_INPUT_MOUSE_WHEEL;
-			in.body.mouse_wheel.x = evt->scroll.x;
-			in.body.mouse_wheel.y = evt->scroll.y;
-			send(d, &in);
+			sent(d, lowlat_client_send_mouse_wheel(d->client, evt->scroll.x, evt->scroll.y),
+				&d->wheels_sent);
 			break;
 		case MTY_EVENT_MOTION:
-			in.kind = LOWLAT_INPUT_MOUSE_MOTION;
-			in.body.mouse_motion.x = evt->motion.x;
-			in.body.mouse_motion.y = evt->motion.y;
-			in.body.mouse_motion.relative = evt->motion.relative;
-			send(d, &in);
+			sent(d, lowlat_client_send_mouse_motion(d->client, evt->motion.x, evt->motion.y,
+				evt->motion.relative), &d->motions_sent);
 			break;
 		case MTY_EVENT_CONTROLLER:
 			on_controller(d, &evt->controller);
 			break;
 		case MTY_EVENT_DISCONNECT:
 			for (size_t i = 0; i < sizeof d->pads / sizeof d->pads[0]; i++)
-				if (d->pads[i].state.pad == evt->controller.id)
+				if (d->pads[i].id == evt->controller.id)
 					memset(&d->pads[i], 0, sizeof d->pads[i]);
-			in.kind = LOWLAT_INPUT_PAD_UNPLUG;
-			in.body.pad_unplug.pad = evt->controller.id;
-			send(d, &in);
+			lowlat_client_send_pad_unplug(d->client, evt->controller.id);
 			break;
 		case MTY_EVENT_FOCUS:
 			// Nothing stays held on a host whose window is no longer in
 			// front.
-			if (!evt->focus) {
-				in.kind = LOWLAT_INPUT_RELEASE_ALL;
-				send(d, &in);
-			}
+			if (!evt->focus)
+				lowlat_client_send_release_all(d->client);
 			apply_relative(d);
 			break;
 		default:

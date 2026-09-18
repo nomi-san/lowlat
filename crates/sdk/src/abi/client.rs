@@ -153,34 +153,7 @@ pub struct lowlat_client_status {
     pub input_dropped: u32,
 }
 
-/// What one input report is.
-///
-/// **Named by an enumeration and carried as an integer** in [`lowlat_input`],
-/// for the reason [`lowlat_status`] is: the application writes the field.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum lowlat_input_kind {
-    /// `key`: a physical key by its usage code.
-    LOWLAT_INPUT_KEY = 1,
-    /// `mouse_button`.
-    LOWLAT_INPUT_MOUSE_BUTTON = 2,
-    /// `mouse_wheel`.
-    LOWLAT_INPUT_MOUSE_WHEEL = 3,
-    /// `mouse_motion`: a position, or a delta.
-    LOWLAT_INPUT_MOUSE_MOTION = 4,
-    /// `pad_button`: one button of a pad.
-    LOWLAT_INPUT_PAD_BUTTON = 5,
-    /// `pad_axis`: one axis of a pad.
-    LOWLAT_INPUT_PAD_AXIS = 6,
-    /// `pad_state`: a whole pad at once.
-    LOWLAT_INPUT_PAD_STATE = 7,
-    /// `pad_unplug`: the pad is gone.
-    LOWLAT_INPUT_PAD_UNPLUG = 8,
-    /// No body. Everything held comes up; sent on losing focus.
-    LOWLAT_INPUT_RELEASE_ALL = 9,
-}
-
-/// Modifier bits for [`lowlat_key_input`]. The lock bits are the toggles'
+/// Modifier bits for [`lowlat_client_send_key`]. The lock bits are the toggles'
 /// state, which a host reads to keep its own locks in step.
 pub const LOWLAT_MOD_LSHIFT: u32 = 0x0001;
 pub const LOWLAT_MOD_RSHIFT: u32 = 0x0002;
@@ -193,16 +166,16 @@ pub const LOWLAT_MOD_RGUI: u32 = 0x0800;
 pub const LOWLAT_MOD_NUM: u32 = 0x1000;
 pub const LOWLAT_MOD_CAPS: u32 = 0x2000;
 
-/// Mouse buttons for [`lowlat_mouse_button_input`].
+/// Mouse buttons for [`lowlat_client_send_mouse_button`].
 pub const LOWLAT_MOUSE_LEFT: u32 = 1;
 pub const LOWLAT_MOUSE_MIDDLE: u32 = 2;
 pub const LOWLAT_MOUSE_RIGHT: u32 = 3;
 pub const LOWLAT_MOUSE_X1: u32 = 4;
 pub const LOWLAT_MOUSE_X2: u32 = 5;
 
-/// Pad buttons for [`lowlat_pad_button_input`], by index.
+/// Pad buttons for [`lowlat_client_send_pad_button`], by index.
 ///
-/// **Not the bits of [`lowlat_pad_state_input`]**: the two forms number the
+/// **Not the bits of [`lowlat_pad_state`]**: the two forms number the
 /// buttons differently and neither is derivable from the other.
 pub const LOWLAT_PAD_A: u32 = 0;
 pub const LOWLAT_PAD_B: u32 = 1;
@@ -220,7 +193,7 @@ pub const LOWLAT_PAD_DPAD_DOWN: u32 = 12;
 pub const LOWLAT_PAD_DPAD_LEFT: u32 = 13;
 pub const LOWLAT_PAD_DPAD_RIGHT: u32 = 14;
 
-/// Pad axes for [`lowlat_pad_axis_input`]. Sticks span the signed range;
+/// Pad axes for [`lowlat_client_send_pad_axis`]. Sticks span the signed range;
 /// triggers run from zero.
 pub const LOWLAT_PAD_AXIS_LX: u32 = 0;
 pub const LOWLAT_PAD_AXIS_LY: u32 = 1;
@@ -229,7 +202,7 @@ pub const LOWLAT_PAD_AXIS_RY: u32 = 3;
 pub const LOWLAT_PAD_AXIS_LT: u32 = 4;
 pub const LOWLAT_PAD_AXIS_RT: u32 = 5;
 
-/// Button bits for [`lowlat_pad_state_input`].
+/// Button bits for [`lowlat_pad_state`].
 pub const LOWLAT_PAD_STATE_DPAD_UP: u16 = 0x0001;
 pub const LOWLAT_PAD_STATE_DPAD_DOWN: u16 = 0x0002;
 pub const LOWLAT_PAD_STATE_DPAD_LEFT: u16 = 0x0004;
@@ -247,74 +220,12 @@ pub const LOWLAT_PAD_STATE_B: u16 = 0x2000;
 pub const LOWLAT_PAD_STATE_X: u16 = 0x4000;
 pub const LOWLAT_PAD_STATE_Y: u16 = 0x8000;
 
-/// A key. Zero is no key and is not sent.
+/// A whole pad at one moment, for [`lowlat_client_send_pad_state`].
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct lowlat_key_input {
-    /// The usage code of the physical key.
-    pub code: u32,
-    /// `LOWLAT_MOD_*` bits in effect, lock state included.
-    pub mods: u32,
-    pub pressed: bool,
-}
-
-/// A mouse button, with where the pointer was in the window's units. A press
-/// outside the picture's rectangle is not sent; a release always is.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct lowlat_mouse_button_input {
-    /// One of `LOWLAT_MOUSE_*`.
-    pub button: u32,
-    pub pressed: bool,
-    pub x: i32,
-    pub y: i32,
-}
-
-/// Wheel movement, 120 to a detent.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct lowlat_mouse_wheel_input {
-    pub x: i32,
-    pub y: i32,
-}
-
-/// A position in the window's units, mapped into the picture through the
-/// viewport; or a delta when relative, scaled by the picture's size against
-/// the viewport's.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct lowlat_mouse_motion_input {
-    pub x: i32,
-    pub y: i32,
-    pub relative: bool,
-}
-
-/// One button of a pad. The pad identifier is the application's and is
-/// arbitrary; a host maps it to a slot.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct lowlat_pad_button_input {
-    pub pad: u32,
-    /// One of `LOWLAT_PAD_*`, the index form.
-    pub button: u32,
-    pub pressed: bool,
-}
-
-/// One axis of a pad.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct lowlat_pad_axis_input {
-    pub pad: u32,
-    /// One of `LOWLAT_PAD_AXIS_*`.
-    pub axis: u32,
-    pub value: i16,
-}
-
-/// A whole pad. An unchanged state for the same pad is not sent again.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct lowlat_pad_state_input {
-    pub pad: u32,
+pub struct lowlat_pad_state {
+    /// Set by the caller to `sizeof(lowlat_pad_state)`.
+    pub size: u32,
     /// `LOWLAT_PAD_STATE_*` bits.
     pub buttons: u16,
     pub lx: i16,
@@ -323,38 +234,6 @@ pub struct lowlat_pad_state_input {
     pub ry: i16,
     pub lt: u8,
     pub rt: u8,
-}
-
-/// The pad is gone. The host destroys its device, which releases everything.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct lowlat_pad_unplug_input {
-    pub pad: u32,
-}
-
-/// Whichever report this is; `kind` says which member is valid.
-#[repr(C)]
-#[derive(Clone, Copy)]
-#[allow(missing_debug_implementations)]
-pub union lowlat_input_body {
-    pub key: lowlat_key_input,
-    pub mouse_button: lowlat_mouse_button_input,
-    pub mouse_wheel: lowlat_mouse_wheel_input,
-    pub mouse_motion: lowlat_mouse_motion_input,
-    pub pad_button: lowlat_pad_button_input,
-    pub pad_axis: lowlat_pad_axis_input,
-    pub pad_state: lowlat_pad_state_input,
-    pub pad_unplug: lowlat_pad_unplug_input,
-}
-
-/// One input report from the application.
-#[repr(C)]
-#[derive(Clone, Copy)]
-#[allow(missing_debug_implementations)]
-pub struct lowlat_input {
-    /// One of [`lowlat_input_kind`].
-    pub kind: u32,
-    pub body: lowlat_input_body,
 }
 
 /// No decoder has been built yet: no parameter set has arrived.
@@ -861,112 +740,255 @@ pub unsafe extern "C" fn lowlat_client_set_viewport(
     }
 }
 
-/// Report one input event.
-///
-/// The library applies the rules every client applies (docs/10-client.md
-/// section 8): positions are mapped into the picture through the viewport
-/// with the far edge reachable, a press outside the picture is dropped and a
-/// release never is, a key of code zero is dropped, an unchanged pad state is
-/// not repeated. **Never blocks.** A session thread that has stopped taking
-/// input fills a fixed ring, after which reports are dropped and counted in
-/// [`lowlat_client_status`].
-///
-/// @param[in] cl The handle from [`lowlat_client_create`].
-/// @param[in] input The report, its `kind` one of [`lowlat_input_kind`].
-/// @returns [`LOWLAT_OK`], [`LOWLAT_ERR_NOT_STARTED`] with no session up, or
-/// [`LOWLAT_ERR_INVALID_ARGUMENT`] for a kind this library does not know.
-///
-/// # Safety
-///
-/// `cl` came from [`lowlat_client_create`]; `input` points to one
-/// [`lowlat_input`] whose member named by `kind` is set.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn lowlat_client_send_input(
-    cl: *mut lowlat_client,
-    input: *const lowlat_input,
-) -> lowlat_status {
-    use ::lowlat_client::input::{Input, PadState};
-    use lowlat_input_kind::*;
+/// Hand one report to the session, or say there is none.
+fn report(cl: *mut lowlat_client, input: ::lowlat_client::input::Input) -> lowlat_status {
+    // SAFETY: every caller is an entry point whose contract is that `cl`
+    // came from `lowlat_client_create`.
     unsafe {
         entered(cl, |handle| {
-            let Some(input) = input.as_ref() else {
-                return LOWLAT_ERR_INVALID_ARGUMENT;
-            };
-            // SAFETY (each arm): the caller set the member `kind` names.
-            let report = match input.kind {
-                k if k == LOWLAT_INPUT_KEY as u32 => {
-                    let b = input.body.key;
-                    Input::Key {
-                        code: b.code,
-                        mods: b.mods,
-                        pressed: b.pressed,
-                    }
-                }
-                k if k == LOWLAT_INPUT_MOUSE_BUTTON as u32 => {
-                    let b = input.body.mouse_button;
-                    Input::Button {
-                        button: b.button,
-                        pressed: b.pressed,
-                        x: b.x,
-                        y: b.y,
-                    }
-                }
-                k if k == LOWLAT_INPUT_MOUSE_WHEEL as u32 => {
-                    let b = input.body.mouse_wheel;
-                    Input::Wheel { x: b.x, y: b.y }
-                }
-                k if k == LOWLAT_INPUT_MOUSE_MOTION as u32 => {
-                    let b = input.body.mouse_motion;
-                    Input::Motion {
-                        x: b.x,
-                        y: b.y,
-                        relative: b.relative,
-                    }
-                }
-                k if k == LOWLAT_INPUT_PAD_BUTTON as u32 => {
-                    let b = input.body.pad_button;
-                    Input::PadButton {
-                        pad: b.pad,
-                        button: b.button,
-                        pressed: b.pressed,
-                    }
-                }
-                k if k == LOWLAT_INPUT_PAD_AXIS as u32 => {
-                    let b = input.body.pad_axis;
-                    Input::PadAxis {
-                        pad: b.pad,
-                        axis: b.axis,
-                        value: b.value,
-                    }
-                }
-                k if k == LOWLAT_INPUT_PAD_STATE as u32 => {
-                    let b = input.body.pad_state;
-                    Input::PadState {
-                        pad: b.pad,
-                        state: PadState {
-                            buttons: b.buttons,
-                            lx: b.lx,
-                            ly: b.ly,
-                            rx: b.rx,
-                            ry: b.ry,
-                            lt: b.lt,
-                            rt: b.rt,
-                        },
-                    }
-                }
-                k if k == LOWLAT_INPUT_PAD_UNPLUG as u32 => Input::PadUnplug {
-                    pad: input.body.pad_unplug.pad,
-                },
-                k if k == LOWLAT_INPUT_RELEASE_ALL as u32 => Input::ReleaseAll,
-                _ => return LOWLAT_ERR_INVALID_ARGUMENT,
-            };
-            if handle.held().seam.send_input(report) {
+            if handle.held().seam.send_input(input) {
                 LOWLAT_OK
             } else {
                 LOWLAT_ERR_NOT_STARTED
             }
         })
     }
+}
+
+/// A key, by the usage code of the physical key. A code of zero is no key
+/// and is not sent.
+///
+/// The rules every client applies are the library's (docs/10-client.md
+/// section 8), here and in the calls below, and **none of them blocks**:
+/// reports cross a fixed ring to the session thread, and a ring that fills --
+/// a thread that is not running -- drops the newest and counts it in
+/// [`lowlat_client_status`].
+///
+/// @param[in] cl The handle from [`lowlat_client_create`].
+/// @param[in] code The usage code.
+/// @param[in] mods `LOWLAT_MOD_*` bits in effect, lock state included.
+/// @param[in] pressed Down or up.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_NOT_STARTED`] with no session up.
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_send_key(
+    cl: *mut lowlat_client,
+    code: u32,
+    mods: u32,
+    pressed: bool,
+) -> lowlat_status {
+    report(
+        cl,
+        ::lowlat_client::input::Input::Key {
+            code,
+            mods,
+            pressed,
+        },
+    )
+}
+
+/// A mouse button, with where the pointer was in the window's units. A press
+/// outside the picture's rectangle is not sent; a release always is.
+///
+/// @param[in] cl The handle from [`lowlat_client_create`].
+/// @param[in] button One of `LOWLAT_MOUSE_*`.
+/// @param[in] pressed Down or up.
+/// @param[in] x Where the pointer was.
+/// @param[in] y Where the pointer was.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_NOT_STARTED`] with no session up.
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_send_mouse_button(
+    cl: *mut lowlat_client,
+    button: u32,
+    pressed: bool,
+    x: i32,
+    y: i32,
+) -> lowlat_status {
+    report(
+        cl,
+        ::lowlat_client::input::Input::Button {
+            button,
+            pressed,
+            x,
+            y,
+        },
+    )
+}
+
+/// Wheel movement, 120 to a detent, positive away from the hand.
+///
+/// @param[in] cl The handle from [`lowlat_client_create`].
+/// @param[in] x Sideways.
+/// @param[in] y Up and down.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_NOT_STARTED`] with no session up.
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_send_mouse_wheel(
+    cl: *mut lowlat_client,
+    x: i32,
+    y: i32,
+) -> lowlat_status {
+    report(cl, ::lowlat_client::input::Input::Wheel { x, y })
+}
+
+/// A pointer position in the window's units, mapped into the picture through
+/// the viewport; or a delta when relative, scaled by the picture's size
+/// against the viewport's. An absolute position before a viewport is set is
+/// not sent.
+///
+/// @param[in] cl The handle from [`lowlat_client_create`].
+/// @param[in] x The position, or the delta.
+/// @param[in] y The position, or the delta.
+/// @param[in] relative A delta rather than a position.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_NOT_STARTED`] with no session up.
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_send_mouse_motion(
+    cl: *mut lowlat_client,
+    x: i32,
+    y: i32,
+    relative: bool,
+) -> lowlat_status {
+    report(cl, ::lowlat_client::input::Input::Motion { x, y, relative })
+}
+
+/// One button of a pad. The pad identifier is the application's and is
+/// arbitrary; a host maps it to a slot.
+///
+/// @param[in] cl The handle from [`lowlat_client_create`].
+/// @param[in] pad The pad.
+/// @param[in] button One of `LOWLAT_PAD_*`, the index form.
+/// @param[in] pressed Down or up.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_NOT_STARTED`] with no session up.
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_send_pad_button(
+    cl: *mut lowlat_client,
+    pad: u32,
+    button: u32,
+    pressed: bool,
+) -> lowlat_status {
+    report(
+        cl,
+        ::lowlat_client::input::Input::PadButton {
+            pad,
+            button,
+            pressed,
+        },
+    )
+}
+
+/// One axis of a pad.
+///
+/// @param[in] cl The handle from [`lowlat_client_create`].
+/// @param[in] pad The pad.
+/// @param[in] axis One of `LOWLAT_PAD_AXIS_*`.
+/// @param[in] value The position: a stick over the signed range, a trigger from zero.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_NOT_STARTED`] with no session up.
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_send_pad_axis(
+    cl: *mut lowlat_client,
+    pad: u32,
+    axis: u32,
+    value: i16,
+) -> lowlat_status {
+    report(
+        cl,
+        ::lowlat_client::input::Input::PadAxis { pad, axis, value },
+    )
+}
+
+/// A whole pad at once. An unchanged state for the same pad is not sent
+/// again.
+///
+/// @param[in] cl The handle from [`lowlat_client_create`].
+/// @param[in] pad The pad.
+/// @param[in] state The state, its `size` set.
+/// @returns [`LOWLAT_OK`], [`LOWLAT_ERR_NOT_STARTED`] with no session up, or
+/// [`LOWLAT_ERR_INVALID_ARGUMENT`].
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`]; `state` points to one
+/// [`lowlat_pad_state`] whose `size` is set.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_send_pad_state(
+    cl: *mut lowlat_client,
+    pad: u32,
+    state: *const lowlat_pad_state,
+) -> lowlat_status {
+    let Some(state) = (unsafe { state.as_ref() }) else {
+        return LOWLAT_ERR_INVALID_ARGUMENT;
+    };
+    if (state.size as usize) < core::mem::size_of::<lowlat_pad_state>() {
+        return LOWLAT_ERR_INVALID_ARGUMENT;
+    }
+    report(
+        cl,
+        ::lowlat_client::input::Input::PadState {
+            pad,
+            state: ::lowlat_client::input::PadState {
+                buttons: state.buttons,
+                lx: state.lx,
+                ly: state.ly,
+                rx: state.rx,
+                ry: state.ry,
+                lt: state.lt,
+                rt: state.rt,
+            },
+        },
+    )
+}
+
+/// The pad is gone. The host destroys its device, which releases everything.
+///
+/// @param[in] cl The handle from [`lowlat_client_create`].
+/// @param[in] pad The pad.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_NOT_STARTED`] with no session up.
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_send_pad_unplug(
+    cl: *mut lowlat_client,
+    pad: u32,
+) -> lowlat_status {
+    report(cl, ::lowlat_client::input::Input::PadUnplug { pad })
+}
+
+/// Everything held comes up on the host; sent on losing focus. Pads are
+/// centred by it, not unplugged.
+///
+/// @param[in] cl The handle from [`lowlat_client_create`].
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_NOT_STARTED`] with no session up.
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_send_release_all(cl: *mut lowlat_client) -> lowlat_status {
+    report(cl, ::lowlat_client::input::Input::ReleaseAll)
 }
 
 /// Send the host's application a message.

@@ -169,8 +169,8 @@ int main(int argc, char **argv)
 
     lowlat_host_create_info info;
     info.size = (uint32_t) sizeof info;
-    lowlat_host *ll = NULL;
-    if (create(&info, &ll) != LOWLAT_OK || ll == NULL) {
+    lowlat_host *hl = NULL;
+    if (create(&info, &hl) != LOWLAT_OK || hl == NULL) {
         fprintf(stderr, "harness: a handle could not be created\n");
         return 1;
     }
@@ -181,7 +181,7 @@ int main(int argc, char **argv)
     lowlat_event event;
     struct timespec before, after;
     clock_gettime(CLOCK_MONOTONIC, &before);
-    lowlat_status polled = poll_events(ll, 60, &event, NULL, NULL);
+    lowlat_status polled = poll_events(hl, 60, &event, NULL, NULL);
     clock_gettime(CLOCK_MONOTONIC, &after);
     if (polled != LOWLAT_TIMEOUT) {
         fprintf(stderr, "harness: an empty poll returned %d, not %d\n",
@@ -219,11 +219,11 @@ int main(int argc, char **argv)
     cfg.audio.enabled = false;
     cfg.audio.allow_uncompressed = false;
     cfg.audio.mute_local = false;
-    if (host_start(ll, &cfg) != LOWLAT_OK) {
+    if (host_start(hl, &cfg) != LOWLAT_OK) {
         fprintf(stderr, "harness: hosting would not start\n");
         return 1;
     }
-    if (host_start(ll, &cfg) != LOWLAT_ERR_ALREADY_STARTED) {
+    if (host_start(hl, &cfg) != LOWLAT_ERR_ALREADY_STARTED) {
         fprintf(stderr, "harness: starting twice was not refused\n");
         return 1;
     }
@@ -232,22 +232,22 @@ int main(int argc, char **argv)
      * not exist. */
     lowlat_host_config bad = cfg;
     bad.codec = 99;
-    if (host_start(ll, &bad) != LOWLAT_ERR_ALREADY_STARTED) {
+    if (host_start(hl, &bad) != LOWLAT_ERR_ALREADY_STARTED) {
         fprintf(stderr, "harness: a running host accepted a second configuration\n");
         return 1;
     }
-    if (host_stop(ll) != LOWLAT_OK) {
+    if (host_stop(hl) != LOWLAT_OK) {
         fprintf(stderr, "harness: hosting would not stop\n");
         return 1;
     }
-    if (host_start(ll, &bad) != LOWLAT_ERR_INVALID_ARGUMENT) {
+    if (host_start(hl, &bad) != LOWLAT_ERR_INVALID_ARGUMENT) {
         fprintf(stderr, "harness: a codec nothing defines was accepted\n");
         return 1;
     }
 
     /* The live half, changed while the host runs and without rebuilding the
      * session: what the boundary can set is what it reads back. */
-    if (host_start(ll, &cfg) != LOWLAT_OK) {
+    if (host_start(hl, &cfg) != LOWLAT_OK) {
         fprintf(stderr, "harness: hosting would not restart\n");
         return 1;
     }
@@ -255,14 +255,14 @@ int main(int argc, char **argv)
     video.fps = 30;
     video.bitrate_mbps = 4.0;
     video.full_fps = false;
-    if (set_video(ll, &video) != LOWLAT_OK) {
+    if (set_video(hl, &video) != LOWLAT_OK) {
         fprintf(stderr, "harness: a live video change was refused\n");
         return 1;
     }
     lowlat_host_video_config back;
     memset(&back, 0, sizeof back);
     back.size = (uint32_t) sizeof back;
-    if (get_video(ll, &back) != LOWLAT_OK) {
+    if (get_video(hl, &back) != LOWLAT_OK) {
         fprintf(stderr, "harness: the live video settings could not be read back\n");
         return 1;
     }
@@ -273,7 +273,7 @@ int main(int argc, char **argv)
     }
     /* A floor above the ceiling is refused rather than silently reordered. */
     video.min_bitrate_mbps = 100.0;
-    if (set_video(ll, &video) != LOWLAT_ERR_INVALID_ARGUMENT) {
+    if (set_video(hl, &video) != LOWLAT_ERR_INVALID_ARGUMENT) {
         fprintf(stderr, "harness: a floor above the ceiling was accepted\n");
         return 1;
     }
@@ -284,14 +284,14 @@ int main(int argc, char **argv)
     lowlat_host_audio_config audio = cfg.audio;
     audio.bitrate_kbps = 96;
     audio.allow_uncompressed = true;
-    if (set_audio(ll, &audio) != LOWLAT_OK) {
+    if (set_audio(hl, &audio) != LOWLAT_OK) {
         fprintf(stderr, "harness: a live audio change was refused\n");
         return 1;
     }
     lowlat_host_audio_config audio_back;
     memset(&audio_back, 0, sizeof audio_back);
     audio_back.size = (uint32_t) sizeof audio_back;
-    if (get_audio(ll, &audio_back) != LOWLAT_OK) {
+    if (get_audio(hl, &audio_back) != LOWLAT_OK) {
         fprintf(stderr, "harness: the live audio settings could not be read back\n");
         return 1;
     }
@@ -302,12 +302,12 @@ int main(int argc, char **argv)
     }
     /* A rate nothing can serve is refused rather than clamped in silence. */
     audio.bitrate_kbps = 0;
-    if (set_audio(ll, &audio) != LOWLAT_ERR_INVALID_ARGUMENT) {
+    if (set_audio(hl, &audio) != LOWLAT_ERR_INVALID_ARGUMENT) {
         fprintf(stderr, "harness: a rate of zero was accepted\n");
         return 1;
     }
     audio.bitrate_kbps = LOWLAT_AUDIO_KBPS_MAX + 1;
-    if (set_audio(ll, &audio) != LOWLAT_ERR_INVALID_ARGUMENT) {
+    if (set_audio(hl, &audio) != LOWLAT_ERR_INVALID_ARGUMENT) {
         fprintf(stderr, "harness: a rate past the ceiling was accepted\n");
         return 1;
     }
@@ -351,7 +351,7 @@ int main(int argc, char **argv)
     offer.permissions.keyboard = true;
     offer.permissions.pointer = true;
     offer.permissions.gamepad = true;
-    if (new_attempt(ll, &offer) != LOWLAT_OK) {
+    if (new_attempt(hl, &offer) != LOWLAT_OK) {
         fprintf(stderr, "harness: an offer could not be registered\n");
         return 1;
     }
@@ -361,15 +361,15 @@ int main(int argc, char **argv)
     cand.size = (uint32_t) sizeof cand;
     cand.port = 41000;
     cand.sync = true;   /* a readiness marker, which carries no address */
-    add_candidate(ll, offer.attempt_id, &cand);
+    add_candidate(hl, offer.attempt_id, &cand);
     cand.sync = false;
     snprintf(cand.address, sizeof cand.address, "%s", "192.168.1.100");
-    add_candidate(ll, offer.attempt_id, &cand);
+    add_candidate(hl, offer.attempt_id, &cand);
 
     lowlat_credentials ours;
     memset(&ours, 0, sizeof ours);
     ours.size = (uint32_t) sizeof ours;
-    if (begin_p2p(ll, offer.attempt_id, 0, &ours) != LOWLAT_OK) {
+    if (begin_p2p(hl, offer.attempt_id, 0, &ours) != LOWLAT_OK) {
         fprintf(stderr, "harness: an attempt could not be approved\n");
         return 1;
     }
@@ -385,7 +385,7 @@ int main(int argc, char **argv)
                 strlen(ours.aes256));
         return 1;
     }
-    if (begin_p2p(ll, offer.attempt_id, 0, &ours) != LOWLAT_ERR_ALREADY_BEGUN) {
+    if (begin_p2p(hl, offer.attempt_id, 0, &ours) != LOWLAT_ERR_ALREADY_BEGUN) {
         fprintf(stderr, "harness: approving twice was not refused\n");
         return 1;
     }
@@ -395,14 +395,14 @@ int main(int argc, char **argv)
     lowlat_attempt_info legacy = offer;
     snprintf(legacy.attempt_id, sizeof legacy.attempt_id, "%s", "legacy-attempt");
     memset(legacy.aes256, 0, sizeof legacy.aes256);
-    if (new_attempt(ll, &legacy) != LOWLAT_OK) {
+    if (new_attempt(hl, &legacy) != LOWLAT_OK) {
         fprintf(stderr, "harness: a legacy offer could not be registered\n");
         return 1;
     }
     lowlat_credentials old_answer;
     memset(&old_answer, 0, sizeof old_answer);
     old_answer.size = (uint32_t) sizeof old_answer;
-    if (begin_p2p(ll, legacy.attempt_id, 0, &old_answer) != LOWLAT_OK) {
+    if (begin_p2p(hl, legacy.attempt_id, 0, &old_answer) != LOWLAT_OK) {
         fprintf(stderr, "harness: a legacy attempt could not be approved\n");
         return 1;
     }
@@ -410,7 +410,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "harness: a legacy answer carried a media key\n");
         return 1;
     }
-    end_connection(ll, legacy.attempt_id);
+    end_connection(hl, legacy.attempt_id);
     /* A browser's offer names its pipe and carries its certificate digest,
      * and the answer carries this process's digest with its hash name and no
      * media key. Without a digest the offer is refused with its own status. */
@@ -418,21 +418,21 @@ int main(int argc, char **argv)
     snprintf(web.attempt_id, sizeof web.attempt_id, "%s", "web-attempt");
     memset(web.aes256, 0, sizeof web.aes256);
     web.transport = LOWLAT_TRANSPORT_WEB;
-    if (new_attempt(ll, &web) != LOWLAT_ERR_FINGERPRINT) {
+    if (new_attempt(hl, &web) != LOWLAT_ERR_FINGERPRINT) {
         fprintf(stderr, "harness: a browser offer without a digest was not refused as such\n");
         return 1;
     }
     snprintf(web.fingerprint, sizeof web.fingerprint, "%s",
              "sha-256 00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:"
              "00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF");
-    if (new_attempt(ll, &web) != LOWLAT_OK) {
+    if (new_attempt(hl, &web) != LOWLAT_OK) {
         fprintf(stderr, "harness: a browser offer could not be registered\n");
         return 1;
     }
     lowlat_credentials web_answer;
     memset(&web_answer, 0, sizeof web_answer);
     web_answer.size = (uint32_t) sizeof web_answer;
-    if (begin_p2p(ll, web.attempt_id, 0, &web_answer) != LOWLAT_OK) {
+    if (begin_p2p(hl, web.attempt_id, 0, &web_answer) != LOWLAT_OK) {
         fprintf(stderr, "harness: a browser attempt could not be approved\n");
         return 1;
     }
@@ -440,29 +440,29 @@ int main(int argc, char **argv)
         fprintf(stderr, "harness: a browser answer did not carry the digest alone\n");
         return 1;
     }
-    end_connection(ll, web.attempt_id);
+    end_connection(hl, web.attempt_id);
     /* An application built against the previous minor sets the size that
      * structure had; its attempt is the native one, whatever lies past it. */
     lowlat_attempt_info older = offer;
     snprintf(older.attempt_id, sizeof older.attempt_id, "%s", "older-attempt");
     older.size = (uint32_t) offsetof(lowlat_attempt_info, transport);
     older.transport = 0xFFFFFFFFu;
-    if (new_attempt(ll, &older) != LOWLAT_OK) {
+    if (new_attempt(hl, &older) != LOWLAT_OK) {
         fprintf(stderr, "harness: an older-sized offer was refused\n");
         return 1;
     }
-    end_connection(ll, older.attempt_id);
+    end_connection(hl, older.attempt_id);
     /* The roster, in the two calls an application makes: how many, then who.
      * Nothing is allocated on the caller's behalf, so there is nothing to
      * free. */
     uint32_t guests = 0;
-    if (get_guests(ll, NULL, &guests) != LOWLAT_OK || guests != 1) {
+    if (get_guests(hl, NULL, &guests) != LOWLAT_OK || guests != 1) {
         fprintf(stderr, "harness: an approved guest is not on the roster (%u)\n", guests);
         return 1;
     }
     lowlat_guest roster[4];
     guests = 4;
-    if (get_guests(ll, roster, &guests) != LOWLAT_OK || guests != 1) {
+    if (get_guests(hl, roster, &guests) != LOWLAT_OK || guests != 1) {
         fprintf(stderr, "harness: the roster could not be read\n");
         return 1;
     }
@@ -473,11 +473,11 @@ int main(int argc, char **argv)
 
     /* An application message, uninterpreted in both directions. */
     const char *hello = "hello";
-    if (send_user_data(ll, roster[0].number, 9, hello, 5) != LOWLAT_OK) {
+    if (send_user_data(hl, roster[0].number, 9, hello, 5) != LOWLAT_OK) {
         fprintf(stderr, "harness: a message to a seated guest was refused\n");
         return 1;
     }
-    if (send_user_data(ll, 4242, 9, hello, 5) != LOWLAT_ERR_UNKNOWN_GUEST) {
+    if (send_user_data(hl, 4242, 9, hello, 5) != LOWLAT_ERR_UNKNOWN_GUEST) {
         fprintf(stderr, "harness: a message to nobody was accepted\n");
         return 1;
     }
@@ -488,7 +488,7 @@ int main(int argc, char **argv)
     lowlat_host_status state;
     memset(&state, 0, sizeof state);
     state.size = (uint32_t) sizeof state;
-    if (get_status(ll, &state) != LOWLAT_OK || !state.running || state.guests != 1) {
+    if (get_status(hl, &state) != LOWLAT_OK || !state.running || state.guests != 1) {
         fprintf(stderr, "harness: the host reports running=%u guests=%u\n",
                 (unsigned) state.running, state.guests);
         return 1;
@@ -508,7 +508,7 @@ int main(int argc, char **argv)
     lowlat_metrics metrics;
     memset(&metrics, 0, sizeof metrics);
     metrics.size = (uint32_t) sizeof metrics;
-    if (get_metrics(ll, roster[0].number, &metrics) != LOWLAT_OK) {
+    if (get_metrics(hl, roster[0].number, &metrics) != LOWLAT_OK) {
         fprintf(stderr, "harness: metrics could not be read\n");
         return 1;
     }
@@ -518,7 +518,7 @@ int main(int argc, char **argv)
         fprintf(stderr, "harness: a guest that sent nothing reported input times\n");
         return 1;
     }
-    if (get_metrics(ll, 4242, &metrics) != LOWLAT_ERR_UNKNOWN_GUEST) {
+    if (get_metrics(hl, 4242, &metrics) != LOWLAT_ERR_UNKNOWN_GUEST) {
         fprintf(stderr, "harness: metrics answered for a guest that is not there\n");
         return 1;
     }
@@ -527,7 +527,7 @@ int main(int argc, char **argv)
      * ask for one and finds itself in the list by number. */
     const char *who = "[{\"id\":1}]";
     uint32_t reached = 0;
-    if (send_roster(ll, who, (uint32_t) strlen(who), &reached) != LOWLAT_OK || reached != 1) {
+    if (send_roster(hl, who, (uint32_t) strlen(who), &reached) != LOWLAT_OK || reached != 1) {
         fprintf(stderr, "harness: the roster reached %u guest(s)\n", reached);
         return 1;
     }
@@ -540,41 +540,41 @@ int main(int argc, char **argv)
     perms.pointer = true;
     perms.gamepad = false;
     perms.reserved = 0;
-    if (set_permissions(ll, roster[0].number, &perms) != LOWLAT_OK) {
+    if (set_permissions(hl, roster[0].number, &perms) != LOWLAT_OK) {
         fprintf(stderr, "harness: permissions could not be changed\n");
         return 1;
     }
     guests = 4;
-    if (get_guests(ll, roster, &guests) != LOWLAT_OK || roster[0].permissions.keyboard) {
+    if (get_guests(hl, roster, &guests) != LOWLAT_OK || roster[0].permissions.keyboard) {
         fprintf(stderr, "harness: the roster did not follow the change\n");
         return 1;
     }
 
     /* **Zero is not a reason.** A peer carries on through a status of zero, so
      * a guest kicked with one is told nothing and stays exactly where it was. */
-    if (kick_guest(ll, roster[0].number, 0) != LOWLAT_ERR_INVALID_ARGUMENT) {
+    if (kick_guest(hl, roster[0].number, 0) != LOWLAT_ERR_INVALID_ARGUMENT) {
         fprintf(stderr, "harness: a status a peer ignores was accepted as a reason\n");
         return 1;
     }
-    if (kick_guest(ll, roster[0].number, -15000) != LOWLAT_OK) {
+    if (kick_guest(hl, roster[0].number, -15000) != LOWLAT_OK) {
         fprintf(stderr, "harness: a guest could not be kicked\n");
         return 1;
     }
 
-    end_connection(ll, offer.attempt_id);
+    end_connection(hl, offer.attempt_id);
 
-    if (host_stop(ll) != LOWLAT_OK) {
+    if (host_stop(hl) != LOWLAT_OK) {
         fprintf(stderr, "harness: hosting would not stop again\n");
         return 1;
     }
     /* And with nothing running there is nothing for it to apply to. */
-    if (set_video(ll, &cfg.video) != LOWLAT_ERR_INVALID_ARGUMENT) {
+    if (set_video(hl, &cfg.video) != LOWLAT_ERR_INVALID_ARGUMENT) {
         fprintf(stderr, "harness: a video change was accepted with no host running\n");
         return 1;
     }
 
     /* An argument that cannot be written to is refused rather than used. */
-    if (poll_events(ll, 0, NULL, NULL, NULL) != LOWLAT_ERR_INVALID_ARGUMENT) {
+    if (poll_events(hl, 0, NULL, NULL, NULL) != LOWLAT_ERR_INVALID_ARGUMENT) {
         fprintf(stderr, "harness: a poll with nowhere to put the event was not refused\n");
         return 1;
     }
@@ -582,7 +582,7 @@ int main(int argc, char **argv)
     /* The point of the whole program. A panic inside the library must arrive
      * here as a value; if containment is off, this call unwinds through a
      * frame compiled by another language and takes the process with it. */
-    lowlat_status contained = debug_panic(ll);
+    lowlat_status contained = debug_panic(hl);
     if (contained != LOWLAT_ERR_INTERNAL) {
         fprintf(stderr, "harness: a deliberate panic returned %d, not %d\n",
                 (int) contained, (int) LOWLAT_ERR_INTERNAL);
@@ -591,7 +591,7 @@ int main(int argc, char **argv)
 
     /* And what follows one is refused, on a handle that can still be
      * destroyed. */
-    if (poll_events(ll, 0, &event, NULL, NULL) != LOWLAT_ERR_POISONED) {
+    if (poll_events(hl, 0, &event, NULL, NULL) != LOWLAT_ERR_POISONED) {
         fprintf(stderr, "harness: a call after a contained panic was not refused\n");
         return 1;
     }
@@ -604,7 +604,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    destroy(ll);
+    destroy(hl);
 
     /* The client half, when the object carries it: a handle, an attempt
      * minted through the boundary, and the whole of it torn down without a
@@ -670,22 +670,19 @@ int main(int argc, char **argv)
             return 1;
         }
         // Input before a session is refused as not started, never taken; a
-        // kind the library does not know is an argument error.
-        lowlat_status (*client_send_input)(lowlat_client *, const lowlat_input *);
-        RESOLVE(client_send_input, lib, "lowlat_client_send_input");
-        lowlat_input report;
-        memset(&report, 0, sizeof report);
-        report.kind = LOWLAT_INPUT_KEY;
-        report.body.key.code = 4;
-        report.body.key.mods = LOWLAT_MOD_LSHIFT | LOWLAT_MOD_CAPS;
-        report.body.key.pressed = true;
-        if (client_send_input(cl, &report) != LOWLAT_ERR_NOT_STARTED) {
+        // pad state without its size is an argument error.
+        lowlat_status (*send_key)(lowlat_client *, uint32_t, uint32_t, bool);
+        lowlat_status (*send_pad_state)(lowlat_client *, uint32_t, const lowlat_pad_state *);
+        RESOLVE(send_key, lib, "lowlat_client_send_key");
+        RESOLVE(send_pad_state, lib, "lowlat_client_send_pad_state");
+        if (send_key(cl, 4, LOWLAT_MOD_LSHIFT | LOWLAT_MOD_CAPS, true) != LOWLAT_ERR_NOT_STARTED) {
             fprintf(stderr, "harness: input before a session was not refused\n");
             return 1;
         }
-        report.kind = 999;
-        if (client_send_input(cl, &report) != LOWLAT_ERR_INVALID_ARGUMENT) {
-            fprintf(stderr, "harness: an unknown input kind was not refused\n");
+        lowlat_pad_state pad;
+        memset(&pad, 0, sizeof pad);
+        if (send_pad_state(cl, 1, &pad) != LOWLAT_ERR_INVALID_ARGUMENT) {
+            fprintf(stderr, "harness: a pad state without its size was not refused\n");
             return 1;
         }
         client_end(cl);
