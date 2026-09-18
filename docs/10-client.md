@@ -320,9 +320,10 @@ budget against drift and jitter, in each direction. A desktop client runs about 
 150; a phone or a browser about twice that, paying latency for coarser periods and worse
 paths. The host's source is the clock ([05 §9](05-host.md)), so the window drifts against
 the device's at the rate of their difference and resyncs on the order of once every twelve
-to fifty minutes; no client can remove that, a client that tries by resampling to the
-device makes a feedback loop, and a library that ran a second window over the device's
-would only flush against it. A decoder is built from the stream's own header and rebuilt
+to fifty minutes (*measured 2026-09-18*: 40 ppm between this machine and the established
+host's, the desktop window flushing every 35 minutes); no client can remove that, a client
+that tries by resampling to the device makes a feedback loop, and a library that ran a
+second window over the device's would only flush against it. A decoder is built from the stream's own header and rebuilt
 when its mask, codec or channel count changes; a stream that is not stereo at the
 protocol's rate is refused per packet and counted. The pipeline hop between the wire and
 the device -- one wake and one decode, a fraction of a millisecond -- is not where the

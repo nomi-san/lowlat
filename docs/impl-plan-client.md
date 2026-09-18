@@ -33,9 +33,9 @@ Recorded once, here; the reasoning is in [10-client.md](10-client.md) and [00 D1
   fence on release; acquire is the poll. Planes or a device handle, the library saying which.
 - **Decoders: VA-API first, then NVDEC**, both loaded at runtime. No Vulkan Video decode.
   **Software decode is deferred**, with its licence question attached; not in v1.
-- The library decodes sound to PCM and hands it out through the playback window; **the
-  application owns the audio device.** Input is encoded by the library from the application's
-  events.
+- The library decodes sound to PCM and hands it out packet by packet; **the application owns
+  the audio device**, whose buffer is the playback window (*C4 moved the window there from
+  the library*). Input is encoded by the library from the application's events.
 - **Signaling stays out of the library** (D3). The demo speaks the signaling service itself
   over the toolkit's WebSocket and JSON, in one file.
 - **One stream on channel 1, the native transport only.** No second stream, no browser pipe.
@@ -250,7 +250,7 @@ both plans, host `uhid` backend first, and the touchpad already has a wire the c
 have to learn there; a Unicode key message for an input method needs a host half that is
 not a key injection, and is owed with it; pen and touch stay deferred.
 
-## Phase C4 - Sound (built 2026-09-18; gate 1 owed)
+## Phase C4 - Sound (built 2026-09-18; gate 1 passed on the established host, this host's run owed)
 
 **Planned 2026-09-18, interview of the same day.** The decisions are recorded once, here;
 the rules are [10 §6](10-client.md).
@@ -284,8 +284,19 @@ the rules are [10 §6](10-client.md).
    resync, then the same from this host. *The resync figure is read from the run, not
    picked: the demo logs the device's queue every second and its slope is the drift; the
    desktop window drifts 75 ms to an edge, which is 25 minutes at 50 ppm and 12.5 at 100,
-   so if the crystals give two the gate's number follows the crystals.* **Owed:** the user
-   drives the run.
+   so if the crystals give two the gate's number follows the crystals.* *Passed 2026-09-18
+   against the Windows host on the second machine: eighty-five minutes with sound playing
+   there, 254,178 packets at 50 a second, none dropped by the pool and none refused by the
+   decoder, one decoder build, the packet's age between the wire and the call 0 ms at the
+   median and 1 at most, the round trip 7 to 9 ms. The device's queue climbed at 39.3, 39.6
+   and 40.3 ppm in the three stretches between flushes -- the two clocks' difference, read
+   from the run -- and crossed the ceiling twice, at 1823 s and 3930 s: one resync per 35
+   minutes, at most one in any thirty, both of them the speaker's clock running behind the
+   host's. The first eleven seconds carried a seven-second hole in the host's own sound at
+   the session's start, which ran the device dry once; that is the host starting, not
+   drift. The run also found the demo counting one flush three times (the device's queue
+   reads zero once more after playback restarts), fixed after it. The same from this host
+   is owed: both ends share a clock there, so it can show a gap and not drift.*
 2. The hermetic session carries sound both codecs and the samples out match the samples in
    (*"both ways" was the wording; the uplink is deferred in the same phase*). *Passed
    2026-09-18: the harness host encodes a real stereo tone at 20 ms and sends it
@@ -368,7 +379,10 @@ Newest first.
   decoded on the application's call rather than on a thread of its own; the pool drops and
   counts; the demo reads resyncs from its device's own queue and logs them at once; "both
   ways" in the hermetic gate is read as both codecs, the uplink being deferred in the same
-  phase. Gate 2 passed; gate 1 is the user's thirty minutes.
+  phase. Gate 2 passed; gate 1 passed on the established host over eighty-five minutes (40 ppm
+  of drift read from the device's queue, a flush every 35 minutes, nothing dropped or
+  refused); the demo's resync counter was counting one flush three times and was fixed after
+  the run. This host's run is owed.
 - 2026-09-18, later: C3 closed. The gate found the demo's event loop bound to the display,
   which is the wrong cadence for a toolkit that reads one pad event a pass; presenting moved
   to its own thread, as every established client has it. The wire's vertical stick sign was

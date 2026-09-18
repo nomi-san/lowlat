@@ -29,8 +29,11 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 ### Verified
 - The hermetic session carries a real tone in both codecs under the three network scripts:
   every packet handed over, uncompressed sound equal sample for sample, compressed sound at
-  each channel's level ([impl-plan-client.md](impl-plan-client.md) C4). The thirty-minute
-  runs against an established host and this host are owed.
+  each channel's level ([impl-plan-client.md](impl-plan-client.md) C4). Against an
+  established host on the second machine, eighty-five minutes with sound playing there: a
+  quarter of a million packets, none dropped or refused, the packet's age at hand-over 0 to
+  1 ms, the device's queue drifting at 40 ppm and flushing every 35 minutes -- at most one
+  resync in any thirty. The run from this host is owed.
 
 ## 2026-09-18 - Phase C3: input
 
