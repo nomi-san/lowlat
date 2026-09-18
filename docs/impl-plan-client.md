@@ -177,20 +177,57 @@ plays both roles.
 
 ## Phase C3 - Input
 
-- [ ] `lowlat_client_send_input` and the rules of [10 §8](10-client.md): the pointer
-  transform into the picture's pixels with the edge bump, the press-outside guard, release-all
-  on focus loss, pad state per poll, the keyboard code guard.
-- [ ] The demo takes keyboard, mouse and pad from the toolkit and sends them.
-- [ ] Relative mode: the event on the transition, the demo confining and hiding its pointer.
+**Planned 2026-09-18, interview of the same day.** The decisions are recorded once, here;
+the rules are [10 §8](10-client.md).
+
+- [ ] `lowlat_client_set_viewport(x, y, w, h)`: the rectangle the application drew the
+  picture into, in the same units as the positions it reports. The library never computes a
+  fit: stretch, shrink, a percent scale and rotation are all the application's ways of
+  producing one rectangle, and DPI does not enter because the rectangle and the positions
+  share a space by construction. A zero rectangle means no picture area, and absolute motion
+  is not sent until one is set; the picture's size comes from the stream's own header, so
+  the two ends of the ratio come from different owners and the application cannot describe
+  the picture wrongly.
+- [ ] `lowlat_client_send_input` and the rules of [10 §8](10-client.md): the transform into
+  the picture's pixels with the edge bump and the clamp, the rotation swapped back, relative
+  deltas scaled by the picture-to-drawn ratio, the press-outside guard evaluated at the
+  press's own position, the keyboard code guard, pad state deduplicated per identifier,
+  release-all on the application's word. Keyboard codes are usage codes and the modifier
+  mask is the event's own, in the wire's bit numbering (`LOWLAT_MOD_*`); the application
+  supplies both, because only its toolkit knows the lock state. The path from the handle to
+  the session thread is a fixed ring of 1024 entries; a full ring drops the newest message
+  and counts it in metrics, and never blocks the application's thread.
+- [ ] The relative-mode event on the cursor message's transition (either the relative or
+  the hidden bit), carrying the position to warp to on the way out, in window coordinates
+  through the inverse of the same viewport mapping. The cursor body is read for that alone
+  here; the image, the hotspot and the suppressed flag are C5's.
+- [ ] The demo takes keyboard, mouse and pad from the toolkit and sends them: the key table
+  generated from the toolkit's own map crossed with the kernel's usage table (two
+  directions, so a disagreement shows); a bare GUI key is dropped, as a chord modifier it
+  is sent; repeats are forwarded as presses; both attached pads as the standard state,
+  unplug on removal. Ctrl+Alt chords are the demo's own: stretch or shrink (the rectangle
+  re-sent), leaving the pointer grab, and cycling the streamed output through the
+  application protocol -- id 10 asked, the id-12 list read from the user-data event, id 11
+  sent with the next `output`, which is what makes gate item 1's two-monitor case
+  drivable from the demo against either host.
+- [ ] Relative mode in the demo: confine and hide on the event, warp on the way out if
+  focused.
 
 **Gate:**
 
-1. Against an established host: typing lands, the pointer lands where it is aimed on a host
-   with one display and with two, a drag that leaves the window releases on the host, a pad
-   drives a game, and mouselook works through relative mode.
+1. Against an established host with two monitors, one of them streamed: typing lands, the
+   pointer lands where it is aimed on whichever output is streamed, switched from the demo
+   both ways; a drag that leaves the window releases on the host; each of the two attached
+   pads drives a game; mouselook works through relative mode.
 2. Against this host: the host's own input log agrees with the demo's, message for message,
    for one minute of mixed input; the census shows every opcode the established client sends
    and nothing it does not.
+
+**Not in C3, recorded here so it is not re-decided:** the DualSense pair -- touchpad
+contacts, motion, lightbar, adaptive triggers and haptics -- is its own phase after C5 on
+both plans, host `uhid` backend first, and the touchpad already has a wire the client will
+have to learn there; a Unicode key message for an input method needs a host half that is
+not a key injection, and is owed with it; pen and touch stay deferred.
 
 ## Phase C4 - Sound
 
@@ -273,6 +310,12 @@ built.
 
 Newest first.
 
+- 2026-09-18: C3 planned. The application hands over the rectangle it drew into and the
+  library computes no fit; keys are usage codes with the event's own modifier mask; the
+  input ring drops and counts rather than blocks; the relative-mode event carries the warp
+  position in window coordinates; the two-monitor gate item is driven from the demo through
+  the application protocol; the DualSense pair and a Unicode key message are recorded as
+  later, not lost.
 - 2026-09-17, later: C2 closed. The library reads both bitstreams itself in full syntax and
   hands the device the picture and slice parameters, because the interfaces here decode from
   those and the licence rule keeps every other reader out; the clips are checked against an

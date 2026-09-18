@@ -679,6 +679,12 @@ delivery gate does what it is meant to throughout, and no guest ever saw a broke
   disconnect.
 - [x] Force feedback as the simple magnitude effect, reported back to the owning guest as a
   rumble message.
+- **A DualSense end to end is its own phase, after the client's C5** (*recorded 2026-09-18*,
+  at C3's planning): the HID-layer virtual pad the kernel's own driver claims, so an
+  application sees the controller it is holding, with the touchpad, motion, the lightbar,
+  the adaptive triggers and the haptics carried on their own messages both ways. The host
+  half comes first because the client half is worthless without it; the client's plan
+  says the same under its C3.
 - [x] Events queued rather than dropped until a freshly created device is usable
   ([07 §4.1](07-platforms.md)), with a bounded queue and a stated overflow rule.
 - [x] The three device-node failures told apart: module absent, group or rule missing,

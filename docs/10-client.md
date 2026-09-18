@@ -344,26 +344,49 @@ away; a client that breaks sends nothing, and a host learns it from its delivery
 ## §8 Input
 
 The application reports what happened in its window; the library turns it into the wire's
-vocabulary ([01 §11.1](01-protocol.md)) and applies the rules every client applies:
+vocabulary ([01 §11.1](01-protocol.md)) and applies the rules every client applies
+(*revised 2026-09-18*, at C3's planning):
 
-- **Pointer positions are transformed into the picture's own pixels.** The coordinate a host
-  expects is in the frame it sent, so a window position is mapped through the letterbox and
-  the scale the renderer used, then clamped to the picture; a position one short of the edge
-  is bumped onto it so the far edge is reachable. Relative motion is sent as deltas unchanged.
+- **The application says where it drew the picture.** `lowlat_client_set_viewport` takes the
+  rectangle, in the same units as the positions the application reports, and that is the
+  whole of what the library knows about the window: no fit is computed here, because
+  stretching, shrinking, a percent scale and a rotated picture are all the application's
+  ways of producing one rectangle, and a display scale factor never enters because the
+  rectangle and the positions share a space by construction. The picture's own size comes
+  from the stream's header, so the two ends of the ratio have different owners and the
+  application cannot describe the picture wrongly. A zero rectangle means there is nothing
+  to aim at, and absolute motion is not sent until one is set.
+- **Pointer positions are transformed into the picture's own pixels.** A window position is
+  mapped through the rectangle into the picture, in the orientation the picture is shown
+  (a rotated stream's coordinates are swapped back), then clamped to the picture; a position
+  one short of the far edge is bumped onto it so the far edge is reachable. Relative motion
+  is sent as deltas scaled by the ratio of the picture to the rectangle, so a picture drawn
+  at half size still turns the host's pointer by the distance the hand moved.
 - **A button press outside the picture is not sent; its release always is**, so a drag that
-  leaves the window ends cleanly on the host.
-- **Losing focus sends the release-all message**, so nothing stays held on a host whose window
-  is no longer in front. Pads are centred by that, not unplugged ([05 §7](05-host.md)).
-- A keyboard code of zero is dropped. Modifier state travels in the mask the host reads for
-  lock-key synchronisation.
-- Pads are sent as whole states at the application's cadence, one message per poll, or as
-  single button and axis changes; the host takes both and does not require one.
+  leaves the window ends cleanly on the host. The guard is evaluated at the press's own
+  position, which the application reports with the press.
+- **Losing focus is the application's to report**, as the release-all message, so nothing
+  stays held on a host whose window is no longer in front. Pads are centred by that, not
+  unplugged ([05 §7](05-host.md)).
+- **Keys are usage codes and the modifier mask is the event's own**, in the wire's bit
+  numbering; the application supplies both, because only its toolkit knows the lock state a
+  host reads for lock-key synchronisation. A code of zero is dropped. A held key's repeats
+  are forwarded as presses; a host tolerates them.
+- **Pads are sent as whole states**, one message per state the application reports, with an
+  unchanged state for the same identifier not repeated; or as single button and axis
+  changes. The host takes both and does not require one.
 - Pen and touch are deferred, as they are on the host.
 
 **Relative mode is the host's to announce and the client's to enter.** The cursor message
-carries it; on the transition the library raises an event and the application confines and
-hides its pointer -- a warp on the transition, not on every update, or the pointer fights the
+carries it in either of two bits; on the transition the library raises an event and the
+application confines and hides its pointer -- a warp on the transition out, to the position
+the event carries in window coordinates, not on every update, or the pointer fights the
 application's own motion.
+
+**Between the application's thread and the session's** the messages travel a fixed ring; a
+full ring drops the newest message and counts it, and never blocks the caller. A ring that
+fills is a session thread that is not running, and by then what the host holds is its own
+release-all problem.
 
 ## §9 Events, status and metrics
 
