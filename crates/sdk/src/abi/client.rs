@@ -286,6 +286,12 @@ pub const LOWLAT_FORMAT_NV12: u32 = 1;
 /// Ten bits in sixteen-bit samples, the value in the high bits; the same
 /// two planes.
 pub const LOWLAT_FORMAT_P010: u32 = 2;
+/// Eight bits, full chroma: three planes of the picture's size, luma then
+/// the two chroma planes.
+pub const LOWLAT_FORMAT_YUV444: u32 = 3;
+/// Ten bits in sixteen-bit samples, the value in the high bits; the same
+/// three planes.
+pub const LOWLAT_FORMAT_YUV444_16: u32 = 4;
 
 /// A decoded picture, lent to the application.
 ///
@@ -1224,8 +1230,12 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
                         pitch: u32::try_from(taken.pitch).unwrap_or(u32::MAX),
                     },
                     lowlat_plane {
-                        data: core::ptr::null(),
-                        pitch: 0,
+                        data: taken.v,
+                        pitch: if taken.v.is_null() {
+                            0
+                        } else {
+                            u32::try_from(taken.pitch).unwrap_or(u32::MAX)
+                        },
                     },
                 ],
                 slot: u32::try_from(taken.index).unwrap_or(u32::MAX),

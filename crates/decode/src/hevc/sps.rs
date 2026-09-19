@@ -379,6 +379,36 @@ fn profile_tier_level(r: &mut BitReader<'_>, max_sub_layers_minus1: u32) -> Resu
     Ok((profile_idc, compatibility))
 }
 
+/// `sps_range_extension()`: the coding tools of the range-extensions
+/// profiles, every one of which the device is told about. All clear for a
+/// sequence that carries none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RangeExtension {
+    pub transform_skip_rotation_enabled: bool,
+    pub transform_skip_context_enabled: bool,
+    pub implicit_rdpcm_enabled: bool,
+    pub explicit_rdpcm_enabled: bool,
+    pub extended_precision_processing: bool,
+    pub intra_smoothing_disabled: bool,
+    pub high_precision_offsets_enabled: bool,
+    pub persistent_rice_adaptation_enabled: bool,
+    pub cabac_bypass_alignment_enabled: bool,
+}
+
+impl RangeExtension {
+    pub fn any(&self) -> bool {
+        self.transform_skip_rotation_enabled
+            || self.transform_skip_context_enabled
+            || self.implicit_rdpcm_enabled
+            || self.explicit_rdpcm_enabled
+            || self.extended_precision_processing
+            || self.intra_smoothing_disabled
+            || self.high_precision_offsets_enabled
+            || self.persistent_rice_adaptation_enabled
+            || self.cabac_bypass_alignment_enabled
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sps {
     pub id: u8,
@@ -423,9 +453,16 @@ pub struct Sps {
     pub used_by_curr_pic_lt_sps: [bool; MAX_LT_SPS],
     pub temporal_mvp_enabled: bool,
     pub strong_intra_smoothing_enabled: bool,
+    pub range: RangeExtension,
 }
 
 impl Sps {
+    /// Whether the sequence is of the range-extensions profile in any way a
+    /// device has to be told about: full chroma, or any of its tools.
+    pub fn is_range_extended(&self) -> bool {
+        self.chroma_format_idc == 3 || self.range.any()
+    }
+
     pub fn max_pic_order_cnt_lsb(&self) -> u32 {
         1 << (u32::from(self.log2_max_pic_order_cnt_lsb_minus4) + 4)
     }
@@ -571,9 +608,38 @@ pub fn parse(payload: &[u8]) -> Result<Sps> {
     }
     let temporal_mvp_enabled = r.flag()?;
     let strong_intra_smoothing_enabled = r.flag()?;
-    // What follows is the VUI and the extensions. The profile is what
-    // decides whether any extension can be present, and only the two the
-    // devices here decode are admitted, so nothing after this is read.
+    // The VUI is walked, not kept: it stands between here and the
+    // extensions, which the device has to be told about.
+    if r.flag()? {
+        vui_parameters(&mut r, u32::from(max_sub_layers_minus1))?;
+    }
+    let mut range = RangeExtension::default();
+    if r.flag()? {
+        // sps_extension_present: the range extension is read; the
+        // multilayer, 3D and screen-content ones are refused, as no device
+        // here decodes them and their syntax would follow.
+        let has_range = r.flag()?;
+        let multilayer = r.flag()?;
+        let three_d = r.flag()?;
+        let scc = r.flag()?;
+        let four_bits = r.bits(4)?;
+        if multilayer || three_d || scc || four_bits != 0 {
+            return Err(ParseError::Unsupported);
+        }
+        if has_range {
+            range = RangeExtension {
+                transform_skip_rotation_enabled: r.flag()?,
+                transform_skip_context_enabled: r.flag()?,
+                implicit_rdpcm_enabled: r.flag()?,
+                explicit_rdpcm_enabled: r.flag()?,
+                extended_precision_processing: r.flag()?,
+                intra_smoothing_disabled: r.flag()?,
+                high_precision_offsets_enabled: r.flag()?,
+                persistent_rice_adaptation_enabled: r.flag()?,
+                cabac_bypass_alignment_enabled: r.flag()?,
+            };
+        }
+    }
 
     Ok(Sps {
         id,
@@ -616,5 +682,109 @@ pub fn parse(payload: &[u8]) -> Result<Sps> {
         used_by_curr_pic_lt_sps,
         temporal_mvp_enabled,
         strong_intra_smoothing_enabled,
+        range,
     })
+}
+
+/// Walk `vui_parameters()` to its end. Nothing in it decodes a picture;
+/// it is read only because the extensions follow it.
+fn vui_parameters(r: &mut BitReader<'_>, max_sub_layers_minus1: u32) -> Result<()> {
+    if r.flag()? {
+        // aspect_ratio_info_present
+        if r.u8(8)? == 255 {
+            r.skip(32)?; // sar_width, sar_height
+        }
+    }
+    if r.flag()? {
+        r.flag()?; // overscan_appropriate
+    }
+    if r.flag()? {
+        // video_signal_type_present
+        r.skip(4)?; // video_format, video_full_range
+        if r.flag()? {
+            r.skip(24)?; // colour_primaries, transfer, matrix_coeffs
+        }
+    }
+    if r.flag()? {
+        // chroma_loc_info_present
+        r.ue()?;
+        r.ue()?;
+    }
+    r.skip(3)?; // neutral_chroma_indication, field_seq, frame_field_info_present
+    if r.flag()? {
+        // default_display_window
+        for _ in 0..4 {
+            r.ue()?;
+        }
+    }
+    if r.flag()? {
+        // vui_timing_info_present
+        r.skip(32)?; // num_units_in_tick
+        r.skip(32)?; // time_scale
+        if r.flag()? {
+            r.ue()?; // num_ticks_poc_diff_one_minus1
+        }
+        if r.flag()? {
+            hrd_parameters(r, true, max_sub_layers_minus1)?;
+        }
+    }
+    if r.flag()? {
+        // bitstream_restriction
+        r.skip(3)?; // tiles_fixed_structure, mvs_over_pic_boundaries, restricted_ref_pic_lists
+        for _ in 0..5 {
+            r.ue()?;
+        }
+    }
+    Ok(())
+}
+
+/// Walk `hrd_parameters()` to its end.
+fn hrd_parameters(r: &mut BitReader<'_>, common: bool, max_sub_layers_minus1: u32) -> Result<()> {
+    let mut nal = false;
+    let mut vcl = false;
+    let mut sub_pic = false;
+    if common {
+        nal = r.flag()?;
+        vcl = r.flag()?;
+        if nal || vcl {
+            sub_pic = r.flag()?;
+            if sub_pic {
+                r.skip(8)?; // tick_divisor_minus2
+                r.skip(5)?; // du_cpb_removal_delay_increment_length_minus1
+                r.skip(1)?; // sub_pic_cpb_params_in_pic_timing_sei
+                r.skip(5)?; // dpb_output_delay_du_length_minus1
+            }
+            r.skip(8)?; // bit_rate_scale, cpb_size_scale
+            if sub_pic {
+                r.skip(4)?; // cpb_size_du_scale
+            }
+            r.skip(15)?; // the three delay lengths, 5 bits each
+        }
+    }
+    for _ in 0..=max_sub_layers_minus1 {
+        let fixed_general = r.flag()?;
+        let fixed_within_cvs = if fixed_general { true } else { r.flag()? };
+        let mut low_delay = false;
+        if fixed_within_cvs {
+            r.ue()?; // elemental_duration_in_tc_minus1
+        } else {
+            low_delay = r.flag()?;
+        }
+        let cpb_cnt_minus1 = if low_delay { 0 } else { r.ue_max(31)? };
+        for present in [nal, vcl] {
+            if !present {
+                continue;
+            }
+            for _ in 0..=cpb_cnt_minus1 {
+                r.ue()?; // bit_rate_value_minus1
+                r.ue()?; // cpb_size_value_minus1
+                if sub_pic {
+                    r.ue()?; // cpb_size_du_value_minus1
+                    r.ue()?; // bit_rate_du_value_minus1
+                }
+                r.flag()?; // cbr
+            }
+        }
+    }
+    Ok(())
 }

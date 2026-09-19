@@ -102,6 +102,35 @@ fn the_synthetic_clips_read_with_no_reordering() {
     }
 }
 
+/// The full-chroma fixtures read as the range-extensions profile at 4:4:4,
+/// the VUI both encoders write walked through to the extension flag. Neither
+/// encoder writes the extension syntax itself (checked with an independent
+/// header trace); the writers test builds that by hand.
+#[test]
+fn the_full_chroma_fixtures_read_as_the_range_extensions_profile() {
+    for (clip, ten_bit) in [
+        ("fixtures/hevc-444.bin", false),
+        ("fixtures/hevc-444-main10.bin", true),
+        ("fixtures/hevc-nvenc-444.bin", false),
+        ("fixtures/hevc-nvenc-444-10.bin", true),
+    ] {
+        let mut stream = Stream::new();
+        let units = common::units(clip);
+        assert_eq!(stream.read(&units[0]).unwrap(), Read::Picture, "{clip}");
+        let job = stream.job().unwrap();
+        assert_eq!(job.sps.profile_idc, 4, "{clip}");
+        assert_eq!(job.sps.chroma_format_idc, 3, "{clip}");
+        assert!(job.sps.is_range_extended(), "{clip}");
+        assert!(!job.sps.range.any(), "{clip}");
+        assert_eq!(
+            job.sps.bit_depth_luma_minus8,
+            if ten_bit { 2 } else { 0 },
+            "{clip}"
+        );
+        assert_eq!(job.pps.range, Default::default(), "{clip}");
+    }
+}
+
 #[test]
 fn a_truncated_unit_is_refused_not_a_panic() {
     let units = common::units("synthetic-720p-hevc.bin");

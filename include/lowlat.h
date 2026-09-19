@@ -264,6 +264,14 @@
 /// two planes.
 #define LOWLAT_FORMAT_P010 2
 
+/// Eight bits, full chroma: three planes of the picture's size, luma then
+/// the two chroma planes.
+#define LOWLAT_FORMAT_YUV444 3
+
+/// Ten bits in sixteen-bit samples, the value in the high bits; the same
+/// three planes.
+#define LOWLAT_FORMAT_YUV444_16 4
+
 /// No attempt has been made.
 #define LOWLAT_CLIENT_IDLE 0
 

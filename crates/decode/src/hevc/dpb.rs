@@ -706,6 +706,7 @@ mod tests {
             used_by_curr_pic_lt_sps: [false; MAX_LT_SPS],
             temporal_mvp_enabled: false,
             strong_intra_smoothing_enabled: false,
+            range: Default::default(),
         }
     }
 
@@ -764,6 +765,7 @@ mod tests {
             slice_qp_delta: 0,
             slice_cb_qp_offset: 0,
             slice_cr_qp_offset: 0,
+            cu_chroma_qp_offset_enabled: false,
             deblocking_filter_disabled: false,
             beta_offset_div2: 0,
             tc_offset_div2: 0,

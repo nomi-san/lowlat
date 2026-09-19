@@ -73,29 +73,69 @@ pub enum Format {
     /// Ten bits in sixteen-bit samples, the value in the high bits; the same
     /// two planes.
     P010,
+    /// Eight bits, full chroma: three planes of the picture's size.
+    Yuv444,
+    /// Ten bits in sixteen-bit samples, the value in the high bits; the same
+    /// three planes.
+    Yuv444_16,
 }
 
 impl Format {
     /// Bytes per sample.
     pub const fn sample(self) -> usize {
         match self {
-            Self::Nv12 => 1,
-            Self::P010 => 2,
+            Self::Nv12 | Self::Yuv444 => 1,
+            Self::P010 | Self::Yuv444_16 => 2,
+        }
+    }
+
+    /// Whether chroma is at the picture's own resolution, in two planes.
+    pub const fn full_chroma(self) -> bool {
+        matches!(self, Self::Yuv444 | Self::Yuv444_16)
+    }
+
+    /// Rows in each chroma plane for a picture `height` rows tall.
+    pub const fn chroma_rows(self, height: usize) -> usize {
+        if self.full_chroma() {
+            height
+        } else {
+            height.div_ceil(2)
+        }
+    }
+
+    /// Bytes a chroma row carries for a picture `width` samples wide: two
+    /// interleaved samples per pair of pixels, or one per pixel per plane,
+    /// which come to the same count.
+    pub const fn chroma_row_bytes(self, width: usize) -> usize {
+        width * self.sample()
+    }
+
+    /// The layout for a stream's depth and chroma.
+    pub const fn of(ten_bit: bool, full_chroma: bool) -> Self {
+        match (ten_bit, full_chroma) {
+            (false, false) => Self::Nv12,
+            (true, false) => Self::P010,
+            (false, true) => Self::Yuv444,
+            (true, true) => Self::Yuv444_16,
         }
     }
 }
 
-/// Where a picture is read back to: two planes the caller owns.
+/// Where a picture is read back to: the planes the caller owns.
 ///
 /// The pitches are the caller's; a backend writes `width` samples of each
-/// of `height` luma rows and `height / 2` chroma rows and touches nothing
-/// past them.
+/// of `height` luma rows and the format's chroma rows and touches nothing
+/// past them. `uv` is the interleaved chroma plane, or the first of the
+/// two chroma planes at full chroma, where `v` is the second; a two-plane
+/// layout leaves `v` empty.
 #[derive(Debug)]
 pub struct Planes<'a> {
     pub y: &'a mut [u8],
     pub y_pitch: usize,
     pub uv: &'a mut [u8],
     pub uv_pitch: usize,
+    pub v: &'a mut [u8],
+    pub v_pitch: usize,
 }
 
 /// What a decoded picture is.

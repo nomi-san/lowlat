@@ -588,6 +588,8 @@ impl<D: Decoder> Guest<D> {
                     y_pitch: 1280 * 2,
                     uv: &mut self.planes.1,
                     uv_pitch: 1280 * 2,
+                    v: &mut [],
+                    v_pitch: 0,
                 };
                 let Ok(Some(picture)) = self.feed.decoder_mut().take(&mut planes) else {
                     break;

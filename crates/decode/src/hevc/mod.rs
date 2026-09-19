@@ -127,8 +127,14 @@ impl Stream {
                     let sps = sps::parse(payload)?;
                     let main = sps.profile_idc == 1 || sps.profile_compatibility & (1 << 30) != 0;
                     let main10 = sps.profile_idc == 2 || sps.profile_compatibility & (1 << 29) != 0;
-                    if !(main || main10)
-                        || sps.chroma_format_idc != 1
+                    let rext = sps.profile_idc == 4 || sps.profile_compatibility & (1 << 27) != 0;
+                    // Main, Main 10 and the range extensions at 4:2:0 or
+                    // 4:4:4, eight or ten bits, the two depths equal: what a
+                    // device here decodes. Separate colour planes are three
+                    // monochrome pictures, which no device takes as one.
+                    if !(main || main10 || rext)
+                        || !(sps.chroma_format_idc == 1 || sps.chroma_format_idc == 3)
+                        || sps.separate_colour_plane
                         || sps.bit_depth_luma_minus8 > 2
                         || sps.bit_depth_luma_minus8 != sps.bit_depth_chroma_minus8
                     {
@@ -323,6 +329,7 @@ fn placeholder_sps() -> Sps {
         used_by_curr_pic_lt_sps: [false; sps::MAX_LT_SPS],
         temporal_mvp_enabled: false,
         strong_intra_smoothing_enabled: false,
+        range: sps::RangeExtension::default(),
     }
 }
 
@@ -366,5 +373,6 @@ fn placeholder_pps() -> Pps {
         lists_modification_present: false,
         log2_parallel_merge_level_minus2: 0,
         slice_segment_header_extension_present: false,
+        range: pps::RangeExtension::default(),
     }
 }

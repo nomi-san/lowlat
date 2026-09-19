@@ -54,6 +54,24 @@ pub struct Pps {
     pub lists_modification_present: bool,
     pub log2_parallel_merge_level_minus2: u8,
     pub slice_segment_header_extension_present: bool,
+    pub range: RangeExtension,
+}
+
+/// Chroma offsets a picture's list may carry.
+pub const MAX_CHROMA_QP_OFFSETS: usize = 6;
+
+/// `pps_range_extension()`. All zero for a picture that carries none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RangeExtension {
+    pub log2_max_transform_skip_block_size_minus2: u8,
+    pub cross_component_prediction_enabled: bool,
+    pub chroma_qp_offset_list_enabled: bool,
+    pub diff_cu_chroma_qp_offset_depth: u8,
+    pub chroma_qp_offset_list_len_minus1: u8,
+    pub cb_qp_offset_list: [i8; MAX_CHROMA_QP_OFFSETS],
+    pub cr_qp_offset_list: [i8; MAX_CHROMA_QP_OFFSETS],
+    pub log2_sao_offset_scale_luma: u8,
+    pub log2_sao_offset_scale_chroma: u8,
 }
 
 fn small_signed(value: i32, min: i32, max: i32) -> Result<i8> {
@@ -151,16 +169,41 @@ pub fn parse(payload: &[u8], sps_of: impl Fn(u8) -> Option<Sps>) -> Result<Pps> 
     let lists_modification_present = r.flag()?;
     let log2_parallel_merge_level_minus2 = small(r.ue()?, 4)?;
     let slice_segment_header_extension_present = r.flag()?;
+    let mut range = RangeExtension::default();
     if r.flag()? {
-        // pps_extension_present: the range, multilayer, 3D and screen
-        // content extensions, none of which the admitted profiles carry.
-        let range = r.flag()?;
+        // pps_extension_present: the range extension is read; the
+        // multilayer, 3D and screen-content ones are refused, as in the
+        // sequence set.
+        let has_range = r.flag()?;
         let multilayer = r.flag()?;
         let three_d = r.flag()?;
         let scc = r.flag()?;
         let four_bits = r.bits(4)?;
-        if range || multilayer || three_d || scc || four_bits != 0 {
+        if multilayer || three_d || scc || four_bits != 0 {
             return Err(ParseError::Unsupported);
+        }
+        if has_range {
+            if transform_skip_enabled {
+                range.log2_max_transform_skip_block_size_minus2 = small(r.ue()?, 3)?;
+            }
+            range.cross_component_prediction_enabled = r.flag()?;
+            range.chroma_qp_offset_list_enabled = r.flag()?;
+            if range.chroma_qp_offset_list_enabled {
+                range.diff_cu_chroma_qp_offset_depth = small(r.ue()?, 3)?;
+                range.chroma_qp_offset_list_len_minus1 = small(r.ue()?, 5)?;
+                for i in 0..=usize::from(range.chroma_qp_offset_list_len_minus1) {
+                    *range
+                        .cb_qp_offset_list
+                        .get_mut(i)
+                        .ok_or(ParseError::TooMany)? = small_signed(r.se()?, -12, 12)?;
+                    *range
+                        .cr_qp_offset_list
+                        .get_mut(i)
+                        .ok_or(ParseError::TooMany)? = small_signed(r.se()?, -12, 12)?;
+                }
+            }
+            range.log2_sao_offset_scale_luma = small(r.ue()?, 6)?;
+            range.log2_sao_offset_scale_chroma = small(r.ue()?, 6)?;
         }
     }
 
@@ -203,5 +246,6 @@ pub fn parse(payload: &[u8], sps_of: impl Fn(u8) -> Option<Sps>) -> Result<Pps> 
         lists_modification_present,
         log2_parallel_merge_level_minus2,
         slice_segment_header_extension_present,
+        range,
     })
 }

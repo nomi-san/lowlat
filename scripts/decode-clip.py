@@ -9,14 +9,15 @@ separate process, so the decoder under test cannot bless its own output.
 
     scripts/decode-clip.py cut    <dump.bin> <dump.idx> <units> <clip.bin>
     scripts/decode-clip.py annexb <stream.h264|.hevc> h264|hevc <clip.bin>
-    scripts/decode-clip.py sums   <clip.bin> h264|hevc nv12|p010le <clip.sums>
+    scripts/decode-clip.py sums   <clip.bin> h264|hevc nv12|p010le|yuv444p|yuv444p16le <clip.sums>
 
 `annexb` splits a byte stream at its access unit delimiters (which the
 encoder must have been told to write), so a fixture made by another encoder
 takes the same form as a dump of ours.
 
-A sums line is `picture y_crc uv_crc` in decimal, one per decoded picture in
-output order.
+A sums line is `picture y_crc chroma_crc` in decimal, one per decoded picture
+in output order; the chroma sum covers everything after the luma plane, the
+interleaved plane or the two full planes one after the other.
 """
 
 import struct
@@ -89,9 +90,12 @@ def sums(clip, codec, pix_fmt, out):
          "-f", "rawvideo", "-pix_fmt", pix_fmt, "-"],
         input=stream, capture_output=True, check=True,
     ).stdout
-    sample = 2 if pix_fmt == "p010le" else 1
+    sample = 2 if pix_fmt in ("p010le", "yuv444p16le") else 1
     y_bytes = width * height * sample
-    uv_bytes = width * (height // 2) * sample
+    if pix_fmt.startswith("yuv444"):
+        uv_bytes = 2 * y_bytes
+    else:
+        uv_bytes = width * (height // 2) * sample
     frame_bytes = y_bytes + uv_bytes
     if len(raw) % frame_bytes:
         sys.exit("raw output is not a whole number of %dx%d pictures" % (width, height))

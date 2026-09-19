@@ -12,7 +12,7 @@ use std::ffi::CString;
 
 use lowlat_core::video::{Codec, Rotation, VideoHeader};
 use lowlat_decode::vaapi::{Backend, caps};
-use lowlat_decode::{Decoder, Fed, Format, Planes};
+use lowlat_decode::{Decoder, Planes};
 use lowlat_drivers::va::Vaapi;
 
 fn node() -> CString {
@@ -34,8 +34,8 @@ fn header(codec: Codec, ten_bit: bool) -> VideoHeader {
     }
 }
 
-/// Decode a clip and return `(y, uv)` checksums of every picture out, in
-/// output order, plus the timings.
+/// Decode a clip and return `(y, chroma)` checksums of every picture out,
+/// in output order, plus the timings.
 fn decode(
     backend: &mut Backend<'_>,
     clip: &str,
@@ -43,57 +43,14 @@ fn decode(
     ten_bit: bool,
 ) -> (Vec<(u32, u32)>, Vec<(u32, u32)>) {
     backend.build(&header(codec, ten_bit)).expect("build");
-    let mut sums = Vec::new();
-    let mut times = Vec::new();
-    // Planes at the largest size a fixture has, with an odd pitch so a
-    // pitch mistake shows.
-    let pitch = 1280 * 2 + 64;
-    let mut y = vec![0u8; pitch * 720];
-    let mut uv = vec![0u8; pitch * 360];
-    let units = common::units(clip);
-    for (n, unit) in units.iter().enumerate() {
-        let fed = backend
-            .feed(unit)
-            .unwrap_or_else(|e| panic!("{clip}: unit {n}: {e:?}"));
-        if fed == Fed::FormatChanged {
-            panic!("{clip}: unit {n} changed format");
-        }
-        if n + 1 == units.len() {
-            backend.drain();
-        }
-        loop {
-            let mut planes = Planes {
-                y: &mut y,
-                y_pitch: pitch,
-                uv: &mut uv,
-                uv_pitch: pitch,
-            };
-            let Some(picture) = backend
-                .take(&mut planes)
-                .unwrap_or_else(|e| panic!("{clip}: take: {e:?}"))
-            else {
-                break;
-            };
-            let sample = match picture.format {
-                Format::Nv12 => 1,
-                Format::P010 => 2,
-            };
-            let w = picture.width as usize * sample;
-            let h = picture.height as usize;
-            let mut yb = Vec::with_capacity(w * h);
-            for row in 0..h {
-                yb.extend_from_slice(&y[row * pitch..row * pitch + w]);
-            }
-            let mut uvb = Vec::with_capacity(w * h / 2);
-            for row in 0..h / 2 {
-                uvb.extend_from_slice(&uv[row * pitch..row * pitch + w]);
-            }
-            sums.push((common::crc32(&yb), common::crc32(&uvb)));
-            times.push((backend.decode_us, backend.readback_us));
-        }
-    }
+    let out = common::decode_clip(
+        backend,
+        clip,
+        |b| b.drain(),
+        |b| (b.decode_us, b.readback_us),
+    );
     backend.destroy();
-    (sums, times)
+    out
 }
 
 fn check(clip: &str, sums_name: &str, codec: Codec, ten_bit: bool) {
@@ -176,8 +133,41 @@ fn every_h264_fixture_decodes_to_the_reference_pictures() {
 #[ignore = "requires the open-stack driver"]
 fn every_hevc_fixture_decodes_to_the_reference_pictures() {
     for (clip, sums) in common::fixtures("hevc") {
+        if clip.contains("444") {
+            // Full chroma is refused on this backend; the test below is its
+            // row.
+            continue;
+        }
         let ten_bit = clip.contains("main10");
         check(&clip, &sums, Codec::H265, ten_bit);
+    }
+}
+
+/// **Full chroma is refused, not decoded wrongly.** The base parameters
+/// would take a range-extended stream without a word and decode it to the
+/// wrong picture; the backend refuses the first unit as fatal instead, on
+/// every device, and the capability it reports says so.
+#[test]
+#[ignore = "requires the open-stack driver"]
+fn the_full_chroma_fixtures_are_refused_on_this_backend() {
+    let va = Vaapi::load().expect("runtime");
+    let display = va.open(&node()).expect("render node");
+    let caps = caps(&display).expect("caps");
+    assert!(!caps.hevc_444 && !caps.hevc_444_10);
+    for (clip, _) in common::fixtures("hevc") {
+        if !clip.contains("444") {
+            continue;
+        }
+        let ten_bit = clip.contains("10");
+        let mut backend = Backend::new(&display, (4096, 4096));
+        backend.build(&header(Codec::H265, ten_bit)).expect("build");
+        let first = &common::units(&clip)[0];
+        assert_eq!(
+            backend.feed(first),
+            Err(lowlat_decode::Fault::Fatal),
+            "{clip}: the first unit was not refused as fatal"
+        );
+        backend.destroy();
     }
 }
 
@@ -271,6 +261,8 @@ fn read_back_copy_probe() {
                     y_pitch: pitch,
                     uv: &mut uv,
                     uv_pitch: pitch,
+                    v: &mut [],
+                    v_pitch: 0,
                 };
                 let Some(picture) = backend.take(&mut planes).expect("take") else {
                     break;

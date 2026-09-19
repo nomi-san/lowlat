@@ -3,7 +3,8 @@
 //!
 //! The ordering is the common ring's; what is here is the storage. The
 //! slots are sized once, from the configuration's ceiling at the deepest
-//! layout a decoder here produces, and **backed on the decode thread at the
+//! layout a decoder here produces (full chroma at sixteen bits: three planes
+//! of two-byte samples), and **backed on the decode thread at the
 //! first decoder build**, demand-zero: nothing is allocated at creation or
 //! at an attempt, and the working set is the pictures actually written,
 //! never the reserve. A rebuild never reallocates, so a slot the application
@@ -11,7 +12,7 @@
 //!
 //! **A picture is laid out at its own pitch, not the ceiling's.** The slot
 //! is the reserve; the planes lent to the decoder are `width` samples a
-//! row, aligned, with the chroma plane straight after the luma rows, so the
+//! row, aligned, with the chroma planes straight after the luma rows, so the
 //! pages a picture touches are its own size and nothing more. The layout
 //! travels with the published picture, so a held slot keeps its own across
 //! anything decoded after it.
@@ -36,17 +37,18 @@ pub struct Frame {
     pub width: u32,
     pub height: u32,
     pub rotation: Rotation,
-    pub chroma_444: bool,
     /// The encoder generation the picture belongs to.
     pub generation: u32,
     /// The picture's order in its stream, from the bitstream.
     pub order: i32,
-    /// Bytes a row, both planes. **The queue's, set at publish** from the
+    /// Bytes a row, every plane. **The queue's, set at publish** from the
     /// planes it lent; whatever is given here is replaced.
     pub pitch: usize,
-    /// Where the chroma plane begins, in bytes from the slot. The queue's,
-    /// as `pitch`.
+    /// Where the chroma planes begin, in bytes from the slot: the
+    /// interleaved plane or the first of two, then the second at full chroma
+    /// (zero otherwise). The queue's, as `pitch`.
     pub uv_offset: usize,
+    pub v_offset: usize,
 }
 
 impl Frame {
@@ -55,11 +57,11 @@ impl Frame {
         width: 0,
         height: 0,
         rotation: Rotation::None,
-        chroma_444: false,
         generation: 0,
         order: 0,
         pitch: 0,
         uv_offset: 0,
+        v_offset: 0,
     };
 }
 
@@ -121,6 +123,7 @@ pub struct Filling<'a> {
     /// The layout lent by `planes_for`, published with the picture.
     pitch: usize,
     uv_offset: usize,
+    v_offset: usize,
 }
 
 /// The application already holds as many pictures as it may.
@@ -135,6 +138,8 @@ pub struct Held {
     pub frame: Frame,
     pub y: *const u8,
     pub uv: *const u8,
+    /// Null for a two-plane layout.
+    pub v: *const u8,
     pub pitch: usize,
 }
 
@@ -155,8 +160,9 @@ impl Frames {
     }
 
     fn slot_bytes(&self) -> usize {
+        // Three planes of the picture's size: full chroma at the deepest.
         let rows = usize::try_from(self.rows).unwrap_or(16);
-        self.pitch * rows + self.pitch * rows.div_ceil(2)
+        self.pitch * rows * 3
     }
 
     /// Whether the slots are backed yet.
@@ -197,6 +203,7 @@ impl Frames {
             published: false,
             pitch: 0,
             uv_offset: 0,
+            v_offset: 0,
         })
     }
 
@@ -216,15 +223,22 @@ impl Frames {
         };
         self.held.fetch_add(1, Ordering::AcqRel);
         let y = self.slot_ptr(index).cast_const();
-        // SAFETY: the offset is the layout `publish` wrote from `planes_for`,
-        // which kept it inside the slot.
+        // SAFETY: the offsets are the layout `publish` wrote from
+        // `planes_for`, which kept them inside the slot.
         let uv = unsafe { y.add(payload.uv_offset) };
+        let v = if payload.format.full_chroma() {
+            // SAFETY: as above.
+            unsafe { y.add(payload.v_offset) }
+        } else {
+            core::ptr::null()
+        };
         Ok(Some(Held {
             index,
             seq,
             frame: payload,
             y,
             uv,
+            v,
             pitch: payload.pitch,
         }))
     }
@@ -262,7 +276,7 @@ impl Frames {
 impl Filling<'_> {
     /// The planes to decode a `width` x `height` picture of `format` into:
     /// rows of the picture's own width, aligned to a cache line, the chroma
-    /// plane straight after the luma rows. `None` if the picture does not
+    /// planes straight after the luma rows. `None` if the picture does not
     /// fit the slot -- refused whole, never truncated.
     pub fn planes_for(&mut self, width: u32, height: u32, format: Format) -> Option<Planes<'_>> {
         let width = usize::try_from(width).ok()?;
@@ -272,20 +286,30 @@ impl Filling<'_> {
         }
         let pitch = (width * format.sample()).div_ceil(64) * 64;
         let luma = pitch.checked_mul(height)?;
-        let chroma = pitch.checked_mul(height.div_ceil(2))?;
-        if luma.checked_add(chroma)? > self.frames.slot_bytes() {
+        let chroma = pitch.checked_mul(format.chroma_rows(height))?;
+        let planes = if format.full_chroma() { 2 } else { 1 };
+        if luma.checked_add(chroma.checked_mul(planes)?)? > self.frames.slot_bytes() {
             return None;
         }
         self.pitch = pitch;
         self.uv_offset = luma;
+        self.v_offset = if format.full_chroma() {
+            luma + chroma
+        } else {
+            0
+        };
         let base = self.frames.slot_ptr(self.index);
         // SAFETY: the slot is lent to this producer alone until it is
-        // published or abandoned; the two ranges are disjoint and inside the
+        // published or abandoned; the ranges are disjoint and inside the
         // slot, checked above.
-        let (y, uv) = unsafe {
+        let (y, uv, v) = unsafe {
             (
                 core::slice::from_raw_parts_mut(base, luma),
                 core::slice::from_raw_parts_mut(base.add(luma), chroma),
+                core::slice::from_raw_parts_mut(
+                    base.add(luma + chroma),
+                    if format.full_chroma() { chroma } else { 0 },
+                ),
             )
         };
         Some(Planes {
@@ -293,6 +317,8 @@ impl Filling<'_> {
             y_pitch: pitch,
             uv,
             uv_pitch: pitch,
+            v,
+            v_pitch: pitch,
         })
     }
 
@@ -301,6 +327,7 @@ impl Filling<'_> {
     pub fn publish(mut self, mut frame: Frame) {
         frame.pitch = self.pitch;
         frame.uv_offset = self.uv_offset;
+        frame.v_offset = self.v_offset;
         self.frames.ring.set(self.index, frame);
         self.frames.ring.publish(self.index);
         self.published = true;
@@ -333,7 +360,7 @@ mod tests {
     fn nothing_is_backed_until_the_first_picture() {
         let frames = Frames::new((4096, 4096));
         assert!(!frames.backed());
-        assert_eq!(frames.reserve_bytes(), 4 * (8192 * 4096 + 8192 * 2048));
+        assert_eq!(frames.reserve_bytes(), 4 * (8192 * 4096 * 3));
         let mut filling = frames.fill().unwrap();
         let planes = filling.planes_for(1920, 1080, Format::Nv12).unwrap();
         assert_eq!(planes.y_pitch, 1920);
@@ -359,10 +386,20 @@ mod tests {
         }
         {
             let planes = filling.planes_for(1920, 1080, Format::P010).unwrap();
-            assert_eq!((planes.y_pitch, planes.uv.len()), (3840, 3840 * 540));
+            assert_eq!(
+                (planes.y_pitch, planes.uv.len(), planes.v.len()),
+                (3840, 3840 * 540, 0)
+            );
+        }
+        {
+            let planes = filling.planes_for(1920, 1080, Format::Yuv444_16).unwrap();
+            assert_eq!(
+                (planes.y_pitch, planes.uv.len(), planes.v.len()),
+                (3840, 3840 * 1080, 3840 * 1080)
+            );
         }
         assert!(
-            filling.planes_for(4096, 4098, Format::P010).is_none(),
+            filling.planes_for(4096, 4098, Format::Yuv444_16).is_none(),
             "a picture past the slot is refused, not truncated"
         );
         assert!(filling.planes_for(0, 16, Format::Nv12).is_none());

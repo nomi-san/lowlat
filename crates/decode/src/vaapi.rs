@@ -68,18 +68,25 @@ impl From<va::Error> for Error {
 
 type Result<T> = core::result::Result<T, Error>;
 
-/// What a device decodes, asked once.
+/// What a device decodes, asked once. Shared by every backend, and what the
+/// declaration is masked with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Caps {
     pub h264: bool,
     pub hevc: bool,
     pub hevc_10: bool,
+    /// Full chroma at eight and ten bits. **Never on this backend**: its
+    /// full-chroma surfaces are a layout no device this was built on can
+    /// verify, so the profile is not asked for and the stream is refused,
+    /// whatever the device lists.
+    pub hevc_444: bool,
+    pub hevc_444_10: bool,
 }
 
 impl Caps {
     /// Whether anything at all can be decoded.
     pub fn any(&self) -> bool {
-        self.h264 || self.hevc || self.hevc_10
+        self.h264 || self.hevc || self.hevc_10 || self.hevc_444 || self.hevc_444_10
     }
 }
 
@@ -104,6 +111,8 @@ pub fn caps(display: &Display<'_>) -> Result<Caps> {
         h264: decodes(VAProfileH264High)?,
         hevc: decodes(VAProfileHEVCMain)?,
         hevc_10: decodes(VAProfileHEVCMain10)?,
+        hevc_444: false,
+        hevc_444_10: false,
     })
 }
 
@@ -660,6 +669,14 @@ impl<'a> Backend<'a> {
         }
         let job = self.hevc.job().ok_or(Error::Status(-1))?;
         let (width, height) = (job.sps.width, job.sps.height);
+        // Full chroma and the range-extension tools are staged through
+        // parameter structures of their own, which no device this backend
+        // was verified on decodes; the base structures would decode such a
+        // stream wrongly without an error, so it is refused outright.
+        if job.sps.is_range_extended() {
+            self.hevc.abandon();
+            return Err(Error::NoProfile);
+        }
         if self.context.is_none() {
             self.create_context(width, height)?;
         } else if width != self.coded_width || height != self.coded_height {
@@ -939,14 +956,17 @@ impl<'a> Backend<'a> {
             if let Some(w) = &h.weights {
                 out.luma_log2_weight_denom = w.luma_log2_denom;
                 out.delta_chroma_log2_weight_denom = w.delta_chroma_log2_denom;
+                // Eight bits: the base parameters, which is all this backend
+                // stages, take the offsets at the range every stream it
+                // admits stays within.
                 out.delta_luma_weight_l0 = w.l0.delta_luma_weight;
-                out.luma_offset_l0 = w.l0.luma_offset;
+                out.luma_offset_l0 = w.l0.luma_offset.map(narrow);
                 out.delta_chroma_weight_l0 = w.l0.delta_chroma_weight;
-                out.ChromaOffsetL0 = w.l0.chroma_offset;
+                out.ChromaOffsetL0 = w.l0.chroma_offset.map(|pair| pair.map(narrow));
                 out.delta_luma_weight_l1 = w.l1.delta_luma_weight;
-                out.luma_offset_l1 = w.l1.luma_offset;
+                out.luma_offset_l1 = w.l1.luma_offset.map(narrow);
                 out.delta_chroma_weight_l1 = w.l1.delta_chroma_weight;
-                out.ChromaOffsetL1 = w.l1.chroma_offset;
+                out.ChromaOffsetL1 = w.l1.chroma_offset.map(|pair| pair.map(narrow));
             }
             out.five_minus_max_num_merge_cand = h.five_minus_max_num_merge_cand;
             out.num_entry_point_offsets =
@@ -1038,6 +1058,12 @@ impl<'a> Backend<'a> {
         self.readback_us = micros(lowlat_common::clock::diff_ms(synced, done));
         result
     }
+}
+
+/// A weighted-prediction offset at eight bits: what the base parameters
+/// carry, and the whole range of every stream this backend admits.
+fn narrow(offset: i16) -> i8 {
+    i8::try_from(offset).unwrap_or(0)
 }
 
 /// Whole microseconds from a millisecond figure, saturated.

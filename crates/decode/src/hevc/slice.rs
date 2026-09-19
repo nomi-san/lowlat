@@ -81,9 +81,11 @@ pub struct LongTerm {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Weights {
     pub delta_luma_weight: [i8; MAX_REFS],
-    pub luma_offset: [i8; MAX_REFS],
+    /// Sixteen bits wide for the high-precision offsets of the range
+    /// extensions; eight suffice otherwise.
+    pub luma_offset: [i16; MAX_REFS],
     pub delta_chroma_weight: [[i8; 2]; MAX_REFS],
-    pub chroma_offset: [[i8; 2]; MAX_REFS],
+    pub chroma_offset: [[i16; 2]; MAX_REFS],
 }
 
 impl Default for Weights {
@@ -141,6 +143,8 @@ pub struct SliceHeader {
     pub slice_qp_delta: i8,
     pub slice_cb_qp_offset: i8,
     pub slice_cr_qp_offset: i8,
+    /// The range extensions' per-unit chroma offsets are in force.
+    pub cu_chroma_qp_offset_enabled: bool,
     pub deblocking_filter_disabled: bool,
     pub beta_offset_div2: i8,
     pub tc_offset_div2: i8,
@@ -231,11 +235,14 @@ fn ceil_log2(n: u32) -> u32 {
     }
 }
 
+/// `half_range` is `WpOffsetHalfRange`: 128, or half the sample range
+/// under the high-precision offsets of the range extensions.
 fn weights(
     r: &mut BitReader<'_>,
     count: usize,
     chroma: bool,
     chroma_log2_denom: u32,
+    half_range: i32,
 ) -> Result<Weights> {
     let mut w = Weights::default();
     let mut luma_flags = [false; MAX_REFS];
@@ -251,19 +258,22 @@ fn weights(
     for i in 0..count.min(MAX_REFS) {
         if luma_flags.get(i).copied().unwrap_or(false) {
             let dw = small_signed(r.se()?, -128, 127)?;
-            let o = small_signed(r.se()?, -128, 127)?;
+            let o = r.se()?;
+            if o < -half_range || o >= half_range {
+                return Err(ParseError::OutOfRange);
+            }
             if let Some(slot) = w.delta_luma_weight.get_mut(i) {
                 *slot = dw;
             }
             if let Some(slot) = w.luma_offset.get_mut(i) {
-                *slot = o;
+                *slot = i16::try_from(o).map_err(|_| ParseError::OutOfRange)?;
             }
         }
         if chroma_flags.get(i).copied().unwrap_or(false) {
             for j in 0..2 {
                 let dw = small_signed(r.se()?, -128, 127)?;
                 let delta_offset = r.se()?;
-                if !(-512..=511).contains(&delta_offset) {
+                if delta_offset < -4 * half_range || delta_offset >= 4 * half_range {
                     return Err(ParseError::OutOfRange);
                 }
                 if let Some(slot) = w.delta_chroma_weight.get_mut(i).and_then(|s| s.get_mut(j)) {
@@ -272,10 +282,11 @@ fn weights(
                 // 7-56: the offset the delta stands for, which is what the
                 // device takes.
                 let weight = (1i32 << chroma_log2_denom) + i32::from(dw);
-                let offset =
-                    (128 + delta_offset - ((128 * weight) >> chroma_log2_denom)).clamp(-128, 127);
+                let offset = (half_range + delta_offset
+                    - ((half_range * weight) >> chroma_log2_denom))
+                    .clamp(-half_range, half_range - 1);
                 if let Some(slot) = w.chroma_offset.get_mut(i).and_then(|s| s.get_mut(j)) {
-                    *slot = i8::try_from(offset).unwrap_or(0);
+                    *slot = i16::try_from(offset).unwrap_or(0);
                 }
             }
         }
@@ -375,6 +386,7 @@ pub fn parse(
             slice_qp_delta: 0,
             slice_cb_qp_offset: 0,
             slice_cr_qp_offset: 0,
+            cu_chroma_qp_offset_enabled: false,
             deblocking_filter_disabled: pps.disable_deblocking_filter,
             beta_offset_div2: pps.beta_offset_div2,
             tc_offset_div2: pps.tc_offset_div2,
@@ -554,11 +566,17 @@ pub fn parse(
                 let chroma_log2_denom =
                     u32::try_from(i32::from(luma_log2_denom) + i32::from(delta_chroma_log2_denom))
                         .unwrap_or(0);
+                let half_range = if sps.range.high_precision_offsets_enabled {
+                    1i32 << (u32::from(sps.bit_depth_chroma_minus8) + 7)
+                } else {
+                    128
+                };
                 let l0 = weights(
                     &mut r,
                     usize::from(header.num_ref_idx_l0_active_minus1) + 1,
                     chroma,
                     chroma_log2_denom,
+                    half_range,
                 )?;
                 let l1 = if header.slice_type.is_b() {
                     weights(
@@ -566,6 +584,7 @@ pub fn parse(
                         usize::from(header.num_ref_idx_l1_active_minus1) + 1,
                         chroma,
                         chroma_log2_denom,
+                        half_range,
                     )?
                 } else {
                     Weights::default()
@@ -583,6 +602,9 @@ pub fn parse(
         if pps.slice_chroma_qp_offsets_present {
             header.slice_cb_qp_offset = small_signed(r.se()?, -12, 12)?;
             header.slice_cr_qp_offset = small_signed(r.se()?, -12, 12)?;
+        }
+        if pps.range.chroma_qp_offset_list_enabled {
+            header.cu_chroma_qp_offset_enabled = r.flag()?;
         }
         let mut deblocking_override = false;
         if pps.deblocking_filter_override_enabled {

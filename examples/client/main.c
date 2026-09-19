@@ -639,12 +639,15 @@ static void report(struct demo *d)
 	uint32_t width = atomic_load(&d->picture_width);
 	if (width != 0) {
 		uint32_t rotation = atomic_load(&d->picture_rotation);
+		uint32_t format = atomic_load(&d->picture_format);
+		const char *colour = format == LOWLAT_FORMAT_P010 ? "10bit"
+			: format == LOWLAT_FORMAT_YUV444 ? "444"
+			: format == LOWLAT_FORMAT_YUV444_16 ? "444 10bit" : "8bit";
 		snprintf(title, sizeof title,
 			"lowlat | %ux%u %s %s%s | %s | %u fps | rtt %u ms | enc %.1f ms | dec %.1f ms | "
 			"rb %.1f ms | q %u behind %u | skips %u | %.1f Mbit/s | snd %u ms | rss %" PRIu64
 			" MB",
-			width, atomic_load(&d->picture_height), codec,
-			atomic_load(&d->picture_format) == LOWLAT_FORMAT_P010 ? "10bit" : "8bit",
+			width, atomic_load(&d->picture_height), codec, colour,
 			rotation == LOWLAT_ROTATION_90 ? " 90deg"
 				: rotation == LOWLAT_ROTATION_180 ? " 180deg"
 				: rotation == LOWLAT_ROTATION_270 ? " 270deg" : "",
@@ -713,16 +716,18 @@ static void *present_loop(void *opaque)
 		// cadence the display's rather than the stream's.
 		if (d->showing) {
 			const lowlat_frame *f = &d->shown;
-			uint32_t sample = f->format == LOWLAT_FORMAT_P010 ? 2 : 1;
+			bool deep = f->format == LOWLAT_FORMAT_P010 || f->format == LOWLAT_FORMAT_YUV444_16;
+			bool full = f->format == LOWLAT_FORMAT_YUV444 || f->format == LOWLAT_FORMAT_YUV444_16;
+			uint32_t sample = deep ? 2 : 1;
 			MTY_RenderDesc desc;
 			memset(&desc, 0, sizeof desc);
-			desc.format = f->format == LOWLAT_FORMAT_P010 ? MTY_COLOR_FORMAT_2PLANES_16
-				: MTY_COLOR_FORMAT_2PLANES;
-			desc.chroma = MTY_CHROMA_420;
+			desc.format = full ? (deep ? MTY_COLOR_FORMAT_3PLANES_16 : MTY_COLOR_FORMAT_3PLANES)
+				: (deep ? MTY_COLOR_FORMAT_2PLANES_16 : MTY_COLOR_FORMAT_2PLANES);
+			desc.chroma = full ? MTY_CHROMA_444 : MTY_CHROMA_420;
 			desc.filter = MTY_FILTER_LINEAR;
 			// The toolkit takes one image with the planes in sequence and
-			// the row length as a width; the second plane's offset is the
-			// first's rows times that width, which is how the slot is laid
+			// the row length as a width; each plane's offset is the rows
+			// before it times that width, which is how the slot is laid
 			// out.
 			desc.imageWidth = f->planes[0].pitch / sample;
 			desc.imageHeight = (uint32_t) ((f->planes[1].data - f->planes[0].data)

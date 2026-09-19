@@ -165,12 +165,12 @@ fn take_pictures(
                     width: picture.width,
                     height: picture.height,
                     rotation: header.map_or(video::Rotation::None, |h| h.rotation),
-                    chroma_444: false,
                     generation: header.map_or(0, |h| h.frame_id),
                     order: picture.order,
                     // The queue's, written at publish.
                     pitch: 0,
                     uv_offset: 0,
+                    v_offset: 0,
                 });
                 telemetry.decoded.fetch_add(1, Ordering::Relaxed);
             }
@@ -199,5 +199,7 @@ pub fn format_code(format: Format) -> u32 {
     match format {
         Format::Nv12 => 1,
         Format::P010 => 2,
+        Format::Yuv444 => 3,
+        Format::Yuv444_16 => 4,
     }
 }
