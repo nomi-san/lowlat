@@ -3,6 +3,20 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-19 - Two faults the gate found, fixed
+
+### Fixed
+- **The host lost its encoder after ten to twenty pipeline builds** and ended every guest
+  with the encoder's status until restarted: each build loaded and unloaded the vendor
+  runtimes and the graphics loader, and the C library's static thread-local area, given back
+  only in stack order, ran out ([07 §8](07-platforms.md)). Runtime libraries now stay loaded
+  for the process's life and the process keeps one graphics instance. The full-chroma census
+  refusal is logged once per census rather than once per frame.
+- **The demo's picture froze after a switch to ten bits**: the toolkit's renderer keyed a
+  texture's recreation on the upload format, which the eight and sixteen bit layouts share,
+  so the sixteen-bit uploads went into an eight-bit texture and changed nothing
+  (`third_party/matoya/PROVENANCE.md`). The demo now prints the toolkit's own lines.
+
 ## 2026-09-19 - Phase C5, the decode half built
 
 ### Added

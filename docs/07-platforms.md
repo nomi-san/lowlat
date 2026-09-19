@@ -768,6 +768,17 @@ missing feature.
 
 - Hardware encode requires an NVIDIA GPU and a current driver. The encoder library is loaded at
   runtime, so its absence is a missing backend rather than a failed start.
+- **A runtime library, once loaded, stays loaded for the life of the process** (*2026-09-19*),
+  and the process makes one instance of the graphics interface and keeps it. Every pipeline
+  build used to open the vendor runtimes and the graphics loader afresh and close them at the
+  teardown; the vendor's driver carries thread-local storage that must live in the static area
+  the C library sets aside at start, that area is given back only in stack order, and builds
+  that interleave the loads and unloads leave holes in it until, after ten to twenty builds,
+  the driver refuses to load -- "cannot allocate memory in static TLS block" -- and its device
+  vanishes from every enumeration for the rest of the process's life. That read as the
+  display having no compute interface and ended every guest with the encoder's status. A
+  driver is not built to be unloaded in the first place; keeping it is the correct shape,
+  not only the cure.
 - The compute interoperation path that imports capture buffers is what makes the pipeline
   zero-copy ([05 §2](05-host.md)). It is the same path §3 probes.
 - Software encode requires no GPU and is the continuous integration path

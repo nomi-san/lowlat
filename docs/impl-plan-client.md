@@ -439,9 +439,12 @@ path.
    dropped. Full chroma asked degraded to eight-bit HEVC and the client followed -- on the
    vendor's head by this host's census rather than on the other head, the same client path.
    **Real full chroma was not streamed**: it needs this host started by hand with the census
-   opened, and twice this host's service answered a ten-bit reconfigure with -15000 and
-   stayed down until restarted, a host-side fault recorded in the local notes; those two
-   rows stay open on the host, not the client.)
+   opened. Twice this host's service answered a ten-bit reconfigure with -15000 and stayed
+   down until restarted; diagnosed and fixed the same day on the host's side -- the runtime
+   libraries were unloaded per build and the C library's static thread-local area ran out
+   ([07 §8](07-platforms.md)) -- and the walk then ran forty switches without it. The gate
+   also found the toolkit's renderer freezing the picture after a switch to ten bits, fixed
+   in the vendored tree. The full-chroma row stays open on the host.)
 3. [x] Against an established host: at the defaults as C2's gate ran, then with the second codec
    and ten-bit asked, following what its encoder gives; the round trip moves off its seed
    within seconds of connecting; its own log shows this client's decode latency.
