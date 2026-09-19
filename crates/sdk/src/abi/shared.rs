@@ -62,6 +62,14 @@ pub enum lowlat_event_type {
     /// The host put this client into relative mode, or took it out. Client
     /// only.
     LOWLAT_EVENT_RELATIVE = 12,
+    /// The host's pointer changed: its picture, its hotspot or its flags.
+    /// Client only, minor 9.
+    LOWLAT_EVENT_CURSOR = 13,
+    /// The host asked a pad to vibrate. Client only, minor 9.
+    LOWLAT_EVENT_RUMBLE = 14,
+    /// The room as the host describes it, with this client's own number;
+    /// the body through the caller's buffer. Client only, minor 9.
+    LOWLAT_EVENT_GUEST_LIST = 15,
 }
 
 /// Why an attempt finished.
@@ -209,6 +217,67 @@ pub struct lowlat_relative_event {
     pub y: i32,
 }
 
+/// The host's pointer as it last described it.
+///
+/// **The one event that carries a pointer.** `image` points into a buffer the
+/// handle owns and is valid until the next `lowlat_client_poll_events` on
+/// that handle; the picture is RGBA, eight bits a channel, `width * height *
+/// 4` bytes, rows top to bottom, at its native size with the hotspot in its
+/// own pixels. Scaling it to the drawn picture is the application's, by the
+/// ratio of its viewport to the picture. `image` is null and `image_update`
+/// false when this update carries no picture: a mode or position change, the
+/// picture already delivered named again (its `checksum` says so; the
+/// application keeps what it was given), or a picture the host named that
+/// this client no longer holds (`checksum` zero).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_cursor_event {
+    /// Where the pointer reappears on the way out of relative mode, in the
+    /// window's units through the viewport the application set.
+    pub x: i32,
+    pub y: i32,
+    pub width: u16,
+    pub height: u16,
+    pub hot_x: u16,
+    pub hot_y: u16,
+    /// The checksum the host names the pointer's picture by, delivered
+    /// with this update or before it; zero when the update names none.
+    pub checksum: u32,
+    pub image: *const u8,
+    pub image_len: u32,
+    /// The host's pointer is hidden by an application there.
+    pub hidden: bool,
+    /// The host wants motion as deltas.
+    pub relative: bool,
+    /// The host's pointer is withheld because it is being driven by touch;
+    /// not relative mode.
+    pub suppressed: bool,
+    /// A picture is in `image`.
+    pub image_update: bool,
+}
+
+/// The host asked a pad to vibrate.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_rumble_event {
+    /// The pad as this client named it in its own reports.
+    pub pad: u32,
+    /// The two motors, as the wire carries them: eight bits each.
+    pub large: u8,
+    pub small: u8,
+    pub reserved: [u8; 2],
+}
+
+/// The room as the host describes it.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_guest_list_event {
+    /// This client's own number in the list, which is how it finds itself.
+    pub number: u32,
+    /// How long the body is, as for an application message.
+    pub body_len: u32,
+}
+
 /// An application message from a guest, or from the host on the client's side.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -244,6 +313,9 @@ pub union lowlat_event_body {
     pub stream_ended: lowlat_stream_ended_event,
     pub host_mode: lowlat_host_mode_event,
     pub relative: lowlat_relative_event,
+    pub cursor: lowlat_cursor_event,
+    pub rumble: lowlat_rumble_event,
+    pub guest_list: lowlat_guest_list_event,
 }
 
 /// One event.

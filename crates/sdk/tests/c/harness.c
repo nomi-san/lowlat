@@ -694,6 +694,22 @@ int main(int argc, char **argv)
             fprintf(stderr, "harness: sound before a session was not refused\n");
             return 1;
         }
+        // The client's own figures: readable before a session, every one
+        // zero, and a structure without its size refused.
+        lowlat_status (*client_metrics)(lowlat_client *, lowlat_client_metrics *);
+        RESOLVE(client_metrics, lib, "lowlat_client_get_metrics");
+        lowlat_client_metrics measured;
+        memset(&measured, 0, sizeof measured);
+        if (client_metrics(cl, &measured) != LOWLAT_ERR_INVALID_ARGUMENT) {
+            fprintf(stderr, "harness: metrics without a size were not refused\n");
+            return 1;
+        }
+        measured.size = (uint32_t) sizeof measured;
+        if (client_metrics(cl, &measured) != LOWLAT_OK || measured.video.fragments != 0
+            || measured.video.loss_30s != 0.0f || measured.connected_ms != 0) {
+            fprintf(stderr, "harness: metrics before a session were not zero\n");
+            return 1;
+        }
         client_end(cl);
         client_destroy(cl);
     }

@@ -30,6 +30,7 @@
 )]
 
 pub mod config;
+pub mod cursor;
 pub mod decode;
 pub mod driver;
 pub mod enumerate;

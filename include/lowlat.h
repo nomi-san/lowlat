@@ -42,7 +42,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 8
+#define LOWLAT_ABI_MINOR 9
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 #define LOWLAT_FEATURE_HOST 1
@@ -402,6 +402,14 @@ typedef enum lowlat_event_type {
     /// The host put this client into relative mode, or took it out. Client
     /// only.
     LOWLAT_EVENT_RELATIVE = 12,
+    /// The host's pointer changed: its picture, its hotspot or its flags.
+    /// Client only, minor 9.
+    LOWLAT_EVENT_CURSOR = 13,
+    /// The host asked a pad to vibrate. Client only, minor 9.
+    LOWLAT_EVENT_RUMBLE = 14,
+    /// The room as the host describes it, with this client's own number;
+    /// the body through the caller's buffer. Client only, minor 9.
+    LOWLAT_EVENT_GUEST_LIST = 15,
 } lowlat_event_type;
 
 /// Why an attempt finished.
@@ -1172,6 +1180,61 @@ typedef struct lowlat_relative_event {
     int32_t y;
 } lowlat_relative_event;
 
+/// The host's pointer as it last described it.
+///
+/// **The one event that carries a pointer.** `image` points into a buffer the
+/// handle owns and is valid until the next `lowlat_client_poll_events` on
+/// that handle; the picture is RGBA, eight bits a channel, `width * height *
+/// 4` bytes, rows top to bottom, at its native size with the hotspot in its
+/// own pixels. Scaling it to the drawn picture is the application's, by the
+/// ratio of its viewport to the picture. `image` is null and `image_update`
+/// false when this update carries no picture: a mode or position change, the
+/// picture already delivered named again (its `checksum` says so; the
+/// application keeps what it was given), or a picture the host named that
+/// this client no longer holds (`checksum` zero).
+typedef struct lowlat_cursor_event {
+    /// Where the pointer reappears on the way out of relative mode, in the
+    /// window's units through the viewport the application set.
+    int32_t x;
+    int32_t y;
+    uint16_t width;
+    uint16_t height;
+    uint16_t hot_x;
+    uint16_t hot_y;
+    /// The checksum the host names the pointer's picture by, delivered
+    /// with this update or before it; zero when the update names none.
+    uint32_t checksum;
+    const uint8_t *image;
+    uint32_t image_len;
+    /// The host's pointer is hidden by an application there.
+    bool hidden;
+    /// The host wants motion as deltas.
+    bool relative;
+    /// The host's pointer is withheld because it is being driven by touch;
+    /// not relative mode.
+    bool suppressed;
+    /// A picture is in `image`.
+    bool image_update;
+} lowlat_cursor_event;
+
+/// The host asked a pad to vibrate.
+typedef struct lowlat_rumble_event {
+    /// The pad as this client named it in its own reports.
+    uint32_t pad;
+    /// The two motors, as the wire carries them: eight bits each.
+    uint8_t large;
+    uint8_t small;
+    uint8_t reserved[2];
+} lowlat_rumble_event;
+
+/// The room as the host describes it.
+typedef struct lowlat_guest_list_event {
+    /// This client's own number in the list, which is how it finds itself.
+    uint32_t number;
+    /// How long the body is, as for an application message.
+    uint32_t body_len;
+} lowlat_guest_list_event;
+
 /// Whichever event this is.
 ///
 /// A union cannot describe itself, and the tag beside it is what says which
@@ -1189,6 +1252,9 @@ typedef union lowlat_event_body {
     lowlat_stream_ended_event stream_ended;
     lowlat_host_mode_event host_mode;
     lowlat_relative_event relative;
+    lowlat_cursor_event cursor;
+    lowlat_rumble_event rumble;
+    lowlat_guest_list_event guest_list;
 } lowlat_event_body;
 
 /// One event.
@@ -1404,7 +1470,58 @@ typedef struct lowlat_client_status {
     /// The stream as the decoder built it: one of `LOWLAT_FORMAT_*`, or
     /// zero before a build. With `codec`, what the host turned out to send.
     uint32_t stream_format;
+    /// This client's number on the host's roster, which is how it finds
+    /// itself in the guest list; zero until the host has sent one.
+    uint32_t number;
+    /// The host's pointer: pictures delivered, names this client no longer
+    /// held, and pictures the reader refused.
+    uint32_t cursor_images;
+    uint32_t cursor_misses;
+    uint32_t cursor_refused;
 } lowlat_client_status;
+
+/// What one channel did, seen from the receiving end.
+///
+/// **A receiver's figures under a receiver's names.** The host's structure
+/// describes a sender -- what it put on the wire, what it resent, its
+/// congestion -- and none of that can be measured here; what can is below.
+typedef struct lowlat_client_channel_metrics {
+    /// Fragments accepted: first arrivals, never duplicates.
+    uint64_t fragments;
+    /// Of those, the ones that arrived behind a later fragment, which on this
+    /// transport is a retransmission, or a reorder on a path that reorders.
+    uint64_t late;
+    /// Fragments refused because they were already here, or already taken.
+    uint64_t duplicates;
+    /// Fragments refused because they were further ahead than the ring holds.
+    uint64_t out_of_window;
+    /// Acknowledgements sent with the negative bit, naming this channel: what
+    /// the host's fast retransmissions to this client answer.
+    uint64_t nacks_sent;
+    /// Bytes and messages taken off the channel, so a rate is a difference
+    /// over time on the application's clock.
+    uint64_t bytes;
+    uint64_t messages;
+    /// Late arrivals over arrivals, per one-second sample, averaged with a
+    /// thirtieth's weight on the newest: the loss the path showed over about
+    /// the last thirty seconds, 0 to 1.
+    float loss_30s;
+    uint32_t reserved;
+} lowlat_client_channel_metrics;
+
+/// The client's own figures (`lowlat_client_get_metrics`).
+typedef struct lowlat_client_metrics {
+    /// Set by the caller to `sizeof(lowlat_client_metrics)`.
+    uint32_t size;
+    /// How long the session has been established, in milliseconds.
+    uint32_t connected_ms;
+    /// The smoothed round trip to the host, in milliseconds.
+    uint32_t rtt_ms;
+    uint32_t reserved;
+    lowlat_client_channel_metrics control;
+    lowlat_client_channel_metrics video;
+    lowlat_client_channel_metrics audio;
+} lowlat_client_metrics;
 
 /// One plane of a picture.
 typedef struct lowlat_plane {
@@ -2398,6 +2515,22 @@ lowlat_status lowlat_client_send_user_data(lowlat_client *cl,
 /// `lowlat_client_status` whose `size` is set.
 lowlat_status lowlat_client_get_status(lowlat_client *cl,
                                        lowlat_client_status *out) LOWLAT_NOEXCEPT;
+
+/// Read what this client measured of the session, per channel.
+///
+/// **The receiver's figures.** The host's own figures for this guest -- what
+/// it sent, what it resent, its rate and round trip -- arrive in the guest
+/// list (`LOWLAT_EVENT_GUEST_LIST`) for the application to read; this call
+/// is the other end of the same path, measured where it can be.
+///
+/// @param[in] cl The handle from `lowlat_client_create`.
+/// @param[out] out One `lowlat_client_metrics` with `size` set, filled.
+/// @returns `LOWLAT_OK`, or `LOWLAT_ERR_INVALID_ARGUMENT`.
+///
+/// @attention `cl` came from `lowlat_client_create`; `out` points to one
+/// `lowlat_client_metrics` whose `size` is set.
+lowlat_status lowlat_client_get_metrics(lowlat_client *cl,
+                                        lowlat_client_metrics *out) LOWLAT_NOEXCEPT;
 
 /// Take the newest picture, waiting up to `timeout_ms` for one newer than
 /// the last one taken.

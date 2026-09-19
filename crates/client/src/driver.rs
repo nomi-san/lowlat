@@ -20,6 +20,7 @@ use lowlat_common::events;
 use lowlat_common::pool::{self, Pool};
 use lowlat_common::spsc::Ring;
 use lowlat_core::audio;
+use lowlat_core::channel::Arrivals;
 use lowlat_core::control::{self, CONTROL_CHANNEL, Control, op};
 use lowlat_core::cursor;
 use lowlat_core::endpoint::Endpoint;
@@ -28,6 +29,7 @@ use lowlat_core::session::{Health, Session};
 use lowlat_core::video::{self, METADATA_LEN, VIDEO_HEADER_LEN};
 use lowlat_core::{Error, conn};
 
+use crate::cursor::{Cache, Shape};
 use crate::input::{Input, Mapper, Viewport};
 use crate::seam::{Event, Outcome};
 use crate::sound::{self, Packets};
@@ -52,6 +54,14 @@ pub const REPORT_INTERVAL_MS: f64 = 2000.0;
 /// The media kinds of a latency report.
 const KIND_VIDEO: u32 = 1;
 const KIND_AUDIO: u32 = 2;
+
+/// The channels the metrics describe: control, video, sound, by number.
+pub const CHANNELS: usize = 3;
+
+/// How often the recent-loss figure takes a sample, and the weight of each
+/// sample in it: a thirtieth, so the figure reads over about thirty seconds.
+const LOSS_SAMPLE_MS: f64 = 1000.0;
+const LOSS_WEIGHT: f64 = 1.0 / 30.0;
 
 /// Received access units, on their way to the decoder.
 ///
@@ -198,6 +208,27 @@ pub struct Telemetry {
     pub audio_refused: AtomicU32,
     pub audio_age_ms: AtomicU32,
     pub audio_codec: AtomicU32,
+    /// This client's number on the host's roster; zero until told.
+    pub number: AtomicU32,
+    /// The pointer: pictures delivered, names the cache did not hold, and
+    /// pictures the boundary's reader refused.
+    pub cursor_images: AtomicU32,
+    pub cursor_misses: AtomicU32,
+    pub cursor_refused: AtomicU32,
+    /// Per channel, what a receiver can count (docs/10-client.md section 9):
+    /// fragments accepted, those that arrived behind a later one, duplicates
+    /// and out-of-window drops, the negatives sent, bytes and messages taken
+    /// off the channel, and the recent-loss figure as the bits of an `f32`.
+    pub fragments: [AtomicU64; CHANNELS],
+    pub late: [AtomicU64; CHANNELS],
+    pub duplicates: [AtomicU64; CHANNELS],
+    pub out_of_window: [AtomicU64; CHANNELS],
+    pub nacks_sent: [AtomicU64; CHANNELS],
+    pub bytes: [AtomicU64; CHANNELS],
+    pub messages: [AtomicU64; CHANNELS],
+    pub loss_30s: [AtomicU32; CHANNELS],
+    /// How long the session has been established, in milliseconds.
+    pub connected_ms: AtomicU32,
 }
 
 /// One session's driver.
@@ -244,6 +275,23 @@ pub struct Driver {
     picture: (u16, u16, video::Rotation),
     /// Whether the host has this client in relative mode.
     relative: bool,
+    /// The pointer pictures the host may name again, and the count of
+    /// names it did not resolve.
+    cursor_cache: Cache,
+    cursor_images: u32,
+    cursor_misses: u32,
+    /// The picture last delivered, by checksum: a host that names it again,
+    /// or sends it again, does not have the application decode it again.
+    cursor_delivered: u32,
+    /// Bytes taken off the control channel; the other two channels' are
+    /// counted where their messages are taken.
+    control_bytes: u64,
+    /// When the session was established, and the recent-loss sampler: when
+    /// it last sampled, the arrivals it saw then, and the average per channel.
+    established_ms: f64,
+    loss_sampled_ms: f64,
+    loss_seen: [Arrivals; CHANNELS],
+    loss_ewma: [f64; CHANNELS],
 }
 
 impl Driver {
@@ -284,6 +332,15 @@ impl Driver {
             mapper: Mapper::default(),
             picture: (0, 0, video::Rotation::Unknown),
             relative: false,
+            cursor_cache: Cache::default(),
+            cursor_images: 0,
+            cursor_misses: 0,
+            cursor_delivered: 0,
+            control_bytes: 0,
+            established_ms: 0.0,
+            loss_sampled_ms: 0.0,
+            loss_seen: [Arrivals::default(); CHANNELS],
+            loss_ewma: [0.0; CHANNELS],
         }
     }
 
@@ -383,6 +440,8 @@ impl Driver {
         match endpoint.conn().state() {
             conn::State::Established(addr) if !self.established => {
                 self.established = true;
+                self.established_ms = now_ms;
+                self.loss_sampled_ms = now_ms;
                 self.telemetry.state.store(1, Ordering::Relaxed);
                 self.start(endpoint.session());
                 self.report_due_ms = Some(now_ms + REPORT_INTERVAL_MS);
@@ -418,8 +477,40 @@ impl Driver {
             return Some(outcome);
         }
         self.measure_lag(endpoint.session(), now_ms);
-        self.publish(endpoint.session());
+        self.sample_loss(endpoint.session(), now_ms);
+        self.publish(endpoint.session(), now_ms);
         None
+    }
+
+    /// Once a second, fold each channel's late arrivals over its arrivals
+    /// since the last sample into the recent-loss average.
+    fn sample_loss(&mut self, session: &Session<'_>, now_ms: f64) {
+        if now_ms - self.loss_sampled_ms < LOSS_SAMPLE_MS {
+            return;
+        }
+        self.loss_sampled_ms = now_ms;
+        for (channel, (seen, ewma)) in self
+            .loss_seen
+            .iter_mut()
+            .zip(self.loss_ewma.iter_mut())
+            .enumerate()
+        {
+            let now = session
+                .recv_arrivals(u8::try_from(channel).unwrap_or(u8::MAX))
+                .unwrap_or_default();
+            let fragments = now.fragments.saturating_sub(seen.fragments);
+            let late = now.late.saturating_sub(seen.late);
+            *seen = now;
+            // Nothing arrived, nothing was lost: a quiet channel reads as a
+            // clean one rather than holding its last figure for ever.
+            #[allow(clippy::cast_precision_loss, reason = "counts per second")]
+            let sample = if fragments == 0 {
+                0.0
+            } else {
+                (late as f64 / fragments as f64).min(1.0)
+            };
+            *ewma += (sample - *ewma) * LOSS_WEIGHT;
+        }
     }
 
     /// The departure: opcode 10 with a zero status, which is what a client
@@ -628,6 +719,7 @@ impl Driver {
                     return Some(Outcome::Unreadable);
                 }
             };
+            self.control_bytes = self.control_bytes.saturating_add(len as u64);
             let Ok(message) = control::parse(inbound.get(..len).unwrap_or(&[])) else {
                 continue;
             };
@@ -658,27 +750,20 @@ impl Driver {
             reason = "a status is signed and travels in an unsigned argument"
         )]
         match message.opcode {
-            // **Either bit puts a client into relative mode**, and the event
-            // is raised on the transition alone, carrying the position the
-            // pointer reappears at when leaving. The image and the hotspot
-            // are a later phase's.
             op::CURSOR => {
                 if let Ok(pointer) = cursor::parse(message) {
-                    let want = pointer.update.relative || pointer.update.hidden;
-                    if want != self.relative {
-                        self.relative = want;
-                        let (x, y) = self.mapper.to_window(pointer.update.x, pointer.update.y);
-                        self.emit.send(Event::Relative {
-                            relative: want,
-                            x,
-                            y,
-                        });
-                    }
+                    self.on_cursor(&pointer);
                 }
             }
-            // Rumble and the roster's body are read by later phases; here
-            // they are counted.
-            op::RUMBLE | op::FRAME_TIMING => {}
+            // Per-frame timing is not asked for and not read.
+            op::FRAME_TIMING => {}
+            // (pad, large, small): the motors travel as bytes in the low
+            // eight bits of their arguments.
+            op::RUMBLE => self.emit.send(Event::Rumble {
+                pad: message.a0,
+                large: (message.a1 & 0xFF) as u8,
+                small: (message.a2 & 0xFF) as u8,
+            }),
             op::DISCONNECT => {
                 let status = message.a0 as i32;
                 self.telemetry
@@ -711,7 +796,17 @@ impl Driver {
                     *slot = message.a1;
                 }
             }
-            op::GUEST_LIST => self.number = Some(message.a1),
+            // The body is the host's application's; what the library reads
+            // is its own number beside it.
+            op::GUEST_LIST => {
+                self.number = Some(message.a1);
+                self.telemetry.number.store(message.a1, Ordering::Relaxed);
+                let body = message.body.strip_suffix(&[0]).unwrap_or(message.body);
+                self.emit.send(Event::GuestList {
+                    number: message.a1,
+                    body: body.to_vec(),
+                });
+            }
             op::HOST_MODE => self.emit.send(Event::HostMode { mode: message.a0 }),
             // (stream, generation, 0): the value the video header's frame
             // identifier will carry from the next encoder.
@@ -723,6 +818,97 @@ impl Driver {
             _ => {}
         }
         None
+    }
+
+    /// The host's pointer: the picture it sent or named, the mode it is in,
+    /// and where it reappears.
+    ///
+    /// **Either bit puts a client into relative mode**, and that event is
+    /// raised on the transition alone. The cursor event is raised on every
+    /// update; a name the cache does not hold delivers it without a picture,
+    /// and a name that carries no size takes the picture's size and hotspot
+    /// from what was stored with it (docs/10-client.md section 7).
+    fn on_cursor(&mut self, pointer: &cursor::Message<'_>) {
+        // One stream: a pointer for another belongs to a picture this
+        // client does not show.
+        if pointer.update.stream != 0 {
+            return;
+        }
+        if pointer.flags.contains(cursor::Flags::FORGET) {
+            self.cursor_cache.clear();
+        }
+        let mut shape = Shape {
+            width: pointer.width,
+            height: pointer.height,
+            hot_x: pointer.update.hot_x,
+            hot_y: pointer.update.hot_y,
+        };
+        let mut checksum = 0;
+        let mut png = Vec::new();
+        if pointer.flags.contains(cursor::Flags::IMAGE) && !pointer.image.is_empty() {
+            checksum = self.cursor_cache.insert(shape, pointer.image);
+            png = pointer.image.to_vec();
+        } else if pointer.flags.contains(cursor::Flags::CACHED) {
+            match self.cursor_cache.get(pointer.checksum) {
+                Some((stored, bytes)) => {
+                    if pointer.width == 0 {
+                        shape = stored;
+                    }
+                    checksum = pointer.checksum;
+                    png = bytes.to_vec();
+                }
+                None => {
+                    self.cursor_misses = self.cursor_misses.saturating_add(1);
+                    self.telemetry
+                        .cursor_misses
+                        .store(self.cursor_misses, Ordering::Relaxed);
+                    if self.cursor_misses == 1 {
+                        lowlat_common::log_warn!(
+                            "client: cursor named a picture not held, checksum={:#010x}",
+                            pointer.checksum
+                        );
+                    }
+                }
+            }
+        }
+        // The same picture as last time travels as its name alone: the
+        // application holds the picture it was given, and a host that
+        // repeats a name on every update would otherwise have it decoded
+        // on every update.
+        if !png.is_empty() && checksum == self.cursor_delivered {
+            png = Vec::new();
+        }
+        if !png.is_empty() {
+            self.cursor_delivered = checksum;
+            self.cursor_images = self.cursor_images.saturating_add(1);
+            self.telemetry
+                .cursor_images
+                .store(self.cursor_images, Ordering::Relaxed);
+        }
+
+        let want = pointer.update.relative || pointer.update.hidden;
+        let (x, y) = self.mapper.to_window(pointer.update.x, pointer.update.y);
+        if want != self.relative {
+            self.relative = want;
+            self.emit.send(Event::Relative {
+                relative: want,
+                x,
+                y,
+            });
+        }
+        self.emit.send(Event::Cursor {
+            x,
+            y,
+            width: shape.width,
+            height: shape.height,
+            hot_x: shape.hot_x,
+            hot_y: shape.hot_y,
+            hidden: pointer.update.hidden,
+            relative: pointer.update.relative,
+            suppressed: pointer.update.suppressed,
+            checksum,
+            png,
+        });
     }
 
     /// Every complete access unit on the video channel, into the pool.
@@ -930,8 +1116,49 @@ impl Driver {
         self.lag = Lag { behind, behind_ms };
     }
 
-    fn publish(&self, session: &Session<'_>) {
+    fn publish(&self, session: &Session<'_>, now_ms: f64) {
         let t = &self.telemetry;
+        // Per channel, what the ring and the session counted and what this
+        // driver took off each.
+        let messages = [
+            self.received.iter().map(|c| u64::from(*c)).sum(),
+            self.pictures.saturating_add(self.metadata),
+            self.audio_packets,
+        ];
+        let bytes = [self.control_bytes, self.video_bytes, self.audio_bytes];
+        for channel in 0..CHANNELS {
+            let index = u8::try_from(channel).unwrap_or(u8::MAX);
+            let arrivals = session.recv_arrivals(index).unwrap_or_default();
+            let drops = session.recv_drops(index).unwrap_or_default();
+            let store = |slot: &[AtomicU64; CHANNELS], value: u64| {
+                if let Some(cell) = slot.get(channel) {
+                    cell.store(value, Ordering::Relaxed);
+                }
+            };
+            store(&t.fragments, arrivals.fragments);
+            store(&t.late, arrivals.late);
+            store(&t.duplicates, drops.duplicate);
+            store(&t.out_of_window, drops.out_of_window);
+            store(&t.nacks_sent, session.nacks_sent(index));
+            store(&t.bytes, bytes.get(channel).copied().unwrap_or(0));
+            store(&t.messages, messages.get(channel).copied().unwrap_or(0));
+            #[allow(clippy::cast_possible_truncation, reason = "a ratio in 0..1")]
+            if let (Some(cell), Some(ewma)) = (t.loss_30s.get(channel), self.loss_ewma.get(channel))
+            {
+                cell.store((*ewma as f32).to_bits(), Ordering::Relaxed);
+            }
+        }
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "milliseconds since the session came up, saturated"
+        )]
+        t.connected_ms.store(
+            (now_ms - self.established_ms)
+                .max(0.0)
+                .min(f64::from(u32::MAX)) as u32,
+            Ordering::Relaxed,
+        );
         t.pictures.store(self.pictures, Ordering::Relaxed);
         t.metadata.store(self.metadata, Ordering::Relaxed);
         t.skipped.store(self.skipped, Ordering::Relaxed);

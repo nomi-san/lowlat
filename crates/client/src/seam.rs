@@ -79,13 +79,51 @@ pub enum Event {
     /// The host put this client into relative mode, or took it out; on the
     /// way out, where the pointer reappears, in the window's units.
     Relative { relative: bool, x: i32, y: i32 },
+    /// The host's pointer changed: its picture, its hotspot or its flags.
+    /// The picture, when one came or was named from the cache, travels as
+    /// it did on the wire and is decoded at the boundary, on the poller's
+    /// thread, into the buffer the application is lent.
+    Cursor {
+        /// Where the pointer reappears on the way out of relative mode, in
+        /// the window's units.
+        x: i32,
+        y: i32,
+        width: u16,
+        height: u16,
+        /// In the picture's own pixels.
+        hot_x: u16,
+        hot_y: u16,
+        hidden: bool,
+        relative: bool,
+        suppressed: bool,
+        /// The checksum the picture is named by; zero when none is delivered.
+        checksum: u32,
+        /// The picture as it travelled; empty when none is delivered.
+        png: Vec<u8>,
+    },
+    /// The host asked a pad to vibrate: the pad this client named, and the
+    /// two motors as the wire carries them.
+    Rumble { pad: u32, large: u8, small: u8 },
+    /// The room as the host describes it, with this client's own number.
+    /// The body is the host's application's and is not read here.
+    GuestList { number: u32, body: Vec<u8> },
 }
 
 impl Queued for Event {
     fn body(&self) -> &[u8] {
         match self {
             Event::UserData { text, .. } => text,
+            Event::GuestList { body, .. } => body,
             _ => &[],
+        }
+    }
+
+    /// The picture is not a body: it is decoded at the boundary into the
+    /// buffer the application is lent, never copied into the caller's.
+    fn held(&self) -> usize {
+        match self {
+            Event::Cursor { png, .. } => png.len(),
+            _ => 0,
         }
     }
 }

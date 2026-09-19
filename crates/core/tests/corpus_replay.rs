@@ -538,7 +538,32 @@ fn a_full_session_replays_the_received_direction() {
                 let content = message_buf.get(..len).expect("fits");
                 match channel {
                     0 => {
-                        control::parse(content).expect("control");
+                        let parsed = control::parse(content).expect("control");
+                        // The pointer pictures a real host sent, kept as
+                        // fixtures for the client's reader when asked: one
+                        // file per distinct picture, named by the checksum
+                        // the host would name it by.
+                        if let Ok(out) = std::env::var("LOWLAT_CURSOR_OUT")
+                            && parsed.opcode == control::op::CURSOR
+                            && let Ok(pointer) = lowlat_core::cursor::parse(&parsed)
+                            && !pointer.image.is_empty()
+                        {
+                            let checksum = lowlat_core::crc32::of(pointer.image);
+                            let path =
+                                PathBuf::from(out).join(format!("cursor-{checksum:08x}.png"));
+                            if !path.exists() {
+                                std::fs::write(&path, pointer.image).expect("fixture written");
+                                eprintln!(
+                                    "cursor: {}x{} hot {},{} {} bytes -> {}",
+                                    pointer.width,
+                                    pointer.height,
+                                    pointer.update.hot_x,
+                                    pointer.update.hot_y,
+                                    pointer.image.len(),
+                                    path.display()
+                                );
+                            }
+                        }
                     }
                     1 => {
                         let header = video::parse(content).expect("video");

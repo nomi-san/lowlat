@@ -934,6 +934,43 @@ fn session_is_clean_with(seed: u64, link: Link, raw_audio: bool) {
     }
     let lag = pair.guest.driver.lag();
     assert_eq!(lag.behind, 0, "the reader ended behind");
+
+    // **What the receiver counted, against what the link did.** A clean
+    // link with nothing reordered has no late arrival and no negative to
+    // send; one percent of loss has both, and the recent-loss figure on the
+    // video channel reads on the order of the loss rate after the run
+    // (an average with a thirtieth's weight reaches 0.63 of the rate in
+    // thirty seconds and 0.86 in sixty).
+    let t = &pair.guest.telemetry;
+    let video = usize::from(VIDEO_CHANNEL);
+    let fragments = t.fragments[video].load(Ordering::Relaxed);
+    let late = t.late[video].load(Ordering::Relaxed);
+    let nacks = t.nacks_sent[video].load(Ordering::Relaxed);
+    let loss = f32::from_bits(t.loss_30s[video].load(Ordering::Relaxed));
+    assert!(
+        fragments > 1000,
+        "too few video fragments counted: {fragments}"
+    );
+    assert_eq!(
+        t.messages[video].load(Ordering::Relaxed),
+        pair.host.frames + pair.guest.metadata_seen,
+        "the video channel's message count is not the frames and their announcements"
+    );
+    assert!(t.bytes[video].load(Ordering::Relaxed) > 0);
+    assert!(t.connected_ms.load(Ordering::Relaxed) as f64 >= duration_ms());
+    if link.loss == 0.0 && link.reorder == 0.0 {
+        assert_eq!(late, 0, "a clean link delivered late");
+        assert_eq!(nacks, 0, "a clean link was asked for a retransmission");
+        assert_eq!(loss.to_bits(), 0, "a clean link reads loss: {loss}");
+    } else if link.loss > 0.0 {
+        assert!(late > 0, "loss repaired without a late arrival");
+        assert!(nacks > 0, "loss repaired without a negative");
+        let expected = link.loss as f32;
+        assert!(
+            loss > expected * 0.3 && loss < expected * 2.0,
+            "recent loss {loss} against a link at {expected}"
+        );
+    }
 }
 
 #[test]
@@ -1335,6 +1372,185 @@ fn input_reaches_the_host_in_the_pictures_pixels() {
         }
     }
     assert_eq!(transitions, vec![(true, 0, 0), (false, 960, 540)]);
+}
+
+/// Everything else the host says on the control channel comes out as an
+/// event, in order, with the right bytes: the pointer's picture fresh and
+/// then by name, a name after a forget (a miss, delivered without the
+/// picture), a name carrying no size (the size and hotspot stored with the
+/// picture), rumble, blocked and unblocked, host mode, the guest list with
+/// this client's own number.
+#[test]
+fn the_hosts_control_messages_become_events() {
+    use lowlat_core::cursor;
+
+    let mut pair = Pair::new(23, clean());
+    pair.run_for(2000.0);
+    assert!(pair.established());
+    pair.run_for(200.0);
+    pair.guest
+        .driver
+        .set_viewport(lowlat_client::input::Viewport {
+            x: 10,
+            y: 20,
+            w: 960,
+            h: 540,
+        });
+
+    // A pointer picture, written by the encoder the host uses.
+    let width = 12u32;
+    let height = 9u32;
+    let pixels: Vec<u8> = (0..width * height * 4).map(|i| (i * 7) as u8).collect();
+    let mut png = vec![0u8; lowlat_core::png::upper_bound(width, height)];
+    let used =
+        lowlat_core::png::encode(&pixels, width, height, (width * 4) as usize, &mut png).unwrap();
+    png.truncate(used);
+    let checksum = crc32(&png);
+
+    let fresh = cursor::Update {
+        x: 480,
+        y: 270,
+        hot_x: 3,
+        hot_y: 4,
+        ..cursor::Update::default()
+    };
+    let named = cursor::Update {
+        x: 100,
+        y: 50,
+        hot_x: 3,
+        hot_y: 4,
+        suppressed: true,
+        ..cursor::Update::default()
+    };
+    let mut out = vec![0u8; cursor::encoded_len(png.len())];
+    let mut send = |pair: &mut Pair<Recorder>, update: &cursor::Update, image, forget| {
+        let used = cursor::encode(&mut out, update, image, forget).unwrap();
+        let message = control::parse(&out[..used]).unwrap();
+        pair.host.send_control(&message);
+    };
+    send(
+        &mut pair,
+        &fresh,
+        cursor::Image::Fresh {
+            png: &png,
+            width: width as u16,
+            height: height as u16,
+            checksum,
+        },
+        false,
+    );
+    send(&mut pair, &named, cursor::Image::Cached { checksum }, false);
+    // Forget, then name the picture again: a miss.
+    send(&mut pair, &named, cursor::Image::Cached { checksum }, true);
+    pair.run_for(100.0);
+
+    let rumble = Control {
+        a0: 7,
+        a1: 0x1FF,
+        a2: 0x80,
+        opcode: op::RUMBLE,
+        body: &[],
+    };
+    pair.host.send_control(&rumble);
+    for (blocked, opcode) in [(1u32, op::BLOCKED), (0, op::BLOCKED)] {
+        pair.host.send_control(&Control {
+            a0: blocked,
+            a1: 0,
+            a2: 0,
+            opcode,
+            body: &[],
+        });
+    }
+    pair.host.send_control(&Control {
+        a0: 1,
+        a1: 0,
+        a2: 0,
+        opcode: op::HOST_MODE,
+        body: &[],
+    });
+    let roster = b"[{\"id\":5,\"owner\":true}]\0";
+    pair.host.send_control(&Control {
+        a0: roster.len() as u32,
+        a1: 5,
+        a2: 0,
+        opcode: op::GUEST_LIST,
+        body: roster,
+    });
+    pair.run_for(100.0);
+
+    let mut events = Vec::new();
+    while let Some(event) = pair.guest.events.try_recv() {
+        events.push(event.event);
+    }
+    let cursors: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            Event::Cursor {
+                x,
+                y,
+                width,
+                height,
+                hot_x,
+                hot_y,
+                suppressed,
+                checksum,
+                png,
+                ..
+            } => Some((
+                *x,
+                *y,
+                *width,
+                *height,
+                *hot_x,
+                *hot_y,
+                *suppressed,
+                *checksum,
+                png.clone(),
+            )),
+            _ => None,
+        })
+        .collect();
+    // The picture is 1920x1080 drawn at half size from (10, 20): the
+    // position comes out in the window's units.
+    assert_eq!(cursors.len(), 3, "{cursors:?}");
+    assert_eq!(
+        cursors[0],
+        (250, 155, 12, 9, 3, 4, false, checksum, png.clone())
+    );
+    // Named with no size: the size and hotspot come from what was stored,
+    // and the picture already delivered travels as its name alone.
+    assert_eq!(
+        cursors[1],
+        (60, 45, 12, 9, 3, 4, true, checksum, Vec::new())
+    );
+    // Forgotten, then named: no picture, the rest delivered.
+    assert_eq!(cursors[2], (60, 45, 0, 0, 3, 4, true, 0, Vec::new()));
+    let t = &pair.guest.telemetry;
+    assert_eq!(t.cursor_images.load(Ordering::Relaxed), 1);
+    assert_eq!(t.cursor_misses.load(Ordering::Relaxed), 1);
+
+    let rest: Vec<_> = events
+        .iter()
+        .filter(|e| !matches!(e, Event::Cursor { .. } | Event::Established { .. }))
+        .collect();
+    assert_eq!(
+        rest,
+        vec![
+            &Event::Rumble {
+                pad: 7,
+                large: 0xFF,
+                small: 0x80
+            },
+            &Event::Blocked { blocked: true },
+            &Event::Blocked { blocked: false },
+            &Event::HostMode { mode: 1 },
+            &Event::GuestList {
+                number: 5,
+                body: roster[..roster.len() - 1].to_vec()
+            },
+        ]
+    );
+    assert_eq!(t.number.load(Ordering::Relaxed), 5);
 }
 
 /// The committed clips, as the decode crate's tests read them.

@@ -19,6 +19,8 @@ lowlat-decode.workspace = true
 lowlat-drivers.workspace = true
 # The sound decoder, the same one the host reads a microphone through.
 lowlat-audio.workspace = true
+# The inflate under the pointer's picture.
+miniz_oxide.workspace = true
 
 [dev-dependencies]
 # The hermetic session's other end: the host crate's own framing and

@@ -326,6 +326,61 @@ pub struct lowlat_client_status {
     /// The stream as the decoder built it: one of `LOWLAT_FORMAT_*`, or
     /// zero before a build. With `codec`, what the host turned out to send.
     pub stream_format: u32,
+    /// This client's number on the host's roster, which is how it finds
+    /// itself in the guest list; zero until the host has sent one.
+    pub number: u32,
+    /// The host's pointer: pictures delivered, names this client no longer
+    /// held, and pictures the reader refused.
+    pub cursor_images: u32,
+    pub cursor_misses: u32,
+    pub cursor_refused: u32,
+}
+
+/// What one channel did, seen from the receiving end.
+///
+/// **A receiver's figures under a receiver's names.** The host's structure
+/// describes a sender -- what it put on the wire, what it resent, its
+/// congestion -- and none of that can be measured here; what can is below.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct lowlat_client_channel_metrics {
+    /// Fragments accepted: first arrivals, never duplicates.
+    pub fragments: u64,
+    /// Of those, the ones that arrived behind a later fragment, which on this
+    /// transport is a retransmission, or a reorder on a path that reorders.
+    pub late: u64,
+    /// Fragments refused because they were already here, or already taken.
+    pub duplicates: u64,
+    /// Fragments refused because they were further ahead than the ring holds.
+    pub out_of_window: u64,
+    /// Acknowledgements sent with the negative bit, naming this channel: what
+    /// the host's fast retransmissions to this client answer.
+    pub nacks_sent: u64,
+    /// Bytes and messages taken off the channel, so a rate is a difference
+    /// over time on the application's clock.
+    pub bytes: u64,
+    pub messages: u64,
+    /// Late arrivals over arrivals, per one-second sample, averaged with a
+    /// thirtieth's weight on the newest: the loss the path showed over about
+    /// the last thirty seconds, 0 to 1.
+    pub loss_30s: f32,
+    pub reserved: u32,
+}
+
+/// The client's own figures ([`lowlat_client_get_metrics`]).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_client_metrics {
+    /// Set by the caller to `sizeof(lowlat_client_metrics)`.
+    pub size: u32,
+    /// How long the session has been established, in milliseconds.
+    pub connected_ms: u32,
+    /// The smoothed round trip to the host, in milliseconds.
+    pub rtt_ms: u32,
+    pub reserved: u32,
+    pub control: lowlat_client_channel_metrics,
+    pub video: lowlat_client_channel_metrics,
+    pub audio: lowlat_client_channel_metrics,
 }
 
 /// The sound codec on the wire, as `lowlat_client_status.audio_codec`
@@ -540,6 +595,9 @@ pub struct lowlat_client {
     /// Held outside the lock because a poll waits for as long as its caller
     /// asked and every other call must stay answerable while it does.
     events: lowlat_common::events::Receiver<Event>,
+    /// The pointer's picture, decoded here for the application: one buffer,
+    /// grown to the largest picture seen, lent until the next poll.
+    cursor: std::sync::Mutex<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -627,6 +685,7 @@ pub unsafe extern "C" fn lowlat_client_create(
                 attempt: None,
             }),
             events,
+            cursor: std::sync::Mutex::new(Vec::new()),
         });
         unsafe { out.write(Box::into_raw(handle)) };
         LOWLAT_OK
@@ -1366,6 +1425,79 @@ pub unsafe extern "C" fn lowlat_client_get_status(
                 asked_flags: t.asked_flags.load(Ordering::Relaxed),
                 declared_flags: t.declared_flags.load(Ordering::Relaxed),
                 stream_format: t.stream_format.load(Ordering::Relaxed),
+                number: t.number.load(Ordering::Relaxed),
+                cursor_images: t.cursor_images.load(Ordering::Relaxed),
+                cursor_misses: t.cursor_misses.load(Ordering::Relaxed),
+                cursor_refused: t.cursor_refused.load(Ordering::Relaxed),
+            };
+            LOWLAT_OK
+        })
+    }
+}
+
+/// One channel's figures, as the session thread last published them.
+fn channel_metrics(
+    t: &::lowlat_client::Telemetry,
+    channel: usize,
+) -> lowlat_client_channel_metrics {
+    let load = |slot: &[core::sync::atomic::AtomicU64; ::lowlat_client::driver::CHANNELS]| {
+        slot.get(channel)
+            .map_or(0, |cell| cell.load(Ordering::Relaxed))
+    };
+    lowlat_client_channel_metrics {
+        fragments: load(&t.fragments),
+        late: load(&t.late),
+        duplicates: load(&t.duplicates),
+        out_of_window: load(&t.out_of_window),
+        nacks_sent: load(&t.nacks_sent),
+        bytes: load(&t.bytes),
+        messages: load(&t.messages),
+        loss_30s: t
+            .loss_30s
+            .get(channel)
+            .map_or(0.0, |cell| f32::from_bits(cell.load(Ordering::Relaxed))),
+        reserved: 0,
+    }
+}
+
+/// Read what this client measured of the session, per channel.
+///
+/// **The receiver's figures.** The host's own figures for this guest -- what
+/// it sent, what it resent, its rate and round trip -- arrive in the guest
+/// list ([`LOWLAT_EVENT_GUEST_LIST`]) for the application to read; this call
+/// is the other end of the same path, measured where it can be.
+///
+/// @param[in] cl The handle from [`lowlat_client_create`].
+/// @param[out] out One [`lowlat_client_metrics`] with `size` set, filled.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_INVALID_ARGUMENT`].
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`]; `out` points to one
+/// [`lowlat_client_metrics`] whose `size` is set.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_get_metrics(
+    cl: *mut lowlat_client,
+    out: *mut lowlat_client_metrics,
+) -> lowlat_status {
+    unsafe {
+        entered(cl, |handle| {
+            let Some(out) = out.as_mut() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            if (out.size as usize) < core::mem::size_of::<lowlat_client_metrics>() {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let held = handle.held();
+            let t = held.seam.telemetry();
+            *out = lowlat_client_metrics {
+                size: out.size,
+                connected_ms: t.connected_ms.load(Ordering::Relaxed),
+                rtt_ms: t.rtt_ms.load(Ordering::Relaxed),
+                reserved: 0,
+                control: channel_metrics(t, 0),
+                video: channel_metrics(t, 1),
+                audio: channel_metrics(t, 2),
             };
             LOWLAT_OK
         })
@@ -1663,7 +1795,7 @@ pub unsafe extern "C" fn lowlat_client_poll_events(
                 let Some(received) = events.recv_timeout(timeout) else {
                     return LOWLAT_TIMEOUT;
                 };
-                out.write(described(&attempt, &received));
+                out.write(described(handle, &attempt, &received));
                 return LOWLAT_OK;
             }
 
@@ -1676,11 +1808,11 @@ pub unsafe extern "C" fn lowlat_client_poll_events(
                     LOWLAT_ERR_TOO_SMALL
                 }
                 Delivery::Took(received) => {
-                    let event = described(&attempt, &received);
-                    let written = if event.kind == LOWLAT_EVENT_USER_DATA {
-                        event.body.user_data.body_len
-                    } else {
-                        0
+                    let event = described(handle, &attempt, &received);
+                    let written = match event.kind {
+                        LOWLAT_EVENT_USER_DATA => event.body.user_data.body_len,
+                        LOWLAT_EVENT_GUEST_LIST => event.body.guest_list.body_len,
+                        _ => 0,
                     };
                     body_len.write(written);
                     out.write(event);
@@ -1691,8 +1823,46 @@ pub unsafe extern "C" fn lowlat_client_poll_events(
     }
 }
 
+/// The pointer's picture, decoded into the handle's own buffer: the pointer
+/// the application is lent, and how long the picture is. A picture the
+/// reader refuses is counted and not delivered.
+fn decode_cursor(handle: &lowlat_client, png: &[u8]) -> (*const u8, u32) {
+    if png.is_empty() {
+        return (core::ptr::null(), 0);
+    }
+    let mut scratch = handle
+        .cursor
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match ::lowlat_client::cursor::decode_png(png, &mut scratch) {
+        Ok(_) => (
+            scratch.as_ptr(),
+            u32::try_from(scratch.len()).unwrap_or(u32::MAX),
+        ),
+        Err(refusal) => {
+            let telemetry = handle
+                .held()
+                .seam
+                .telemetry()
+                .cursor_refused
+                .fetch_add(1, Ordering::Relaxed);
+            if telemetry == 0 {
+                lowlat_common::log_warn!(
+                    "client: cursor picture refused, why={refusal:?} bytes={}",
+                    png.len()
+                );
+            }
+            (core::ptr::null(), 0)
+        }
+    }
+}
+
 /// Describe one event in the shape the boundary publishes.
-fn described(attempt: &str, received: &lowlat_common::events::Received<Event>) -> lowlat_event {
+fn described(
+    handle: &lowlat_client,
+    attempt: &str,
+    received: &lowlat_common::events::Received<Event>,
+) -> lowlat_event {
     let dropped = received.dropped;
     let mut named = [0; LOWLAT_ATTEMPT_MAX];
     put(&mut named, attempt);
@@ -1805,6 +1975,64 @@ fn described(attempt: &str, received: &lowlat_common::events::Received<Event>) -
                     guest: 0,
                     id: *id,
                     body_len: u32::try_from(text.len()).unwrap_or(u32::MAX),
+                },
+            },
+        },
+        Event::Cursor {
+            x,
+            y,
+            width,
+            height,
+            hot_x,
+            hot_y,
+            hidden,
+            relative,
+            suppressed,
+            checksum,
+            png,
+        } => {
+            let (image, image_len) = decode_cursor(handle, png);
+            lowlat_event {
+                kind: LOWLAT_EVENT_CURSOR,
+                dropped,
+                body: lowlat_event_body {
+                    cursor: lowlat_cursor_event {
+                        x: *x,
+                        y: *y,
+                        width: *width,
+                        height: *height,
+                        hot_x: *hot_x,
+                        hot_y: *hot_y,
+                        checksum: *checksum,
+                        image,
+                        image_len,
+                        hidden: *hidden,
+                        relative: *relative,
+                        suppressed: *suppressed,
+                        image_update: !image.is_null(),
+                    },
+                },
+            }
+        }
+        Event::Rumble { pad, large, small } => lowlat_event {
+            kind: LOWLAT_EVENT_RUMBLE,
+            dropped,
+            body: lowlat_event_body {
+                rumble: lowlat_rumble_event {
+                    pad: *pad,
+                    large: *large,
+                    small: *small,
+                    reserved: [0; 2],
+                },
+            },
+        },
+        Event::GuestList { number, body } => lowlat_event {
+            kind: LOWLAT_EVENT_GUEST_LIST,
+            dropped,
+            body: lowlat_event_body {
+                guest_list: lowlat_guest_list_event {
+                    number: *number,
+                    body_len: u32::try_from(body.len()).unwrap_or(u32::MAX),
                 },
             },
         },
@@ -1947,12 +2175,39 @@ mod tests {
             asked_flags: 0,
             declared_flags: 0,
             stream_format: 0,
+            number: 0,
+            cursor_images: 0,
+            cursor_misses: 0,
+            cursor_refused: 0,
         };
         assert_eq!(
             unsafe { lowlat_client_get_status(handle, &raw mut status) },
             LOWLAT_OK
         );
         assert_eq!(status.state, LOWLAT_CLIENT_IDLE);
+        // The client's own figures: readable before a session, every one
+        // zero, and a structure without its size refused.
+        let mut metrics = lowlat_client_metrics {
+            size: 0,
+            connected_ms: 7,
+            rtt_ms: 7,
+            reserved: 0,
+            control: lowlat_client_channel_metrics::default(),
+            video: lowlat_client_channel_metrics::default(),
+            audio: lowlat_client_channel_metrics::default(),
+        };
+        assert_eq!(
+            unsafe { lowlat_client_get_metrics(handle, &raw mut metrics) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        metrics.size = core::mem::size_of::<lowlat_client_metrics>() as u32;
+        assert_eq!(
+            unsafe { lowlat_client_get_metrics(handle, &raw mut metrics) },
+            LOWLAT_OK
+        );
+        assert_eq!(metrics.connected_ms, 0);
+        assert_eq!(metrics.video.fragments, 0);
+        assert_eq!(metrics.video.loss_30s.to_bits(), 0);
         let mut samples = [0i16; 4];
         let mut count: u32 = 2;
         assert_eq!(

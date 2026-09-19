@@ -22,6 +22,8 @@ lowlat-crypto = { path = "../crates/crypto" }
 # The video readers: everything a host's bitstream says is read here before
 # the device sees any of it.
 lowlat-decode = { path = "../crates/decode" }
+# The pointer's picture: a PNG from the host, inflated and unfiltered here.
+lowlat-client = { path = "../crates/client" }
 
 [[bin]]
 name = "envelope"
@@ -99,3 +101,9 @@ path = "fuzz_targets/decode_hevc.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "cursor_png"
+path = "fuzz_targets/cursor_png.rs"
+test = false
+doc = false

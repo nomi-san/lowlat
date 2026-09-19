@@ -28,6 +28,14 @@ pub trait Queued {
     /// Empty for an event that carries none.
     fn body(&self) -> &[u8];
 
+    /// Bytes the event holds that are not handed to the caller's buffer, and
+    /// still count against the byte budget: a picture the boundary decodes
+    /// into a buffer of its own. Zero for every event that carries only a
+    /// body, or nothing.
+    fn held(&self) -> usize {
+        0
+    }
+
     /// Whether the event survives the queue being full.
     ///
     /// **A seam has one that does, if any.** A bound that discards the message
@@ -60,7 +68,7 @@ const MAX_BYTES: usize = 4 * 1024 * 1024;
 /// Only a body is worth counting. Everything else is a handful of fixed-size
 /// fields, and the queue is bounded by its length as well.
 fn weight<E: Queued>(event: &E) -> usize {
-    event.body().len()
+    event.body().len().saturating_add(event.held())
 }
 
 /// An event, and what was lost before it.
@@ -218,7 +226,7 @@ impl<E: Queued> Receiver<E> {
     /// carry a megabyte of scratch -- was not taken.
     pub fn recv_timeout_into(&self, timeout: Duration, body: &mut [u8]) -> Delivery<E> {
         self.wait_for(timeout, |state| {
-            let needed = weight(state.queued.front()?);
+            let needed = state.queued.front()?.body().len();
             if needed > body.len() {
                 return Some(Delivery::TooSmall { needed });
             }
