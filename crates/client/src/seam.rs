@@ -232,10 +232,19 @@ fn stage_of(error: &vaapi::Error) -> DecoderStage {
 
 /// The card behind a render node, as the compute runtime addresses it:
 /// the node's device link in the kernel's tree names the bus address.
-fn address_of(node: &str) -> Option<PciAddress> {
+pub(crate) fn address_of(node: &str) -> Option<PciAddress> {
     let name = std::path::Path::new(node).file_name()?.to_str()?;
     let link = std::fs::read_link(format!("/sys/class/drm/{name}/device")).ok()?;
     PciAddress::parse(link.file_name()?.to_str()?)
+}
+
+/// The render node on a card, by its bus address: the inverse of
+/// [`address_of`], over the nodes this crate looks at.
+pub(crate) fn node_of(address: PciAddress) -> Option<&'static str> {
+    RENDER_NODES
+        .iter()
+        .copied()
+        .find(|node| address_of(node) == Some(address))
 }
 
 /// Probe the vendor's interface on `address`, or on the first device: the
@@ -254,6 +263,8 @@ fn probe_nvdec(address: Option<PciAddress>) -> Result<Caps, DecoderStage> {
     context.make_current().map_err(|_| DecoderStage::Device)?;
     let loaded = cuvid::Cuvid::load().map_err(|_| DecoderStage::Runtime)?;
     let caps = nvdec::caps(&loaded);
+    // The application's thread, left as it was found.
+    let _ = context.release_current();
     if caps.any() {
         Ok(caps)
     } else {
@@ -262,7 +273,7 @@ fn probe_nvdec(address: Option<PciAddress>) -> Result<Caps, DecoderStage> {
 }
 
 /// Where the first render node that decodes is looked for.
-const RENDER_NODES: [&str; 8] = [
+pub(crate) const RENDER_NODES: [&str; 8] = [
     "/dev/dri/renderD128",
     "/dev/dri/renderD129",
     "/dev/dri/renderD130",

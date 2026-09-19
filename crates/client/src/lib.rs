@@ -32,6 +32,7 @@
 pub mod config;
 pub mod decode;
 pub mod driver;
+pub mod enumerate;
 pub mod feed;
 pub mod frames;
 pub mod input;

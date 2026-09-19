@@ -42,6 +42,7 @@ type Memcpy2D = unsafe extern "C" fn(*const crate::ffi::cuda::CUDA_MEMCPY2D) -> 
 type PrimaryCtxRetain = unsafe extern "C" fn(*mut CUcontext, CUdevice) -> CUresult;
 type PrimaryCtxRelease = unsafe extern "C" fn(CUdevice) -> CUresult;
 type CtxPushCurrent = unsafe extern "C" fn(CUcontext) -> CUresult;
+type CtxPopCurrent = unsafe extern "C" fn(*mut CUcontext) -> CUresult;
 type StreamCreate = unsafe extern "C" fn(*mut CUstream, c_uint) -> CUresult;
 type StreamDestroy = unsafe extern "C" fn(CUstream) -> CUresult;
 type EventCreate = unsafe extern "C" fn(*mut CUevent, c_uint) -> CUresult;
@@ -255,6 +256,7 @@ pub struct Context {
     device: CUdevice,
     release: PrimaryCtxRelease,
     push_current: CtxPushCurrent,
+    pop_current: CtxPopCurrent,
 }
 
 // SAFETY: a context is usable from any thread, and this type only hands out
@@ -277,11 +279,21 @@ impl Context {
     /// informative way this can go wrong.
     ///
     /// Pushed rather than assigned, because the interface offers no assign.
-    /// Never popped: the thread that drives a session drives it for the
-    /// session's life, so there is nothing to restore.
+    /// Not popped by the thread that drives a session, which drives it for
+    /// the session's life; a probe on a borrowed thread pops with
+    /// [`Self::release_current`].
     pub fn make_current(&self) -> Result<()> {
         // SAFETY: the handle is valid for the life of `self`.
         check(unsafe { (self.push_current)(self.raw) })
+    }
+
+    /// Undo [`Self::make_current`] on the calling thread, for a probe that
+    /// borrows an application's thread and leaves it as it found it.
+    pub fn release_current(&self) -> Result<()> {
+        let mut popped: CUcontext = core::ptr::null_mut();
+        // SAFETY: the out pointer is to a live local; the context popped is
+        // whatever this thread has on top, which is the one pushed.
+        check(unsafe { (self.pop_current)(&raw mut popped) })
     }
 }
 
@@ -303,6 +315,7 @@ pub struct Cuda {
     primary_ctx_retain: PrimaryCtxRetain,
     primary_ctx_release: PrimaryCtxRelease,
     ctx_push_current: CtxPushCurrent,
+    ctx_pop_current: CtxPopCurrent,
     mem_alloc_pitch: MemAllocPitch,
     mem_free: MemFree,
     memset_d8: MemsetD8,
@@ -361,6 +374,9 @@ impl Cuda {
                     .ok_or(Error::MissingSymbol)?,
                 ctx_push_current: library
                     .symbol(c"cuCtxPushCurrent_v2")
+                    .ok_or(Error::MissingSymbol)?,
+                ctx_pop_current: library
+                    .symbol(c"cuCtxPopCurrent_v2")
                     .ok_or(Error::MissingSymbol)?,
                 mem_alloc_pitch: library
                     .symbol(c"cuMemAllocPitch_v2")
@@ -534,6 +550,7 @@ impl Cuda {
             device: device.handle,
             release: self.primary_ctx_release,
             push_current: self.ctx_push_current,
+            pop_current: self.ctx_pop_current,
         })
     }
 }

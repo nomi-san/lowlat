@@ -94,6 +94,108 @@ pub struct lowlat_client_create_info {
     pub device: [c_char; LOWLAT_OUTPUT_MAX],
 }
 
+/// The longest name a decoder's row carries.
+pub const LOWLAT_DECODER_NAME_MAX: usize = 128;
+
+/// One decoder this machine can open, as [`lowlat_enum_decoders`] reports
+/// it: what creation takes to open exactly this one, and what it decodes.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_decoder_info {
+    /// Set by the caller to `sizeof(lowlat_decoder_info)`.
+    pub size: u32,
+    /// Its position in the enumeration.
+    pub index: u32,
+    /// One of [`lowlat_decoder`], `LOWLAT_DECODER_OPEN` or
+    /// `LOWLAT_DECODER_VENDOR`: what `lowlat_client_create_info.decoder`
+    /// names to open this one.
+    pub decoder: u32,
+    /// The largest coded picture per codec, as the device reports it; zero
+    /// where it does not say.
+    pub max_width_h264: u32,
+    pub max_height_h264: u32,
+    pub max_width_hevc: u32,
+    pub max_height_hevc: u32,
+    /// What it decodes. A preference in `lowlat_client_video_config` past
+    /// these is masked before anything is declared.
+    pub h264: bool,
+    pub hevc: bool,
+    pub hevc_10: bool,
+    pub hevc_444: bool,
+    pub hevc_444_10: bool,
+    /// Whether it hands pictures out as a handle: what
+    /// `lowlat_client_create_info.frame_kind = LOWLAT_FRAME_HANDLE` needs.
+    pub handle: bool,
+    pub reserved: [u8; 2],
+    /// The render node, NUL-terminated, for `lowlat_client_create_info
+    /// .device`; empty for the vendor's device when no node names it, which
+    /// creation takes as the first device.
+    pub device: [c_char; LOWLAT_OUTPUT_MAX],
+    /// The device's or driver's own name, NUL-terminated, for a label.
+    pub name: [c_char; LOWLAT_DECODER_NAME_MAX],
+}
+
+/// The `index`-th decoder this machine can open, in a fixed order: the
+/// open decoder on each render node that decodes, then the vendor's on
+/// each of its devices. Callers iterate from zero until this returns
+/// false. Each call probes the devices afresh, a few milliseconds, so it
+/// is for a startup or a settings screen, not a loop.
+///
+/// A row is opened by creation with its `decoder` and `device`, and
+/// `frame_kind = LOWLAT_FRAME_HANDLE` on a row whose `handle` is set.
+///
+/// @param[in] index The position, from zero.
+/// @param[out] out One [`lowlat_decoder_info`] with `size` set, filled when
+/// there is a decoder at `index`.
+/// @returns True with `out` filled; false past the last decoder, or when
+/// `out` is null or its `size` is short.
+///
+/// # Safety
+///
+/// `out` is null or points to one [`lowlat_decoder_info`] whose `size` is
+/// set.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_enum_decoders(index: u32, out: *mut lowlat_decoder_info) -> bool {
+    guard(false, || {
+        // SAFETY: the caller's contract.
+        let Some(out) = (unsafe { out.as_mut() }) else {
+            return false;
+        };
+        if (out.size as usize) < core::mem::size_of::<lowlat_decoder_info>() {
+            return false;
+        }
+        let rows = ::lowlat_client::enumerate::enumerate();
+        let Some(row) = usize::try_from(index).ok().and_then(|i| rows.get(i)) else {
+            return false;
+        };
+        let mut info = lowlat_decoder_info {
+            size: out.size,
+            index,
+            decoder: match row.backend {
+                Backend::Nvdec => lowlat_decoder::LOWLAT_DECODER_VENDOR,
+                _ => lowlat_decoder::LOWLAT_DECODER_OPEN,
+            } as u32,
+            max_width_h264: row.max_h264.0,
+            max_height_h264: row.max_h264.1,
+            max_width_hevc: row.max_hevc.0,
+            max_height_hevc: row.max_hevc.1,
+            h264: row.caps.h264,
+            hevc: row.caps.hevc,
+            hevc_10: row.caps.hevc_10,
+            hevc_444: row.caps.hevc_444,
+            hevc_444_10: row.caps.hevc_444_10,
+            handle: row.handle,
+            reserved: [0; 2],
+            device: [0; LOWLAT_OUTPUT_MAX],
+            name: [0; LOWLAT_DECODER_NAME_MAX],
+        };
+        put(&mut info.device, &row.device);
+        put(&mut info.name, &row.name);
+        *out = info;
+        true
+    })
+}
+
 /// What a client asks of a host, per attempt.
 ///
 /// What the application would like of the picture, for the one stream.
@@ -2026,5 +2128,55 @@ mod tests {
             LOWLAT_ERR_INVALID_ARGUMENT
         );
         assert!(handle.is_null());
+    }
+
+    /// The enumeration runs from zero until false, every row is one
+    /// creation could open, and a bad out-parameter is false rather than a
+    /// write. On a machine with no decoder the first call is the last.
+    #[test]
+    fn the_decoders_enumerate_until_false() {
+        assert!(!unsafe { lowlat_enum_decoders(0, core::ptr::null_mut()) });
+        // SAFETY: plain data.
+        let mut row: lowlat_decoder_info = unsafe { core::mem::zeroed() };
+        row.size = 4;
+        assert!(
+            !unsafe { lowlat_enum_decoders(0, &raw mut row) },
+            "a short size"
+        );
+
+        let mut count = 0;
+        loop {
+            row.size = core::mem::size_of::<lowlat_decoder_info>() as u32;
+            if !unsafe { lowlat_enum_decoders(count, &raw mut row) } {
+                break;
+            }
+            assert_eq!(row.index, count);
+            assert!(
+                row.decoder == lowlat_decoder::LOWLAT_DECODER_OPEN as u32
+                    || row.decoder == lowlat_decoder::LOWLAT_DECODER_VENDOR as u32
+            );
+            assert!(row.h264 || row.hevc, "a row that decodes nothing");
+            assert_eq!(
+                row.handle,
+                row.decoder == lowlat_decoder::LOWLAT_DECODER_VENDOR as u32
+            );
+            assert_eq!(row.name[LOWLAT_DECODER_NAME_MAX - 1], 0, "terminated");
+            let name = unsafe { core::ffi::CStr::from_ptr(row.name.as_ptr()) };
+            let device = unsafe { core::ffi::CStr::from_ptr(row.device.as_ptr()) };
+            println!(
+                "[{}] {:?} on {:?}: h264 {} hevc {} 10 {} 444 {} 444/10 {} handle {}",
+                row.index,
+                name,
+                device,
+                row.h264,
+                row.hevc,
+                row.hevc_10,
+                row.hevc_444,
+                row.hevc_444_10,
+                row.handle
+            );
+            count += 1;
+        }
+        println!("{count} decoders");
     }
 }

@@ -20,7 +20,8 @@
 // `LOWLAT_SERVER` names the signaling service (kessel-ws.parsec.app by
 // default), `LOWLAT_DEVICE` a render node for the decoder (the first that
 // decodes by default), `LOWLAT_DECODER` one of `auto`, `open`, `vendor`,
-// `none`.
+// `none`. The decoders this machine can open are printed at start, one
+// row each, and `LOWLAT_DECODER_INDEX` picks a row by its number instead.
 // `LOWLAT_HEVC`, `LOWLAT_10BIT` and `LOWLAT_444` are the preferences the
 // attempt starts with: each is "prefer this if the host has it", masked by
 // what the decoder takes before anything is declared.
@@ -985,6 +986,27 @@ int main(void)
 		: strcmp(decoder, "vendor") == 0 ? LOWLAT_DECODER_VENDOR : LOWLAT_DECODER_AUTO;
 	info.frame_kind = LOWLAT_FRAME_PLANES;
 	snprintf(info.device, sizeof info.device, "%s", device);
+
+	// What this machine can open, one row each; a row picked by number
+	// names the decoder and the device for creation.
+	const char *pick = getenv("LOWLAT_DECODER_INDEX");
+	lowlat_decoder_info row;
+	memset(&row, 0, sizeof row);
+	row.size = (uint32_t) sizeof row;
+	for (uint32_t i = 0; lowlat_enum_decoders(i, &row); i++) {
+		printf("demo: decoder [%u] %s on %s: h264 %ux%u, hevc %ux%u%s%s%s, %s\n",
+			row.index, row.name, row.device[0] ? row.device : "any device",
+			row.max_width_h264, row.max_height_h264,
+			row.max_width_hevc, row.max_height_hevc,
+			row.hevc_10 ? ", 10-bit" : "",
+			row.hevc_444 ? ", 4:4:4" : "",
+			row.hevc_444_10 ? ", 4:4:4 10-bit" : "",
+			row.handle ? "handles" : "planes only");
+		if (pick != NULL && strtoul(pick, NULL, 10) == row.index) {
+			info.decoder = row.decoder;
+			snprintf(info.device, sizeof info.device, "%s", row.device);
+		}
+	}
 	lowlat_status s = lowlat_client_create(&info, &d.client);
 	if (s != LOWLAT_OK) {
 		fprintf(stderr, "demo: no client: %s\n", lowlat_status_string(s));

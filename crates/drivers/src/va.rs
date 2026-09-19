@@ -31,6 +31,7 @@ pub type MaxNumEntrypoints = unsafe extern "C" fn(VADisplay) -> c_int;
 pub type QueryConfigEntrypoints =
     unsafe extern "C" fn(VADisplay, VAProfile, *mut VAEntrypoint, *mut c_int) -> VAStatus;
 pub type ErrorStr = unsafe extern "C" fn(VAStatus) -> *const c_char;
+pub type QueryVendorString = unsafe extern "C" fn(VADisplay) -> *const c_char;
 pub type GetConfigAttributes = unsafe extern "C" fn(
     VADisplay,
     VAProfile,
@@ -167,6 +168,7 @@ pub struct Vaapi {
     pub max_num_entrypoints: MaxNumEntrypoints,
     pub query_config_entrypoints: QueryConfigEntrypoints,
     pub error_str: ErrorStr,
+    pub query_vendor_string: QueryVendorString,
     pub get_config_attributes: GetConfigAttributes,
     pub query_surface_attributes: QuerySurfaceAttributes,
     pub create_config: CreateConfig,
@@ -229,6 +231,7 @@ impl Vaapi {
                 max_num_entrypoints: symbol!(c"vaMaxNumEntrypoints"),
                 query_config_entrypoints: symbol!(c"vaQueryConfigEntrypoints"),
                 error_str: symbol!(c"vaErrorStr"),
+                query_vendor_string: symbol!(c"vaQueryVendorString"),
                 get_config_attributes: symbol!(c"vaGetConfigAttributes"),
                 query_surface_attributes: symbol!(c"vaQuerySurfaceAttributes"),
                 create_config: symbol!(c"vaCreateConfig"),
@@ -354,6 +357,47 @@ impl<'a> Display<'a> {
         self.va.check(status)?;
         profiles.truncate(count(found));
         Ok(profiles)
+    }
+
+    /// The driver's own description of itself, for a label. Empty when the
+    /// driver gives none.
+    pub fn vendor(&self) -> String {
+        // SAFETY: the display is live; the string is the driver's, valid
+        // for the display's life, and copied out at once.
+        let text = unsafe { (self.va.query_vendor_string)(self.raw) };
+        if text.is_null() {
+            return String::new();
+        }
+        // SAFETY: a NUL-terminated string the driver owns.
+        unsafe { CStr::from_ptr(text) }
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    /// The largest picture one profile decodes, as the driver reports it;
+    /// zero where the driver does not say.
+    pub fn max_picture(&self, profile: VAProfile, entrypoint: VAEntrypoint) -> (u32, u32) {
+        let mut attribs = [
+            VAConfigAttrib {
+                type_: crate::ffi::va::VAConfigAttribMaxPictureWidth,
+                value: 0,
+            },
+            VAConfigAttrib {
+                type_: crate::ffi::va::VAConfigAttribMaxPictureHeight,
+                value: 0,
+            },
+        ];
+        // SAFETY: the display is live and the array is writable for the
+        // count passed.
+        let status = unsafe {
+            (self.va.get_config_attributes)(self.raw, profile, entrypoint, attribs.as_mut_ptr(), 2)
+        };
+        if self.va.check(status).is_err() {
+            return (0, 0);
+        }
+        // An attribute the driver does not support comes back as all ones.
+        let read = |value: u32| if value == u32::MAX { 0 } else { value };
+        (read(attribs[0].value), read(attribs[1].value))
     }
 
     /// The entry points the driver offers for one profile.

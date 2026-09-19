@@ -190,6 +190,22 @@ pub fn caps(cuvid: &Cuvid) -> Caps {
     }
 }
 
+/// The largest coded picture the device decodes for a codec, from the
+/// capability query, which is trusted for the size limits and nothing
+/// else; zero where it does not say.
+pub fn limits(cuvid: &Cuvid, codec: Codec) -> (u32, u32) {
+    let mut query: CUVIDDECODECAPS = zeroed();
+    query.eCodecType = match codec {
+        Codec::H264 => cudaVideoCodec_H264,
+        Codec::H265 => cudaVideoCodec_HEVC,
+    };
+    query.eChromaFormat = cudaVideoChromaFormat_420;
+    if cuvid.caps(&mut query).is_err() || query.bIsSupported == 0 {
+        return (0, 0);
+    }
+    (query.nMaxWidth, query.nMaxHeight)
+}
+
 /// The decoder over one device.
 pub struct Backend<'a> {
     cuda: &'a Cuda,

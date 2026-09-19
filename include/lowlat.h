@@ -127,6 +127,9 @@
 #endif
 
 #if defined(LOWLAT_CLIENT)
+/// The longest name a decoder's row carries.
+#define LOWLAT_DECODER_NAME_MAX 128
+
 /// The sound codec on the wire, as `lowlat_client_status.audio_codec`
 /// reports it.
 #define LOWLAT_AUDIO_OPUS 1
@@ -1206,6 +1209,42 @@ typedef struct lowlat_event {
 #endif
 
 #if defined(LOWLAT_CLIENT)
+/// One decoder this machine can open, as `lowlat_enum_decoders` reports
+/// it: what creation takes to open exactly this one, and what it decodes.
+typedef struct lowlat_decoder_info {
+    /// Set by the caller to `sizeof(lowlat_decoder_info)`.
+    uint32_t size;
+    /// Its position in the enumeration.
+    uint32_t index;
+    /// One of `lowlat_decoder`, `LOWLAT_DECODER_OPEN` or
+    /// `LOWLAT_DECODER_VENDOR`: what `lowlat_client_create_info.decoder`
+    /// names to open this one.
+    uint32_t decoder;
+    /// The largest coded picture per codec, as the device reports it; zero
+    /// where it does not say.
+    uint32_t max_width_h264;
+    uint32_t max_height_h264;
+    uint32_t max_width_hevc;
+    uint32_t max_height_hevc;
+    /// What it decodes. A preference in `lowlat_client_video_config` past
+    /// these is masked before anything is declared.
+    bool h264;
+    bool hevc;
+    bool hevc_10;
+    bool hevc_444;
+    bool hevc_444_10;
+    /// Whether it hands pictures out as a handle: what
+    /// `lowlat_client_create_info.frame_kind = LOWLAT_FRAME_HANDLE` needs.
+    bool handle;
+    uint8_t reserved[2];
+    /// The render node, NUL-terminated, for `lowlat_client_create_info
+    /// .device`; empty for the vendor's device when no node names it, which
+    /// creation takes as the first device.
+    char device[LOWLAT_OUTPUT_MAX];
+    /// The device's or driver's own name, NUL-terminated, for a label.
+    char name[LOWLAT_DECODER_NAME_MAX];
+} lowlat_decoder_info;
+
 /// What a client is created with.
 ///
 /// **Zeroed is the sensible default**: the first decoder that opens, planes,
@@ -2049,6 +2088,26 @@ lowlat_status lowlat_debug_panic(lowlat_host *hl) LOWLAT_NOEXCEPT;
 #endif
 
 #if defined(LOWLAT_CLIENT)
+/// The `index`-th decoder this machine can open, in a fixed order: the
+/// open decoder on each render node that decodes, then the vendor's on
+/// each of its devices. Callers iterate from zero until this returns
+/// false. Each call probes the devices afresh, a few milliseconds, so it
+/// is for a startup or a settings screen, not a loop.
+///
+/// A row is opened by creation with its `decoder` and `device`, and
+/// `frame_kind = LOWLAT_FRAME_HANDLE` on a row whose `handle` is set.
+///
+/// @param[in] index The position, from zero.
+/// @param[out] out One `lowlat_decoder_info` with `size` set, filled when
+/// there is a decoder at `index`.
+/// @returns True with `out` filled; false past the last decoder, or when
+/// `out` is null or its `size` is short.
+///
+/// @attention `out` is null or points to one `lowlat_decoder_info` whose `size` is
+/// set.
+bool lowlat_enum_decoders(uint32_t index,
+                          lowlat_decoder_info *out) LOWLAT_NOEXCEPT;
+
 /// Create a handle.
 ///
 /// @param[in] info One `lowlat_client_create_info` whose `size` says how much of it is set.

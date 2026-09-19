@@ -97,6 +97,12 @@ pub fn caps(display: &Display<'_>) -> Result<Caps> {
     })
 }
 
+/// The largest coded picture a display decodes for a codec, as the driver
+/// reports it; zero where it does not say.
+pub fn limits(display: &Display<'_>, codec: Codec) -> (u32, u32) {
+    display.max_picture(profile_for(codec, false), VAEntrypointVLD)
+}
+
 /// Open the runtime and a render node and ask what it decodes: the probe a
 /// client makes at creation, so a machine without a decoder is refused
 /// before anything connects.
