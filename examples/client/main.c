@@ -46,7 +46,17 @@
 // numbers rather than a judgement: presents and pictures in the second,
 // repeats (a present with no new picture) and skips (pictures published and
 // never shown, because a newer one had arrived), the decoder's figures, the
-// reader's lag, and the process's resident set.
+// reader's lag, and the process's resident set; then this side's figures
+// for the video channel (fragments, late arrivals, negatives sent, the
+// recent loss) beside the host's figures for this guest as its last guest
+// list carried them (`h_*`), which are the two ends of one path.
+//
+// The host's pointer is drawn by the toolkit from the picture the library
+// decodes, resampled with its hotspot by the ratio the picture is drawn at,
+// so a pointer from a host at twice the scale shows at the size it has in
+// the picture and shrinks with a letterboxed window; a pointer the host
+// withholds for touch is hidden here too. A rumble goes to the pad the host
+// named. The guest list is parsed here, with the toolkit's own reader.
 
 #include <inttypes.h>
 #include <math.h>
@@ -119,6 +129,38 @@ struct demo {
 	// The host's pointer mode, and whether the chord let go of it.
 	bool relative;
 	bool released;
+
+	// The host's pointer picture, kept at its native size; the toolkit is
+	// given it resampled by the drawn ratio, so a pointer from a host at
+	// twice the scale shows at the size it has in the picture and shrinks
+	// with a letterboxed window. The ratio last applied says when to redo it.
+	uint8_t *cursor_rgba;
+	uint32_t cursor_width;
+	uint32_t cursor_height;
+	uint32_t cursor_hot_x;
+	uint32_t cursor_hot_y;
+	uint32_t cursor_checksum;
+	double cursor_ratio;
+	bool cursor_suppressed;
+
+	// The room as the host describes it: this client's number, its own
+	// entry's owner flag and permissions, and the host's figures for it,
+	// drawn on the line beside this side's own.
+	uint32_t number;
+	bool owner;
+	bool perm_mouse;
+	bool perm_keyboard;
+	bool perm_gamepad;
+	uint32_t rosters;
+	double host_rtt_ms;
+	double host_mbps;
+	double host_encode_ms;
+	double host_decode_ms;
+	int32_t host_packets;
+	int32_t host_fast_rts;
+	int32_t host_slow_rts;
+	int32_t host_cg_events;
+	uint32_t rumbles;
 
 	// Switching the streamed output: the host's outputs and its current
 	// configuration, both asked for on the chord and acted on together.
@@ -246,6 +288,126 @@ static void apply_relative(struct demo *d)
 }
 
 static void ask_outputs(struct demo *d);
+
+// The ratio the picture is drawn at: the rectangle's width over the
+// picture's, as the picture is shown (a quarter turn swaps its sides). One
+// before there is a picture or a rectangle.
+static double drawn_ratio(const struct demo *d)
+{
+	uint32_t width = atomic_load(&d->picture_width);
+	uint32_t height = atomic_load(&d->picture_height);
+	uint32_t rotation = atomic_load(&d->picture_rotation);
+	bool turned = rotation == LOWLAT_ROTATION_90 || rotation == LOWLAT_ROTATION_270;
+	double across = turned ? height : width;
+	if (across == 0 || d->viewport[2] <= 0)
+		return 1.0;
+	return (double) d->viewport[2] / across;
+}
+
+// Give the toolkit the host's pointer at the drawn ratio: nearest-neighbour
+// resample of the native picture and of the hotspot with it. Skipped when
+// neither the picture nor the ratio changed.
+static void apply_cursor(struct demo *d)
+{
+	if (d->cursor_rgba == NULL)
+		return;
+	double ratio = drawn_ratio(d);
+	if (ratio == d->cursor_ratio)
+		return;
+	d->cursor_ratio = ratio;
+	uint32_t sw = (uint32_t) lrint((double) d->cursor_width * ratio);
+	uint32_t sh = (uint32_t) lrint((double) d->cursor_height * ratio);
+	if (sw == 0) sw = 1;
+	if (sh == 0) sh = 1;
+	uint32_t *scaled = malloc((size_t) sw * sh * 4);
+	if (scaled == NULL)
+		return;
+	const uint32_t *native = (const uint32_t *) d->cursor_rgba;
+	for (uint32_t y = 0; y < sh; y++) {
+		uint32_t sy = (uint32_t) ((uint64_t) y * d->cursor_height / sh);
+		for (uint32_t x = 0; x < sw; x++) {
+			uint32_t sx = (uint32_t) ((uint64_t) x * d->cursor_width / sw);
+			scaled[(size_t) y * sw + x] = native[(size_t) sy * d->cursor_width + sx];
+		}
+	}
+	MTY_AppSetRGBACursor(d->app, scaled, sw, sh,
+		(uint32_t) lrint((double) d->cursor_hot_x * ratio),
+		(uint32_t) lrint((double) d->cursor_hot_y * ratio));
+	free(scaled);
+}
+
+// One cursor event: keep the picture if one came, then apply.
+static void on_cursor(struct demo *d, const lowlat_cursor_event *c)
+{
+	if (c->image_update && c->image != NULL && c->image_len == (uint32_t) c->width * c->height * 4) {
+		uint8_t *copy = malloc(c->image_len);
+		if (copy != NULL) {
+			memcpy(copy, c->image, c->image_len);
+			free(d->cursor_rgba);
+			d->cursor_rgba = copy;
+			d->cursor_width = c->width;
+			d->cursor_height = c->height;
+			d->cursor_hot_x = c->hot_x;
+			d->cursor_hot_y = c->hot_y;
+			d->cursor_checksum = c->checksum;
+			d->cursor_ratio = 0.0;
+		}
+	}
+	apply_cursor(d);
+	// A pointer the host withholds for touch is not drawn here either; it
+	// is not relative mode, which the relative event handles.
+	if (c->suppressed != d->cursor_suppressed) {
+		d->cursor_suppressed = c->suppressed;
+		MTY_AppShowCursor(d->app, !c->suppressed);
+	}
+}
+
+// The room: find this client's own entry by its number and keep what the
+// host says about it -- owner, permissions, and its figures for this guest.
+// A body that does not parse is dropped, as an established client drops it.
+static void on_guest_list(struct demo *d, uint32_t number, const char *body)
+{
+	MTY_JSON *list = MTY_JSONParse(body);
+	if (list == NULL) {
+		printf("demo: guest list did not parse (%zu bytes)\n", strlen(body));
+		return;
+	}
+	d->rosters++;
+	d->number = number;
+	uint32_t n = MTY_JSONArrayGetLength(list);
+	for (uint32_t i = 0; i < n; i++) {
+		const MTY_JSON *guest = MTY_JSONArrayGetItem(list, i);
+		int32_t id = -1;
+		if (!MTY_JSONInt32(MTY_JSONObjGetItem(guest, "id"), &id) || (uint32_t) id != number)
+			continue;
+		MTY_JSONObjGetBool(guest, "owner", &d->owner);
+		const MTY_JSON *perms = MTY_JSONObjGetItem(guest, "perms");
+		if (perms != NULL) {
+			MTY_JSONObjGetBool(perms, "mouse", &d->perm_mouse);
+			MTY_JSONObjGetBool(perms, "keyboard", &d->perm_keyboard);
+			MTY_JSONObjGetBool(perms, "gamepad", &d->perm_gamepad);
+		}
+		const MTY_JSON *metrics = MTY_JSONObjGetItem(guest, "metrics");
+		const MTY_JSON *video = metrics != NULL && MTY_JSONGetType(metrics) == MTY_JSON_ARRAY
+			? MTY_JSONArrayGetItem(metrics, 0) : metrics;
+		if (video != NULL) {
+			MTY_JSONNumber(MTY_JSONObjGetItem(video, "networkLatency"), &d->host_rtt_ms);
+			MTY_JSONNumber(MTY_JSONObjGetItem(video, "bitrate"), &d->host_mbps);
+			MTY_JSONNumber(MTY_JSONObjGetItem(video, "encodeLatency"), &d->host_encode_ms);
+			MTY_JSONNumber(MTY_JSONObjGetItem(video, "decodeLatency"), &d->host_decode_ms);
+			MTY_JSONInt32(MTY_JSONObjGetItem(video, "packetsSent"), &d->host_packets);
+			MTY_JSONInt32(MTY_JSONObjGetItem(video, "fastRTs"), &d->host_fast_rts);
+			MTY_JSONInt32(MTY_JSONObjGetItem(video, "slowRTs"), &d->host_slow_rts);
+			MTY_JSONInt32(MTY_JSONObjGetItem(video, "cgEvents"), &d->host_cg_events);
+		}
+		break;
+	}
+	if (d->rosters == 1)
+		printf("demo: guest list: %u guests, this client is %u%s, mouse=%d keyboard=%d gamepad=%d\n",
+			n, number, d->owner ? " (owner)" : "", d->perm_mouse, d->perm_keyboard,
+			d->perm_gamepad);
+	MTY_JSONDestroy(&list);
+}
 
 static const char *video_words(const lowlat_client_video_config *v)
 {
@@ -495,6 +657,8 @@ static void place_picture(struct demo *d)
 	if (memcmp(rect, d->viewport, sizeof rect) != 0) {
 		memcpy(d->viewport, rect, sizeof rect);
 		lowlat_client_set_viewport(d->client, rect[0], rect[1], rect[2], rect[3]);
+		// The pointer is drawn at the picture's ratio, so it follows.
+		apply_cursor(d);
 	}
 }
 
@@ -605,6 +769,26 @@ static void pump_library(struct demo *d)
 				printf("demo: stream %u ended, status %d\n", (unsigned) e.body.stream_ended.stream,
 					(int) e.body.stream_ended.status);
 				break;
+			case LOWLAT_EVENT_HOST_MODE:
+				printf("demo: host mode %u\n", (unsigned) e.body.host_mode.mode);
+				break;
+			case LOWLAT_EVENT_CURSOR:
+				on_cursor(d, &e.body.cursor);
+				break;
+			case LOWLAT_EVENT_RUMBLE: {
+				// Eight bits each on the wire; the toolkit takes sixteen, and
+				// a byte broadcast into both halves maps the ends exactly.
+				const lowlat_rumble_event *r = &e.body.rumble;
+				d->rumbles++;
+				MTY_AppRumbleController(d->app, r->pad,
+					(uint16_t) (r->large | (r->large << 8)),
+					(uint16_t) (r->small | (r->small << 8)));
+				break;
+			}
+			case LOWLAT_EVENT_GUEST_LIST:
+				body[body_len] = '\0';
+				on_guest_list(d, e.body.guest_list.number, body);
+				break;
 			default:
 				break;
 		}
@@ -678,13 +862,24 @@ static void report(struct demo *d)
 	uint32_t snd_age_max = atomic_exchange(&d->snd_age_max, 0);
 	if (snd == 0)
 		snd_q_min = 0;
+	// This side's figures for the video channel, and beside them the host's
+	// for this guest as its last guest list carried them: the two ends of
+	// one path, each measured where it can be.
+	lowlat_client_metrics m;
+	memset(&m, 0, sizeof m);
+	m.size = (uint32_t) sizeof m;
+	lowlat_client_get_metrics(d->client, &m);
 	printf("demo: t=%" PRIu64 " presents=%u polls=%u pictures=%u repeats=%u skips=%u "
 		"codec=%s decode_us=%u readback_us=%u encode_us=%u queue=%u behind=%u behind_ms=%u "
 		"rtt_ms=%u mbit=%.1f decoded=%" PRIu64 " rss_mb=%" PRIu64 " keys=%u btn=%u wheel=%u "
 		"motion=%u pad=%u pad_events=%u input_dropped=%u "
 		"snd=%u snd_frames=%u snd_q_ms=%u snd_q_min=%u snd_q_max=%u snd_age_ms=%u "
 		"snd_queued=%u snd_dropped=%u snd_refused=%u snd_resync=%u snd_codec=%s "
-		"reported_us=%u snd_reported_us=%u asked=%#x declared=%#x stream_format=%u\n",
+		"reported_us=%u snd_reported_us=%u asked=%#x declared=%#x stream_format=%u "
+		"frag=%" PRIu64 " late=%" PRIu64 " dup=%" PRIu64 " oow=%" PRIu64 " nacks=%" PRIu64
+		" loss30=%.4f cursor=%u misses=%u refused=%u rumble=%u "
+		"guest=%u owner=%d rosters=%u h_rtt=%.1f h_mbps=%.2f h_enc=%.2f h_dec=%.2f "
+		"h_packets=%d h_fast=%d h_slow=%d h_cg=%d\n",
 		d->seconds, presents, polls, pictures, repeats, skips, codec,
 		st.decode_us, st.readback_us, st.encode_us, st.queue_depth, st.behind, st.behind_ms,
 		st.rtt_ms, mbit, st.decoded, rss, d->keys_sent, d->buttons_sent, d->wheels_sent,
@@ -694,7 +889,12 @@ static void report(struct demo *d)
 		st.audio_codec == LOWLAT_AUDIO_OPUS ? "opus"
 			: st.audio_codec == LOWLAT_AUDIO_PCM ? "pcm" : "-",
 		st.decode_reported_us, st.audio_reported_us, st.asked_flags, st.declared_flags,
-		st.stream_format);
+		st.stream_format,
+		m.video.fragments, m.video.late, m.video.duplicates, m.video.out_of_window,
+		m.video.nacks_sent, (double) m.video.loss_30s, st.cursor_images, st.cursor_misses,
+		st.cursor_refused, d->rumbles, st.number, d->owner, d->rosters, d->host_rtt_ms,
+		d->host_mbps, d->host_encode_ms, d->host_decode_ms, d->host_packets, d->host_fast_rts,
+		d->host_slow_rts, d->host_cg_events);
 	// The warning every client shows for hardware that cannot keep up,
 	// gated on the reader's lag rather than on any figure of the decoder's:
 	// thirty or more messages behind for sixty consecutive seconds, cleared
@@ -720,7 +920,7 @@ static void report(struct demo *d)
 	d->pad_sent = 0;
 	fflush(stdout);
 
-	char title[256];
+	char title[320];
 	uint32_t width = atomic_load(&d->picture_width);
 	if (width != 0) {
 		uint32_t rotation = atomic_load(&d->picture_rotation);
@@ -729,9 +929,9 @@ static void report(struct demo *d)
 			: format == LOWLAT_FORMAT_YUV444 ? "444"
 			: format == LOWLAT_FORMAT_YUV444_16 ? "444 10bit" : "8bit";
 		snprintf(title, sizeof title,
-			"lowlat | %ux%u %s %s%s | asked %s | %s | %u fps | rtt %u ms | enc %.1f ms | "
-			"dec %.1f ms | rb %.1f ms | q %u behind %u | skips %u | %.1f Mbit/s | snd %u ms | "
-			"rss %" PRIu64 " MB%s",
+			"lowlat | %ux%u %s %s%s | asked %s | %s | %u fps | rtt %u/%.0f ms | enc %.1f ms | "
+			"dec %.1f ms | rb %.1f ms | q %u behind %u | skips %u | %.1f/%.1f Mbit/s | "
+			"loss %.2f%% | snd %u ms | rss %" PRIu64 " MB | guest %u%s%s%s%s%s",
 			width, atomic_load(&d->picture_height), codec, colour,
 			rotation == LOWLAT_ROTATION_90 ? " 90deg"
 				: rotation == LOWLAT_ROTATION_180 ? " 180deg"
@@ -740,9 +940,11 @@ static void report(struct demo *d)
 			st.backend == LOWLAT_DECODER_OPEN ? "open planes"
 				: st.backend == LOWLAT_DECODER_VENDOR ? (d->handles ? "vendor handles" : "vendor planes")
 				: "no decoder",
-			pictures, st.rtt_ms, (double) st.encode_us / 1000.0,
+			pictures, st.rtt_ms, d->host_rtt_ms, (double) st.encode_us / 1000.0,
 			(double) st.decode_us / 1000.0, (double) st.readback_us / 1000.0, st.queue_depth,
-			st.behind, skips, mbit, atomic_load(&d->snd_q_ms), rss,
+			st.behind, skips, mbit, d->host_mbps, (double) m.video.loss_30s * 100.0,
+			atomic_load(&d->snd_q_ms), rss, st.number, d->owner ? " owner" : "",
+			d->perm_mouse ? " m" : "", d->perm_keyboard ? " k" : "", d->perm_gamepad ? " g" : "",
 			d->behind_warned ? " | CANNOT KEEP UP" : "");
 	} else {
 		snprintf(title, sizeof title, "lowlat | %s",
