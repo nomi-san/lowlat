@@ -309,8 +309,10 @@ to a seat that arrives later.
 
 **Ten-bit decode is as widely available as HEVC decode itself** -- every part in §3 to §5
 decodes it, and so does software -- so a guest asking for it is not asking for something
-exotic. **4:4:4 decode is not**, which is the other half of why it is out of v1: one vendor
-decodes none of it, and a client meeting a 4:4:4 stream there falls back to software or fails.
+exotic. **4:4:4 decode is not**: one vendor decodes none of it, and a client meeting a 4:4:4
+stream there falls back to software or fails. The client library of [10](10-client.md) asks
+for it only where its decoder was verified to decode it (§7a), so what it declares is what it
+takes.
 
 **A guest that cannot decode what it is sent is the one party that can tell**, and it says so
 by disconnecting with a decode status rather than by degrading quietly. A host reads that
@@ -319,17 +321,22 @@ status and reports it; it cannot detect the condition itself and does not guess.
 ### §7a The client library, on Linux
 
 The above is any guest. **A guest running the client library of [10](10-client.md) does have
-a requirement**: a hardware decoder reached through the open interface, because the library
-decodes in hardware or refuses ([10 §5.1](10-client.md)). What it needs of the part is the
-decode entry point for the stream's profile -- H.264 High, HEVC Main, HEVC Main 10 -- which
-on the open stack every part that encodes in §3 to §5 also has, and many older ones besides.
+a requirement**: a hardware decoder reached through the open interface or the vendor's,
+because the library decodes in hardware or refuses ([10 §5.1](10-client.md)). What it needs
+of the part is the decode entry point for the stream's profile -- H.264 High, HEVC Main, HEVC
+Main 10, and for full chroma the range-extensions profile -- which on the open stack every
+part that encodes in §3 to §5 also has, and many older ones besides. **Full chroma decode is
+declared only where the library has verified the surface it reads back**, which today is the
+vendor interface; the open stack lists the profile on some parts and the library does not
+ask for it there.
 
-| Part | Interface | H.264 High | HEVC Main | HEVC Main 10 | Evidence |
-|---|---|---|---|---|---|
-| AMD RDNA 2 (discrete) | VA-API, open stack 25.0.7 | yes | yes | yes | **measured**: eighteen clips from three encoders, every picture the reference decoder's; a 1080p stream at 120 pictures a second decodes in about 2 ms and reads back in about 2 ms |
-| Other AMD from Fiji (GCN 3) | VA-API | yes | yes | Polaris and later | from the driver's published profile tables; the same code path, not run here |
-| Intel from Broadwell | VA-API | yes | Skylake and later | Kaby Lake and later | from the driver's published profile tables; not run here |
-| NVIDIA | the vendor's decode interface | -- | -- | -- | the second backend, a later phase; the open interface has no driver for this vendor |
+| Part | Interface | H.264 High | HEVC Main | HEVC Main 10 | HEVC 4:4:4, 8 and 10 | Handle | Evidence |
+|---|---|---|---|---|---|---|---|
+| AMD RDNA 2 (discrete) | VA-API, open stack 25.0.7 | yes | yes | yes | no | no | **measured**: twenty-one clips from four encoders, every picture the reference decoder's; a 2560x1440 stream at 120 pictures a second decodes in about 2 ms and reads back in about 2 ms |
+| Other AMD from Fiji (GCN 3) | VA-API | yes | yes | Polaris and later | no | no | from the driver's published profile tables; the same code path, not run here |
+| Intel from Broadwell | VA-API | yes | Skylake and later | Kaby Lake and later | not asked for | no | from the driver's published profile tables; not run here |
+| NVIDIA RTX 5060 | the vendor's decode interface, driver 615 | yes | yes | yes | yes | yes, an opaque descriptor | **measured** (*2026-09-19*): every clip bit for bit, full chroma at both depths included; a 2560x1440 stream at 120 pictures a second decodes in 0.6 ms and reads back in 0.5-0.9 ms, or is copied on the device in 0.09 ms when handed out as a handle |
+| Other NVIDIA | the vendor's decode interface | from the interface's capability query | from the query | from the query | probed by building a decoder | yes | the creation-time probe builds a real decoder per combination, so a part that lacks one says so at creation; not run here |
 
 ---
 

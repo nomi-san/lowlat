@@ -375,25 +375,38 @@ lowlat_status lowlat_client_set_video_config(lowlat_client *cl, const lowlat_cli
 lowlat_status lowlat_client_get_metrics(lowlat_client *cl, lowlat_metrics *out);
 ```
 
-**Minor 8 (planned 2026-09-19): the preferences, the second backend and the handle.**
-`lowlat_client_config` gains a `video` block, `lowlat_client_video_config { resolution_x,
-resolution_y, hevc, ten_bit, chroma_444 }` -- the size request moves into it from the top
-level, and the three booleans are preferences, "this if the host has it", masked by what the
-decoder opened at creation decodes before anything is declared ([10 §7](10-client.md)); one
-block for the one stream. `lowlat_client_set_video_config` takes the same block mid-session:
-the new declaration goes out with a reinitialisation request and the decoder is torn down,
-so the next keyframe builds one for whatever the host now sends. Status gains what was asked,
-what was declared and what the stream is (`stream_ten_bit`, `stream_chroma_444` beside the
-codec). Two planar formats join the two: `LOWLAT_FORMAT_YUV444` and
-`LOWLAT_FORMAT_YUV444_16`, three planes at full size, ten bits in the high bits of sixteen
-as `P010` holds them. `LOWLAT_DECODER_VENDOR` is accepted at creation. `lowlat_frame` gains
-its handle: `handle_kind` (`LOWLAT_HANDLE_OPAQUE_FD` now, a buffer descriptor with modifier
-reserved), `fd`, `handle_size`, `modifier`, and each `lowlat_plane` an `offset`; a frame of
-kind handle leaves the plane pointers null. The descriptor is the library's for the lease and
-is closed when its slot set is freed, which happens after the last hold on that set is
-released, so an application that keeps one past a release duplicates it. `frame_kind =
-LOWLAT_FRAME_HANDLE` is accepted for the vendor backend and refused with
+**Minor 8 (2026-09-19): the preferences, the second backend, the handle, the decoders
+listed.** `lowlat_client_config` gains a `video` block, `lowlat_client_video_config {
+resolution_x, resolution_y, hevc, ten_bit, chroma_444 }` -- the size request moves into it
+from the top level, and the three booleans are preferences, "this if the host has it", masked
+by what the decoder opened at creation decodes before anything is declared
+([10 §7](10-client.md)); one block for the one stream. `lowlat_client_set_video_config` takes
+the same block mid-session: the new declaration goes out with a reinitialisation request and
+the decoder is torn down, so the next keyframe builds one for whatever the host now sends.
+Status gains what was asked, what was declared and what the stream is (`asked_flags`,
+`declared_flags`, `stream_format` beside the codec). Two planar formats join the two:
+`LOWLAT_FORMAT_YUV444` and `LOWLAT_FORMAT_YUV444_16`, three planes at full size, ten bits in
+the high bits of sixteen as `P010` holds them. `LOWLAT_DECODER_VENDOR` is accepted at
+creation.
+
+`lowlat_frame` gains its handle: `handle_kind` (`LOWLAT_HANDLE_OPAQUE_FD` now, a buffer
+descriptor with modifier reserved), `fd`, `handle_size`, `modifier`, an `allocation` number,
+and each `lowlat_plane` an `offset`; a frame of kind handle leaves the plane pointers null.
+The descriptor is the library's for the lease and is closed when the allocation behind it is
+freed, which happens after the last hold on it is released, so an application that keeps one
+past a release duplicates it -- and an import that takes ownership of what it is given (GL's
+does) is given a duplicate. **The application's import is keyed by `allocation`, not by the
+descriptor's number**: numbers are reused once closed, so the number alone cannot tell a new
+allocation from an old one; the ordinal can, and it also says which imports may be dropped.
+`frame_kind = LOWLAT_FRAME_HANDLE` is accepted for the vendor backend (and settles
+`LOWLAT_DECODER_AUTO` on it, since nothing else exports) and refused with
 `LOWLAT_ERR_DECODER_UNSUPPORTED` for the open stack in this minor.
+
+`lowlat_enum_decoders(index, out)` lists what this machine can open ([§6](#6-enumeration)):
+one `lowlat_decoder_info` per backend and device that decodes anything, carrying what
+creation takes to open exactly that one (`decoder`, `device`), what it decodes (the five
+capability rows), the size limits per codec, whether it hands out a handle, and the device's
+own name for a label.
 
 **Creation names the decoder** (minor 5). `lowlat_client_create_info` carries the backend by
 index (`LOWLAT_DECODER_AUTO`, the open interface, the vendor's from minor 8, or
@@ -701,6 +714,15 @@ failing, which is the same thing an application does with the answer.
 display, so today the answer is a consequence rather than a menu. Adding a function is additive;
 a call that answers nothing is worse than no call.
 
+**The decoders are a menu, so they are listed** (minor 8). `lowlat_enum_decoders(index, out)`
+fills the `index`-th `lowlat_decoder_info` and answers true, or false past the last, so a
+caller iterates from zero until false; the shape is the one an established client SDK's
+decoder list has. One row per backend and device that decodes anything, in a fixed order --
+the open interface on each render node that decodes, then the vendor's on each of its devices
+-- and every row is probed exactly the way creation probes it, so a row is a decoder creation
+will open, named by the two values creation takes. Each call probes afresh, a few
+milliseconds: for a startup or a settings screen, not a loop.
+
 Two-call pattern: pass `NULL` to learn the count, then a buffer. **Nothing returned by this API
 is heap allocated on the caller's behalf**, so there is no free function and no ownership
 question. The caller owns every buffer it passes.
@@ -831,12 +853,14 @@ the nine `lowlat_client_send_*` calls with `lowlat_pad_state`, the `LOWLAT_MOD_*
 `LOWLAT_AUDIO_OPUS` and `LOWLAT_AUDIO_PCM`, and in `lowlat_client_status` the packets decoded,
 dropped, refused and queued, the last packet's age and the codec.
 
-**Minor 8** (planned 2026-09-19) is the preferences, the second backend and the handle
-([§3b](#3b-client)): `lowlat_client_video_config` as `lowlat_client_config.video`, taking
-the size request with it; `lowlat_client_set_video_config`; the two full-chroma formats; the
-handle fields of `lowlat_frame` and `lowlat_plane.offset`; the vendor decoder accepted; the
-status fields for what was asked, declared and decoded. The size request moves, which is a
-layout change to `lowlat_client_config` under the rule below.
+**Minor 8** (2026-09-19) is the preferences, the second backend, the handle and the decoder
+list ([§3b](#3b-client), [§6](#6-enumeration)): `lowlat_client_video_config` as
+`lowlat_client_config.video`, taking the size request with it; `lowlat_client_set_video_config`;
+the two full-chroma formats; the handle fields of `lowlat_frame` and `lowlat_plane.offset`;
+`lowlat_handle_kind`; the vendor decoder accepted; the status fields for what was asked,
+declared and decoded; `lowlat_enum_decoders` with `lowlat_decoder_info`; the client's decode
+and sound figures as reported to the host. The size request moves, which is a layout change
+to `lowlat_client_config` under the rule below.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected

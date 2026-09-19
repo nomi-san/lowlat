@@ -1,7 +1,7 @@
 # 10 - The client
 
 **Status:** designed 2026-09-15, interview of the same day; C1 and C2 built 2026-09-17, C3
-and C4 2026-09-18; C5's decode half planned 2026-09-19.
+and C4 2026-09-18; C5's decode half planned and built 2026-09-19, its live gate open.
 Built by [impl-plan-client.md](impl-plan-client.md).
 
 The client is the other half of the same protocol: it receives what [05](05-host.md) produces.
@@ -136,27 +136,36 @@ that the application imports into its own device, with an offset and a pitch per
 application asks for a kind at creation and is told which it got; a decoder that cannot
 export hands out planes.
 
-**The handle has a kind, and the first kind is an opaque descriptor** (*planned 2026-09-19*).
+**The handle has a kind, and the first kind is an opaque descriptor** (*built 2026-09-19*).
 The vendor interface's decoded picture is not exportable: its pool is the interface's own
 and a mapped picture is a transient pointer. So on that backend the four slots of the queue
 are **exportable device allocations**, one descriptor each, and the backend does one
 device-side copy into the slot in place of the host read-back -- the copy the read-back was
-is gone, and what remains runs at the device's own bandwidth. The descriptor is the kind
-NVIDIA's GL and Vulkan import as external memory; the second kind, a buffer descriptor with
-its layout modifier, is the open stack's, which can export the decoded surface itself with
-no copy at all but must then hold that surface out of the decoder's pool for the lease,
-which is the fence's job; it comes later. Acquire returns after the copy has completed, so a
-null fence stays correct on the first kind, and a real fence is a refinement rather than a
-requirement.
+is gone, and what remains runs at the device's own bandwidth: **at 2560x1440 the read-back
+was 0.5-0.9 ms a picture and the device copy is 0.09 ms**, and the repeats and skips the
+read-back's jitter produced at 120 pictures a second (five of each in some seconds) are
+gone with it. The copy is queued on the backend's own stream behind the interface's map and
+the stream is waited for before the picture is unmapped, so acquire returns with the bytes
+in place and a null fence stays correct on this kind; a real fence is a refinement rather
+than a requirement. The descriptor is the kind NVIDIA's GL and Vulkan import as external
+memory; the second kind, a buffer descriptor with its layout modifier, is the open stack's,
+which can export the decoded surface itself with no copy at all but must then hold that
+surface out of the decoder's pool for the lease, which is the fence's job; it comes later.
 
-**Device slots are sized at the stream's size at the decoder's build, never at the
-ceiling.** Device memory is real where the host-memory slots' reserve is virtual: full
-chroma at sixteen bits is 200 MB a slot at the ceiling, and a 1080p stream would leave most
-of it idle. A build at a new size or layout allocates a fresh set of four with fresh
-descriptors; the frame carries its slot's descriptor, so the application's import is keyed
-by it and a new descriptor is a new import; the previous set is freed after its last hold
-is released, so a slot the application holds is never pulled from under it, which is the
-same rule the host-memory slots keep by never reallocating at all.
+**Device slots are sized at the stream's size, never at the ceiling.** Device memory is
+real where the host-memory slots' reserve is virtual: full chroma at sixteen bits is 200 MB a
+slot at the ceiling, and a 1080p stream would leave most of it idle. A slot is allocated when
+a picture of a new layout is about to be decoded into it, exported once, and the allocation
+before it is freed then -- which is after the last hold on it was released, because the ring
+lends a slot to the producer only once nothing holds it; so a slot the application holds is
+never pulled from under it, which is the same rule the host-memory slots keep by never
+reallocating at all. The frame carries its slot's descriptor and the allocation's ordinal,
+and **the application's import is keyed by the ordinal**: descriptor numbers are reused once
+closed, so the number alone cannot tell a new allocation from an old one, and an import whose
+ordinal no longer appears may be dropped. The renderer this was built against imports the
+descriptor as a buffer and fills its plane textures from that buffer at each plane's offset
+and pitch, a device-side transfer costing 0.05 ms for two planes at 2560x1440 -- so the
+pitch stays the library's and no tiled-image layout has to be negotiated.
 
 Each picture carries what the header and the bitstream said about it: size, rotation (applied
 by the renderer, not the decoder -- the picture arrives as the display was encoded, and a
@@ -304,8 +313,12 @@ with the stage named rather than asking the host for keyframes it would fail on 
 
 The choice is the application's by index, as the host's encoder is; unset, the first render
 node the open stack decodes on, and the vendor interface only where there is none, so on a
-machine with both the vendor backend is chosen by index. The device is named as a render
-node for either backend; the vendor's resolves it to the card behind it. Nothing is linked: a
+machine with both the vendor backend is chosen by index -- or by asking for handles, which
+only the vendor backend exports. The device is named as a render node for either backend;
+the vendor's resolves it to the card behind it. **What can be opened is listed** (*2026-09-19*):
+one row per backend and device that decodes anything, probed exactly as creation probes it,
+with what it decodes, its size limits and whether it exports a handle, so an application
+shows a menu or picks by capability rather than guessing at a name. Nothing is linked: a
 machine without either interface refuses with the stage named, exactly as a host without an
 encoder does. **Software decode is a decision deferred**, with its licence question attached
 ([09 §9](09-compatibility.md)); v1 is hardware or nothing.
@@ -344,10 +357,18 @@ open-stack driver): about 2 ms a picture live, as much as the decode itself, and
 of it the driver's own mapping of the surface rather than the copy out of it -- the copy is a
 quarter of a millisecond, and a streaming-load copy that makes it a twentieth moves the live
 figure six percent, so it was measured and not taken. The lever is the handle path of §4,
-which has no host copy; it arrives with the second backend.
+which has no host copy; it arrived with the second backend (*2026-09-19*: at 2560x1440 the
+vendor backend decodes in 0.6 ms and its read-back costs 0.5-0.9 ms, the open stack's 2.1
+and 2.0; with the handle the read-back becomes a 0.09 ms device copy).
+
+**The vendor backend is driven from the same readers** (*built 2026-09-19*): the picture and
+slice parameters its interface takes are filled from the jobs the open-stack backend
+stages, the interface's own parser unused -- it would be a second reader and a second
+picture buffer beside the ones every clip is checked against. Every committed clip decodes
+bit for bit on both backends, full chroma included on the vendor's.
 
 **Full chroma is the second codec's, in the range-extensions profile, and the readers read
-it** (*planned 2026-09-19*): the HEVC reader admits that profile at 4:2:0 and 4:4:4, eight
+it** (*built 2026-09-19*): the HEVC reader admits that profile at 4:2:0 and 4:4:4, eight
 and ten bits, and reads both extension syntaxes, whose fields the devices' picture
 parameters carry. H.264 stays at eight-bit 4:2:0, which is every device's whole answer for
 it. Two planar layouts join the two that exist, with the third plane already in the

@@ -3,6 +3,35 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-19 - Phase C5, the decode half built
+
+### Added
+- **The client reports its decode times** ([10 §7](10-client.md), [01 §11.4a](01-protocol.md)):
+  both kinds on a two-second clock, the smoothed figure of decode and hand-over per picture
+  and of the sound decode; the round-trip figure in status is live against a host that sends
+  nothing else to acknowledge.
+- **Full chroma in the HEVC reader** ([10 §5.1](10-client.md)): the range-extensions profile
+  at 4:2:0 and 4:4:4, both extension syntaxes; two planar formats, `LOWLAT_FORMAT_YUV444` and
+  `LOWLAT_FORMAT_YUV444_16` ([06 §3b](06-api.md)).
+- **The preferences** ([06 §3b](06-api.md), minor 8): `lowlat_client_config.video` with the
+  size request and the three colour preferences, masked by what the decoder takes;
+  `lowlat_client_set_video_config` mid-session; status says what was asked, declared and
+  decoded.
+- **The vendor decoder** ([10 §5.1](10-client.md), [09 §7a](09-compatibility.md)): driven from
+  the library's own readers, probed at creation by building a decoder per combination, every
+  clip bit for bit including full chroma; `LOWLAT_DECODER_VENDOR` accepted.
+- **The handle path** ([10 §4](10-client.md), [06 §3b](06-api.md)): `LOWLAT_FRAME_HANDLE` on
+  the vendor decoder hands out an opaque descriptor with per-plane offsets and an allocation
+  number; the read-back becomes a 0.09 ms device copy at 2560x1440.
+- **The decoders listed** ([06 §6](06-api.md)): `lowlat_enum_decoders` with one row per
+  backend and device, what it decodes, its limits and whether it exports a handle.
+- The application toolkit the demo draws with is a vendored tree with a provenance note; its
+  GL renderer imports the descriptor and fills its textures on the device.
+
+### Open
+- The live gate of the phase's decode half ([impl-plan-client.md](impl-plan-client.md), C5):
+  the ten-minute runs per backend and format, the established host, the mid-session toggle.
+
 ## 2026-09-19 - Phase C5 planned, the decode half first
 
 ### Decided
