@@ -3,6 +3,34 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-19 - Phase C5's second half built
+
+### Added
+- **The pointer decoded** ([10 §7](10-client.md), [06 §3b](06-api.md), minor 9):
+  `LOWLAT_EVENT_CURSOR` with the picture as RGBA from a buffer the handle owns, valid until
+  the next poll, the hotspot in its pixels, the suppressed flag and the position in window
+  units; the cache the initialization declares, kept by checksum and emptied on the host's
+  forget bit; a name not held delivers the rest; a picture already delivered travels as its
+  checksum alone. The reader takes 8-bit RGB and RGBA up to 512 square and is fuzzed.
+- **Rumble** (`LOWLAT_EVENT_RUMBLE`) and **the guest list** (`LOWLAT_EVENT_GUEST_LIST`, the
+  body through the caller's buffer with the recipient's number; `number` in status).
+- **The client's metrics** (`lowlat_client_get_metrics`, [10 §9](10-client.md)): per
+  channel the fragments arrived, arrived late, duplicates, out-of-window drops, negatives
+  sent, bytes, messages and a recent-loss figure over about thirty seconds; the round trip
+  and the connected time.
+- The demo draws the pointer at the picture's ratio, rumbles the pad named, reads the guest
+  list with its toolkit and puts the host's figures for this guest beside its own.
+
+### Changed
+- The receive ring counts what it accepted and what arrived behind a later fragment; the
+  session counts the negatives it sent per channel ([01 §9](01-protocol.md) unchanged on the
+  wire).
+
+### Fixed
+- **The demo's sticks were upside down on an established host**: the toolkit already hands
+  a stick over with away-from-the-player positive, the wire's convention, and the demo
+  negated it again on a trace read backwards at C3. The values pass through now.
+
 ## 2026-09-19 - Phase C5's second half planned
 
 ### Decided

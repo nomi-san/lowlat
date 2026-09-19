@@ -234,6 +234,10 @@ the rules are [10 §8](10-client.md).
    seconds; with presenting on its own thread the toolkit delivered up to 610 pad reports
    a second and none were late. The stick's vertical sign is the wire's up-is-positive, read
    live: a stick pushed down arrived from the toolkit as +32767 and left as -32767.*
+   *Corrected 2026-09-19, at C5's second half: that trace was read backwards. The toolkit
+   already hands every stick over up-positive, so the demo's negation put down-positive on
+   the wire and a game on the established host looked the wrong way up; the values pass
+   through now, as every established client passes them.*
 2. Against this host: the host's own input log agrees with the demo's, message for message,
    for one minute of mixed input; the census shows every opcode the established client sends
    and nothing it does not. *Passed 2026-09-18, sixty seconds of scripted keys, clicks, wheel,
@@ -467,7 +471,7 @@ path.
 **Planned 2026-09-19, evening, interview of the same day.** The decisions are recorded once,
 here; the rules are [10 §7](10-client.md) and §9, the surface [06 §3b](06-api.md).
 
-- [ ] **The cursor, decoded.** The pointer message's picture is inflated and unfiltered in
+- [x] **The cursor, decoded.** The pointer message's picture is inflated and unfiltered in
   the library and handed to the application as RGBA at its native size, with the hotspot
   in the picture's own pixels, the suppressed flag, and the position the pointer reappears
   at on the way out of relative mode, in window units. **The picture is delivered from a
@@ -488,16 +492,16 @@ here; the rules are [10 §7](10-client.md) and §9, the surface [06 §3b](06-api
   display server draws a cursor at its native size, so the library hands over the picture
   and the application resamples picture and hotspot together (*an earlier draft had the
   hotspot "scaled into the window" by the library, which scales nothing*).
-- [ ] **Rumble** as an event: the pad the application named and the two motors as eight-bit
+- [x] **Rumble** as an event: the pad the application named and the two motors as eight-bit
   values; the application scales them to its toolkit's range.
-- [ ] **The guest list is handed over, not parsed.** The library needs nothing from its
+- [x] **The guest list is handed over, not parsed.** The library needs nothing from its
   body: its own number arrives beside it and goes into status, permissions gate nothing on
   this side because the host drops what it does not permit, and the figures in it are the
   application's panel. So it is an event carrying the recipient's number, with the body
   through the caller's buffer as an application message goes; the application finds itself
   by that number and drops a body it cannot read (*an earlier draft had the library parse it
   for the client's own permissions*).
-- [ ] **The client's own metrics**, in a shape of their own: per channel the fragments that
+- [x] **The client's own metrics**, in a shape of their own: per channel the fragments that
   arrived, those that arrived late -- behind a later one, which on this transport is a
   retransmission or a reorder -- duplicates, out-of-window drops, the negative
   acknowledgements sent, bytes and messages, and **a recent-loss figure**, late arrivals
@@ -509,24 +513,63 @@ here; the rules are [10 §7](10-client.md) and §9, the surface [06 §3b](06-api
   structure, half of whose fields a receiver cannot measure*). Minor 9.
 - [x] User data both ways, host mode, stream ended and blocked were built with the session
   (minor 4) and stay as they are.
-- [ ] The demo sets the toolkit's cursor from the picture, resampled with its hotspot by the
+- [x] The demo sets the toolkit's cursor from the picture, resampled with its hotspot by the
   drawn ratio; hides its pointer while the host's is suppressed; rumbles the pad the host
   named; parses the guest list with its toolkit, shows owner and permissions in the title
   and draws the host's figures for this guest on its line beside its own.
 
+**Built 2026-09-19, evening, deviations from the text above:** the picture already delivered,
+named or sent again, travels as its checksum alone -- the first live run against this host
+showed it naming the same picture a dozen times a second, each a decode for nothing -- so
+the application keeps the picture it was given and `image_update` says when there is a new
+one. The pictures the reader is checked against are six an established host sent in a
+recorded session (compressed, where this host's encoder writes stored blocks), against an
+independent decoder's pixels; the fuzz target ran five minutes clean on them. The receive
+ring's late-arrival count is what the loss figure reads; the recorded session's downlink,
+replayed, shows none at all, which is what a clean path reads.
+
 **Gate, second half:**
 
-1. Hermetic: the harness host sends a fresh picture, the same by name, a name after a
+1. [x] Hermetic: the harness host sends a fresh picture, the same by name, a name after a
    forget, a hidden pointer, rumble, blocked and unblocked, host mode and a guest list; the
    events come out in order with the right bytes, the miss delivers the position alone, and
    under the simulator's one percent loss the recent-loss figure reads about a hundredth on
-   the video channel after sixty simulated seconds and zero at zero loss.
-2. Gate C in full: ten minutes against an established host with picture, sound, input, the
+   the video channel after sixty simulated seconds and zero at zero loss. (*2026-09-19*:
+   every event in order; the miss delivers the position alone; the recent loss on the video
+   channel reads 0.3 to 2 times the link's one percent after thirty simulated seconds, zero
+   and no negative on a clean link, late arrivals without negatives under reorder alone.)
+2. [ ] Gate C in full: ten minutes against an established host with picture, sound, input, the
    cursor and relative mode, from a cold connect, on both backends; then the same against
-   this host with its ten-bit and 4:4:4 streams.
-3. The demo's panel and this host's roster agree on the figures they share: the round trip,
-   the rate, the decode time the host re-publishes; the negatives this client sent against
-   the fragments the host resent on them.
+   this host with its ten-bit and 4:4:4 streams. (*2026-09-19, the unattended half*,
+   `local/logs/2026-09-19-c5-gateC-*`: against the established host over the internet at
+   8-12 ms, from a cold connect, the vendor backend by handles for 599 s and the open stack
+   for 502 s -- the second ended from outside, not by a fault -- a mostly still desktop at
+   14-16 pictures a second and bursts to 113; decode 0.63 ms by the vendor's route and 2.1 ms
+   plus 2.0 of read-back by the open stack's; the reader at most one message behind; the
+   guest list every two seconds with this client its owner; 152 and 63 pointer pictures
+   decoded, none refused, no name missed; a rumble message from that host's game reached the
+   event. Against this host at ten-bit HEVC, vendor handles, 599 s with the desktop moving:
+   112 pictures a second at the median, decode 0.74 ms, device copy 0.13 ms, 323 pointer
+   pictures, 293 guest lists, no late arrival. **The interactive items are owed at the
+   desk**: typing, mouselook in and out, a drag out, the pointer changing shape under the
+   pointer, rumble from a game on both backends, the output cycle; this host's rumble probe
+   and its 4:4:4 stream on the by-hand host. The first desk session found two things the
+   unattended runs could not: the demo's sticks were upside down (its negation of the
+   toolkit's already-inverted vertical axes, since C3, corrected), and a pointer resampled
+   at a two percent shrink lost a row (the ratio is quantised now, native within a step).)
+3. [x] The demo's panel and this host's roster agree on the figures they share: the round
+   trip, the rate, the decode time the host re-publishes; the negatives this client sent
+   against the fragments the host resent on them. (*2026-09-19*: on the same line, this
+   host's re-published decode figure 0.86-0.87 ms against the client's reported 0.86; its
+   encode 3.98 ms against `encode_us` 3.9-4.2; its round trip 0.0-0.1 ms against ours 0;
+   the established host's 10.5 ms against ours 9, its 0.75 ms decode against our 0.76
+   reported, its 3.72 encode against `encode_us` 3.7. **The resends pair loosely by
+   construction**: over the internet the established host resent 262 fragments on our
+   negatives while this side counted 124 negatives sent, 123 late arrivals and 233
+   duplicates -- a lost fragment costs one late arrival and several duplicates, because the
+   host resends from the cumulative acknowledgement up to the named fragment, and one
+   negative can name several. The recent-loss figure peaked at 1.3 percent in a burst and
+   read zero for most of the run.)
 
 ## Phase C6 - Packaging and the second half of the header
 

@@ -120,7 +120,11 @@ Every byte that arrives from the network is parsed by a fuzz target:
 - control messages and their bodies
 - connectivity check messages
 - relay framing
-- cursor image decoding
+- **the pointer's picture** ([10 §7](10-client.md)): the PNG a host sends, taken apart,
+  inflated and unfiltered by the client's own reader, seeded with six pictures an
+  established host sent in a recorded session. Those six are also fixtures: each decodes
+  byte for byte to the pixels an independent decoder read out of it
+  (`scripts/decode-cursor.py`), the rule every clip follows.
 - signaling payloads, at the application layer
 - the browser pipe's record layer, fed datagrams in every state it passes through with a
   real peer advanced between them, and its association, fed bytes carried as real

@@ -319,10 +319,9 @@ have moved by itself; an application that kept its own copy would mark the wrong
 ## §3b Client
 
 **Planned 2026-09-15, built from 2026-09-17 by [impl-plan-client.md](impl-plan-client.md).**
-The first block below is in the header (minor 4 the session, minor 5 the pictures, minor 6
-the input, minor 7 the sound); the second is the shape the rest will take, fixed here so the
-header can grow into it. A signature that has not landed is not in the header yet, and the header is the
-truth.
+Everything below is in the header (minor 4 the session, minor 5 the pictures, minor 6 the
+input, minor 7 the sound, minor 8 the preferences and the handle, minor 9 the cursor and the
+metrics); the header is the truth.
 
 ```c
 lowlat_status lowlat_client_create(const lowlat_client_create_info *info, lowlat_client **out);
@@ -368,14 +367,12 @@ lowlat_status lowlat_client_send_release_all(lowlat_client *cl);
 
 lowlat_status lowlat_client_acquire_audio(lowlat_client *cl, uint32_t timeout_ms,
                                           int16_t *samples, uint32_t *count);
-```
 
-```c
 lowlat_status lowlat_client_set_video_config(lowlat_client *cl, const lowlat_client_video_config *cfg);
 lowlat_status lowlat_client_get_metrics(lowlat_client *cl, lowlat_client_metrics *out);
 ```
 
-**Minor 9 (planned 2026-09-19, evening): the cursor, rumble, the guest list, the client's
+**Minor 9 (2026-09-19, evening): the cursor, rumble, the guest list, the client's
 metrics.** Three events join §5's set. `LOWLAT_EVENT_CURSOR` carries the pointer as the
 host described it -- hidden, relative, suppressed, the position it reappears at in window
 units, the hotspot in the picture's own pixels, the picture's size and its checksum -- and,
@@ -388,16 +385,20 @@ native size and the library scales nothing: the application resamples picture an
 by the ratio of its rectangle to the picture, as an established client does
 ([10 §7](10-client.md)). A picture the reader cannot take (anything but 8-bit RGB or RGBA,
 non-interlaced, up to 512 square) is dropped and counted in status, the rest of the update
-delivered. `LOWLAT_EVENT_RUMBLE` names the pad the application reported and the two motors
-as eight-bit values. `LOWLAT_EVENT_GUEST_LIST` carries the recipient's own number and the
+delivered; **the picture already delivered, named or sent again, travels as its checksum
+alone**, so a host that repeats the name on every update does not have it decoded on every
+update -- the application keeps the picture it was given. `LOWLAT_EVENT_RUMBLE` names the
+pad the application reported and the two motors as eight-bit values. `LOWLAT_EVENT_GUEST_LIST` carries the recipient's own number and the
 list's body through the caller's buffer, exactly as user data does; the library reads
 nothing in it, and `lowlat_client_status.number` carries the same number for a late reader.
 `lowlat_client_get_metrics` fills `lowlat_client_metrics { size, connected_ms, rtt_ms,
-control, audio, video }`, each channel a `lowlat_client_channel_metrics { fragments, late,
+control, video, audio }`, each channel a `lowlat_client_channel_metrics { fragments, late,
 duplicates, out_of_window, nacks_sent, bytes, messages, loss_30s }` as [10 §9](10-client.md)
 defines them -- the receiver's own figures under the receiver's names; the host's figures for
 this guest reach the application through the guest list, on the host's `lowlat_metrics`,
-so a panel shows both ends of one path from the structure each end can fill.
+so a panel shows both ends of one path from the structure each end can fill. Status gains
+`number` and the pointer's three counts (pictures delivered, names not held, pictures
+refused).
 
 **Minor 8 (2026-09-19): the preferences, the second backend, the handle, the decoders
 listed.** `lowlat_client_config` gains a `video` block, `lowlat_client_video_config {

@@ -2,7 +2,7 @@
 
 **Status:** designed 2026-09-15, interview of the same day; C1 and C2 built 2026-09-17, C3
 and C4 2026-09-18; C5's decode half planned, built and gated 2026-09-19, its second half
-planned the same evening.
+planned and built the same evening.
 Built by [impl-plan-client.md](impl-plan-client.md).
 
 The client is the other half of the same protocol: it receives what [05](05-host.md) produces.
@@ -452,7 +452,7 @@ Anything else is ignored. **A clean departure is opcode 10 with a zero status**,
 moment on the reliable channel before the session goes away; a client that breaks sends
 nothing, and a host learns it from its delivery deadline.
 
-**The pointer's picture is decoded here and scaled nowhere here** (*planned 2026-09-19,
+**The pointer's picture is decoded here and scaled nowhere here** (*built 2026-09-19,
 evening*). The picture travels as a PNG ([01 §11.2](01-protocol.md)); the library inflates
 and unfilters it -- 8-bit RGB or RGBA, non-interlaced, up to 512 square, which decoded is
 the 1 MiB an established client's buffer holds -- and anything else is refused with the
@@ -464,7 +464,10 @@ name it does not hold as an update without a picture (counted in status), and ta
 size and hotspot of a name that carries no size from what was stored with the picture. The
 decoded picture is handed to the application from a buffer the handle owns, valid until
 its next poll, so no application sizes a scratch buffer at the ceiling of a picture it
-sees a few times an hour. **Scaling is the application's**: an established client scales
+sees a few times an hour; and **the picture already delivered, named or sent again, travels
+as its checksum alone** (*built 2026-09-19*): this host repeats the name on many updates
+that change nothing about the picture, and decoding it on each would be work for nothing
+-- the application keeps the picture it was given. **Scaling is the application's**: an established client scales
 the pointer by the viewport it drew into, or by its display's scale, so a pointer from a
 host at twice the scale shows at the size it has in the picture and shrinks with a
 letterboxed window. The library cannot do that -- it does not own the toolkit's cursor, and
@@ -576,7 +579,7 @@ behind the reader is, the decode and hand-over times, the queue depth, the host'
 time as it reported it, the sound figures, the declaration and the stream, and this
 client's own number in the room.
 
-**The client's metrics have a shape of their own** (*planned 2026-09-19, evening*; an
+**The client's metrics have a shape of their own** (*built 2026-09-19, evening*; an
 earlier draft put them on the host's structure). The host's per-guest figures are a
 sender's -- fragments put on the wire, the resends it took on a negative acknowledgement
 and on its timeout, its congestion events, its window and stale count -- and a receiver can
