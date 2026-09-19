@@ -22,6 +22,9 @@
 // decodes by default), `LOWLAT_DECODER` one of `auto`, `open`, `vendor`,
 // `none`. The decoders this machine can open are printed at start, one
 // row each, and `LOWLAT_DECODER_INDEX` picks a row by its number instead.
+// `LOWLAT_HANDLE` asks for pictures as device handles, which the renderer
+// imports and draws with no copy through this process; only a decoder that
+// exports them (a row saying "handles") can be opened for that.
 // `LOWLAT_HEVC`, `LOWLAT_10BIT` and `LOWLAT_444` are the preferences the
 // attempt starts with: each is "prefer this if the host has it", masked by
 // what the decoder takes before anything is declared.
@@ -77,6 +80,8 @@ struct demo {
 	atomic_uint picture_height;
 	atomic_uint picture_rotation;
 	atomic_uint picture_format;
+	// Whether pictures arrive as device handles, asked at creation.
+	bool handles;
 	pthread_t presenter;
 
 	// Sound: the device, on a thread of its own that acquires and queues.
@@ -719,8 +724,9 @@ static void report(struct demo *d)
 				: rotation == LOWLAT_ROTATION_180 ? " 180deg"
 				: rotation == LOWLAT_ROTATION_270 ? " 270deg" : "",
 			video_words(&d->video),
-			st.backend == LOWLAT_DECODER_OPEN ? "open CPU"
-				: st.backend == LOWLAT_DECODER_VENDOR ? "vendor CPU" : "no decoder",
+			st.backend == LOWLAT_DECODER_OPEN ? "open planes"
+				: st.backend == LOWLAT_DECODER_VENDOR ? (d->handles ? "vendor handles" : "vendor planes")
+				: "no decoder",
 			pictures, st.rtt_ms, (double) st.encode_us / 1000.0,
 			(double) st.decode_us / 1000.0, (double) st.readback_us / 1000.0, st.queue_depth,
 			st.behind, skips, mbit, atomic_load(&d->snd_q_ms), rss,
@@ -770,6 +776,13 @@ static void *present_loop(void *opaque)
 	struct demo *d = opaque;
 	if (!MTY_WindowSetGFX(d->app, d->window, MTY_GFX_GL, true)) {
 		fprintf(stderr, "demo: no graphics context\n");
+		atomic_store(&d->quit, true);
+		return NULL;
+	}
+	// A handle is only drawable on a context that imports one: asked once,
+	// before any picture, rather than found out per frame.
+	if (d->handles && !MTY_WindowIsValidHardwareFrame(d->app, d->window, NULL, NULL)) {
+		fprintf(stderr, "demo: this graphics context does not import device handles\n");
 		atomic_store(&d->quit, true);
 		return NULL;
 	}
@@ -823,13 +836,29 @@ static void *present_loop(void *opaque)
 				: (deep ? MTY_COLOR_FORMAT_2PLANES_16 : MTY_COLOR_FORMAT_2PLANES);
 			desc.chroma = full ? MTY_CHROMA_444 : MTY_CHROMA_420;
 			desc.filter = MTY_FILTER_LINEAR;
-			// The toolkit takes one image with the planes in sequence and
-			// the row length as a width; each plane's offset is the rows
-			// before it times that width, which is how the slot is laid
-			// out.
-			desc.imageWidth = f->planes[0].pitch / sample;
-			desc.imageHeight = (uint32_t) ((f->planes[1].data - f->planes[0].data)
-				/ f->planes[0].pitch);
+			// A handle is drawn from the toolkit's import of it, at each
+			// plane's offset and pitch; planes are one image with the
+			// planes in sequence and the row length as a width, each
+			// plane's offset being the rows before it times that width,
+			// which is how the slot is laid out.
+			MTY_HardwareFrame hw;
+			memset(&hw, 0, sizeof hw);
+			if (f->kind == LOWLAT_FRAME_HANDLE) {
+				hw.fd = f->fd;
+				hw.id = f->allocation;
+				hw.size = f->handle_size;
+				for (uint32_t p = 0; p < 3; p++) {
+					hw.offset[p] = f->planes[p].offset;
+					hw.pitch[p] = f->planes[p].pitch;
+				}
+				desc.hardware = true;
+				desc.imageWidth = f->width;
+				desc.imageHeight = f->height;
+			} else {
+				desc.imageWidth = f->planes[0].pitch / sample;
+				desc.imageHeight = (uint32_t) ((f->planes[1].data - f->planes[0].data)
+					/ f->planes[0].pitch);
+			}
 			desc.cropWidth = f->width;
 			desc.cropHeight = f->height;
 			desc.rotation = f->rotation == LOWLAT_ROTATION_90 ? MTY_ROTATION_90
@@ -843,7 +872,9 @@ static void *present_loop(void *opaque)
 			// toolkit's multiply is for samples in the low bits, and applied
 			// here it saturates the chroma into a uniform magenta.
 			desc.multiplyYUV = false;
-			MTY_WindowDrawQuad(d->app, d->window, f->planes[0].data, &desc);
+			MTY_WindowDrawQuad(d->app, d->window,
+				f->kind == LOWLAT_FRAME_HANDLE ? (const void *) &hw : (const void *) f->planes[0].data,
+				&desc);
 		} else {
 			MTY_WindowClear(d->app, d->window, 0.0f, 0.0f, 0.0f, 1.0f);
 		}
@@ -984,7 +1015,10 @@ int main(void)
 	info.decoder = strcmp(decoder, "none") == 0 ? LOWLAT_DECODER_NONE
 		: strcmp(decoder, "open") == 0 ? LOWLAT_DECODER_OPEN
 		: strcmp(decoder, "vendor") == 0 ? LOWLAT_DECODER_VENDOR : LOWLAT_DECODER_AUTO;
-	info.frame_kind = LOWLAT_FRAME_PLANES;
+	// Pictures as device handles the renderer imports, on a decoder that
+	// exports them; the decoder is then the vendor's whatever was asked.
+	d.handles = getenv("LOWLAT_HANDLE") != NULL;
+	info.frame_kind = d.handles ? LOWLAT_FRAME_HANDLE : LOWLAT_FRAME_PLANES;
 	snprintf(info.device, sizeof info.device, "%s", device);
 
 	// What this machine can open, one row each; a row picked by number

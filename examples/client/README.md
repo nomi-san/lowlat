@@ -11,8 +11,15 @@ does not speak ([docs/06-api.md](../../docs/06-api.md) section 4).
 `make` builds the toolkit from its tree, the library in release, and the demo.
 The token is what `lowlat-login` produces; the peer id is the host's, as its
 service prints it. `LOWLAT_DEVICE` names a render node for the decoder (the
-first that decodes by default), `LOWLAT_DECODER` picks `auto`, `open` or
-`none`, and `LOWLAT_SERVER` names the signaling service.
+first that decodes by default), `LOWLAT_DECODER` picks `auto`, `open`,
+`vendor` or `none`, and `LOWLAT_SERVER` names the signaling service. The
+decoders this machine can open are printed at start, one numbered row each
+with what it decodes, and `LOWLAT_DECODER_INDEX` picks a row by number.
+`LOWLAT_HEVC`, `LOWLAT_10BIT` and `LOWLAT_444` are the preferences the
+attempt starts with, masked by what the decoder takes; Ctrl+Alt+C cycles
+them live. `LOWLAT_HANDLE` asks for pictures as device handles, which the
+toolkit's renderer imports and draws with nothing copied through this
+process; only a decoder whose row says "handles" opens that way.
 
 Three more are for measuring rather than watching. `LOWLAT_FPS` asks the
 host for that frame rate through the application protocol once the first
