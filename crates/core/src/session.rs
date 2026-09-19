@@ -14,7 +14,7 @@
 //! Storage for the per-channel rings is lent by the caller, so a session that
 //! carries only control and video costs two rings rather than nineteen.
 
-use crate::channel::{Drops, RecvRing, Stored};
+use crate::channel::{Arrivals, Drops, RecvRing, Stored};
 use crate::envelope::{ENVELOPE_LEN, Envelope};
 use crate::error::{Error, Result};
 use crate::message::Message;
@@ -164,6 +164,8 @@ pub struct Session<'a> {
     trigger: (u8, u32),
     /// Whether that fragment revealed a gap on its own channel.
     trigger_nack: bool,
+    /// Acknowledgements sent with the negative bit, per channel named.
+    nacks_sent: [u64; CHANNEL_COUNT],
 
     /// Which channel the output drain is working through.
     drain_channel: usize,
@@ -199,6 +201,7 @@ impl<'a> Session<'a> {
             ack_kind: AckKind::Ack,
             trigger: (0, 0),
             trigger_nack: false,
+            nacks_sent: [0; CHANNEL_COUNT],
             drain_channel: 0,
             drain_started: false,
             peer_identified: false,
@@ -293,6 +296,16 @@ impl<'a> Session<'a> {
     /// Stores the ring on `channel` refused, counted per kind.
     pub fn recv_drops(&self, channel: u8) -> Option<Drops> {
         Some(self.recv.get(channel as usize)?.as_ref()?.drops())
+    }
+
+    /// Stores the ring on `channel` accepted, and how many arrived late.
+    pub fn recv_arrivals(&self, channel: u8) -> Option<Arrivals> {
+        Some(self.recv.get(channel as usize)?.as_ref()?.arrivals())
+    }
+
+    /// Acknowledgements sent with the negative bit naming `channel`.
+    pub fn nacks_sent(&self, channel: u8) -> u64 {
+        self.nacks_sent.get(channel as usize).copied().unwrap_or(0)
     }
 
     /// Anchor a receive channel at `sequence`.
@@ -647,6 +660,11 @@ impl<'a> Session<'a> {
             // all. A peer with fewer reads the prefix it understands.
             reported: CHANNEL_COUNT,
         };
+        if ack.nack
+            && let Some(count) = self.nacks_sent.get_mut(usize::from(ack.trigger_channel))
+        {
+            *count = count.saturating_add(1);
+        }
         // The negative spans one emission: it was captured with the trigger
         // it belongs to, and the next acknowledgement carries its own.
         self.trigger_nack = false;
@@ -1103,6 +1121,17 @@ mod tests {
         let ack = next_ack(&mut right, 2.0);
         assert!(ack.nack, "a loss inside the floor waited");
         assert_eq!((ack.trigger_channel, ack.trigger_seq), (VIDEO, 4));
+        // The negative was counted on the channel it named, and the clean
+        // acknowledgement before it was not.
+        assert_eq!(right.nacks_sent(VIDEO), 1);
+        assert_eq!(right.nacks_sent(CONTROL), 0);
+        assert_eq!(
+            right.recv_arrivals(VIDEO),
+            Some(Arrivals {
+                fragments: 2,
+                late: 0
+            })
+        );
     }
 
     /// The floor's second bypass: the last fragment of a message is answered

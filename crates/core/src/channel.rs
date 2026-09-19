@@ -66,6 +66,23 @@ pub struct Drops {
     pub too_large: u64,
 }
 
+/// Stores the ring accepted, and how many of them arrived behind a later
+/// fragment.
+///
+/// **A late arrival is a retransmission or a reorder**, and on a path that
+/// delivers in order it is the former: the sender resends only what it was
+/// told is missing or what its timeout gave up waiting for, so the count is
+/// the receiver's own view of the loss the sender is repairing. The ratio of
+/// the two over a window is the recent-loss figure a client reports.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Arrivals {
+    /// Fragments placed in a slot: first arrivals, never duplicates.
+    pub fragments: u64,
+    /// Of those, the ones that arrived below the highest sequence already
+    /// seen.
+    pub late: u64,
+}
+
 /// Per-slot bookkeeping, kept out of the body storage so bodies stay a flat
 /// byte arena.
 #[derive(Debug, Clone, Copy, Default)]
@@ -87,6 +104,7 @@ pub struct RecvRing<'a> {
     /// One past the highest sequence seen, for gap detection.
     highest: u32,
     drops: Drops,
+    arrivals: Arrivals,
 }
 
 impl<'a> RecvRing<'a> {
@@ -108,6 +126,7 @@ impl<'a> RecvRing<'a> {
             cumulative: 0,
             highest: 0,
             drops: Drops::default(),
+            arrivals: Arrivals::default(),
         })
     }
 
@@ -134,6 +153,11 @@ impl<'a> RecvRing<'a> {
     /// Stores this ring refused, counted per kind.
     pub fn drops(&self) -> Drops {
         self.drops
+    }
+
+    /// Stores this ring accepted, and how many arrived late.
+    pub fn arrivals(&self) -> Arrivals {
+        self.arrivals
     }
 
     /// True if something arrived past the contiguous frontier, so a fragment is
@@ -166,7 +190,9 @@ impl<'a> RecvRing<'a> {
     pub fn store(&mut self, sequence: u32, body: &[u8]) -> Stored {
         let stored = self.store_inner(sequence, body);
         match stored {
-            Stored::Accepted => {}
+            Stored::Accepted => {
+                self.arrivals.fragments = self.arrivals.fragments.saturating_add(1);
+            }
             Stored::Duplicate => self.drops.duplicate = self.drops.duplicate.saturating_add(1),
             Stored::OutOfWindow => {
                 self.drops.out_of_window = self.drops.out_of_window.saturating_add(1);
@@ -215,6 +241,10 @@ impl<'a> RecvRing<'a> {
         let next = sequence.wrapping_add(1);
         if seq::gt(next, self.highest) {
             self.highest = next;
+        } else {
+            // A fragment past this one was already here: a retransmission,
+            // or a reorder on a path that reorders.
+            self.arrivals.late = self.arrivals.late.saturating_add(1);
         }
         self.advance();
         Stored::Accepted
@@ -583,6 +613,44 @@ mod tests {
         // Delivered, so a retransmission is still a duplicate and never
         // overwrites a slot the reader has moved past.
         assert_eq!(ring.store(0, &parts[0]), Stored::Duplicate);
+    }
+
+    #[test]
+    fn a_late_arrival_counts_once_and_a_duplicate_never() {
+        let mut storage = Storage::new();
+        let mut ring = storage.ring();
+        let parts = fragments(b"abc", SLOT);
+        // In order: nothing is late.
+        assert_eq!(ring.store(0, &parts[0]), Stored::Accepted);
+        assert_eq!(ring.store(1, &parts[0]), Stored::Accepted);
+        assert_eq!(
+            ring.arrivals(),
+            Arrivals {
+                fragments: 2,
+                late: 0
+            }
+        );
+        // Three lost, four arrives, then three: three is late.
+        assert_eq!(ring.store(3, &parts[0]), Stored::Accepted);
+        assert_eq!(ring.store(2, &parts[0]), Stored::Accepted);
+        assert_eq!(
+            ring.arrivals(),
+            Arrivals {
+                fragments: 4,
+                late: 1
+            }
+        );
+        // A retransmission of what is already here is a duplicate, counted
+        // there and not as an arrival.
+        assert_eq!(ring.store(2, &parts[0]), Stored::Duplicate);
+        assert_eq!(
+            ring.arrivals(),
+            Arrivals {
+                fragments: 4,
+                late: 1
+            }
+        );
+        assert_eq!(ring.drops().duplicate, 1);
     }
 
     #[test]

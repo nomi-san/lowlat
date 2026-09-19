@@ -573,6 +573,17 @@ fn a_full_session_replays_the_received_direction() {
             ours, theirs,
             "channel {channel}: our frontier {ours} differs from the peer's {theirs}"
         );
+        // The recording's downlink carried no retransmission, so every late
+        // arrival here is a reorder; the count is reported, and every
+        // sequence below the frontier was accepted exactly once, so the
+        // arrivals cover the frontier at least.
+        let arrivals = session.recv_arrivals(channel).expect("ring attached");
+        eprintln!("channel {channel}: arrivals {arrivals:?}");
+        assert!(
+            arrivals.fragments >= u64::from(ours),
+            "channel {channel}: {} accepted stores below a frontier of {ours}",
+            arrivals.fragments
+        );
     }
     assert!(delivered > 1000, "too few messages delivered: {delivered}");
 }
