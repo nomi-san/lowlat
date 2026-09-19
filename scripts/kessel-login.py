@@ -87,7 +87,9 @@ def login():
     if tfa:
         body["tfa"] = tfa
     status, answer = call("POST", "/v2/auth", body)
-    if status == 200 and isinstance(answer, dict) and answer.get("session_id"):
+    # A created session answers 201, which is what the service returns today;
+    # accepting only 200 throws a successful login away.
+    if status in (200, 201) and isinstance(answer, dict) and answer.get("session_id"):
         return answer
     if status == 403 and "ip_unverified" in reason(answer):
         sys.exit(
