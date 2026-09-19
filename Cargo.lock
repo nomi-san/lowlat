@@ -775,6 +775,7 @@ dependencies = [
  "lowlat-core",
  "lowlat-crypto",
  "lowlat-decode",
+ "lowlat-drivers",
  "lowlat-host",
  "lowlat-inject",
  "lowlat-net",

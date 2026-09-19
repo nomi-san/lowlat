@@ -12,5 +12,6 @@
 //! above, in `lowlat-encode` and `lowlat-decode`.
 
 pub mod cuda;
+pub mod cuvid;
 pub mod ffi;
 pub mod va;

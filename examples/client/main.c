@@ -19,7 +19,8 @@
 //
 // `LOWLAT_SERVER` names the signaling service (kessel-ws.parsec.app by
 // default), `LOWLAT_DEVICE` a render node for the decoder (the first that
-// decodes by default), `LOWLAT_DECODER` one of `auto`, `open`, `none`.
+// decodes by default), `LOWLAT_DECODER` one of `auto`, `open`, `vendor`,
+// `none`.
 // `LOWLAT_HEVC`, `LOWLAT_10BIT` and `LOWLAT_444` are the preferences the
 // attempt starts with: each is "prefer this if the host has it", masked by
 // what the decoder takes before anything is declared.
@@ -717,7 +718,8 @@ static void report(struct demo *d)
 				: rotation == LOWLAT_ROTATION_180 ? " 180deg"
 				: rotation == LOWLAT_ROTATION_270 ? " 270deg" : "",
 			video_words(&d->video),
-			st.backend == LOWLAT_DECODER_OPEN ? "open CPU" : "no decoder",
+			st.backend == LOWLAT_DECODER_OPEN ? "open CPU"
+				: st.backend == LOWLAT_DECODER_VENDOR ? "vendor CPU" : "no decoder",
 			pictures, st.rtt_ms, (double) st.encode_us / 1000.0,
 			(double) st.decode_us / 1000.0, (double) st.readback_us / 1000.0, st.queue_depth,
 			st.behind, skips, mbit, atomic_load(&d->snd_q_ms), rss,
@@ -979,7 +981,8 @@ int main(void)
 	memset(&info, 0, sizeof info);
 	info.size = (uint32_t) sizeof info;
 	info.decoder = strcmp(decoder, "none") == 0 ? LOWLAT_DECODER_NONE
-		: strcmp(decoder, "open") == 0 ? LOWLAT_DECODER_OPEN : LOWLAT_DECODER_AUTO;
+		: strcmp(decoder, "open") == 0 ? LOWLAT_DECODER_OPEN
+		: strcmp(decoder, "vendor") == 0 ? LOWLAT_DECODER_VENDOR : LOWLAT_DECODER_AUTO;
 	info.frame_kind = LOWLAT_FRAME_PLANES;
 	snprintf(info.device, sizeof info.device, "%s", device);
 	lowlat_status s = lowlat_client_create(&info, &d.client);

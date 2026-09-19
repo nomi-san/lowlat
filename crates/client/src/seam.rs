@@ -19,7 +19,9 @@ use lowlat_common::spsc::Ring;
 use lowlat_core::conn::Kind;
 use lowlat_core::envelope::Cipher;
 use lowlat_crypto::Credentials;
-use lowlat_decode::vaapi;
+use lowlat_decode::{nvdec, vaapi};
+use lowlat_drivers::cuda::{self, PciAddress};
+use lowlat_drivers::cuvid;
 use lowlat_net::{Guest, Wake};
 
 use crate::config::{Backend, Caps, Config, Decoding, FrameKind, Video};
@@ -138,6 +140,15 @@ pub enum Error {
     TooSmall(usize),
 }
 
+/// The decoder settled at creation: which backend, on which device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Opened {
+    /// The open stack, on a render node.
+    Vaapi(CString),
+    /// The vendor's interface, on the device at an address, or the first.
+    Nvdec(Option<PciAddress>),
+}
+
 /// Where building a decoder stopped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DecoderStage {
@@ -193,9 +204,8 @@ pub struct Client {
     events: Option<events::Receiver<Event>>,
     telemetry: Arc<Telemetry>,
     units: Units,
-    /// The render node the decoder opens, settled at creation; none for a
-    /// client without a decoder.
-    node: Option<CString>,
+    /// The decoder opened at creation; none for a client without one.
+    opened: Option<Opened>,
     /// What that decoder takes, which the declaration is masked with.
     caps: Caps,
     frames: Arc<Frames>,
@@ -217,6 +227,37 @@ fn stage_of(error: &vaapi::Error) -> DecoderStage {
         ) => DecoderStage::Runtime,
         vaapi::Error::NoProfile => DecoderStage::Profile,
         _ => DecoderStage::Device,
+    }
+}
+
+/// The card behind a render node, as the compute runtime addresses it:
+/// the node's device link in the kernel's tree names the bus address.
+fn address_of(node: &str) -> Option<PciAddress> {
+    let name = std::path::Path::new(node).file_name()?.to_str()?;
+    let link = std::fs::read_link(format!("/sys/class/drm/{name}/device")).ok()?;
+    PciAddress::parse(link.file_name()?.to_str()?)
+}
+
+/// Probe the vendor's interface on `address`, or on the first device: the
+/// runtimes loaded, the context made current here, a real decoder built per
+/// combination.
+fn probe_nvdec(address: Option<PciAddress>) -> Result<Caps, DecoderStage> {
+    let cuda = cuda::Cuda::load().map_err(|_| DecoderStage::Runtime)?;
+    let device = match address {
+        Some(address) => cuda.device_at(address),
+        None => cuda.any_device(),
+    }
+    .map_err(|_| DecoderStage::Device)?;
+    let context = cuda
+        .retain_primary(&device)
+        .map_err(|_| DecoderStage::Device)?;
+    context.make_current().map_err(|_| DecoderStage::Device)?;
+    let loaded = cuvid::Cuvid::load().map_err(|_| DecoderStage::Runtime)?;
+    let caps = nvdec::caps(&loaded);
+    if caps.any() {
+        Ok(caps)
+    } else {
+        Err(DecoderStage::Profile)
     }
 }
 
@@ -243,41 +284,63 @@ impl Client {
     /// decodes: a machine without one is refused here, with the stage named,
     /// rather than after it has connected.
     pub fn new(decoding: &Decoding) -> Result<Self, Error> {
-        if decoding.backend == Backend::Nvdec || decoding.kind == FrameKind::Handle {
+        if decoding.kind == FrameKind::Handle {
             return Err(Error::Decoder(DecoderStage::Unsupported));
         }
-        let (node, caps) = if decoding.backend == Backend::None {
-            (None, Caps::default())
-        } else if decoding.device.is_empty() {
-            let mut found = None;
-            let mut last = DecoderStage::Device;
-            for candidate in RENDER_NODES {
-                let Ok(path) = CString::new(candidate) else {
-                    continue;
+        let (opened, caps) = match decoding.backend {
+            Backend::None => (None, Caps::default()),
+            Backend::Nvdec => {
+                // The device is named as a render node, as for the open
+                // stack; the card behind it is what the runtime takes.
+                let address = if decoding.device.is_empty() {
+                    None
+                } else {
+                    Some(address_of(&decoding.device).ok_or(Error::Decoder(DecoderStage::Device))?)
                 };
-                match vaapi::probe(&path) {
-                    Ok(caps) if caps.any() => {
-                        found = Some((path, caps));
-                        break;
-                    }
-                    Ok(_) => last = DecoderStage::Profile,
-                    Err(e) => {
-                        if stage_of(&e) == DecoderStage::Runtime {
-                            last = DecoderStage::Runtime;
+                let caps = probe_nvdec(address).map_err(Error::Decoder)?;
+                (Some(Opened::Nvdec(address)), caps)
+            }
+            Backend::Vaapi | Backend::Auto => {
+                if decoding.device.is_empty() {
+                    let mut found = None;
+                    let mut last = DecoderStage::Device;
+                    for candidate in RENDER_NODES {
+                        let Ok(path) = CString::new(candidate) else {
+                            continue;
+                        };
+                        match vaapi::probe(&path) {
+                            Ok(caps) if caps.any() => {
+                                found = Some((path, caps));
+                                break;
+                            }
+                            Ok(_) => last = DecoderStage::Profile,
+                            Err(e) => {
+                                if stage_of(&e) == DecoderStage::Runtime {
+                                    last = DecoderStage::Runtime;
+                                }
+                            }
                         }
                     }
+                    match found {
+                        Some((path, caps)) => (Some(Opened::Vaapi(path)), caps),
+                        // Nothing decodes through the open stack: the
+                        // vendor's interface on any device, if there is one.
+                        None if decoding.backend == Backend::Auto => {
+                            let caps = probe_nvdec(None).map_err(|_| Error::Decoder(last))?;
+                            (Some(Opened::Nvdec(None)), caps)
+                        }
+                        None => return Err(Error::Decoder(last)),
+                    }
+                } else {
+                    let path = CString::new(decoding.device.as_str())
+                        .map_err(|_| Error::Decoder(DecoderStage::Device))?;
+                    let caps = vaapi::probe(&path).map_err(|e| Error::Decoder(stage_of(&e)))?;
+                    if !caps.any() {
+                        return Err(Error::Decoder(DecoderStage::Profile));
+                    }
+                    (Some(Opened::Vaapi(path)), caps)
                 }
             }
-            let (path, caps) = found.ok_or(Error::Decoder(last))?;
-            (Some(path), caps)
-        } else {
-            let path = CString::new(decoding.device.as_str())
-                .map_err(|_| Error::Decoder(DecoderStage::Device))?;
-            let caps = vaapi::probe(&path).map_err(|e| Error::Decoder(stage_of(&e)))?;
-            if !caps.any() {
-                return Err(Error::Decoder(DecoderStage::Profile));
-            }
-            (Some(path), caps)
         };
         let (emit, events) = events::queue();
         let telemetry = Arc::new(Telemetry::default());
@@ -288,7 +351,7 @@ impl Client {
             events: Some(events),
             telemetry: Arc::clone(&telemetry),
             units: Units::new(),
-            node,
+            opened,
             caps,
             frames: Arc::new(Frames::new(decoding.ceiling())),
             last_seq: 0,
@@ -297,9 +360,9 @@ impl Client {
         })
     }
 
-    /// The render node the decoder opens, if there is a decoder.
-    pub fn node(&self) -> Option<&CString> {
-        self.node.as_ref()
+    /// The decoder opened at creation, if there is one.
+    pub fn opened(&self) -> Option<&Opened> {
+        self.opened.as_ref()
     }
 
     /// What the decoder takes.
@@ -564,7 +627,7 @@ impl Client {
         // where they land, so the pool never fills.
         let stopping = Arc::new(AtomicBool::new(false));
         let decode_args = crate::decode::Attached {
-            node: self.node.clone(),
+            opened: self.opened.clone(),
             units: self.units.clone(),
             frames: Arc::clone(&self.frames),
             telemetry: Arc::clone(&self.telemetry),

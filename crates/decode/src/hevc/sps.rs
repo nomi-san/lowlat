@@ -28,6 +28,10 @@ pub struct StRps {
     pub used_s0: [bool; MAX_DELTA_POCS],
     pub delta_s1: [i32; MAX_DELTA_POCS],
     pub used_s1: [bool; MAX_DELTA_POCS],
+    /// How many deltas the set this one was predicted from had; zero for a
+    /// set coded outright. A device that re-reads the slice's own set needs
+    /// it to know how far the prediction syntax runs.
+    pub predicted_from_deltas: u8,
 }
 
 impl StRps {
@@ -61,6 +65,7 @@ pub fn st_ref_pic_set(
         let delta_rps = (1 - 2 * i32::from(delta_rps_sign))
             * (i32::try_from(abs_delta_rps_minus1).unwrap_or(0) + 1);
         let total = reference.num_delta_pocs();
+        out.predicted_from_deltas = u8::try_from(total).unwrap_or(u8::MAX);
         let mut used = [false; MAX_DELTA_POCS * 2 + 1];
         let mut use_delta = [true; MAX_DELTA_POCS * 2 + 1];
         for j in 0..=total {
@@ -168,9 +173,10 @@ pub struct ScalingLists {
 }
 
 /// The up-right diagonal scans a coded list arrives in (6.5.3), to raster:
-/// the device takes raster.
-const DIAG_4X4: [usize; 16] = [0, 4, 1, 8, 5, 2, 12, 9, 6, 3, 13, 10, 7, 14, 11, 15];
-const DIAG_8X8: [usize; 64] = [
+/// the open-stack device takes raster, the vendor's takes the coded order
+/// and reads these the other way.
+pub const DIAG_4X4: [usize; 16] = [0, 4, 1, 8, 5, 2, 12, 9, 6, 3, 13, 10, 7, 14, 11, 15];
+pub const DIAG_8X8: [usize; 64] = [
     0, 8, 1, 16, 9, 2, 24, 17, 10, 3, 32, 25, 18, 11, 4, 40, 33, 26, 19, 12, 5, 48, 41, 34, 27, 20,
     13, 6, 56, 49, 42, 35, 28, 21, 14, 7, 57, 50, 43, 36, 29, 22, 15, 58, 51, 44, 37, 30, 23, 59,
     52, 45, 38, 31, 60, 53, 46, 39, 61, 54, 47, 62, 55, 63,

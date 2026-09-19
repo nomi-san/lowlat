@@ -20,6 +20,7 @@ inc="$root/third_party/nvcodec/include"
 out="$root/crates/drivers/src/ffi"
 enc_h="$inc/ffnvcodec/nvEncodeAPI.h"
 cuda_h="$inc/ffnvcodec/dynlink_cuda.h"
+cuvid_h="$inc/ffnvcodec/dynlink_cuviddec.h"
 
 mkdir -p "$out"
 
@@ -65,6 +66,32 @@ bindgen "$cuda_h" \
     --allowlist-var 'CU.*' \
     -o "$out/cuda.rs" \
     -- -I "$inc"
+
+# The decode interface beside the encoder's, declared the same way: function
+# pointer typedefs and structures, nothing to link. Only the decoder half is
+# taken; the interface's own parser and source objects are not used, since
+# the readers here produce the picture parameters themselves.
+# The header expects the compute runtime's types to be declared before it,
+# which its sibling does by inclusion; here the compute bindings next door
+# are used for them rather than generated twice.
+echo "generating cuvid bindings"
+bindgen "$cuvid_h" \
+    "${common[@]}" \
+    --raw-line 'use super::cuda::{CUcontext, CUdeviceptr, CUresult, CUstream};' \
+    --allowlist-type '_?CUVID.*' \
+    --allowlist-type 'CUvideodecoder' \
+    --allowlist-type 'CUvideoctxlock' \
+    --allowlist-type 'cudaVideo.*' \
+    --allowlist-type 'tcuvid.*' \
+    --allowlist-var 'CUVID.*' \
+    --allowlist-var 'MAX_CLOCK_TS' \
+    --blocklist-type 'CUresult' \
+    --blocklist-type 'CUdeviceptr(_v2)?' \
+    --blocklist-type 'CUstream(_st)?' \
+    --blocklist-type 'CUcontext' \
+    --blocklist-type 'CUctx_st' \
+    -o "$out/cuvid.rs" \
+    -- -I "$inc" -include ffnvcodec/dynlink_cuda.h
 
 # Codec, preset, profile and tuning identifiers, transcribed mechanically from
 # the header so that no human copies sixteen bytes of hex.
@@ -198,6 +225,6 @@ PY
 # bindgen's own formatting does not match this workspace's, and the generated
 # files are committed, so the format gate would fail after every regeneration.
 echo "formatting"
-cargo fmt -p lowlat-encode
+cargo fmt -p lowlat-drivers
 
 echo "done. build to check the layout assertions."

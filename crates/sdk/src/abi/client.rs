@@ -1200,10 +1200,14 @@ pub unsafe extern "C" fn lowlat_client_get_status(
                 video_bytes: t.video_bytes.load(Ordering::Relaxed),
                 encode_us: t.encode_us.load(Ordering::Relaxed),
                 codec: t.codec.load(Ordering::Relaxed),
-                backend: if held.seam.node().is_some() {
-                    lowlat_decoder::LOWLAT_DECODER_OPEN as u32
-                } else {
-                    lowlat_decoder::LOWLAT_DECODER_NONE as u32
+                backend: match held.seam.opened() {
+                    Some(::lowlat_client::seam::Opened::Vaapi(_)) => {
+                        lowlat_decoder::LOWLAT_DECODER_OPEN as u32
+                    }
+                    Some(::lowlat_client::seam::Opened::Nvdec(_)) => {
+                        lowlat_decoder::LOWLAT_DECODER_VENDOR as u32
+                    }
+                    None => lowlat_decoder::LOWLAT_DECODER_NONE as u32,
                 },
                 input_dropped: t.input_dropped.load(Ordering::Relaxed),
                 audio_decoded: t.audio_decoded.load(Ordering::Relaxed),
@@ -1916,17 +1920,10 @@ mod tests {
         unsafe { lowlat_client_destroy(handle) };
     }
 
-    /// A decoder that is not built is refused at creation, with the stage,
-    /// and so is a frame kind nothing exports.
+    /// A frame kind nothing exports is refused at creation, with the stage.
     #[test]
     fn what_is_not_built_is_refused_at_creation() {
         let mut handle: *mut lowlat_client = core::ptr::null_mut();
-        let mut info = no_decoder();
-        info.decoder = lowlat_decoder::LOWLAT_DECODER_VENDOR as u32;
-        assert_eq!(
-            unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
-            LOWLAT_ERR_DECODER_UNSUPPORTED
-        );
         let mut info = no_decoder();
         info.frame_kind = lowlat_frame_kind::LOWLAT_FRAME_HANDLE as u32;
         assert_eq!(

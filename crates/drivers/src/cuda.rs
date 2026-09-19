@@ -514,6 +514,45 @@ impl Drop for DeviceBuffer {
 }
 
 impl Cuda {
+    /// Copy `rows` of `row_bytes` from a pitched device address into host
+    /// memory at `dst_pitch`: a decoded picture's read-back. Synchronous:
+    /// the bytes are in `dst` when this returns.
+    ///
+    /// # Safety
+    ///
+    /// `src` addresses at least `rows` rows of `src_pitch` bytes in the
+    /// current context.
+    pub unsafe fn read_rows(
+        &self,
+        src: CUdeviceptr,
+        src_pitch: usize,
+        dst: &mut [u8],
+        dst_pitch: usize,
+        row_bytes: usize,
+        rows: usize,
+    ) -> Result<()> {
+        if rows == 0 || row_bytes == 0 {
+            return Ok(());
+        }
+        if dst_pitch < row_bytes || dst.len() < (rows - 1) * dst_pitch + row_bytes {
+            return Err(Error::SourceTooSmall);
+        }
+        // SAFETY: plain data, whose only pointers are the two set below and
+        // both are live for the call.
+        let mut copy = unsafe { core::mem::zeroed::<crate::ffi::cuda::CUDA_MEMCPY2D>() };
+        copy.srcMemoryType = crate::ffi::cuda::CU_MEMORYTYPE_DEVICE;
+        copy.srcDevice = src;
+        copy.srcPitch = src_pitch;
+        copy.dstMemoryType = crate::ffi::cuda::CU_MEMORYTYPE_HOST;
+        copy.dstHost = dst.as_mut_ptr().cast();
+        copy.dstPitch = dst_pitch;
+        copy.WidthInBytes = row_bytes;
+        copy.Height = rows;
+        // SAFETY: the descriptor is live for the call; the destination is
+        // bounded above and the source by the caller's contract.
+        check(unsafe { (self.memcpy_2d)(&raw const copy) })
+    }
+
     /// Allocate `rows` of at least `width` bytes.
     pub fn alloc_pitch(&self, width: usize, rows: usize) -> Result<DeviceBuffer> {
         let mut ptr: CUdeviceptr = 0;

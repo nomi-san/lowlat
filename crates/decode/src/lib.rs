@@ -36,6 +36,7 @@ pub mod bits;
 pub mod h264;
 pub mod hevc;
 pub mod nal;
+pub mod nvdec;
 pub mod vaapi;
 
 use lowlat_core::video::VideoHeader;

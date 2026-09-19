@@ -20,7 +20,8 @@ pub enum Backend {
     Auto,
     /// The open-stack interface.
     Vaapi,
-    /// The vendor interface. Not built yet: refused at creation.
+    /// The vendor interface, on the card behind the render node named, or
+    /// the first.
     Nvdec,
     /// No decoder at all: the session carries control and sound, and every
     /// picture is taken off the wire and dropped. A test peer, or a client

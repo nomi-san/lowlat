@@ -6,30 +6,59 @@
 //! it; a full picture queue is never full, because the queue steals. The
 //! device is opened here, on this thread, and lives as long as it does.
 
-use std::ffi::CString;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use lowlat_common::events;
 use lowlat_core::video;
-use lowlat_decode::vaapi::{Backend, Vaapi};
-use lowlat_decode::{Fed, Format};
+use lowlat_decode::vaapi::Vaapi;
+use lowlat_decode::{Decoder, Fed, Format, nvdec, vaapi};
+use lowlat_drivers::cuda::Cuda;
+use lowlat_drivers::cuvid::Cuvid;
 use lowlat_net::WakeHandle;
 
+use crate::UNIT_BYTES;
 use crate::driver::{Telemetry, Units};
 use crate::feed::{Decision, Feed};
 use crate::frames::{Frame, Frames};
 use crate::report::Smoothed;
-use crate::seam::{Event, Outcome};
+use crate::seam::{Event, Opened, Outcome};
 
 /// How long the thread waits for a unit before looking at the stop flag.
 const IDLE_WAIT: Duration = Duration::from_millis(50);
 
+/// What either backend tells the thread beyond the decoder trait: the
+/// layout of what it hands out and what the last picture cost.
+trait Backend: Decoder {
+    fn output(&self) -> Option<(u32, u32, Format)>;
+    /// The last picture's decode wait and hand-over, in microseconds.
+    fn timings(&self) -> (u32, u32);
+}
+
+impl Backend for vaapi::Backend<'_> {
+    fn output(&self) -> Option<(u32, u32, Format)> {
+        vaapi::Backend::output(self)
+    }
+    fn timings(&self) -> (u32, u32) {
+        (self.decode_us, self.readback_us)
+    }
+}
+
+impl Backend for nvdec::Backend<'_> {
+    fn output(&self) -> Option<(u32, u32, Format)> {
+        nvdec::Backend::output(self)
+    }
+    fn timings(&self) -> (u32, u32) {
+        (self.decode_us, self.readback_us)
+    }
+}
+
 /// What the thread is handed.
 pub(crate) struct Attached {
-    /// The render node, or none: then units are taken and dropped.
-    pub node: Option<CString>,
+    /// The decoder chosen at creation, or none: then units are taken and
+    /// dropped.
+    pub opened: Option<Opened>,
     pub units: Units,
     pub frames: Arc<Frames>,
     pub telemetry: Arc<Telemetry>,
@@ -41,7 +70,7 @@ pub(crate) struct Attached {
 
 pub(crate) fn run(args: Attached) {
     let Attached {
-        node,
+        opened,
         units,
         frames,
         telemetry,
@@ -50,24 +79,76 @@ pub(crate) fn run(args: Attached) {
         stopping,
     } = args;
 
-    let Some(node) = node else {
-        while !stopping.load(Ordering::Acquire) {
-            if units.take().is_none() {
-                units.wait(IDLE_WAIT);
+    // The runtimes are opened here, on this thread, and live as long as it
+    // does; the vendor's context is made current here, where every call
+    // against it is made.
+    match opened {
+        None => {
+            while !stopping.load(Ordering::Acquire) {
+                if units.take().is_none() {
+                    units.wait(IDLE_WAIT);
+                }
             }
+            frames.close();
         }
-        frames.close();
-        return;
-    };
-    let Ok(va) = Vaapi::load() else {
-        fail(&telemetry, &emit, &frames);
-        return;
-    };
-    let Ok(display) = va.open(&node) else {
-        fail(&telemetry, &emit, &frames);
-        return;
-    };
-    let mut feed = Feed::new(Backend::new(&display, frames.ceiling()));
+        Some(Opened::Vaapi(node)) => {
+            let Ok(va) = Vaapi::load() else {
+                fail(&telemetry, &emit, &frames);
+                return;
+            };
+            let Ok(display) = va.open(&node) else {
+                fail(&telemetry, &emit, &frames);
+                return;
+            };
+            let backend = vaapi::Backend::new(&display, frames.ceiling());
+            drive(
+                backend, &units, &frames, &telemetry, &emit, &shell, &stopping,
+            );
+        }
+        Some(Opened::Nvdec(address)) => {
+            let Ok(cuda) = Cuda::load() else {
+                fail(&telemetry, &emit, &frames);
+                return;
+            };
+            let device = match address {
+                Some(address) => cuda.device_at(address),
+                None => cuda.any_device(),
+            };
+            let Ok(device) = device else {
+                fail(&telemetry, &emit, &frames);
+                return;
+            };
+            let Ok(context) = cuda.retain_primary(&device) else {
+                fail(&telemetry, &emit, &frames);
+                return;
+            };
+            if context.make_current().is_err() {
+                fail(&telemetry, &emit, &frames);
+                return;
+            }
+            let Ok(cuvid) = Cuvid::load() else {
+                fail(&telemetry, &emit, &frames);
+                return;
+            };
+            let backend = nvdec::Backend::new(&cuda, &cuvid, frames.ceiling(), UNIT_BYTES);
+            drive(
+                backend, &units, &frames, &telemetry, &emit, &shell, &stopping,
+            );
+        }
+    }
+}
+
+/// The loop: units in, pictures out, the policy between.
+fn drive<D: Backend>(
+    backend: D,
+    units: &Units,
+    frames: &Frames,
+    telemetry: &Telemetry,
+    emit: &events::Sender<Event>,
+    shell: &WakeHandle,
+    stopping: &std::sync::atomic::AtomicBool,
+) {
+    let mut feed = Feed::new(backend);
     let mut reported = Smoothed::default();
     let mut reconfigured = telemetry.reconfigure.load(Ordering::Acquire);
 
@@ -97,18 +178,12 @@ pub(crate) fn run(args: Attached) {
                 let _ = shell.notify();
             }
             Decision::Failed => {
-                fail(&telemetry, &emit, &frames);
+                fail(telemetry, emit, frames);
                 return;
             }
             Decision::Fed(Fed::Picture) => {
                 telemetry.decoder.store(1, Ordering::Relaxed);
-                take_pictures(
-                    &mut feed,
-                    &frames,
-                    &telemetry,
-                    header.as_ref(),
-                    &mut reported,
-                );
+                take_pictures(&mut feed, frames, telemetry, header.as_ref(), &mut reported);
             }
             Decision::Built(fed) => {
                 telemetry.decoder.store(1, Ordering::Relaxed);
@@ -123,13 +198,7 @@ pub(crate) fn run(args: Attached) {
                     Ordering::Relaxed,
                 );
                 if fed == Fed::Picture {
-                    take_pictures(
-                        &mut feed,
-                        &frames,
-                        &telemetry,
-                        header.as_ref(),
-                        &mut reported,
-                    );
+                    take_pictures(&mut feed, frames, telemetry, header.as_ref(), &mut reported);
                 }
             }
             _ => {}
@@ -143,8 +212,8 @@ pub(crate) fn run(args: Attached) {
 }
 
 /// Every picture the decoder has ready goes into the queue.
-fn take_pictures(
-    feed: &mut Feed<Backend<'_>>,
+fn take_pictures<D: Backend>(
+    feed: &mut Feed<D>,
     frames: &Frames,
     telemetry: &Telemetry,
     header: Option<&video::VideoHeader>,
@@ -163,17 +232,12 @@ fn take_pictures(
         };
         match lowlat_decode::Decoder::take(feed.decoder_mut(), &mut planes) {
             Ok(Some(picture)) => {
-                let backend = feed.decoder();
-                telemetry
-                    .decode_us
-                    .store(backend.decode_us, Ordering::Relaxed);
-                telemetry
-                    .readback_us
-                    .store(backend.readback_us, Ordering::Relaxed);
+                let (decode_us, readback_us) = feed.decoder().timings();
+                telemetry.decode_us.store(decode_us, Ordering::Relaxed);
+                telemetry.readback_us.store(readback_us, Ordering::Relaxed);
                 // What the host is told: decode and hand-over together,
                 // smoothed, since that is the time a picture costs here.
-                let sample_ms =
-                    f64::from(backend.decode_us.saturating_add(backend.readback_us)) / 1000.0;
+                let sample_ms = f64::from(decode_us.saturating_add(readback_us)) / 1000.0;
                 telemetry
                     .decode_reported_us
                     .store(reported.push(sample_ms), Ordering::Relaxed);
