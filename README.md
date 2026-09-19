@@ -165,6 +165,42 @@ service starts at boot and, until it has been logged in, says so and exits. Wher
 screen should be reachable too, the example under `/usr/share/doc/lowlat/` moves the greeter
 onto a Wayland compositor.
 
+### Distributions without a package (Arch, Fedora, ...)
+
+Where there is no package, the same layout the Debian package produces is installed by hand.
+Everything graphical is loaded at runtime, so the build needs nothing but a stable Rust
+toolchain:
+
+```sh
+cargo build --release -p lowlatd
+
+sudo install -Dm755 target/release/lowlatd          /usr/bin/lowlatd
+sudo install -Dm755 scripts/kessel-login.py         /usr/bin/lowlat-login
+sudo install -Dm644 packaging/lowlatd.service       /usr/lib/systemd/system/lowlatd.service
+sudo install -Dm644 packaging/lowlat-session.service /usr/lib/systemd/user/lowlat-session.service
+sudo install -Dm644 packaging/lowlat-tray.service    /usr/lib/systemd/user/lowlat-tray.service
+sudo install -Dm640 packaging/lowlatd.env           /etc/lowlat/lowlatd.env   # once; keep existing afterwards
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now lowlatd
+sudo systemctl --global enable lowlat-session.service lowlat-tray.service
+sudo lowlat-login --install
+```
+
+The encoder and the sound server are runtime dependencies and packaged under different names
+per distribution; a desktop install already carries most of this:
+
+| Piece | Arch | Fedora |
+|---|---|---|
+| login tool (Python) | `python` | `python3` |
+| sound server socket | `pipewire` | `pipewire` |
+| VA-API encoder (AMD, Intel) | `libva` + `mesa` | `libva` + `mesa-va-drivers` |
+| Vulkan Video | `vulkan-radeon`, `vulkan-intel`, ... | `mesa-vulkan-drivers` |
+
+If the env file ships `KESSEL_WS_SERVER=` empty, set it to `kessel-ws.parsec.app` before
+logging in; `lowlat-login --install` fills the session token and restarts the service. Which
+encoder a given card hosts is [docs/09-compatibility.md](docs/09-compatibility.md).
+
 ## Documentation
 
 | Document | Contents |
