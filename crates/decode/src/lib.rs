@@ -40,6 +40,26 @@ pub mod vaapi;
 
 use lowlat_core::video::VideoHeader;
 
+/// What a device decodes, asked once at creation. Shared by every backend,
+/// and what the application's preferences are masked with before anything
+/// is declared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Caps {
+    pub h264: bool,
+    pub hevc: bool,
+    pub hevc_10: bool,
+    /// Full chroma at eight and ten bits.
+    pub hevc_444: bool,
+    pub hevc_444_10: bool,
+}
+
+impl Caps {
+    /// Whether anything at all can be decoded.
+    pub fn any(&self) -> bool {
+        self.h264 || self.hevc || self.hevc_10 || self.hevc_444 || self.hevc_444_10
+    }
+}
+
 /// What a backend reports for one unit it was fed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fed {

@@ -498,6 +498,9 @@ struct Guest<D: Decoder> {
     planes: (Vec<u8>, Vec<u8>),
     /// The deepest lag the reader reached.
     deepest_lag: lowlat_client::Lag,
+    /// The declaration generation last acted on, as the decode thread keeps
+    /// it.
+    reconfigured: u32,
 }
 
 impl<D: Decoder> Guest<D> {
@@ -509,7 +512,7 @@ impl<D: Decoder> Guest<D> {
         let packets = Packets::new();
         let telemetry = Arc::new(Telemetry::default());
         let driver = Driver::new(
-            Config::default().init(),
+            Config::default().init(&lowlat_decode::Caps::default()),
             units.clone(),
             packets.clone(),
             emit,
@@ -536,6 +539,7 @@ impl<D: Decoder> Guest<D> {
             pictures: Vec::new(),
             planes: (vec![0u8; 1280 * 720 * 2], vec![0u8; 1280 * 360 * 2]),
             deepest_lag: lowlat_client::Lag::default(),
+            reconfigured: 0,
         }
     }
 
@@ -558,6 +562,15 @@ impl<D: Decoder> Guest<D> {
     }
 
     fn consume(&mut self, now: f64) {
+        // As the decode thread does: a changed declaration tears the
+        // decoder down and asks for the keyframe, as one act.
+        let generation = self.telemetry.reconfigure.load(Ordering::Acquire);
+        if generation != self.reconfigured {
+            self.reconfigured = generation;
+            if self.feed.reconfigure() == Decision::Request {
+                self.telemetry.request.store(true, Ordering::Release);
+            }
+        }
         loop {
             if self.cost_ms > 0.0 && now < self.next_consume_ms {
                 return;
@@ -579,6 +592,9 @@ impl<D: Decoder> Guest<D> {
             match decision {
                 Decision::Built(_) => self.builds += 1,
                 Decision::Fed(_) | Decision::Consumed(_) => {}
+                // Between a teardown and the keyframe asked for, every
+                // picture is ignored by rule.
+                Decision::Ignored if !self.feed.present() => {}
                 other => panic!("the feed refused a unit the host sent: {other:?}"),
             }
             // A real decoder has pictures to take; the fake has none.
@@ -1123,6 +1139,56 @@ fn a_departure_reaches_the_host_as_a_zero_disconnect() {
     assert!(pair.guest.driver.left(pair.sim.now_ms()));
     assert_eq!(pair.host.received[usize::from(op::DISCONNECT)], 1);
     let _ = pair.guest.events.try_recv();
+}
+
+/// **A preference changed mid-session is one restatement per secondary
+/// stream, one request on the first, one teardown and one build**, and the
+/// picture goes on: the host reads the new flags and answers with a keyframe.
+#[test]
+fn a_preference_changed_mid_session_costs_one_request_and_one_build() {
+    let mut pair = Pair::new(11, clean());
+    pair.run_for(2000.0);
+    assert!(pair.established());
+    pair.run_for(5000.0);
+    let before = pair.host.received[usize::from(op::ENCODER_CONFIG)];
+    let builds = pair.guest.builds;
+    let pictures = pair.guest.driver.pictures();
+    assert_eq!(before, 2, "the two secondary declarations at the start");
+    assert_eq!(builds, 1);
+
+    // The second codec asked for, as the seam would push it after the mask.
+    let flags = lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC;
+    pair.guest
+        .driver
+        .set_flags(pair.guest.endpoint.session(), flags);
+    pair.run_for(5000.0);
+
+    let negotiation = pair.host.negotiation.as_ref().unwrap();
+    assert_eq!(
+        pair.host.received[usize::from(op::ENCODER_CONFIG)],
+        before + 3,
+        "two restatements and one request"
+    );
+    assert_eq!(
+        negotiation.flags(),
+        flags,
+        "the host read the new declaration"
+    );
+    assert_eq!(pair.guest.builds, builds + 1, "one teardown, one build");
+    assert!(
+        pair.guest.driver.pictures() > pictures + 100,
+        "the picture did not go on"
+    );
+    // The same flags again change nothing and send nothing.
+    let sent = pair.guest.driver.sent()[usize::from(op::ENCODER_CONFIG)];
+    pair.guest
+        .driver
+        .set_flags(pair.guest.endpoint.session(), flags);
+    pair.run_for(1000.0);
+    assert_eq!(
+        pair.guest.driver.sent()[usize::from(op::ENCODER_CONFIG)],
+        sent
+    );
 }
 
 /// **Input crosses as the host reads it.** The rectangle is the picture's

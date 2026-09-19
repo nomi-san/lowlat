@@ -12,18 +12,24 @@
 // positions into the picture. Chords the demo keeps for itself, never sent:
 // Ctrl+Alt+F switches between the picture stretched to the window and shown
 // at its own size, Ctrl+Alt+R lets go of a pointer the host has captured
-// (and takes it again), Ctrl+Alt+O asks the host to stream its next output.
+// (and takes it again), Ctrl+Alt+O asks the host to stream its next output,
+// Ctrl+Alt+C cycles the colour preferences mid-session.
 // A bare Windows key is not sent, because the desktop here takes it and the
 // host would be left with the modifier held; it reaches the host on chords.
 //
 // `LOWLAT_SERVER` names the signaling service (kessel-ws.parsec.app by
 // default), `LOWLAT_DEVICE` a render node for the decoder (the first that
 // decodes by default), `LOWLAT_DECODER` one of `auto`, `open`, `none`.
+// `LOWLAT_HEVC`, `LOWLAT_10BIT` and `LOWLAT_444` are the preferences the
+// attempt starts with: each is "prefer this if the host has it", masked by
+// what the decoder takes before anything is declared.
 // `LOWLAT_FPS` asks the host for that rate through the application
 // protocol once the first picture is in; `LOWLAT_PRESENT_HZ` caps how often
 // a new picture is taken (the cached one is still drawn every refresh), so
 // a stream faster than the presentation can be measured on one display;
-// `LOWLAT_SECONDS` leaves cleanly after that long. `LOWLAT_RAW_AUDIO` asks
+// `LOWLAT_SECONDS` leaves cleanly after that long; `LOWLAT_DUMP_FRAME` names
+// a file the tenth picture's planes are written to, so what the renderer
+// was handed can be looked at with another tool. `LOWLAT_RAW_AUDIO` asks
 // the host for uncompressed sound; `LOWLAT_AUDIO_TRACE` prints a line per
 // sound packet with its age and what the device held. Against a host on
 // this same machine the sound must go to an output the host does not
@@ -108,6 +114,15 @@ struct demo {
 	// configuration, both asked for on the chord and acted on together.
 	MTY_JSON *outputs;
 	MTY_JSON *config;
+
+	// The picture preferences, cycled by the chord.
+	lowlat_client_video_config video;
+
+	// The reader's lag, sampled once a second: thirty or more messages
+	// behind for sixty consecutive seconds is the warning every client
+	// shows, and it clears the moment the lag drops under.
+	unsigned behind_seconds;
+	bool behind_warned;
 
 	// Pads are sent once per iteration, the latest state of each: the
 	// toolkit reports on every axis event, which is several hundred a
@@ -213,6 +228,35 @@ static void apply_relative(struct demo *d)
 
 static void ask_outputs(struct demo *d);
 
+static const char *video_words(const lowlat_client_video_config *v)
+{
+	return !v->hevc && !v->ten_bit && !v->chroma_444 ? "h264"
+		: v->ten_bit && v->chroma_444 ? "hevc 10bit 444"
+		: v->ten_bit ? "hevc 10bit"
+		: v->chroma_444 ? "hevc 444" : "hevc";
+}
+
+// The chord walks the preferences up the host's own order and back to the
+// start: none, the second codec, ten-bit, full chroma, both.
+static void cycle_video(struct demo *d)
+{
+	lowlat_client_video_config *v = &d->video;
+	if (!v->hevc) {
+		v->hevc = true;
+	} else if (!v->ten_bit && !v->chroma_444) {
+		v->ten_bit = true;
+	} else if (v->ten_bit && !v->chroma_444) {
+		v->ten_bit = false;
+		v->chroma_444 = true;
+	} else if (!v->ten_bit) {
+		v->ten_bit = true;
+	} else {
+		v->hevc = v->ten_bit = v->chroma_444 = false;
+	}
+	lowlat_status s = lowlat_client_set_video_config(d->client, v);
+	printf("demo: asked %s: %s\n", video_words(v), lowlat_status_string(s));
+}
+
 static void on_key(struct demo *d, const MTY_KeyEvent *k)
 {
 	// The demo's own chords, never sent. The release that follows one is
@@ -231,6 +275,9 @@ static void on_key(struct demo *d, const MTY_KeyEvent *k)
 				return;
 			case MTY_KEY_O:
 				ask_outputs(d);
+				return;
+			case MTY_KEY_C:
+				cycle_video(d);
 				return;
 			default:
 				break;
@@ -617,7 +664,7 @@ static void report(struct demo *d)
 		"motion=%u pad=%u pad_events=%u input_dropped=%u "
 		"snd=%u snd_frames=%u snd_q_ms=%u snd_q_min=%u snd_q_max=%u snd_age_ms=%u "
 		"snd_queued=%u snd_dropped=%u snd_refused=%u snd_resync=%u snd_codec=%s "
-		"reported_us=%u snd_reported_us=%u\n",
+		"reported_us=%u snd_reported_us=%u asked=%#x declared=%#x stream_format=%u\n",
 		d->seconds, presents, polls, pictures, repeats, skips, codec,
 		st.decode_us, st.readback_us, st.encode_us, st.queue_depth, st.behind, st.behind_ms,
 		st.rtt_ms, mbit, st.decoded, rss, d->keys_sent, d->buttons_sent, d->wheels_sent,
@@ -626,7 +673,25 @@ static void report(struct demo *d)
 		st.audio_queued, st.audio_dropped, st.audio_refused, atomic_load(&d->snd_resyncs),
 		st.audio_codec == LOWLAT_AUDIO_OPUS ? "opus"
 			: st.audio_codec == LOWLAT_AUDIO_PCM ? "pcm" : "-",
-		st.decode_reported_us, st.audio_reported_us);
+		st.decode_reported_us, st.audio_reported_us, st.asked_flags, st.declared_flags,
+		st.stream_format);
+	// The warning every client shows for hardware that cannot keep up,
+	// gated on the reader's lag rather than on any figure of the decoder's:
+	// thirty or more messages behind for sixty consecutive seconds, cleared
+	// the moment it drops under.
+	if (st.behind >= 30) {
+		d->behind_seconds++;
+		if (d->behind_seconds >= 60 && !d->behind_warned) {
+			d->behind_warned = true;
+			printf("demo: WARNING the host's resolution or rate is too high for this "
+				"hardware to keep up (behind=%u for %u s)\n", st.behind, d->behind_seconds);
+		}
+	} else {
+		if (d->behind_warned)
+			printf("demo: the reader caught up\n");
+		d->behind_seconds = 0;
+		d->behind_warned = false;
+	}
 	d->keys_sent = 0;
 	d->buttons_sent = 0;
 	d->wheels_sent = 0;
@@ -644,17 +709,19 @@ static void report(struct demo *d)
 			: format == LOWLAT_FORMAT_YUV444 ? "444"
 			: format == LOWLAT_FORMAT_YUV444_16 ? "444 10bit" : "8bit";
 		snprintf(title, sizeof title,
-			"lowlat | %ux%u %s %s%s | %s | %u fps | rtt %u ms | enc %.1f ms | dec %.1f ms | "
-			"rb %.1f ms | q %u behind %u | skips %u | %.1f Mbit/s | snd %u ms | rss %" PRIu64
-			" MB",
+			"lowlat | %ux%u %s %s%s | asked %s | %s | %u fps | rtt %u ms | enc %.1f ms | "
+			"dec %.1f ms | rb %.1f ms | q %u behind %u | skips %u | %.1f Mbit/s | snd %u ms | "
+			"rss %" PRIu64 " MB%s",
 			width, atomic_load(&d->picture_height), codec, colour,
 			rotation == LOWLAT_ROTATION_90 ? " 90deg"
 				: rotation == LOWLAT_ROTATION_180 ? " 180deg"
 				: rotation == LOWLAT_ROTATION_270 ? " 270deg" : "",
+			video_words(&d->video),
 			st.backend == LOWLAT_DECODER_OPEN ? "open CPU" : "no decoder",
 			pictures, st.rtt_ms, (double) st.encode_us / 1000.0,
 			(double) st.decode_us / 1000.0, (double) st.readback_us / 1000.0, st.queue_depth,
-			st.behind, skips, mbit, atomic_load(&d->snd_q_ms), rss);
+			st.behind, skips, mbit, atomic_load(&d->snd_q_ms), rss,
+			d->behind_warned ? " | CANNOT KEEP UP" : "");
 	} else {
 		snprintf(title, sizeof title, "lowlat | %s",
 			st.state == LOWLAT_CLIENT_ESTABLISHED ? "established, no picture yet"
@@ -668,6 +735,33 @@ static void report(struct demo *d)
 // thread is the toolkit's event loop and must not be: the pads are read one
 // event per iteration of it, so a loop bound to the display's rate drains a
 // stick slower than it moves.
+// `LOWLAT_DUMP_FRAME=<path>` writes the tenth picture's planes, each row at
+// its own width with the pitch's padding left out, so the bytes a renderer
+// is handed can be looked at with another tool.
+static void dump_once(struct demo *d, const lowlat_frame *f)
+{
+	static unsigned seen;
+	const char *path = getenv("LOWLAT_DUMP_FRAME");
+	if (path == NULL || ++seen != 10)
+		return;
+	(void) d;
+	bool deep = f->format == LOWLAT_FORMAT_P010 || f->format == LOWLAT_FORMAT_YUV444_16;
+	bool full = f->format == LOWLAT_FORMAT_YUV444 || f->format == LOWLAT_FORMAT_YUV444_16;
+	uint32_t row = f->width * (deep ? 2 : 1);
+	FILE *out = fopen(path, "wb");
+	if (out == NULL)
+		return;
+	for (uint32_t p = 0; p < 3; p++) {
+		if (f->planes[p].data == NULL)
+			continue;
+		uint32_t rows = p == 0 || full ? f->height : f->height / 2;
+		for (uint32_t r = 0; r < rows; r++)
+			fwrite(f->planes[p].data + (size_t) r * f->planes[p].pitch, 1, row, out);
+	}
+	fclose(out);
+	printf("demo: dumped picture %ux%u format=%u to %s\n", f->width, f->height, f->format, path);
+}
+
 static void *present_loop(void *opaque)
 {
 	struct demo *d = opaque;
@@ -702,6 +796,7 @@ static void *present_loop(void *opaque)
 				atomic_store(&d->picture_format, fresh.format);
 				atomic_store(&d->picture_width, fresh.width);
 				atomic_fetch_add(&d->pictures, 1);
+				dump_once(d, &fresh);
 				if (d->ask_fps != 0 && !d->asked) {
 					d->asked = true;
 					ask_rate(d);
@@ -740,7 +835,11 @@ static void *present_loop(void *opaque)
 			desc.aspectRatio = (float) f->width / (float) f->height;
 			// Fitted to the window, or at its own size when it fits.
 			desc.scale = atomic_load(&d->stretch) ? 0.0f : 1.0f;
-			desc.multiplyYUV = sample == 2;
+			// Ten-bit samples arrive in the high bits of sixteen, which is
+			// already the scale a sixteen-bit texture normalises; the
+			// toolkit's multiply is for samples in the low bits, and applied
+			// here it saturates the chroma into a uniform magenta.
+			desc.multiplyYUV = false;
 			MTY_WindowDrawQuad(d->app, d->window, f->planes[0].data, &desc);
 		} else {
 			MTY_WindowClear(d->app, d->window, 0.0f, 0.0f, 0.0f, 1.0f);
@@ -900,6 +999,11 @@ int main(void)
 	memset(&cfg, 0, sizeof cfg);
 	cfg.size = (uint32_t) sizeof cfg;
 	cfg.raw_audio = getenv("LOWLAT_RAW_AUDIO") != NULL;
+	d.video.hevc = getenv("LOWLAT_HEVC") != NULL;
+	d.video.ten_bit = getenv("LOWLAT_10BIT") != NULL;
+	d.video.chroma_444 = getenv("LOWLAT_444") != NULL;
+	cfg.video = d.video;
+	printf("demo: asking %s\n", video_words(&d.video));
 	s = lowlat_client_new_attempt(d.client, &cfg, d.attempt, LOWLAT_TRANSPORT_BUD, &ours);
 	if (s != LOWLAT_OK) {
 		fprintf(stderr, "demo: no attempt: %s\n", lowlat_status_string(s));

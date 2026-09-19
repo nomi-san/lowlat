@@ -196,6 +196,7 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
                 match request {
                     Request::Input(input) => driving.send_input(endpoint.session(), &input),
                     Request::Viewport(viewport) => driving.set_viewport(viewport),
+                    Request::Video(flags) => driving.set_flags(endpoint.session(), flags),
                 }
             }
         }) {

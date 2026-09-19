@@ -169,6 +169,14 @@ pub struct Telemetry {
     /// in microseconds: what the client reports to the host.
     pub decode_reported_us: AtomicU32,
     pub audio_reported_us: AtomicU32,
+    /// The declaration: what the application asked, and what went out after
+    /// the mask; and the stream as decoded, the layout's code or zero.
+    pub asked_flags: AtomicU32,
+    pub declared_flags: AtomicU32,
+    pub stream_format: AtomicU32,
+    /// Bumped by the loop when the declaration changed mid-session: the
+    /// decode thread tears its decoder down and asks for a keyframe.
+    pub reconfigure: AtomicU32,
     /// Pictures decoded and handed to the queue.
     pub decoded: AtomicU64,
     /// Pictures published and not yet taken by the application.
@@ -292,6 +300,34 @@ impl Driver {
         if let Some(wire) = self.mapper.encode(input) {
             self.send_control(session, &wire.control());
         }
+    }
+
+    /// The application changed its declaration: restate it to the host on
+    /// the secondary streams, and have the decode thread tear its decoder
+    /// down and ask for the keyframe on the first. Before the session is
+    /// established the new flags simply go into the initialization.
+    pub fn set_flags(&mut self, session: &mut Session<'_>, flags: u32) {
+        if flags == self.init.flags {
+            return;
+        }
+        self.init.flags = flags;
+        if !self.established {
+            return;
+        }
+        for stream in [2, 1] {
+            self.send_control(
+                session,
+                &Control {
+                    a0: stream,
+                    a1: flags,
+                    a2: 0,
+                    opcode: op::ENCODER_CONFIG,
+                    body: &[],
+                },
+            );
+        }
+        self.telemetry.reconfigure.fetch_add(1, Ordering::Release);
+        self.units.wake();
     }
 
     /// Whether the host has put this client in relative mode.

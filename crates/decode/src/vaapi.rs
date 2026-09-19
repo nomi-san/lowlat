@@ -25,7 +25,7 @@ use lowlat_drivers::va;
 pub use lowlat_drivers::va::{Display, Error as RuntimeError, Vaapi};
 
 use crate::h264::dpb::{Parity, Structure};
-use crate::{Decoder, Fault, Fed, Format, Picture, Planes, h264, hevc};
+use crate::{Caps, Decoder, Fault, Fed, Format, Picture, Planes, h264, hevc};
 
 /// Surfaces a context holds: what either picture buffer can index.
 const SURFACES: usize = h264::dpb::MAX_FRAMES;
@@ -68,28 +68,6 @@ impl From<va::Error> for Error {
 
 type Result<T> = core::result::Result<T, Error>;
 
-/// What a device decodes, asked once. Shared by every backend, and what the
-/// declaration is masked with.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct Caps {
-    pub h264: bool,
-    pub hevc: bool,
-    pub hevc_10: bool,
-    /// Full chroma at eight and ten bits. **Never on this backend**: its
-    /// full-chroma surfaces are a layout no device this was built on can
-    /// verify, so the profile is not asked for and the stream is refused,
-    /// whatever the device lists.
-    pub hevc_444: bool,
-    pub hevc_444_10: bool,
-}
-
-impl Caps {
-    /// Whether anything at all can be decoded.
-    pub fn any(&self) -> bool {
-        self.h264 || self.hevc || self.hevc_10 || self.hevc_444 || self.hevc_444_10
-    }
-}
-
 fn profile_for(codec: Codec, ten_bit: bool) -> VAProfile {
     match (codec, ten_bit) {
         (Codec::H264, _) => VAProfileH264High,
@@ -98,7 +76,10 @@ fn profile_for(codec: Codec, ten_bit: bool) -> VAProfile {
     }
 }
 
-/// Ask a display what it decodes.
+/// Ask a display what it decodes. **Full chroma is never reported here**:
+/// this backend's full-chroma surfaces are a layout no device it was built
+/// on can verify, so the profile is not asked for and such a stream is
+/// refused, whatever the device lists.
 pub fn caps(display: &Display<'_>) -> Result<Caps> {
     let profiles = display.profiles()?;
     let decodes = |profile: VAProfile| -> Result<bool> {

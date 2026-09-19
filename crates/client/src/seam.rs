@@ -22,7 +22,7 @@ use lowlat_crypto::Credentials;
 use lowlat_decode::vaapi;
 use lowlat_net::{Guest, Wake};
 
-use crate::config::{Backend, Config, Decoding, FrameKind};
+use crate::config::{Backend, Caps, Config, Decoding, FrameKind, Video};
 use crate::driver::{Telemetry, Units};
 use crate::frames::{Frames, Held};
 use crate::input::{Input, RING_DEPTH, Request, Viewport};
@@ -196,6 +196,8 @@ pub struct Client {
     /// The render node the decoder opens, settled at creation; none for a
     /// client without a decoder.
     node: Option<CString>,
+    /// What that decoder takes, which the declaration is masked with.
+    caps: Caps,
     frames: Arc<Frames>,
     /// The newest picture handed out, so the next acquire waits for newer.
     last_seq: u64,
@@ -244,8 +246,8 @@ impl Client {
         if decoding.backend == Backend::Nvdec || decoding.kind == FrameKind::Handle {
             return Err(Error::Decoder(DecoderStage::Unsupported));
         }
-        let node = if decoding.backend == Backend::None {
-            None
+        let (node, caps) = if decoding.backend == Backend::None {
+            (None, Caps::default())
         } else if decoding.device.is_empty() {
             let mut found = None;
             let mut last = DecoderStage::Device;
@@ -255,7 +257,7 @@ impl Client {
                 };
                 match vaapi::probe(&path) {
                     Ok(caps) if caps.any() => {
-                        found = Some(path);
+                        found = Some((path, caps));
                         break;
                     }
                     Ok(_) => last = DecoderStage::Profile,
@@ -266,7 +268,8 @@ impl Client {
                     }
                 }
             }
-            Some(found.ok_or(Error::Decoder(last))?)
+            let (path, caps) = found.ok_or(Error::Decoder(last))?;
+            (Some(path), caps)
         } else {
             let path = CString::new(decoding.device.as_str())
                 .map_err(|_| Error::Decoder(DecoderStage::Device))?;
@@ -274,7 +277,7 @@ impl Client {
             if !caps.any() {
                 return Err(Error::Decoder(DecoderStage::Profile));
             }
-            Some(path)
+            (Some(path), caps)
         };
         let (emit, events) = events::queue();
         let telemetry = Arc::new(Telemetry::default());
@@ -286,6 +289,7 @@ impl Client {
             telemetry: Arc::clone(&telemetry),
             units: Units::new(),
             node,
+            caps,
             frames: Arc::new(Frames::new(decoding.ceiling())),
             last_seq: 0,
             sound: Arc::new(Mutex::new(Sound::new(packets.clone(), telemetry))),
@@ -296,6 +300,11 @@ impl Client {
     /// The render node the decoder opens, if there is a decoder.
     pub fn node(&self) -> Option<&CString> {
         self.node.as_ref()
+    }
+
+    /// What the decoder takes.
+    pub fn caps(&self) -> &Caps {
+        &self.caps
     }
 
     /// The picture queue.
@@ -522,7 +531,16 @@ impl Client {
             material,
             cipher,
             seed,
-            init: attempt.config.init(),
+            init: {
+                let init = attempt.config.init(&self.caps);
+                self.telemetry
+                    .asked_flags
+                    .store(attempt.config.video.asked(), Ordering::Relaxed);
+                self.telemetry
+                    .declared_flags
+                    .store(init.flags, Ordering::Relaxed);
+                init
+            },
             arrivals,
             asked,
             requests: Arc::clone(&requests),
@@ -633,6 +651,27 @@ impl Client {
             let _ = thread.wake_handle().notify();
         }
         true
+    }
+
+    /// A new preference for the picture, mid-session. The declaration is
+    /// masked by capability as at the attempt, restated to the host, and the
+    /// decoder torn down with a keyframe asked for, so the next one builds
+    /// for whatever the host now sends. Refused without an attempt to apply
+    /// it to.
+    pub fn set_video(&mut self, video: Video) -> Result<(), Error> {
+        let Some(attempt) = self.attempt.as_mut() else {
+            return Err(Error::UnknownAttempt);
+        };
+        attempt.config.video = video;
+        let flags = video.flags(&self.caps);
+        self.telemetry
+            .asked_flags
+            .store(video.asked(), Ordering::Relaxed);
+        self.telemetry
+            .declared_flags
+            .store(flags, Ordering::Relaxed);
+        self.request(Request::Video(flags));
+        Ok(())
     }
 
     /// Where the application drew the picture, in the units its positions

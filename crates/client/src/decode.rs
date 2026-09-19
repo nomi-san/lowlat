@@ -69,8 +69,19 @@ pub(crate) fn run(args: Attached) {
     };
     let mut feed = Feed::new(Backend::new(&display, frames.ceiling()));
     let mut reported = Smoothed::default();
+    let mut reconfigured = telemetry.reconfigure.load(Ordering::Acquire);
 
     while !stopping.load(Ordering::Acquire) {
+        // A declaration changed under the decoder: torn down here, and the
+        // keyframe asked for, as one act.
+        let generation = telemetry.reconfigure.load(Ordering::Acquire);
+        if generation != reconfigured {
+            reconfigured = generation;
+            if feed.reconfigure() == Decision::Request {
+                telemetry.request.store(true, Ordering::Release);
+                let _ = shell.notify();
+            }
+        }
         let Some(unit) = units.take() else {
             units.wait(IDLE_WAIT);
             continue;
@@ -103,6 +114,12 @@ pub(crate) fn run(args: Attached) {
                 telemetry.decoder.store(1, Ordering::Relaxed);
                 telemetry.codec.store(
                     header.as_ref().map_or(0, |h| u32::from(h.codec.wire())),
+                    Ordering::Relaxed,
+                );
+                telemetry.stream_format.store(
+                    feed.decoder()
+                        .output()
+                        .map_or(0, |(_, _, f)| format_code(f)),
                     Ordering::Relaxed,
                 );
                 if fed == Fed::Picture {

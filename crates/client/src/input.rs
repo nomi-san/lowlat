@@ -86,6 +86,8 @@ pub enum Input {
 pub(crate) enum Request {
     Input(Input),
     Viewport(Viewport),
+    /// A new declaration: the flags, already masked by capability.
+    Video(u32),
 }
 
 /// Entries the ring between the two threads holds.

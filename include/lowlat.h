@@ -1208,11 +1208,14 @@ typedef struct lowlat_client_create_info {
 
 /// What a client asks of a host, per attempt.
 ///
-/// **Zeroed is the sensible default**: no size request, compressed sound, the
-/// current cipher, no reflexive servers.
-typedef struct lowlat_client_config {
-    /// Set by the caller to `sizeof(lowlat_client_config)`.
-    uint32_t size;
+/// What the application would like of the picture, for the one stream.
+///
+/// **Preferences, not requirements.** Each of the three is "this if the host
+/// has it": the library masks them with what its decoder was verified to
+/// decode before declaring anything, so a stream the decoder cannot take is
+/// never asked for, and follows whatever the host then sends. Zeroed is the
+/// sensible default and what every established client asks at its defaults.
+typedef struct lowlat_client_video_config {
     /// The picture size asked of the host, or zero for no preference.
     ///
     /// **A request to change the host's display, not a description of this
@@ -1220,6 +1223,22 @@ typedef struct lowlat_client_config {
     /// so set it only to change the person's monitor.
     uint32_t resolution_x;
     uint32_t resolution_y;
+    /// The second codec.
+    bool hevc;
+    /// Ten-bit colour, which implies the second codec.
+    bool ten_bit;
+    /// Full chroma, which implies the second codec.
+    bool chroma_444;
+    uint8_t reserved;
+} lowlat_client_video_config;
+
+/// **Zeroed is the sensible default**: no size request, no colour
+/// preference, compressed sound, the current cipher, no reflexive servers.
+typedef struct lowlat_client_config {
+    /// Set by the caller to `sizeof(lowlat_client_config)`.
+    uint32_t size;
+    /// The picture: the size asked of the host and the preferences.
+    lowlat_client_video_config video;
     /// Whether uncompressed sound is acceptable.
     bool raw_audio;
     /// Offer no media key, so the host answers without one and both ends key
@@ -1317,6 +1336,14 @@ typedef struct lowlat_client_status {
     /// packet, in microseconds; zero until something has been timed.
     uint32_t decode_reported_us;
     uint32_t audio_reported_us;
+    /// The declaration, in the wire's flag bits: what the application asked
+    /// (the preferences as flags, unmasked) and what was declared after the
+    /// mask; zero before an attempt.
+    uint32_t asked_flags;
+    uint32_t declared_flags;
+    /// The stream as the decoder built it: one of `LOWLAT_FORMAT_*`, or
+    /// zero before a build. With `codec`, what the host turned out to send.
+    uint32_t stream_format;
 } lowlat_client_status;
 
 /// One plane of a picture.
@@ -2095,6 +2122,25 @@ lowlat_status lowlat_client_set_viewport(lowlat_client *cl,
                                          int32_t y,
                                          int32_t w,
                                          int32_t h) LOWLAT_NOEXCEPT;
+
+/// Change what the application would like of the picture, mid-session.
+///
+/// The new declaration is masked by capability as at the attempt and
+/// restated to the host with a reinitialisation request; the decoder is torn
+/// down with it, so the next keyframe builds one for whatever the host now
+/// sends. Costs the host one keyframe, and an established host an encoder
+/// rebuild, so it is for a person changing a setting rather than a loop. The
+/// size request travels with it.
+///
+/// @param[in] cl The handle from `lowlat_client_create`.
+/// @param[in] video The preferences, whole.
+/// @returns `LOWLAT_OK`, or `LOWLAT_ERR_UNKNOWN_ATTEMPT` with no attempt
+/// to apply them to.
+///
+/// @attention `cl` came from `lowlat_client_create`; `video` points at a readable
+/// structure.
+lowlat_status lowlat_client_set_video_config(lowlat_client *cl,
+                                             const lowlat_client_video_config *video) LOWLAT_NOEXCEPT;
 
 /// A key, by the usage code of the physical key. A code of zero is no key
 /// and is not sent.

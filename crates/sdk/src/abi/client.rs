@@ -73,13 +73,16 @@ pub struct lowlat_client_create_info {
 
 /// What a client asks of a host, per attempt.
 ///
-/// **Zeroed is the sensible default**: no size request, compressed sound, the
-/// current cipher, no reflexive servers.
+/// What the application would like of the picture, for the one stream.
+///
+/// **Preferences, not requirements.** Each of the three is "this if the host
+/// has it": the library masks them with what its decoder was verified to
+/// decode before declaring anything, so a stream the decoder cannot take is
+/// never asked for, and follows whatever the host then sends. Zeroed is the
+/// sensible default and what every established client asks at its defaults.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
-pub struct lowlat_client_config {
-    /// Set by the caller to `sizeof(lowlat_client_config)`.
-    pub size: u32,
+pub struct lowlat_client_video_config {
     /// The picture size asked of the host, or zero for no preference.
     ///
     /// **A request to change the host's display, not a description of this
@@ -87,6 +90,24 @@ pub struct lowlat_client_config {
     /// so set it only to change the person's monitor.
     pub resolution_x: u32,
     pub resolution_y: u32,
+    /// The second codec.
+    pub hevc: bool,
+    /// Ten-bit colour, which implies the second codec.
+    pub ten_bit: bool,
+    /// Full chroma, which implies the second codec.
+    pub chroma_444: bool,
+    pub reserved: u8,
+}
+
+/// **Zeroed is the sensible default**: no size request, no colour
+/// preference, compressed sound, the current cipher, no reflexive servers.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_client_config {
+    /// Set by the caller to `sizeof(lowlat_client_config)`.
+    pub size: u32,
+    /// The picture: the size asked of the host and the preferences.
+    pub video: lowlat_client_video_config,
     /// Whether uncompressed sound is acceptable.
     pub raw_audio: bool,
     /// Offer no media key, so the host answers without one and both ends key
@@ -172,6 +193,14 @@ pub struct lowlat_client_status {
     /// packet, in microseconds; zero until something has been timed.
     pub decode_reported_us: u32,
     pub audio_reported_us: u32,
+    /// The declaration, in the wire's flag bits: what the application asked
+    /// (the preferences as flags, unmasked) and what was declared after the
+    /// mask; zero before an attempt.
+    pub asked_flags: u32,
+    pub declared_flags: u32,
+    /// The stream as the decoder built it: one of `LOWLAT_FORMAT_*`, or
+    /// zero before a build. With `codec`, what the host turned out to send.
+    pub stream_format: u32,
 }
 
 /// The sound codec on the wire, as `lowlat_client_status.audio_codec`
@@ -498,13 +527,21 @@ fn configured(cfg: &lowlat_client_config) -> Option<::lowlat_client::Config> {
         }
     }
     Some(::lowlat_client::Config {
-        resolution: (cfg.resolution_x, cfg.resolution_y),
+        video: video_of(&cfg.video),
         raw_audio: cfg.raw_audio,
         legacy_cipher: cfg.legacy_cipher,
         servers,
         shared_address_space: cfg.shared_address_space,
-        ..::lowlat_client::Config::default()
     })
+}
+
+fn video_of(video: &lowlat_client_video_config) -> ::lowlat_client::config::Video {
+    ::lowlat_client::config::Video {
+        resolution: (video.resolution_x, video.resolution_y),
+        hevc: video.hevc,
+        ten_bit: video.ten_bit,
+        chroma_444: video.chroma_444,
+    }
 }
 
 fn refused(error: ::lowlat_client::Error) -> lowlat_status {
@@ -768,6 +805,43 @@ pub unsafe extern "C" fn lowlat_client_set_viewport(
                 LOWLAT_OK
             } else {
                 LOWLAT_ERR_NOT_STARTED
+            }
+        })
+    }
+}
+
+/// Change what the application would like of the picture, mid-session.
+///
+/// The new declaration is masked by capability as at the attempt and
+/// restated to the host with a reinitialisation request; the decoder is torn
+/// down with it, so the next keyframe builds one for whatever the host now
+/// sends. Costs the host one keyframe, and an established host an encoder
+/// rebuild, so it is for a person changing a setting rather than a loop. The
+/// size request travels with it.
+///
+/// @param[in] cl The handle from [`lowlat_client_create`].
+/// @param[in] video The preferences, whole.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_UNKNOWN_ATTEMPT`] with no attempt
+/// to apply them to.
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`]; `video` points at a readable
+/// structure.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_set_video_config(
+    cl: *mut lowlat_client,
+    video: *const lowlat_client_video_config,
+) -> lowlat_status {
+    unsafe {
+        entered(cl, |handle| {
+            if video.is_null() {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let video = video_of(&*video);
+            match handle.held().seam.set_video(video) {
+                Ok(()) => LOWLAT_OK,
+                Err(error) => refused(error),
             }
         })
     }
@@ -1140,6 +1214,9 @@ pub unsafe extern "C" fn lowlat_client_get_status(
                 audio_codec: t.audio_codec.load(Ordering::Relaxed),
                 decode_reported_us: t.decode_reported_us.load(Ordering::Relaxed),
                 audio_reported_us: t.audio_reported_us.load(Ordering::Relaxed),
+                asked_flags: t.asked_flags.load(Ordering::Relaxed),
+                declared_flags: t.declared_flags.load(Ordering::Relaxed),
+                stream_format: t.stream_format.load(Ordering::Relaxed),
             };
             LOWLAT_OK
         })
@@ -1674,6 +1751,9 @@ mod tests {
             audio_codec: 0,
             decode_reported_us: 0,
             audio_reported_us: 0,
+            asked_flags: 0,
+            declared_flags: 0,
+            stream_format: 0,
         };
         assert_eq!(
             unsafe { lowlat_client_get_status(handle, &raw mut status) },
@@ -1777,8 +1857,14 @@ mod tests {
         );
         let mut cfg = lowlat_client_config {
             size: core::mem::size_of::<lowlat_client_config>() as u32,
-            resolution_x: 0,
-            resolution_y: 0,
+            video: lowlat_client_video_config {
+                resolution_x: 0,
+                resolution_y: 0,
+                hevc: false,
+                ten_bit: false,
+                chroma_444: false,
+                reserved: 0,
+            },
             raw_audio: false,
             legacy_cipher: true,
             shared_address_space: false,
