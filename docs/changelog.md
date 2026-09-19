@@ -3,6 +3,25 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-19 - Phase C5's second half planned
+
+### Decided
+- The pointer's picture is decoded in the library and delivered from a buffer the handle
+  owns, valid until the next poll; the cache the initialization declares is kept by
+  checksum; scaling the pointer is the application's, by the ratio of its rectangle to the
+  picture ([10 §7](10-client.md), [06 §3b](06-api.md), minor 9 planned).
+- The guest list is handed to the application with the recipient's own number, unread by
+  the library; the number goes into status ([10 §7](10-client.md)).
+- The client's metrics take a shape of their own -- arrivals, late arrivals, duplicates,
+  out-of-window drops, negatives sent, bytes, messages, and a recent-loss figure over about
+  thirty seconds, per channel -- and the host's structure stays the host's, reaching the
+  client's application through the guest list ([10 §9](10-client.md)).
+- Rumble is an event with the pad and two eight-bit motors ([10 §7](10-client.md)).
+
+### Corrected
+- [01 §11.2](01-protocol.md): a cached pointer name that carries no size means the size and
+  hotspot sent with the picture.
+
 ## 2026-09-19 - Two faults the gate found, fixed
 
 ### Fixed

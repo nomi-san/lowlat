@@ -1,7 +1,8 @@
 # 10 - The client
 
 **Status:** designed 2026-09-15, interview of the same day; C1 and C2 built 2026-09-17, C3
-and C4 2026-09-18; C5's decode half planned, built and gated 2026-09-19.
+and C4 2026-09-18; C5's decode half planned, built and gated 2026-09-19, its second half
+planned the same evening.
 Built by [impl-plan-client.md](impl-plan-client.md).
 
 The client is the other half of the same protocol: it receives what [05](05-host.md) produces.
@@ -436,13 +437,13 @@ reads channel 0 for:
 
 | opcode | what the client does |
 |---|---|
-| 9 cursor | decodes the image if one came, scales the hotspot into the window, and raises a cursor event; the *suppressed* flag hides the local pointer |
+| 9 cursor | decodes the picture if one came or is named from the cache, and raises a cursor event with it at native size, the hotspot in its pixels, the *suppressed* flag and the position in window units; a name the cache does not hold delivers the rest without a picture; the forget bit empties the cache; the first stream only |
 | 10 disconnect | records the status the host gave and ends; zero is not an ending ([01 §11.2](01-protocol.md)) |
 | 16 blocked | raises the blocked or unblocked event |
 | 17 user data | hands the body to the application with its sub-identifier, opaque ([01 §11.2a](01-protocol.md)) |
-| 20 rumble | raises the rumble event for the pad named |
+| 20 rumble | raises the rumble event for the pad named, the two motors as eight-bit values |
 | 21 encode latency | stores the host's figure for the stream named |
-| 25 guest list | parses it whole, finds its own entry by number, and takes its permissions from it; a body that does not parse is dropped whole |
+| 25 guest list | hands the body to the application with the recipient's own number, opaque; the number goes into status |
 | 27 stream ended | raises the stream event with the reason |
 | 28 host mode | stores it |
 | 29 encoder generation | stores it per stream, for §5's staleness rule |
@@ -450,6 +451,39 @@ reads channel 0 for:
 Anything else is ignored. **A clean departure is opcode 10 with a zero status**, given a
 moment on the reliable channel before the session goes away; a client that breaks sends
 nothing, and a host learns it from its delivery deadline.
+
+**The pointer's picture is decoded here and scaled nowhere here** (*planned 2026-09-19,
+evening*). The picture travels as a PNG ([01 §11.2](01-protocol.md)); the library inflates
+and unfilters it -- 8-bit RGB or RGBA, non-interlaced, up to 512 square, which decoded is
+the 1 MiB an established client's buffer holds -- and anything else is refused with the
+picture dropped and the position, the flags and the hotspot still delivered. The
+initialization declares that this client caches, so a host names a picture it sent before
+by the checksum of its bytes rather than sending it again: the library keeps a hundred by
+checksum, empties the cache when the host's forget bit says its own is empty, delivers a
+name it does not hold as an update without a picture (counted in status), and takes the
+size and hotspot of a name that carries no size from what was stored with the picture. The
+decoded picture is handed to the application from a buffer the handle owns, valid until
+its next poll, so no application sizes a scratch buffer at the ceiling of a picture it
+sees a few times an hour. **Scaling is the application's**: an established client scales
+the pointer by the viewport it drew into, or by its display's scale, so a pointer from a
+host at twice the scale shows at the size it has in the picture and shrinks with a
+letterboxed window. The library cannot do that -- it does not own the toolkit's cursor, and
+a display server draws a cursor at the size it was given -- so it hands over the native
+picture with the hotspot in its pixels, and the application resamples the two together by
+the ratio of its rectangle to the picture, the same ratio [§8](#8-input) maps positions
+through. The suppressed flag -- the pointer withheld because the host is being driven by
+touch -- is delivered as itself and is not relative mode ([§8](#8-input)); the application
+hides its own pointer for it.
+
+**The guest list is opaque to the library.** Its own number arrives in the message's
+header and is all the library needs: permissions gate nothing on this side, because the
+host drops what it does not permit and a stale list would only refuse input the host would
+take; and the figures in the body are the application's panel ([§9](#9-events-status-and-metrics)).
+So the body goes to the application unread, with the recipient's number beside it, and the
+application finds itself, reads what it wants and drops a body it cannot read -- as it does
+with any application message. An earlier draft had the library parse the list for the
+client's own permissions; that put a reader for one application's schema into a library
+whose host half sends the same schema blind, for nothing the library would act on.
 
 **What the declaration says is a preference masked by capability** (*2026-09-19*). The
 application names what it would like -- the second codec, ten-bit colour, full chroma -- in
@@ -536,11 +570,31 @@ onto the device.
 ## §9 Events, status and metrics
 
 Events are polled ([06 §5](06-api.md)): candidate found, established, ended with an outcome,
-cursor, relative mode, blocked, rumble, user data, stream ended, host mode. Status carries
-what the session is doing and what the decoder is; metrics carry the client's side of the
-same named channels the host reports ([06 §3](06-api.md)) -- what arrived, what was
-retransmitted to it, its decode time, its queue depth -- so an application can draw the same
-panel either side.
+cursor, relative mode, blocked, rumble, user data, the guest list, stream ended, host mode.
+Status carries what the session is doing and what the decoder is: the round trip, how far
+behind the reader is, the decode and hand-over times, the queue depth, the host's encode
+time as it reported it, the sound figures, the declaration and the stream, and this
+client's own number in the room.
+
+**The client's metrics have a shape of their own** (*planned 2026-09-19, evening*; an
+earlier draft put them on the host's structure). The host's per-guest figures are a
+sender's -- fragments put on the wire, the resends it took on a negative acknowledgement
+and on its timeout, its congestion events, its window and stale count -- and a receiver can
+measure none of them; reporting zeros under those names would describe the wrong end. What
+a receiver can count, per channel: the fragments that **arrived**; those that arrived
+**late**, behind a later fragment, which on this transport is a retransmission or a
+reorder; **duplicates** and **out-of-window** drops; the **negative acknowledgements it
+sent**; bytes and messages. And **a recent-loss figure**: late arrivals over arrivals in
+each one-second sample, folded into an average with a thirtieth's weight on the newest
+sample, so it reads over about thirty seconds and settles at the path's loss rate rather
+than at the session's total. Per session, the round trip and how long the session has been
+up. The host's own figures for this guest -- what it sent, what it resent, its rate and its
+round trip -- reach the application through the guest list ([§7](#7-initialization-and-the-control-vocabulary)),
+so one panel's two sides are the host's `lowlat_metrics`, as the host reports them, and the
+client's `lowlat_client_metrics`, as the client measures them; the pairs that describe one
+path from its two ends are the round trip, the rate, the decode time the host re-publishes
+against the one the client reports, and the negatives the client sent against the resends
+the host took on them (related, not equal: one negative can name several fragments).
 
 **A presentation-rate hint, and an event when the decoder cannot sustain the stream, were
 considered and are not built** (*recorded 2026-09-16*, *decided 2026-09-19*; the shape is

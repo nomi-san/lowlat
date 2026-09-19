@@ -317,8 +317,8 @@ the rules are [10 §6](10-client.md).
 
 **Planned 2026-09-19, interview of the same day, in two halves.** The decode half is planned
 here and **built and gated the same day**, with two rows left open on the host's side; the
-second half keeps the wording it had and is planned when the first is closed. The decisions are recorded once, here; the rules
-are [10 §4](10-client.md), §5.1 and §7.
+second half was planned the same evening, at its own interview, once the first had closed.
+The decisions are recorded once, here; the rules are [10 §4](10-client.md), §5.1, §7 and §9.
 
 ### C5, first half: the decode time reported, the second backend, ten-bit and 4:4:4
 
@@ -462,19 +462,71 @@ path.
    answered, the picture back within the second -- about forty repeats, the keyframe asked
    for -- and the stream's format following the declaration each time.)
 
-### C5, second half
+### C5, second half: the cursor, rumble, the guest list, the client's metrics
 
-- [ ] The cursor: image, hotspot scaled into the window, the suppressed flag; the demo sets the
-  toolkit's cursor from it.
-- [ ] User data both ways, the guest list read for the client's own permissions, host mode,
-  stream ended, blocked, rumble; status and metrics with the named channels.
+**Planned 2026-09-19, evening, interview of the same day.** The decisions are recorded once,
+here; the rules are [10 §7](10-client.md) and §9, the surface [06 §3b](06-api.md).
+
+- [ ] **The cursor, decoded.** The pointer message's picture is inflated and unfiltered in
+  the library and handed to the application as RGBA at its native size, with the hotspot
+  in the picture's own pixels, the suppressed flag, and the position the pointer reappears
+  at on the way out of relative mode, in window units. **The picture is delivered from a
+  buffer the handle owns, valid until the next poll** -- not through the caller's body
+  buffer, which would make every application size its scratch at the picture ceiling or
+  drop the cursor when it does not, as the demo did on a body too large. The library keeps
+  the cache its initialization declares: pictures by checksum, a hundred of them, forgotten
+  when the host says so; a name the cache does not hold delivers the position and the flags
+  without a picture, and counts; a name that carries no size takes the picture's size and
+  hotspot from what was stored with it. The reader takes 8-bit RGB and RGBA,
+  non-interlaced, up to 512 square -- 1 MiB decoded, the same ceiling an established
+  client's buffer has -- and refuses anything else with the picture dropped and the rest of
+  the update delivered; it is fuzzed, and the committed pictures decode byte for byte
+  against an independent decoder's output. **Scaling the pointer is the application's.** An
+  established client scales it by the viewport it drew into, or by its display's scale, so
+  a pointer from a host at twice the scale shows at the size it has in the picture and
+  shrinks with a letterboxed window; the library does not own the toolkit's cursor, and a
+  display server draws a cursor at its native size, so the library hands over the picture
+  and the application resamples picture and hotspot together (*an earlier draft had the
+  hotspot "scaled into the window" by the library, which scales nothing*).
+- [ ] **Rumble** as an event: the pad the application named and the two motors as eight-bit
+  values; the application scales them to its toolkit's range.
+- [ ] **The guest list is handed over, not parsed.** The library needs nothing from its
+  body: its own number arrives beside it and goes into status, permissions gate nothing on
+  this side because the host drops what it does not permit, and the figures in it are the
+  application's panel. So it is an event carrying the recipient's number, with the body
+  through the caller's buffer as an application message goes; the application finds itself
+  by that number and drops a body it cannot read (*an earlier draft had the library parse it
+  for the client's own permissions*).
+- [ ] **The client's own metrics**, in a shape of their own: per channel the fragments that
+  arrived, those that arrived late -- behind a later one, which on this transport is a
+  retransmission or a reorder -- duplicates, out-of-window drops, the negative
+  acknowledgements sent, bytes and messages, and **a recent-loss figure**, late arrivals
+  over arrivals per one-second sample averaged with a thirtieth's weight so it reads over
+  about thirty seconds; per session the round trip and the connected time. The host's own
+  figures for this guest reach the application through the guest list, so one panel's two
+  sides are the host's `lowlat_metrics` and the client's `lowlat_client_metrics`, each
+  measured where it can be (*an earlier draft put the client's figures on the host's
+  structure, half of whose fields a receiver cannot measure*). Minor 9.
+- [x] User data both ways, host mode, stream ended and blocked were built with the session
+  (minor 4) and stay as they are.
+- [ ] The demo sets the toolkit's cursor from the picture, resampled with its hotspot by the
+  drawn ratio; hides its pointer while the host's is suppressed; rumbles the pad the host
+  named; parses the guest list with its toolkit, shows owner and permissions in the title
+  and draws the host's figures for this guest on its line beside its own.
 
 **Gate, second half:**
 
-1. Gate C in full: ten minutes against an established host with picture, sound, input, the
+1. Hermetic: the harness host sends a fresh picture, the same by name, a name after a
+   forget, a hidden pointer, rumble, blocked and unblocked, host mode and a guest list; the
+   events come out in order with the right bytes, the miss delivers the position alone, and
+   under the simulator's one percent loss the recent-loss figure reads about a hundredth on
+   the video channel after sixty simulated seconds and zero at zero loss.
+2. Gate C in full: ten minutes against an established host with picture, sound, input, the
    cursor and relative mode, from a cold connect, on both backends; then the same against
    this host with its ten-bit and 4:4:4 streams.
-2. The demo's panel and this host's roster agree on the figures they share.
+3. The demo's panel and this host's roster agree on the figures they share: the round trip,
+   the rate, the decode time the host re-publishes; the negatives this client sent against
+   the fragments the host resent on them.
 
 ## Phase C6 - Packaging and the second half of the header
 
@@ -524,6 +576,12 @@ slower decoder ever reopens them.
 
 Newest first.
 
+- 2026-09-19, evening: C5's second half planned. The cursor's picture is decoded in the
+  library and delivered from a buffer the handle owns, valid until the next poll; scaling
+  the pointer is the application's, because nothing in the library can; the guest list is
+  handed over with the recipient's number rather than parsed, the library needing nothing
+  from it; the client's metrics take a shape of their own, with a recent-loss figure read
+  from late arrivals, and the host's structure stays the host's.
 - 2026-09-19: C5 planned in two halves, the decode half first. The declaration is a
   preference masked by capability with no fallback to another decoder; the second backend is
   driven from the library's own readers and probed by building a real decoder per

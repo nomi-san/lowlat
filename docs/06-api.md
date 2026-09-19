@@ -372,8 +372,32 @@ lowlat_status lowlat_client_acquire_audio(lowlat_client *cl, uint32_t timeout_ms
 
 ```c
 lowlat_status lowlat_client_set_video_config(lowlat_client *cl, const lowlat_client_video_config *cfg);
-lowlat_status lowlat_client_get_metrics(lowlat_client *cl, lowlat_metrics *out);
+lowlat_status lowlat_client_get_metrics(lowlat_client *cl, lowlat_client_metrics *out);
 ```
+
+**Minor 9 (planned 2026-09-19, evening): the cursor, rumble, the guest list, the client's
+metrics.** Three events join §5's set. `LOWLAT_EVENT_CURSOR` carries the pointer as the
+host described it -- hidden, relative, suppressed, the position it reappears at in window
+units, the hotspot in the picture's own pixels, the picture's size and its checksum -- and,
+when a picture came or was named from the cache, **a pointer to the decoded RGBA in a buffer
+the handle owns, valid until the next `poll_events` on that handle**: the one event that
+carries a pointer, because a pointer picture at its ceiling is a megabyte and arrives a few
+times an hour, which is the wrong shape for a caller's scratch buffer and the `TOO_SMALL`
+retry ([§5](#5-events)); `image_update` says whether one is there. The picture is at its
+native size and the library scales nothing: the application resamples picture and hotspot
+by the ratio of its rectangle to the picture, as an established client does
+([10 §7](10-client.md)). A picture the reader cannot take (anything but 8-bit RGB or RGBA,
+non-interlaced, up to 512 square) is dropped and counted in status, the rest of the update
+delivered. `LOWLAT_EVENT_RUMBLE` names the pad the application reported and the two motors
+as eight-bit values. `LOWLAT_EVENT_GUEST_LIST` carries the recipient's own number and the
+list's body through the caller's buffer, exactly as user data does; the library reads
+nothing in it, and `lowlat_client_status.number` carries the same number for a late reader.
+`lowlat_client_get_metrics` fills `lowlat_client_metrics { size, connected_ms, rtt_ms,
+control, audio, video }`, each channel a `lowlat_client_channel_metrics { fragments, late,
+duplicates, out_of_window, nacks_sent, bytes, messages, loss_30s }` as [10 §9](10-client.md)
+defines them -- the receiver's own figures under the receiver's names; the host's figures for
+this guest reach the application through the guest list, on the host's `lowlat_metrics`,
+so a panel shows both ends of one path from the structure each end can fill.
 
 **Minor 8 (2026-09-19): the preferences, the second backend, the handle, the decoders
 listed.** `lowlat_client_config` gains a `video` block, `lowlat_client_video_config {
@@ -496,11 +520,11 @@ taken off the video channel (a rate is a difference over time, the application's
 one panel serves both ends. A decoder that fails past recovery ends the session with
 `LOWLAT_OUTCOME_DECODER_FAILED`.
 
-**Events** add to §5's set: cursor (image in the body, hotspot, suppressed), relative mode
-(`LOWLAT_EVENT_RELATIVE`, on the transition alone, with the position the pointer reappears
-at on the way out in the window's units, so the application confines and hides its pointer
-on entry and warps it once on exit), blocked and unblocked, rumble, stream ended with a
-reason, host mode.
+**Events** add to §5's set: cursor (the decoded picture from the handle's own buffer,
+hotspot, suppressed; minor 9), relative mode (`LOWLAT_EVENT_RELATIVE`, on the transition
+alone, with the position the pointer reappears at on the way out in the window's units, so
+the application confines and hides its pointer on entry and warps it once on exit), blocked
+and unblocked, rumble, the guest list, stream ended with a reason, host mode.
 
 ## §4 Signaling seam
 
@@ -607,11 +631,14 @@ lowlat_status lowlat_host_poll_events(lowlat_host *hl, uint32_t timeout_ms, lowl
 Returns `LOWLAT_OK` with an event, or `LOWLAT_TIMEOUT` if none arrived. A `timeout_ms` of zero
 polls without blocking.
 
-**The one event that carries a body is handed it through the caller's own buffer**, which is
+**An event that carries a body is handed it through the caller's own buffer**, which is
 why the poll call takes one. `body_len` is the buffer's capacity going in and the bytes written
 coming out; `NULL` means the application does not want bodies, and one that arrives is dropped
 with the loss counted like any other. **The event itself never carries a pointer**, only the
-body's length, so the union stays blittable ([§12](#12-bindings)).
+body's length, so the union stays blittable ([§12](#12-bindings)) -- with one exception on
+the client half, the cursor's decoded picture ([§3b](#3b-client), minor 9), which points
+into a buffer the handle owns and is valid until the next poll on that handle: a megabyte at
+its ceiling and rare, the wrong shape for a scratch buffer sized per poll.
 
 **A buffer too small does not lose the message.** The needed length is written to `body_len`,
 `LOWLAT_ERR_TOO_SMALL` is returned, and the event stays at the head of the queue for a second
@@ -643,6 +670,10 @@ ignores it, which is why the type field is first.
 | blocked | the host blocked this client's input, or unblocked it (client) |
 | stream ended | the host ended one stream and not the session (client) |
 | host mode | the host said which mode it is in (client) |
+| relative | the host took the pointer or gave it back, with where it reappears (client) |
+| cursor | the host's pointer changed: its picture, hotspot or flags (client, minor 9) |
+| rumble | the host asked a pad to vibrate (client, minor 9) |
+| guest list | the room, as the host describes it, with this client's own number (client, minor 9) |
 
 **A guest's state changes are the four attempt events**, not one event with a
 state field: candidate and ready while it negotiates, established when a path is found, ended

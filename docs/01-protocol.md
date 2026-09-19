@@ -641,6 +641,10 @@ mistaken for something else.
 
 Cursor images on the wire are **PNG, not raw pixels**. Cursor position is in stream space and
 requires the host-to-client transform, including a width and height swap on rotated displays.
+**A cached name that carries no size means the picture's size and hotspot are the ones sent
+with it**: a reader keeps the two with the picture and takes the hotspot from the header's
+arguments only when the message carries a size, so a sender naming a picture repeats what it
+sent or sends nothing for both (*2026-09-19*).
 
 ### §11.2a Application messages
 
