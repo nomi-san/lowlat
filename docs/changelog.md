@@ -28,9 +28,13 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - The application toolkit the demo draws with is a vendored tree with a provenance note; its
   GL renderer imports the descriptor and fills its textures on the device.
 
-### Open
-- The live gate of the phase's decode half ([impl-plan-client.md](impl-plan-client.md), C5):
-  the ten-minute runs per backend and format, the established host, the mid-session toggle.
+### Gated
+- Ten-minute runs against this host on both backends and by both routes with the
+  preferences walked mid-session, and against an established host over the internet: the
+  reader never more than one message behind, every switch answered within the second
+  ([10 §4.1](10-client.md), [impl-plan-client.md](impl-plan-client.md) C5). Real full
+  chroma stays unstreamed: this host's service refuses it by census and twice answered a
+  ten-bit reconfigure with an encoder fault that outlived the session, a host-side item.
 
 ## 2026-09-19 - Phase C5 planned, the decode half first
 

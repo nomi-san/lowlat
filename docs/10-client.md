@@ -1,7 +1,7 @@
 # 10 - The client
 
 **Status:** designed 2026-09-15, interview of the same day; C1 and C2 built 2026-09-17, C3
-and C4 2026-09-18; C5's decode half planned and built 2026-09-19, its live gate open.
+and C4 2026-09-18; C5's decode half planned, built and gated 2026-09-19.
 Built by [impl-plan-client.md](impl-plan-client.md).
 
 The client is the other half of the same protocol: it receives what [05](05-host.md) produces.
@@ -231,6 +231,19 @@ The equal case is the beat above: two clocks at the same nominal rate slip one p
 against each other a few times a second, and each slip is one repeat and one skip. The
 other two are exactly what the paragraph predicts, and neither drops a picture it did not
 have to. The decoder's own time is [§9](#9-events-status-and-metrics)'s.
+
+**The record the decision was made on, this phase's gate** (*2026-09-19*, this machine,
+2560x1440 at 120 pictures a second, ten minutes a run, the preferences walked every hundred
+seconds, two client windows and a spinning test window on the captured desktop): **the
+reader was never more than one message behind** -- at most 16 ms -- on either backend, at
+either depth, by either route, and against the established host over the internet; the
+vendor backend by the handle route ran 120 pictures a second at 0.6-0.75 ms of decode and
+0.09-0.14 ms of device copy with no skips outside the switching second; its planes route
+0.5-1.0 ms of read-back with a few skips a second; the open stack 2.0-3.4 ms of decode and
+1.8-2.4 ms of read-back, 115-120 pictures a second at eight bits and 19 skips a second at
+ten, where the decoder is seventy percent busy and latest-wins does what it should. The
+warning never fired. A switch costs the switching second about forty repeats: the keyframe
+the host is asked for.
 
 ## §5 The decoder, and when a client asks for a keyframe
 

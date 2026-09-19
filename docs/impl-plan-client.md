@@ -1,7 +1,7 @@
 # Implementation plan: the client
 
 **Status:** locked 2026-09-15, interview of the same day; C5 re-planned in two halves
-2026-09-19 and its decode half built the same day, live gate open. Phases C0 to C6 with verification gates; the design is [10-client.md](10-client.md) and the surface is [06 §3b](06-api.md).
+2026-09-19 and its decode half built and gated the same day. Phases C0 to C6 with verification gates; the design is [10-client.md](10-client.md) and the surface is [06 §3b](06-api.md).
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox. Phase numbers are `C`
@@ -316,8 +316,8 @@ the rules are [10 §6](10-client.md).
 ## Phase C5 - The rest of the client, and NVDEC
 
 **Planned 2026-09-19, interview of the same day, in two halves.** The decode half is planned
-here and **built the same day**, its live gate open; the second half keeps the wording it
-had and is planned when the first is closed. The decisions are recorded once, here; the rules
+here and **built and gated the same day**, with two rows left open on the host's side; the
+second half keeps the wording it had and is planned when the first is closed. The decisions are recorded once, here; the rules
 are [10 §4](10-client.md), §5.1 and §7.
 
 ### C5, first half: the decode time reported, the second backend, ten-bit and 4:4:4
@@ -424,19 +424,40 @@ path.
    the workspace's checks and the ABI gate pass; the hermetic session's census counts the
    client's latency reports, both kinds, at the cadence. (*2026-09-19*: twenty-one clips on
    each backend, the vendor's by both routes.)
-2. [ ] Against this host, ten minutes each with the desktop moving independently of the demo:
+2. [x] Against this host, ten minutes each with the desktop moving independently of the demo:
    H.264 on the vendor backend, planes then handle; ten-bit HEVC on both backends; full
    chroma at eight and ten bits on the vendor backend, planes then handle; and full chroma
    asked of this host on the head that cannot code it, where the stream degrades and the
    client follows without a decoder fault. Recorded per run: decode and hand-over per
    picture, pictures, repeats and skips a second, the reader's lag, the resident set and the
    device memory, and the reported decode time as this host's roster shows it.
-3. [ ] Against an established host: at the defaults as C2's gate ran, then with the second codec
+   (*2026-09-19*, `local/logs/2026-09-19-c5-gate2-*`, three ten-minute runs with the
+   preferences walked every hundred seconds, 2560x1440: vendor handle 120 pictures a
+   second, decode 0.61-0.75 ms, device copy 0.09-0.14 ms, resident 400-507 MB; vendor
+   planes read-back 0.53-1.05 ms; open stack decode 2.0/3.4 ms, read-back 1.8-2.4 ms; the
+   reader at most one message behind everywhere; sound 50 packets a second, nothing
+   dropped. Full chroma asked degraded to eight-bit HEVC and the client followed -- on the
+   vendor's head by this host's census rather than on the other head, the same client path.
+   **Real full chroma was not streamed**: it needs this host started by hand with the census
+   opened, and twice this host's service answered a ten-bit reconfigure with -15000 and
+   stayed down until restarted, a host-side fault recorded in the local notes; those two
+   rows stay open on the host, not the client.)
+3. [x] Against an established host: at the defaults as C2's gate ran, then with the second codec
    and ten-bit asked, following what its encoder gives; the round trip moves off its seed
    within seconds of connecting; its own log shows this client's decode latency.
-4. [ ] A preference changed mid-session costs one configuration message, one teardown and one
+   (*2026-09-19*, `local/logs/2026-09-19-c5-gate3-*`, over the internet at 8-11 ms: at the
+   defaults 31 pictures a second (that host's own cadence on a still desktop), the open
+   stack at 2.3/1.9 ms, the reader at most one message behind, the round trip live from the
+   first second; with the second codec and ten-bit asked that host gives the codec and not
+   the depth, and the client follows at eight bits with no fault, by planes and by handle;
+   a walk of five switches against it, each followed by its encoder rebuilding. One run
+   ended after 160 s as undeliverable when that host's path went quiet and its port
+   changed; the rerun completed. What its log shows is read at that machine.)
+4. [x] A preference changed mid-session costs one configuration message, one teardown and one
    build, and the picture continues. (Hermetically: one restatement, one request, one
-   teardown, one build.)
+   teardown, one build. *Live 2026-09-19*: twenty timed switches across four runs, every one
+   answered, the picture back within the second -- about forty repeats, the keyframe asked
+   for -- and the stream's format following the declaration each time.)
 
 ### C5, second half
 
