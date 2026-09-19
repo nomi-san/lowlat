@@ -556,7 +556,13 @@ replayed, shows none at all, which is what a clean path reads.
    and its 4:4:4 stream on the by-hand host. The first desk session found two things the
    unattended runs could not: the demo's sticks were upside down (its negation of the
    toolkit's already-inverted vertical axes, since C3, corrected), and a pointer resampled
-   at a two percent shrink lost a row (the ratio is quantised now, native within a step).)
+   at a two percent shrink lost a row to nearest neighbour and went soft under a box filter,
+   where an established client stays sharp. Its rule is the demo's now: the target is the
+   picture's size times the drawn-to-stream ratio per axis, a target within two pixels of
+   the native size or of exactly half of it snaps there, and anything else is halved by box
+   averaging while at least twice the target and then resampled bilinearly. The toolkit's
+   own cursor-size call is empty on this platform and on Windows, so the scaling is the
+   application's everywhere.)
 3. [x] The demo's panel and this host's roster agree on the figures they share: the round
    trip, the rate, the decode time the host re-publishes; the negatives this client sent
    against the fragments the host resent on them. (*2026-09-19*: on the same line, this
