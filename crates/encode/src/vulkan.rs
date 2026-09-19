@@ -265,10 +265,13 @@ fn with_profile<R>(
     }
 }
 
-/// The loaded interface. Held for as long as anything built on it.
+/// The loaded interface: the process's loader and instance, which the
+/// capture crate makes once and never releases (its `vulkan` module says
+/// why), so a device opened here is a device on the same instance every
+/// conversion runs on.
 pub struct Vulkan {
-    _entry: ash::Entry,
-    instance: ash::Instance,
+    entry: &'static ash::Entry,
+    instance: &'static ash::Instance,
 }
 
 impl core::fmt::Debug for Vulkan {
@@ -280,17 +283,12 @@ impl core::fmt::Debug for Vulkan {
 impl Vulkan {
     /// Load the driver, or say it is not here.
     pub fn load() -> Result<Self> {
-        // SAFETY: loads the system driver loader; the handle is kept for the
-        // lifetime of everything derived from it.
-        let entry = unsafe { ash::Entry::load() }.map_err(|_| Error::NoLoader)?;
-        let application = vk::ApplicationInfo::default().api_version(vk::API_VERSION_1_3);
-        let create = vk::InstanceCreateInfo::default().application_info(&application);
-        // SAFETY: the create info outlives the call and names no extensions.
-        let instance = unsafe { entry.create_instance(&create, None) }.map_err(driver)?;
-        Ok(Self {
-            _entry: entry,
-            instance,
-        })
+        let (entry, instance) = lowlat_capture::vulkan::shared().map_err(|error| match error {
+            lowlat_capture::vulkan::Error::NoLoader => Error::NoLoader,
+            lowlat_capture::vulkan::Error::Driver(code) => Error::Driver(code),
+            _ => Error::NoLoader,
+        })?;
+        Ok(Self { entry, instance })
     }
 
     /// The device that drives a display node, ready to encode.
@@ -342,20 +340,13 @@ impl Vulkan {
             // What the device also has is turned on with it: a session is
             // built for one codec, but which one is not known here.
             let extra: Vec<&CStr> = OPTIONAL.into_iter().filter(|name| has(name)).collect();
-            return Device::open(&self.instance, &self._entry, physical, &extra);
+            return Device::open(self.instance, self.entry, physical, &extra);
         }
         if answered {
             Err(Error::NoDeviceForNode)
         } else {
             Err(Error::Unsupported("VK_EXT_physical_device_drm"))
         }
-    }
-}
-
-impl Drop for Vulkan {
-    fn drop(&mut self) {
-        // SAFETY: nothing built on it outlives this type.
-        unsafe { self.instance.destroy_instance(None) };
     }
 }
 

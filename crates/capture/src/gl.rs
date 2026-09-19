@@ -323,10 +323,28 @@ impl Gl {
 
 /// The device the display is on, ready to import from it.
 ///
+/// The display interface, loaded once for the process and never released,
+/// for the reason the primary interface's module gives: a driver unloaded
+/// is a driver reloaded at the next build, and the vendor's carries static
+/// thread-local storage that is never given back, so builds that load and
+/// unload it eventually cannot load it at all.
+static EGL: std::sync::OnceLock<Result<egl::DynamicInstance<egl::EGL1_5>, Error>> =
+    std::sync::OnceLock::new();
+
+fn egl() -> Result<&'static egl::DynamicInstance<egl::EGL1_5>, Error> {
+    EGL.get_or_init(|| {
+        // SAFETY: loads the display interface by its versioned name; the
+        // library is kept for the life of the process.
+        unsafe { egl::DynamicInstance::<egl::EGL1_5>::load_required() }.map_err(|_| Error::NoLoader)
+    })
+    .as_ref()
+    .map_err(|error| *error)
+}
+
 /// Not `Send`: the context below is current on the thread that built it, and
 /// the interface offers no way to use it from another without moving it first.
 pub struct Device {
-    egl: egl::DynamicInstance<egl::EGL1_5>,
+    egl: &'static egl::DynamicInstance<egl::EGL1_5>,
     display: egl::Display,
     context: egl::Context,
     gl: Gl,
@@ -385,29 +403,23 @@ impl Device {
         Self::build(|_, _| true)
     }
 
-    /// Open the first enumerated device the predicate accepts.
-    ///
-    /// **The instance is built here and moved in at the end.** It owns the
-    /// loaded library, so it cannot be handed to the steps below by value and
-    /// cannot be copied; they borrow it and report what they built instead.
+    /// Open the first enumerated device the predicate accepts, on the
+    /// process's instance of the interface.
     fn build(
         wanted: impl Fn(&egl::DynamicInstance<egl::EGL1_5>, egl::Attrib) -> bool,
     ) -> Result<Self, Error> {
-        // SAFETY: loads the display interface by its versioned name. The
-        // instance owns the library for as long as it lives.
-        let egl = unsafe { egl::DynamicInstance::<egl::EGL1_5>::load_required() }
-            .map_err(|_| Error::NoLoader)?;
+        let egl = egl()?;
 
         // SAFETY: enumeration is by the interface's own extension, resolved
         // against the client rather than a display, which is what makes it
         // callable before any display exists.
-        let devices = unsafe { query_devices(&egl)? };
+        let devices = unsafe { query_devices(egl)? };
         let mut opened = None;
         for device in devices {
-            if !wanted(&egl, device) {
+            if !wanted(egl, device) {
                 continue;
             }
-            match Self::open(&egl, device) {
+            match Self::open(egl, device) {
                 Ok(parts) => {
                     opened = Some(parts);
                     break;
@@ -576,7 +588,7 @@ impl Device {
             *mut egl::Int,
         ) -> egl::Boolean;
         let Ok(query): Result<QueryFormats, Error> = entry(
-            &self.egl,
+            self.egl,
             "eglQueryDmaBufFormatsEXT",
             "eglQueryDmaBufFormatsEXT",
         ) else {

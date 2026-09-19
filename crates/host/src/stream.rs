@@ -3808,16 +3808,19 @@ fn encode_loop<E: Encoder + FromDevice>(
             && not_emitted(wanted) & lowlat_core::init::FLAG_10BIT == 0;
         // **Full chroma is the census gate on top of the codec rule.** Every
         // encoder this host could select has to be able to code it, asked once
-        // and remembered, and the refusal names the gate.
+        // and remembered, and the refusal names the gate -- once, when the
+        // census is taken: a guest goes on asking on every pass, and a line
+        // per pass was thousands a minute.
         let mut wanted_chroma = false;
         if asked & lowlat_core::init::FLAG_COLOR444 != 0 {
-            let gate = full_chroma_census.get_or_insert_with(|| chroma_census(&config));
-            match gate {
-                Ok(()) => wanted_chroma = true,
-                Err(why) => {
+            if full_chroma_census.is_none() {
+                let gate = chroma_census(&config);
+                if let Err(why) = gate {
                     lowlat_common::log_warn!("stream: full chroma asked and refused: {why}");
                 }
+                full_chroma_census = Some(gate);
             }
+            wanted_chroma = full_chroma_census == Some(Ok(()));
         }
         let disagrees = asked != 0
             && (wanted != config.codec

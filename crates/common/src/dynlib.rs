@@ -12,6 +12,20 @@
 //! workspace containing `unsafe`, which is what keeps that obligation in one
 //! auditable place; a loader written into each backend would spread it.
 //!
+//! **A library, once opened, stays mapped for the life of the process.**
+//! Dropping a `Library` releases the handle and nothing else. Two reasons,
+//! the first measured (2026-09-19). A vendor runtime carries thread-local
+//! storage that must live in the static area glibc sets aside at start,
+//! about two kilobytes; that area is given back only in stack order, so a
+//! runtime opened and closed once per pipeline build, interleaved with the
+//! others a build opens, leaves holes that are never reused, and after ten
+//! to twenty builds the vendor's driver refuses to load at all -- "cannot
+//! allocate memory in static TLS block" -- and its device is gone from every
+//! enumeration until the process restarts. And a vendor runtime is not built
+//! to be unloaded in the first place: reopening one after a close is a path
+//! its authors never test. Opening a library that is already open costs a
+//! reference count, so a backend keeps opening by name as it always did.
+//!
 //! **`miri` cannot reach any of this**, because it cannot execute a loader
 //! syscall or run foreign code. The tests below check the observable contract
 //! -- a library opens, a symbol resolves, an absent one reports absence -- and
@@ -20,7 +34,8 @@
 use core::ffi::{CStr, c_void};
 use core::ptr::NonNull;
 
-/// An open shared library. Closed on drop.
+/// An open shared library. The mapping outlives the handle (see the module
+/// note); dropping this releases nothing the process cannot open again.
 pub struct Library {
     handle: NonNull<c_void>,
 }
@@ -72,8 +87,9 @@ impl Library {
     /// defines it. Nothing here can check that, and getting it wrong is
     /// undefined behaviour at the first call rather than at resolution.
     ///
-    /// The returned pointer borrows the library: calling it after the
-    /// `Library` is dropped is a use-after-unmap.
+    /// The returned pointer borrows the library. The mapping behind it stays
+    /// for the process's life, but nothing here promises that to a caller:
+    /// a pointer kept past the `Library` is a pointer nothing accounts for.
     pub unsafe fn symbol<T: Copy>(&self, name: &CStr) -> Option<T> {
         const {
             assert!(
@@ -89,14 +105,6 @@ impl Library {
         // SAFETY: `address` is non-null and pointer sized, asserted above. The
         // caller carries the obligation that `T` describes it correctly.
         Some(unsafe { core::mem::transmute_copy::<*mut c_void, T>(&address) })
-    }
-}
-
-impl Drop for Library {
-    fn drop(&mut self) {
-        // SAFETY: the handle came from a successful open and is closed once,
-        // because `Library` is neither `Copy` nor `Clone`.
-        unsafe { imp::close(self.handle.as_ptr()) };
     }
 }
 
@@ -124,12 +132,6 @@ mod imp {
         // SAFETY: the caller guarantees `handle` is open; `name` is valid.
         unsafe { libc::dlsym(handle, name.as_ptr()) }
     }
-
-    pub(super) unsafe fn close(handle: *mut c_void) {
-        // SAFETY: the caller guarantees `handle` came from `open` and is
-        // closed exactly once.
-        unsafe { libc::dlclose(handle) };
-    }
 }
 
 #[cfg(windows)]
@@ -141,7 +143,6 @@ mod imp {
     unsafe extern "system" {
         fn LoadLibraryA(name: *const u8) -> *mut c_void;
         fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
-        fn FreeLibrary(module: *mut c_void) -> i32;
     }
 
     pub(super) fn open(name: &CStr) -> *mut c_void {
@@ -152,12 +153,6 @@ mod imp {
     pub(super) unsafe fn symbol(handle: *mut c_void, name: &CStr) -> *mut c_void {
         // SAFETY: the caller guarantees `handle` is open; `name` is valid.
         unsafe { GetProcAddress(handle, name.as_ptr().cast()) }
-    }
-
-    pub(super) unsafe fn close(handle: *mut c_void) {
-        // SAFETY: the caller guarantees `handle` came from `open` and is
-        // closed exactly once.
-        unsafe { FreeLibrary(handle) };
     }
 }
 
@@ -211,8 +206,13 @@ mod tests {
     #[test]
     fn a_handle_crosses_threads() {
         let library = Library::open(LIBC).expect("libc did not open");
-        std::thread::spawn(move || drop(library))
-            .join()
-            .expect("the handle did not survive the move");
+        std::thread::spawn(move || {
+            // SAFETY: resolution only, on the other thread.
+            let symbol: Option<unsafe extern "C" fn(usize) -> *mut c_void> =
+                unsafe { library.symbol(c"malloc") };
+            assert!(symbol.is_some());
+        })
+        .join()
+        .expect("the handle did not survive the move");
     }
 }

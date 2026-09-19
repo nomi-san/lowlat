@@ -189,10 +189,61 @@ impl core::fmt::Debug for Device {
     }
 }
 
+/// The loader and the one instance this process makes.
+///
+/// **Made once and never released.** Every device is created from this
+/// instance and destroyed on its own; the instance and the loader beneath it
+/// outlive them all. Measured 2026-09-19: the loader unloads every driver it
+/// opened when the last instance goes, and a driver unloaded is a driver
+/// reloaded at the next build. The vendor's carries thread-local storage
+/// that must live in the static area glibc sets aside at start, which is
+/// given back only in stack order, so builds interleaving its loads and
+/// unloads with the other runtimes' leave holes that are never reused; after
+/// ten to twenty builds the driver refuses to load -- "cannot allocate memory
+/// in static TLS block" -- and the device it drives is gone from enumeration
+/// for the process's life, which read as the display having no compute
+/// interface. Keeping the instance keeps the drivers loaded, and a driver
+/// was never built to be unloaded anyway.
+struct Loaded {
+    entry: ash::Entry,
+    instance: ash::Instance,
+}
+
+static LOADED: std::sync::OnceLock<Result<Loaded, Error>> = std::sync::OnceLock::new();
+
+/// The process's loader and instance, made on the first call.
+fn loaded() -> Result<&'static Loaded, Error> {
+    LOADED
+        .get_or_init(|| {
+            // SAFETY: loads the system driver loader. Nothing is passed in,
+            // and the handle is kept for the life of the process.
+            let entry = unsafe { ash::Entry::load() }.map_err(|_| Error::NoLoader)?;
+            // The highest version anything on this instance asks for: the
+            // encoder's video queues need 1.3. A loader since 1.1 accepts a
+            // version above its own rather than refusing it.
+            let application = vk::ApplicationInfo::default().api_version(vk::API_VERSION_1_3);
+            let create = vk::InstanceCreateInfo::default().application_info(&application);
+            // SAFETY: the create info borrows `application`, which outlives
+            // it, and names no extensions or layers.
+            let instance = unsafe { entry.create_instance(&create, None) }.map_err(driver)?;
+            Ok(Loaded { entry, instance })
+        })
+        .as_ref()
+        .map_err(|error| *error)
+}
+
+/// The process's loader and instance, for whatever builds beside a device
+/// rather than on one.
+pub fn shared() -> Result<(&'static ash::Entry, &'static ash::Instance), Error> {
+    let loaded = loaded()?;
+    Ok((&loaded.entry, &loaded.instance))
+}
+
 /// What one device holds. Reached through [`Device`], never owned directly.
 pub struct DeviceInner {
-    /// Dropped last. Every handle below is scoped to it.
-    _entry: ash::Entry,
+    /// The process's, never this device's to release.
+    loaded: &'static Loaded,
+    /// A handle on the process's instance, for the calls made through it.
     pub(crate) instance: ash::Instance,
     pub(crate) physical: vk::PhysicalDevice,
     pub(crate) device: ash::Device,
@@ -252,7 +303,7 @@ impl Device {
 
     /// The loader, for an extension table built above this device.
     pub fn entry(&self) -> &ash::Entry {
-        &self._entry
+        &self.loaded.entry
     }
 
     /// The instance, for whatever builds on this device.
@@ -281,44 +332,20 @@ impl Device {
 
     fn opened(node: &Path, encode: bool) -> Result<Self, Error> {
         let (major, minor) = node_numbers(node).ok_or(Error::NoDeviceForNode)?;
-
-        // SAFETY: loads the system driver loader. Nothing is passed in and the
-        // handle is kept for the lifetime of everything derived from it.
-        let entry = unsafe { ash::Entry::load() }.map_err(|_| Error::NoLoader)?;
-
-        let application = vk::ApplicationInfo::default().api_version(vk::API_VERSION_1_1);
-        let create = vk::InstanceCreateInfo::default().application_info(&application);
-        // SAFETY: the create info borrows `application`, which outlives it, and
-        // names no extensions or layers.
-        let instance = unsafe { entry.create_instance(&create, None) }.map_err(driver)?;
-
-        // Everything after the instance exists can fail, and the instance has
-        // to be released exactly once on that path. Resolving it all into one
-        // result keeps that to a single place.
-        let opened = Self::find(&instance, major, minor).and_then(|physical| {
-            Self::open(&instance, physical, encode, &REQUIRED)
-                .map(|(device, queue, family, encode)| (physical, device, queue, family, encode))
-        });
-
-        match opened {
-            Ok((physical, device, queue, queue_family, encode)) => {
-                Ok(Self(std::sync::Arc::new(DeviceInner {
-                    _entry: entry,
-                    instance,
-                    physical,
-                    device,
-                    queue,
-                    queue_family,
-                    encode,
-                })))
-            }
-            Err(error) => {
-                // SAFETY: nothing created from this instance outlives the
-                // failed call, so it is the only thing left to release.
-                unsafe { instance.destroy_instance(None) };
-                Err(error)
-            }
-        }
+        let loaded = loaded()?;
+        let instance = &loaded.instance;
+        let physical = Self::find(instance, major, minor)?;
+        let (device, queue, queue_family, encode) =
+            Self::open(instance, physical, encode, &REQUIRED)?;
+        Ok(Self(std::sync::Arc::new(DeviceInner {
+            loaded,
+            instance: instance.clone(),
+            physical,
+            device,
+            queue,
+            queue_family,
+            encode,
+        })))
     }
 
     /// Open any device that can do this, for a test with no display attached.
@@ -329,23 +356,18 @@ impl Device {
     /// transform can be checked against a reference without a screen, which is
     /// the only check of it that cannot be fooled by the contents of a desktop.
     pub fn any() -> Result<Self, Error> {
-        // SAFETY: as in for_display.
-        let entry = unsafe { ash::Entry::load() }.map_err(|_| Error::NoLoader)?;
-        let application = vk::ApplicationInfo::default().api_version(vk::API_VERSION_1_1);
-        let create = vk::InstanceCreateInfo::default().application_info(&application);
-        // SAFETY: the create info outlives the call.
-        let instance = unsafe { entry.create_instance(&create, None) }.map_err(driver)?;
-
+        let loaded = loaded()?;
+        let instance = &loaded.instance;
         // SAFETY: enumerating from a live instance.
         let candidates = unsafe { instance.enumerate_physical_devices() }.map_err(driver)?;
         // **The last refusal is the answer when nothing opens**, so a machine
         // whose only device lacks one interface says which, rather than that
         // it has no device at all.
         let mut refused = Error::NoDeviceForNode;
-        let opened = candidates
+        let (physical, device, queue, queue_family) = candidates
             .into_iter()
             .find_map(
-                |physical| match Self::open(&instance, physical, false, &CONVERSION) {
+                |physical| match Self::open(instance, physical, false, &CONVERSION) {
                     Ok((device, queue, family, _)) => Some((physical, device, queue, family)),
                     Err(error) => {
                         refused = error;
@@ -353,26 +375,16 @@ impl Device {
                     }
                 },
             )
-            .ok_or(refused);
-
-        match opened {
-            Ok((physical, device, queue, queue_family)) => {
-                Ok(Self(std::sync::Arc::new(DeviceInner {
-                    _entry: entry,
-                    instance,
-                    physical,
-                    device,
-                    queue,
-                    queue_family,
-                    encode: None,
-                })))
-            }
-            Err(error) => {
-                // SAFETY: nothing created from it outlives the failed call.
-                unsafe { instance.destroy_instance(None) };
-                Err(error)
-            }
-        }
+            .ok_or(refused)?;
+        Ok(Self(std::sync::Arc::new(DeviceInner {
+            loaded,
+            instance: instance.clone(),
+            physical,
+            device,
+            queue,
+            queue_family,
+            encode: None,
+        })))
     }
 
     /// The device that reports driving this display node.
@@ -594,13 +606,13 @@ impl Drop for DeviceInner {
         // **On the inner value, so the last clone is what releases.** A drop
         // on the wrapper would destroy the device the first time any clone
         // went away, with the others still holding it.
-        // SAFETY: both handles are live until here, and nothing derived from
-        // them outlives this type. The wait is what makes that true: work still
-        // running would otherwise be holding memory that is about to go.
+        // SAFETY: the device is live until here, and nothing derived from it
+        // outlives this type. The wait is what makes that true: work still
+        // running would otherwise be holding memory that is about to go. The
+        // instance is the process's and stays.
         unsafe {
             let _ = self.device.device_wait_idle();
             self.device.destroy_device(None);
-            self.instance.destroy_instance(None);
         }
     }
 }
