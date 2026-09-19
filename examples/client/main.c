@@ -131,16 +131,20 @@ struct demo {
 	bool released;
 
 	// The host's pointer picture, kept at its native size; the toolkit is
-	// given it resampled by the drawn ratio, so a pointer from a host at
-	// twice the scale shows at the size it has in the picture and shrinks
-	// with a letterboxed window. The ratio last applied says when to redo it.
+	// given it at the size it has in the drawn picture (the toolkit's own
+	// cursor-size call is a no-op on this platform and on Windows, so the
+	// resample is done here, as an established client does it), so a
+	// pointer from a host at twice the scale shows at the size it has in
+	// the picture and shrinks with a letterboxed window. The target last
+	// applied says when to redo it.
 	uint8_t *cursor_rgba;
 	uint32_t cursor_width;
 	uint32_t cursor_height;
 	uint32_t cursor_hot_x;
 	uint32_t cursor_hot_y;
 	uint32_t cursor_checksum;
-	double cursor_ratio;
+	uint32_t cursor_target_w;
+	uint32_t cursor_target_h;
 	bool cursor_suppressed;
 
 	// The room as the host describes it: this client's number, its own
@@ -289,63 +293,139 @@ static void apply_relative(struct demo *d)
 
 static void ask_outputs(struct demo *d);
 
-// The ratio the picture is drawn at: the rectangle's width over the
-// picture's, as the picture is shown (a quarter turn swaps its sides). One
-// before there is a picture or a rectangle.
-static double drawn_ratio(const struct demo *d)
+// The drawn size of the picture as shown (a quarter turn swaps its sides),
+// or zero before there is one.
+static void drawn_size(const struct demo *d, uint32_t *across, uint32_t *down)
 {
 	uint32_t width = atomic_load(&d->picture_width);
 	uint32_t height = atomic_load(&d->picture_height);
 	uint32_t rotation = atomic_load(&d->picture_rotation);
 	bool turned = rotation == LOWLAT_ROTATION_90 || rotation == LOWLAT_ROTATION_270;
-	double across = turned ? height : width;
-	if (across == 0 || d->viewport[2] <= 0)
-		return 1.0;
-	return (double) d->viewport[2] / across;
+	*across = turned ? height : width;
+	*down = turned ? width : height;
 }
 
-// Give the toolkit the host's pointer at the drawn ratio, quantised to
-// quarter steps: a picture a few percent smaller than the window is drawn
-// at its native size, because a 32-pixel pointer cannot be made 31 wide
-// sharply by any filter (nearest drops a row, a box filter softens every
-// edge), and an established client keeps its pointer native there too. A
-// step below one resamples by nearest neighbour, which keeps a small
-// pointer's lines crisp where averaging would grey them; the hotspot moves
-// with it. Skipped when neither the picture nor the step changed.
+// Halve a picture: each output pixel the mean of its two-by-two block.
+static void halve_rgba(const uint8_t *src, uint32_t sw, uint32_t sh, uint8_t *dst,
+	uint32_t dw, uint32_t dh)
+{
+	for (uint32_t y = 0; y < dh; y++) {
+		uint32_t y0 = y * 2, y1 = y0 + 1 < sh ? y0 + 1 : y0;
+		for (uint32_t x = 0; x < dw; x++) {
+			uint32_t x0 = x * 2, x1 = x0 + 1 < sw ? x0 + 1 : x0;
+			const uint8_t *a = src + ((size_t) y0 * sw + x0) * 4;
+			const uint8_t *b = src + ((size_t) y0 * sw + x1) * 4;
+			const uint8_t *c = src + ((size_t) y1 * sw + x0) * 4;
+			const uint8_t *e = src + ((size_t) y1 * sw + x1) * 4;
+			uint8_t *q = dst + ((size_t) y * dw + x) * 4;
+			for (int k = 0; k < 4; k++)
+				q[k] = (uint8_t) ((a[k] + b[k] + c[k] + e[k] + 2) / 4);
+		}
+	}
+}
+
+// Resample bilinearly, in 16.16 fixed point, from a picture no more than
+// twice the target.
+static void bilinear_rgba(const uint8_t *src, uint32_t sw, uint32_t sh, uint8_t *dst,
+	uint32_t dw, uint32_t dh)
+{
+	uint32_t step_x = dw > 1 ? ((sw - 1) << 16) / (dw - 1) : 0;
+	uint32_t step_y = dh > 1 ? ((sh - 1) << 16) / (dh - 1) : 0;
+	uint32_t fy = 0;
+	for (uint32_t y = 0; y < dh; y++, fy += step_y) {
+		uint32_t y0 = fy >> 16, y1 = y0 + 1 < sh ? y0 + 1 : sh - 1;
+		uint32_t wy = (fy >> 8) & 0xFF;
+		uint32_t fx = 0;
+		for (uint32_t x = 0; x < dw; x++, fx += step_x) {
+			uint32_t x0 = fx >> 16, x1 = x0 + 1 < sw ? x0 + 1 : sw - 1;
+			uint32_t wx = (fx >> 8) & 0xFF;
+			const uint8_t *p00 = src + ((size_t) y0 * sw + x0) * 4;
+			const uint8_t *p01 = src + ((size_t) y0 * sw + x1) * 4;
+			const uint8_t *p10 = src + ((size_t) y1 * sw + x0) * 4;
+			const uint8_t *p11 = src + ((size_t) y1 * sw + x1) * 4;
+			uint32_t w00 = (256 - wx) * (256 - wy), w01 = wx * (256 - wy);
+			uint32_t w10 = (256 - wx) * wy, w11 = wx * wy;
+			uint8_t *q = dst + ((size_t) y * dw + x) * 4;
+			for (int k = 0; k < 4; k++)
+				q[k] = (uint8_t) ((w00 * p00[k] + w01 * p01[k] + w10 * p10[k] + w11 * p11[k]
+					+ 0x8000) >> 16);
+		}
+	}
+}
+
+// Give the toolkit the host's pointer at the size it has in the drawn
+// picture, the rule an established client applies: the target is the
+// picture's size times the drawn-to-stream ratio, per axis; a target within
+// two pixels of the native size, or of exactly half of it, snaps there, so a
+// picture a few percent smaller than the window keeps the native pointer
+// untouched; anything else is halved by box averaging while it is still at
+// least twice the target and then resampled bilinearly, which keeps a
+// shrunk pointer crisp without aliasing. The hotspot scales with it. Skipped
+// when neither the picture nor the target changed.
 static void apply_cursor(struct demo *d)
 {
 	if (d->cursor_rgba == NULL)
 		return;
-	double ratio = round(drawn_ratio(d) * 4.0) / 4.0;
-	if (ratio < 0.25)
-		ratio = 0.25;
-	if (ratio == d->cursor_ratio)
-		return;
-	d->cursor_ratio = ratio;
-	if (ratio == 1.0) {
-		MTY_AppSetRGBACursor(d->app, d->cursor_rgba, d->cursor_width, d->cursor_height,
-			d->cursor_hot_x, d->cursor_hot_y);
-		return;
+	uint32_t across, down;
+	drawn_size(d, &across, &down);
+	uint32_t cw = d->cursor_width, ch = d->cursor_height;
+	uint32_t tw = cw, th = ch;
+	if (across != 0 && down != 0 && d->viewport[2] > 0 && d->viewport[3] > 0) {
+		tw = (uint32_t) ((uint64_t) cw * (uint64_t) d->viewport[2] + across / 2) / across;
+		th = (uint32_t) ((uint64_t) ch * (uint64_t) d->viewport[3] + down / 2) / down;
 	}
-	uint32_t sw = (uint32_t) lrint((double) d->cursor_width * ratio);
-	uint32_t sh = (uint32_t) lrint((double) d->cursor_height * ratio);
-	if (sw == 0) sw = 1;
-	if (sh == 0) sh = 1;
-	uint32_t *scaled = malloc((size_t) sw * sh * 4);
-	if (scaled == NULL)
-		return;
-	const uint32_t *native = (const uint32_t *) d->cursor_rgba;
-	for (uint32_t y = 0; y < sh; y++) {
-		uint32_t sy = (uint32_t) ((uint64_t) y * d->cursor_height / sh);
-		for (uint32_t x = 0; x < sw; x++) {
-			uint32_t sx = (uint32_t) ((uint64_t) x * d->cursor_width / sw);
-			scaled[(size_t) y * sw + x] = native[(size_t) sy * d->cursor_width + sx];
+	if (tw == 0) tw = 1;
+	if (th == 0) th = 1;
+	if (cw <= 127 && ch <= 127) {
+		for (uint32_t div = 1; div <= 2; div++) {
+			uint32_t sw = cw / div, sh = ch / div;
+			if (sw == 0 || sh == 0)
+				break;
+			uint32_t dx = sw > tw ? sw - tw : tw - sw;
+			uint32_t dy = sh > th ? sh - th : th - sh;
+			if (dx <= 2 && dy <= 2) {
+				tw = sw;
+				th = sh;
+				break;
+			}
 		}
 	}
-	MTY_AppSetRGBACursor(d->app, scaled, sw, sh,
-		(uint32_t) lrint((double) d->cursor_hot_x * ratio),
-		(uint32_t) lrint((double) d->cursor_hot_y * ratio));
-	free(scaled);
+	if (tw == d->cursor_target_w && th == d->cursor_target_h)
+		return;
+	d->cursor_target_w = tw;
+	d->cursor_target_h = th;
+	uint32_t hot_x = (uint32_t) (((uint64_t) tw * d->cursor_hot_x + cw / 2) / cw);
+	uint32_t hot_y = (uint32_t) (((uint64_t) th * d->cursor_hot_y + ch / 2) / ch);
+	if (tw == cw && th == ch) {
+		MTY_AppSetRGBACursor(d->app, d->cursor_rgba, cw, ch, d->cursor_hot_x, d->cursor_hot_y);
+		return;
+	}
+	// The chain of halvings, then the bilinear step.
+	uint8_t *cur = d->cursor_rgba;
+	uint32_t sw = cw, sh = ch;
+	while ((sw > sh ? sw : sh) >= 2 * tw && sw >= 2 && sh >= 2) {
+		uint32_t hw = sw / 2, hh = sh / 2;
+		uint8_t *next = malloc((size_t) hw * hh * 4);
+		if (next == NULL)
+			break;
+		halve_rgba(cur, sw, sh, next, hw, hh);
+		if (cur != d->cursor_rgba)
+			free(cur);
+		cur = next;
+		sw = hw;
+		sh = hh;
+	}
+	uint8_t *scaled = malloc((size_t) tw * th * 4);
+	if (scaled != NULL) {
+		if (sw == tw && sh == th)
+			memcpy(scaled, cur, (size_t) tw * th * 4);
+		else
+			bilinear_rgba(cur, sw, sh, scaled, tw, th);
+		MTY_AppSetRGBACursor(d->app, scaled, tw, th, hot_x, hot_y);
+		free(scaled);
+	}
+	if (cur != d->cursor_rgba)
+		free(cur);
 }
 
 // One cursor event: keep the picture if one came, then apply.
@@ -362,7 +442,8 @@ static void on_cursor(struct demo *d, const lowlat_cursor_event *c)
 			d->cursor_hot_x = c->hot_x;
 			d->cursor_hot_y = c->hot_y;
 			d->cursor_checksum = c->checksum;
-			d->cursor_ratio = 0.0;
+			d->cursor_target_w = 0;
+			d->cursor_target_h = 0;
 		}
 	}
 	apply_cursor(d);
