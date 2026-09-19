@@ -3,6 +3,25 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-19 - Phase C5 planned, the decode half first
+
+### Decided
+- The video declaration is a preference masked by capability, grouped as
+  `lowlat_client_config.video`, with no fallback to another decoder ([10 §5.1](10-client.md),
+  §7; [06 §3b](06-api.md), minor 8 planned).
+- The second backend is driven from the library's own readers and probed at creation by
+  building a real decoder per combination ([10 §5.1](10-client.md)).
+- The handle path is in this phase on Linux: exportable device slots sized at the stream's
+  size, one device copy, an opaque descriptor as the first handle kind ([10 §4](10-client.md)).
+- The three deferred decisions of 2026-09-16 are decided as none in v1; the reader's lag in
+  status is the application's warning ([10 §4.1](10-client.md)).
+- Opcode 21 goes out on a two-second clock with both kinds ([10 §7](10-client.md),
+  [01 §11.4a](01-protocol.md)).
+
+### Corrected
+- [01 §11.5](01-protocol.md): both colour bits are preferences a host degrades on, as
+  [05 §6.1](05-host.md) has said since 2026-09-01; the paragraph still said 4:4:4 was refused.
+
 ## 2026-09-18 - Phase C4: sound
 
 ### Added

@@ -1,7 +1,7 @@
 # Implementation plan: the client
 
-**Status:** locked 2026-09-15, interview of the same day. Phases C0 to C6 with verification
-gates; the design is [10-client.md](10-client.md) and the surface is [06 §3b](06-api.md).
+**Status:** locked 2026-09-15, interview of the same day; C5 re-planned in two halves
+2026-09-19. Phases C0 to C6 with verification gates; the design is [10-client.md](10-client.md) and the surface is [06 §3b](06-api.md).
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox. Phase numbers are `C`
@@ -315,17 +315,118 @@ the rules are [10 §6](10-client.md).
 
 ## Phase C5 - The rest of the client, and NVDEC
 
+**Planned 2026-09-19, interview of the same day, in two halves.** The decode half is planned
+here; the second half keeps the wording it had and is planned when the first is closed. The
+decisions are recorded once, here; the rules are [10 §4](10-client.md), §5.1 and §7.
+
+### C5, first half: the decode time reported, the second backend, ten-bit and 4:4:4
+
+- [ ] **Opcode 21 out**, both kinds, on one two-second tick of the session thread from the
+  moment the session is established: the video kind with the decode thread's smoothed figure
+  for decode and hand-over per picture, the sound kind with the figure `acquire_audio`
+  smooths on the application's thread, both zero until something has been timed and sent
+  anyway, as this host sends its own. A time cadence rather than a count of pictures, so a
+  still desktop still reports; the same message is what keeps the round-trip estimate
+  alive, because a sample is taken only when the host acknowledges something this client
+  sent.
+- [ ] **The declaration is a preference masked by capability.** The application names what it
+  would like -- the second codec, ten-bit colour, full chroma -- in the video block of the
+  attempt's configuration, one block for the one stream; the library ANDs that with what the
+  decoder it opened at creation decodes and declares the result, with the wire's own
+  implication (depth and chroma imply the second codec, and neither is declared without it).
+  Defaults off, so a client of ours at its defaults asks a host for exactly what every
+  established client asks at its defaults. `lowlat_client_set_video_config` changes it
+  mid-session: the new flags go out as the encoder configuration with the reinitialisation
+  argument and the decoder is torn down with it -- the first of the two request cases of
+  [10 §5](10-client.md), which the state machine has had since C1. Status carries what was
+  asked, what was declared and what the stream turned out to be. **One decoder is chosen at
+  creation and there is no fallback to another**: a stream the built decoder cannot take,
+  which can only be one the client did not declare, ends the session with the decoder's
+  status and the stage named, never a quiet switch to a slower path. Minor 8.
+- [ ] **Full chroma in the readers and three planes out.** The HEVC reader admits the
+  range-extensions profile at 4:2:0 and 4:4:4, eight and ten bits, and reads both extension
+  syntaxes, which the devices' picture parameters carry; H.264 stays at eight-bit 4:2:0,
+  which is all any device decodes. Two planar layouts join the two that exist, with the
+  third plane already in the picture's shape; the slots' ceiling layout becomes the deepest
+  of the four. On the open-stack backend the profile is asked for and refused where the
+  device lacks it -- every device here -- so no read-back is written for a surface layout
+  nothing here can verify. The clips: two from this host's synthetic source through its
+  vendor encoder at 4:4:4, eight and ten bits, and three from an independent encoder at 128
+  square with the extension syntax exercised, each checked against the independent decoder's
+  per-picture sums as every clip is.
+- [ ] **NVDEC, driven from the library's own readers.** The second backend fills the vendor
+  interface's picture and slice parameters from the same jobs the open-stack backend stages
+  and submits a picture at a time; nothing in the interface's own parser is used, so there
+  is one reader, one picture buffer and one reordering rule for both backends. Read-back is
+  a device-to-host copy of the mapped picture. **The creation-time probe builds and destroys
+  a real decoder per combination of codec, chroma and depth** rather than trusting the
+  interface's capability query, which has reported a combination the device then failed to
+  create; a device that fails does so at creation with the stage named, not mid-stream in
+  the application's process. The device is named as a render node for both backends; for
+  the vendor's it is resolved to the card behind it. Automatic selection takes the first
+  node the open stack decodes on and the vendor interface only where there is none, so the
+  vendor backend is chosen by index where both exist.
+- [ ] **The handle path, on NVDEC first.** A decoded picture on that interface is not
+  exportable -- its pool is internal and a mapped picture is a transient pointer -- so the
+  four slots become exportable device allocations, one file descriptor each, and the backend
+  does one device-side copy into the slot in place of the host read-back; the ring, the
+  latest-wins rule and the two-held rule are unchanged. The frame carries the descriptor and
+  its kind (an opaque descriptor now; a buffer descriptor with its layout modifier is the
+  open stack's kind and is later), with an offset and pitch per plane; acquire returns after
+  the copy has completed, so a null fence stays correct and a real fence is a refinement.
+  **Device slots are sized at the stream's size at the decoder's build, never at the
+  ceiling**: device memory is real, and full chroma at sixteen bits is 200 MB a slot at the
+  ceiling; a build at a new size or layout allocates a fresh set with fresh descriptors, the
+  descriptor keys the application's import, and the old set is freed after its last hold is
+  released. A spike precedes the wiring: a descriptor exported from the device runtime and
+  imported by the application toolkit's GL context on this machine; if the import is
+  refused, the handle kind is not viable on that renderer and the phase falls back to planes
+  with the finding recorded.
+- [ ] **The application toolkit becomes a vendored tree** rather than a submodule, so its GL
+  renderer's existing hardware-frame hook can be implemented for the descriptor: imported
+  once per slot, one texture per plane, sampled through the shaders it already has for the
+  planar layouts. The demo asks for the handle kind with a knob, draws through the hook,
+  releases after present, and reports the hand-over time per picture beside the decode time.
+- [ ] The demo takes the three preferences at start and cycles them live through a chord,
+  shows asked / declared / decoded in its title bar and its second's line, and draws the
+  warning of [10 §4.1](10-client.md) when the reader has been thirty or more messages behind
+  for sixty consecutive seconds.
+
+**Decided here, and not built (recorded 2026-09-16 as deferred, decided 2026-09-19):** the
+decode-lag keyframe request, the presentation-rate hint with its sustainability event, and
+the application pacer are **none of them in v1**. Every established client's whole remedy for
+a decoder slower than the stream is a warning to the person, gated on the reader being thirty
+or more messages behind for sixty consecutive samples and cleared the moment it drops under;
+status already carries the figure, so the warning is the application's and the library adds
+no mechanism. The gate below records the decode and hand-over time per backend and format at
+the display's rate and the reader's lag, which is the record if this is ever reopened.
+
+**Gate, first half:**
+
+1. Every committed clip decodes bit-exact on both backends, the new 4:4:4 clips included; the
+   workspace's checks and the ABI gate pass; the hermetic session's census counts the
+   client's latency reports, both kinds, at the cadence.
+2. Against this host, ten minutes each with the desktop moving independently of the demo:
+   H.264 on the vendor backend, planes then handle; ten-bit HEVC on both backends; full
+   chroma at eight and ten bits on the vendor backend, planes then handle; and full chroma
+   asked of this host on the head that cannot code it, where the stream degrades and the
+   client follows without a decoder fault. Recorded per run: decode and hand-over per
+   picture, pictures, repeats and skips a second, the reader's lag, the resident set and the
+   device memory, and the reported decode time as this host's roster shows it.
+3. Against an established host: at the defaults as C2's gate ran, then with the second codec
+   and ten-bit asked, following what its encoder gives; the round trip moves off its seed
+   within seconds of connecting; its own log shows this client's decode latency.
+4. A preference changed mid-session costs one configuration message, one teardown and one
+   build, and the picture continues.
+
+### C5, second half
+
 - [ ] The cursor: image, hotspot scaled into the window, the suppressed flag; the demo sets the
   toolkit's cursor from it.
 - [ ] User data both ways, the guest list read for the client's own permissions, host mode,
   stream ended, blocked, rumble; status and metrics with the named channels.
-- [ ] Opcode 21 every two seconds with the decode time.
-- [ ] **NVDEC**: the second backend, on the first card, planes first; the handle path on
-  whichever backend exports first.
-- [ ] Ten-bit and 4:4:4 declared when the decoder has them, following what the stream turns
-  out to be ([05 §6.1](05-host.md) from the other side).
 
-**Gate:**
+**Gate, second half:**
 
 1. Gate C in full: ten minutes against an established host with picture, sound, input, the
    cursor and relative mode, from a cold connect, on both backends; then the same against
@@ -353,12 +454,12 @@ the rules are [10 §6](10-client.md).
 - **A second stream, the browser pipe, pen and touch, the microphone uplink.** Each is known
   and none is needed for a client that streams.
 
-### Deferred decisions, recorded 2026-09-16
+### Deferred decisions, recorded 2026-09-16, decided 2026-09-19
 
-Each is written up in [10-client.md](10-client.md) and decided on the numbers the C2 gate
-records, not before; none is in v1. **The numbers are recorded** (2026-09-17, in 10 §4.1, §5
-and §9); the decisions are taken at C5's planning, where the surface two of them need is
-built.
+Each is written up in [10-client.md](10-client.md) and was decided on the numbers the C2 gate
+records. **Decided at C5's planning: none of the three is in v1** (the reasoning is in C5
+above and in 10 §4.1). They stay written down here so the shape is not re-derived if a
+slower decoder ever reopens them.
 
 - **A decode-lag keyframe request** ([10 §5](10-client.md)): a third trigger for the request,
   when the reader is behind by more than a threshold with no announced keyframe ahead, rate
@@ -380,6 +481,14 @@ built.
 
 Newest first.
 
+- 2026-09-19: C5 planned in two halves, the decode half first. The declaration is a
+  preference masked by capability with no fallback to another decoder; the second backend is
+  driven from the library's own readers and probed by building a real decoder per
+  combination; the handle path is in this phase on Linux, the slots becoming exportable
+  device allocations sized at the stream's size and the application toolkit becoming a
+  vendored tree so its renderer can import them; the three deferred decisions are decided as
+  none in v1, the reader's lag being the application's warning; opcode 21 goes out on a time
+  cadence with both kinds.
 - 2026-09-18, evening: C4 planned and built. The playback window leaves the library for the
   application's device, where every reference keeps it and where the clock is; sound is
   decoded on the application's call rather than on a thread of its own; the pool drops and

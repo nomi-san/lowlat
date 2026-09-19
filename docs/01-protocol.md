@@ -925,6 +925,15 @@ video and `2` for audio. The two directions carry the pair in opposite order -- 
 kind first, a peer sends the figure first. Nothing depends on receiving one, and a host that
 ignores every one it receives is not missing anything a stream needs.
 
+**The cadences differ by generation and by kind, and none of them is required.** A host
+sends its video figure on a two-second clock here and every thirtieth frame elsewhere, its
+audio figure every hundredth packet; the current client generation sends its video figure
+every thirtieth decoded picture and its audio figure every twenty-fifth packet, and the older
+one sends the video figure alone, with the kind argument zero -- so a host that accepts only
+kinds 1 and 2 discards an older peer's report, and one that reads zero as video recovers it.
+A client of ours sends both kinds on a two-second clock ([10 §7](10-client.md)). Every
+figure is a smoothed average, a tenth's weight on the newest sample, in microseconds.
+
 ### §11.5 Session initialization
 
 The connecting side sends opcode 11 with a JSON body declaring its preferences: maximum
@@ -1016,12 +1025,16 @@ neither is advisory. A host that codes what these name promotes the codec with t
 honouring one and not the other; a peer asking for depth on H.264 is asking for something no
 hardware produces.
 
-**4:4:4 is read and refused, 10-bit is read and honoured** (D7, from 2026-08-30). A guest
-declaring bit 4 gets a ten-bit stream where the built encoder can produce one and a refusal
-naming that encoder where it cannot. A guest declaring bit 1 is always refused, and the refusal
-is the honest answer rather than silence: a peer builds one decoder from what it declared and
-does not switch on what arrives, so a request treated as granted leaves it failing every
-picture.
+**Both bits are read as preferences, and a host that cannot meet one degrades** (*corrected
+2026-09-19*; this paragraph said from 2026-08-30 that 4:4:4 was refused outright, which was
+true for one day). A guest declaring bit 4 gets a ten-bit stream where the built encoder can
+produce one, and bit 1 full chroma where it can and the host's census allows it
+([05 §6.1](05-host.md)); where it cannot, the axis is taken off and the stream carries on,
+because a declaration is what the peer would like and not what it requires: an established
+client follows whatever arrives, and a client of ours declares only what its decoder was
+verified to decode ([10 §7](10-client.md)), so what arrives is always within what was
+declared. The earlier reasoning -- that a peer builds one decoder from its declaration and
+fails every picture on anything else -- described a peer that does not exist.
 
 ## §12 Session lifecycle
 

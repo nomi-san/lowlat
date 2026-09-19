@@ -1,7 +1,7 @@
 # 10 - The client
 
 **Status:** designed 2026-09-15, interview of the same day; C1 and C2 built 2026-09-17, C3
-and C4 2026-09-18.
+and C4 2026-09-18; C5's decode half planned 2026-09-19.
 Built by [impl-plan-client.md](impl-plan-client.md).
 
 The client is the other half of the same protocol: it receives what [05](05-host.md) produces.
@@ -131,10 +131,32 @@ now", which is the right answer for a picture that was copied.
 **A picture leaves the library one of two ways, and the library chooses which it can offer.**
 As **planes**: pointers, pitches and a format (`NV12`, `P010`, or the 4:4:4 layouts) into
 memory the library owns for the lease, which every renderer can take and which is the path a
-software or read-back decoder produces anyway. Or as a **handle**: a device-level reference --
-a buffer file descriptor and its layout modifier here, a shared texture and a fence on Windows
--- that the application imports into its own device with no copy. The application asks for a
-kind at creation and is told which it got; a decoder that cannot export hands out planes.
+software or read-back decoder produces anyway. Or as a **handle**: a device-level reference
+that the application imports into its own device, with an offset and a pitch per plane. The
+application asks for a kind at creation and is told which it got; a decoder that cannot
+export hands out planes.
+
+**The handle has a kind, and the first kind is an opaque descriptor** (*planned 2026-09-19*).
+The vendor interface's decoded picture is not exportable: its pool is the interface's own
+and a mapped picture is a transient pointer. So on that backend the four slots of the queue
+are **exportable device allocations**, one descriptor each, and the backend does one
+device-side copy into the slot in place of the host read-back -- the copy the read-back was
+is gone, and what remains runs at the device's own bandwidth. The descriptor is the kind
+NVIDIA's GL and Vulkan import as external memory; the second kind, a buffer descriptor with
+its layout modifier, is the open stack's, which can export the decoded surface itself with
+no copy at all but must then hold that surface out of the decoder's pool for the lease,
+which is the fence's job; it comes later. Acquire returns after the copy has completed, so a
+null fence stays correct on the first kind, and a real fence is a refinement rather than a
+requirement.
+
+**Device slots are sized at the stream's size at the decoder's build, never at the
+ceiling.** Device memory is real where the host-memory slots' reserve is virtual: full
+chroma at sixteen bits is 200 MB a slot at the ceiling, and a 1080p stream would leave most
+of it idle. A build at a new size or layout allocates a fresh set of four with fresh
+descriptors; the frame carries its slot's descriptor, so the application's import is keyed
+by it and a new descriptor is a new import; the previous set is freed after its last hold
+is released, so a slot the application holds is never pulled from under it, which is the
+same rule the host-memory slots keep by never reallocating at all.
 
 Each picture carries what the header and the bitstream said about it: size, rotation (applied
 by the renderer, not the decoder -- the picture arrives as the display was encoded, and a
@@ -166,15 +188,25 @@ established client warns the user when its queue stays above thirty messages and
 rate to the host's panel; the newest one can fast-forward only to a keyframe that is already
 in the backlog, which without a periodic keyframe on the host is never there.
 
-**Deferred decisions, recorded here so they are decided once** (the plan lists them):
+**Three decisions were deferred here and are now taken: none of them is in v1** (*decided
+2026-09-19*, at C5's planning, on the numbers below):
 
 - *A presentation pacer in the application, not the library.* Moonlight, an open client for
   a different protocol, sets the frame rate from the client and offers frame pacing as an
   option with its trade-off named -- lowest latency or smoothest motion; the same shape fits
   here as a deeper hold count on acquire, so an application that wants evenness over
-  currency can buffer. Decided on the cadence numbers Phase C2 records, not before.
-- *A decode-lag keyframe request*, §5 below.
-- *A presentation-rate hint and a sustainability event*, §9 below.
+  currency can buffer. Not built: the cadence numbers show nothing a pacer would fix at the
+  rates that matter, and the library stays latest-wins.
+- *A decode-lag keyframe request*, §5 below. Not built.
+- *A presentation-rate hint and a sustainability event*, §9 below. Not built.
+
+What every established client does instead, and what this one does: **the reader's lag is
+the application's warning.** A client whose reader has been thirty or more messages behind
+for sixty consecutive samples tells the person that the host's resolution or rate is too
+high for this hardware, and clears the warning the moment the lag drops under thirty; status
+carries the figure ([§9](#9-events-status-and-metrics)) and the demo draws the warning. A
+decoder slower than its stream has no remedy but fewer frames, and the only lever for that
+which every host honours is the application's own message.
 
 **The numbers, recorded 2026-09-17** (this machine, this host, 1080p H.264 at 120 pictures a
 second, a 120 Hz display, independent motion on the desktop; the C demo's own count of
@@ -233,8 +265,9 @@ earlier draft here asked on the first fault and rebuilt only when faults persist
 sends a request per bad unit; against a host that rebuilds its encoder on every request that
 is the storm, and it is not what any client does.
 
-**Deferred: a third trigger, for a reader that has fallen behind** (*recorded 2026-09-16*,
-not in v1). The two cases above are the established rule and they leave the slow-decoder
+**A third trigger, for a reader that has fallen behind, was considered and is not built**
+(*recorded 2026-09-16*, *decided 2026-09-19*; the record stays because the shape is
+non-obvious). The two cases above are the established rule and they leave the slow-decoder
 case of [§4.1](#41-what-latest-wins-costs-and-what-it-cannot-do) without a way out: the
 backlog has all arrived, the decoder is sound, and nothing in it is a keyframe to skip to. A
 request sent when the reader is more than a threshold behind, no announced keyframe is ahead
@@ -244,8 +277,7 @@ of a keyframe from this host and of an encoder rebuild, every two seconds while 
 lasts, from the established one. It is a divergence, and a correct one on this protocol --
 an instantaneous refresh resets references, so nothing is lost by abandoning arrived
 pictures -- but it does not cure a decoder that is slower than the stream; only fewer frames
-do, which is §9's event. Decided when the C2 lag numbers exist, with the thresholds measured
-rather than picked. **The lag number, recorded 2026-09-17**: under the simulator, against
+do, which was §9's event. **The lag number, recorded 2026-09-17, which decided it**: under the simulator, against
 this host's framing with a keyframe every 300 pictures, a decoder at half the stream's rate
 falls 159 messages behind at the deepest and the catch-up discards 611 pictures over 1317
 frames to land on each keyframe; a decoder that keeps up is never more than two behind.
@@ -267,14 +299,32 @@ with the stage named rather than asking the host for keyframes it would fail on 
 
 | backend | reached through | hands out |
 |---|---|---|
-| VA-API | the driver's own interface, loaded at runtime | planes by read-back; a handle where the surface exports |
-| NVDEC | the vendor's decode interface, loaded at runtime | planes by read-back; a device pointer or handle where the application's device can take it |
+| VA-API | the driver's own interface, loaded at runtime | planes by read-back; the surface's own buffer descriptor, later |
+| NVDEC | the vendor's decode interface, loaded at runtime | planes by a device-to-host copy; an exportable slot filled by a device copy (§4) |
 
-The choice is the application's by index, as the host's encoder is; unset, the first backend
-that opens on the device the application named. Nothing is linked: a machine without either
-interface refuses with the stage named, exactly as a host without an encoder does. **Software
-decode is a decision deferred**, with its licence question attached ([09 §9](09-compatibility.md));
-v1 is hardware or nothing.
+The choice is the application's by index, as the host's encoder is; unset, the first render
+node the open stack decodes on, and the vendor interface only where there is none, so on a
+machine with both the vendor backend is chosen by index. The device is named as a render
+node for either backend; the vendor's resolves it to the card behind it. Nothing is linked: a
+machine without either interface refuses with the stage named, exactly as a host without an
+encoder does. **Software decode is a decision deferred**, with its licence question attached
+([09 §9](09-compatibility.md)); v1 is hardware or nothing.
+
+**One decoder is chosen at creation and there is no fallback to another** (*2026-09-19*).
+An established client offers the second codec and both colour axes as preferences and, when
+its hardware cannot decode what arrives, quietly moves to a software path; here the
+preference is masked by capability before it is declared (§7), so what arrives is what was
+declared, and a stream the built decoder cannot take -- which can only be one the client did
+not declare -- ends the session with the decoder's status and the stage named. A quiet
+switch to a slower decoder ships a degraded stream without telling anyone, and the
+application cannot choose what it does not know about.
+
+**The creation-time probe builds a real decoder per combination** (*2026-09-19*) of codec,
+chroma and depth, and destroys it, rather than trusting a capability query: the vendor
+interface's query has reported a combination the device then failed to create, inside the
+driver, where nothing catches it. A device that fails a combination fails it at creation,
+in the probe, with the stage named, and never mid-stream in the application's process; and
+what the probe found is what the declaration is masked with.
 
 **The library reads the bitstream itself** (*built 2026-09-17*). The device interfaces on this
 platform decode a picture from its parameters and its slices; reading those out of the stream
@@ -294,7 +344,17 @@ open-stack driver): about 2 ms a picture live, as much as the decode itself, and
 of it the driver's own mapping of the surface rather than the copy out of it -- the copy is a
 quarter of a millisecond, and a streaming-load copy that makes it a twentieth moves the live
 figure six percent, so it was measured and not taken. The lever is the handle path of §4,
-which has no copy; it arrives with the second backend.
+which has no host copy; it arrives with the second backend.
+
+**Full chroma is the second codec's, in the range-extensions profile, and the readers read
+it** (*planned 2026-09-19*): the HEVC reader admits that profile at 4:2:0 and 4:4:4, eight
+and ten bits, and reads both extension syntaxes, whose fields the devices' picture
+parameters carry. H.264 stays at eight-bit 4:2:0, which is every device's whole answer for
+it. Two planar layouts join the two that exist, with the third plane already in the
+picture's shape. On the open stack the profile is asked for and refused where the device
+lacks it, which is every device this was built on; no read-back is written for a surface
+layout nothing here can verify, and the capability stays false until a device says
+otherwise.
 
 ## §6 Sound
 
@@ -353,10 +413,35 @@ reads channel 0 for:
 | 28 host mode | stores it |
 | 29 encoder generation | stores it per stream, for §5's staleness rule |
 
-Anything else is ignored. The client sends opcode 21 every two seconds with its decode time,
-in the argument order a client uses ([01 §11.1](01-protocol.md)). **A clean departure is
-opcode 10 with a zero status**, given a moment on the reliable channel before the session goes
-away; a client that breaks sends nothing, and a host learns it from its delivery deadline.
+Anything else is ignored. **A clean departure is opcode 10 with a zero status**, given a
+moment on the reliable channel before the session goes away; a client that breaks sends
+nothing, and a host learns it from its delivery deadline.
+
+**What the declaration says is a preference masked by capability** (*2026-09-19*). The
+application names what it would like -- the second codec, ten-bit colour, full chroma -- in
+the video block of the attempt's configuration; the library ANDs that with what the decoder
+it opened at creation decodes (§5.1) and declares the result in the initialization's flags
+and the two secondary declarations, with the wire's own implication that depth and chroma
+imply the second codec and neither is declared without it. Defaults off: a client of ours at
+its defaults asks a host for exactly what every established client asks at its defaults,
+and full chroma at ten bits is nearly twice the bytes of the same picture at eight-bit
+4:2:0, which is not a choice the library makes for the application. A change mid-session
+goes out as the encoder configuration with the reinitialisation argument, paired with the
+decoder's teardown -- the first request case of §5. What the stream then turns out to be is
+the decoder's to follow, from the header and the parameter sets, and status carries all
+three: asked, declared, decoded.
+
+**The client reports its decode time on a time cadence, both kinds** (*2026-09-19*). Every
+two seconds from the moment the session is established, the session thread sends opcode 21
+twice in the argument order a client uses ([01 §11.1](01-protocol.md)): the video kind with
+the decode thread's smoothed figure for decode and hand-over per picture, and the sound kind
+with the figure `acquire_audio` smooths on the application's thread, each an exponentially
+weighted average with a tenth's weight on the newest sample, in microseconds, zero until
+something has been timed and sent anyway. A time cadence rather than a count of pictures,
+so a still desktop still reports, as this host does in the other direction. The message
+does one more thing: the round-trip estimate samples only when the host acknowledges
+something this client sent, and after the start-up burst a client that sends nothing keeps
+its first estimate for the whole session; a report every two seconds is what keeps it live.
 
 ## §8 Input
 
@@ -423,8 +508,9 @@ same named channels the host reports ([06 §3](06-api.md)) -- what arrived, what
 retransmitted to it, its decode time, its queue depth -- so an application can draw the same
 panel either side.
 
-**Deferred: a presentation-rate hint, and an event when the decoder cannot sustain the
-stream** (*recorded 2026-09-16*, not in v1). There is no wire-level channel for the rate a
+**A presentation-rate hint, and an event when the decoder cannot sustain the stream, were
+considered and are not built** (*recorded 2026-09-16*, *decided 2026-09-19*; the shape is
+kept). There is no wire-level channel for the rate a
 client can take that any host honours: the initialization's `refreshRate` is a literal 60
 from every established client and no host reads it, the decode time of opcode 21 is only
 re-published, and one encode serves every seat, so a host cannot thin frames for one guest
@@ -436,7 +522,9 @@ honours is `encoderFPS` in the application protocol, which is the application's 
 or zero for unknown), status carries the rate the decoder can sustain, and an event says when
 it cannot sustain the stream, with the rate the library recommends; the application relays
 that as `encoderFPS` in one line, and it works against an established host exactly as it
-does against this one. Decided with the lag trigger of [§5](#5-the-decoder-and-when-a-client-asks-for-a-keyframe).
+does against this one. Decided with the lag trigger of [§5](#5-the-decoder-and-when-a-client-asks-for-a-keyframe):
+the numbers below show a decoder that keeps up, and the reader's lag in status is the
+application's warning ([§4.1](#41-what-latest-wins-costs-and-what-it-cannot-do)).
 **The decoder's own numbers, recorded 2026-09-17** (this machine's open-stack decoder,
 1080p H.264): decode about 2.0 ms a picture at the median and 2.3 at the ninety-fifth
 percentile, read-back about the same, so a 120-picture stream costs the decode thread about
