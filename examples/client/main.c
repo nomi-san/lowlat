@@ -27,7 +27,8 @@
 // exports them (a row saying "handles") can be opened for that.
 // `LOWLAT_HEVC`, `LOWLAT_10BIT` and `LOWLAT_444` are the preferences the
 // attempt starts with: each is "prefer this if the host has it", masked by
-// what the decoder takes before anything is declared.
+// what the decoder takes before anything is declared; `LOWLAT_SWITCH_EVERY`
+// walks them every that many seconds, as the chord does by hand.
 // `LOWLAT_FPS` asks the host for that rate through the application
 // protocol once the first picture is in; `LOWLAT_PRESENT_HZ` caps how often
 // a new picture is taken (the cached one is still drawn every refresh), so
@@ -107,6 +108,8 @@ struct demo {
 	double poll_period_ms;
 	double last_poll_ms;
 	double leave_at_ms;
+	// Cycle the preferences every so many seconds; zero for never.
+	uint64_t switch_every;
 
 	// Where the picture is drawn: stretched to the window, or at its own
 	// size when it fits. The rectangle last told to the library.
@@ -648,6 +651,7 @@ static void report(struct demo *d)
 	st.size = (uint32_t) sizeof st;
 	lowlat_client_get_status(d->client, &st);
 	d->seconds++;
+	d->established = st.state == LOWLAT_CLIENT_ESTABLISHED;
 	double mbit = (double) (st.video_bytes - d->last_video_bytes) * 8.0 / 1.0e6;
 	d->last_video_bytes = st.video_bytes;
 	uint64_t rss = resident_mb();
@@ -968,6 +972,11 @@ static bool app_func(void *opaque)
 	if (t - d->second_began >= 1000.0) {
 		d->second_began = t;
 		report(d);
+		// The timed walk through the preferences, the chord's without a
+		// hand on the keyboard: once the session is up, every so many
+		// seconds.
+		if (d->switch_every > 0 && d->established && d->seconds % d->switch_every == 0)
+			cycle_video(d);
 	}
 	return true;
 }
@@ -992,6 +1001,7 @@ int main(void)
 	unsigned long ask_fps = strtoul(env_or("LOWLAT_FPS", "0"), NULL, 10);
 	unsigned long present_hz = strtoul(env_or("LOWLAT_PRESENT_HZ", "0"), NULL, 10);
 	unsigned long seconds = strtoul(env_or("LOWLAT_SECONDS", "0"), NULL, 10);
+	unsigned long switch_every = strtoul(env_or("LOWLAT_SWITCH_EVERY", "0"), NULL, 10);
 
 	if ((lowlat_features() & LOWLAT_FEATURE_CLIENT) == 0) {
 		fprintf(stderr, "demo: this library carries no client half\n");
@@ -1003,6 +1013,7 @@ int main(void)
 	struct demo d;
 	memset(&d, 0, sizeof d);
 	d.ask_fps = (uint32_t) ask_fps;
+	d.switch_every = switch_every;
 	d.poll_period_ms = present_hz > 0 ? 1000.0 / (double) present_hz : 0.0;
 	atomic_store(&d.stretch, true);
 	d.trace_pads = getenv("LOWLAT_PAD_TRACE") != NULL;
