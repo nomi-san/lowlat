@@ -193,6 +193,15 @@ static void log_line(uint32_t level, const char *message, void *opaque)
 	fprintf(stderr, "%s%s\n", level <= LOWLAT_LOG_WARN ? "! " : "  ", message);
 }
 
+// The toolkit's own lines, which say when a draw could not be made: a
+// picture that failed to import would otherwise leave the last one on the
+// screen with every counter looking healthy.
+static void toolkit_line(const char *message, void *opaque)
+{
+	(void) opaque;
+	fprintf(stderr, "! toolkit: %s\n", message);
+}
+
 // Six random groups: the attempt identifier's shape.
 static void attempt_id(char *out, size_t size)
 {
@@ -1008,6 +1017,7 @@ int main(void)
 		return 2;
 	}
 	lowlat_set_log_callback(log_line, NULL);
+	MTY_SetLogFunc(toolkit_line, NULL);
 	lowlat_set_log_level(LOWLAT_LOG_INFO);
 
 	struct demo d;

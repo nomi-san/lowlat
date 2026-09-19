@@ -25,7 +25,7 @@ offsets and pitches. Upstream's GL renderer refuses every hardware frame
 |---|---|
 | `src/matoya.h` | `MTY_HardwareFrame`: the descriptor, its allocation's number and size, and the planes' offsets and pitches, which is what `MTY_WindowDrawQuad` takes as the image when `MTY_RenderDesc.hardware` is set on GL |
 | `src/gfx/gl/glproc.h`, `glproc.c` | the external-memory entry points and their constants, resolved when the context has them and left null otherwise |
-| `src/gfx/gl/gl.c` | `mty_gl_valid_hardware_frame` answers whether the context imports descriptors; `mty_gl_render` with `hardware` imports the descriptor once per allocation number (a duplicate of it, since the import takes ownership), keeps it as a buffer, and fills the plane textures from that buffer at each plane's offset and pitch -- a device-side transfer, nothing read by the CPU |
+| `src/gfx/gl/gl.c` | `mty_gl_valid_hardware_frame` answers whether the context imports descriptors; `mty_gl_render` with `hardware` imports the descriptor once per allocation number (a duplicate of it, since the import takes ownership), keeps it as a buffer, and fills the plane textures from that buffer at each plane's offset and pitch -- a device-side transfer, nothing read by the CPU. The staging textures are remade on a change of internal format, not only of upload format: upstream keys the check on the upload format, which the eight and sixteen bit layouts share, so a picture that changed depth mid-stream kept its old texture and the old picture stayed on the screen |
 
 Nothing else is touched: no other renderer, no platform code, no shader. A diff against the
 upstream commit lists exactly the files above.

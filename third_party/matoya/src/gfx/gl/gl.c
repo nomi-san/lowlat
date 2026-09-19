@@ -185,13 +185,15 @@ static void gl_res_destroy(struct gl_res *rtv)
 // format, and bound.
 static void gl_res_ensure(struct gl_res *rtv, MTY_ColorFormat fmt, uint8_t plane, uint32_t w, uint32_t h)
 {
+	GLenum internal = FMT_PLANES[fmt][plane][0];
 	GLenum format = FMT_PLANES[fmt][plane][1];
 	GLenum type = FMT_PLANES[fmt][plane][2];
 
-	// Resize texture
-	if (!rtv->texture || rtv->w != w || rtv->h != h || rtv->format != format) {
-		GLenum internal = FMT_PLANES[fmt][plane][0];
-
+	// Resize texture. Keyed on the internal format, not the upload's: the
+	// eight and sixteen bit layouts share an upload format and differ only
+	// here, and a texture kept across that change takes sixteen-bit uploads
+	// without changing, so the last eight-bit picture stays on the screen.
+	if (!rtv->texture || rtv->w != w || rtv->h != h || rtv->format != internal) {
 		gl_res_destroy(rtv);
 
 		glGenTextures(1, &rtv->texture);
@@ -200,7 +202,7 @@ static void gl_res_ensure(struct gl_res *rtv, MTY_ColorFormat fmt, uint8_t plane
 
 		rtv->w = w;
 		rtv->h = h;
-		rtv->format = format;
+		rtv->format = internal;
 	}
 
 	glBindTexture(GL_TEXTURE_2D, rtv->texture);
