@@ -532,8 +532,11 @@ static int32_t scaled(const MTY_Axis *a, int32_t lo, int32_t hi)
 // pad and sent on the next iteration. Axes are found by their usage rather
 // than their slot, because the toolkit numbers slots in the order the device
 // lists its axes; a pad's sticks are X, Y, Z and Rz and its triggers Rx and
-// Ry on that page. The vertical axes are inverted: a pad's own protocol
-// reports a stick pushed away as positive, a device reports it as negative.
+// Ry on that page. The toolkit hands every stick over as a signed sixteen-bit
+// value with a stick pushed away from the player positive, which is the
+// wire's own convention, so the values pass through as they are. (Until
+// 2026-09-19 the vertical axes were negated here, on a misread trace, and a
+// game on an established host looked the wrong way up.)
 static void on_controller(struct demo *d, const MTY_ControllerEvent *c)
 {
 	d->pad_events++;
@@ -572,9 +575,9 @@ static void on_controller(struct demo *d, const MTY_ControllerEvent *c)
 		const MTY_Axis *a = &c->axes[i];
 		switch (a->usage) {
 			case 0x30: p->lx = (int16_t) scaled(a, -32768, 32767); break;
-			case 0x31: p->ly = (int16_t) -scaled(a, -32767, 32767); break;
+			case 0x31: p->ly = (int16_t) scaled(a, -32768, 32767); break;
 			case 0x32: p->rx = (int16_t) scaled(a, -32768, 32767); break;
-			case 0x35: p->ry = (int16_t) -scaled(a, -32767, 32767); break;
+			case 0x35: p->ry = (int16_t) scaled(a, -32768, 32767); break;
 			case 0x33: p->lt = (uint8_t) scaled(a, 0, 255); break;
 			case 0x34: p->rt = (uint8_t) scaled(a, 0, 255); break;
 			default: break;
