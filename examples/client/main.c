@@ -304,9 +304,45 @@ static double drawn_ratio(const struct demo *d)
 	return (double) d->viewport[2] / across;
 }
 
-// Give the toolkit the host's pointer at the drawn ratio: nearest-neighbour
-// resample of the native picture and of the hotspot with it. Skipped when
-// neither the picture nor the ratio changed.
+// Resample a picture to another size with a box filter over premultiplied
+// colour: every source pixel contributes by the area it covers, so a
+// one-pixel line shrunk a little becomes a softer line rather than a
+// missing one (nearest neighbour drops a row of a 32-pixel pointer at 98
+// percent), and the edges of a transparent picture do not darken.
+static void resample_rgba(const uint8_t *src, uint32_t sw, uint32_t sh, uint8_t *dst,
+	uint32_t dw, uint32_t dh)
+{
+	for (uint32_t y = 0; y < dh; y++) {
+		double y0 = (double) y * sh / dh, y1 = (double) (y + 1) * sh / dh;
+		for (uint32_t x = 0; x < dw; x++) {
+			double x0 = (double) x * sw / dw, x1 = (double) (x + 1) * sw / dw;
+			double sum[4] = {0, 0, 0, 0}, area = 0;
+			for (uint32_t sy = (uint32_t) floor(y0); sy < sh && (double) sy < y1; sy++) {
+				double wy = fmin(y1, sy + 1.0) - fmax(y0, (double) sy);
+				for (uint32_t sx = (uint32_t) floor(x0); sx < sw && (double) sx < x1; sx++) {
+					double w = wy * (fmin(x1, sx + 1.0) - fmax(x0, (double) sx));
+					const uint8_t *p = src + ((size_t) sy * sw + sx) * 4;
+					double a = p[3] / 255.0;
+					sum[0] += w * p[0] * a;
+					sum[1] += w * p[1] * a;
+					sum[2] += w * p[2] * a;
+					sum[3] += w * a;
+					area += w;
+				}
+			}
+			uint8_t *q = dst + ((size_t) y * dw + x) * 4;
+			double a = area > 0 ? sum[3] / area : 0;
+			for (int c = 0; c < 3; c++)
+				q[c] = sum[3] > 0 ? (uint8_t) lrint(fmin(255.0, sum[c] / sum[3])) : 0;
+			q[3] = (uint8_t) lrint(a * 255.0);
+		}
+	}
+}
+
+// Give the toolkit the host's pointer at the drawn ratio: the native picture
+// resampled, and the hotspot with it. Skipped when neither the picture nor
+// the ratio changed; a ratio whose result is the native size uses the native
+// picture as it is.
 static void apply_cursor(struct demo *d)
 {
 	if (d->cursor_rgba == NULL)
@@ -319,20 +355,17 @@ static void apply_cursor(struct demo *d)
 	uint32_t sh = (uint32_t) lrint((double) d->cursor_height * ratio);
 	if (sw == 0) sw = 1;
 	if (sh == 0) sh = 1;
-	uint32_t *scaled = malloc((size_t) sw * sh * 4);
+	uint32_t hot_x = (uint32_t) lrint((double) d->cursor_hot_x * ratio);
+	uint32_t hot_y = (uint32_t) lrint((double) d->cursor_hot_y * ratio);
+	if (sw == d->cursor_width && sh == d->cursor_height) {
+		MTY_AppSetRGBACursor(d->app, d->cursor_rgba, sw, sh, d->cursor_hot_x, d->cursor_hot_y);
+		return;
+	}
+	uint8_t *scaled = malloc((size_t) sw * sh * 4);
 	if (scaled == NULL)
 		return;
-	const uint32_t *native = (const uint32_t *) d->cursor_rgba;
-	for (uint32_t y = 0; y < sh; y++) {
-		uint32_t sy = (uint32_t) ((uint64_t) y * d->cursor_height / sh);
-		for (uint32_t x = 0; x < sw; x++) {
-			uint32_t sx = (uint32_t) ((uint64_t) x * d->cursor_width / sw);
-			scaled[(size_t) y * sw + x] = native[(size_t) sy * d->cursor_width + sx];
-		}
-	}
-	MTY_AppSetRGBACursor(d->app, scaled, sw, sh,
-		(uint32_t) lrint((double) d->cursor_hot_x * ratio),
-		(uint32_t) lrint((double) d->cursor_hot_y * ratio));
+	resample_rgba(d->cursor_rgba, d->cursor_width, d->cursor_height, scaled, sw, sh);
+	MTY_AppSetRGBACursor(d->app, scaled, sw, sh, hot_x, hot_y);
 	free(scaled);
 }
 
