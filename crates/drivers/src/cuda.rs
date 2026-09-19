@@ -16,7 +16,8 @@
 //! order is not stable across driver reloads, and neither is the display's
 //! attachment.
 
-use core::ffi::{CStr, c_char, c_int, c_uint};
+use core::ffi::{CStr, c_char, c_int, c_uint, c_ulonglong, c_void};
+use std::os::fd::OwnedFd;
 
 use lowlat_common::dynlib::Library;
 
@@ -57,6 +58,75 @@ type ExternalMemoryGetMappedBuffer = unsafe extern "C" fn(
     *const crate::ffi::cuda::CUDA_EXTERNAL_MEMORY_BUFFER_DESC,
 ) -> CUresult;
 type DestroyExternalMemory = unsafe extern "C" fn(crate::ffi::cuda::CUexternalMemory) -> CUresult;
+type Memcpy2DAsync =
+    unsafe extern "C" fn(*const crate::ffi::cuda::CUDA_MEMCPY2D, CUstream) -> CUresult;
+type StreamSynchronize = unsafe extern "C" fn(CUstream) -> CUresult;
+type MemGetAllocationGranularity =
+    unsafe extern "C" fn(*mut usize, *const MemAllocationProp, c_uint) -> CUresult;
+type MemCreate = unsafe extern "C" fn(
+    *mut MemGenericAllocationHandle,
+    usize,
+    *const MemAllocationProp,
+    c_ulonglong,
+) -> CUresult;
+type MemRelease = unsafe extern "C" fn(MemGenericAllocationHandle) -> CUresult;
+type MemAddressReserve =
+    unsafe extern "C" fn(*mut CUdeviceptr, usize, usize, CUdeviceptr, c_ulonglong) -> CUresult;
+type MemAddressFree = unsafe extern "C" fn(CUdeviceptr, usize) -> CUresult;
+type MemMap = unsafe extern "C" fn(
+    CUdeviceptr,
+    usize,
+    usize,
+    MemGenericAllocationHandle,
+    c_ulonglong,
+) -> CUresult;
+type MemUnmap = unsafe extern "C" fn(CUdeviceptr, usize) -> CUresult;
+type MemSetAccess =
+    unsafe extern "C" fn(CUdeviceptr, usize, *const MemAccessDesc, usize) -> CUresult;
+type MemExportToShareableHandle =
+    unsafe extern "C" fn(*mut c_void, MemGenericAllocationHandle, c_uint, c_ulonglong) -> CUresult;
+
+/// The virtual-memory interface's descriptors, declared here because the
+/// vendored header predates that interface. The layouts are the ones its
+/// own header documents, and the sizes are asserted below so a slip is a
+/// build failure rather than a fault in the driver.
+type MemGenericAllocationHandle = c_ulonglong;
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MemLocation {
+    kind: c_uint,
+    id: c_int,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MemAllocationProp {
+    kind: c_uint,
+    requested_handle_types: c_uint,
+    location: MemLocation,
+    win32_handle_meta_data: *mut c_void,
+    /// The compression type, the direct-access flag, the usage and four
+    /// reserved bytes: none of them asked for, all of them zero.
+    alloc_flags: [u8; 8],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct MemAccessDesc {
+    location: MemLocation,
+    flags: c_uint,
+}
+
+const _: () = assert!(core::mem::size_of::<MemAllocationProp>() == 32);
+const _: () = assert!(core::mem::align_of::<MemAllocationProp>() == 8);
+const _: () = assert!(core::mem::size_of::<MemAccessDesc>() == 12);
+
+const MEM_ALLOCATION_TYPE_PINNED: c_uint = 1;
+const MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR: c_uint = 1;
+const MEM_LOCATION_TYPE_DEVICE: c_uint = 1;
+const MEM_ACCESS_FLAGS_PROT_READWRITE: c_uint = 3;
+const MEM_ALLOC_GRANULARITY_MINIMUM: c_uint = 0;
 
 /// Why the runtime could not be used.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,6 +316,17 @@ pub struct Cuda {
     import_external_memory: ImportExternalMemory,
     external_memory_get_mapped_buffer: ExternalMemoryGetMappedBuffer,
     destroy_external_memory: DestroyExternalMemory,
+    memcpy_2d_async: Memcpy2DAsync,
+    stream_synchronize: StreamSynchronize,
+    mem_get_allocation_granularity: MemGetAllocationGranularity,
+    mem_create: MemCreate,
+    mem_release: MemRelease,
+    mem_address_reserve: MemAddressReserve,
+    mem_address_free: MemAddressFree,
+    mem_map: MemMap,
+    mem_unmap: MemUnmap,
+    mem_set_access: MemSetAccess,
+    mem_export_to_shareable_handle: MemExportToShareableHandle,
     /// Last, so it outlives the addresses taken from it.
     _library: Library,
 }
@@ -319,6 +400,33 @@ impl Cuda {
                     .ok_or(Error::MissingSymbol)?,
                 destroy_external_memory: library
                     .symbol(c"cuDestroyExternalMemory")
+                    .ok_or(Error::MissingSymbol)?,
+                memcpy_2d_async: library
+                    .symbol(c"cuMemcpy2DAsync_v2")
+                    .ok_or(Error::MissingSymbol)?,
+                stream_synchronize: library
+                    .symbol(c"cuStreamSynchronize")
+                    .ok_or(Error::MissingSymbol)?,
+                mem_get_allocation_granularity: library
+                    .symbol(c"cuMemGetAllocationGranularity")
+                    .ok_or(Error::MissingSymbol)?,
+                mem_create: library.symbol(c"cuMemCreate").ok_or(Error::MissingSymbol)?,
+                mem_release: library
+                    .symbol(c"cuMemRelease")
+                    .ok_or(Error::MissingSymbol)?,
+                mem_address_reserve: library
+                    .symbol(c"cuMemAddressReserve")
+                    .ok_or(Error::MissingSymbol)?,
+                mem_address_free: library
+                    .symbol(c"cuMemAddressFree")
+                    .ok_or(Error::MissingSymbol)?,
+                mem_map: library.symbol(c"cuMemMap").ok_or(Error::MissingSymbol)?,
+                mem_unmap: library.symbol(c"cuMemUnmap").ok_or(Error::MissingSymbol)?,
+                mem_set_access: library
+                    .symbol(c"cuMemSetAccess")
+                    .ok_or(Error::MissingSymbol)?,
+                mem_export_to_shareable_handle: library
+                    .symbol(c"cuMemExportToShareableHandle")
                     .ok_or(Error::MissingSymbol)?,
                 _library: library,
             }
@@ -574,6 +682,274 @@ impl Cuda {
         // from; the pointer is live for the life of the buffer.
         check(unsafe { (self.memset_d8)(buffer.ptr, value, count) })
     }
+
+    /// Copy rows of host memory to a pitched device address: the mirror of
+    /// [`Self::read_rows`]. Synchronous with respect to `source`.
+    ///
+    /// # Safety
+    ///
+    /// `dst` addresses at least `rows` rows of `dst_pitch` bytes in the
+    /// current context.
+    pub unsafe fn write_rows(
+        &self,
+        dst: CUdeviceptr,
+        dst_pitch: usize,
+        source: &[u8],
+        src_pitch: usize,
+        row_bytes: usize,
+        rows: usize,
+    ) -> Result<()> {
+        if rows == 0 || row_bytes == 0 {
+            return Ok(());
+        }
+        if src_pitch < row_bytes || source.len() < (rows - 1) * src_pitch + row_bytes {
+            return Err(Error::SourceTooSmall);
+        }
+        // SAFETY: plain data, whose only pointers are the two set below and
+        // both are live for the call.
+        let mut copy = unsafe { core::mem::zeroed::<crate::ffi::cuda::CUDA_MEMCPY2D>() };
+        copy.srcMemoryType = crate::ffi::cuda::CU_MEMORYTYPE_HOST;
+        copy.srcHost = source.as_ptr().cast();
+        copy.srcPitch = src_pitch;
+        copy.dstMemoryType = crate::ffi::cuda::CU_MEMORYTYPE_DEVICE;
+        copy.dstDevice = dst;
+        copy.dstPitch = dst_pitch;
+        copy.WidthInBytes = row_bytes;
+        copy.Height = rows;
+        // SAFETY: the descriptor is live for the call; the source is
+        // bounded above and the destination by the caller's contract.
+        check(unsafe { (self.memcpy_2d)(&raw const copy) })
+    }
+
+    /// Queue a copy of `rows` of `row_bytes` between two pitched device
+    /// addresses on `stream`. **Returns before the copy is done**: the
+    /// caller waits on the stream before either side is touched again.
+    ///
+    /// # Safety
+    ///
+    /// Both addresses cover `rows` rows at their pitch in the current
+    /// context, and stay valid until the stream has passed the copy.
+    // Two pitched sides and a stream: the copy descriptor's own fields, one
+    // past the lint's count.
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe fn copy_rows_async(
+        &self,
+        src: CUdeviceptr,
+        src_pitch: usize,
+        dst: CUdeviceptr,
+        dst_pitch: usize,
+        row_bytes: usize,
+        rows: usize,
+        stream: &Stream,
+    ) -> Result<()> {
+        if rows == 0 || row_bytes == 0 {
+            return Ok(());
+        }
+        if src_pitch < row_bytes || dst_pitch < row_bytes {
+            return Err(Error::SourceTooSmall);
+        }
+        // SAFETY: plain data, whose only pointers are the two set below.
+        let mut copy = unsafe { core::mem::zeroed::<crate::ffi::cuda::CUDA_MEMCPY2D>() };
+        copy.srcMemoryType = crate::ffi::cuda::CU_MEMORYTYPE_DEVICE;
+        copy.srcDevice = src;
+        copy.srcPitch = src_pitch;
+        copy.dstMemoryType = crate::ffi::cuda::CU_MEMORYTYPE_DEVICE;
+        copy.dstDevice = dst;
+        copy.dstPitch = dst_pitch;
+        copy.WidthInBytes = row_bytes;
+        copy.Height = rows;
+        // SAFETY: the descriptor is live for the call, which reads it whole
+        // before returning; the addresses are the caller's contract.
+        check(unsafe { (self.memcpy_2d_async)(&raw const copy, stream.raw) })
+    }
+
+    /// Wait until everything queued on `stream` has run.
+    pub fn synchronize(&self, stream: &Stream) -> Result<()> {
+        // SAFETY: the handle is valid for the life of the stream.
+        check(unsafe { (self.stream_synchronize)(stream.raw) })
+    }
+}
+
+/// A device allocation another interface can map.
+///
+/// Made through the virtual-memory interface rather than as a pitched
+/// allocation, because only an allocation made that way can leave the
+/// runtime as a descriptor. The descriptor is the platform's opaque kind,
+/// which the display interfaces import as foreign memory; it is **this
+/// allocation's for its life**, closed with it, so a consumer that keeps
+/// one past the allocation duplicates it first. An import that takes
+/// ownership of what it is given is given a duplicate.
+pub struct Exportable {
+    ptr: CUdeviceptr,
+    /// The mapped length: the bytes asked for, rounded up to the granule.
+    size: usize,
+    handle: MemGenericAllocationHandle,
+    fd: OwnedFd,
+    unmap: MemUnmap,
+    address_free: MemAddressFree,
+    release: MemRelease,
+}
+
+impl core::fmt::Debug for Exportable {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("Exportable")
+            .field("ptr", &self.ptr)
+            .field("size", &self.size)
+            .field("fd", &self.fd)
+            .finish_non_exhaustive()
+    }
+}
+
+// SAFETY: a device allocation belongs to its context, not to a thread.
+unsafe impl Send for Exportable {}
+unsafe impl Sync for Exportable {}
+
+impl Exportable {
+    pub fn ptr(&self) -> CUdeviceptr {
+        self.ptr
+    }
+
+    /// The whole mapped length, which is what an importer is told.
+    pub fn size(&self) -> usize {
+        self.size
+    }
+
+    /// The descriptor, borrowed: it is closed with the allocation.
+    pub fn fd(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd;
+        self.fd.as_fd()
+    }
+}
+
+impl Drop for Exportable {
+    fn drop(&mut self) {
+        // SAFETY: mapped once at `ptr` for `size`, reserved once, created
+        // once; the type is neither `Copy` nor `Clone`. The descriptor is
+        // closed after, by its own drop, so the allocation's last
+        // reference is not the one an importer may still hold.
+        unsafe {
+            let _ = (self.unmap)(self.ptr, self.size);
+            let _ = (self.address_free)(self.ptr, self.size);
+            let _ = (self.release)(self.handle);
+        }
+    }
+}
+
+impl Cuda {
+    /// An allocation of at least `bytes` on `device`, exported.
+    ///
+    /// The size is rounded up to the interface's granule, which is what a
+    /// mapping must be a multiple of; the caller lays its rows out inside
+    /// `bytes` and the rest is slack.
+    pub fn alloc_exportable(&self, device: &Device, bytes: usize) -> Result<Exportable> {
+        let location = MemLocation {
+            kind: MEM_LOCATION_TYPE_DEVICE,
+            id: device.handle,
+        };
+        let prop = MemAllocationProp {
+            kind: MEM_ALLOCATION_TYPE_PINNED,
+            requested_handle_types: MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,
+            location,
+            win32_handle_meta_data: core::ptr::null_mut(),
+            alloc_flags: [0; 8],
+        };
+        let mut granule: usize = 0;
+        // SAFETY: both pointers are to live locals for the call.
+        check(unsafe {
+            (self.mem_get_allocation_granularity)(
+                &raw mut granule,
+                &raw const prop,
+                MEM_ALLOC_GRANULARITY_MINIMUM,
+            )
+        })?;
+        let granule = granule.max(1);
+        let size = bytes.max(1).div_ceil(granule) * granule;
+
+        let mut handle: MemGenericAllocationHandle = 0;
+        // SAFETY: as above; the flags are documented as reserved and zero.
+        check(unsafe { (self.mem_create)(&raw mut handle, size, &raw const prop, 0) })?;
+
+        let mapped = self.map_exportable(handle, size, location);
+        match mapped {
+            Ok((ptr, fd)) => Ok(Exportable {
+                ptr,
+                size,
+                handle,
+                fd,
+                unmap: self.mem_unmap,
+                address_free: self.mem_address_free,
+                release: self.mem_release,
+            }),
+            Err(e) => {
+                // SAFETY: created above and not mapped, or unmapped by the
+                // failed step.
+                unsafe {
+                    let _ = (self.mem_release)(handle);
+                }
+                Err(e)
+            }
+        }
+    }
+
+    /// Reserve, map, open for access and export; on a failure, undo what
+    /// was done. The handle itself is the caller's to release.
+    fn map_exportable(
+        &self,
+        handle: MemGenericAllocationHandle,
+        size: usize,
+        location: MemLocation,
+    ) -> Result<(CUdeviceptr, OwnedFd)> {
+        let mut ptr: CUdeviceptr = 0;
+        // SAFETY: the out pointer is to a live local; no alignment or
+        // address is asked for, and the flags are reserved.
+        check(unsafe { (self.mem_address_reserve)(&raw mut ptr, size, 0, 0, 0) })?;
+
+        // SAFETY: the range was reserved above at this size.
+        let mapped = unsafe { (self.mem_map)(ptr, size, 0, handle, 0) };
+        if let Err(e) = check(mapped) {
+            // SAFETY: reserved above, not mapped.
+            unsafe {
+                let _ = (self.mem_address_free)(ptr, size);
+            }
+            return Err(e);
+        }
+
+        let access = MemAccessDesc {
+            location,
+            flags: MEM_ACCESS_FLAGS_PROT_READWRITE,
+        };
+        let mut fd: c_int = -1;
+        // SAFETY: the descriptor is a live local; the range is mapped. The
+        // out parameter is what the interface documents for this kind: a
+        // pointer to an `int`.
+        let opened = unsafe { (self.mem_set_access)(ptr, size, &raw const access, 1) };
+        let exported = check(opened).and_then(|()| {
+            check(unsafe {
+                (self.mem_export_to_shareable_handle)(
+                    (&raw mut fd).cast::<c_void>(),
+                    handle,
+                    MEM_HANDLE_TYPE_POSIX_FILE_DESCRIPTOR,
+                    0,
+                )
+            })
+        });
+        match exported {
+            Ok(()) => {
+                // SAFETY: a descriptor the runtime just gave us, owned by
+                // nothing else.
+                let fd = unsafe { <OwnedFd as std::os::fd::FromRawFd>::from_raw_fd(fd) };
+                Ok((ptr, fd))
+            }
+            Err(e) => {
+                // SAFETY: mapped and reserved above.
+                unsafe {
+                    let _ = (self.mem_unmap)(ptr, size);
+                    let _ = (self.mem_address_free)(ptr, size);
+                }
+                Err(e)
+            }
+        }
+    }
 }
 
 /// A command stream the encoder is told to use.
@@ -771,6 +1147,57 @@ mod tests {
             cuda.device_at(absent).unwrap_err(),
             Error::NoSuchDevice(absent),
             "selection fell back to another device"
+        );
+    }
+
+    /// An exported allocation's descriptor is one this runtime itself
+    /// imports as foreign memory, and what was written through the
+    /// allocation reads back through the import: the descriptor is live
+    /// and names the same bytes. Off by default, as above.
+    #[test]
+    #[ignore = "requires the vendor driver"]
+    fn an_exported_allocation_reads_back_through_its_descriptor() {
+        let cuda = Cuda::load().expect("compute runtime did not load");
+        let device = cuda.any_device().expect("a device");
+        let context = cuda.retain_primary(&device).expect("primary context");
+        context.make_current().expect("current");
+
+        const PITCH: usize = 4096;
+        const ROWS: usize = 64;
+        let exportable = cuda
+            .alloc_exportable(&device, PITCH * ROWS)
+            .expect("exportable allocation");
+        assert!(exportable.size() >= PITCH * ROWS, "rounded down");
+        println!(
+            "{} bytes asked, {} mapped, descriptor {:?}",
+            PITCH * ROWS,
+            exportable.size(),
+            exportable.fd()
+        );
+
+        let pattern: Vec<u8> = (0..PITCH * ROWS)
+            .map(|i| u8::try_from(i % 251).expect("under 256"))
+            .collect();
+        // SAFETY: the allocation covers the rows.
+        unsafe { cuda.write_rows(exportable.ptr(), PITCH, &pattern, PITCH, PITCH, ROWS) }
+            .expect("write");
+
+        // The import takes ownership of what it is given, so it is given a
+        // duplicate and the allocation keeps its own.
+        let dup = exportable.fd().try_clone_to_owned().expect("duplicate");
+        let size = u64::try_from(exportable.size()).expect("size");
+        // SAFETY: the context is current and the descriptor is an opaque
+        // one this runtime exported.
+        let external = unsafe { cuda.import(dup, size) }.expect("import");
+        let plane = external
+            .plane(0, u64::try_from(PITCH * ROWS).expect("size"), PITCH)
+            .expect("plane");
+        let mut back = vec![0u8; PITCH * ROWS];
+        // SAFETY: the import covers the rows.
+        unsafe { cuda.read_rows(plane.ptr(), PITCH, &mut back, PITCH, PITCH, ROWS) }.expect("read");
+        assert!(
+            back == pattern,
+            "the import does not see what the allocation holds"
         );
     }
 }

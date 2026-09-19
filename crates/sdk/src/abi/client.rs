@@ -43,9 +43,32 @@ pub enum lowlat_decoder {
 pub enum lowlat_frame_kind {
     /// Planes in memory the library owns for the lease.
     LOWLAT_FRAME_PLANES = 0,
-    /// A device-level handle the application imports into its own device.
-    /// No decoder exports one yet: refused at creation.
+    /// A device-level handle the application imports into its own device:
+    /// the picture's planes at offsets into it. Only the vendor decoder
+    /// exports one, so asking for it settles the decoder on the vendor's
+    /// (`LOWLAT_DECODER_AUTO` then means the vendor's on any device), and
+    /// the open decoder refuses it at creation with
+    /// [`LOWLAT_ERR_DECODER_UNSUPPORTED`].
     LOWLAT_FRAME_HANDLE = 1,
+}
+
+/// What a frame of the handle kind carries.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_handle_kind {
+    /// A frame of the planes kind: no handle.
+    LOWLAT_HANDLE_NONE = 0,
+    /// An opaque descriptor of the vendor's compute runtime, which the
+    /// same vendor's GL imports as `GL_HANDLE_TYPE_OPAQUE_FD_EXT` and
+    /// Vulkan as `VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT`; the
+    /// picture's rows are laid out plainly at each plane's offset and
+    /// pitch. The descriptor is **the library's for the lease** and is
+    /// closed when the allocation behind it is freed, which is after the
+    /// last hold on it is released; an import that takes ownership of the
+    /// descriptor it is given (GL's does) is given a duplicate.
+    LOWLAT_HANDLE_OPAQUE_FD = 1,
+    /// Reserved: a buffer descriptor with a layout modifier.
+    LOWLAT_HANDLE_DMABUF = 2,
 }
 
 /// What a client is created with.
@@ -303,10 +326,14 @@ pub const LOWLAT_DECODER_FAILED: u32 = 2;
 #[derive(Debug, Clone, Copy)]
 pub struct lowlat_plane {
     /// The first sample of the first row, or null for a plane the layout
-    /// does not have.
+    /// does not have -- and null for every plane of a frame of the handle
+    /// kind, whose planes are `offset` into the handle instead.
     pub data: *const u8,
     /// Bytes from one row to the next.
     pub pitch: u32,
+    /// Bytes from the start of the handle to the first sample of the
+    /// first row, for a frame of the handle kind; zero otherwise.
+    pub offset: u64,
 }
 
 /// Eight bits: a luma plane and an interleaved chroma plane at half the
@@ -348,6 +375,22 @@ pub struct lowlat_frame {
     pub planes: [lowlat_plane; 3],
     /// Which slot this is, for the release.
     pub slot: u32,
+    /// One of [`lowlat_handle_kind`]: none for a frame of the planes kind.
+    pub handle_kind: u32,
+    /// The descriptor, for [`lowlat_handle_kind::LOWLAT_HANDLE_OPAQUE_FD`];
+    /// negative otherwise.
+    pub fd: i32,
+    /// The allocation's ordinal since creation, from one, for a frame of
+    /// the handle kind. Descriptor numbers are reused once closed, so this
+    /// is what tells one allocation from the next: two frames with the
+    /// same number share an import, a new number is a new import, and an
+    /// import whose number no longer appears may be dropped.
+    pub allocation: u32,
+    /// The whole allocation behind the descriptor in bytes, which is what
+    /// an import is told; zero for a frame of the planes kind.
+    pub handle_size: u64,
+    /// The layout modifier, for a kind that has one; zero otherwise.
+    pub modifier: u64,
 }
 
 /// A synchronisation object the application's device signals when it has
@@ -1287,9 +1330,56 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
                 Err(_) => return LOWLAT_ERR_TOO_MANY_HELD,
             };
             handle.held().seam.set_last_seq(taken.seq);
+            let pitch = u32::try_from(taken.pitch).unwrap_or(u32::MAX);
+            let full_chroma = taken.frame.format.full_chroma();
+            let planes = match taken.handle {
+                // A device slot: the planes are offsets into the handle.
+                Some(_) => [
+                    lowlat_plane {
+                        data: core::ptr::null(),
+                        pitch,
+                        offset: 0,
+                    },
+                    lowlat_plane {
+                        data: core::ptr::null(),
+                        pitch,
+                        offset: taken.frame.uv_offset as u64,
+                    },
+                    lowlat_plane {
+                        data: core::ptr::null(),
+                        pitch: if full_chroma { pitch } else { 0 },
+                        offset: if full_chroma {
+                            taken.frame.v_offset as u64
+                        } else {
+                            0
+                        },
+                    },
+                ],
+                None => [
+                    lowlat_plane {
+                        data: taken.y,
+                        pitch,
+                        offset: 0,
+                    },
+                    lowlat_plane {
+                        data: taken.uv,
+                        pitch,
+                        offset: 0,
+                    },
+                    lowlat_plane {
+                        data: taken.v,
+                        pitch: if taken.v.is_null() { 0 } else { pitch },
+                        offset: 0,
+                    },
+                ],
+            };
             *frame = lowlat_frame {
                 size: frame.size,
-                kind: lowlat_frame_kind::LOWLAT_FRAME_PLANES as u32,
+                kind: if taken.handle.is_some() {
+                    lowlat_frame_kind::LOWLAT_FRAME_HANDLE
+                } else {
+                    lowlat_frame_kind::LOWLAT_FRAME_PLANES
+                } as u32,
                 format: ::lowlat_client::decode::format_code(taken.frame.format),
                 width: taken.frame.width,
                 height: taken.frame.height,
@@ -1301,25 +1391,16 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
                 } as u32,
                 generation: taken.frame.generation,
                 sequence: taken.seq,
-                planes: [
-                    lowlat_plane {
-                        data: taken.y,
-                        pitch: u32::try_from(taken.pitch).unwrap_or(u32::MAX),
-                    },
-                    lowlat_plane {
-                        data: taken.uv,
-                        pitch: u32::try_from(taken.pitch).unwrap_or(u32::MAX),
-                    },
-                    lowlat_plane {
-                        data: taken.v,
-                        pitch: if taken.v.is_null() {
-                            0
-                        } else {
-                            u32::try_from(taken.pitch).unwrap_or(u32::MAX)
-                        },
-                    },
-                ],
+                planes,
                 slot: u32::try_from(taken.index).unwrap_or(u32::MAX),
+                handle_kind: match taken.handle {
+                    Some(_) => lowlat_handle_kind::LOWLAT_HANDLE_OPAQUE_FD,
+                    None => lowlat_handle_kind::LOWLAT_HANDLE_NONE,
+                } as u32,
+                fd: taken.handle.map_or(-1, |h| h.fd),
+                allocation: taken.handle.map_or(0, |h| h.allocation),
+                handle_size: taken.handle.map_or(0, |h| h.size as u64),
+                modifier: 0,
             };
             LOWLAT_OK
         })
@@ -1697,8 +1778,14 @@ mod tests {
             planes: [lowlat_plane {
                 data: core::ptr::null(),
                 pitch: 0,
+                offset: 0,
             }; 3],
             slot: 0,
+            handle_kind: 0,
+            fd: -1,
+            allocation: 0,
+            handle_size: 0,
+            modifier: 0,
         };
         assert_eq!(
             unsafe { lowlat_client_acquire_frame(handle, 0, 0, &raw mut frame) },
@@ -1920,11 +2007,13 @@ mod tests {
         unsafe { lowlat_client_destroy(handle) };
     }
 
-    /// A frame kind nothing exports is refused at creation, with the stage.
+    /// A frame kind the open decoder does not export is refused at
+    /// creation, with the stage, before any device is opened.
     #[test]
     fn what_is_not_built_is_refused_at_creation() {
         let mut handle: *mut lowlat_client = core::ptr::null_mut();
         let mut info = no_decoder();
+        info.decoder = lowlat_decoder::LOWLAT_DECODER_OPEN as u32;
         info.frame_kind = lowlat_frame_kind::LOWLAT_FRAME_HANDLE as u32;
         assert_eq!(
             unsafe { lowlat_client_create(&raw const info, &raw mut handle) },

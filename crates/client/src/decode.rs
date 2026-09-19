@@ -12,13 +12,15 @@ use std::time::Duration;
 
 use lowlat_common::events;
 use lowlat_core::video;
+use lowlat_decode::nvdec::DevicePlanes;
 use lowlat_decode::vaapi::Vaapi;
-use lowlat_decode::{Decoder, Fed, Format, nvdec, vaapi};
+use lowlat_decode::{Decoder, Fault, Fed, Format, Picture, nvdec, vaapi};
 use lowlat_drivers::cuda::Cuda;
 use lowlat_drivers::cuvid::Cuvid;
 use lowlat_net::WakeHandle;
 
 use crate::UNIT_BYTES;
+use crate::config::FrameKind;
 use crate::driver::{Telemetry, Units};
 use crate::feed::{Decision, Feed};
 use crate::frames::{Frame, Frames};
@@ -29,11 +31,19 @@ use crate::seam::{Event, Opened, Outcome};
 const IDLE_WAIT: Duration = Duration::from_millis(50);
 
 /// What either backend tells the thread beyond the decoder trait: the
-/// layout of what it hands out and what the last picture cost.
+/// layout of what it hands out, what the last picture cost, and the
+/// device route for a backend that has one.
 trait Backend: Decoder {
     fn output(&self) -> Option<(u32, u32, Format)>;
     /// The last picture's decode wait and hand-over, in microseconds.
     fn timings(&self) -> (u32, u32);
+    /// The next picture into device memory. Only a backend that exports
+    /// is ever asked, because creation refuses the handle kind for the
+    /// rest; a fault here is the answer if one is asked anyway.
+    fn take_to_device(&mut self, out: &DevicePlanes) -> Result<Option<Picture>, Fault> {
+        let _ = out;
+        Err(Fault::Fatal)
+    }
 }
 
 impl Backend for vaapi::Backend<'_> {
@@ -51,6 +61,9 @@ impl Backend for nvdec::Backend<'_> {
     }
     fn timings(&self) -> (u32, u32) {
         (self.decode_us, self.readback_us)
+    }
+    fn take_to_device(&mut self, out: &DevicePlanes) -> Result<Option<Picture>, Fault> {
+        nvdec::Backend::take_to_device(self, out)
     }
 }
 
@@ -130,6 +143,13 @@ pub(crate) fn run(args: Attached) {
                 fail(&telemetry, &emit, &frames);
                 return;
             };
+            // The queue's device slots are made through this runtime, and
+            // may outlive this thread while the application holds one, so
+            // the queue keeps its own reference to it.
+            let cuda = Arc::new(cuda);
+            if frames.kind() == FrameKind::Handle {
+                frames.open_device(Arc::clone(&cuda), device);
+            }
             let backend = nvdec::Backend::new(&cuda, &cuvid, frames.ceiling(), UNIT_BYTES);
             drive(
                 backend, &units, &frames, &telemetry, &emit, &shell, &stopping,
@@ -227,10 +247,21 @@ fn take_pictures<D: Backend>(
         let Some(mut filling) = frames.fill() else {
             return;
         };
-        let Some(mut planes) = filling.planes_for(width, height, format) else {
-            return;
+        let taken = match frames.kind() {
+            FrameKind::Planes => {
+                let Some(mut planes) = filling.planes_for(width, height, format) else {
+                    return;
+                };
+                lowlat_decode::Decoder::take(feed.decoder_mut(), &mut planes)
+            }
+            FrameKind::Handle => {
+                let Some(planes) = filling.device_planes_for(width, height, format) else {
+                    return;
+                };
+                feed.decoder_mut().take_to_device(&planes)
+            }
         };
-        match lowlat_decode::Decoder::take(feed.decoder_mut(), &mut planes) {
+        match taken {
             Ok(Some(picture)) => {
                 let (decode_us, readback_us) = feed.decoder().timings();
                 telemetry.decode_us.store(decode_us, Ordering::Relaxed);
@@ -252,6 +283,7 @@ fn take_pictures<D: Backend>(
                     pitch: 0,
                     uv_offset: 0,
                     v_offset: 0,
+                    handle: None,
                 });
                 telemetry.decoded.fetch_add(1, Ordering::Relaxed);
             }

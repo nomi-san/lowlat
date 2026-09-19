@@ -569,10 +569,31 @@ typedef enum lowlat_decoder {
 typedef enum lowlat_frame_kind {
     /// Planes in memory the library owns for the lease.
     LOWLAT_FRAME_PLANES = 0,
-    /// A device-level handle the application imports into its own device.
-    /// No decoder exports one yet: refused at creation.
+    /// A device-level handle the application imports into its own device:
+    /// the picture's planes at offsets into it. Only the vendor decoder
+    /// exports one, so asking for it settles the decoder on the vendor's
+    /// (`LOWLAT_DECODER_AUTO` then means the vendor's on any device), and
+    /// the open decoder refuses it at creation with
+    /// `LOWLAT_ERR_DECODER_UNSUPPORTED`.
     LOWLAT_FRAME_HANDLE = 1,
 } lowlat_frame_kind;
+
+/// What a frame of the handle kind carries.
+typedef enum lowlat_handle_kind {
+    /// A frame of the planes kind: no handle.
+    LOWLAT_HANDLE_NONE = 0,
+    /// An opaque descriptor of the vendor's compute runtime, which the
+    /// same vendor's GL imports as `GL_HANDLE_TYPE_OPAQUE_FD_EXT` and
+    /// Vulkan as `VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT`; the
+    /// picture's rows are laid out plainly at each plane's offset and
+    /// pitch. The descriptor is **the library's for the lease** and is
+    /// closed when the allocation behind it is freed, which is after the
+    /// last hold on it is released; an import that takes ownership of the
+    /// descriptor it is given (GL's does) is given a duplicate.
+    LOWLAT_HANDLE_OPAQUE_FD = 1,
+    /// Reserved: a buffer descriptor with a layout modifier.
+    LOWLAT_HANDLE_DMABUF = 2,
+} lowlat_handle_kind;
 
 typedef enum lowlat_fence_kind {
     /// Reusable now.
@@ -1349,10 +1370,14 @@ typedef struct lowlat_client_status {
 /// One plane of a picture.
 typedef struct lowlat_plane {
     /// The first sample of the first row, or null for a plane the layout
-    /// does not have.
+    /// does not have -- and null for every plane of a frame of the handle
+    /// kind, whose planes are `offset` into the handle instead.
     const uint8_t *data;
     /// Bytes from one row to the next.
     uint32_t pitch;
+    /// Bytes from the start of the handle to the first sample of the
+    /// first row, for a frame of the handle kind; zero otherwise.
+    uint64_t offset;
 } lowlat_plane;
 
 /// A decoded picture, lent to the application.
@@ -1379,6 +1404,22 @@ typedef struct lowlat_frame {
     lowlat_plane planes[3];
     /// Which slot this is, for the release.
     uint32_t slot;
+    /// One of `lowlat_handle_kind`: none for a frame of the planes kind.
+    uint32_t handle_kind;
+    /// The descriptor, for `lowlat_handle_kind::LOWLAT_HANDLE_OPAQUE_FD`;
+    /// negative otherwise.
+    int32_t fd;
+    /// The allocation's ordinal since creation, from one, for a frame of
+    /// the handle kind. Descriptor numbers are reused once closed, so this
+    /// is what tells one allocation from the next: two frames with the
+    /// same number share an import, a new number is a new import, and an
+    /// import whose number no longer appears may be dropped.
+    uint32_t allocation;
+    /// The whole allocation behind the descriptor in bytes, which is what
+    /// an import is told; zero for a frame of the planes kind.
+    uint64_t handle_size;
+    /// The layout modifier, for a kind that has one; zero otherwise.
+    uint64_t modifier;
 } lowlat_frame;
 
 /// A synchronisation object the application's device signals when it has

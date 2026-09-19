@@ -9,7 +9,7 @@
 
 use std::path::PathBuf;
 
-use lowlat_decode::{Decoder, Fed, Planes};
+use lowlat_decode::{Decoder, Fault, Fed, Picture, Planes};
 
 pub fn data(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -63,7 +63,20 @@ pub fn decode_clip<D: Decoder>(
     backend: &mut D,
     clip: &str,
     drain: impl Fn(&mut D),
+    timed: impl FnMut(&D) -> (u32, u32),
+) -> (Vec<(u32, u32)>, Vec<(u32, u32)>) {
+    decode_clip_with(backend, clip, drain, timed, |b, planes| b.take(planes))
+}
+
+/// As [`decode_clip`], with the picture taken by `take` rather than the
+/// trait's own: a backend's other route, which must leave the picture in
+/// the host planes it is given all the same.
+pub fn decode_clip_with<D: Decoder>(
+    backend: &mut D,
+    clip: &str,
+    drain: impl Fn(&mut D),
     mut timed: impl FnMut(&D) -> (u32, u32),
+    mut take: impl FnMut(&mut D, &mut Planes<'_>) -> Result<Option<Picture>, Fault>,
 ) -> (Vec<(u32, u32)>, Vec<(u32, u32)>) {
     let mut sums = Vec::new();
     let mut times = Vec::new();
@@ -93,9 +106,8 @@ pub fn decode_clip<D: Decoder>(
                 v: &mut v,
                 v_pitch: pitch,
             };
-            let Some(picture) = backend
-                .take(&mut planes)
-                .unwrap_or_else(|e| panic!("{clip}: take: {e:?}"))
+            let Some(picture) =
+                take(backend, &mut planes).unwrap_or_else(|e| panic!("{clip}: take: {e:?}"))
             else {
                 break;
             };

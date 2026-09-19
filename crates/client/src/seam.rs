@@ -284,12 +284,19 @@ impl Client {
     /// decodes: a machine without one is refused here, with the stage named,
     /// rather than after it has connected.
     pub fn new(decoding: &Decoding) -> Result<Self, Error> {
-        if decoding.kind == FrameKind::Handle {
-            return Err(Error::Decoder(DecoderStage::Unsupported));
-        }
-        let (opened, caps) = match decoding.backend {
-            Backend::None => (None, Caps::default()),
-            Backend::Nvdec => {
+        let (opened, caps) = match (decoding.kind, decoding.backend) {
+            // Only the vendor backend exports a handle, so asking for one
+            // settles the choice: the vendor's on any device, or nothing.
+            (FrameKind::Handle, Backend::Vaapi) => {
+                return Err(Error::Decoder(DecoderStage::Unsupported));
+            }
+            (FrameKind::Handle, Backend::Auto) => {
+                let caps =
+                    probe_nvdec(None).map_err(|_| Error::Decoder(DecoderStage::Unsupported))?;
+                (Some(Opened::Nvdec(None)), caps)
+            }
+            (_, Backend::None) => (None, Caps::default()),
+            (_, Backend::Nvdec) => {
                 // The device is named as a render node, as for the open
                 // stack; the card behind it is what the runtime takes.
                 let address = if decoding.device.is_empty() {
@@ -300,7 +307,7 @@ impl Client {
                 let caps = probe_nvdec(address).map_err(Error::Decoder)?;
                 (Some(Opened::Nvdec(address)), caps)
             }
-            Backend::Vaapi | Backend::Auto => {
+            (_, Backend::Vaapi | Backend::Auto) => {
                 if decoding.device.is_empty() {
                     let mut found = None;
                     let mut last = DecoderStage::Device;
@@ -353,7 +360,7 @@ impl Client {
             units: Units::new(),
             opened,
             caps,
-            frames: Arc::new(Frames::new(decoding.ceiling())),
+            frames: Arc::new(Frames::new(decoding.ceiling(), decoding.kind)),
             last_seq: 0,
             sound: Arc::new(Mutex::new(Sound::new(packets.clone(), telemetry))),
             packets,

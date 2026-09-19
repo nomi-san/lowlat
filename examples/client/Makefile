@@ -34,8 +34,14 @@ $(TARGET)/liblowlat.so: FORCE
 run: client
 	./client
 
+# A one-off: does the toolkit's GL context import what the compute runtime
+# exports? Needs no library build.
+probe-import: probe-import.c $(MATOYA)/bin/linux/$(ARCH)/libmatoya.a
+	$(CC) $(CFLAGS) -I$(MATOYA)/deps -o $@ probe-import.c \
+		$(MATOYA)/bin/linux/$(ARCH)/libmatoya.a -lc -ldl -lpthread -lm
+
 clean:
-	rm -f client
+	rm -f client probe-import
 
 FORCE:
 

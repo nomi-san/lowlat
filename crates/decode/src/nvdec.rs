@@ -7,7 +7,7 @@
 //! are filled from the same jobs the open-stack backend stages; the slice
 //! data is handed over with a start code ahead of each slice, in a buffer
 //! sized once. A decoded picture is mapped, copied out to the caller's
-//! planes and unmapped.
+//! planes -- in host memory, or on the device itself -- and unmapped.
 //!
 //! **The interface's own parser is not used.** It would be a second reader
 //! and a second picture buffer beside the ones every clip is checked
@@ -17,7 +17,7 @@
 use core::ffi::c_int;
 
 use lowlat_core::video::{Codec, VideoHeader};
-use lowlat_drivers::cuda::{self, Cuda};
+use lowlat_drivers::cuda::{self, Cuda, Stream};
 use lowlat_drivers::cuvid::{self, Cuvid};
 use lowlat_drivers::ffi::cuvid::{
     CUVIDDECODECAPS, CUVIDDECODECREATEINFO, CUVIDH264DPBENTRY, CUVIDPICPARAMS, CUVIDPROCPARAMS,
@@ -84,6 +84,21 @@ type Result<T> = core::result::Result<T, Error>;
 // whole before use, so zero is a valid starting state.
 fn zeroed<T>() -> T {
     unsafe { core::mem::zeroed() }
+}
+
+/// Planes on the device, for a picture copied there rather than read
+/// back: the shape of [`Planes`] with device addresses in place of slices.
+/// The caller's allocation covers each plane's rows at its pitch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DevicePlanes {
+    pub y: u64,
+    pub y_pitch: usize,
+    /// The interleaved chroma plane, or the first of two.
+    pub uv: u64,
+    pub uv_pitch: usize,
+    /// The second chroma plane at full chroma; zero otherwise.
+    pub v: u64,
+    pub v_pitch: usize,
 }
 
 /// What a decoder is created for.
@@ -192,6 +207,8 @@ pub struct Backend<'a> {
     /// of it, and where each begins.
     bitstream: Vec<u8>,
     offsets: Box<[u32; MAX_SLICES]>,
+    /// The stream the device copies run on, made at the first.
+    stream: Option<Stream>,
     /// The last decode and read-back, in microseconds, for the log.
     pub decode_us: u32,
     pub readback_us: u32,
@@ -227,6 +244,7 @@ impl<'a> Backend<'a> {
             // this many slices.
             bitstream: vec![0u8; max_unit + MAX_SLICES * START_CODE.len()],
             offsets: Box::new([0; MAX_SLICES]),
+            stream: None,
             decode_us: 0,
             readback_us: 0,
         }
@@ -761,6 +779,67 @@ impl<'a> Backend<'a> {
         Ok(())
     }
 
+    /// As [`Self::read_back`], to device memory: the mapped picture is
+    /// copied plane by plane on this backend's stream and the stream is
+    /// waited for before the picture is unmapped, so the bytes are in
+    /// `out` when this returns and whatever imports that memory may read
+    /// them with no fence of its own.
+    fn copy_to_device(&mut self, slot: usize, out: &DevicePlanes) -> Result<()> {
+        let shape = self.shape.ok_or(Error::NoProfile)?;
+        let format = shape.format();
+        if self.stream.is_none() {
+            self.stream = Some(self.cuda.create_stream()?);
+        }
+        let stream = self.stream.as_ref().ok_or(Error::NoProfile)?;
+        let decoder = self.decoder.as_ref().ok_or(Error::NoProfile)?;
+        let started = lowlat_common::clock::Time::now();
+        let mut proc_params: CUVIDPROCPARAMS = zeroed();
+        proc_params.progressive_frame = 1;
+        // The map's own work runs on this stream too, so the copies queued
+        // behind it are ordered after it.
+        proc_params.output_stream = stream.raw();
+        let picture = c_int::try_from(slot).map_err(|_| Error::TooLarge)?;
+        let (ptr, pitch) = decoder.map(picture, &mut proc_params)?;
+        let synced = lowlat_common::clock::Time::now();
+        let width = usize::try_from(shape.width).unwrap_or(0);
+        let coded_height = usize::try_from(shape.height).unwrap_or(0);
+        let row_bytes = width * format.sample();
+        let plane = u64::try_from(pitch * coded_height).unwrap_or(0);
+        let planes: [(u64, u64, usize, usize); 3] = [
+            (ptr, out.y, out.y_pitch, coded_height),
+            (
+                ptr + plane,
+                out.uv,
+                out.uv_pitch,
+                format.chroma_rows(coded_height),
+            ),
+            (ptr + 2 * plane, out.v, out.v_pitch, coded_height),
+        ];
+        let count = if format.full_chroma() { 3 } else { 2 };
+        let mut result = Ok(());
+        for (src, dst, dst_pitch, rows) in planes.into_iter().take(count) {
+            // SAFETY: the mapped picture is `pitch` x the coded height per
+            // plane and stays mapped until the unmap below, after the
+            // stream is waited for; the destination is the caller's.
+            result = unsafe {
+                self.cuda
+                    .copy_rows_async(src, pitch, dst, dst_pitch, row_bytes, rows, stream)
+            };
+            if result.is_err() {
+                break;
+            }
+        }
+        let waited = self.cuda.synchronize(stream);
+        let unmapped = decoder.unmap(ptr);
+        let done = lowlat_common::clock::Time::now();
+        self.decode_us = micros(lowlat_common::clock::diff_ms(started, synced));
+        self.readback_us = micros(lowlat_common::clock::diff_ms(synced, done));
+        result?;
+        waited?;
+        unmapped?;
+        Ok(())
+    }
+
     /// The planes of a mapped picture: luma, then the chroma plane or the
     /// two chroma planes, each `pitch` x the coded height apart.
     fn copy_planes(
@@ -849,6 +928,32 @@ impl Decoder for Backend<'_> {
     }
 
     fn take(&mut self, out: &mut Planes<'_>) -> core::result::Result<Option<Picture>, Fault> {
+        self.take_with(|this, slot| this.read_back(slot, out))
+    }
+
+    fn destroy(&mut self) {
+        self.decoder = None;
+        self.shape = None;
+    }
+}
+
+impl Backend<'_> {
+    /// As [`Decoder::take`], into device memory the caller allocated:
+    /// one device copy in place of the read-back, complete when this
+    /// returns.
+    pub fn take_to_device(
+        &mut self,
+        out: &DevicePlanes,
+    ) -> core::result::Result<Option<Picture>, Fault> {
+        self.take_with(|this, slot| this.copy_to_device(slot, out))
+    }
+
+    /// The next picture in output order, moved out of its slot by `copy`
+    /// and the slot given back to the picture buffer either way.
+    fn take_with(
+        &mut self,
+        copy: impl FnOnce(&mut Self, usize) -> Result<()>,
+    ) -> core::result::Result<Option<Picture>, Fault> {
         let (slot, order) = match self.codec {
             Codec::H264 => match self.h264.next_output() {
                 Some(o) => (o.slot, o.poc),
@@ -859,12 +964,12 @@ impl Decoder for Backend<'_> {
                 None => return Ok(None),
             },
         };
-        let read = self.read_back(slot, out);
+        let copied = copy(self, slot);
         match self.codec {
             Codec::H264 => self.h264.dpb.taken(slot),
             Codec::H265 => self.hevc.dpb.taken(slot),
         }
-        read.map_err(|_| Fault::Unrecoverable)?;
+        copied.map_err(|_| Fault::Unrecoverable)?;
         let (width, height) = match self.codec {
             Codec::H264 => self.h264.active_sps().map_or((0, 0), |s| s.visible()),
             Codec::H265 => self.hevc.active_sps().map_or((0, 0), |s| s.visible()),
@@ -875,10 +980,5 @@ impl Decoder for Backend<'_> {
             height,
             order,
         }))
-    }
-
-    fn destroy(&mut self) {
-        self.decoder = None;
-        self.shape = None;
     }
 }

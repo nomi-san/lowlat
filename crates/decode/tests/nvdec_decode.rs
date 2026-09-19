@@ -10,7 +10,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use lowlat_core::video::{Codec, Rotation, VideoHeader};
-use lowlat_decode::nvdec::{Backend, caps};
+use lowlat_decode::nvdec::{Backend, DevicePlanes, caps};
 use lowlat_decode::{Caps, Decoder};
 use lowlat_drivers::cuda::{Context, Cuda};
 use lowlat_drivers::cuvid::Cuvid;
@@ -199,6 +199,129 @@ fn the_synthetic_clips_decode_to_the_reference_pictures() {
             ten_bit,
             false,
         );
+    }
+}
+
+/// The device route: the picture copied into an exportable allocation
+/// instead of read back, then read back from there by the test. The same
+/// pictures, bit for bit, and the copy's cost beside the read-back's.
+#[test]
+#[ignore = "requires the vendor's decode interface"]
+fn the_device_route_produces_the_same_pictures() {
+    let (cuda, _context, cuvid) = open();
+    let device = cuda.any_device().expect("a device");
+    let able = caps(&cuvid);
+    // One allocation at the harness's odd pitch for the largest fixture,
+    // three planes deep.
+    let pitch = 1280 * 2 + 64;
+    let slot = cuda
+        .alloc_exportable(&device, pitch * 720 * 3)
+        .expect("an exportable allocation");
+    for (clip, sums, codec, ten_bit, full_chroma) in [
+        (
+            "synthetic-720p-h264.bin",
+            "synthetic-720p-h264.sums",
+            Codec::H264,
+            false,
+            false,
+        ),
+        (
+            "synthetic-720p-hevc10.bin",
+            "synthetic-720p-hevc10.sums",
+            Codec::H265,
+            true,
+            false,
+        ),
+        (
+            "fixtures/hevc-nvenc-444-10.bin",
+            "fixtures/hevc-nvenc-444-10.sums",
+            Codec::H265,
+            true,
+            true,
+        ),
+    ] {
+        let can = match (ten_bit, full_chroma) {
+            _ if codec == Codec::H264 => able.h264,
+            (false, false) => able.hevc,
+            (true, false) => able.hevc_10,
+            (false, true) => able.hevc_444,
+            (true, true) => able.hevc_444_10,
+        };
+        if !can {
+            println!("{clip}: not decoded here, skipped");
+            continue;
+        }
+        let mut backend = Backend::new(&cuda, &cuvid, (4096, 4096), MAX_UNIT);
+        backend.build(&header(codec, ten_bit)).expect("build");
+        let (ours, times) = common::decode_clip_with(
+            &mut backend,
+            clip,
+            |b| b.drain(),
+            |b| (b.decode_us, b.readback_us),
+            |b, planes| {
+                let base = slot.ptr();
+                let plane = u64::try_from(pitch * 720).unwrap();
+                let target = DevicePlanes {
+                    y: base,
+                    y_pitch: pitch,
+                    uv: base + plane,
+                    uv_pitch: pitch,
+                    v: base + 2 * plane,
+                    v_pitch: pitch,
+                };
+                let picture = b.take_to_device(&target)?;
+                if let Some(p) = picture {
+                    let rows = p.height as usize;
+                    let row_bytes = p.width as usize * p.format.sample();
+                    let chroma_rows = p.format.chroma_rows(rows);
+                    // SAFETY: the allocation covers three planes of
+                    // `pitch` x 720 and the pictures are no larger.
+                    unsafe {
+                        cuda.read_rows(base, pitch, planes.y, pitch, row_bytes, rows)
+                            .expect("luma");
+                        cuda.read_rows(
+                            base + plane,
+                            pitch,
+                            planes.uv,
+                            pitch,
+                            row_bytes,
+                            chroma_rows,
+                        )
+                        .expect("chroma");
+                        if p.format.full_chroma() {
+                            cuda.read_rows(
+                                base + 2 * plane,
+                                pitch,
+                                planes.v,
+                                pitch,
+                                row_bytes,
+                                rows,
+                            )
+                            .expect("chroma");
+                        }
+                    }
+                }
+                Ok(picture)
+            },
+        );
+        backend.destroy();
+        let theirs = common::sums(sums);
+        let mut expected: BTreeMap<(u32, u32), usize> = BTreeMap::new();
+        for s in &theirs {
+            *expected.entry((s.y, s.uv)).or_default() += 1;
+        }
+        let mut got: BTreeMap<(u32, u32), usize> = BTreeMap::new();
+        for s in &ours {
+            *got.entry(*s).or_default() += 1;
+        }
+        let copy_mean =
+            times.iter().map(|t| u64::from(t.1)).sum::<u64>() / times.len().max(1) as u64;
+        let copy_max = times.iter().map(|t| t.1).max().unwrap_or(0);
+        println!(
+            "{clip}: {} pictures by the device route; device copy mean {copy_mean} us max {copy_max}",
+            ours.len()
+        );
+        assert_eq!(got, expected, "{clip}: the device route differs");
     }
 }
 
