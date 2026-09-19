@@ -167,6 +167,11 @@ pub struct lowlat_client_status {
     /// What the sound decoder was built for: [`LOWLAT_AUDIO_OPUS`],
     /// [`LOWLAT_AUDIO_PCM`], or zero before a build.
     pub audio_codec: u32,
+    /// What the client reports to the host every two seconds: the smoothed
+    /// decode and hand-over per picture, and the smoothed decode per sound
+    /// packet, in microseconds; zero until something has been timed.
+    pub decode_reported_us: u32,
+    pub audio_reported_us: u32,
 }
 
 /// The sound codec on the wire, as `lowlat_client_status.audio_codec`
@@ -1127,6 +1132,8 @@ pub unsafe extern "C" fn lowlat_client_get_status(
                 audio_queued: u32::try_from(held.seam.sound_queued()).unwrap_or(u32::MAX),
                 audio_age_ms: t.audio_age_ms.load(Ordering::Relaxed),
                 audio_codec: t.audio_codec.load(Ordering::Relaxed),
+                decode_reported_us: t.decode_reported_us.load(Ordering::Relaxed),
+                audio_reported_us: t.audio_reported_us.load(Ordering::Relaxed),
             };
             LOWLAT_OK
         })
@@ -1655,6 +1662,8 @@ mod tests {
             audio_queued: 0,
             audio_age_ms: 0,
             audio_codec: 0,
+            decode_reported_us: 0,
+            audio_reported_us: 0,
         };
         assert_eq!(
             unsafe { lowlat_client_get_status(handle, &raw mut status) },

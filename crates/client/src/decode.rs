@@ -20,6 +20,7 @@ use lowlat_net::WakeHandle;
 use crate::driver::{Telemetry, Units};
 use crate::feed::{Decision, Feed};
 use crate::frames::{Frame, Frames};
+use crate::report::Smoothed;
 use crate::seam::{Event, Outcome};
 
 /// How long the thread waits for a unit before looking at the stop flag.
@@ -67,6 +68,7 @@ pub(crate) fn run(args: Attached) {
         return;
     };
     let mut feed = Feed::new(Backend::new(&display, frames.ceiling()));
+    let mut reported = Smoothed::default();
 
     while !stopping.load(Ordering::Acquire) {
         let Some(unit) = units.take() else {
@@ -89,7 +91,13 @@ pub(crate) fn run(args: Attached) {
             }
             Decision::Fed(Fed::Picture) => {
                 telemetry.decoder.store(1, Ordering::Relaxed);
-                take_pictures(&mut feed, &frames, &telemetry, header.as_ref());
+                take_pictures(
+                    &mut feed,
+                    &frames,
+                    &telemetry,
+                    header.as_ref(),
+                    &mut reported,
+                );
             }
             Decision::Built(fed) => {
                 telemetry.decoder.store(1, Ordering::Relaxed);
@@ -98,7 +106,13 @@ pub(crate) fn run(args: Attached) {
                     Ordering::Relaxed,
                 );
                 if fed == Fed::Picture {
-                    take_pictures(&mut feed, &frames, &telemetry, header.as_ref());
+                    take_pictures(
+                        &mut feed,
+                        &frames,
+                        &telemetry,
+                        header.as_ref(),
+                        &mut reported,
+                    );
                 }
             }
             _ => {}
@@ -117,6 +131,7 @@ fn take_pictures(
     frames: &Frames,
     telemetry: &Telemetry,
     header: Option<&video::VideoHeader>,
+    reported: &mut Smoothed,
 ) {
     loop {
         // The layout before the take: the planes are the picture's own size.
@@ -138,6 +153,13 @@ fn take_pictures(
                 telemetry
                     .readback_us
                     .store(backend.readback_us, Ordering::Relaxed);
+                // What the host is told: decode and hand-over together,
+                // smoothed, since that is the time a picture costs here.
+                let sample_ms =
+                    f64::from(backend.decode_us.saturating_add(backend.readback_us)) / 1000.0;
+                telemetry
+                    .decode_reported_us
+                    .store(reported.push(sample_ms), Ordering::Relaxed);
                 filling.publish(Frame {
                     format: picture.format,
                     width: picture.width,

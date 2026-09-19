@@ -27,7 +27,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use lowlat_client::driver::{Driver, Telemetry, Units};
+use lowlat_client::driver::{Driver, REPORT_INTERVAL_MS, Telemetry, Units};
 use lowlat_client::feed::{Decision, Decoder, Fault, Fed, Feed};
 use lowlat_client::sound::{Packets, Sound};
 use lowlat_client::{AUDIO_CHANNEL, BODY, Config, Event, Outcome, VIDEO_CHANNEL};
@@ -164,6 +164,9 @@ struct Host {
     /// Messages received from the client, one count per opcode.
     received: [u32; 256],
     sent: [u32; 256],
+    /// The client's last latency report per kind (video, sound), as the
+    /// peer's argument order carries it: the figure first.
+    reported_us: [u32; 3],
     frames: u64,
     audio: u64,
     next_frame_ms: f64,
@@ -223,6 +226,7 @@ impl Host {
             packetiser,
             received: [0; 256],
             sent: [0; 256],
+            reported_us: [0; 3],
             frames: 0,
             audio: 0,
             next_frame_ms: 0.0,
@@ -291,6 +295,11 @@ impl Host {
             let message =
                 control::parse(&self.inbound[..len]).expect("a malformed control message");
             self.received[usize::from(message.opcode)] += 1;
+            if message.opcode == op::ENCODE_LATENCY {
+                if let Some(slot) = self.reported_us.get_mut(message.a1 as usize) {
+                    *slot = message.a0;
+                }
+            }
             self.injector.on_control(&message, &mut self.injected);
             let was_ready = negotiation.ready();
             negotiation.on_control(&message);
@@ -787,6 +796,26 @@ fn session_is_clean_with(seed: u64, link: Link, raw_audio: bool) {
         host.sent[usize::from(op::ENCODE_LATENCY)] >= 10,
         "no latency reports crossed"
     );
+    // **The client reports both kinds on its clock**: two messages every two
+    // seconds from establishment through the drain, give or take the pass
+    // that lands on the boundary. Established for about two seconds before
+    // the run, streaming for the run, then two of tail.
+    let expected = 2 * ((duration_ms() + 4000.0) / REPORT_INTERVAL_MS).floor() as u32;
+    let reports = host.received[usize::from(op::ENCODE_LATENCY)];
+    assert!(
+        (expected.saturating_sub(4)..=expected + 2).contains(&reports),
+        "the client sent {reports} latency reports, expected about {expected}"
+    );
+    // The recorder decodes no picture, so the video figure stays zero and is
+    // sent anyway; compressed sound is really decoded, so its figure is not
+    // (an uncompressed packet is a copy that rounds to nothing).
+    assert_eq!(
+        host.reported_us[1], 0,
+        "a decode time from a decoder that never ran"
+    );
+    if !raw_audio {
+        assert!(host.reported_us[2] > 0, "no sound decode time was reported");
+    }
     assert_eq!(host.sent[usize::from(op::ENCODER_GENERATION)], 1);
     assert_eq!(
         guest.driver.generation(0),

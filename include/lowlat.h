@@ -42,7 +42,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 7
+#define LOWLAT_ABI_MINOR 8
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 #define LOWLAT_FEATURE_HOST 1
@@ -1304,6 +1304,11 @@ typedef struct lowlat_client_status {
     /// What the sound decoder was built for: `LOWLAT_AUDIO_OPUS`,
     /// `LOWLAT_AUDIO_PCM`, or zero before a build.
     uint32_t audio_codec;
+    /// What the client reports to the host every two seconds: the smoothed
+    /// decode and hand-over per picture, and the smoothed decode per sound
+    /// packet, in microseconds; zero until something has been timed.
+    uint32_t decode_reported_us;
+    uint32_t audio_reported_us;
 } lowlat_client_status;
 
 /// One plane of a picture.

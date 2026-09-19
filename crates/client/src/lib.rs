@@ -35,6 +35,7 @@ pub mod driver;
 pub mod feed;
 pub mod frames;
 pub mod input;
+pub mod report;
 pub mod seam;
 mod shell;
 pub mod sound;

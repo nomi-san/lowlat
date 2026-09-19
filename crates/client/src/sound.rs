@@ -17,6 +17,7 @@ use lowlat_common::spsc::Ring;
 use lowlat_core::audio::{self, AudioHeader, Codec};
 
 use crate::driver::Telemetry;
+use crate::report::Smoothed;
 
 /// Packets waiting for the application: 640 ms at the host's 20 ms.
 pub const SLOTS: usize = 32;
@@ -153,6 +154,8 @@ struct Decoding {
     held: Option<Acquired>,
     decoded: u64,
     refused: u32,
+    /// The decode time per packet, smoothed: what the host is told.
+    reported: Smoothed,
 }
 
 impl std::fmt::Debug for Sound {
@@ -178,6 +181,7 @@ impl Sound {
                 held: None,
                 decoded: 0,
                 refused: 0,
+                reported: Smoothed::default(),
             },
         }
     }
@@ -268,9 +272,14 @@ impl Decoding {
             return self.refuse();
         };
         let compressed = header.codec == Codec::Opus;
+        let began = lowlat_common::clock::Time::now();
         let Ok(frames) = decoder.decode(payload, compressed, &mut self.pcm) else {
             return self.refuse();
         };
+        let reported = self.reported.push(lowlat_common::clock::elapsed_ms(began));
+        self.telemetry
+            .audio_reported_us
+            .store(reported, Ordering::Relaxed);
         self.decoded = self.decoded.saturating_add(1);
         self.telemetry
             .audio_decoded

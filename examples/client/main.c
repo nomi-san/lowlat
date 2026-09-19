@@ -616,7 +616,8 @@ static void report(struct demo *d)
 		"rtt_ms=%u mbit=%.1f decoded=%" PRIu64 " rss_mb=%" PRIu64 " keys=%u btn=%u wheel=%u "
 		"motion=%u pad=%u pad_events=%u input_dropped=%u "
 		"snd=%u snd_frames=%u snd_q_ms=%u snd_q_min=%u snd_q_max=%u snd_age_ms=%u "
-		"snd_queued=%u snd_dropped=%u snd_refused=%u snd_resync=%u snd_codec=%s\n",
+		"snd_queued=%u snd_dropped=%u snd_refused=%u snd_resync=%u snd_codec=%s "
+		"reported_us=%u snd_reported_us=%u\n",
 		d->seconds, presents, polls, pictures, repeats, skips, codec,
 		st.decode_us, st.readback_us, st.encode_us, st.queue_depth, st.behind, st.behind_ms,
 		st.rtt_ms, mbit, st.decoded, rss, d->keys_sent, d->buttons_sent, d->wheels_sent,
@@ -624,7 +625,8 @@ static void report(struct demo *d)
 		snd, snd_frames, atomic_load(&d->snd_q_ms), snd_q_min, snd_q_max, snd_age_max,
 		st.audio_queued, st.audio_dropped, st.audio_refused, atomic_load(&d->snd_resyncs),
 		st.audio_codec == LOWLAT_AUDIO_OPUS ? "opus"
-			: st.audio_codec == LOWLAT_AUDIO_PCM ? "pcm" : "-");
+			: st.audio_codec == LOWLAT_AUDIO_PCM ? "pcm" : "-",
+		st.decode_reported_us, st.audio_reported_us);
 	d->keys_sent = 0;
 	d->buttons_sent = 0;
 	d->wheels_sent = 0;

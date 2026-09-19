@@ -44,6 +44,15 @@ const STREAMS: usize = 3;
 /// The pool's tag on a unit that is keyframe metadata rather than a picture.
 pub const TAG_METADATA: u32 = 1;
 
+/// How often the client reports its decode times: on the clock, not per
+/// picture, so a still desktop still reports and the round-trip estimate,
+/// which samples only on acknowledged sends, stays alive.
+pub const REPORT_INTERVAL_MS: f64 = 2000.0;
+
+/// The media kinds of a latency report.
+const KIND_VIDEO: u32 = 1;
+const KIND_AUDIO: u32 = 2;
+
 /// Received access units, on their way to the decoder.
 ///
 /// One producer (the session's thread) and one consumer. The pool holds the
@@ -156,6 +165,10 @@ pub struct Telemetry {
     /// The last picture's decode and read-back, in microseconds.
     pub decode_us: AtomicU32,
     pub readback_us: AtomicU32,
+    /// The smoothed decode and hand-over per picture, and per sound packet,
+    /// in microseconds: what the client reports to the host.
+    pub decode_reported_us: AtomicU32,
+    pub audio_reported_us: AtomicU32,
     /// Pictures decoded and handed to the queue.
     pub decoded: AtomicU64,
     /// Pictures published and not yet taken by the application.
@@ -190,6 +203,8 @@ pub struct Driver {
     stalled_said: bool,
     /// When the departure went out, if it has.
     leaving: Option<f64>,
+    /// When the next latency report is due.
+    report_due_ms: Option<f64>,
     inbound: Vec<u8>,
     /// Sound packets on their way to the application, and the scratch a
     /// packet is taken into when the pool has no room for it.
@@ -240,6 +255,7 @@ impl Driver {
             established: false,
             stalled_said: false,
             leaving: None,
+            report_due_ms: None,
             inbound: vec![0u8; MAX_INBOUND],
             dropped_sound: vec![0u8; sound::PACKET_BYTES],
             received: [0; 256],
@@ -333,6 +349,7 @@ impl Driver {
                 self.established = true;
                 self.telemetry.state.store(1, Ordering::Relaxed);
                 self.start(endpoint.session());
+                self.report_due_ms = Some(now_ms + REPORT_INTERVAL_MS);
                 self.emit.send(Event::Established { addr });
             }
             conn::State::Failed(failure) => {
@@ -350,6 +367,10 @@ impl Driver {
         }
         if self.telemetry.request.swap(false, Ordering::AcqRel) {
             self.request_keyframe(endpoint.session());
+        }
+        if self.report_due_ms.is_some_and(|due| now_ms >= due) {
+            self.report(endpoint.session());
+            self.report_due_ms = Some(now_ms + REPORT_INTERVAL_MS);
         }
         if let Some(outcome) = self.drain_control(endpoint.session()) {
             return Some(outcome);
@@ -477,6 +498,26 @@ impl Driver {
                 body: &[],
             },
         );
+    }
+
+    /// The decode times, both kinds, in the argument order a client uses:
+    /// the figure first, then the kind. Zero until something has been timed,
+    /// and sent anyway.
+    fn report(&mut self, session: &mut Session<'_>) {
+        let video = self.telemetry.decode_reported_us.load(Ordering::Relaxed);
+        let audio = self.telemetry.audio_reported_us.load(Ordering::Relaxed);
+        for (us, kind) in [(video, KIND_VIDEO), (audio, KIND_AUDIO)] {
+            self.send_control(
+                session,
+                &Control {
+                    a0: us,
+                    a1: kind,
+                    a2: 0,
+                    opcode: op::ENCODE_LATENCY,
+                    body: &[],
+                },
+            );
+        }
     }
 
     fn send_control(&mut self, session: &mut Session<'_>, control: &Control<'_>) {
