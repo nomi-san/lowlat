@@ -1332,8 +1332,13 @@ pub unsafe extern "C" fn lowlat_client_send_pad_state(
 /// and `lowlat_client_send_pad_state`, `_button` and `_axis` are refused for
 /// it -- the report already carries what they would say.
 ///
+/// **Keep the identifier below 256.** An established host keys the standard
+/// pad messages on its low eight bits and the report on the whole of it, so
+/// a wider identifier's reports never reach the pad the states made, and its
+/// rumble comes back under the eight-bit one (docs/01-protocol.md 11.1).
+///
 /// @param[in] cl The handle from [`lowlat_client_create`].
-/// @param[in] pad The pad, the application's own identifier.
+/// @param[in] pad The pad, the application's own identifier, below 256.
 /// @param[in] type_ One of [`lowlat_pad_type`].
 /// @param[in] kind `LOWLAT_PAD_REPORT_INPUT` or `LOWLAT_PAD_REPORT_FEATURE`.
 /// @param[in] report The report's bytes, identifier byte first.

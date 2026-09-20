@@ -16,9 +16,16 @@
 #define VENDOR_SONY 0x054C
 #define BUS_USB 3
 #define BUS_BLUETOOTH 5
-// The pads are named to the library apart from the toolkit's small
-// controller numbers, so a rumble message can be told to the right side.
-#define ID_BASE 0x5000
+// The pads are named to the library apart from the toolkit's controller
+// numbers, so a rumble message can be told to the right side, and **below
+// 256**: an established host keys its pads on the low eight bits of the
+// identifier for the state, button, axis and unplug messages and on the
+// whole identifier for the report message, so a report under a wider
+// identifier never reaches the pad the states made (docs/01-protocol.md
+// 11.1), and its rumble comes back under the eight-bit one. The toolkit
+// numbers its controllers by descriptor, so this starts well above where
+// those sit.
+#define ID_BASE 200
 #define SCAN_EVERY_MS 1000.0
 
 // The raw node's feature-report reads and writes.

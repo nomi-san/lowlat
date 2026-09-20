@@ -571,7 +571,11 @@ which is a request to send nothing extra rather than a message to ignore.
 **The pad identifier is the peer's, and it is arbitrary.** Opcodes 4, 5, 6 and 23 all carry a
 32-bit value the peer chose; it is not an index and nothing bounds it. A host maps it to a slot
 and caps how many slots one guest may occupy, or a peer that varies the field creates a device
-per distinct value.
+per distinct value. **Keep it below 256** (*2026-09-20*): an established host keys those four
+messages' pads on the low eight bits of the identifier and the report message's (opcode 31)
+on the whole of it, so a report under a wider identifier finds no pad and is dropped, and the
+rumble it sends back names the eight-bit one. Found live: a peer naming its pads from 0x5000
+up got sixteen-button pads and nothing else from a host in its DualShock mode.
 
 **Opcode 23's body is fifteen bytes and the first three of them are padding**: a big-endian
 `u16` of button bits, four big-endian `i16` thumbstick axes, then two single-byte triggers. The
