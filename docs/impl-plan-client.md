@@ -654,7 +654,17 @@ once, here and under Phase 14; the rules are [10 §8](10-client.md), the wire
 1. **The DualShock 4 against the established host in its DualShock mode** (before the host
    half exists): the pad appears there as a DualShock 4, sticks and buttons the right way
    up, the touchpad works there, rumble comes back as the rumble message and the demo writes
-   it.
+   it. *Passed 2026-09-20 at the desk (`local/logs/2026-09-21-c7--ds4-run-2.log`), on the
+   second run: the first found the pad identifiers too wide for that host
+   ([01 §11.1](01-protocol.md)). With them below 256: the pad a DualShock 4 there, touch and
+   its click working, seven rumble messages answered by the demo's motor-only writes, 900
+   to 960 reports a second sent with none dropped, the two feature reports taken from each
+   of the pads on the desk (a DualSense beside it over Bluetooth). **The motion sensors do
+   not reach that host, and cannot**: its DualShock mode builds the pad's report from the
+   sixteen-button state and the ten-byte touch block and writes nothing else into it -- the
+   wire it defines for a DualShock 4 carries no motion, and its own client sends none.
+   Motion is what the whole report on opcode 31 carries, which this library's host reads
+   (Phase 14).*
 2. **Both pads against this host** and **the established client holding the DualSense against
    this host** are Phase 14's gate, run with it.
 3. The hermetic tests above; the ABI gate at minor 10; the census on the host names the two
