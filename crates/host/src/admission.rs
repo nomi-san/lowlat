@@ -1752,6 +1752,25 @@ fn forward_declaration(negotiation: &mut Negotiation, seat: Option<&SeatHold>, d
     }
 }
 
+/// What the host's HID pad was written, to the peer holding the real one.
+fn send_pad_written<M: Media>(session: &mut M, written: &lowlat_inject::uinput::PadWritten) {
+    let report = written
+        .written
+        .report
+        .get(..written.written.len)
+        .unwrap_or(&[]);
+    send_control(
+        session,
+        &control::Control {
+            a0: u32::try_from(report.len()).unwrap_or(0),
+            a1: written.written.kind.wire(),
+            a2: written.pad,
+            opcode: control::op::PAD_OUTPUT,
+            body: report,
+        },
+    );
+}
+
 /// Ask a peer's controller to vibrate.
 fn send_rumble<M: Media>(session: &mut M, pad: u32, large: u8, small: u8) {
     send_control(
@@ -2450,6 +2469,13 @@ fn drive<M: Media>(
                     rumble.large,
                     rumble.small,
                 );
+            }
+            // **And what a local application wrote to a pad presented on the
+            // HID layer goes back whole**: the lights and the trigger effects
+            // are in that report and have no other road, so it is never
+            // folded into the rumble message (docs/05-host.md section 7.2).
+            while let Some(written) = input.sink.written() {
+                send_pad_written(shell.endpoint().session(), &written);
             }
             if args.rumble_probe {
                 let chord = input.injector.pad_holding(PROBE_CHORD);

@@ -194,11 +194,13 @@ struct Host {
     sent_pcm: Vec<i16>,
 }
 
-/// Every device event the host's injector produced, in order.
+/// Every device event the host's injector produced, in order, and every
+/// pad report it handed to the device layer.
 #[derive(Default)]
 struct Injected {
     events: Vec<(Device, lowlat_inject::event::Event)>,
     unplugged: Vec<u32>,
+    reports: Vec<(u32, String)>,
 }
 
 impl Sink for Injected {
@@ -209,6 +211,18 @@ impl Sink for Injected {
 
     fn unplug(&mut self, pad: u32) {
         self.unplugged.push(pad);
+    }
+
+    fn report(&mut self, pad: u32, inbound: &lowlat_core::pad::Inbound<'_>) {
+        use lowlat_core::pad::Inbound;
+        let what = match inbound {
+            Inbound::Input { product, .. } => format!("input {product:?}"),
+            Inbound::Feature {
+                product, feature, ..
+            } => format!("feature {product:?} {feature:?}"),
+            Inbound::TouchBlock => "block".to_string(),
+        };
+        self.reports.push((pad, what));
     }
 }
 
@@ -1469,10 +1483,13 @@ fn a_pads_own_reports_reach_the_host_and_its_writes_come_back() {
             .load(Ordering::Relaxed),
         6
     );
-    // The host's injector made the sixteen-button pads from the states, as
-    // a host that reads no reports would: three devices, four state messages.
+    // The host reads the reports: each pad is made from its first one, the
+    // feature report kept ahead of it, the touch block creating nothing, and
+    // the states beside them dropped -- no sixteen-button device for any of
+    // the three, however many state messages arrived (the tally counts
+    // them before the family rule does).
     assert_eq!(host.injector.tally().pads, 4);
-    let mut pads: Vec<u32> = host
+    let pads: Vec<u32> = host
         .injected
         .events
         .iter()
@@ -1481,9 +1498,18 @@ fn a_pads_own_reports_reach_the_host_and_its_writes_come_back() {
             _ => None,
         })
         .collect();
-    pads.sort_unstable();
-    pads.dedup();
-    assert_eq!(pads, vec![3, 5, 7]);
+    assert_eq!(pads, Vec::<u32>::new());
+    assert_eq!(
+        host.injected.reports,
+        vec![
+            (3, "feature DualSense Calibration".to_string()),
+            (3, "input DualSense".to_string()),
+            (3, "input DualSense".to_string()),
+            (3, "input DualSense".to_string()),
+            (5, "input DualShock4".to_string()),
+            (7, "input DualSense".to_string()),
+        ]
+    );
 
     // What the host's devices are written, back to the pads.
     let mut out = [0u8; pad::DS5_OUTPUT_LEN];

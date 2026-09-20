@@ -640,7 +640,9 @@ pub enum OutputKind {
 }
 
 impl OutputKind {
-    const fn wire(self) -> u32 {
+    /// The kind as the message's second argument carries it.
+    #[must_use]
+    pub const fn wire(self) -> u32 {
         match self {
             OutputKind::Feature => 0,
             OutputKind::Output => 1,

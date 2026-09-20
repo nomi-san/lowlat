@@ -11,8 +11,10 @@
 
 use crate::event::{ABS_RANGE, Device, Event, Sink};
 use crate::gamepad::{self, MAX_PADS};
+use crate::uhid::{self, HidPad};
 use crate::usage;
 use core::fmt::Write as _;
+use lowlat_core::pad::{Inbound, Product};
 use std::os::fd::{AsRawFd as _, OwnedFd};
 
 /// Request numbers, as the kernel's own headers compute them.
@@ -806,10 +808,37 @@ pub struct Devices {
     /// pointers exist because it connected; a pad exists because it sent one,
     /// and how many it has is not knowable in advance.
     pads: [Option<PadNode>; MAX_PADS],
+    /// The pads sent as their own reports, on the HID layer
+    /// ([`crate::uhid`]). Created by the first input report; the feature
+    /// reports ahead of it are kept here until then.
+    hid: [Option<HidSlot>; MAX_PADS],
     /// Set once, so a guest holding more pads than there are slots is
     /// reported rather than silently short of one.
     refused: bool,
     label: NameBuf,
+    /// The middle of every HID pad's address: this guest's, so two guests'
+    /// pads never share one.
+    address: [u8; 3],
+}
+
+/// One pad on the HID layer, addressed by the identifier its peer gave it.
+#[derive(Debug)]
+struct HidSlot {
+    id: u32,
+    product: Product,
+    features: uhid::Features,
+    /// The device, once the first input report has arrived.
+    pad: Option<HidPad>,
+    /// Set once, so a device that could not be created is reported rather
+    /// than retried on every report.
+    refused: bool,
+}
+
+/// What an application wrote to one of a guest's HID pads, for the peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PadWritten {
+    pub pad: u32,
+    pub written: uhid::Written,
 }
 
 /// One pad's device, addressed by the identifier its peer gave it.
@@ -830,18 +859,77 @@ impl Devices {
     /// behaving oddly. The label is whatever the caller correlates its logs
     /// on; a long one is truncated rather than refused.
     pub fn create(guest: &str) -> Result<Self, Error> {
+        let crc = lowlat_core::crc32::of(guest.as_bytes()).to_le_bytes();
         Ok(Self {
             keyboard: keyboard(guest)?,
             pointer: pointer(guest)?,
             pointer_absolute: pointer_absolute(guest)?,
             pads: [const { None }; MAX_PADS],
+            hid: [const { None }; MAX_PADS],
             refused: false,
             label: {
                 let mut label = NameBuf::default();
                 let _ = label.write_str(guest);
                 label
             },
+            address: [crc[0], crc[1], crc[2]],
         })
+    }
+
+    /// What an application wrote to one of this guest's HID pads, since the
+    /// last ask; polled as [`Self::rumble`] is, and for the same reason.
+    /// Servicing the descriptors is what answers the driver's questions, so
+    /// this is called every pass whether or not anything is expected.
+    pub fn written(&mut self) -> Option<PadWritten> {
+        for slot in self.hid.iter_mut().filter_map(Option::as_mut) {
+            if let Some(written) = slot.pad.as_mut().and_then(HidPad::poll) {
+                return Some(PadWritten {
+                    pad: slot.id,
+                    written,
+                });
+            }
+        }
+        None
+    }
+
+    /// The HID slot for a pad, taking one if the identifier is new.
+    fn hid_slot(&mut self, id: u32, product: Product) -> Option<&mut HidSlot> {
+        if let Some(index) = self
+            .hid
+            .iter()
+            .position(|s| s.as_ref().is_some_and(|s| s.id == id))
+        {
+            return self.hid.get_mut(index).and_then(Option::as_mut);
+        }
+        let Some(index) = self.hid.iter().position(Option::is_none) else {
+            if !self.refused {
+                self.refused = true;
+                lowlat_common::log_warn!("inject: no room for another pad, pads={MAX_PADS}");
+            }
+            return None;
+        };
+        let slot = self.hid.get_mut(index)?;
+        *slot = Some(HidSlot {
+            id,
+            product,
+            features: uhid::Features::new(),
+            pad: None,
+            refused: false,
+        });
+        slot.as_mut()
+    }
+
+    /// The address of a HID pad: locally administered, this guest's middle,
+    /// the slot last -- unique on this host, which the driver insists on.
+    fn hid_address(&self, index: usize) -> [u8; 6] {
+        [
+            0x02,
+            self.address.first().copied().unwrap_or(0),
+            self.address.get(1).copied().unwrap_or(0),
+            self.address.get(2).copied().unwrap_or(0),
+            0x4c,
+            u8::try_from(index).unwrap_or(u8::MAX),
+        ]
     }
 
     /// Release anything held once the devices can deliver it.
@@ -952,19 +1040,97 @@ impl Sink for Devices {
     }
 
     fn unplug(&mut self, pad: u32) {
-        let Some(index) = self
+        // Dropping the device is the unplug, and it is also what releases
+        // everything the pad was holding.
+        if let Some(index) = self
             .pads
             .iter()
             .position(|p| p.as_ref().is_some_and(|p| p.id == pad))
+            && let Some(slot) = self.pads.get_mut(index)
+        {
+            *slot = None;
+            lowlat_common::log_info!("inject: pad unplugged, pad={pad}");
+        }
+        if let Some(index) = self
+            .hid
+            .iter()
+            .position(|s| s.as_ref().is_some_and(|s| s.id == pad))
+            && let Some(slot) = self.hid.get_mut(index)
+        {
+            *slot = None;
+            lowlat_common::log_info!("inject: pad unplugged, pad={pad}");
+        }
+    }
+
+    fn report(&mut self, pad: u32, inbound: &Inbound<'_>) {
+        let (product, report) = match inbound {
+            Inbound::Feature {
+                product,
+                feature,
+                report,
+            } => {
+                if let Some(slot) = self.hid_slot(pad, *product) {
+                    slot.features.set(*feature, report);
+                }
+                return;
+            }
+            Inbound::Input { product, report } => (*product, report),
+            Inbound::TouchBlock => return,
+        };
+        let label = self.label;
+        let Some(index) = self
+            .hid
+            .iter()
+            .position(|s| s.as_ref().is_some_and(|s| s.id == pad))
         else {
+            // A new pad: take the slot, then come back for the device.
+            if self.hid_slot(pad, product).is_some() {
+                self.report(pad, inbound);
+            }
             return;
         };
-        // Dropping the device is the unplug, and it is also what releases
-        // everything the pad was holding.
-        if let Some(slot) = self.pads.get_mut(index) {
-            *slot = None;
+        let address = self.hid_address(index);
+        let Some(slot) = self.hid.get_mut(index).and_then(Option::as_mut) else {
+            return;
+        };
+        // The product is fixed by the pad's first report; one that names
+        // another is not that pad's.
+        if product != slot.product {
+            return;
         }
-        lowlat_common::log_info!("inject: pad unplugged, pad={pad}");
+        if slot.pad.is_none() {
+            if slot.refused {
+                return;
+            }
+            match HidPad::create(label.as_str(), pad, slot.product, address, slot.features) {
+                Ok(device) => {
+                    lowlat_common::log_info!(
+                        "inject: pad created, pad={pad} product={product:?} address={:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                        address.first().copied().unwrap_or(0),
+                        address.get(1).copied().unwrap_or(0),
+                        address.get(2).copied().unwrap_or(0),
+                        address.get(3).copied().unwrap_or(0),
+                        address.get(4).copied().unwrap_or(0),
+                        address.get(5).copied().unwrap_or(0)
+                    );
+                    slot.pad = Some(device);
+                }
+                Err(error) => {
+                    slot.refused = true;
+                    lowlat_common::log_warn!("inject: pad not created, pad={pad} error={error}");
+                    return;
+                }
+            }
+        }
+        // **Nothing is written until the kernel runs the device.** The driver
+        // asks its questions first, answered by the poll; a report written
+        // before that is refused, and the pad's next one says the same.
+        if let Some(device) = slot.pad.as_ref()
+            && device.started()
+            && let Err(error) = device.input(report)
+        {
+            lowlat_common::log_warn!("inject: pad report refused, pad={pad} error={error}");
+        }
     }
 }
 
@@ -1118,7 +1284,7 @@ fn pad(guest: &str, id: u32) -> Result<Node, Error> {
 
 /// A device name built without allocating, discarding anything past the
 /// kernel's limit.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct NameBuf {
     bytes: [u8; NAME_LEN],
     used: usize,

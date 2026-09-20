@@ -9,6 +9,7 @@
 use crate::gamepad::{self, MAX_PADS};
 use crate::usage;
 use lowlat_core::control::{Control, op};
+use lowlat_core::pad::{self, Inbound};
 
 /// Event types, as the kernel numbers them.
 const EV_SYN: u16 = 0x00;
@@ -121,6 +122,12 @@ pub trait Sink {
     /// was unplugged, and it is also what releases everything the pad held, so
     /// there is nothing to emit first.
     fn unplug(&mut self, _pad: u32) {}
+
+    /// A pad's own report, for a pad sent as its reports (docs/05-host.md
+    /// section 7.2): a feature report to keep for the device's creation, or
+    /// an input report to write into it -- the first of which creates it.
+    /// Nothing is expanded here; the report is the device's own.
+    fn report(&mut self, _pad: u32, _inbound: &Inbound<'_>) {}
 }
 
 /// What a guest is allowed to drive.
@@ -415,12 +422,19 @@ impl Injector {
                 let y = i32::from(high16_signed(message.a1));
                 self.motion(relative, x, y, out);
             }
+            // **A pad sent as its own report is that report** (docs/05-host.md
+            // section 7.2): the first message that can create a pad fixes
+            // its family, a report pad takes only reports, and a
+            // sixteen-button pad ignores them.
+            op::PAD_REPORT if self.permissions.gamepad => {
+                self.pad_report(message, out);
+            }
             op::GAMEPAD_BUTTON if self.permissions.gamepad => {
                 // Arguments are the button, whether it is down, and the pad.
                 let Some(bit) = gamepad::bit_for_index(message.a0) else {
                     return;
                 };
-                let Some(index) = self.pad(message.a2, out) else {
+                let Some(index) = self.standard_pad(message.a2, out) else {
                     return;
                 };
                 let Some(pad) = self.pads.get_mut(index).and_then(Option::as_mut) else {
@@ -438,7 +452,7 @@ impl Injector {
             }
             op::GAMEPAD_AXIS if self.permissions.gamepad => {
                 // Arguments are the axis, its value, and the pad.
-                let Some(index) = self.pad(message.a2, out) else {
+                let Some(index) = self.standard_pad(message.a2, out) else {
                     return;
                 };
                 let Some(id) = self.pads.get(index).and_then(|p| p.as_ref()).map(|p| p.id) else {
@@ -513,17 +527,58 @@ impl Injector {
     ///
     /// **Bounded.** The identifier is the peer's and nothing constrains it, so
     /// a peer that varies the field would otherwise get a device per value.
-    fn pad(&mut self, id: u32, out: &mut impl Sink) -> Option<usize> {
+    fn pad(&mut self, id: u32, raw: bool, out: &mut impl Sink) -> Option<usize> {
         if let Some(index) = self.pads.iter().position(|p| p.is_some_and(|p| p.id == id)) {
             return Some(index);
         }
         let index = self.pads.iter().position(Option::is_none)?;
-        *self.pads.get_mut(index)? = Some(Pad { id, buttons: 0 });
+        *self.pads.get_mut(index)? = Some(Pad {
+            id,
+            buttons: 0,
+            raw,
+        });
         // **The device is created by the first event sent to it.** Nothing is
         // sent here, so a pad that is announced and never used costs a slot
         // and no device.
         let _ = out;
         Some(index)
+    }
+
+    /// The slot of a sixteen-button pad, taking one if the identifier is
+    /// new; `None` for a pad sent as its own reports, whose report is the
+    /// superset of what the message would say.
+    fn standard_pad(&mut self, id: u32, out: &mut impl Sink) -> Option<usize> {
+        let index = self.pad(id, false, out)?;
+        let raw = self
+            .pads
+            .get(index)
+            .and_then(|p| p.as_ref())
+            .is_some_and(|p| p.raw);
+        (!raw).then_some(index)
+    }
+
+    /// A pad's own report: to the sink for a pad that is, or becomes, a
+    /// report pad. An established peer's ten-byte block names no product and
+    /// creates nothing; a report for a sixteen-button pad is dropped.
+    fn pad_report(&mut self, message: &Control<'_>, out: &mut impl Sink) {
+        let Some(inbound) = pad::parse_report(message) else {
+            return;
+        };
+        if matches!(inbound, Inbound::TouchBlock) {
+            return;
+        }
+        let Some(index) = self.pad(message.a1, true, out) else {
+            return;
+        };
+        let raw = self
+            .pads
+            .get(index)
+            .and_then(|p| p.as_ref())
+            .is_some_and(|p| p.raw);
+        if !raw {
+            return;
+        }
+        out.report(message.a1, &inbound);
     }
 
     fn unplug(&mut self, id: u32, out: &mut impl Sink) {
@@ -536,12 +591,17 @@ impl Injector {
         out.unplug(id);
     }
 
-    /// Centre every pad without taking any away.
+    /// Centre every pad without taking any away. A report pad is what its
+    /// last report says, and its reports keep coming whether or not the peer
+    /// has focus, so it is left alone.
     fn centre_pads(&mut self, out: &mut impl Sink) {
         for index in 0..MAX_PADS {
             let Some(pad) = self.pads.get(index).copied().flatten() else {
                 continue;
             };
+            if pad.raw {
+                continue;
+            }
             if let Some(slot) = self.pads.get_mut(index).and_then(Option::as_mut) {
                 slot.buttons = 0;
             }
@@ -629,7 +689,7 @@ impl Injector {
         };
         let at = |offset: usize| i16::from_be_bytes(pair(offset));
         let buttons = u16::from_be_bytes(pair(0));
-        let Some(index) = self.pad(id, out) else {
+        let Some(index) = self.standard_pad(id, out) else {
             return;
         };
         let before = self
@@ -1002,6 +1062,9 @@ struct Pad {
     /// What it is holding, in the whole-pad message's bits whichever message
     /// set them.
     buttons: u16,
+    /// Sent as its own reports rather than as the sixteen-button messages,
+    /// fixed by the first message that created it.
+    raw: bool,
 }
 
 /// One line per keyboard message, at the debug level.
@@ -1113,6 +1176,9 @@ mod tests {
     struct Recorder {
         batches: Vec<(Device, Vec<Event>)>,
         unplugged: Vec<u32>,
+        /// The pad reports handed on: the pad, and whether an input report
+        /// (true) or a feature report.
+        reports: Vec<(u32, bool)>,
     }
 
     impl Sink for Recorder {
@@ -1122,6 +1188,11 @@ mod tests {
 
         fn unplug(&mut self, pad: u32) {
             self.unplugged.push(pad);
+        }
+
+        fn report(&mut self, pad: u32, inbound: &Inbound<'_>) {
+            self.reports
+                .push((pad, matches!(inbound, Inbound::Input { .. })));
         }
     }
 
@@ -2128,5 +2199,112 @@ mod tests {
     )]
     const fn as_u32(value: i32) -> u32 {
         value as u32
+    }
+
+    /// **The first message that can create a pad fixes its family.** A report
+    /// makes a report pad, whose states and buttons are then dropped; a state
+    /// makes a sixteen-button pad, whose reports are then dropped; the
+    /// established peer's ten-byte block creates nothing; an unplug frees
+    /// the identifier for either family. A release-all leaves a report pad
+    /// alone.
+    #[test]
+    fn a_pads_family_is_fixed_by_the_message_that_created_it() {
+        let (mut inject, mut out) = (injector(), Recorder::default());
+        let ds5: &[u8; 64] = include_bytes!("../../core/tests/data/pad/ds5/input-idle.bin");
+        let calibration = include_bytes!("../../core/tests/data/pad/ds5/feature-calibration.bin");
+        let feature = Control {
+            a0: 41,
+            a1: 3,
+            a2: 0x0CE6 | lowlat_core::pad::FEATURE_BIT,
+            opcode: op::PAD_REPORT,
+            body: calibration,
+        };
+        let report = Control {
+            a0: 64,
+            a1: 3,
+            a2: 0x0CE6,
+            opcode: op::PAD_REPORT,
+            body: ds5,
+        };
+        // The block alone: nothing.
+        let block = Control {
+            a0: 10,
+            a1: 9,
+            a2: 0,
+            opcode: op::PAD_REPORT,
+            body: &ds5[33..43],
+        };
+        inject.on_control(&block, &mut out);
+        assert!(out.reports.is_empty());
+        assert!(inject.pads.iter().all(Option::is_none));
+
+        // A report pad: the feature then the input reach the sink, the
+        // state beside them does not make a device.
+        inject.on_control(&feature, &mut out);
+        inject.on_control(&report, &mut out);
+        let state = pad_state_body(gamepad::bit::A, 0, 0, 0, 0, 0, 0);
+        inject.on_control(
+            &Control {
+                a0: 3,
+                a1: 0,
+                a2: 0,
+                opcode: op::GAMEPAD_STATE,
+                body: &state,
+            },
+            &mut out,
+        );
+        inject.on_control(&control(op::GAMEPAD_BUTTON, 0, 1, 3), &mut out);
+        inject.on_control(&control(op::GAMEPAD_AXIS, 0, 1000, 3), &mut out);
+        assert_eq!(out.reports, vec![(3, false), (3, true)]);
+        assert!(
+            out.batches.is_empty(),
+            "a report pad produced device events"
+        );
+        inject.release_all(&mut out);
+        assert!(out.batches.is_empty());
+
+        // A sixteen-button pad: its report is dropped.
+        inject.on_control(
+            &Control {
+                a0: 4,
+                a1: 0,
+                a2: 0,
+                opcode: op::GAMEPAD_STATE,
+                body: &state,
+            },
+            &mut out,
+        );
+        assert_eq!(out.distinct_devices(), 1);
+        inject.on_control(&Control { a1: 4, ..report }, &mut out);
+        assert_eq!(out.reports.len(), 2);
+
+        // Unplugged, the identifier may be the other family.
+        inject.on_control(&control(op::GAMEPAD_UNPLUG, 0, 0, 3), &mut out);
+        assert_eq!(out.unplugged, vec![3]);
+        inject.on_control(
+            &Control {
+                a0: 3,
+                a1: 0,
+                a2: 0,
+                opcode: op::GAMEPAD_STATE,
+                body: &state,
+            },
+            &mut out,
+        );
+        assert_eq!(out.distinct_devices(), 2);
+        inject.on_control(&report, &mut out);
+        assert_eq!(out.reports.len(), 2);
+
+        // Without the pad permission nothing is handed on.
+        let mut denied = injector();
+        denied.set_permissions(
+            Permissions {
+                gamepad: false,
+                ..Permissions::default()
+            },
+            &mut out,
+        );
+        denied.on_control(&Control { a1: 5, ..report }, &mut out);
+        assert_eq!(out.reports.len(), 2);
     }
 }
