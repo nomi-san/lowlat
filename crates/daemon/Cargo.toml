@@ -58,6 +58,7 @@ assets = [
     ["../../packaging/lowlatd.env", "etc/lowlat/lowlatd.env", "640"],
     ["../../packaging/lowlat-session.service", "usr/lib/systemd/user/", "644"],
     ["../../packaging/lowlat-tray.service", "usr/lib/systemd/user/", "644"],
+    ["../../packaging/70-lowlat-pads.rules", "usr/lib/udev/rules.d/", "644"],
     ["../../packaging/sddm-10-wayland.conf.example", "usr/share/doc/lowlat/", "644"],
     ["../../README.md", "usr/share/doc/lowlat/", "644"],
 ]

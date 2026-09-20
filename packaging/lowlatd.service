@@ -46,8 +46,11 @@ RuntimeDirectoryMode=0755
 EnvironmentFile=/etc/lowlat/lowlatd.env
 
 # **Denied by default, then the classes it needs.** char-drm covers both the
-# display device and the render node; the input node is named because it is
-# the only one of its class this opens. The vendor driver's own nodes are not
+# display device and the render node; the two input nodes are named because
+# they are the only ones of their class this opens -- the second presents a
+# guest's DualShock 4 or DualSense on the HID layer, and without it the pad
+# is refused at creation (measured: "Operation not permitted" under this
+# policy with the first node alone). The vendor driver's own nodes are not
 # display devices: its encoder is reached through them, and without them a
 # display on that card is captured and then refused an encoder (measured:
 # "compute runtime unavailable", and the stream stays on the other card).
@@ -60,6 +63,7 @@ DeviceAllow=char-drm rw
 DeviceAllow=char-nvidia rwm
 DeviceAllow=char-nvidia-uvm rwm
 DeviceAllow=/dev/uinput rw
+DeviceAllow=/dev/uhid rw
 
 # **Not `strict`, deliberately.** The session's own sockets live under /run,
 # and a read-only /run refuses a connection to one, which would take the
