@@ -40,6 +40,9 @@ pub mod op {
     pub const RELEASE: u8 = 24;
     pub const MOUSE_MOTION_STREAM: u8 = 26;
     pub const PEN_TOUCH: u8 = 30;
+    /// A controller's own input report, or a feature report of it, raw
+    /// ([`crate::pad`]).
+    pub const PAD_REPORT: u8 = 31;
     /// One opcode for several virtual devices, told apart by the header's
     /// arguments rather than by the opcode. A guest's microphone is one of
     /// them ([`crate::microphone`]); the rest are devices this host does not
@@ -63,6 +66,8 @@ pub mod op {
     /// Announces the generation the video header's frame identifier will carry,
     /// on the frame after an encoder initialization.
     pub const ENCODER_GENERATION: u8 = 29;
+    /// What the host's virtual pad was written, raw ([`crate::pad`]).
+    pub const PAD_OUTPUT: u8 = 33;
     /// Per-frame timing, behind the flag [`DIAGNOSTICS`] carries.
     pub const FRAME_TIMING: u8 = 34;
 
@@ -97,7 +102,9 @@ pub mod op {
             HOST_MODE => "host-mode",
             ENCODER_GENERATION => "encoder-generation",
             PEN_TOUCH => "pen-touch",
+            PAD_REPORT => "pad-report",
             VIRTUAL_DEVICE => "virtual-device",
+            PAD_OUTPUT => "pad-output",
             DIAGNOSTICS => "diagnostics",
             FRAME_TIMING => "frame-timing",
             _ => "unknown",
@@ -291,7 +298,8 @@ mod tests {
             BLOCKED, CURSOR, DIAGNOSTICS, DISCONNECT, ENCODE_LATENCY, ENCODER_CONFIG,
             ENCODER_GENERATION, FRAME_TIMING, GAMEPAD_AXIS, GAMEPAD_BUTTON, GAMEPAD_STATE,
             GAMEPAD_UNPLUG, GUEST_LIST, HOST_MODE, INIT, KEYBOARD, MOUSE_BUTTON, MOUSE_MOTION,
-            MOUSE_MOTION_STREAM, MOUSE_WHEEL, PEN_TOUCH, RELEASE, RUMBLE, USER_DATA, name,
+            MOUSE_MOTION_STREAM, MOUSE_WHEEL, PAD_OUTPUT, PAD_REPORT, PEN_TOUCH, RELEASE, RUMBLE,
+            USER_DATA, VIRTUAL_DEVICE, name,
         };
         for opcode in [
             KEYBOARD,
@@ -316,6 +324,9 @@ mod tests {
             HOST_MODE,
             ENCODER_GENERATION,
             PEN_TOUCH,
+            PAD_REPORT,
+            VIRTUAL_DEVICE,
+            PAD_OUTPUT,
             FRAME_TIMING,
             DIAGNOSTICS,
         ] {

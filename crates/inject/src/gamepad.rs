@@ -17,28 +17,9 @@ pub const MAX_PADS: usize = 4;
 ///
 /// One representation is kept for both messages, and this is it: the
 /// per-button message converts into these bits on the way in, so a guest that
-/// uses both forms has one held state rather than two that disagree.
-pub mod bit {
-    pub const DPAD_UP: u16 = 0x0001;
-    pub const DPAD_DOWN: u16 = 0x0002;
-    pub const DPAD_LEFT: u16 = 0x0004;
-    pub const DPAD_RIGHT: u16 = 0x0008;
-    pub const START: u16 = 0x0010;
-    pub const BACK: u16 = 0x0020;
-    pub const LEFT_THUMB: u16 = 0x0040;
-    pub const RIGHT_THUMB: u16 = 0x0080;
-    pub const LEFT_SHOULDER: u16 = 0x0100;
-    pub const RIGHT_SHOULDER: u16 = 0x0200;
-    pub const GUIDE: u16 = 0x0400;
-    /// **No key code and no index.** A peer can report a touchpad press and
-    /// the pad being emulated has no such button, so it is dropped rather than
-    /// mapped onto something plausible.
-    pub const TOUCHPAD: u16 = 0x0800;
-    pub const A: u16 = 0x1000;
-    pub const B: u16 = 0x2000;
-    pub const X: u16 = 0x4000;
-    pub const Y: u16 = 0x8000;
-}
+/// uses both forms has one held state rather than two that disagree. The bits
+/// are the core's, which reads a controller's raw report into the same set.
+pub use lowlat_core::pad::bit;
 
 /// Kernel button codes.
 pub mod key {

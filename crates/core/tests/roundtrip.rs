@@ -14,7 +14,8 @@ use lowlat_core::channel::{RecvRing, SlotMeta};
 use lowlat_core::envelope::Envelope;
 use lowlat_core::message::{self, Message};
 use lowlat_core::packet::{self, Ack, AckKind, CHANNEL_COUNT, Data, Packet};
-use lowlat_core::{control, video};
+use lowlat_core::pad::{self, Feature, Inbound, Output, OutputKind, Product, Transport};
+use lowlat_core::{control, crc32, video};
 
 const CASES: usize = 10_000;
 
@@ -258,5 +259,171 @@ fn records_round_trip_on_both_ciphers() {
             assert_eq!(opened.counter, counter, "{label} case {case}");
             assert_eq!(opened.cleartext, &plaintext[..], "{label} case {case}");
         }
+    }
+}
+
+/// The checksum a wireless pad report carries: the direction's seed, then
+/// everything before the last four bytes, little endian at the end. Built
+/// here independently of the module under test.
+fn seal_wireless(seed: u8, report: &mut [u8]) {
+    let at = report.len() - 4;
+    let mut crc = crc32::Crc32::new();
+    crc.update(&[seed]);
+    crc.update(&report[..at]);
+    report[at..].copy_from_slice(&crc.finish().to_le_bytes());
+}
+
+/// A controller's reports round-trip through the wire in both directions and
+/// both framings, for every product, every feature report and every kind,
+/// over random content: the DualShock 4's input body loses its identifier on
+/// the wire and gets it back; a wireless report normalises to the USB one it
+/// was framed from; an output report framed for a wireless pad carries the
+/// USB content where the device reads it, under a checksum that verifies.
+#[test]
+fn pad_reports_round_trip_in_both_directions_and_framings() {
+    let mut rng = Rng(0xD5_4D54_0000_0031);
+    let mut buf = [0u8; 160];
+    let mut usb = [0u8; pad::INPUT_LEN];
+    let mut framed = [0u8; pad::REPORT_MAX];
+    let mut out = [0u8; pad::INPUT_LEN];
+    let mut feature_out = [0u8; pad::FEATURE_MAX];
+
+    for case in 0..CASES {
+        let product = if rng.below(2) == 0 {
+            Product::DualShock4
+        } else {
+            Product::DualSense
+        };
+        let id = rng.next() as u32;
+
+        // Input: a random report in the USB form.
+        rng.fill(&mut usb);
+        usb[0] = pad::USB_INPUT_ID;
+        let body: &[u8] = match product {
+            Product::DualShock4 => pad::ds4_body(&usb),
+            Product::DualSense => &usb,
+            _ => unreachable!(),
+        };
+        let n = pad::encode_report(&mut buf, id, product, false, body).expect("encode");
+        let message = control::parse(&buf[..n]).expect("parse");
+        assert_eq!(message.a1, id, "case {case}");
+        assert_eq!(
+            pad::parse_report(&message),
+            Some(Inbound::Input {
+                product,
+                report: usb
+            }),
+            "case {case}: input"
+        );
+        // Feature: a random body under one of the two identifiers and lengths.
+        let feature = if rng.below(2) == 0 {
+            Feature::Calibration
+        } else {
+            Feature::Firmware
+        };
+        let len = feature.len(product);
+        rng.fill(&mut feature_out[..len]);
+        feature_out[0] = feature.id(product);
+        let n =
+            pad::encode_report(&mut buf, id, product, true, &feature_out[..len]).expect("encode");
+        let message = control::parse(&buf[..n]).expect("parse");
+        assert_eq!(
+            message.a2 & pad::FEATURE_BIT,
+            pad::FEATURE_BIT,
+            "case {case}"
+        );
+        assert_eq!(
+            pad::parse_report(&message),
+            Some(Inbound::Feature {
+                product,
+                feature,
+                report: &feature_out[..len]
+            }),
+            "case {case}: feature"
+        );
+
+        // Output: a random report of any length under either kind.
+        let kind = if rng.below(2) == 0 {
+            OutputKind::Output
+        } else {
+            OutputKind::Feature
+        };
+        let len = 1 + rng.below(pad::REPORT_MAX as u32) as usize;
+        rng.fill(&mut framed[..len]);
+        let n = pad::encode_output(&mut buf, id, kind, &framed[..len]).expect("encode");
+        let message = control::parse(&buf[..n]).expect("parse");
+        assert_eq!(
+            pad::parse_output(&message),
+            Some(Output {
+                pad: id,
+                kind,
+                report: &framed[..len]
+            }),
+            "case {case}: output"
+        );
+
+        // Wireless input: framed as the pad frames it, normalised back.
+        let mut wireless = [0u8; pad::BT_INPUT_LEN];
+        rng.fill(&mut wireless);
+        match product {
+            Product::DualShock4 => {
+                wireless[0] = 0x11;
+                wireless[3..63].copy_from_slice(&usb[1..61]);
+            }
+            Product::DualSense => {
+                wireless[0] = 0x31;
+                wireless[2..65].copy_from_slice(&usb[1..]);
+            }
+            _ => unreachable!(),
+        }
+        seal_wireless(0xA1, &mut wireless);
+        assert_eq!(
+            pad::normalize_input(product, &wireless, &mut out).expect("normalise"),
+            Transport::Bluetooth,
+            "case {case}"
+        );
+        match product {
+            Product::DualShock4 => {
+                assert_eq!(&out[..61], &usb[..61], "case {case}: ds4 wireless");
+                assert_eq!(&out[61..], &[0, 0, 0], "case {case}: ds4 wireless tail");
+            }
+            Product::DualSense => assert_eq!(out, usb, "case {case}: ds5 wireless"),
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            pad::normalize_input(product, &usb, &mut out).expect("normalise"),
+            Transport::Usb
+        );
+        assert_eq!(out, usb, "case {case}: usb passes through");
+
+        // Wireless output: the USB content where the device reads it, sealed.
+        let olen = product.output_len();
+        rng.fill(&mut usb[..olen]);
+        usb[0] = product.output_id();
+        let seq = rng.below(16) as u8;
+        let n = pad::frame_output(
+            product,
+            Transport::Bluetooth,
+            seq,
+            &usb[..olen],
+            &mut framed,
+        )
+        .expect("frame");
+        assert_eq!(n, pad::BT_OUTPUT_LEN, "case {case}");
+        assert_eq!(
+            &framed[3..3 + olen - 1],
+            &usb[1..olen],
+            "case {case}: content"
+        );
+        let mut check = framed;
+        seal_wireless(0xA2, &mut check[..n]);
+        assert_eq!(&check[..n], &framed[..n], "case {case}: checksum");
+        let n = pad::frame_output(product, Transport::Usb, seq, &usb[..olen], &mut framed)
+            .expect("frame");
+        assert_eq!(
+            &framed[..n],
+            &usb[..olen],
+            "case {case}: usb output passes through"
+        );
     }
 }
