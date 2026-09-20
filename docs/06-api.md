@@ -339,7 +339,7 @@ have moved by itself; an application that kept its own copy would mark the wrong
 **Planned 2026-09-15, built from 2026-09-17 by [impl-plan-client.md](impl-plan-client.md).**
 Everything below is in the header (minor 4 the session, minor 5 the pictures, minor 6 the
 input, minor 7 the sound, minor 8 the preferences and the handle, minor 9 the cursor and the
-metrics; minor 10, planned, the pad reports); the header is the truth.
+metrics, minor 10 the pad reports); the header is the truth.
 
 ```c
 lowlat_status lowlat_client_create(const lowlat_client_create_info *info, lowlat_client **out);
@@ -383,7 +383,7 @@ lowlat_status lowlat_client_send_pad_state(lowlat_client *cl, uint32_t pad,
 lowlat_status lowlat_client_send_pad_unplug(lowlat_client *cl, uint32_t pad);
 lowlat_status lowlat_client_send_pad_report(lowlat_client *cl, uint32_t pad, uint32_t type,
                                             uint32_t kind, const uint8_t *report,
-                                            uint32_t len);                  /* minor 10, planned */
+                                            uint32_t len);                  /* minor 10 */
 lowlat_status lowlat_client_send_release_all(lowlat_client *cl);
 
 lowlat_status lowlat_client_acquire_audio(lowlat_client *cl, uint32_t timeout_ms,
@@ -421,20 +421,25 @@ so a panel shows both ends of one path from the structure each end can fill. Sta
 `number` and the pointer's three counts (pictures delivered, names not held, pictures
 refused).
 
-**Minor 10 (planned 2026-09-20, C7 and Phase 14): the pad reports.**
+**Minor 10 (2026-09-20, C7 and Phase 14): the pad reports.** The client half is built
+(C7.1); the host half is planned.
 `lowlat_client_send_pad_report(cl, pad, type, kind, report, len)` hands over a DualShock 4's
-or a DualSense's own report (`type` one of `lowlat_pad_type`: `LOWLAT_PAD_DS4`,
-`LOWLAT_PAD_DS5`; `kind` one of `lowlat_pad_report`: `LOWLAT_PAD_INPUT` the input report as
-the device delivered it, USB or Bluetooth form, or `LOWLAT_PAD_FEATURE` a feature report read
-from the pad -- calibration or firmware, identifier in byte 0, sent before the first input
-report). The library derives and sends the standard state beside the report, so
-`send_pad_state` is never called for such a pad and is refused for its identifier until
-`send_pad_unplug` ([10 §8](10-client.md)). `LOWLAT_EVENT_PAD_REPORT` carries back what the
-host's device was written (`lowlat_pad_report_event { pad, kind, len, report }`, `kind`
-`LOWLAT_PAD_OUTPUT` or `LOWLAT_PAD_FEATURE`), the report already in the pad's own framing,
-**a pointer valid until the next `poll_events`** as the cursor's picture is; the application
-writes it to the pad. `LOWLAT_EVENT_RUMBLE` is unchanged and still arrives for any pad a host
-rumbles that way. Status gains the reports sent, received and dropped.
+or a DualSense's own report (`type` one of `lowlat_pad_type`: `LOWLAT_PAD_TYPE_DS4`,
+`LOWLAT_PAD_TYPE_DS5`; `kind` one of `lowlat_pad_report`: `LOWLAT_PAD_REPORT_INPUT` the input
+report as the device delivered it, USB or Bluetooth form, or `LOWLAT_PAD_REPORT_FEATURE` a
+feature report read from the pad -- calibration or firmware, identifier in byte 0, sent
+before the first input report; at most `LOWLAT_PAD_REPORT_MAX` bytes). The library derives
+and sends the standard state beside the report, so `send_pad_state` is never called for such
+a pad and is refused for its identifier until `send_pad_unplug`, as a report is refused for a
+pad already sent as states -- `LOWLAT_ERR_INVALID_ARGUMENT` either way, at the call
+([10 §8](10-client.md)). `LOWLAT_EVENT_PAD_REPORT` carries back what the host's device was
+written (`lowlat_pad_report_event { pad, kind, len, report }`, `kind`
+`LOWLAT_PAD_REPORT_OUTPUT` or `LOWLAT_PAD_REPORT_FEATURE`), an output report already in the
+pad's own framing and a feature write in the USB form, **a pointer valid until the next
+`poll_events`** as the cursor's picture is; the application writes it to the pad.
+`LOWLAT_EVENT_RUMBLE` is unchanged and still arrives for any pad a host rumbles that way.
+Status gains `pad_reports_sent`, `pad_reports_received` and `pad_reports_dropped` (received
+for a pad this client never sent as reports).
 
 On the host half ([§3](#3-host)): `lowlat_host_config.pad_sink` (`LOWLAT_PAD_SINK_DEVICE`,
 the default, or `LOWLAT_PAD_SINK_APP`), `lowlat_host_poll_pad_report(hl, timeout_ms, &guest,
@@ -719,7 +724,7 @@ ignores it, which is why the type field is first.
 | cursor | the host's pointer changed: its picture, hotspot or flags (client, minor 9) |
 | rumble | the host asked a pad to vibrate (client, minor 9) |
 | guest list | the room, as the host describes it, with this client's own number (client, minor 9) |
-| pad report | the host's virtual pad was written: an output report or a feature write, in the pad's own framing (client, minor 10, planned) |
+| pad report | the host's virtual pad was written: an output report or a feature write, in the pad's own framing (client, minor 10) |
 
 **A guest's state changes are the four attempt events**, not one event with a
 state field: candidate and ready while it negotiates, established when a path is found, ended
@@ -944,11 +949,13 @@ to `lowlat_client_config` under the rule below.
 `lowlat_client_metrics` and `lowlat_client_channel_metrics`, and the status fields for the
 client's own number and the pointer's counts.
 
-**Minor 10** (planned 2026-09-20) is the pad reports ([§3b](#3b-client), [§3](#3-host)):
-`lowlat_pad_type`, `lowlat_pad_report`, `lowlat_client_send_pad_report`,
-`LOWLAT_EVENT_PAD_REPORT` with `lowlat_pad_report_event`; on the host `pad_sink` in a reserved
-byte of `lowlat_host_config`, `lowlat_pad_sink`, `lowlat_host_poll_pad_report` and
-`lowlat_host_send_pad_report`; status fields for the reports on both halves. Nothing moves.
+**Minor 10** (2026-09-20) is the pad reports ([§3b](#3b-client), [§3](#3-host)): the client
+half built with C7.1 -- `lowlat_pad_type`, `lowlat_pad_report`, `LOWLAT_PAD_REPORT_MAX`,
+`lowlat_client_send_pad_report`, `LOWLAT_EVENT_PAD_REPORT` with `lowlat_pad_report_event`, the
+three `pad_reports_*` status fields; the host half planned for Phase 14 under the same minor --
+`pad_sink` in a reserved byte of `lowlat_host_config`, `lowlat_pad_sink`,
+`lowlat_host_poll_pad_report` and `lowlat_host_send_pad_report`, a status field for the report
+pads. Nothing moves.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected

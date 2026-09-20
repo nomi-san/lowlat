@@ -597,37 +597,50 @@ the header before this phase changes both would be done twice. The decisions are
 once, here and under Phase 14; the rules are [10 §8](10-client.md), the wire
 [01 §11](01-protocol.md), the surface [06 §3b](06-api.md).
 
-- [ ] **One call, one event** (minor 10): `lowlat_client_send_pad_report(cl, pad, type, kind,
+- [x] **One call, one event** (minor 10): `lowlat_client_send_pad_report(cl, pad, type, kind,
   report, len)` with the product named and the report as the device delivered it, USB or
   Bluetooth form; `LOWLAT_EVENT_PAD_REPORT` with what the host's device was written, lent
   until the next poll, in the pad's own framing. `send_pad_state`, `button` and `axis` stay
   the sixteen-button pad's, and a pad identifier is one family until it is unplugged.
-- [ ] **The library derives the standard state from the report and sends it beside it**, the
+  *C7.1, 2026-09-20. The family is recorded with the attempt on the application's thread, so
+  the other family is refused at the call rather than dropped on the session thread; the
+  enumerations are `LOWLAT_PAD_TYPE_*` and `LOWLAT_PAD_REPORT_*`, the shorter names the plan
+  used having collided with the button indices' `LOWLAT_PAD_*`.*
+- [x] **The library derives the standard state from the report and sends it beside it**, the
   report first, deduplicated, so a host that does not read reports still has a pad and one
   that does has its slot; a DualShock 4 also travels as the ten-byte touch block an
   established host's DualShock mode reads, and its whole report goes without its identifier
   byte so no established host in any mode can mistake it for a DualSense's
-  ([01 §11.1](01-protocol.md)).
-- [ ] **Feature reports first, bounded**: calibration and firmware for each product, any
+  ([01 §11.1](01-protocol.md)). *C7.1.*
+- [x] **Feature reports first, bounded**: calibration and firmware for each product, any
   subset, before the first input report; anything else refused. The pairing report is the
-  host's.
-- [ ] **Bluetooth normalised in the library**: the wireless framing stripped on the way in, the
+  host's. *C7.1; the normalisation runs on the application's thread, where the refusal is
+  answered.*
+- [x] **Bluetooth normalised in the library**: the wireless framing stripped on the way in, the
   transport remembered per pad, the identifier and checksum put back on the way out; the
-  calibration report's wireless identifier rewritten.
-- [ ] **The rumble event stays** for any pad a host rumbles that way; the application decides
-  what to write (a motor-only report keeping the lightbar it last wrote).
+  calibration report's wireless identifier rewritten. *C7.0/C7.1, confirmed on both pads
+  paired to the desk: a DualShock 4 also groups its wireless calibration's gyro ranges where
+  the USB answer interleaves them, and the rewrite reorders. A late feature report does not
+  unsay the transport the input reports gave; a wireless DualSense's output reports carry a
+  sequence the library advances.*
+- [x] **The rumble event stays** for any pad a host rumbles that way; the application decides
+  what to write (a motor-only report keeping the lightbar it last wrote). *C7.1: unchanged.*
 - [ ] **The demo reads the raw nodes itself**, nothing patched in the toolkit, which has no HID
   path on Linux: the Sony nodes found by identity, opened under the seat's access, polled in
   the millisecond loop, the feature reports read at open, the toolkit's controller events for
   those pads dropped, unplug when a node dies. A knob decides whether a host gets reports or
   states, defaulting to reports for this library's hosts only, known from the host list:
   **a DualSense against an established host is neither promised nor gated.**
-- [ ] Fixtures from the pads on the desk (addresses zeroed); hermetic tests: the report stream
+- [x] Fixtures from the pads on the desk (addresses zeroed); hermetic tests: the report stream
   in and the messages out, in order and deduplicated; the output report in and the event
   out, both framings; a host that reads no reports still receiving states. *The core half
   is in (C7.0, 2026-09-20): the framing, the reads and the fixtures, with the pads' own
   offsets confirmed against the reports they produced; the DualShock 4 answers its pairing
-  report empty over the raw node, which is one more reason that report is the host's.*
+  report empty over the raw node, which is one more reason that report is the host's. The
+  hermetic session (C7.1) sends both pads' reports through the driver to a host that reads
+  none of them and counts the report, the block and the states it makes its pads from, then
+  writes the pads and reads the events back framed for USB and for Bluetooth, with a write
+  for an unknown pad dropped and counted.*
 - [ ] Documentation closure with Phase 14's.
 
 **Gate:**

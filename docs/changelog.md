@@ -3,6 +3,25 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-20 - C7.1: the client sends a pad's own reports
+
+### Added
+- **`lowlat_client_send_pad_report`** and **`LOWLAT_EVENT_PAD_REPORT`** ([06 §3b](06-api.md),
+  [10 §8](10-client.md), minor 10): a DualShock 4's or a DualSense's input or feature report,
+  as the pad delivered it, normalised to the USB form on the application's thread and sent
+  raw with the standard state it implies beside it -- a DualShock 4's as its body, the touch
+  block an established host reads and the state; what the host's device is written comes
+  back as an event in the pad's own framing, a wireless pad's identifier, sequence and
+  checksum put back. `lowlat_pad_type`, `lowlat_pad_report`, `LOWLAT_PAD_REPORT_MAX`; status
+  counts the reports sent, received and dropped.
+- A pad is one family until unplugged: a state for a report pad, or a report for a state
+  pad, is refused at the call with `LOWLAT_ERR_INVALID_ARGUMENT`, as is a report this path
+  does not carry.
+
+### Changed
+- The whole-pad message's state type is the core's; the input ring's message body grew to a
+  report's size.
+
 ## 2026-09-20 - C7.0: the pad report framing in the core
 
 ### Added
