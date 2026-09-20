@@ -8,8 +8,8 @@ writes, under `<out>/<ds4|ds5>/`:
     descriptor.bin            the HID report descriptor, as the kernel exposes it
     feature-calibration.bin   the calibration feature report (DS4 0x02, DS5 0x05)
     feature-firmware.bin      the firmware feature report (DS4 0xA3, DS5 0x20)
-    feature-pairing.bin       the pairing feature report (DS5 0x09; the DS4 v2
-                              answers it empty over hidraw), both addresses zeroed
+    feature-pairing.bin       the pairing feature report (DS4 0x12, DS5 0x09),
+                              both addresses zeroed
     input-idle.bin            the first input report read, nothing touched
     input-held.bin            with --held: the first report showing a touch
                               contact and the Cross button, waited for
@@ -33,7 +33,7 @@ import sys
 VENDOR = 0x054C
 PRODUCTS = {0x09CC: "ds4", 0x05C4: "ds4", 0x0CE6: "ds5"}
 FEATURES = {
-    "ds4": [("calibration", 0x02, 37), ("firmware", 0xA3, 49), ("pairing", 0x81, 7)],
+    "ds4": [("calibration", 0x02, 37), ("firmware", 0xA3, 49), ("pairing", 0x12, 16)],
     "ds5": [("calibration", 0x05, 41), ("firmware", 0x20, 64), ("pairing", 0x09, 20)],
 }
 # A DualShock 4 over Bluetooth answers its calibration under another

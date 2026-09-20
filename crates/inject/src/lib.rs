@@ -21,5 +21,6 @@
 
 pub mod event;
 pub mod gamepad;
+pub mod uhid;
 pub mod uinput;
 pub mod usage;

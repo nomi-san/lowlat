@@ -60,8 +60,12 @@ static uint32_t type_of(unsigned product)
 	}
 }
 
-// The node's identity from its device's uevent: bus, vendor, product.
-static bool identity(unsigned node, unsigned *bus, unsigned *vendor, unsigned *product)
+// The node's identity from its device's uevent: bus, vendor, product, and
+// whether it is one of a host's own virtual pads. A demo run on the host's
+// machine would otherwise read the pad the host made from its reports and
+// send it back, which is an echo.
+static bool identity(unsigned node, unsigned *bus, unsigned *vendor, unsigned *product,
+	bool *virtual_pad)
 {
 	char path[96];
 	snprintf(path, sizeof path, "/sys/class/hidraw/hidraw%u/device/uevent", node);
@@ -69,10 +73,14 @@ static bool identity(unsigned node, unsigned *bus, unsigned *vendor, unsigned *p
 	if (f == NULL)
 		return false;
 	bool found = false;
+	*virtual_pad = false;
 	char line[160];
-	while (fgets(line, sizeof line, f) != NULL)
+	while (fgets(line, sizeof line, f) != NULL) {
 		if (sscanf(line, "HID_ID=%x:%x:%x", bus, vendor, product) == 3)
 			found = true;
+		if (strncmp(line, "HID_PHYS=lowlat/", 16) == 0)
+			*virtual_pad = true;
+	}
 	fclose(f);
 	return found;
 }
@@ -147,7 +155,10 @@ void raw_pads_scan(struct raw_pads *r, lowlat_client *client, double now_ms, boo
 		if (open_already)
 			continue;
 		unsigned bus, vendor, product;
-		if (!identity(node, &bus, &vendor, &product) || vendor != VENDOR_SONY)
+		bool virtual_pad;
+		if (!identity(node, &bus, &vendor, &product, &virtual_pad) || vendor != VENDOR_SONY)
+			continue;
+		if (virtual_pad)
 			continue;
 		if ((bus != BUS_USB && bus != BUS_BLUETOOTH) || type_of(product) == 0)
 			continue;
