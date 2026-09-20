@@ -616,6 +616,7 @@ fn configured(cfg: &lowlat_host_config) -> Option<::lowlat_host::admission::Conf
 
     Some(::lowlat_host::admission::Config {
         microphone: None,
+        pad_sink: None,
         base_port: cfg.base_port,
         // Not on the boundary yet: no application has asked to offer shared
         // address space, and a field nobody sets is a field nobody tests.

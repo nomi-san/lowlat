@@ -18,6 +18,7 @@ use lowlat_host::admission::{self, Admission, Event as HostEvent};
 fn host() -> Admission {
     Admission::new(admission::Config {
         microphone: None,
+        pad_sink: None,
         exclusive_pointer: false,
         rumble_probe: false,
         exclusive_hold_ms: lowlat_host::floor::HOLD_MS,

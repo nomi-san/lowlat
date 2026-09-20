@@ -1094,6 +1094,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     channel::listen();
     let mut seam = Admission::new(Config {
         microphone: Some(hear),
+        pad_sink: None,
         exclusive_pointer,
         // The figure the pointer arbitration was tuned to. A flag exists so a
         // two-guest run can try another without a rebuild.

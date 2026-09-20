@@ -14,7 +14,7 @@ use crate::gamepad::{self, MAX_PADS};
 use crate::uhid::{self, HidPad};
 use crate::usage;
 use core::fmt::Write as _;
-use lowlat_core::pad::{Inbound, Product};
+use lowlat_core::pad::{INPUT_LEN, Inbound, Product};
 use std::os::fd::{AsRawFd as _, OwnedFd};
 
 /// Request numbers, as the kernel's own headers compute them.
@@ -815,6 +815,9 @@ pub struct Devices {
     /// Set once, so a guest holding more pads than there are slots is
     /// reported rather than silently short of one.
     refused: bool,
+    /// Where a report pad's reports go instead, when the application holds
+    /// the device for it ([`Forwarding`]).
+    forward: Option<Forwarding>,
     label: NameBuf,
     /// The middle of every HID pad's address: this guest's, so two guests'
     /// pads never share one.
@@ -839,6 +842,134 @@ struct HidSlot {
 pub struct PadWritten {
     pub pad: u32,
     pub written: uhid::Written,
+}
+
+/// A report pad's report on its way to the application rather than into a
+/// device of this host's own, and the end of such a pad (docs/05-host.md
+/// section 7.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Forwarded {
+    /// An input report, the whole USB form.
+    Input {
+        pad: u32,
+        product: Product,
+        report: [u8; INPUT_LEN],
+    },
+    /// A feature report: `len` bytes, identifier byte first.
+    Feature {
+        pad: u32,
+        product: Product,
+        len: usize,
+        report: [u8; INPUT_LEN],
+    },
+    /// The pad is gone: unplugged by its peer, or its guest left. Told after
+    /// the pad's last report, so a device destroyed on it has seen them all.
+    Unplugged { pad: u32, product: Product },
+}
+
+/// Where forwarded reports go. A call rather than a queue: the application's
+/// queue is across a boundary this crate does not see, and the report is in
+/// it one hop after it was parsed rather than two.
+pub struct Forward(pub Box<dyn FnMut(Forwarded) + Send>);
+
+impl core::fmt::Debug for Forward {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("Forward")
+    }
+}
+
+/// The report pads of a guest whose application holds the devices.
+///
+/// **The same rules as a device of this host's own, without the device.** The
+/// product is fixed by the pad's first report; nothing is kept, because the
+/// application's device is what needs the feature reports and it is given
+/// them in the order they came; and the pad's end is told, on an unplug and
+/// on the guest's, which is what lets the application destroy its device on
+/// the same rule the host destroys its own.
+#[derive(Debug)]
+struct Forwarding {
+    to: Forward,
+    pads: [Option<(u32, Product)>; MAX_PADS],
+}
+
+impl Forwarding {
+    fn new(to: Forward) -> Self {
+        Self {
+            to,
+            pads: [const { None }; MAX_PADS],
+        }
+    }
+
+    fn report(&mut self, pad: u32, inbound: &Inbound<'_>) {
+        let (product, forwarded) = match *inbound {
+            Inbound::Input { product, report } => (
+                product,
+                Forwarded::Input {
+                    pad,
+                    product,
+                    report,
+                },
+            ),
+            Inbound::Feature {
+                product, report, ..
+            } => {
+                let mut bytes = [0u8; INPUT_LEN];
+                let len = report.len().min(bytes.len());
+                if let (Some(target), Some(source)) = (bytes.get_mut(..len), report.get(..len)) {
+                    target.copy_from_slice(source);
+                }
+                (
+                    product,
+                    Forwarded::Feature {
+                        pad,
+                        product,
+                        len,
+                        report: bytes,
+                    },
+                )
+            }
+            Inbound::TouchBlock => return,
+        };
+        match self.pads.iter().flatten().find(|(id, _)| *id == pad) {
+            // Fixed by the first report; one naming another product is not
+            // this pad's.
+            Some((_, fixed)) if *fixed != product => return,
+            Some(_) => {}
+            None => {
+                // The expander's cap is in front of this, so there is room.
+                let Some(slot) = self.pads.iter_mut().find(|slot| slot.is_none()) else {
+                    return;
+                };
+                *slot = Some((pad, product));
+            }
+        }
+        (self.to.0)(forwarded);
+    }
+
+    /// Whether the pad was one forwarded, and so one the application was
+    /// told about.
+    fn unplug(&mut self, pad: u32) -> bool {
+        let Some((_, product)) = self
+            .pads
+            .iter_mut()
+            .find(|slot| slot.is_some_and(|(id, _)| id == pad))
+            .and_then(Option::take)
+        else {
+            return false;
+        };
+        (self.to.0)(Forwarded::Unplugged { pad, product });
+        true
+    }
+}
+
+impl Drop for Forwarding {
+    /// **A guest's end ends its pads.** The devices of this host's own go
+    /// with their descriptors; the application is told, pad by pad.
+    fn drop(&mut self) {
+        for (pad, product) in self.pads.iter_mut().filter_map(Option::take) {
+            (self.to.0)(Forwarded::Unplugged { pad, product });
+        }
+    }
 }
 
 /// One pad's device, addressed by the identifier its peer gave it.
@@ -867,6 +998,7 @@ impl Devices {
             pads: [const { None }; MAX_PADS],
             hid: [const { None }; MAX_PADS],
             refused: false,
+            forward: None,
             label: {
                 let mut label = NameBuf::default();
                 let _ = label.write_str(guest);
@@ -874,6 +1006,14 @@ impl Devices {
             },
             address: [crc[0], crc[1], crc[2]],
         })
+    }
+
+    /// Hand every report pad's reports to `to` instead of presenting a
+    /// device for it, and tell it when the pad is gone: the application's
+    /// device stands in for this host's own (docs/05-host.md section 7.2).
+    /// Set before the first report.
+    pub fn forward_reports(&mut self, to: Forward) {
+        self.forward = Some(Forwarding::new(to));
     }
 
     /// What an application wrote to one of this guest's HID pads, since the
@@ -1060,9 +1200,16 @@ impl Sink for Devices {
             *slot = None;
             lowlat_common::log_info!("inject: pad unplugged, pad={pad}");
         }
+        if self.forward.as_mut().is_some_and(|f| f.unplug(pad)) {
+            lowlat_common::log_info!("inject: pad unplugged, pad={pad}");
+        }
     }
 
     fn report(&mut self, pad: u32, inbound: &Inbound<'_>) {
+        if let Some(forward) = self.forward.as_mut() {
+            forward.report(pad, inbound);
+            return;
+        }
         let (product, report) = match inbound {
             Inbound::Feature {
                 product,
@@ -1451,6 +1598,114 @@ mod held_tests {
         held.push(&report(1));
         assert_eq!(held.take(), 2);
         assert_eq!(held.take(), 0);
+    }
+}
+
+#[cfg(test)]
+mod forwarding_tests {
+    use super::*;
+    use lowlat_core::pad::Feature;
+    use std::sync::{Arc, Mutex};
+
+    /// A forwarding whose every call is written down.
+    fn forwarding() -> (Forwarding, Arc<Mutex<Vec<Forwarded>>>) {
+        let told = Arc::new(Mutex::new(Vec::new()));
+        let into = Arc::clone(&told);
+        let forwarding = Forwarding::new(Forward(Box::new(move |forwarded| {
+            into.lock().unwrap().push(forwarded);
+        })));
+        (forwarding, told)
+    }
+
+    const DS5: &[u8; 64] = include_bytes!("../../core/tests/data/pad/ds5/input-idle.bin");
+    const DS4: &[u8; 64] = include_bytes!("../../core/tests/data/pad/ds4/input-idle.bin");
+    const CALIBRATION: &[u8] =
+        include_bytes!("../../core/tests/data/pad/ds5/feature-calibration.bin");
+
+    /// **The reports reach the application in the order they came**, the
+    /// feature report whole with its length, the input report whole; the
+    /// established peer's block reaches nobody; the product is fixed by the
+    /// first report, so one naming another is not this pad's.
+    #[test]
+    fn reports_are_forwarded_in_order_and_the_product_is_fixed() {
+        let (mut forwarding, told) = forwarding();
+        forwarding.report(
+            3,
+            &Inbound::Feature {
+                product: Product::DualSense,
+                feature: Feature::Calibration,
+                report: CALIBRATION,
+            },
+        );
+        forwarding.report(
+            3,
+            &Inbound::Input {
+                product: Product::DualSense,
+                report: *DS5,
+            },
+        );
+        forwarding.report(3, &Inbound::TouchBlock);
+        forwarding.report(
+            3,
+            &Inbound::Input {
+                product: Product::DualShock4,
+                report: *DS4,
+            },
+        );
+        let told = told.lock().unwrap();
+        assert_eq!(told.len(), 2, "{told:?}");
+        assert!(
+            matches!(
+                told[0],
+                Forwarded::Feature {
+                    pad: 3,
+                    product: Product::DualSense,
+                    len: 41,
+                    ref report
+                } if &report[..41] == CALIBRATION
+            ),
+            "{:?}",
+            told[0]
+        );
+        assert!(matches!(
+            told[1],
+            Forwarded::Input {
+                pad: 3,
+                product: Product::DualSense,
+                report
+            } if report == *DS5
+        ));
+    }
+
+    /// **The pad's end is told after its last report**, on an unplug and on
+    /// the guest's own end, once each; a pad never forwarded is nobody's to
+    /// tell about.
+    #[test]
+    fn a_pads_end_is_told_once_and_the_guests_end_tells_the_rest() {
+        let (mut forwarding, told) = forwarding();
+        for pad in [3, 4] {
+            forwarding.report(
+                pad,
+                &Inbound::Input {
+                    product: Product::DualShock4,
+                    report: *DS4,
+                },
+            );
+        }
+        assert!(forwarding.unplug(3));
+        assert!(!forwarding.unplug(3), "told twice");
+        assert!(!forwarding.unplug(9), "a pad never forwarded");
+        drop(forwarding);
+        let told = told.lock().unwrap();
+        let ends: Vec<u32> = told
+            .iter()
+            .filter_map(|f| match f {
+                Forwarded::Unplugged { pad, .. } => Some(*pad),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ends, [3, 4]);
+        assert_eq!(told.len(), 4);
     }
 }
 

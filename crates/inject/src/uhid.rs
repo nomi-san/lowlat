@@ -83,7 +83,7 @@ const BUS_USB: u16 = 0x03;
 const VERSION: u32 = 0x8111;
 
 /// The largest report the device is written: the DualSense's output report
-/// is 48 bytes, the feature writes at most 64.
+/// is 63 bytes, the feature writes at most 64.
 pub const WRITTEN_MAX: usize = pad::FEATURE_MAX;
 
 /// Why a device could not be created; the same three tellings-apart the

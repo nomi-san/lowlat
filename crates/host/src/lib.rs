@@ -11,6 +11,7 @@ pub mod events;
 pub mod floor;
 pub mod gate;
 pub mod microphone;
+pub mod padsink;
 pub mod rate;
 pub mod session;
 pub mod stock;

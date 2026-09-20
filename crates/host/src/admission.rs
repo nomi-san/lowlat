@@ -386,6 +386,10 @@ pub struct Config {
     /// says a microphone is accepted lives with the rest of sound; this is the
     /// other half of it, the place the samples are put once decoded.
     pub microphone: Option<crate::microphone::Sender>,
+    /// Where a report pad's reports go when the application holds the
+    /// device for it (docs/05-host.md section 7.2), or `None` for a host that
+    /// presents a device of its own. Set, it is the sink for every guest.
+    pub pad_sink: Option<crate::padsink::Sender>,
     /// Whether one guest at a time may drive the pointer
     /// ([`crate::floor`]). Off by default: one person driving is a
     /// configuration, not a law.
@@ -751,7 +755,11 @@ struct Said {
     opcode: u8,
     /// The second argument. Its meaning belongs to the opcode.
     a1: u32,
-    /// Already terminated. The far side reads both as C strings.
+    /// The third, which the two above leave at zero and a pad's report
+    /// message carries the pad in.
+    a2: u32,
+    /// Sent as it is: terminated where the far side reads a C string, and a
+    /// report where it reads a report.
     body: Vec<u8>,
 }
 
@@ -1059,6 +1067,7 @@ impl Admission {
         let owner = attempt.peer.owner;
         let rumble_probe = self.config.rumble_probe;
         let microphone = self.config.microphone.clone();
+        let pad_sink = self.config.pad_sink.clone();
 
         let guest = Guest::spawn(wake, move |wake, running| {
             run_guest(
@@ -1073,6 +1082,7 @@ impl Admission {
                         attempt_id,
                         emit,
                         microphone,
+                        pad_sink,
                         arrivals,
                         said,
                         asked,
@@ -1206,7 +1216,49 @@ impl Admission {
         say.send(Said {
             opcode: lowlat_core::control::op::USER_DATA,
             a1: id,
+            a2: 0,
             body: terminated(text),
+        })
+        .is_ok()
+    }
+
+    /// Give a guest's report pad what the application's device was written
+    /// (docs/05-host.md section 7.2): an output report or a feature write,
+    /// in the pad's USB form, identifier byte first. The pair of
+    /// [`Config::pad_sink`], and the road a device of this host's own takes
+    /// by itself.
+    ///
+    /// Answers whether the guest is one that could be reached at all. A
+    /// report longer than any the pads take is refused here.
+    pub fn send_pad_report(
+        &mut self,
+        guest: u32,
+        pad: u32,
+        kind: lowlat_core::pad::OutputKind,
+        report: &[u8],
+    ) -> bool {
+        if report.is_empty() || report.len() > lowlat_inject::uhid::WRITTEN_MAX {
+            lowlat_common::log_warn!(
+                "guest: refusing a pad report of {} bytes for guest {guest}",
+                report.len()
+            );
+            return false;
+        }
+        let Some(attempt) = self
+            .attempts
+            .values()
+            .find(|attempt| attempt.number == Some(guest))
+        else {
+            return false;
+        };
+        let Some(say) = attempt.say.as_ref() else {
+            return false;
+        };
+        say.send(Said {
+            opcode: lowlat_core::control::op::PAD_OUTPUT,
+            a1: kind.wire(),
+            a2: pad,
+            body: report.to_vec(),
         })
         .is_ok()
     }
@@ -1230,6 +1282,7 @@ impl Admission {
                 say.send(Said {
                     opcode: lowlat_core::control::op::GUEST_LIST,
                     a1: *number,
+                    a2: 0,
                     body: terminated.clone(),
                 })
                 .is_ok()
@@ -1503,6 +1556,9 @@ struct Driven {
     telemetry: Arc<Telemetry>,
     /// Where a guest's microphone goes, when this host takes one.
     microphone: Option<crate::microphone::Sender>,
+    /// Where a report pad's reports go, when the application holds the
+    /// devices.
+    pad_sink: Option<crate::padsink::Sender>,
     /// A way onto the stream, taken once this guest is streamable.
     seats: Option<Seats>,
     /// The stream's configured dimensions, which the video header carries
@@ -1807,7 +1863,7 @@ fn send_said<M: Media>(session: &mut M, message: &Said) {
             // alone leaves it reading one byte past what arrived.
             a0: u32::try_from(message.body.len()).unwrap_or(u32::MAX),
             a1: message.a1,
-            a2: 0,
+            a2: message.a2,
             opcode: message.opcode,
             body: &message.body,
         },
@@ -2061,17 +2117,29 @@ impl Input<Devices> {
     /// this fails is a deployment problem on the host rather than anything the
     /// peer did, and refusing the guest would report it as a connection
     /// failure to the one party who cannot fix it.
-    fn open(label: &str, video: Option<(u32, u32)>) -> Option<Self> {
+    ///
+    /// With a `forward`, a report pad gets no device of this host's own and
+    /// its reports go there instead (docs/05-host.md section 7.2).
+    fn open(
+        label: &str,
+        video: Option<(u32, u32)>,
+        forward: Option<lowlat_inject::uinput::Forward>,
+    ) -> Option<Self> {
         let (width, height) = video?;
         // **Not placed yet, and it does not have to be.** A guest is seated
         // before the loop has opened a display, so the layout is not known
         // here; the loop below picks it up on the pass after it is.
         let extents = desktop_extents(width, height, Rotation::None, None);
         match Devices::create(label) {
-            Ok(devices) => Some(Self {
-                injector: Injector::new(extents),
-                sink: devices,
-            }),
+            Ok(mut devices) => {
+                if let Some(forward) = forward {
+                    devices.forward_reports(forward);
+                }
+                Some(Self {
+                    injector: Injector::new(extents),
+                    sink: devices,
+                })
+            }
             Err(error) => {
                 lowlat_common::log_warn!(
                     "inject: no devices for this guest, input is off, error={error}"
@@ -2240,7 +2308,16 @@ fn drive<M: Media>(
     // A device takes a fifth of a second to become usable and there is nothing
     // to wait on; starting now puts that behind connectivity and session
     // initialization, which are longer, so it costs nothing anybody can see.
-    let mut input = Input::open(&args.guest.to_string(), args.video);
+    // **The application's queue, when it holds the devices for report pads.**
+    // Each report goes straight into it from the parse, under this guest's
+    // number.
+    let forward = args.pad_sink.clone().map(|sink| {
+        let guest = args.guest;
+        lowlat_inject::uinput::Forward(Box::new(move |forwarded| {
+            sink.send(crate::padsink::Report::of(guest, forwarded));
+        }))
+    });
+    let mut input = Input::open(&args.guest.to_string(), args.video, forward);
     if let Some(input) = input.as_mut() {
         // **The one line that joins the two identifiers.** Everything else
         // logs the attempt, and a device name and a pointer holder both need
@@ -2795,6 +2872,7 @@ fn drive<M: Media>(
                     &Said {
                         opcode: control::op::USER_DATA,
                         a1: id,
+                        a2: 0,
                         body,
                     },
                 );
@@ -3254,6 +3332,7 @@ mod tests {
     fn admission(max_guests: usize) -> Admission {
         Admission::new(Config {
             microphone: None,
+            pad_sink: None,
             exclusive_pointer: false,
             rumble_probe: false,
             exclusive_hold_ms: crate::floor::HOLD_MS,
@@ -3272,6 +3351,7 @@ mod tests {
     fn admission_on(base: u16) -> Admission {
         Admission::new(Config {
             microphone: None,
+            pad_sink: None,
             exclusive_pointer: false,
             rumble_probe: false,
             exclusive_hold_ms: crate::floor::HOLD_MS,
@@ -3284,10 +3364,21 @@ mod tests {
         })
     }
 
+    /// A pad report longer than any a pad takes, or empty, is refused at the
+    /// call rather than sent.
+    #[test]
+    fn a_pad_report_outside_what_a_pad_takes_is_refused() {
+        let mut seam = admission(1);
+        let kind = lowlat_core::pad::OutputKind::Feature;
+        assert!(!seam.send_pad_report(1, 3, kind, &[]));
+        assert!(!seam.send_pad_report(1, 3, kind, &[0; 65]));
+    }
+
     #[test]
     fn an_unknown_attempt_is_a_no_op_rather_than_a_fault() {
         let mut seam = Admission::new(Config {
             microphone: None,
+            pad_sink: None,
             exclusive_pointer: false,
             rumble_probe: false,
             exclusive_hold_ms: crate::floor::HOLD_MS,
@@ -3531,6 +3622,7 @@ mod tests {
 
         let mut seam = Admission::new(Config {
             microphone: None,
+            pad_sink: None,
             exclusive_pointer: false,
             rumble_probe: false,
             exclusive_hold_ms: crate::floor::HOLD_MS,
@@ -4287,6 +4379,49 @@ mod geometry {
         assert_eq!(read.video.slow_rts, 4);
     }
 
+    /// **A pad's report message crosses as it was given**: the kind in the
+    /// second argument, the pad in the third, the report the whole body with
+    /// no terminator on it. A peer reads a report by its length, and one
+    /// byte more is part of the report.
+    #[test]
+    fn a_pad_report_said_to_a_guest_crosses_whole_and_unterminated() {
+        use lowlat_core::pad::{self, OutputKind};
+
+        let mut ours = Arena::new();
+        let mut ours = ours.session();
+        let mut theirs = Arena::new();
+        let mut theirs = theirs.session();
+
+        let mut report = [0u8; pad::DS5_OUTPUT_MIN_LEN];
+        report[0] = pad::DS5_OUTPUT_ID;
+        report[1] = 0x03;
+        report[3] = 200;
+        report[4] = 100;
+        send_said(
+            &mut ours,
+            &Said {
+                opcode: op::PAD_OUTPUT,
+                a1: OutputKind::Output.wire(),
+                a2: 3,
+                body: report.to_vec(),
+            },
+        );
+        pump(&mut ours, &mut theirs, 1.0);
+
+        let mut inbound = vec![0u8; MAX_INBOUND];
+        let len = theirs
+            .take_message(CONTROL_CHANNEL, &mut inbound)
+            .expect("nothing crossed")
+            .expect("taken");
+        let message = control::parse(&inbound[..len]).expect("a control message");
+        assert_eq!(message.a0, 48);
+        assert_eq!(message.body, &report[..]);
+        let output = pad::parse_output(&message).expect("a pad report message");
+        assert_eq!(output.pad, 3);
+        assert_eq!(output.kind, OutputKind::Output);
+        assert_eq!(output.report, &report[..]);
+    }
+
     /// A control message longer than the old 64 KiB take buffer but inside
     /// the protocol's ceiling is delivered, not fatal. A take that does not
     /// fit ends the attempt, so an undersized buffer turned a legal message
@@ -4650,6 +4785,7 @@ mod geometry {
     fn an_application_message_to_nobody_reaches_nobody() {
         let mut seam = Admission::new(Config {
             microphone: None,
+            pad_sink: None,
             exclusive_pointer: false,
             rumble_probe: false,
             exclusive_hold_ms: crate::floor::HOLD_MS,
@@ -4662,6 +4798,7 @@ mod geometry {
         });
         assert!(!seam.send_user_data(1, 0, b"hello"));
         assert_eq!(seam.send_user_data_all(0, b"hello"), 0);
+        assert!(!seam.send_pad_report(1, 3, lowlat_core::pad::OutputKind::Output, &[2; 48]));
     }
 
     /// A guest with no devices is still a guest: its input is dropped and
@@ -4968,6 +5105,7 @@ mod reclamation {
 
         let mut seam = Admission::new(Config {
             microphone: None,
+            pad_sink: None,
             exclusive_pointer: false,
             rumble_probe: false,
             exclusive_hold_ms: crate::floor::HOLD_MS,
