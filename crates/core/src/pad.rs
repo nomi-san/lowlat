@@ -424,9 +424,11 @@ pub fn normalize_input(
 
 /// Bring a feature report, as the pad answered it, to the USB form.
 ///
-/// Only the reports of [`Feature`] pass; a wireless DualShock 4 answers its
-/// calibration under another identifier with a checksum, and that one is
-/// checked and rewritten. Returns which report it is and its length in `out`.
+/// Only the reports of [`Feature`] pass. A wireless pad answers with a
+/// checksum in the last four bytes where the USB answer has zeros, and those
+/// are zeroed when they verify; a wireless DualShock 4 answers its calibration
+/// under another identifier as well, and that one is checked and rewritten.
+/// Returns which report it is and its length in `out`.
 pub fn normalize_feature(
     product: Product,
     report: &[u8],
@@ -450,6 +452,11 @@ pub fn normalize_feature(
     let feature = Feature::of(product, report).ok_or(Error::Malformed)?;
     let dst = out.get_mut(..report.len()).ok_or(Error::BufferTooSmall)?;
     dst.copy_from_slice(report);
+    if bt_checked(CRC_SEED_FEATURE, dst) {
+        if let Some(tail) = dst.len().checked_sub(4).and_then(|at| dst.get_mut(at..)) {
+            tail.fill(0);
+        }
+    }
     Ok((feature, report.len()))
 }
 
@@ -696,6 +703,13 @@ mod tests {
     const DS5_CALIBRATION: &[u8] = include_bytes!("../tests/data/pad/ds5/feature-calibration.bin");
     const DS5_FIRMWARE: &[u8] = include_bytes!("../tests/data/pad/ds5/feature-firmware.bin");
     const DS5_PAIRING: &[u8] = include_bytes!("../tests/data/pad/ds5/feature-pairing.bin");
+    const DS4_HELD: &[u8; INPUT_LEN] = include_bytes!("../tests/data/pad/ds4/input-held.bin");
+    const DS5_HELD: &[u8; INPUT_LEN] = include_bytes!("../tests/data/pad/ds5/input-held.bin");
+    const DS5_BT_IDLE: &[u8; BT_INPUT_LEN] =
+        include_bytes!("../tests/data/pad/ds5/bt-input-idle.bin");
+    const DS5_BT_CALIBRATION: &[u8] =
+        include_bytes!("../tests/data/pad/ds5/bt-feature-calibration.bin");
+    const DS5_BT_FIRMWARE: &[u8] = include_bytes!("../tests/data/pad/ds5/bt-feature-firmware.bin");
 
     /// A report a real pad produced, at rest: every stick centred, nothing
     /// pressed, the hat neutral. The two products centre their sticks one
@@ -711,6 +725,54 @@ mod tests {
         assert_eq!(ds5.buttons, 0);
         assert_eq!((ds5.lt, ds5.rt), (0, 0));
         assert_eq!((ds5.lx, ds5.ly, ds5.rx, ds5.ry), (-129, 128, 128, -129));
+    }
+
+    /// A report each pad produced with a finger on the touchpad and Cross
+    /// held: Cross is the one button, and the first touch contact is live at
+    /// the offset each product keeps it.
+    #[test]
+    fn a_held_pad_reads_cross_and_a_live_contact() {
+        assert_eq!(state(Product::DualShock4, DS4_HELD).buttons, bit::A);
+        assert_eq!(DS4_HELD[DS4_TOUCH_AT], 1);
+        assert_eq!(DS4_HELD[DS4_TOUCH_AT + 2] & 0x80, 0);
+        assert_ne!(DS4_HELD[DS4_TOUCH_AT + 6] & 0x80, 0);
+        assert_eq!(state(Product::DualSense, DS5_HELD).buttons, bit::A);
+        assert_eq!(DS5_HELD[33] & 0x80, 0);
+        assert_ne!(DS5_HELD[37] & 0x80, 0);
+    }
+
+    /// What the DualSense on the desk sent over Bluetooth: the checksum
+    /// verifies under the input seed, the content normalises to a report at
+    /// rest, and the calibration and firmware answers it gave over Bluetooth
+    /// are, once their checksums are stripped, byte for byte the answers it
+    /// gave over USB -- which ties the seeds and the offsets to the device
+    /// rather than to each other.
+    #[test]
+    fn the_wireless_dualsense_agrees_with_itself_over_usb() {
+        let mut out = [0u8; INPUT_LEN];
+        assert_eq!(
+            normalize_input(Product::DualSense, DS5_BT_IDLE, &mut out).unwrap(),
+            Transport::Bluetooth
+        );
+        let s = state(Product::DualSense, &out);
+        assert_eq!(s.buttons, 0);
+        assert_eq!((s.lt, s.rt), (0, 0));
+        for v in [s.lx, s.ly, s.rx, s.ry] {
+            assert!(v.abs() < 1000, "stick at rest reads {v}");
+        }
+
+        let mut feature = [0u8; FEATURE_MAX];
+        assert_eq!(
+            normalize_feature(Product::DualSense, DS5_BT_CALIBRATION, &mut feature).unwrap(),
+            (Feature::Calibration, 41)
+        );
+        assert_eq!(&feature[..41], DS5_CALIBRATION);
+        assert_ne!(&DS5_BT_CALIBRATION[37..], &[0, 0, 0, 0]);
+        assert_eq!(
+            normalize_feature(Product::DualSense, DS5_BT_FIRMWARE, &mut feature).unwrap(),
+            (Feature::Firmware, 64)
+        );
+        assert_eq!(&feature[..64], DS5_FIRMWARE);
     }
 
     /// The button bits of each product's report, read into the one bit set
