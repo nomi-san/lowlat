@@ -775,4 +775,126 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(200));
         }
     }
+
+    /// **A rumble raised on the virtual pad comes back as its output report
+    /// with the motors set**, the driver's own force-feedback path: an effect
+    /// uploaded and played on the pad's event node reaches the descriptor as
+    /// the report the peer's real pad is to be written. Needs `/dev/uhid` and
+    /// the seat's access to the pad's event node, so off by default.
+    #[test]
+    #[ignore = "needs /dev/uhid and the playstation driver"]
+    fn a_rumble_on_the_virtual_pad_comes_back_as_its_output_report() {
+        #[repr(C)]
+        struct FfEffect {
+            kind: u16,
+            id: i16,
+            direction: u16,
+            trigger: [u16; 2],
+            replay: [u16; 2],
+            _pad: [u8; 2],
+            // The union, of which the rumble effect is the first four bytes:
+            // strong then weak, each a u16.
+            u: [u64; 4],
+        }
+        const EVIOCSFF: libc::c_ulong = 0x4030_4580;
+        const FF_RUMBLE: u16 = 0x50;
+        const EV_FF: u16 = 0x15;
+
+        for (product, motors_at) in [(Product::DualSense, 3), (Product::DualShock4, 4)] {
+            let address = [0x02, 0x4c, 0x4c, 0x00, 0x01, 0x09];
+            let mut pad =
+                HidPad::create("test", 9, product, address, Features::new()).expect("the device");
+            let began = std::time::Instant::now();
+            while began.elapsed() < std::time::Duration::from_secs(3) {
+                let _ = pad.poll();
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            assert!(pad.started(), "{product:?}: never started");
+
+            // The gamepad node: ours by address, and not the sensors or the
+            // touchpad beside it.
+            let uniq = "02:4c:4c:00:01:09";
+            let mut node = None;
+            for entry in std::fs::read_dir("/sys/class/input").expect("sysfs") {
+                let path = entry.expect("entry").path();
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+                let Some(name) = name.filter(|n| n.starts_with("event")) else {
+                    continue;
+                };
+                let found = std::fs::read_to_string(path.join("device/uniq")).unwrap_or_default();
+                let device = std::fs::read_to_string(path.join("device/name")).unwrap_or_default();
+                if found.trim() == uniq
+                    && !device.contains("Motion")
+                    && !device.contains("Touchpad")
+                {
+                    node = Some(format!("/dev/input/{name}"));
+                }
+            }
+            let node = node.expect("the pad's event node");
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(&node)
+                .unwrap_or_else(|e| panic!("{node}: {e}"));
+            let mut effect = FfEffect {
+                kind: FF_RUMBLE,
+                id: -1,
+                direction: 0,
+                trigger: [0; 2],
+                replay: [1000, 0],
+                _pad: [0; 2],
+                u: [0; 4],
+            };
+            effect.u[0] = u64::from(0xC000u16) | (u64::from(0x8000u16) << 16);
+            // SAFETY: the structure is the kernel's own layout and the
+            // descriptor is open.
+            let rc = unsafe { libc::ioctl(file.as_raw_fd(), EVIOCSFF, &raw mut effect) };
+            assert_eq!(rc, 0, "{product:?}: uploading the effect failed");
+            let play = |value: i32| {
+                use std::io::Write as _;
+                let mut event = [0u8; 24];
+                event[16..18].copy_from_slice(&EV_FF.to_ne_bytes());
+                event[18..20].copy_from_slice(&effect.id.to_ne_bytes());
+                event[20..24].copy_from_slice(&value.to_ne_bytes());
+                (&file)
+                    .write_all(&event)
+                    .unwrap_or_else(|e| panic!("{product:?}: playing failed: {e}"));
+            };
+            play(1);
+            let mut outputs = Vec::new();
+            let began = std::time::Instant::now();
+            while began.elapsed() < std::time::Duration::from_millis(300) {
+                while let Some(written) = pad.poll() {
+                    outputs.push(written);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            play(0);
+            let began = std::time::Instant::now();
+            while began.elapsed() < std::time::Duration::from_millis(300) {
+                while let Some(written) = pad.poll() {
+                    outputs.push(written);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let heads: Vec<Vec<u8>> = outputs.iter().map(|w| w.report[..8].to_vec()).collect();
+            eprintln!("{product:?}: outputs {heads:02x?}");
+            assert!(
+                outputs.iter().any(|w| w.kind == pad::OutputKind::Output
+                    && w.report[0] == product.output_id()
+                    && w.report[motors_at] == 0x80
+                    && w.report[motors_at + 1] == 0xC0),
+                "{product:?}: no output report carried the motors, got {heads:02x?}"
+            );
+            assert!(
+                outputs.iter().any(|w| w.kind == pad::OutputKind::Output
+                    && w.report[motors_at] == 0
+                    && w.report[motors_at + 1] == 0
+                    && w.report[1] != 0),
+                "{product:?}: the stop never came, got {heads:02x?}"
+            );
+            drop(pad);
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
 }

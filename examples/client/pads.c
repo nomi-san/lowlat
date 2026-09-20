@@ -253,10 +253,14 @@ bool raw_pads_write(struct raw_pads *r, const lowlat_pad_report_event *e)
 			strerror(errno));
 	else
 		r->outputs++;
-	if (r->trace)
-		printf("demo: pad %u <- %s %u bytes id 0x%02x\n", p->id,
-			e->kind == LOWLAT_PAD_REPORT_FEATURE ? "feature" : "output", (unsigned) e->len,
-			e->report[0]);
+	if (r->trace) {
+		// The head of the report, where the flags and the motors are.
+		printf("demo: pad %u <- %s %u bytes:", p->id,
+			e->kind == LOWLAT_PAD_REPORT_FEATURE ? "feature" : "output", (unsigned) e->len);
+		for (uint32_t i = 0; i < e->len && i < 12; i++)
+			printf(" %02x", e->report[i]);
+		printf("\n");
+	}
 	return true;
 }
 
