@@ -624,7 +624,10 @@ once, here and under Phase 14; the rules are [10 §8](10-client.md), the wire
   **a DualSense against an established host is neither promised nor gated.**
 - [ ] Fixtures from the pads on the desk (addresses zeroed); hermetic tests: the report stream
   in and the messages out, in order and deduplicated; the output report in and the event
-  out, both framings; a host that reads no reports still receiving states.
+  out, both framings; a host that reads no reports still receiving states. *The core half
+  is in (C7.0, 2026-09-20): the framing, the reads and the fixtures, with the pads' own
+  offsets confirmed against the reports they produced; the DualShock 4 answers its pairing
+  report empty over the raw node, which is one more reason that report is the host's.*
 - [ ] Documentation closure with Phase 14's.
 
 **Gate:**

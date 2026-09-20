@@ -3,6 +3,27 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-20 - C7.0: the pad report framing in the core
+
+### Added
+- **`lowlat_core::pad`** ([01 §11.1](01-protocol.md), §11.2): the two products and their
+  identifiers; the input, output and feature report shapes in the USB form; the standard
+  state a report implies (the toolkit's own numbers: sticks exact over the signed range,
+  the vertical ones away-from-the-player positive, the hat as direction bits); the
+  wireless framings normalised on the way in and put back on the way out, under the
+  checksum the pads use; the touch block an established host's DualShock mode reads; the
+  inbound and outbound message framing, with the DualShock 4's body travelling without its
+  identifier byte. Opcodes 31 and 33 named in the control vocabulary.
+- **Fixtures from the pads on the desk** (`crates/core/tests/data/pad/`, captured by
+  `scripts/capture-pad-fixtures.py`, addresses zeroed): the descriptors, the calibration
+  and firmware reports, the pairing report's shape, an input report at rest for each. The
+  reads are tested against them and the framing round-trips over ten thousand random
+  reports.
+
+### Changed
+- The injector's whole-pad button bits are the core's, re-exported, so the raw report is
+  read into the same set the two established messages use.
+
 ## 2026-09-20 - Phase 14 and C7 planned
 
 ### Decided
