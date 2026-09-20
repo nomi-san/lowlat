@@ -17,6 +17,14 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   (one over USB, one over Bluetooth), the feature reports taken, nine hundred reports a
   second sent with none dropped.
 
+### Fixed
+- **Pad identifiers below 256** ([01 §11.1](01-protocol.md)): an established host keys the
+  state, button, axis and unplug messages on the identifier's low eight bits and the report
+  message on the whole of it, so the demo's raw pads, named from 0x5000, reached its
+  DualShock mode as sixteen-button pads only, without touch, and their rumble came back
+  under an identifier the demo did not know. The demo names them from 200; the header says
+  to keep the identifier below 256.
+
 ## 2026-09-20 - C7.1: the client sends a pad's own reports
 
 ### Added
