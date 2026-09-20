@@ -339,7 +339,11 @@ appears is what the common game launcher and the controller libraries open to re
 features the driver does not expose, so **the seat-access rule for that node matters as
 much as the device node's**: the launcher ships one keyed on the vendor and product, which
 matches a virtual device with the same identity, and the package ships one of its own for a
-host without the launcher.
+host without the launcher (`70-lowlat-pads.rules`, keyed the same way, so the real pad is
+granted alongside). **The service's device policy has to name the HID node** beside the
+input one: it is a second character device of the same class, and a closed policy that
+allows the first alone refuses the second (measured), which reads as every report pad
+failing to be created.
 
 **A virtual pad has to borrow a real controller's identity.** Everything that reads a gamepad
 decides what its buttons mean by looking the bus, vendor, product and version up in a table:

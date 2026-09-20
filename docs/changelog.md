@@ -3,6 +3,79 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-20 - 14.2 and 14.3: the application as the pad sink, and the package
+
+### Added
+- **`pad_sink` in `lowlat_host_config`, `lowlat_host_poll_pad_report` and
+  `lowlat_host_send_pad_report`** ([06 §3](06-api.md), [05 §7.2](05-host.md), minor 10, the
+  host half): with the sink set to the application, a report pad gets no device of the
+  library's own and its reports come out of a poll of their own -- the guest, the pad, the
+  product, the kind, the report in the USB form -- feature reports ahead of the first input
+  report, and **the pad's end after its last report** (`LOWLAT_PAD_REPORT_UNPLUG`, on the
+  guest's unplug and on its leaving), which is what the application destroys its device on;
+  what that device is written goes back as the output report or the feature write, and the
+  guest frames it for its pad's transport. The queue is the microphone's shape: sixty-four
+  reports, the oldest input report dropped and counted when nobody drains, never a feature
+  report or a pad's end. **Measured through the boundary at a wired DualSense's rate**, from
+  the guest thread's push to the parked poll's return: p50 13 us, p95 19 us, p99 26 us, worst
+  40 us (release; 17 / 24 / 32 us in a debug build). The pad enumerations moved to the half
+  both sides share.
+- **The per-report path allocates nothing**, asserted (`crates/host/tests/no_alloc.rs`): the
+  message read, the family rule, the report handed to the sink, queued and taken, and the
+  drop at the queue's cap.
+- **The package**: the service's device policy names the HID node beside the input one
+  (measured: without it the node is refused under the policy and no report pad can be made),
+  and a seat-access rule for the raw node of the virtual DualShock 4 or DualSense, keyed on
+  the identity it shares with the real pad, for a host without the game launcher's own.
+
+### Changed
+- The seam's application-message shape carries the third argument, which a pad's report
+  message names the pad in; the others leave it at zero.
+
+## 2026-09-20 - 14.1: a pad sent as its reports is that pad, and what it is written goes back
+
+### Added
+- **The injector keeps a HID slot per report pad** ([05 §7.2](05-host.md)): a feature
+  report takes the slot and is kept, the first input report creates the device from it, the
+  product is fixed by that first report and a report naming another is not the pad's; the
+  pad is unplugged with its slot, on the message and on the guest's end. The first message
+  that can create a pad fixes its family per identifier: a state or a button makes the
+  sixteen-button pad, a report naming a product makes the HID one, the sixteen-button
+  messages beside a report pad are dropped, a release-all leaves a report pad alone, and an
+  established peer's ten-byte touch block creates nothing.
+- **What the device is written travels back whole** ([01 §11.2](01-protocol.md)): the guest
+  loop polls each HID pad's descriptor every pass -- answering the driver's questions, and
+  taking what an application wrote -- and sends an output report or a feature write as
+  opcode 33; never the rumble message for such a pad.
+
+### Fixed
+- **The DualSense's output report is sixty-three bytes**, as the kernel's driver writes it,
+  not the forty-eight a toolkit writes; the client dropped the driver's, and now takes
+  either length.
+
+## 2026-09-20 - 14.0: a controller on the HID layer
+
+### Added
+- **`lowlat_inject::uhid`** ([07 §4.2](07-platforms.md)): a DualShock 4 or a DualSense
+  presented through the kernel's HID device interface with the product's own descriptor,
+  identity, name and version, its location naming the guest and the pad, and a
+  locally-administered address made from the guest's label and the slot, which the driver
+  insists be unique on the host; the driver's calibration and firmware questions answered
+  from what the peer sent or from the fixtures, the pairing answer built around the
+  address; the descriptor serviced from the guest loop with no thread per pad, the device
+  written only once the kernel runs it. Verified against the kernel's driver on this
+  machine: both products registered with three input nodes and a raw node each, the
+  driver's questions answered within its wait, the probe's own output report back, a
+  second device with the same address refused as the driver promises. **Loopback on this
+  machine** with the demo's raw pads and a by-hand host: both pads presented, the
+  DualSense registered with the real pad's firmware version, the driver's lightbar
+  reports back at the physical pads (the wireless one's framed for its transport), fifty
+  thousand motion events in twelve seconds from the virtual DualSense.
+
+### Fixed
+- The DualShock 4's pairing report over USB is `0x12`, sixteen bytes (an older driver's
+  `0x81` was in the fixtures and the capture script).
+
 ## 2026-09-20 - C7.2: the demo reads the Sony pads raw
 
 ### Added

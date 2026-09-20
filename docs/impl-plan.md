@@ -1779,15 +1779,16 @@ description it hands its browser, which is what lets a second browser family con
    and per-datagram time at p50, p95 and p99.
 7. The encode-latency report is seen on the wire every two seconds on both transports.
 
-## Phase 14 - The HID-layer pads: DualShock 4 and DualSense (planned 2026-09-20)
+## Phase 14 - The HID-layer pads: DualShock 4 and DualSense (built 2026-09-20; gate legs 1, 2 and 4 open)
 
 **Planned 2026-09-20 with the client's C7** ([impl-plan-client.md](impl-plan-client.md)),
 interview of the same day; one phase across both documents, the client half first. The
 decisions are recorded once, here and under C7; the rules are [05 §7.2](05-host.md),
 [07 §4.2](07-platforms.md) and [01 §11](01-protocol.md), the surface [06 §3](06-api.md).
-Executed after C5's owed desk items and before C6.
+Executed before C5's owed desk items at the user's word, and before C6. **Built the same
+day**, 14.0 to 14.3, the client half (C7) gated first against an established host.
 
-- [ ] **The wire is the pair that exists: opcode 31 in, opcode 33 out, raw reports.** The
+- [x] **The wire is the pair that exists: opcode 31 in, opcode 33 out, raw reports.** The
   premise this phase was recorded under -- "carried on their own messages both ways" -- was
   wrong in the useful direction: an established peer already sends a controller's own input
   report on opcode 31, and an established host already sends back what its virtual pad was
@@ -1795,33 +1796,55 @@ Executed after C5's owed desk items and before C6.
   argument no host reads, so a host may present the pad a guest holds rather than one its
   owner chose. Not opcode 32, which is the device passthrough with a fixed body and a whole
   emulator behind it.
-- [ ] **The peer chooses the family, per pad, by the first message that can create it**
+- [x] **The peer chooses the family, per pad, by the first message that can create it**
   ([05 §7.2](05-host.md)); no host-wide type. A pad made from its report drops the
   sixteen-button messages a peer sends beside it. A ten-byte touch block with no product
   creates nothing (an established peer's DualShock 4 stays the sixteen-button pad; the
-  synthesis an established host does from that block is deferred, not built).
-- [ ] **A `uhid` backend in the injector**, beside the input-layer one: the product's own
+  synthesis an established host does from that block is deferred, not built). *14.1.*
+- [x] **A `uhid` backend in the injector**, beside the input-layer one: the product's own
   descriptor, identity and name, the driver's questions answered from the peer's feature
   reports with a default for what was not sent, the pairing answer the host's own with an
   address made unique per guest and pad (the driver refuses a duplicate, and the same
   physical pad may be on the host beside its passthrough), polled from the guest thread's
   loop as the force-feedback poll is -- no thread per pad, and the driver's questions
   answered within its timeout. Destroyed on unplug, on disconnect, by the permission gate;
-  the cap shared with the sixteen-button pads.
-- [ ] **What the device is written travels back whole**, output reports and feature writes,
-  and never as the rumble message for such a pad ([01 §11.2](01-protocol.md)).
-- [ ] **The sink.** `pad_sink` in the host configuration: the library's device by default, or
+  the cap shared with the sixteen-button pads. *14.0: verified against the kernel's driver
+  on this machine -- both products registered with three input nodes and a raw node each,
+  the probe's questions answered, a twin address refused; the driver's source settled the
+  DualShock 4's pairing report (`0x12`, sixteen bytes) and that the DualSense's probe fails
+  without all three answers where the DualShock 4's degrades to defaults.*
+- [x] **What the device is written travels back whole**, output reports and feature writes,
+  and never as the rumble message for such a pad ([01 §11.2](01-protocol.md)). *14.1; the
+  loopback on this machine put the driver's lightbar reports back on both physical pads,
+  and found the DualSense's output report is sixty-three bytes as the driver writes it
+  (14.1a).*
+- [x] **The sink.** `pad_sink` in the host configuration: the library's device by default, or
   the application's, which then takes the reports through a poll of its own and gives back
   what its device emits ([06 §3](06-api.md)); the gate, the cap and the destroy rule stay in
   the library. The poll parks on the microphone's wake; its cost over the device is one
   cross-thread wake, **measured** (p50, p95, p99) and recorded here. The daemon is untouched.
   The Windows application's driver behind it is the application's, not this phase's.
-- [ ] Fixtures from real pads with their addresses zeroed: the descriptors, input reports, the
+  *14.1b and 14.2. Decided while building: the destroy rule reaches the application as a
+  report of its own -- `LOWLAT_PAD_REPORT_UNPLUG` after the pad's last report, on the
+  guest's unplug and on its leaving -- so a device is destroyed on the same rule the
+  library's own is, and in order with the reports; no status field for the report pads (the
+  guest loop's census already names the message); the poll reports the dropped count as the
+  microphone's does. The wake, from the guest thread's push to the parked poll's return at
+  a wired DualSense's rate, 2000 reports: **p50 13 us, p95 19 us, p99 26 us, worst 40 us**
+  (release build; 17 / 24 / 32 us debug).*
+- [x] Fixtures from real pads with their addresses zeroed: the descriptors, input reports, the
   feature reports; property tests for the framing; a zero-allocation assertion on the
-  per-report path; the hermetic session in sink mode.
-- [ ] Packaging item: a seat-access rule for the virtual pad's raw node (the game launcher
+  per-report path; the hermetic session in sink mode. *C7.0 the fixtures and the round
+  trip; 14.2a the assertion (the message read, the family rule, the sink, the queue, the
+  drop at its cap); the hermetic session carries the reports whole and in order, features
+  first, states for a report pad dropped, both kinds of 33 back (C7.1's test); the sink
+  itself is exercised through the boundary in the SDK's tests.*
+- [x] Packaging item: a seat-access rule for the virtual pad's raw node (the game launcher
   ships one keyed on the identity; the package needs its own for a host without it).
-- [ ] Documentation closure.
+  *14.3, and one more the plan did not foresee: the service's closed device policy named
+  the input node only, and the HID node was refused under it (measured), so no report pad
+  could be made by the installed service -- the unit names it now.*
+- [x] Documentation closure.
 
 **Gate:**
 
@@ -1833,11 +1856,18 @@ Executed after C5's owed desk items and before C6.
    drives the trigger effects on the physical pad.
 2. **An established client holding the DualSense against this host**: the same, with the
    output report applied by that client.
-3. The hermetic session in sink mode carries every report whole and in order, feature
+3. ~~The hermetic session in sink mode carries every report whole and in order, feature
    reports first, and drops the sixteen-button messages for a report pad; the wake latency is
-   recorded.
+   recorded.~~ *Passed 2026-09-20: the hermetic session (C7.1) and the sink's own tests
+   (14.1b, 14.2); the wake recorded above.*
 4. Everything Phase 7's gate passed still passes with a sixteen-button pad beside a report
    pad from the same guest.
+
+**Ahead of the gate, on this machine (2026-09-20):** the loopback -- the demo's raw pads to a
+by-hand host -- presented both pads, registered the virtual DualSense with the real pad's
+firmware version, put the driver's lightbar reports back on the physical pads, and delivered
+fifty thousand motion events in twelve seconds from the virtual DualSense's node. Legs 1 and 2
+need the installed service rebuilt from this tree (the unit's device policy changed in 14.3).
 
 **Watched, not decided:** the virtual pad's touchpad is a touchpad to the host's compositor
 and a guest's swipes move the host's pointer as a real pad's would, outside the one-pointer
@@ -1849,6 +1879,12 @@ arbitration; a paired Bluetooth pad at the client, if one is paired.
 
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
+
+- 2026-09-20: **Phase 14 built, legs 1, 2 and 4 of its gate open.** Two things decided
+  while building: the application that holds the devices is told a pad's end through the
+  same poll as its reports, after the last of them, so the destroy rule holds in both modes
+  and in order; and the report pads get no status field. One thing found: the service's
+  closed device policy had to name the HID node, or the installed host makes no report pad.
 
 - 2026-09-20: **Phase 14 is added: the HID-layer pads, with the client's C7.** The phase
   recorded at C3's planning as "a DualSense on its own messages, host half first" was

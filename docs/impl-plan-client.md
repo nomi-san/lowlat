@@ -647,7 +647,7 @@ once, here and under Phase 14; the rules are [10 §8](10-client.md), the wire
   none of them and counts the report, the block and the states it makes its pads from, then
   writes the pads and reads the events back framed for USB and for Bluetooth, with a write
   for an unknown pad dropped and counted.*
-- [ ] Documentation closure with Phase 14's.
+- [x] Documentation closure with Phase 14's. *2026-09-20, with 14.3.*
 
 **Gate:**
 

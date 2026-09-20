@@ -107,10 +107,11 @@ lowlat_status lowlat_host_poll_microphone(lowlat_host *hl, uint32_t timeout_ms, 
                                           uint32_t *count, uint32_t *guest, uint32_t *dropped);
 lowlat_status lowlat_host_poll_pad_report(lowlat_host *hl, uint32_t timeout_ms, uint32_t *guest,
                                           uint32_t *pad, uint32_t *type, uint32_t *kind,
-                                          uint8_t *report, uint32_t *len);   /* minor 10, planned */
+                                          uint8_t *report, uint32_t *len,
+                                          uint32_t *dropped);               /* minor 10 */
 lowlat_status lowlat_host_send_pad_report(lowlat_host *hl, uint32_t guest, uint32_t pad,
                                           uint32_t kind, const uint8_t *report,
-                                          uint32_t len);                    /* minor 10, planned */
+                                          uint32_t len);                    /* minor 10 */
 
 lowlat_status lowlat_host_set_video_config(lowlat_host *hl, const lowlat_host_video_config *cfg);
 lowlat_status lowlat_host_get_video_config(lowlat_host *hl, lowlat_host_video_config *out);
@@ -184,17 +185,20 @@ therefore no partial delivery to call back for. `dropped` reports what a queue n
 had to discard -- oldest first, because late sound is worth less than the sound behind it -- and
 travels with the next delivery, which is the only place it can.
 
-**`lowlat_host_poll_pad_report` is the same shape for a pad's reports** (minor 10, planned;
+**`lowlat_host_poll_pad_report` is the same shape for a pad's reports** (minor 10;
 [05 §7.2](05-host.md)), and exists for an application that owns the virtual device: with
 `pad_sink` set to the application, a DualShock 4's or a DualSense's reports come out here --
 the guest, the pad, the product, the kind, then the report in the pad's USB form -- feature
-reports ahead of the first input report, and `lowlat_host_send_pad_report` carries back what
-the application's device was written. Two hundred and fifty reports a second is the
-microphone's rate, so it is the microphone's queue: bounded, the oldest input report
-dropped and counted when the application falls behind, never a feature report. The wait is
-the same wake the microphone's is, so the cost over the library's own device is one
-cross-thread wake; an application that polls it with a zero timeout from a timed loop adds
-the loop's period, which is why the header says to park a thread on it.
+reports ahead of the first input report, **and the pad's end after its last report**
+(`LOWLAT_PAD_REPORT_UNPLUG`, no report, on the guest's unplug and on its leaving), which is
+what the application destroys its device on; `lowlat_host_send_pad_report` carries back what
+that device was written. Two hundred and fifty reports a second is the microphone's rate,
+so it is the microphone's queue: bounded, the oldest input report dropped and counted when
+the application falls behind, never a feature report or a pad's end. The wait is the same
+wake the microphone's is, so the cost over the library's own device is one cross-thread wake
+(measured, push to return, 13 us at the median and 26 us at the ninety-ninth percentile); an
+application that polls it with a zero timeout from a timed loop adds the loop's period,
+which is why the header says to park a thread on it.
 
 **It refuses rather than waits when the microphone is not accepted.**
 `LOWLAT_ERR_NOT_STARTED` comes back immediately: a host that is not taking microphones will
@@ -421,8 +425,8 @@ so a panel shows both ends of one path from the structure each end can fill. Sta
 `number` and the pointer's three counts (pictures delivered, names not held, pictures
 refused).
 
-**Minor 10 (2026-09-20, C7 and Phase 14): the pad reports.** The client half is built
-(C7.1); the host half is planned.
+**Minor 10 (2026-09-20, C7 and Phase 14): the pad reports.** The client half is C7.1, the
+host half 14.2.
 `lowlat_client_send_pad_report(cl, pad, type, kind, report, len)` hands over a DualShock 4's
 or a DualSense's own report (`type` one of `lowlat_pad_type`: `LOWLAT_PAD_TYPE_DS4`,
 `LOWLAT_PAD_TYPE_DS5`; `kind` one of `lowlat_pad_report`: `LOWLAT_PAD_REPORT_INPUT` the input
@@ -443,11 +447,13 @@ for a pad this client never sent as reports).
 
 On the host half ([§3](#3-host)): `lowlat_host_config.pad_sink` (`LOWLAT_PAD_SINK_DEVICE`,
 the default, or `LOWLAT_PAD_SINK_APP`), `lowlat_host_poll_pad_report(hl, timeout_ms, &guest,
-&pad, &type, &kind, report, &len)` and `lowlat_host_send_pad_report(hl, guest, pad, kind,
-report, len)`, the pair an application uses when it owns the virtual device
+&pad, &type, &kind, report, &len, &dropped)` and `lowlat_host_send_pad_report(hl, guest, pad,
+kind, report, len)`, the pair an application uses when it owns the virtual device
 ([05 §7.2](05-host.md)); a poll of its own, like the microphone's, parked on the same wake --
-call it from a thread that waits on it, not from a loop that polls it. Status gains the
-report pads.
+call it from a thread that waits on it, not from a loop that polls it. `lowlat_pad_report`
+gains `LOWLAT_PAD_REPORT_UNPLUG`, the pad's end, which that poll delivers after the pad's
+last report; the pad enumerations are in the half both sides share. No status field for the
+report pads: the guest's own line names the message when it first arrives.
 
 **Minor 8 (2026-09-19): the preferences, the second backend, the handle, the decoders
 listed.** `lowlat_client_config` gains a `video` block, `lowlat_client_video_config {
@@ -952,10 +958,10 @@ client's own number and the pointer's counts.
 **Minor 10** (2026-09-20) is the pad reports ([§3b](#3b-client), [§3](#3-host)): the client
 half built with C7.1 -- `lowlat_pad_type`, `lowlat_pad_report`, `LOWLAT_PAD_REPORT_MAX`,
 `lowlat_client_send_pad_report`, `LOWLAT_EVENT_PAD_REPORT` with `lowlat_pad_report_event`, the
-three `pad_reports_*` status fields; the host half planned for Phase 14 under the same minor --
+three `pad_reports_*` status fields; the host half built with Phase 14 under the same minor --
 `pad_sink` in a reserved byte of `lowlat_host_config`, `lowlat_pad_sink`,
-`lowlat_host_poll_pad_report` and `lowlat_host_send_pad_report`, a status field for the report
-pads. Nothing moves.
+`lowlat_host_poll_pad_report` and `lowlat_host_send_pad_report`, `LOWLAT_PAD_REPORT_UNPLUG`.
+Nothing moves.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected

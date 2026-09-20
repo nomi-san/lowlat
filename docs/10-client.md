@@ -550,7 +550,7 @@ vocabulary ([01 §11.1](01-protocol.md)) and applies the rules every client appl
   changes. The host takes both and does not require one.
 - Pen and touch are deferred, as they are on the host.
 
-**A DualShock 4 or a DualSense is sent as its own report** (*C7, planned 2026-09-20*; the
+**A DualShock 4 or a DualSense is sent as its own report** (*C7, 2026-09-20*; the
 wire is [01 §11.1](01-protocol.md) and §11.2, the surface [06 §3b](06-api.md)). The
 application hands the library the input report exactly as the device delivered it, USB or
 Bluetooth form, under a pad identifier of its choosing, with the product named; everything
