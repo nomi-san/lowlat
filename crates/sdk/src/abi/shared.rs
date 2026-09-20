@@ -70,6 +70,10 @@ pub enum lowlat_event_type {
     /// The room as the host describes it, with this client's own number;
     /// the body through the caller's buffer. Client only, minor 9.
     LOWLAT_EVENT_GUEST_LIST = 15,
+    /// The host's virtual pad was written: an output report or a feature
+    /// write, for a pad this client sends as its own reports, in the pad's
+    /// own framing. Client only, minor 10.
+    LOWLAT_EVENT_PAD_REPORT = 16,
 }
 
 /// Why an attempt finished.
@@ -268,6 +272,28 @@ pub struct lowlat_rumble_event {
     pub reserved: [u8; 2],
 }
 
+/// What the host's virtual pad was written, for a pad this client sends as
+/// its own reports ([`lowlat_client_send_pad_report`]).
+///
+/// `report` points into a buffer the handle owns and is valid until the next
+/// `lowlat_client_poll_events` on that handle. An output report
+/// (`LOWLAT_PAD_REPORT_OUTPUT`: motors, lights, a DualSense's trigger
+/// effects) is already in the pad's own framing -- the wireless identifier
+/// and checksum added when the pad was reported over Bluetooth -- so the
+/// application writes it to the pad as it is. A feature write
+/// (`LOWLAT_PAD_REPORT_FEATURE`) is in the USB form, identifier first.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_pad_report_event {
+    /// The pad as this client named it in its own reports.
+    pub pad: u32,
+    /// `LOWLAT_PAD_REPORT_OUTPUT` or `LOWLAT_PAD_REPORT_FEATURE`, as an
+    /// integer for the reason [`lowlat_status`] is one.
+    pub kind: u32,
+    pub len: u32,
+    pub report: *const u8,
+}
+
 /// The room as the host describes it.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -316,6 +342,7 @@ pub union lowlat_event_body {
     pub cursor: lowlat_cursor_event,
     pub rumble: lowlat_rumble_event,
     pub guest_list: lowlat_guest_list_event,
+    pub pad_report: lowlat_pad_report_event,
 }
 
 /// One event.

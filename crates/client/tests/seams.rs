@@ -165,11 +165,13 @@ fn session_under(legacy: bool) {
         h: 100,
     }));
     for pressed in [true, false] {
-        assert!(client.send_input(lowlat_client::input::Input::Key {
-            code: 4,
-            mods: 0,
-            pressed,
-        }));
+        client
+            .send_input(lowlat_client::input::Input::Key {
+                code: 4,
+                mods: 0,
+                pressed,
+            })
+            .unwrap();
     }
     let began = Instant::now();
     while began.elapsed() < Duration::from_secs(2)
@@ -222,4 +224,93 @@ fn a_session_under_the_current_cipher() {
 #[test]
 fn a_session_under_the_legacy_cipher() {
     session_under(true);
+}
+
+/// A pad is one family until it is unplugged, and the rule is applied where
+/// the application calls, not on the session thread: a state for a pad sent
+/// as its own reports is refused at once, and so is a report for a pad sent
+/// as states; a report this path does not carry is refused as such; an
+/// unplug forgets the pad. No session is needed for any of it -- the family
+/// is recorded with the attempt -- and without one the sending fails as
+/// "no session" rather than silently.
+#[test]
+fn a_pad_is_one_family_until_it_is_unplugged() {
+    use lowlat_client::Error;
+    use lowlat_client::input::{Input, PadState, ReportKind};
+    use lowlat_core::pad::Product;
+
+    let mut client = Client::new(&lowlat_client::config::Decoding {
+        backend: lowlat_client::config::Backend::None,
+        ..Default::default()
+    })
+    .expect("a client without a decoder");
+    let idle = include_bytes!("../../core/tests/data/pad/ds5/input-idle.bin");
+    let state = Input::PadState {
+        pad: 1,
+        state: PadState::default(),
+    };
+
+    // Nothing is recorded without an attempt.
+    assert_eq!(
+        client.send_pad_report(1, Product::DualSense, ReportKind::Input, idle),
+        Err(Error::NoSession)
+    );
+    client
+        .new_attempt("a", Config::default(), Transport::Bud)
+        .expect("credentials");
+
+    // A report pad: the family is recorded even though no session carries
+    // the report yet, and a state for it is refused from then on.
+    assert_eq!(
+        client.send_pad_report(1, Product::DualSense, ReportKind::Input, idle),
+        Err(Error::NoSession)
+    );
+    assert_eq!(client.send_input(state), Err(Error::PadFamily));
+    assert_eq!(
+        client.send_input(Input::PadButton {
+            pad: 1,
+            button: 0,
+            pressed: true
+        }),
+        Err(Error::PadFamily)
+    );
+    // A state pad: a report for it is refused.
+    assert_eq!(
+        client.send_input(Input::PadState {
+            pad: 2,
+            state: PadState::default()
+        }),
+        Err(Error::NoSession)
+    );
+    assert_eq!(
+        client.send_pad_report(2, Product::DualShock4, ReportKind::Input, idle),
+        Err(Error::PadFamily)
+    );
+    // A report this path does not carry is refused before any family is
+    // recorded: the wrong length, a feature report other than the two.
+    assert_eq!(
+        client.send_pad_report(3, Product::DualSense, ReportKind::Input, &idle[..40]),
+        Err(Error::Report)
+    );
+    assert_eq!(
+        client.send_pad_report(3, Product::DualSense, ReportKind::Feature, &[0x09; 20]),
+        Err(Error::Report)
+    );
+    assert_eq!(
+        client.send_input(Input::PadState {
+            pad: 3,
+            state: PadState::default()
+        }),
+        Err(Error::NoSession)
+    );
+    // An unplug forgets the family, and the other one may follow.
+    assert_eq!(
+        client.send_input(Input::PadUnplug { pad: 1 }),
+        Err(Error::NoSession)
+    );
+    assert_eq!(client.send_input(state), Err(Error::NoSession));
+    assert_eq!(
+        client.send_pad_report(1, Product::DualSense, ReportKind::Input, idle),
+        Err(Error::PadFamily)
+    );
 }

@@ -34,6 +34,7 @@ use crate::input::{Input, Mapper, Viewport};
 use crate::seam::{Event, Outcome};
 use crate::sound::{self, Packets};
 use crate::{AUDIO_CHANNEL, UNIT_BYTES, UNIT_SLOTS, VIDEO_CHANNEL};
+use lowlat_core::pad;
 
 /// The longest inbound control message that will be taken: the user-data
 /// ceiling plus its header. A longer one cannot be consumed and the channel
@@ -200,6 +201,11 @@ pub struct Telemetry {
     /// Input reports refused because the ring to the session thread was
     /// full, counted where they were dropped.
     pub input_dropped: AtomicU32,
+    /// A pad's own reports: sent to the host, received from it, and received
+    /// for a pad this client never sent as reports, which are dropped.
+    pub pad_reports_sent: AtomicU32,
+    pub pad_reports_received: AtomicU32,
+    pub pad_reports_dropped: AtomicU32,
     /// Sound: packets decoded and handed over; dropped because the pool
     /// was full; refused by the decoder; the last hand-over's age; the codec
     /// the decoder was built for on the wire's numbering, 0 for none.
@@ -352,6 +358,29 @@ impl Driver {
     /// One report from the application, onto the wire if the rules allow it.
     pub fn send_input(&mut self, session: &mut Session<'_>, input: &Input) {
         if !self.established {
+            return;
+        }
+        if let Input::PadReport {
+            pad,
+            product,
+            kind,
+            transport,
+            len,
+            report,
+        } = input
+        {
+            let report = report.get(..usize::from(*len)).unwrap_or(&[]);
+            for wire in self
+                .mapper
+                .encode_report(*pad, *product, *kind, *transport, report)
+                .iter()
+                .flatten()
+            {
+                self.send_control(session, &wire.control());
+            }
+            self.telemetry
+                .pad_reports_sent
+                .fetch_add(1, Ordering::Relaxed);
             return;
         }
         if let Some(wire) = self.mapper.encode(input) {
@@ -764,6 +793,37 @@ impl Driver {
                 large: (message.a1 & 0xFF) as u8,
                 small: (message.a2 & 0xFF) as u8,
             }),
+            // What the host's device was written, framed for the pad it
+            // names; a pad never sent as reports has no framing and is
+            // dropped.
+            op::PAD_OUTPUT => {
+                if let Some(output) = pad::parse_output(message) {
+                    let mut framed = [0u8; pad::REPORT_MAX];
+                    match self.mapper.frame_output(
+                        output.pad,
+                        output.kind,
+                        output.report,
+                        &mut framed,
+                    ) {
+                        Some(len) => {
+                            self.telemetry
+                                .pad_reports_received
+                                .fetch_add(1, Ordering::Relaxed);
+                            self.emit.send(Event::PadReport {
+                                pad: output.pad,
+                                kind: output.kind,
+                                len: u8::try_from(len).unwrap_or(u8::MAX),
+                                report: framed,
+                            });
+                        }
+                        None => {
+                            self.telemetry
+                                .pad_reports_dropped
+                                .fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                }
+            }
             op::DISCONNECT => {
                 let status = message.a0 as i32;
                 self.telemetry

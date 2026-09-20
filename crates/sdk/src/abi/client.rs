@@ -334,6 +334,12 @@ pub struct lowlat_client_status {
     pub cursor_images: u32,
     pub cursor_misses: u32,
     pub cursor_refused: u32,
+    /// A pad's own reports (minor 10): handed to the session thread, received
+    /// from the host, and received for a pad this client never sent as
+    /// reports, which are dropped.
+    pub pad_reports_sent: u32,
+    pub pad_reports_received: u32,
+    pub pad_reports_dropped: u32,
 }
 
 /// What one channel did, seen from the receiving end.
@@ -471,6 +477,40 @@ pub struct lowlat_pad_state {
     pub rt: u8,
 }
 
+/// Which controller a report came from, for [`lowlat_client_send_pad_report`].
+///
+/// **The product decides what the host presents**: a device of that model,
+/// with its own descriptor and identity, which the host's driver claims as
+/// the real thing. A pad reported as one product stays that product until
+/// it is unplugged.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_pad_type {
+    /// A DualShock 4, either generation.
+    LOWLAT_PAD_TYPE_DS4 = 1,
+    /// A DualSense.
+    LOWLAT_PAD_TYPE_DS5 = 2,
+}
+
+/// Which of a pad's reports travels, for [`lowlat_client_send_pad_report`]
+/// and [`lowlat_pad_report_event`].
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_pad_report {
+    /// An input report, as the pad delivered it: what the pad is doing.
+    LOWLAT_PAD_REPORT_INPUT = 0,
+    /// An output report the host's device was written: motors, lights,
+    /// effects. Received only.
+    LOWLAT_PAD_REPORT_OUTPUT = 1,
+    /// A feature report: calibration or firmware read from the pad on the
+    /// way in, a feature write to the host's device on the way back.
+    LOWLAT_PAD_REPORT_FEATURE = 2,
+}
+
+/// The longest report [`lowlat_client_send_pad_report`] takes or
+/// [`lowlat_pad_report_event`] carries: a wireless report with its framing.
+pub const LOWLAT_PAD_REPORT_MAX: u32 = 78;
+
 /// No decoder has been built yet: no parameter set has arrived.
 pub const LOWLAT_DECODER_NONE_YET: u32 = 0;
 /// A decoder exists and is being fed.
@@ -598,6 +638,8 @@ pub struct lowlat_client {
     /// The pointer's picture, decoded here for the application: one buffer,
     /// grown to the largest picture seen, lent until the next poll.
     cursor: std::sync::Mutex<Vec<u8>>,
+    /// The last pad report delivered, lent the same way.
+    pad_report: std::sync::Mutex<[u8; ::lowlat_core::pad::REPORT_MAX]>,
 }
 
 #[derive(Debug)]
@@ -686,6 +728,7 @@ pub unsafe extern "C" fn lowlat_client_create(
             }),
             events,
             cursor: std::sync::Mutex::new(Vec::new()),
+            pad_report: std::sync::Mutex::new([0; ::lowlat_core::pad::REPORT_MAX]),
         });
         unsafe { out.write(Box::into_raw(handle)) };
         LOWLAT_OK
@@ -769,6 +812,7 @@ fn refused(error: ::lowlat_client::Error) -> lowlat_status {
         Error::TooManyHeld => LOWLAT_ERR_TOO_MANY_HELD,
         Error::NoSession => LOWLAT_ERR_NOT_STARTED,
         Error::TooSmall(_) => LOWLAT_ERR_TOO_SMALL,
+        Error::Report | Error::PadFamily => LOWLAT_ERR_INVALID_ARGUMENT,
     }
 }
 
@@ -1056,12 +1100,9 @@ fn report(cl: *mut lowlat_client, input: ::lowlat_client::input::Input) -> lowla
     // SAFETY: every caller is an entry point whose contract is that `cl`
     // came from `lowlat_client_create`.
     unsafe {
-        entered(cl, |handle| {
-            if handle.held().seam.send_input(input) {
-                LOWLAT_OK
-            } else {
-                LOWLAT_ERR_NOT_STARTED
-            }
+        entered(cl, |handle| match handle.held().seam.send_input(input) {
+            Ok(()) => LOWLAT_OK,
+            Err(error) => refused(error),
         })
     }
 }
@@ -1271,6 +1312,83 @@ pub unsafe extern "C" fn lowlat_client_send_pad_state(
     )
 }
 
+/// A DualShock 4's or a DualSense's own report, as the pad delivered it
+/// (docs/10-client.md section 8; minor 10).
+///
+/// The library sends the report raw and the standard state it implies
+/// beside it, so a host that does not read reports still has a pad; it
+/// normalises a wireless pad's framing on the way in and puts it back on
+/// what comes back ([`lowlat_pad_report_event`]). `kind` is
+/// `LOWLAT_PAD_REPORT_INPUT` for an input report -- the 64 bytes a USB pad
+/// delivers, or the 78 a wireless one does -- or `LOWLAT_PAD_REPORT_FEATURE`
+/// for one of the two feature reports the host's driver asks a new device
+/// for, read from the pad and sent **before the first input report**:
+/// calibration (`0x02` for a DualShock 4 over USB, `0x05` over Bluetooth
+/// and for a DualSense) and firmware (`0xA3`, `0x20`), identifier in byte
+/// 0. Any subset; the host keeps a default for what did not arrive. The
+/// pairing report is the host's and is refused.
+///
+/// A pad reported here is one product until [`lowlat_client_send_pad_unplug`],
+/// and `lowlat_client_send_pad_state`, `_button` and `_axis` are refused for
+/// it -- the report already carries what they would say.
+///
+/// @param[in] cl The handle from [`lowlat_client_create`].
+/// @param[in] pad The pad, the application's own identifier.
+/// @param[in] type_ One of [`lowlat_pad_type`].
+/// @param[in] kind `LOWLAT_PAD_REPORT_INPUT` or `LOWLAT_PAD_REPORT_FEATURE`.
+/// @param[in] report The report's bytes, identifier byte first.
+/// @param[in] len How many, at most [`LOWLAT_PAD_REPORT_MAX`].
+/// @returns [`LOWLAT_OK`]; [`LOWLAT_ERR_NOT_STARTED`] with no session up;
+/// [`LOWLAT_ERR_INVALID_ARGUMENT`] for a report this path does not carry
+/// (the wrong length or identifier for the product, a feature report other
+/// than the two, a wireless checksum that does not verify), for a kind that
+/// is not sent, or for a pad already sent as states.
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`]; `report` points to `len` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_send_pad_report(
+    cl: *mut lowlat_client,
+    pad: u32,
+    type_: u32,
+    kind: u32,
+    report: *const u8,
+    len: u32,
+) -> lowlat_status {
+    use ::lowlat_client::input::ReportKind;
+    use ::lowlat_core::pad::Product;
+    let product = match type_ {
+        x if x == lowlat_pad_type::LOWLAT_PAD_TYPE_DS4 as u32 => Product::DualShock4,
+        x if x == lowlat_pad_type::LOWLAT_PAD_TYPE_DS5 as u32 => Product::DualSense,
+        _ => return LOWLAT_ERR_INVALID_ARGUMENT,
+    };
+    let kind = match kind {
+        x if x == lowlat_pad_report::LOWLAT_PAD_REPORT_INPUT as u32 => ReportKind::Input,
+        x if x == lowlat_pad_report::LOWLAT_PAD_REPORT_FEATURE as u32 => ReportKind::Feature,
+        _ => return LOWLAT_ERR_INVALID_ARGUMENT,
+    };
+    if report.is_null() || len == 0 || len > LOWLAT_PAD_REPORT_MAX {
+        return LOWLAT_ERR_INVALID_ARGUMENT;
+    }
+    // SAFETY: the contract is that `report` points to `len` bytes, and `len`
+    // was bounded above.
+    let bytes = unsafe { core::slice::from_raw_parts(report, len as usize) };
+    // SAFETY: `cl` came from `lowlat_client_create`.
+    unsafe {
+        entered(cl, |handle| {
+            match handle
+                .held()
+                .seam
+                .send_pad_report(pad, product, kind, bytes)
+            {
+                Ok(()) => LOWLAT_OK,
+                Err(error) => refused(error),
+            }
+        })
+    }
+}
+
 /// The pad is gone. The host destroys its device, which releases everything.
 ///
 /// @param[in] cl The handle from [`lowlat_client_create`].
@@ -1429,6 +1547,9 @@ pub unsafe extern "C" fn lowlat_client_get_status(
                 cursor_images: t.cursor_images.load(Ordering::Relaxed),
                 cursor_misses: t.cursor_misses.load(Ordering::Relaxed),
                 cursor_refused: t.cursor_refused.load(Ordering::Relaxed),
+                pad_reports_sent: t.pad_reports_sent.load(Ordering::Relaxed),
+                pad_reports_received: t.pad_reports_received.load(Ordering::Relaxed),
+                pad_reports_dropped: t.pad_reports_dropped.load(Ordering::Relaxed),
             };
             LOWLAT_OK
         })
@@ -2036,6 +2157,39 @@ fn described(
                 },
             },
         },
+        Event::PadReport {
+            pad,
+            kind,
+            len,
+            report,
+        } => {
+            let len = usize::from(*len).min(report.len());
+            let mut lent = handle
+                .pad_report
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            *lent = *report;
+            let kind = match kind {
+                ::lowlat_core::pad::OutputKind::Output => {
+                    lowlat_pad_report::LOWLAT_PAD_REPORT_OUTPUT
+                }
+                ::lowlat_core::pad::OutputKind::Feature => {
+                    lowlat_pad_report::LOWLAT_PAD_REPORT_FEATURE
+                }
+            };
+            lowlat_event {
+                kind: LOWLAT_EVENT_PAD_REPORT,
+                dropped,
+                body: lowlat_event_body {
+                    pad_report: lowlat_pad_report_event {
+                        pad: *pad,
+                        kind: kind as u32,
+                        len: u32::try_from(len).unwrap_or(u32::MAX),
+                        report: lent.as_ptr(),
+                    },
+                },
+            }
+        }
     }
 }
 
@@ -2179,6 +2333,9 @@ mod tests {
             cursor_images: 0,
             cursor_misses: 0,
             cursor_refused: 0,
+            pad_reports_sent: 0,
+            pad_reports_received: 0,
+            pad_reports_dropped: 0,
         };
         assert_eq!(
             unsafe { lowlat_client_get_status(handle, &raw mut status) },

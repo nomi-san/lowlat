@@ -8,6 +8,7 @@
 //! is known and the control channel is written.
 
 use lowlat_core::control::{Control, op};
+use lowlat_core::pad::{self, Product};
 use lowlat_core::video::Rotation;
 
 /// Where the application drew the picture, in the units its positions use.
@@ -22,16 +23,18 @@ pub struct Viewport {
     pub h: i32,
 }
 
-/// A whole pad at one moment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct PadState {
-    pub buttons: u16,
-    pub lx: i16,
-    pub ly: i16,
-    pub rx: i16,
-    pub ry: i16,
-    pub lt: u8,
-    pub rt: u8,
+/// A whole pad at one moment, as the whole-pad message carries it. The
+/// core's, which also reads a controller's own report into it.
+pub type PadState = pad::State;
+
+/// Which of a pad's reports the application handed over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReportKind {
+    /// An input report: what the pad is doing.
+    Input,
+    /// A feature report the pad answered: calibration or firmware, sent
+    /// ahead of the first input report.
+    Feature,
 }
 
 /// What the application reports. Positions are in the window's units.
@@ -77,6 +80,18 @@ pub enum Input {
     PadUnplug {
         pad: u32,
     },
+    /// A DualShock 4's or a DualSense's own report, already in the USB form
+    /// (docs/01-protocol.md 11.1): an input report of [`pad::INPUT_LEN`]
+    /// bytes, or a feature report of `len` bytes, and how the pad is
+    /// attached, which decides the framing of what comes back.
+    PadReport {
+        pad: u32,
+        product: Product,
+        kind: ReportKind,
+        transport: pad::Transport,
+        len: u8,
+        report: [u8; pad::INPUT_LEN],
+    },
     /// Everything held comes up; the application reports it on losing focus.
     ReleaseAll,
 }
@@ -96,6 +111,9 @@ pub(crate) const RING_DEPTH: usize = 1024;
 /// The pad states remembered for deduplication, by identifier.
 const PADS: usize = 4;
 
+/// The largest body a message here carries: a controller's report.
+const BODY_MAX: usize = pad::INPUT_LEN;
+
 /// One message, ready for the header writer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Wire {
@@ -103,7 +121,7 @@ pub(crate) struct Wire {
     pub a1: u32,
     pub a2: u32,
     pub opcode: u8,
-    body: [u8; 15],
+    body: [u8; BODY_MAX],
     body_len: usize,
 }
 
@@ -114,9 +132,27 @@ impl Wire {
             a1,
             a2,
             opcode,
-            body: [0; 15],
+            body: [0; BODY_MAX],
             body_len: 0,
         }
+    }
+
+    /// A message whose first argument is its body's length.
+    fn with_body(opcode: u8, a1: u32, a2: u32, body: &[u8]) -> Self {
+        let mut wire = Self::bare(opcode, u32::try_from(body.len()).unwrap_or(0), a1, a2);
+        let len = body.len().min(BODY_MAX);
+        if let (Some(dst), Some(src)) = (wire.body.get_mut(..len), body.get(..len)) {
+            dst.copy_from_slice(src);
+        }
+        wire.body_len = len;
+        wire
+    }
+
+    /// The whole-pad message names its pad in the first argument, not the
+    /// length.
+    const fn named(mut self, pad: u32) -> Self {
+        self.a0 = pad;
+        self
     }
 
     pub(crate) fn control(&self) -> Control<'_> {
@@ -130,6 +166,26 @@ impl Wire {
     }
 }
 
+/// What is remembered of a pad sent as its own report: the product, how it
+/// is attached, and the sequence a wireless DualSense's output reports
+/// carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Raw {
+    product: Product,
+    transport: pad::Transport,
+    seq: u8,
+}
+
+/// One pad the application has named: the last state sent for it, and what
+/// its reports said about it when it is sent as reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Slot {
+    id: u32,
+    /// The last state sent, once one has been.
+    last: Option<PadState>,
+    raw: Option<Raw>,
+}
+
 /// The mapping from the window to the picture, and the guards around it.
 #[derive(Debug, Default)]
 pub(crate) struct Mapper {
@@ -138,7 +194,7 @@ pub(crate) struct Mapper {
     /// for a quarter turn, because a host expects coordinates in the
     /// orientation its output is in. Zero until a picture has arrived.
     picture: (i64, i64),
-    pads: [Option<(u32, PadState)>; PADS],
+    pads: [Option<Slot>; PADS],
 }
 
 /// `value * num / den`, rounded to nearest, for non-negative operands.
@@ -285,49 +341,166 @@ impl Mapper {
                 signed(i32::from(value)),
                 pad,
             )),
-            Input::PadState { pad, state } => {
-                if !self.pad_changed(pad, state) {
-                    return None;
-                }
-                let mut wire = Wire::bare(op::GAMEPAD_STATE, pad, 0, 0);
-                // Three bytes of padding a host skips, then the fields.
-                let [b0, b1] = state.buttons.to_be_bytes();
-                let [lx0, lx1] = state.lx.to_be_bytes();
-                let [ly0, ly1] = state.ly.to_be_bytes();
-                let [rx0, rx1] = state.rx.to_be_bytes();
-                let [ry0, ry1] = state.ry.to_be_bytes();
-                wire.body = [
-                    0, 0, 0, b0, b1, lx0, lx1, ly0, ly1, rx0, rx1, ry0, ry1, state.lt, state.rt,
-                ];
-                wire.body_len = 15;
-                Some(wire)
-            }
+            Input::PadState { pad, state } => self.pad_state(pad, state),
             Input::PadUnplug { pad } => {
                 if let Some(slot) = self
                     .pads
                     .iter_mut()
-                    .find(|s| s.is_some_and(|(id, _)| id == pad))
+                    .find(|s| s.is_some_and(|slot| slot.id == pad))
                 {
                     *slot = None;
                 }
                 Some(Wire::bare(op::GAMEPAD_UNPLUG, 0, 0, pad))
             }
+            // A report is several messages; the driver asks for them apart.
+            Input::PadReport { .. } => None,
             Input::ReleaseAll => Some(Wire::bare(op::RELEASE, 0, 0, 0)),
+        }
+    }
+
+    /// The whole-pad state message for one pad, or `None` when nothing
+    /// changed since the last one sent for it.
+    fn pad_state(&mut self, pad: u32, state: PadState) -> Option<Wire> {
+        if !self.pad_changed(pad, state) {
+            return None;
+        }
+        let [b0, b1] = state.buttons.to_be_bytes();
+        let [lx0, lx1] = state.lx.to_be_bytes();
+        let [ly0, ly1] = state.ly.to_be_bytes();
+        let [rx0, rx1] = state.rx.to_be_bytes();
+        let [ry0, ry1] = state.ry.to_be_bytes();
+        // Three bytes of padding a host skips, then the fields.
+        Some(
+            Wire::with_body(
+                op::GAMEPAD_STATE,
+                0,
+                0,
+                &[
+                    0, 0, 0, b0, b1, lx0, lx1, ly0, ly1, rx0, rx1, ry0, ry1, state.lt, state.rt,
+                ],
+            )
+            .named(pad),
+        )
+    }
+
+    /// What one of a pad's own reports puts on the wire, in order
+    /// (docs/10-client.md section 8): the report itself; for a DualShock 4
+    /// the touch block an established host's DualShock mode reads; and,
+    /// for an input report, the standard state it implies when that changed
+    /// -- so a host that reads no reports still has a pad, and one that
+    /// does has its slot. A feature report is one message. The product and
+    /// the transport are remembered for what comes back.
+    pub(crate) fn encode_report(
+        &mut self,
+        pad: u32,
+        product: Product,
+        kind: ReportKind,
+        transport: pad::Transport,
+        report: &[u8],
+    ) -> [Option<Wire>; 3] {
+        let feature = kind == ReportKind::Feature;
+        // A feature report says nothing about the transport; the input
+        // reports do, and a late feature report must not unsay it.
+        self.remember_raw(pad, product, (!feature).then_some(transport));
+        let a2 = u32::from(product.product_id()) | if feature { pad::FEATURE_BIT } else { 0 };
+        if feature {
+            return [
+                Some(Wire::with_body(op::PAD_REPORT, pad, a2, report)),
+                None,
+                None,
+            ];
+        }
+        let Ok(usb) = <&[u8; pad::INPUT_LEN]>::try_from(report) else {
+            return [None, None, None];
+        };
+        let (body, block): (&[u8], Option<Wire>) = match product {
+            Product::DualShock4 => (
+                pad::ds4_body(usb),
+                Some(Wire::with_body(
+                    op::PAD_REPORT,
+                    pad,
+                    0,
+                    &pad::ds4_touch_block(usb),
+                )),
+            ),
+            Product::DualSense => (usb, None),
+            _ => (usb, None),
+        };
+        [
+            Some(Wire::with_body(op::PAD_REPORT, pad, a2, body)),
+            block,
+            self.pad_state(pad, pad::state(product, usb)),
+        ]
+    }
+
+    /// Frame what the host's device was written for the pad it names: an
+    /// output report in the pad's own framing, a feature write as it is.
+    /// `None` for a pad this mapper never sent as reports.
+    pub(crate) fn frame_output(
+        &mut self,
+        pad: u32,
+        kind: pad::OutputKind,
+        report: &[u8],
+        out: &mut [u8; pad::REPORT_MAX],
+    ) -> Option<usize> {
+        let slot = self.pads.iter_mut().flatten().find(|s| s.id == pad)?;
+        let raw = slot.raw.as_mut()?;
+        match kind {
+            pad::OutputKind::Output => {
+                let len =
+                    pad::frame_output(raw.product, raw.transport, raw.seq, report, out).ok()?;
+                raw.seq = raw.seq.wrapping_add(1) & 0x0F;
+                Some(len)
+            }
+            pad::OutputKind::Feature => {
+                let dst = out.get_mut(..report.len())?;
+                dst.copy_from_slice(report);
+                Some(report.len())
+            }
+        }
+    }
+
+    /// The slot for a pad, made if there is room.
+    fn slot(&mut self, pad: u32) -> Option<&mut Slot> {
+        if let Some(index) = self
+            .pads
+            .iter()
+            .position(|s| s.is_some_and(|s| s.id == pad))
+        {
+            return self.pads.get_mut(index).and_then(Option::as_mut);
+        }
+        let free = self.pads.iter().position(Option::is_none)?;
+        let slot = self.pads.get_mut(free)?;
+        *slot = Some(Slot {
+            id: pad,
+            last: None,
+            raw: None,
+        });
+        slot.as_mut()
+    }
+
+    fn remember_raw(&mut self, pad: u32, product: Product, transport: Option<pad::Transport>) {
+        if let Some(slot) = self.slot(pad) {
+            let (seq, known) = slot
+                .raw
+                .map_or((0, pad::Transport::Usb), |raw| (raw.seq, raw.transport));
+            slot.raw = Some(Raw {
+                product,
+                transport: transport.unwrap_or(known),
+                seq,
+            });
         }
     }
 
     /// Whether a pad's state differs from the last one sent for it, recording
     /// it. A pad with no slot left is sent every time.
     fn pad_changed(&mut self, pad: u32, state: PadState) -> bool {
-        if let Some((_, last)) = self.pads.iter_mut().flatten().find(|(id, _)| *id == pad) {
-            let changed = *last != state;
-            *last = state;
-            return changed;
-        }
-        if let Some(slot) = self.pads.iter_mut().find(|s| s.is_none()) {
-            *slot = Some((pad, state));
-        }
-        true
+        let Some(slot) = self.slot(pad) else {
+            return true;
+        };
+        let changed = slot.last != Some(state);
+        slot.last = Some(state);
+        changed
     }
 }
 
@@ -574,6 +747,189 @@ mod tests {
                 state: moved
             })
             .is_some()
+        );
+    }
+
+    const DS5_IDLE: &[u8; pad::INPUT_LEN] =
+        include_bytes!("../../core/tests/data/pad/ds5/input-idle.bin");
+    const DS5_HELD: &[u8; pad::INPUT_LEN] =
+        include_bytes!("../../core/tests/data/pad/ds5/input-held.bin");
+    const DS4_IDLE: &[u8; pad::INPUT_LEN] =
+        include_bytes!("../../core/tests/data/pad/ds4/input-idle.bin");
+    const DS5_CALIBRATION: &[u8] =
+        include_bytes!("../../core/tests/data/pad/ds5/feature-calibration.bin");
+
+    fn wires(reports: [Option<Wire>; 3]) -> Vec<(u8, u32, u32, u32, usize)> {
+        reports
+            .iter()
+            .flatten()
+            .map(|w| (w.opcode, w.a0, w.a1, w.a2, w.body_len))
+            .collect()
+    }
+
+    /// A DualSense's report goes out as itself and as the state it implies,
+    /// in that order; the same state again goes out as the report alone; a
+    /// changed one brings the state back.
+    #[test]
+    fn a_dualsense_report_is_the_report_then_the_state_it_implies() {
+        let mut m = Mapper::default();
+        let first = m.encode_report(
+            3,
+            Product::DualSense,
+            ReportKind::Input,
+            pad::Transport::Usb,
+            DS5_IDLE,
+        );
+        assert_eq!(
+            wires(first),
+            vec![
+                (op::PAD_REPORT, 64, 3, 0x0CE6, 64),
+                (op::GAMEPAD_STATE, 3, 0, 0, 15)
+            ]
+        );
+        assert_eq!(first[0].unwrap().control().body, DS5_IDLE);
+        let again = m.encode_report(
+            3,
+            Product::DualSense,
+            ReportKind::Input,
+            pad::Transport::Usb,
+            DS5_IDLE,
+        );
+        assert_eq!(wires(again), vec![(op::PAD_REPORT, 64, 3, 0x0CE6, 64)]);
+        let held = m.encode_report(
+            3,
+            Product::DualSense,
+            ReportKind::Input,
+            pad::Transport::Usb,
+            DS5_HELD,
+        );
+        assert_eq!(wires(held).len(), 2);
+        let state = held[2].unwrap();
+        assert_eq!(&state.control().body[3..5], &pad::bit::A.to_be_bytes());
+    }
+
+    /// A DualShock 4's report goes out without its identifier byte, then as
+    /// the ten-byte block an established host reads under no product, then
+    /// as the state.
+    #[test]
+    fn a_dualshock_report_travels_as_body_block_and_state() {
+        let mut m = Mapper::default();
+        let out = m.encode_report(
+            5,
+            Product::DualShock4,
+            ReportKind::Input,
+            pad::Transport::Usb,
+            DS4_IDLE,
+        );
+        assert_eq!(
+            wires(out),
+            vec![
+                (op::PAD_REPORT, 63, 5, 0x09CC, 63),
+                (op::PAD_REPORT, 10, 5, 0, 10),
+                (op::GAMEPAD_STATE, 5, 0, 0, 15)
+            ]
+        );
+        assert_eq!(out[0].unwrap().control().body, &DS4_IDLE[1..]);
+        assert_eq!(out[1].unwrap().control().body, &DS4_IDLE[33..43]);
+    }
+
+    /// A feature report is one message with the feature bit, and it says
+    /// nothing about the transport: the one the input reports gave stays.
+    #[test]
+    fn a_feature_report_is_one_message_and_keeps_the_transport() {
+        let mut m = Mapper::default();
+        let out = m.encode_report(
+            3,
+            Product::DualSense,
+            ReportKind::Feature,
+            pad::Transport::Usb,
+            DS5_CALIBRATION,
+        );
+        assert_eq!(
+            wires(out),
+            vec![(op::PAD_REPORT, 41, 3, 0x0CE6 | pad::FEATURE_BIT, 41)]
+        );
+        m.encode_report(
+            3,
+            Product::DualSense,
+            ReportKind::Input,
+            pad::Transport::Bluetooth,
+            DS5_IDLE,
+        );
+        m.encode_report(
+            3,
+            Product::DualSense,
+            ReportKind::Feature,
+            pad::Transport::Usb,
+            DS5_CALIBRATION,
+        );
+        let mut framed = [0u8; pad::REPORT_MAX];
+        let mut report = [0u8; pad::DS5_OUTPUT_LEN];
+        report[0] = pad::DS5_OUTPUT_ID;
+        assert_eq!(
+            m.frame_output(3, pad::OutputKind::Output, &report, &mut framed),
+            Some(pad::BT_OUTPUT_LEN)
+        );
+    }
+
+    /// What comes back is framed for the pad's transport, a wireless
+    /// DualSense's sequence advancing per report; a feature write passes as
+    /// it is; a pad never sent as reports has no framing.
+    #[test]
+    fn output_is_framed_for_the_pad_it_names() {
+        let mut m = Mapper::default();
+        let mut framed = [0u8; pad::REPORT_MAX];
+        let mut report = [0u8; pad::DS5_OUTPUT_LEN];
+        report[0] = pad::DS5_OUTPUT_ID;
+        report[3] = 200;
+        assert_eq!(
+            m.frame_output(3, pad::OutputKind::Output, &report, &mut framed),
+            None
+        );
+        m.encode_report(
+            3,
+            Product::DualSense,
+            ReportKind::Input,
+            pad::Transport::Usb,
+            DS5_IDLE,
+        );
+        assert_eq!(
+            m.frame_output(3, pad::OutputKind::Output, &report, &mut framed),
+            Some(pad::DS5_OUTPUT_LEN)
+        );
+        assert_eq!(&framed[..pad::DS5_OUTPUT_LEN], &report);
+        assert_eq!(
+            m.frame_output(3, pad::OutputKind::Feature, &report[..5], &mut framed),
+            Some(5)
+        );
+        assert_eq!(&framed[..5], &report[..5]);
+
+        m.encode_report(
+            4,
+            Product::DualSense,
+            ReportKind::Input,
+            pad::Transport::Bluetooth,
+            DS5_IDLE,
+        );
+        let mut seqs = Vec::new();
+        for _ in 0..17 {
+            assert_eq!(
+                m.frame_output(4, pad::OutputKind::Output, &report, &mut framed),
+                Some(pad::BT_OUTPUT_LEN)
+            );
+            seqs.push(framed[1] >> 4);
+        }
+        assert_eq!(seqs[..3], [0, 1, 2]);
+        assert_eq!(seqs[15..], [15, 0]);
+        assert_eq!(framed[0], 0x31);
+        assert_eq!(&framed[3..50], &report[1..]);
+
+        // The wrong product's report for the pad is refused.
+        let mut wrong = [0u8; pad::DS4_OUTPUT_LEN];
+        wrong[0] = pad::DS4_OUTPUT_ID;
+        assert_eq!(
+            m.frame_output(4, pad::OutputKind::Output, &wrong, &mut framed),
+            None
         );
     }
 

@@ -42,7 +42,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 9
+#define LOWLAT_ABI_MINOR 10
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 #define LOWLAT_FEATURE_HOST 1
@@ -250,6 +250,10 @@
 
 #define LOWLAT_PAD_STATE_Y 32768
 
+/// The longest report `lowlat_client_send_pad_report` takes or
+/// `lowlat_pad_report_event` carries: a wireless report with its framing.
+#define LOWLAT_PAD_REPORT_MAX 78
+
 /// No decoder has been built yet: no parameter set has arrived.
 #define LOWLAT_DECODER_NONE_YET 0
 
@@ -410,6 +414,10 @@ typedef enum lowlat_event_type {
     /// The room as the host describes it, with this client's own number;
     /// the body through the caller's buffer. Client only, minor 9.
     LOWLAT_EVENT_GUEST_LIST = 15,
+    /// The host's virtual pad was written: an output report or a feature
+    /// write, for a pad this client sends as its own reports, in the pad's
+    /// own framing. Client only, minor 10.
+    LOWLAT_EVENT_PAD_REPORT = 16,
 } lowlat_event_type;
 
 /// Why an attempt finished.
@@ -610,6 +618,32 @@ typedef enum lowlat_fence_kind {
     /// Reusable now.
     LOWLAT_FENCE_NONE = 0,
 } lowlat_fence_kind;
+
+/// Which controller a report came from, for `lowlat_client_send_pad_report`.
+///
+/// **The product decides what the host presents**: a device of that model,
+/// with its own descriptor and identity, which the host's driver claims as
+/// the real thing. A pad reported as one product stays that product until
+/// it is unplugged.
+typedef enum lowlat_pad_type {
+    /// A DualShock 4, either generation.
+    LOWLAT_PAD_TYPE_DS4 = 1,
+    /// A DualSense.
+    LOWLAT_PAD_TYPE_DS5 = 2,
+} lowlat_pad_type;
+
+/// Which of a pad's reports travels, for `lowlat_client_send_pad_report`
+/// and `lowlat_pad_report_event`.
+typedef enum lowlat_pad_report {
+    /// An input report, as the pad delivered it: what the pad is doing.
+    LOWLAT_PAD_REPORT_INPUT = 0,
+    /// An output report the host's device was written: motors, lights,
+    /// effects. Received only.
+    LOWLAT_PAD_REPORT_OUTPUT = 1,
+    /// A feature report: calibration or firmware read from the pad on the
+    /// way in, a feature write to the host's device on the way back.
+    LOWLAT_PAD_REPORT_FEATURE = 2,
+} lowlat_pad_report;
 
 /// One client, as the application holds it.
 ///
@@ -1235,6 +1269,26 @@ typedef struct lowlat_guest_list_event {
     uint32_t body_len;
 } lowlat_guest_list_event;
 
+/// What the host's virtual pad was written, for a pad this client sends as
+/// its own reports (`lowlat_client_send_pad_report`).
+///
+/// `report` points into a buffer the handle owns and is valid until the next
+/// `lowlat_client_poll_events` on that handle. An output report
+/// (`LOWLAT_PAD_REPORT_OUTPUT`: motors, lights, a DualSense's trigger
+/// effects) is already in the pad's own framing -- the wireless identifier
+/// and checksum added when the pad was reported over Bluetooth -- so the
+/// application writes it to the pad as it is. A feature write
+/// (`LOWLAT_PAD_REPORT_FEATURE`) is in the USB form, identifier first.
+typedef struct lowlat_pad_report_event {
+    /// The pad as this client named it in its own reports.
+    uint32_t pad;
+    /// `LOWLAT_PAD_REPORT_OUTPUT` or `LOWLAT_PAD_REPORT_FEATURE`, as an
+    /// integer for the reason `lowlat_status` is one.
+    uint32_t kind;
+    uint32_t len;
+    const uint8_t *report;
+} lowlat_pad_report_event;
+
 /// Whichever event this is.
 ///
 /// A union cannot describe itself, and the tag beside it is what says which
@@ -1255,6 +1309,7 @@ typedef union lowlat_event_body {
     lowlat_cursor_event cursor;
     lowlat_rumble_event rumble;
     lowlat_guest_list_event guest_list;
+    lowlat_pad_report_event pad_report;
 } lowlat_event_body;
 
 /// One event.
@@ -1478,6 +1533,12 @@ typedef struct lowlat_client_status {
     uint32_t cursor_images;
     uint32_t cursor_misses;
     uint32_t cursor_refused;
+    /// A pad's own reports (minor 10): handed to the session thread, received
+    /// from the host, and received for a pad this client never sent as
+    /// reports, which are dropped.
+    uint32_t pad_reports_sent;
+    uint32_t pad_reports_received;
+    uint32_t pad_reports_dropped;
 } lowlat_client_status;
 
 /// What one channel did, seen from the receiving end.
@@ -2469,6 +2530,46 @@ lowlat_status lowlat_client_send_pad_axis(lowlat_client *cl,
 lowlat_status lowlat_client_send_pad_state(lowlat_client *cl,
                                            uint32_t pad,
                                            const lowlat_pad_state *state) LOWLAT_NOEXCEPT;
+
+/// A DualShock 4's or a DualSense's own report, as the pad delivered it
+/// (docs/10-client.md section 8; minor 10).
+///
+/// The library sends the report raw and the standard state it implies
+/// beside it, so a host that does not read reports still has a pad; it
+/// normalises a wireless pad's framing on the way in and puts it back on
+/// what comes back (`lowlat_pad_report_event`). `kind` is
+/// `LOWLAT_PAD_REPORT_INPUT` for an input report -- the 64 bytes a USB pad
+/// delivers, or the 78 a wireless one does -- or `LOWLAT_PAD_REPORT_FEATURE`
+/// for one of the two feature reports the host's driver asks a new device
+/// for, read from the pad and sent **before the first input report**:
+/// calibration (`0x02` for a DualShock 4 over USB, `0x05` over Bluetooth
+/// and for a DualSense) and firmware (`0xA3`, `0x20`), identifier in byte
+/// 0. Any subset; the host keeps a default for what did not arrive. The
+/// pairing report is the host's and is refused.
+///
+/// A pad reported here is one product until `lowlat_client_send_pad_unplug`,
+/// and `lowlat_client_send_pad_state`, `_button` and `_axis` are refused for
+/// it -- the report already carries what they would say.
+///
+/// @param[in] cl The handle from `lowlat_client_create`.
+/// @param[in] pad The pad, the application's own identifier.
+/// @param[in] type_ One of `lowlat_pad_type`.
+/// @param[in] kind `LOWLAT_PAD_REPORT_INPUT` or `LOWLAT_PAD_REPORT_FEATURE`.
+/// @param[in] report The report's bytes, identifier byte first.
+/// @param[in] len How many, at most `LOWLAT_PAD_REPORT_MAX`.
+/// @returns `LOWLAT_OK`; `LOWLAT_ERR_NOT_STARTED` with no session up;
+/// `LOWLAT_ERR_INVALID_ARGUMENT` for a report this path does not carry
+/// (the wrong length or identifier for the product, a feature report other
+/// than the two, a wireless checksum that does not verify), for a kind that
+/// is not sent, or for a pad already sent as states.
+///
+/// @attention `cl` came from `lowlat_client_create`; `report` points to `len` bytes.
+lowlat_status lowlat_client_send_pad_report(lowlat_client *cl,
+                                            uint32_t pad,
+                                            uint32_t type_,
+                                            uint32_t kind,
+                                            const uint8_t *report,
+                                            uint32_t len) LOWLAT_NOEXCEPT;
 
 /// The pad is gone. The host destroys its device, which releases everything.
 ///

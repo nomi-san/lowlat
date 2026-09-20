@@ -1374,6 +1374,173 @@ fn input_reaches_the_host_in_the_pictures_pixels() {
     assert_eq!(transitions, vec![(true, 0, 0), (false, 960, 540)]);
 }
 
+/// A pad's own reports reach the host as the report and the state it
+/// implies -- a DualShock 4's as its body, the touch block and the state --
+/// and what the host's device is written comes back as an event framed for
+/// the pad: as it is for a USB pad, with the wireless identifier, sequence
+/// and checksum for one reported over Bluetooth; a write for a pad never
+/// sent as reports is dropped and counted.
+#[test]
+fn a_pads_own_reports_reach_the_host_and_its_writes_come_back() {
+    use lowlat_client::input::{Input, ReportKind};
+    use lowlat_core::pad::{self, OutputKind, Product};
+
+    let ds5_idle: &[u8; 64] = include_bytes!("../../core/tests/data/pad/ds5/input-idle.bin");
+    let ds5_held: &[u8; 64] = include_bytes!("../../core/tests/data/pad/ds5/input-held.bin");
+    let ds4_idle: &[u8; 64] = include_bytes!("../../core/tests/data/pad/ds4/input-idle.bin");
+    let calibration = include_bytes!("../../core/tests/data/pad/ds5/feature-calibration.bin");
+
+    let mut pair = Pair::new(29, clean());
+    pair.run_for(2000.0);
+    assert!(pair.established());
+    pair.run_for(200.0);
+
+    let report = |pad, product, kind, transport, bytes: &[u8]| {
+        let mut report = [0u8; pad::INPUT_LEN];
+        report[..bytes.len()].copy_from_slice(bytes);
+        Input::PadReport {
+            pad,
+            product,
+            kind,
+            transport,
+            len: bytes.len() as u8,
+            report,
+        }
+    };
+    let inputs = [
+        report(
+            3,
+            Product::DualSense,
+            ReportKind::Feature,
+            pad::Transport::Usb,
+            calibration,
+        ),
+        report(
+            3,
+            Product::DualSense,
+            ReportKind::Input,
+            pad::Transport::Usb,
+            ds5_idle,
+        ),
+        report(
+            3,
+            Product::DualSense,
+            ReportKind::Input,
+            pad::Transport::Usb,
+            ds5_idle,
+        ),
+        report(
+            3,
+            Product::DualSense,
+            ReportKind::Input,
+            pad::Transport::Usb,
+            ds5_held,
+        ),
+        report(
+            5,
+            Product::DualShock4,
+            ReportKind::Input,
+            pad::Transport::Usb,
+            ds4_idle,
+        ),
+        report(
+            7,
+            Product::DualSense,
+            ReportKind::Input,
+            pad::Transport::Bluetooth,
+            ds5_idle,
+        ),
+    ];
+    for input in &inputs {
+        pair.guest
+            .driver
+            .send_input(pair.guest.endpoint.session(), input);
+    }
+    pair.run_for(300.0);
+    let host = &pair.host;
+    // One feature, four DualSense inputs, a DualShock 4 body and its block.
+    assert_eq!(host.received[usize::from(op::PAD_REPORT)], 7);
+    // The states: two for pad 3 (idle, then held), one each for 5 and 7.
+    assert_eq!(host.received[usize::from(op::GAMEPAD_STATE)], 4);
+    assert_eq!(
+        pair.guest
+            .telemetry
+            .pad_reports_sent
+            .load(Ordering::Relaxed),
+        6
+    );
+    // The host's injector made the sixteen-button pads from the states, as
+    // a host that reads no reports would: three devices, four state messages.
+    assert_eq!(host.injector.tally().pads, 4);
+    let mut pads: Vec<u32> = host
+        .injected
+        .events
+        .iter()
+        .filter_map(|(device, _)| match device {
+            Device::Gamepad(id) => Some(*id),
+            _ => None,
+        })
+        .collect();
+    pads.sort_unstable();
+    pads.dedup();
+    assert_eq!(pads, vec![3, 5, 7]);
+
+    // What the host's devices are written, back to the pads.
+    let mut out = [0u8; pad::DS5_OUTPUT_LEN];
+    out[0] = pad::DS5_OUTPUT_ID;
+    out[1] = 0x03;
+    out[3] = 200;
+    out[4] = 100;
+    out[45..48].copy_from_slice(&[0, 255, 0]);
+    let mut buf = [0u8; 128];
+    for (pad, kind) in [
+        (3, OutputKind::Output),
+        (7, OutputKind::Output),
+        (99, OutputKind::Output),
+        (3, OutputKind::Feature),
+    ] {
+        let n = pad::encode_output(&mut buf, pad, kind, &out).unwrap();
+        let message = control::parse(&buf[..n]).unwrap();
+        pair.host.send_control(&message);
+    }
+    pair.run_for(100.0);
+    let mut back = Vec::new();
+    while let Some(event) = pair.guest.events.try_recv() {
+        if let Event::PadReport {
+            pad,
+            kind,
+            len,
+            report,
+        } = event.event
+        {
+            back.push((pad, kind, report[..usize::from(len)].to_vec()));
+        }
+    }
+    assert_eq!(back.len(), 3);
+    assert_eq!(back[0].0, 3);
+    assert_eq!(back[0].1, OutputKind::Output);
+    assert_eq!(back[0].2, out.to_vec());
+    assert_eq!(back[1].0, 7);
+    assert_eq!(back[1].2.len(), pad::BT_OUTPUT_LEN);
+    assert_eq!(&back[1].2[..3], &[0x31, 0x00, 0x10]);
+    assert_eq!(&back[1].2[3..50], &out[1..]);
+    assert_eq!(back[2], (3, OutputKind::Feature, out.to_vec()));
+    assert_eq!(
+        pair.guest
+            .telemetry
+            .pad_reports_received
+            .load(Ordering::Relaxed),
+        3
+    );
+    assert_eq!(
+        pair.guest
+            .telemetry
+            .pad_reports_dropped
+            .load(Ordering::Relaxed),
+        1
+    );
+}
+
 /// Everything else the host says on the control channel comes out as an
 /// event, in order, with the right bytes: the pointer's picture fresh and
 /// then by name, a name after a forget (a miss, delivered without the

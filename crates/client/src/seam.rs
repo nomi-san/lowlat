@@ -27,8 +27,9 @@ use lowlat_net::{Guest, Wake};
 use crate::config::{Backend, Caps, Config, Decoding, FrameKind, Video};
 use crate::driver::{Telemetry, Units};
 use crate::frames::{Frames, Held};
-use crate::input::{Input, RING_DEPTH, Request, Viewport};
+use crate::input::{Input, RING_DEPTH, ReportKind, Request, Viewport};
 use crate::sound::{self, Packets, Sound};
+use lowlat_core::pad::{self, Product};
 
 /// Which pipe an attempt asks for. A client of this library uses the native
 /// one; the browser's exists so a page can be a guest, and a native client
@@ -104,6 +105,15 @@ pub enum Event {
     /// The host asked a pad to vibrate: the pad this client named, and the
     /// two motors as the wire carries them.
     Rumble { pad: u32, large: u8, small: u8 },
+    /// What the host's device was written, for a pad this client sends as
+    /// its own reports: an output report in the pad's own framing, or a
+    /// feature write as the host sent it; `len` bytes of `report`.
+    PadReport {
+        pad: u32,
+        kind: lowlat_core::pad::OutputKind,
+        len: u8,
+        report: [u8; lowlat_core::pad::REPORT_MAX],
+    },
     /// The room as the host describes it, with this client's own number.
     /// The body is the host's application's and is not read here.
     GuestList { number: u32, body: Vec<u8> },
@@ -176,6 +186,13 @@ pub enum Error {
     /// The buffer given holds fewer frames than the sound packet; carries
     /// how many it needs. The packet waits for the next call.
     TooSmall(usize),
+    /// A pad's report is not one this path carries: the wrong length or
+    /// identifier for its product, a feature report other than calibration
+    /// or firmware, or a wireless checksum that does not verify.
+    Report,
+    /// A pad already sent as the other family: as its own reports, or as
+    /// states and buttons. One family until it is unplugged.
+    PadFamily,
 }
 
 /// The decoder settled at creation: which backend, on which device.
@@ -213,6 +230,17 @@ pub(crate) enum Ask {
     Leave,
 }
 
+/// How a pad is sent: as the sixteen-button messages, or as its own reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Family {
+    Standard,
+    Raw,
+}
+
+/// How many pads' families are remembered; past that the rule cannot be
+/// applied and the pad goes through as sent.
+const PADS: usize = 8;
+
 struct Attempt {
     id: String,
     config: Config,
@@ -223,6 +251,9 @@ struct Attempt {
     /// Input and the viewport, in order, to the session thread. Fixed depth;
     /// a full ring drops the newest and counts it, never blocks the caller.
     requests: Option<Arc<Ring<Request, RING_DEPTH>>>,
+    /// The pads the application has named and which family each is sent
+    /// as, so the other family is refused until an unplug.
+    pads: [Option<(u32, Family)>; PADS],
     thread: Option<Guest>,
     decode: Option<(JoinHandle<()>, Arc<AtomicBool>)>,
     /// The session thread's epoch, once it is running: the clock the sound
@@ -562,6 +593,7 @@ impl Client {
             inject: None,
             ask: None,
             requests: None,
+            pads: [None; PADS],
             thread: None,
             decode: None,
             epoch: Arc::new(OnceLock::new()),
@@ -799,10 +831,105 @@ impl Client {
         self.request(Request::Viewport(viewport))
     }
 
-    /// One input report. False if there is no session; a full ring drops it
-    /// and counts it rather than saying so here.
-    pub fn send_input(&mut self, input: Input) -> bool {
-        self.request(Request::Input(input))
+    /// One input report. `Err(NoSession)` without one; a full ring drops it
+    /// and counts it rather than saying so here. A state, button or axis for
+    /// a pad sent as its own reports is refused (`PadFamily`); an unplug
+    /// forgets the pad's family.
+    pub fn send_input(&mut self, input: Input) -> Result<(), Error> {
+        let pad = match input {
+            Input::PadState { pad, .. }
+            | Input::PadButton { pad, .. }
+            | Input::PadAxis { pad, .. } => Some(pad),
+            Input::PadUnplug { pad } => {
+                self.forget_pad(pad);
+                None
+            }
+            _ => None,
+        };
+        if let Some(pad) = pad {
+            self.claim_pad(pad, Family::Standard)?;
+        }
+        if self.request(Request::Input(input)) {
+            Ok(())
+        } else {
+            Err(Error::NoSession)
+        }
+    }
+
+    /// A DualShock 4's or a DualSense's own report, as the pad delivered it
+    /// (docs/10-client.md section 8): normalised to the USB form here, on the
+    /// application's thread, and handed to the session thread with the
+    /// product and the transport. `Report` for one this path does not carry,
+    /// `PadFamily` for a pad already sent as states.
+    pub fn send_pad_report(
+        &mut self,
+        pad: u32,
+        product: Product,
+        kind: ReportKind,
+        report: &[u8],
+    ) -> Result<(), Error> {
+        let mut normalised = [0u8; pad::INPUT_LEN];
+        let (transport, len) = match kind {
+            ReportKind::Input => {
+                let transport = pad::normalize_input(product, report, &mut normalised)
+                    .map_err(|_| Error::Report)?;
+                (transport, pad::INPUT_LEN)
+            }
+            ReportKind::Feature => {
+                let mut feature = [0u8; pad::FEATURE_MAX];
+                let (_, len) = pad::normalize_feature(product, report, &mut feature)
+                    .map_err(|_| Error::Report)?;
+                if let (Some(dst), Some(src)) = (normalised.get_mut(..len), feature.get(..len)) {
+                    dst.copy_from_slice(src);
+                }
+                // A feature report says nothing about the transport: a
+                // wireless pad's checksum was stripped above, and the mapper
+                // keeps what the input reports said.
+                (pad::Transport::Usb, len)
+            }
+        };
+        self.claim_pad(pad, Family::Raw)?;
+        let input = Input::PadReport {
+            pad,
+            product,
+            kind,
+            transport,
+            len: u8::try_from(len).unwrap_or(u8::MAX),
+            report: normalised,
+        };
+        if self.request(Request::Input(input)) {
+            Ok(())
+        } else {
+            Err(Error::NoSession)
+        }
+    }
+
+    /// Record which family a pad is sent as, refusing the other.
+    fn claim_pad(&mut self, pad: u32, family: Family) -> Result<(), Error> {
+        let Some(attempt) = self.attempt.as_mut() else {
+            return Err(Error::NoSession);
+        };
+        if let Some((_, known)) = attempt.pads.iter().flatten().find(|(id, _)| *id == pad) {
+            return if *known == family {
+                Ok(())
+            } else {
+                Err(Error::PadFamily)
+            };
+        }
+        if let Some(slot) = attempt.pads.iter_mut().find(|s| s.is_none()) {
+            *slot = Some((pad, family));
+        }
+        Ok(())
+    }
+
+    fn forget_pad(&mut self, pad: u32) {
+        if let Some(attempt) = self.attempt.as_mut() {
+            for slot in attempt.pads.iter_mut() {
+                if slot.is_some_and(|(id, _)| id == pad) {
+                    *slot = None;
+                }
+            }
+        }
     }
 
     /// Send the host's application a message. False if there is no session.
