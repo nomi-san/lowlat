@@ -684,7 +684,9 @@ delivery gate does what it is meant to throughout, and no guest ever saw a broke
   application sees the controller it is holding, with the touchpad, motion, the lightbar,
   the adaptive triggers and the haptics carried on their own messages both ways. The host
   half comes first because the client half is worthless without it; the client's plan
-  says the same under its C3.
+  says the same under its C3. *Planned 2026-09-20 as Phase 14 below, with the client's C7;
+  two of the premises did not survive the reading: the messages exist already, and the
+  client half goes first because an established host can be talked to.*
 - [x] Events queued rather than dropped until a freshly created device is usable
   ([07 §4.1](07-platforms.md)), with a bounded queue and a stated overflow rule.
 - [x] The three device-node failures told apart: module absent, group or rule missing,
@@ -1777,12 +1779,88 @@ description it hands its browser, which is what lets a second browser family con
    and per-datagram time at p50, p95 and p99.
 7. The encode-latency report is seen on the wire every two seconds on both transports.
 
+## Phase 14 - The HID-layer pads: DualShock 4 and DualSense (planned 2026-09-20)
+
+**Planned 2026-09-20 with the client's C7** ([impl-plan-client.md](impl-plan-client.md)),
+interview of the same day; one phase across both documents, the client half first. The
+decisions are recorded once, here and under C7; the rules are [05 §7.2](05-host.md),
+[07 §4.2](07-platforms.md) and [01 §11](01-protocol.md), the surface [06 §3](06-api.md).
+Executed after C5's owed desk items and before C6.
+
+- [ ] **The wire is the pair that exists: opcode 31 in, opcode 33 out, raw reports.** The
+  premise this phase was recorded under -- "carried on their own messages both ways" -- was
+  wrong in the useful direction: an established peer already sends a controller's own input
+  report on opcode 31, and an established host already sends back what its virtual pad was
+  written on opcode 33. Nothing is invented; the one extension is the product named in an
+  argument no host reads, so a host may present the pad a guest holds rather than one its
+  owner chose. Not opcode 32, which is the device passthrough with a fixed body and a whole
+  emulator behind it.
+- [ ] **The peer chooses the family, per pad, by the first message that can create it**
+  ([05 §7.2](05-host.md)); no host-wide type. A pad made from its report drops the
+  sixteen-button messages a peer sends beside it. A ten-byte touch block with no product
+  creates nothing (an established peer's DualShock 4 stays the sixteen-button pad; the
+  synthesis an established host does from that block is deferred, not built).
+- [ ] **A `uhid` backend in the injector**, beside the input-layer one: the product's own
+  descriptor, identity and name, the driver's questions answered from the peer's feature
+  reports with a default for what was not sent, the pairing answer the host's own with an
+  address made unique per guest and pad (the driver refuses a duplicate, and the same
+  physical pad may be on the host beside its passthrough), polled from the guest thread's
+  loop as the force-feedback poll is -- no thread per pad, and the driver's questions
+  answered within its timeout. Destroyed on unplug, on disconnect, by the permission gate;
+  the cap shared with the sixteen-button pads.
+- [ ] **What the device is written travels back whole**, output reports and feature writes,
+  and never as the rumble message for such a pad ([01 §11.2](01-protocol.md)).
+- [ ] **The sink.** `pad_sink` in the host configuration: the library's device by default, or
+  the application's, which then takes the reports through a poll of its own and gives back
+  what its device emits ([06 §3](06-api.md)); the gate, the cap and the destroy rule stay in
+  the library. The poll parks on the microphone's wake; its cost over the device is one
+  cross-thread wake, **measured** (p50, p95, p99) and recorded here. The daemon is untouched.
+  The Windows application's driver behind it is the application's, not this phase's.
+- [ ] Fixtures from real pads with their addresses zeroed: the descriptors, input reports, the
+  feature reports; property tests for the framing; a zero-allocation assertion on the
+  per-report path; the hermetic session in sink mode.
+- [ ] Packaging item: a seat-access rule for the virtual pad's raw node (the game launcher
+  ships one keyed on the identity; the package needs its own for a host without it).
+- [ ] Documentation closure.
+
+**Gate:**
+
+1. **Both ends here, both pads, the service on this machine**: the virtual pad's own nodes
+   show the touch contacts and the motion sensors live; the game launcher's controller
+   settings show the pad as the model it is, with gyro and touch live, and a lightbar colour
+   set there and a rumble test there reach the physical pad at the desk; a title with native
+   DualSense support, or a probe writing the output report over the virtual pad's raw node,
+   drives the trigger effects on the physical pad.
+2. **An established client holding the DualSense against this host**: the same, with the
+   output report applied by that client.
+3. The hermetic session in sink mode carries every report whole and in order, feature
+   reports first, and drops the sixteen-button messages for a report pad; the wake latency is
+   recorded.
+4. Everything Phase 7's gate passed still passes with a sixteen-button pad beside a report
+   pad from the same guest.
+
+**Watched, not decided:** the virtual pad's touchpad is a touchpad to the host's compositor
+and a guest's swipes move the host's pointer as a real pad's would, outside the one-pointer
+arbitration; a paired Bluetooth pad at the client, if one is paired.
+
 ---
 
 ## Change log
 
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
+
+- 2026-09-20: **Phase 14 is added: the HID-layer pads, with the client's C7.** The phase
+  recorded at C3's planning as "a DualSense on its own messages, host half first" was
+  planned against the binaries and both premises fell: the messages exist (opcode 31 in,
+  33 out, raw reports, an established peer sending them already), and the client half
+  goes first because an established host in its DualShock mode can be talked to before
+  the device backend exists. Decided with the pads on the desk: the peer names the
+  product and the first message fixes the family, so nothing host-wide selects a pad
+  type ([00 D12](00-overview.md) amended); the device is a `uhid` one the kernel's own
+  driver claims; what it is written travels back whole rather than as rumble; and an
+  application may take the reports itself, which is what a host on another operating
+  system does with its own driver.
 
 - 2026-09-12: **Phase 13 is added: the browser transport.** A browser was always the reason
   the credential exchange carries a certificate fingerprint and an ICE-shaped username and

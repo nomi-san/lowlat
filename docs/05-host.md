@@ -782,6 +782,40 @@ is offered: it is what the common controller libraries raise, and the shaped eff
 require carrying an envelope simulation for a peer that can express two motor strengths and
 nothing else.
 
+**A pad sent as its own report is presented as that product, on the HID layer** (*Phase 14,
+planned 2026-09-20*; the wire is [01 §11.1](01-protocol.md), the layer choice
+[07 §4.2](07-platforms.md)). The first message that can create a pad fixes what it is: a
+whole state or a single button or axis makes the sixteen-button pad above; a report naming a
+DualShock 4 or a DualSense makes a device of that model, with the device's own descriptor,
+identity and name, which the kernel's own driver then claims -- so the touchpad, the motion
+sensors, the lights and the hidraw node exist as they do for the real thing, and every
+consumer that recognises the real thing recognises this one. From then on the pad takes only
+its reports; the sixteen-button messages a peer sends beside them are dropped as the fallback
+they are. Nothing on the host chooses the family: the peer decides by what it sends, and a
+guest who wants the plain pad for a game that ignores the other kind sends the plain pad.
+
+Three things the host owes such a device, all decided at the report's arrival:
+
+- **The driver's questions are answered from the peer.** The kernel's driver reads
+  calibration and firmware reports from a new device and will not attach to one that does
+  not answer; a peer sends its pad's own answers ahead of the first report, and the host
+  keeps a plausible default for whatever a peer did not send. The pairing report is the
+  host's alone: the driver refuses a second device with an address it already has, and the
+  same physical pad can be present on the host beside its own passthrough, so the virtual
+  pad carries an address the host makes up, unique per guest and pad.
+- **What an application writes to the device travels back whole**, as the report it wrote,
+  and never folded into the rumble message: the lightbar, the player lights and a DualSense's
+  trigger effects are in that report and have no other road. So a report pad is never
+  rumbled by opcode 20, whose answer on the peer's side would repaint the lightbar.
+- **An application may take the reports itself instead.** A host built with the sink set to
+  the application creates no device for report pads; the reports are handed out through a
+  poll of their own, feature reports first, and the application gives back what its own
+  device emits. The permission gate, the per-guest cap and the destroy-on-unplug rule apply
+  in both modes, so an application only ever sees a pad the guest is allowed to have. The
+  poll parks on the same wake the microphone's does: one cross-thread wake, no interval.
+  It is the shape a host on another operating system uses with its own virtual-device
+  driver, and it is why that driver is the application's and not this library's.
+
 ### §7.3 The attention chord
 
 **A guest asks for `Ctrl+Alt+Del` rather than typing it**, because the operating system the

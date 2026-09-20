@@ -252,7 +252,9 @@ the rules are [10 §8](10-client.md).
 contacts, motion, lightbar, adaptive triggers and haptics -- is its own phase after C5 on
 both plans, host `uhid` backend first, and the touchpad already has a wire the client will
 have to learn there; a Unicode key message for an input method needs a host half that is
-not a key injection, and is owed with it; pen and touch stay deferred.
+not a key injection, and is owed with it; pen and touch stay deferred. *Planned 2026-09-20
+as C7 below with the host's Phase 14; the wire turned out to be whole, and the client half
+goes first.*
 
 ## Phase C4 - Sound (closed 2026-09-18)
 
@@ -587,6 +589,55 @@ replayed, shows none at all, which is what a clean path reads.
 **Gate:** the workflow produces the full library, the client-only library and the demo, and
 `lowlat_features()` on each says what it is.
 
+## Phase C7 - The pad reports: DualShock 4 and DualSense (planned 2026-09-20)
+
+**Planned 2026-09-20 with the host's Phase 14** ([impl-plan.md](impl-plan.md)), interview of
+the same day. Executed **before C6** and after C5's owed desk items: packaging the demo and
+the header before this phase changes both would be done twice. The decisions are recorded
+once, here and under Phase 14; the rules are [10 §8](10-client.md), the wire
+[01 §11](01-protocol.md), the surface [06 §3b](06-api.md).
+
+- [ ] **One call, one event** (minor 10): `lowlat_client_send_pad_report(cl, pad, type, kind,
+  report, len)` with the product named and the report as the device delivered it, USB or
+  Bluetooth form; `LOWLAT_EVENT_PAD_REPORT` with what the host's device was written, lent
+  until the next poll, in the pad's own framing. `send_pad_state`, `button` and `axis` stay
+  the sixteen-button pad's, and a pad identifier is one family until it is unplugged.
+- [ ] **The library derives the standard state from the report and sends it beside it**, the
+  report first, deduplicated, so a host that does not read reports still has a pad and one
+  that does has its slot; a DualShock 4 also travels as the ten-byte touch block an
+  established host's DualShock mode reads, and its whole report goes without its identifier
+  byte so no established host in any mode can mistake it for a DualSense's
+  ([01 §11.1](01-protocol.md)).
+- [ ] **Feature reports first, bounded**: calibration and firmware for each product, any
+  subset, before the first input report; anything else refused. The pairing report is the
+  host's.
+- [ ] **Bluetooth normalised in the library**: the wireless framing stripped on the way in, the
+  transport remembered per pad, the identifier and checksum put back on the way out; the
+  calibration report's wireless identifier rewritten.
+- [ ] **The rumble event stays** for any pad a host rumbles that way; the application decides
+  what to write (a motor-only report keeping the lightbar it last wrote).
+- [ ] **The demo reads the raw nodes itself**, nothing patched in the toolkit, which has no HID
+  path on Linux: the Sony nodes found by identity, opened under the seat's access, polled in
+  the millisecond loop, the feature reports read at open, the toolkit's controller events for
+  those pads dropped, unplug when a node dies. A knob decides whether a host gets reports or
+  states, defaulting to reports for this library's hosts only, known from the host list:
+  **a DualSense against an established host is neither promised nor gated.**
+- [ ] Fixtures from the pads on the desk (addresses zeroed); hermetic tests: the report stream
+  in and the messages out, in order and deduplicated; the output report in and the event
+  out, both framings; a host that reads no reports still receiving states.
+- [ ] Documentation closure with Phase 14's.
+
+**Gate:**
+
+1. **The DualShock 4 against the established host in its DualShock mode** (before the host
+   half exists): the pad appears there as a DualShock 4, sticks and buttons the right way
+   up, the touchpad works there, rumble comes back as the rumble message and the demo writes
+   it.
+2. **Both pads against this host** and **the established client holding the DualSense against
+   this host** are Phase 14's gate, run with it.
+3. The hermetic tests above; the ABI gate at minor 10; the census on the host names the two
+   opcodes and nothing unexpected.
+
 ## Later, and not in v1
 
 - **A Windows client**: the completion-port receive path in the shell ([02 §6](02-io-shell.md)),
@@ -625,6 +676,12 @@ slower decoder ever reopens them.
 
 Newest first.
 
+- 2026-09-20: C7 planned with Phase 14. The pair recorded at C3 as later has its wire
+  already (opcode 31 in, 33 out, raw reports); the library derives the standard state
+  beside the report so every host has a pad; feature reports go first and are bounded;
+  Bluetooth is normalised in the library; the demo reads the raw nodes itself rather than
+  patching the toolkit; a DualSense against an established host is application policy,
+  neither promised nor gated; C7 runs before C6.
 - 2026-09-19, evening: C5's second half planned. The cursor's picture is decoded in the
   library and delivered from a buffer the handle owns, valid until the next poll; scaling
   the pointer is the application's, because nothing in the library can; the guest list is

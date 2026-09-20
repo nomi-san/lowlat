@@ -3,6 +3,26 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-20 - Phase 14 and C7 planned
+
+### Decided
+- **The DualShock 4 and DualSense pair rides the pair of opcodes that exist for it**, 31 in
+  and 33 out, raw reports in the USB form, the product named in an argument no established
+  host reads ([01 §11](01-protocol.md)). Not a new message and not the device passthrough.
+- **The peer chooses the family, per pad, by the first message that can create it**; the
+  host presents the product on the HID layer through `uhid`, answers the driver from the
+  peer's feature reports with defaults for the rest, makes the pad's address itself, and
+  sends back what the device is written whole ([05 §7.2](05-host.md), [07 §4.2](07-platforms.md),
+  [00 D12](00-overview.md) amended).
+- **An application may own the device instead** (`pad_sink`, a poll of its own on the
+  microphone's wake; [06 §3](06-api.md)); the daemon keeps the library's device.
+- **The client library derives the standard state beside the report**, normalises Bluetooth,
+  sends feature reports first, and hands back the host's output reports as an event; the
+  demo reads the raw nodes itself, and reports go to this library's hosts by default
+  ([10 §8](10-client.md), [06 §3b](06-api.md), minor 10 planned).
+- Order: C5's desk items, then C7 (the client half, gated against an established host's
+  DualShock mode), then Phase 14, then C6.
+
 ## 2026-09-19 - Phase C5's second half built
 
 ### Added

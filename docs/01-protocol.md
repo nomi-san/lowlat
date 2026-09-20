@@ -554,6 +554,7 @@ length **includes the terminator**; omitting it causes a silent parse failure on
 | 24 | release all input | 0, 0, 0 | v1 |
 | 26 | mouse motion, stream 1 and above | packed | v1 |
 | 30 | pen and touch | packed | deferred |
+| 31 | pad report | length, pad, product and flags, plus the report | v1 (*Phase 14*) |
 | 35 | diagnostics | bit flags | v1 |
 
 **Opcode 21 travels in both directions and its arguments are transposed between them.** A host
@@ -588,6 +589,54 @@ host that maps one and shifts it into the other produces a pad whose face button
 direction pad. **Opcode 5's axis value is signed sixteen-bit** carried in an unsigned
 thirty-two-bit argument, so it needs a narrowing cast and not a comparison against zero.
 
+**Opcode 31 carries a pad's own report, raw** (*added 2026-09-20, Phase 14*). A peer holding
+a controller with more to say than the sixteen-button layout -- a DualShock 4 or a DualSense:
+touch contacts, motion, and on the way back the lightbar and the trigger effects -- sends the
+report the device produced, and the host presents a device of the same model that produces
+the same report. The first argument is the body's length, the second the same pad identifier
+opcodes 4, 5, 6 and 23 carry, and the third names the product: the low sixteen bits are the
+product identifier (`0x09CC` or `0x05C4` for a DualShock 4, `0x0CE6` for a DualSense) and bit
+16 marks a **feature report** rather than an input report. Established peers write zero
+there, and a host reading zero tells the two apart by the length.
+
+The body is the report in its wired form, and the two products are framed differently on
+purpose:
+
+- **A DualSense input report is the 64 bytes the device produces over USB**, report
+  identifier included. That is the form an established host writes into its own virtual
+  DualSense, so the body cannot be anything else.
+- **A DualShock 4 input report travels without its identifier byte: 63 bytes.** An
+  established host in DualShock mode reads only the ten-byte touch block at offset 33 of that
+  report, and one in DualSense mode writes *any* 64-byte body into its virtual DualSense --
+  so a DualShock 4 report at 64 bytes would drive a game with garbage on a host set to the
+  other pad. Sixty-three bytes match nothing an established host reads. **A peer that wants
+  an established host's DualShock mode to see the touchpad sends the ten-byte block as a
+  second message**, the established peer's own form: no product in the third argument, and a
+  host that reads products ignores it.
+- **A feature report** (bit 16) is the device's answer to one of the reads a host's driver
+  makes when the device appears -- calibration and firmware, by their identifiers -- and
+  travels ahead of the first input report so the host has it when it creates the device. A
+  host answers from what it was given and from a plausible default for what it was not.
+
+**A pad's family is fixed by the first message that can create it**, per identifier. A
+message of opcode 23, 4 or 5 makes the sixteen-button pad; an opcode 31 message naming a
+product, or carrying an established peer's 64-byte DualSense report, makes that product. A
+pad created from its report ignores every 23, 4 and 5 that follows -- the report is the
+superset -- and a ten-byte block with no product cannot create anything, so an established
+peer's DualShock 4 is the sixteen-button pad. A peer sends opcode 23 beside opcode 31
+anyway (the report first), because a host that does not read opcode 31 creates its slot from
+23 alone and a host that does gets a fallback it can ignore. A pad is destroyed by opcode 6
+and by the peer leaving, as any pad is.
+
+**Bluetooth is the peer's problem, not the wire's.** Both products frame their reports
+differently over Bluetooth (a leading identifier and a checksum, the DualShock 4's at offset
+3, the DualSense's at 2); a peer converts to the USB form before sending and converts what
+comes back, so a host sees one form of each report and never a checksum.
+
+**Opcode 32 is not a pad's.** It is the device passthrough of [§11.4b](#114b-the-guest-microphone),
+one opcode for several kinds of device with a fixed body, and a controller has the pair
+above.
+
 ### §11.2 Sent by the host
 
 | Op | Name | Arguments | Status |
@@ -602,6 +651,7 @@ thirty-two-bit argument, so it needs a narrowing cast and not a comparison again
 | 25 | guest list | length, the recipient's own guest number, 0, plus a JSON body | v1 |
 | 28 | host mode | mode | later |
 | 29 | encoder generation | stream, generation, 0 | v1 |
+| 33 | pad output | length, kind, pad, plus the report | v1 (*Phase 14*) |
 | 34 | frame timing | 0, stream, 0, plus 16-byte body | diagnostic |
 
 Two of these have cadences rather than triggers. Encode latency goes out **every two seconds
@@ -638,6 +688,18 @@ it.
 counterpart, opcode 35, carries (§11.1), so an ordinary session never emits it: four big-endian floats covering loop start to encode complete, capture start to
 encode start, the frame interval, and the encode duration. Documented so its arrival is not
 mistaken for something else.
+
+**Opcode 33 carries back what the host's virtual pad was written** (*added 2026-09-20, Phase
+14*): the output report an application on the host sent to the device -- motors, lightbar,
+player lights, and on a DualSense the two trigger effects -- or a feature report it wrote.
+The first argument is the length, the second the kind (`1` an output report, `0` a feature
+write), the third the pad identifier the peer chose; the body is the report in the USB form
+with its identifier byte, which a peer holding a wireless pad re-frames itself. **A pad
+created from its report is never rumbled with opcode 20**: its motors are two bytes of the
+output report, and a peer's toolkit that answers opcode 20 with a report of its own would
+paint its constant lightbar over the one the host just sent. The sixteen-button pad keeps
+opcode 20. An established peer applies kind 1 to whatever pad it holds, so a host may send it
+for either product.
 
 Cursor images on the wire are **PNG, not raw pixels**. Cursor position is in stream space and
 requires the host-to-client transform, including a width and height swap on rotated displays.

@@ -550,6 +550,44 @@ vocabulary ([01 §11.1](01-protocol.md)) and applies the rules every client appl
   changes. The host takes both and does not require one.
 - Pen and touch are deferred, as they are on the host.
 
+**A DualShock 4 or a DualSense is sent as its own report** (*C7, planned 2026-09-20*; the
+wire is [01 §11.1](01-protocol.md) and §11.2, the surface [06 §3b](06-api.md)). The
+application hands the library the input report exactly as the device delivered it, USB or
+Bluetooth form, under a pad identifier of its choosing, with the product named; everything
+else is the library's:
+
+- **The standard state is derived from the report and sent beside it**, the report first,
+  deduplicated as a whole state is. A host that reads reports has its slot and drops the
+  state; a host that does not has a sixteen-button pad and nothing else. The application
+  never sends a state for a report pad, and the library refuses the other family for an
+  identifier until it is unplugged.
+- **The Bluetooth form is normalised to the USB form** on the way in (the identifier and
+  checksum stripped, the calibration report's Bluetooth identifier rewritten), the transport
+  remembered per pad, and what comes back is re-framed with the identifier and checksum a
+  wireless pad expects. The host sees one form.
+- **Feature reports go first.** Calibration and firmware, read from the pad by the
+  application and sent under the same call before the first input report; the host's
+  driver asks for them when the device appears and scales the motion sensors by the
+  calibration one, so a default there is a gyro that drifts. Any subset is accepted; the
+  pairing report is the host's ([05 §7.2](05-host.md)).
+- **A DualShock 4 travels twice**: its whole report in the form only a host that reads
+  products takes, and the ten-byte touch block an established host's DualShock mode reads,
+  so that host gets the touchpad too ([01 §11.1](01-protocol.md) says why the whole report
+  cannot be framed as the established one is).
+- **What the host's device was written comes back as an event**, the output report or a
+  feature write, in the pad's own framing, lent until the next poll; the application writes
+  it to the pad. The rumble event still arrives when a host sends the rumble message (an
+  established host in DualShock mode does), and the application decides what to write for
+  it -- its own motor-only report, keeping the lightbar it last wrote, is the right answer.
+- **Whether to send reports at all is the application's policy.** An established host reads
+  a DualSense's report only in a mode its owner set, and the library cannot tell one host
+  from another; the demo sends reports to this library's hosts and states to the rest,
+  knowing the peer's build from the host list.
+
+The toolkit the demo is built on has no HID path on Linux, so the demo reads the pad's raw
+node itself beside the toolkit's controller events and drops those events for the pads it
+reads raw; nothing in the toolkit is patched.
+
 **Relative mode is the host's to announce and the client's to enter.** The cursor message
 carries it in either of two bits; on the transition the library raises an event and the
 application confines and hides its pointer -- a warp on the transition out, to the position

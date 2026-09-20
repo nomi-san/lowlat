@@ -328,6 +328,19 @@ holding, so a second emulation buys identity and nothing else, and the identity 
 kernel driver interrogates a device of that family during setup and will not attach to one that
 cannot answer. That is worth doing and is not worth doing first.
 
+**Amended 2026-09-20: the HID layer is Phase 14.** The premise changed: a peer holding a
+DualShock 4 or a DualSense can send the device's own report ([01 §11.1](01-protocol.md)),
+which carries what the sixteen-button layout cannot -- the touch contacts, the motion
+sensors, and back the other way the lightbar and the trigger effects -- so the second
+emulation buys capability after all. The interrogation is answered from the peer's own pad,
+with a default for what it did not send ([05 §7.2](05-host.md)). The pad presents its own
+model's descriptor and identity and the kernel's driver binds it; the hidraw node that
+appears is what the common game launcher and the controller libraries open to reach the
+features the driver does not expose, so **the seat-access rule for that node matters as
+much as the device node's**: the launcher ships one keyed on the vendor and product, which
+matches a virtual device with the same identity, and the package ships one of its own for a
+host without the launcher.
+
 **A virtual pad has to borrow a real controller's identity.** Everything that reads a gamepad
 decides what its buttons mean by looking the bus, vendor, product and version up in a table:
 browsers, the common controller libraries, and every per-title mapping people share. A device
