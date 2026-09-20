@@ -18,11 +18,11 @@ LIBS    := $(MATOYA)/bin/linux/$(ARCH)/libmatoya.a \
            -L$(TARGET) -llowlat -Wl,-rpath,$(TARGET) \
            -lc -ldl -lpthread -lm
 
-SOURCES := main.c signaling.c
+SOURCES := main.c signaling.c pads.c
 
 all: client
 
-client: $(SOURCES) signaling.h keys.h $(MATOYA)/bin/linux/$(ARCH)/libmatoya.a $(TARGET)/liblowlat.so
+client: $(SOURCES) signaling.h pads.h keys.h $(MATOYA)/bin/linux/$(ARCH)/libmatoya.a $(TARGET)/liblowlat.so
 	$(CC) $(CFLAGS) -o $@ $(SOURCES) $(LIBS)
 
 $(MATOYA)/bin/linux/$(ARCH)/libmatoya.a:

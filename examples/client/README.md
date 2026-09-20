@@ -21,6 +21,19 @@ them live. `LOWLAT_HANDLE` asks for pictures as device handles, which the
 toolkit's renderer imports and draws with nothing copied through this
 process; only a decoder whose row says "handles" opens that way.
 
+`LOWLAT_PAD_RAW` sends a DualShock 4 or a DualSense as its own report
+([docs/10-client.md](../../docs/10-client.md) section 8): the demo reads the
+pad's raw node itself, feature reports first, and puts what the host's device
+is written back on it; the toolkit's events for those pads are dropped
+meanwhile. Off, they go as the sixteen-button pad every host takes. An
+established host reads the report only in a mode its owner set, and this
+library's hosts read it as it is, so which peer is on the other end is the
+application's to know: this one is told. `LOWLAT_PAD_RAW=only` drops every
+controller the toolkit reports as well, for a demo run on the host's own
+machine, where the virtual pads the host makes are controllers to the
+toolkit and would go back as states. `LOWLAT_PAD_TRACE` prints every report
+either way.
+
 Three more are for measuring rather than watching. `LOWLAT_FPS` asks the
 host for that frame rate through the application protocol once the first
 picture is in, the way a settings panel does. `LOWLAT_PRESENT_HZ` caps how

@@ -71,6 +71,7 @@
 #include "lowlat.h"
 #include "matoya.h"
 #include "keys.h"
+#include "pads.h"
 #include "signaling.h"
 
 struct demo {
@@ -191,6 +192,14 @@ struct demo {
 	uint32_t pad_events;
 	uint32_t pad_sent;
 	bool trace_pads;
+	// The Sony pads read raw from their nodes when the knob says so; the
+	// toolkit's events for them are dropped then, and with the knob at
+	// "only", every controller the toolkit reports: on the host's own
+	// machine, the virtual pads the host makes from this side's reports are
+	// controllers to the toolkit, and would go back as states.
+	bool raw_on;
+	bool raw_only;
+	struct raw_pads raw;
 	// What went to the library in the second, by kind, so the host's own
 	// count of what it received can be read against this.
 	uint32_t keys_sent;
@@ -599,6 +608,8 @@ static int32_t scaled(const MTY_Axis *a, int32_t lo, int32_t hi)
 // game on an established host looked the wrong way up.)
 static void on_controller(struct demo *d, const MTY_ControllerEvent *c)
 {
+	if (d->raw_only || (d->raw_on && raw_pads_owns_vendor(&d->raw, c->vid)))
+		return;
 	d->pad_events++;
 	size_t slot = sizeof d->pads / sizeof d->pads[0];
 	for (size_t i = 0; i < sizeof d->pads / sizeof d->pads[0]; i++) {
@@ -653,7 +664,7 @@ static void on_controller(struct demo *d, const MTY_ControllerEvent *c)
 	d->pads[slot].state = fresh;
 	d->pads[slot].pending = true;
 	if (d->trace_pads) {
-		printf("pad %u:", c->id);
+		printf("pad %u (%04x:%04x):", c->id, c->vid, c->pid);
 		for (uint8_t i = 0; i < c->numAxes && i < MTY_CAXIS_MAX; i++)
 			printf(" u%02x=%d[%d..%d]", c->axes[i].usage, c->axes[i].value, c->axes[i].min,
 				c->axes[i].max);
@@ -702,6 +713,8 @@ static void event_func(const MTY_Event *evt, void *opaque)
 			on_controller(d, &evt->controller);
 			break;
 		case MTY_EVENT_DISCONNECT:
+			if (d->raw_only || (d->raw_on && raw_pads_owns_vendor(&d->raw, evt->controller.vid)))
+				break;
 			for (size_t i = 0; i < sizeof d->pads / sizeof d->pads[0]; i++)
 				if (d->pads[i].id == evt->controller.id)
 					memset(&d->pads[i], 0, sizeof d->pads[i]);
@@ -873,14 +886,22 @@ static void pump_library(struct demo *d)
 				break;
 			case LOWLAT_EVENT_RUMBLE: {
 				// Eight bits each on the wire; the toolkit takes sixteen, and
-				// a byte broadcast into both halves maps the ends exactly.
+				// a byte broadcast into both halves maps the ends exactly. A
+				// pad read raw gets a motor-only report of its own instead.
 				const lowlat_rumble_event *r = &e.body.rumble;
 				d->rumbles++;
+				if (d->raw_on && raw_pads_rumble(&d->raw, r->pad, r->large, r->small))
+					break;
 				MTY_AppRumbleController(d->app, r->pad,
 					(uint16_t) (r->large | (r->large << 8)),
 					(uint16_t) (r->small | (r->small << 8)));
 				break;
 			}
+			case LOWLAT_EVENT_PAD_REPORT:
+				if (!raw_pads_write(&d->raw, &e.body.pad_report))
+					printf("demo: a write for pad %u, which is not read here\n",
+						(unsigned) e.body.pad_report.pad);
+				break;
 			case LOWLAT_EVENT_GUEST_LIST:
 				body[body_len] = '\0';
 				on_guest_list(d, e.body.guest_list.number, body);
@@ -968,7 +989,7 @@ static void report(struct demo *d)
 	printf("demo: t=%" PRIu64 " presents=%u polls=%u pictures=%u repeats=%u skips=%u "
 		"codec=%s decode_us=%u readback_us=%u encode_us=%u queue=%u behind=%u behind_ms=%u "
 		"rtt_ms=%u mbit=%.1f decoded=%" PRIu64 " rss_mb=%" PRIu64 " keys=%u btn=%u wheel=%u "
-		"motion=%u pad=%u pad_events=%u input_dropped=%u "
+		"motion=%u pad=%u pad_events=%u pad_raw=%u pad_out=%u input_dropped=%u "
 		"snd=%u snd_frames=%u snd_q_ms=%u snd_q_min=%u snd_q_max=%u snd_age_ms=%u "
 		"snd_queued=%u snd_dropped=%u snd_refused=%u snd_resync=%u snd_codec=%s "
 		"reported_us=%u snd_reported_us=%u asked=%#x declared=%#x stream_format=%u "
@@ -979,7 +1000,8 @@ static void report(struct demo *d)
 		d->seconds, presents, polls, pictures, repeats, skips, codec,
 		st.decode_us, st.readback_us, st.encode_us, st.queue_depth, st.behind, st.behind_ms,
 		st.rtt_ms, mbit, st.decoded, rss, d->keys_sent, d->buttons_sent, d->wheels_sent,
-		d->motions_sent, d->pad_sent, d->pad_events, st.input_dropped,
+		d->motions_sent, d->pad_sent, d->pad_events, d->raw.reports, d->raw.outputs,
+		st.input_dropped,
 		snd, snd_frames, atomic_load(&d->snd_q_ms), snd_q_min, snd_q_max, snd_age_max,
 		st.audio_queued, st.audio_dropped, st.audio_refused, atomic_load(&d->snd_resyncs),
 		st.audio_codec == LOWLAT_AUDIO_OPUS ? "opus"
@@ -1014,6 +1036,8 @@ static void report(struct demo *d)
 	d->motions_sent = 0;
 	d->pad_events = 0;
 	d->pad_sent = 0;
+	d->raw.reports = 0;
+	d->raw.outputs = 0;
 	fflush(stdout);
 
 	char title[320];
@@ -1274,6 +1298,10 @@ static bool app_func(void *opaque)
 	}
 	if (atomic_load(&d->quit))
 		return false;
+	if (d->raw_on) {
+		raw_pads_scan(&d->raw, d->client, t, d->established);
+		raw_pads_pump(&d->raw, d->client);
+	}
 	flush_pads(d);
 	place_picture(d);
 	if (t - d->second_began >= 1000.0) {
@@ -1326,6 +1354,13 @@ int main(void)
 	atomic_store(&d.stretch, true);
 	d.trace_pads = getenv("LOWLAT_PAD_TRACE") != NULL;
 	d.trace_audio = getenv("LOWLAT_AUDIO_TRACE") != NULL;
+	// A DualShock 4 or a DualSense sent as its own report, which an
+	// established host takes only in a mode its owner set; this library's
+	// hosts take it as it is. The peer's kind is the application's to know,
+	// and this one is told.
+	d.raw_on = getenv("LOWLAT_PAD_RAW") != NULL;
+	d.raw_only = d.raw_on && strcmp(getenv("LOWLAT_PAD_RAW"), "only") == 0;
+	raw_pads_init(&d.raw, d.trace_pads);
 	atomic_store(&d.snd_q_min, UINT32_MAX);
 
 	lowlat_client_create_info info;
@@ -1437,6 +1472,7 @@ int main(void)
 	pthread_join(d.listener, NULL);
 	if (d.audio != NULL)
 		MTY_AudioDestroy(&d.audio);
+	raw_pads_close(&d.raw, d.client);
 	lowlat_client_end_connection(d.client);
 	signaling_close(&d.sig);
 	lowlat_client_destroy(d.client);
