@@ -16,9 +16,12 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   identifier byte. Opcodes 31 and 33 named in the control vocabulary.
 - **Fixtures from the pads on the desk** (`crates/core/tests/data/pad/`, captured by
   `scripts/capture-pad-fixtures.py`, addresses zeroed): the descriptors, the calibration
-  and firmware reports, the pairing report's shape, an input report at rest for each. The
-  reads are tested against them and the framing round-trips over ten thousand random
-  reports.
+  and firmware reports, the pairing report's shape, an input report at rest and one held
+  (a finger on the touchpad, Cross down) for each, and **the DualSense's over Bluetooth**:
+  its wireless input verifies and normalises, and its wireless calibration and firmware
+  answers are, checksums stripped, byte for byte its USB ones, which ties the seeds and the
+  offsets to the device. The reads are tested against them and the framing round-trips over
+  ten thousand random reports.
 
 ### Changed
 - The injector's whole-pad button bits are the core's, re-exported, so the raw report is
