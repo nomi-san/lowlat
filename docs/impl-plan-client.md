@@ -625,12 +625,18 @@ once, here and under Phase 14; the rules are [10 §8](10-client.md), the wire
   sequence the library advances.*
 - [x] **The rumble event stays** for any pad a host rumbles that way; the application decides
   what to write (a motor-only report keeping the lightbar it last wrote). *C7.1: unchanged.*
-- [ ] **The demo reads the raw nodes itself**, nothing patched in the toolkit, which has no HID
+- [x] **The demo reads the raw nodes itself**, nothing patched in the toolkit, which has no HID
   path on Linux: the Sony nodes found by identity, opened under the seat's access, polled in
   the millisecond loop, the feature reports read at open, the toolkit's controller events for
   those pads dropped, unplug when a node dies. A knob decides whether a host gets reports or
   states, defaulting to reports for this library's hosts only, known from the host list:
-  **a DualSense against an established host is neither promised nor gated.**
+  **a DualSense against an established host is neither promised nor gated.** *C7.2,
+  2026-09-20, with one deviation: the host list cannot tell this library's host from an
+  established one, because the daemon advertises the established build string, so the knob
+  is explicit (`LOWLAT_PAD_RAW`) rather than defaulted from the peer; the policy is still
+  the application's. And one addition the same-machine rig needed: `only`, which also drops
+  the toolkit's controllers, since the pads the host makes from these reports are
+  controllers to a toolkit on the host's own machine.*
 - [x] Fixtures from the pads on the desk (addresses zeroed); hermetic tests: the report stream
   in and the messages out, in order and deduplicated; the output report in and the event
   out, both framings; a host that reads no reports still receiving states. *The core half

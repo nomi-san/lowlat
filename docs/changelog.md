@@ -3,6 +3,20 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-20 - C7.2: the demo reads the Sony pads raw
+
+### Added
+- **`examples/client/pads.c`**: with `LOWLAT_PAD_RAW` set, a DualShock 4 or a DualSense is
+  read from its own raw node -- found by identity once the session is up, the two feature
+  reports sent first, every queued report each pass of the millisecond loop, the host's
+  writes put back on the node, a motor-only report for the rumble message -- and the
+  toolkit's events for the vendor's pads are dropped meanwhile; `only` drops every
+  controller the toolkit reports, for a run on the host's own machine, where the pads the
+  host makes from these reports are controllers to the toolkit. The second's line counts
+  the reports sent and the writes applied. Smoke-run against this host: both pads found
+  (one over USB, one over Bluetooth), the feature reports taken, nine hundred reports a
+  second sent with none dropped.
+
 ## 2026-09-20 - C7.1: the client sends a pad's own reports
 
 ### Added
