@@ -64,13 +64,14 @@ impl Product {
         }
     }
 
-    /// How large the product's output report is in the USB form, identifier
-    /// included.
+    /// How long the product's output report may be in the USB form,
+    /// identifier included: the shortest a writer sends, and the whole
+    /// report as the descriptor declares it.
     #[must_use]
-    pub const fn output_len(self) -> usize {
+    pub const fn output_lens(self) -> (usize, usize) {
         match self {
-            Product::DualShock4 => DS4_OUTPUT_LEN,
-            Product::DualSense => DS5_OUTPUT_LEN,
+            Product::DualShock4 => (DS4_OUTPUT_LEN, DS4_OUTPUT_LEN),
+            Product::DualSense => (DS5_OUTPUT_MIN_LEN, DS5_OUTPUT_LEN),
         }
     }
 
@@ -138,9 +139,13 @@ const DS4_BT_INPUT_MAPPED: usize = 61;
 /// A DualShock 4's output report in the USB form.
 pub const DS4_OUTPUT_ID: u8 = 0x05;
 pub const DS4_OUTPUT_LEN: usize = 32;
-/// A DualSense's output report in the USB form.
+/// A DualSense's output report in the USB form: 63 bytes as the descriptor
+/// declares it and a host's driver writes it, of which the first 48 are the
+/// content and what a toolkit driving the pad directly writes; the device
+/// takes either length.
 pub const DS5_OUTPUT_ID: u8 = 0x02;
-pub const DS5_OUTPUT_LEN: usize = 48;
+pub const DS5_OUTPUT_LEN: usize = 63;
+pub const DS5_OUTPUT_MIN_LEN: usize = 48;
 /// A wireless output report; both products.
 pub const BT_OUTPUT_LEN: usize = 78;
 const DS4_BT_OUTPUT_ID: u8 = 0x11;
@@ -491,7 +496,11 @@ pub fn frame_output(
     report: &[u8],
     out: &mut [u8; REPORT_MAX],
 ) -> Result<usize> {
-    if report.first() != Some(&product.output_id()) || report.len() != product.output_len() {
+    let (shortest, longest) = product.output_lens();
+    if report.first() != Some(&product.output_id())
+        || report.len() < shortest
+        || report.len() > longest
+    {
         return Err(Error::Malformed);
     }
     match transport {
@@ -1004,7 +1013,8 @@ mod tests {
 
     #[test]
     fn output_reports_are_framed_for_the_transport() {
-        let mut usb = [0u8; DS5_OUTPUT_LEN];
+        // The 48 bytes a toolkit writes: the content alone.
+        let mut usb = [0u8; DS5_OUTPUT_MIN_LEN];
         usb[0] = DS5_OUTPUT_ID;
         usb[1] = 0x03;
         usb[3] = 200;
@@ -1013,9 +1023,9 @@ mod tests {
         let mut out = [0u8; REPORT_MAX];
         assert_eq!(
             frame_output(Product::DualSense, Transport::Usb, 0, &usb, &mut out).unwrap(),
-            DS5_OUTPUT_LEN
+            DS5_OUTPUT_MIN_LEN
         );
-        assert_eq!(&out[..DS5_OUTPUT_LEN], &usb);
+        assert_eq!(&out[..DS5_OUTPUT_MIN_LEN], &usb);
 
         let n = frame_output(Product::DualSense, Transport::Bluetooth, 5, &usb, &mut out).unwrap();
         assert_eq!(n, BT_OUTPUT_LEN);
@@ -1033,13 +1043,41 @@ mod tests {
         assert_eq!(&out[3..34], &ds4[1..]);
         assert!(bt_checked(CRC_SEED_OUTPUT, &out[..n]));
 
-        // The wrong product's report, or the wrong length, is refused.
+        // The whole report as a host's driver writes it frames too, its 62
+        // bytes of content where the wireless report has them.
+        let mut whole = [0u8; DS5_OUTPUT_LEN];
+        whole[0] = DS5_OUTPUT_ID;
+        whole[62] = 0x77;
+        let n = frame_output(
+            Product::DualSense,
+            Transport::Bluetooth,
+            1,
+            &whole,
+            &mut out,
+        )
+        .unwrap();
+        assert_eq!(n, BT_OUTPUT_LEN);
+        assert_eq!(&out[3..65], &whole[1..]);
+        assert!(bt_checked(CRC_SEED_OUTPUT, &out[..n]));
+        assert_eq!(
+            frame_output(Product::DualSense, Transport::Usb, 0, &whole, &mut out),
+            Ok(DS5_OUTPUT_LEN)
+        );
+
+        // The wrong product's report, or a length outside the product's, is
+        // refused.
         assert_eq!(
             frame_output(Product::DualShock4, Transport::Usb, 0, &usb, &mut out),
             Err(Error::Malformed)
         );
         assert_eq!(
             frame_output(Product::DualSense, Transport::Usb, 0, &usb[..47], &mut out),
+            Err(Error::Malformed)
+        );
+        let mut over = [0u8; DS5_OUTPUT_LEN + 1];
+        over[0] = DS5_OUTPUT_ID;
+        assert_eq!(
+            frame_output(Product::DualSense, Transport::Usb, 0, &over, &mut out),
             Err(Error::Malformed)
         );
     }

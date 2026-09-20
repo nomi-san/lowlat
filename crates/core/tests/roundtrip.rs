@@ -397,7 +397,8 @@ fn pad_reports_round_trip_in_both_directions_and_framings() {
         assert_eq!(out, usb, "case {case}: usb passes through");
 
         // Wireless output: the USB content where the device reads it, sealed.
-        let olen = product.output_len();
+        let (shortest, longest) = product.output_lens();
+        let olen = shortest + rng.below((longest - shortest + 1) as u32) as usize;
         rng.fill(&mut usb[..olen]);
         usb[0] = product.output_id();
         let seq = rng.below(16) as u8;

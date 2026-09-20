@@ -1512,7 +1512,7 @@ fn a_pads_own_reports_reach_the_host_and_its_writes_come_back() {
     );
 
     // What the host's devices are written, back to the pads.
-    let mut out = [0u8; pad::DS5_OUTPUT_LEN];
+    let mut out = [0u8; pad::DS5_OUTPUT_MIN_LEN];
     out[0] = pad::DS5_OUTPUT_ID;
     out[1] = 0x03;
     out[3] = 200;

@@ -864,7 +864,7 @@ mod tests {
             DS5_CALIBRATION,
         );
         let mut framed = [0u8; pad::REPORT_MAX];
-        let mut report = [0u8; pad::DS5_OUTPUT_LEN];
+        let mut report = [0u8; pad::DS5_OUTPUT_MIN_LEN];
         report[0] = pad::DS5_OUTPUT_ID;
         assert_eq!(
             m.frame_output(3, pad::OutputKind::Output, &report, &mut framed),
@@ -879,7 +879,7 @@ mod tests {
     fn output_is_framed_for_the_pad_it_names() {
         let mut m = Mapper::default();
         let mut framed = [0u8; pad::REPORT_MAX];
-        let mut report = [0u8; pad::DS5_OUTPUT_LEN];
+        let mut report = [0u8; pad::DS5_OUTPUT_MIN_LEN];
         report[0] = pad::DS5_OUTPUT_ID;
         report[3] = 200;
         assert_eq!(
@@ -895,9 +895,9 @@ mod tests {
         );
         assert_eq!(
             m.frame_output(3, pad::OutputKind::Output, &report, &mut framed),
-            Some(pad::DS5_OUTPUT_LEN)
+            Some(pad::DS5_OUTPUT_MIN_LEN)
         );
-        assert_eq!(&framed[..pad::DS5_OUTPUT_LEN], &report);
+        assert_eq!(&framed[..pad::DS5_OUTPUT_MIN_LEN], &report);
         assert_eq!(
             m.frame_output(3, pad::OutputKind::Feature, &report[..5], &mut framed),
             Some(5)

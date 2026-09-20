@@ -2475,6 +2475,12 @@ fn drive<M: Media>(
             // are in that report and have no other road, so it is never
             // folded into the rumble message (docs/05-host.md section 7.2).
             while let Some(written) = input.sink.written() {
+                lowlat_common::log_debug!(
+                    "inject: pad written, pad={} kind={:?} len={}",
+                    written.pad,
+                    written.written.kind,
+                    written.written.len
+                );
                 send_pad_written(shell.endpoint().session(), &written);
             }
             if args.rumble_probe {

@@ -989,7 +989,8 @@ static void report(struct demo *d)
 	printf("demo: t=%" PRIu64 " presents=%u polls=%u pictures=%u repeats=%u skips=%u "
 		"codec=%s decode_us=%u readback_us=%u encode_us=%u queue=%u behind=%u behind_ms=%u "
 		"rtt_ms=%u mbit=%.1f decoded=%" PRIu64 " rss_mb=%" PRIu64 " keys=%u btn=%u wheel=%u "
-		"motion=%u pad=%u pad_events=%u pad_raw=%u pad_out=%u input_dropped=%u "
+		"motion=%u pad=%u pad_events=%u pad_raw=%u pad_out=%u pad_in=%u pad_in_dropped=%u "
+		"input_dropped=%u "
 		"snd=%u snd_frames=%u snd_q_ms=%u snd_q_min=%u snd_q_max=%u snd_age_ms=%u "
 		"snd_queued=%u snd_dropped=%u snd_refused=%u snd_resync=%u snd_codec=%s "
 		"reported_us=%u snd_reported_us=%u asked=%#x declared=%#x stream_format=%u "
@@ -1001,7 +1002,7 @@ static void report(struct demo *d)
 		st.decode_us, st.readback_us, st.encode_us, st.queue_depth, st.behind, st.behind_ms,
 		st.rtt_ms, mbit, st.decoded, rss, d->keys_sent, d->buttons_sent, d->wheels_sent,
 		d->motions_sent, d->pad_sent, d->pad_events, d->raw.reports, d->raw.outputs,
-		st.input_dropped,
+		st.pad_reports_received, st.pad_reports_dropped, st.input_dropped,
 		snd, snd_frames, atomic_load(&d->snd_q_ms), snd_q_min, snd_q_max, snd_age_max,
 		st.audio_queued, st.audio_dropped, st.audio_refused, atomic_load(&d->snd_resyncs),
 		st.audio_codec == LOWLAT_AUDIO_OPUS ? "opus"
