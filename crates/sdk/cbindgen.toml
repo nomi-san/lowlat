@@ -76,7 +76,7 @@ prefix = ""
 # is deliberate -- the application writes those fields, so reading one back as a
 # variant would be reading whatever it wrote. Nothing being typed by them is the
 # point, and it is also why they have to be asked for here.
-include = ["lowlat_codec", "lowlat_chroma", "lowlat_encoder", "lowlat_rotation", "lowlat_cg_level", "lowlat_log_level", "lowlat_quality", "lowlat_transport", "lowlat_decoder", "lowlat_frame_kind", "lowlat_handle_kind", "lowlat_fence_kind", "lowlat_pad_type", "lowlat_pad_report"]
+include = ["lowlat_codec", "lowlat_chroma", "lowlat_encoder", "lowlat_rotation", "lowlat_cg_level", "lowlat_log_level", "lowlat_quality", "lowlat_transport", "lowlat_decoder", "lowlat_frame_kind", "lowlat_handle_kind", "lowlat_fence_kind", "lowlat_pad_type", "lowlat_pad_report", "lowlat_pad_sink"]
 
 [enum]
 prefix_with_name = false

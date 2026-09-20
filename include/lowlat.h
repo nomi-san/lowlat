@@ -74,6 +74,11 @@
 /// signaling to forward has to be anyway.
 #define LOWLAT_ADDRESS_MAX 46
 
+/// The longest report `lowlat_client_send_pad_report` takes or
+/// `lowlat_pad_report_event` carries -- a wireless report with its framing
+/// -- and what a buffer given to `lowlat_host_poll_pad_report` must hold.
+#define LOWLAT_PAD_REPORT_MAX 78
+
 /// **Sized for the longest kind of identity, which is a device path.** These
 /// are not display connector names, which are short: the same bound carries
 /// the sound server's own name for a device, where a USB output's serial and
@@ -249,10 +254,6 @@
 #define LOWLAT_PAD_STATE_X 16384
 
 #define LOWLAT_PAD_STATE_Y 32768
-
-/// The longest report `lowlat_client_send_pad_report` takes or
-/// `lowlat_pad_report_event` carries: a wireless report with its framing.
-#define LOWLAT_PAD_REPORT_MAX 78
 
 /// No decoder has been built yet: no parameter set has arrived.
 #define LOWLAT_DECODER_NONE_YET 0
@@ -618,8 +619,11 @@ typedef enum lowlat_fence_kind {
     /// Reusable now.
     LOWLAT_FENCE_NONE = 0,
 } lowlat_fence_kind;
+#endif
 
-/// Which controller a report came from, for `lowlat_client_send_pad_report`.
+#if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
+/// Which controller a report came from, for `lowlat_client_send_pad_report`
+/// and `lowlat_host_poll_pad_report`.
 ///
 /// **The product decides what the host presents**: a device of that model,
 /// with its own descriptor and identity, which the host's driver claims as
@@ -632,19 +636,43 @@ typedef enum lowlat_pad_type {
     LOWLAT_PAD_TYPE_DS5 = 2,
 } lowlat_pad_type;
 
-/// Which of a pad's reports travels, for `lowlat_client_send_pad_report`
-/// and `lowlat_pad_report_event`.
+/// Which of a pad's reports travels, for `lowlat_client_send_pad_report`,
+/// `lowlat_pad_report_event`, `lowlat_host_poll_pad_report` and
+/// `lowlat_host_send_pad_report`.
 typedef enum lowlat_pad_report {
     /// An input report, as the pad delivered it: what the pad is doing.
     LOWLAT_PAD_REPORT_INPUT = 0,
-    /// An output report the host's device was written: motors, lights,
-    /// effects. Received only.
+    /// An output report a virtual pad was written: motors, lights, effects.
+    /// The way back only.
     LOWLAT_PAD_REPORT_OUTPUT = 1,
     /// A feature report: calibration or firmware read from the pad on the
-    /// way in, a feature write to the host's device on the way back.
+    /// way in, a feature write to the virtual pad on the way back.
     LOWLAT_PAD_REPORT_FEATURE = 2,
+    /// The pad is gone: unplugged by the guest, or with it. A host's poll
+    /// only, after the pad's last report, with no report and a length of
+    /// zero; an application destroys its device for the pad on it.
+    LOWLAT_PAD_REPORT_UNPLUG = 3,
 } lowlat_pad_report;
+#endif
 
+#if defined(LOWLAT_HOST)
+/// Where a report pad's reports go: which side holds the virtual device for
+/// a DualShock 4 or a DualSense a guest sends as its own reports
+/// (`lowlat_client_send_pad_report`; docs/05-host.md section 7.2).
+typedef enum lowlat_pad_sink {
+    /// This library presents a device of its own, which the kernel's own
+    /// driver claims as the real thing, and what is written to it goes back
+    /// to the guest by itself. **The default.**
+    LOWLAT_PAD_SINK_DEVICE = 0,
+    /// The application holds the device: it takes the reports from
+    /// `lowlat_host_poll_pad_report` and gives back what its device is
+    /// written with `lowlat_host_send_pad_report`. The permission gate,
+    /// the per-guest cap and the unplug rule apply as they do above.
+    LOWLAT_PAD_SINK_APP = 1,
+} lowlat_pad_sink;
+#endif
+
+#if defined(LOWLAT_CLIENT)
 /// One client, as the application holds it.
 ///
 /// Opaque: the application holds a pointer it cannot look inside, so what is
@@ -803,7 +831,12 @@ typedef struct lowlat_host_config {
     /// Whether one guest at a time may drive the pointer. Off means everybody
     /// drives it, which is a configuration rather than a fault. **Default: off.**
     bool exclusive_pointer;
-    uint8_t reserved2[3];
+    /// One of `lowlat_pad_sink`: who holds the virtual device for a pad a
+    /// guest sends as its own reports. **Default: this library**, a device
+    /// of its own; set to the application, the reports come out of
+    /// `lowlat_host_poll_pad_report` instead. Settled when hosting starts.
+    uint8_t pad_sink;
+    uint8_t reserved2[2];
     /// How many of `servers` are set. **Default: 0**, so a host consults
     /// nothing for its own address until an application names a server.
     uint32_t server_count;
@@ -2210,6 +2243,84 @@ lowlat_status lowlat_host_poll_microphone(lowlat_host *hl,
                                           uint32_t *count,
                                           uint32_t *guest,
                                           uint32_t *dropped) LOWLAT_NOEXCEPT;
+
+/// Take one of a report pad's reports, waiting up to `timeout_ms`.
+///
+/// **For an application that holds the virtual device** (docs/05-host.md
+/// section 7.2): with `pad_sink` set to `LOWLAT_PAD_SINK_APP` in
+/// `lowlat_host_config`, a DualShock 4's or a DualSense's reports come out
+/// here rather than into a device of this library's own -- the guest, the
+/// pad as the guest named it, the product, the kind, then the report in the
+/// pad's USB form, identifier byte first. The feature reports
+/// (`LOWLAT_PAD_REPORT_FEATURE`: calibration, firmware) come ahead of the
+/// first input report (`LOWLAT_PAD_REPORT_INPUT`, 64 bytes), which is
+/// when the application creates its device; `LOWLAT_PAD_REPORT_UNPLUG`,
+/// with no report, comes after the pad's last one -- on the guest's unplug
+/// and on its leaving -- and is when the application destroys it. What that
+/// device is written goes back with `lowlat_host_send_pad_report`.
+///
+/// **Its own poll, not the event queue**, for the microphone's reason: a pad
+/// reports several hundred times a second. The queue is bounded; when the
+/// application falls behind the oldest input report is dropped and counted,
+/// never a feature report or a pad's end. **Park a thread on it.** The wait
+/// is the same wake the microphone's is, one cross-thread wake after the
+/// report was parsed; a loop polling it with a zero timeout adds its own
+/// interval to every report.
+///
+/// Answers `LOWLAT_TIMEOUT` when nothing arrived, which is not an error,
+/// and `LOWLAT_ERR_NOT_STARTED` when this host does not hand reports to
+/// the application: it does nothing in that case rather than waiting out a
+/// timeout for a report that by construction cannot come.
+///
+/// @param[in] hl The handle from `lowlat_host_create`.
+/// @param[in] timeout_ms How long to wait for a report. Zero polls without waiting.
+/// @param[out] guest Which guest sent it.
+/// @param[out] pad The pad, as the guest named it.
+/// @param[out] type_ One of `lowlat_pad_type`.
+/// @param[out] kind One of `lowlat_pad_report`: input, feature, or unplug.
+/// @param[out] report Where the report is written. Must hold `LOWLAT_PAD_REPORT_MAX`.
+/// @param[in,out] len The buffer's capacity in, how many bytes were written out.
+/// @param[out] dropped How many input reports were lost to a queue nobody was
+/// draining, reported with the next delivery. May be null.
+/// @returns `LOWLAT_OK`, `LOWLAT_TIMEOUT` when nothing arrived, or
+/// `LOWLAT_ERR_NOT_STARTED` when the reports go to this library's own device.
+///
+/// @attention `report` points to at least `*len` bytes, and `guest`, `pad`, `type_`,
+/// `kind` and `len` are writable. `dropped` may be null.
+lowlat_status lowlat_host_poll_pad_report(lowlat_host *hl,
+                                          uint32_t timeout_ms,
+                                          uint32_t *guest,
+                                          uint32_t *pad,
+                                          uint32_t *type_,
+                                          uint32_t *kind,
+                                          uint8_t *report,
+                                          uint32_t *len,
+                                          uint32_t *dropped) LOWLAT_NOEXCEPT;
+
+/// Give a guest's report pad what the application's device was written: an
+/// output report (`LOWLAT_PAD_REPORT_OUTPUT`: motors, lights, a
+/// DualSense's trigger effects) or a feature write
+/// (`LOWLAT_PAD_REPORT_FEATURE`), in the pad's USB form, identifier byte
+/// first. The pair of `lowlat_host_poll_pad_report`; the guest frames it
+/// for its pad's own transport.
+///
+/// @param[in] hl The handle from `lowlat_host_create`.
+/// @param[in] guest The guest holding the pad.
+/// @param[in] pad The pad, as the guest named it.
+/// @param[in] kind `LOWLAT_PAD_REPORT_OUTPUT` or `LOWLAT_PAD_REPORT_FEATURE`.
+/// @param[in] report The report, identifier byte first.
+/// @param[in] len How many bytes, at most 64.
+/// @returns `LOWLAT_OK`, `LOWLAT_ERR_UNKNOWN_GUEST` when no such guest is
+/// connected, `LOWLAT_ERR_INVALID_ARGUMENT` for a kind that does not go this
+/// way or a report no pad takes, or `LOWLAT_ERR_NOT_STARTED`.
+///
+/// @attention `report` points to at least `len` readable bytes.
+lowlat_status lowlat_host_send_pad_report(lowlat_host *hl,
+                                          uint32_t guest,
+                                          uint32_t pad,
+                                          uint32_t kind,
+                                          const uint8_t *report,
+                                          uint32_t len) LOWLAT_NOEXCEPT;
 
 /// Take one event, waiting up to `timeout_ms` for one to arrive.
 ///

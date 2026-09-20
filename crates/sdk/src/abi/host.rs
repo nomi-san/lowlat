@@ -186,6 +186,23 @@ pub struct lowlat_host_audio_config {
     pub device: [c_char; LOWLAT_OUTPUT_MAX],
 }
 
+/// Where a report pad's reports go: which side holds the virtual device for
+/// a DualShock 4 or a DualSense a guest sends as its own reports
+/// (`lowlat_client_send_pad_report`; docs/05-host.md section 7.2).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_pad_sink {
+    /// This library presents a device of its own, which the kernel's own
+    /// driver claims as the real thing, and what is written to it goes back
+    /// to the guest by itself. **The default.**
+    LOWLAT_PAD_SINK_DEVICE = 0,
+    /// The application holds the device: it takes the reports from
+    /// [`lowlat_host_poll_pad_report`] and gives back what its device is
+    /// written with [`lowlat_host_send_pad_report`]. The permission gate,
+    /// the per-guest cap and the unplug rule apply as they do above.
+    LOWLAT_PAD_SINK_APP = 1,
+}
+
 /// How a host is configured.
 ///
 /// **There is no resolution here.** The display decides the picture's size, the
@@ -233,7 +250,12 @@ pub struct lowlat_host_config {
     /// Whether one guest at a time may drive the pointer. Off means everybody
     /// drives it, which is a configuration rather than a fault. **Default: off.**
     pub exclusive_pointer: bool,
-    pub reserved2: [u8; 3],
+    /// One of [`lowlat_pad_sink`]: who holds the virtual device for a pad a
+    /// guest sends as its own reports. **Default: this library**, a device
+    /// of its own; set to the application, the reports come out of
+    /// [`lowlat_host_poll_pad_report`] instead. Settled when hosting starts.
+    pub pad_sink: u8,
+    pub reserved2: [u8; 2],
     /// How many of `servers` are set. **Default: 0**, so a host consults
     /// nothing for its own address until an application names a server.
     pub server_count: u32,
@@ -278,7 +300,8 @@ pub extern "C" fn lowlat_host_config_default() -> lowlat_host_config {
         // test below is what keeps the two the same number.
         exclusive_hold_ms: 500,
         exclusive_pointer: false,
-        reserved2: [0; 3],
+        pad_sink: lowlat_pad_sink::LOWLAT_PAD_SINK_DEVICE as u8,
+        reserved2: [0; 2],
         server_count: 0,
         servers: [[0; LOWLAT_SERVER_MAX]; LOWLAT_SERVERS_MAX],
         video: lowlat_host_video_config {
@@ -445,6 +468,12 @@ pub struct lowlat_host {
     heard: ::lowlat_host::microphone::Receiver,
     /// The other end, handed to each host as it starts.
     hear: ::lowlat_host::microphone::Sender,
+    /// The report pads' queue, for the same reason: a pad reports several
+    /// hundred times a second.
+    reports: ::lowlat_host::padsink::Receiver,
+    /// The other end, handed to a host that starts with the application as
+    /// the sink.
+    report: ::lowlat_host::padsink::Sender,
 }
 
 impl lowlat_host {
@@ -486,6 +515,7 @@ pub unsafe extern "C" fn lowlat_host_create(
         }
         let (raise, events) = ::lowlat_host::events::queue();
         let (hear, heard) = ::lowlat_host::microphone::queue();
+        let (report, reports) = ::lowlat_host::padsink::queue();
         let handle = Box::new(lowlat_host {
             poisoned: AtomicBool::new(false),
             held: std::sync::Mutex::new(Held { seam: None }),
@@ -493,6 +523,8 @@ pub unsafe extern "C" fn lowlat_host_create(
             raise,
             heard,
             hear,
+            reports,
+            report,
         });
         unsafe { out.write(Box::into_raw(handle)) };
         LOWLAT_OK
@@ -609,6 +641,9 @@ fn configured(cfg: &lowlat_host_config) -> Option<::lowlat_host::admission::Conf
             "host: reflexive servers capped, kept={} dropped={dropped}",
             servers.len()
         );
+    }
+    if u32::from(cfg.pad_sink) > lowlat_pad_sink::LOWLAT_PAD_SINK_APP as u32 {
+        return None;
     }
     let video = video_configured(&cfg.video)?;
     let output = taken(&cfg.video.output)?;
@@ -774,6 +809,9 @@ pub unsafe extern "C" fn lowlat_host_start(
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             };
             config.microphone = Some(handle.hear.clone());
+            if u32::from(cfg.pad_sink) == lowlat_pad_sink::LOWLAT_PAD_SINK_APP as u32 {
+                config.pad_sink = Some(handle.report.clone());
+            }
             // **Raising into the handle's queue rather than its own**, so a
             // host starting and stopping does not take the queue with it.
             held.seam = Some(::lowlat_host::admission::Admission::raising(
@@ -2171,6 +2209,200 @@ pub unsafe extern "C" fn lowlat_host_poll_microphone(
     }
 }
 
+/// Take one of a report pad's reports, waiting up to `timeout_ms`.
+///
+/// **For an application that holds the virtual device** (docs/05-host.md
+/// section 7.2): with `pad_sink` set to [`LOWLAT_PAD_SINK_APP`] in
+/// [`lowlat_host_config`], a DualShock 4's or a DualSense's reports come out
+/// here rather than into a device of this library's own -- the guest, the
+/// pad as the guest named it, the product, the kind, then the report in the
+/// pad's USB form, identifier byte first. The feature reports
+/// ([`LOWLAT_PAD_REPORT_FEATURE`]: calibration, firmware) come ahead of the
+/// first input report ([`LOWLAT_PAD_REPORT_INPUT`], 64 bytes), which is
+/// when the application creates its device; [`LOWLAT_PAD_REPORT_UNPLUG`],
+/// with no report, comes after the pad's last one -- on the guest's unplug
+/// and on its leaving -- and is when the application destroys it. What that
+/// device is written goes back with [`lowlat_host_send_pad_report`].
+///
+/// **Its own poll, not the event queue**, for the microphone's reason: a pad
+/// reports several hundred times a second. The queue is bounded; when the
+/// application falls behind the oldest input report is dropped and counted,
+/// never a feature report or a pad's end. **Park a thread on it.** The wait
+/// is the same wake the microphone's is, one cross-thread wake after the
+/// report was parsed; a loop polling it with a zero timeout adds its own
+/// interval to every report.
+///
+/// Answers [`LOWLAT_TIMEOUT`] when nothing arrived, which is not an error,
+/// and [`LOWLAT_ERR_NOT_STARTED`] when this host does not hand reports to
+/// the application: it does nothing in that case rather than waiting out a
+/// timeout for a report that by construction cannot come.
+///
+/// @param[in] hl The handle from [`lowlat_host_create`].
+/// @param[in] timeout_ms How long to wait for a report. Zero polls without waiting.
+/// @param[out] guest Which guest sent it.
+/// @param[out] pad The pad, as the guest named it.
+/// @param[out] type_ One of [`lowlat_pad_type`].
+/// @param[out] kind One of [`lowlat_pad_report`]: input, feature, or unplug.
+/// @param[out] report Where the report is written. Must hold [`LOWLAT_PAD_REPORT_MAX`].
+/// @param[in,out] len The buffer's capacity in, how many bytes were written out.
+/// @param[out] dropped How many input reports were lost to a queue nobody was
+/// draining, reported with the next delivery. May be null.
+/// @returns [`LOWLAT_OK`], [`LOWLAT_TIMEOUT`] when nothing arrived, or
+/// [`LOWLAT_ERR_NOT_STARTED`] when the reports go to this library's own device.
+///
+/// # Safety
+///
+/// `report` points to at least `*len` bytes, and `guest`, `pad`, `type_`,
+/// `kind` and `len` are writable. `dropped` may be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_poll_pad_report(
+    hl: *mut lowlat_host,
+    timeout_ms: u32,
+    guest: *mut u32,
+    pad: *mut u32,
+    type_: *mut u32,
+    kind: *mut u32,
+    report: *mut u8,
+    len: *mut u32,
+    dropped: *mut u32,
+) -> lowlat_status {
+    unsafe {
+        entered(hl, |handle| {
+            if guest.is_null()
+                || pad.is_null()
+                || type_.is_null()
+                || kind.is_null()
+                || report.is_null()
+                || len.is_null()
+            {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let capacity = len.read() as usize;
+            if capacity < LOWLAT_PAD_REPORT_MAX as usize {
+                len.write(LOWLAT_PAD_REPORT_MAX);
+                return LOWLAT_ERR_TOO_SMALL;
+            }
+            // **Refused rather than waited out**, as the microphone's is: a
+            // host whose reports go into its own devices will never have one
+            // here.
+            let forwarding = handle
+                .held()
+                .seam
+                .as_ref()
+                .is_some_and(::lowlat_host::admission::Admission::forwards_pad_reports);
+            if !forwarding {
+                len.write(0);
+                return LOWLAT_ERR_NOT_STARTED;
+            }
+            let buffer = core::slice::from_raw_parts_mut(report, capacity);
+            match handle
+                .reports
+                .recv_timeout_into(Duration::from_millis(u64::from(timeout_ms)), buffer)
+            {
+                ::lowlat_host::padsink::Taken::Empty => {
+                    len.write(0);
+                    LOWLAT_TIMEOUT
+                }
+                ::lowlat_host::padsink::Taken::Took {
+                    guest: from,
+                    pad: which,
+                    product,
+                    kind: what,
+                    len: written,
+                    dropped: lost,
+                } => {
+                    guest.write(from);
+                    pad.write(which);
+                    type_.write(pad_type(product) as u32);
+                    kind.write(match what {
+                        ::lowlat_host::padsink::Kind::Input => {
+                            lowlat_pad_report::LOWLAT_PAD_REPORT_INPUT
+                        }
+                        ::lowlat_host::padsink::Kind::Feature => {
+                            lowlat_pad_report::LOWLAT_PAD_REPORT_FEATURE
+                        }
+                        ::lowlat_host::padsink::Kind::Unplug => {
+                            lowlat_pad_report::LOWLAT_PAD_REPORT_UNPLUG
+                        }
+                    } as u32);
+                    len.write(u32::try_from(written).unwrap_or(0));
+                    if !dropped.is_null() {
+                        dropped.write(lost);
+                    }
+                    LOWLAT_OK
+                }
+            }
+        })
+    }
+}
+
+/// The product as the boundary names it. The core's list may grow; a third
+/// product is named here before it is reported.
+fn pad_type(product: lowlat_core::pad::Product) -> lowlat_pad_type {
+    if product == lowlat_core::pad::Product::DualShock4 {
+        lowlat_pad_type::LOWLAT_PAD_TYPE_DS4
+    } else {
+        lowlat_pad_type::LOWLAT_PAD_TYPE_DS5
+    }
+}
+
+/// Give a guest's report pad what the application's device was written: an
+/// output report ([`LOWLAT_PAD_REPORT_OUTPUT`]: motors, lights, a
+/// DualSense's trigger effects) or a feature write
+/// ([`LOWLAT_PAD_REPORT_FEATURE`]), in the pad's USB form, identifier byte
+/// first. The pair of [`lowlat_host_poll_pad_report`]; the guest frames it
+/// for its pad's own transport.
+///
+/// @param[in] hl The handle from [`lowlat_host_create`].
+/// @param[in] guest The guest holding the pad.
+/// @param[in] pad The pad, as the guest named it.
+/// @param[in] kind [`LOWLAT_PAD_REPORT_OUTPUT`] or [`LOWLAT_PAD_REPORT_FEATURE`].
+/// @param[in] report The report, identifier byte first.
+/// @param[in] len How many bytes, at most 64.
+/// @returns [`LOWLAT_OK`], [`LOWLAT_ERR_UNKNOWN_GUEST`] when no such guest is
+/// connected, [`LOWLAT_ERR_INVALID_ARGUMENT`] for a kind that does not go this
+/// way or a report no pad takes, or [`LOWLAT_ERR_NOT_STARTED`].
+///
+/// # Safety
+///
+/// `report` points to at least `len` readable bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_host_send_pad_report(
+    hl: *mut lowlat_host,
+    guest: u32,
+    pad: u32,
+    kind: u32,
+    report: *const u8,
+    len: u32,
+) -> lowlat_status {
+    unsafe {
+        entered(hl, |handle| {
+            let kind = match kind {
+                k if k == lowlat_pad_report::LOWLAT_PAD_REPORT_OUTPUT as u32 => {
+                    lowlat_core::pad::OutputKind::Output
+                }
+                k if k == lowlat_pad_report::LOWLAT_PAD_REPORT_FEATURE as u32 => {
+                    lowlat_core::pad::OutputKind::Feature
+                }
+                _ => return LOWLAT_ERR_INVALID_ARGUMENT,
+            };
+            if report.is_null() || len == 0 || len as usize > lowlat_core::pad::FEATURE_MAX {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let body = core::slice::from_raw_parts(report, len as usize);
+            let mut held = handle.held();
+            let Some(seam) = held.seam.as_mut() else {
+                return LOWLAT_ERR_NOT_STARTED;
+            };
+            if seam.send_pad_report(guest, pad, kind, body) {
+                LOWLAT_OK
+            } else {
+                LOWLAT_ERR_UNKNOWN_GUEST
+            }
+        })
+    }
+}
+
 /// Take one event, waiting up to `timeout_ms` for one to arrive.
 ///
 /// Answers [`LOWLAT_TIMEOUT`] when nothing arrived, which is not an error. A
@@ -2550,7 +2782,8 @@ mod start_tests {
             quality: lowlat_quality::LOWLAT_QUALITY_LOWEST_LATENCY as u32,
             exclusive_hold_ms: 500,
             exclusive_pointer: false,
-            reserved2: [0; 3],
+            pad_sink: 0,
+            reserved2: [0; 2],
             server_count: 0,
             servers: [[0; LOWLAT_SERVER_MAX]; LOWLAT_SERVERS_MAX],
             video: video(),
@@ -2711,6 +2944,7 @@ mod start_tests {
             // A floor above the ceiling leaves congestion control nowhere to go.
             |cfg| cfg.video.min_bitrate_mbps = 100.0,
             |cfg| cfg.server_count = u32::try_from(LOWLAT_SERVERS_MAX + 1).unwrap_or(u32::MAX),
+            |cfg| cfg.pad_sink = 2,
             // A field with no terminator was overrun by whoever filled it.
             |cfg| cfg.video.output = [b'x' as c_char; LOWLAT_OUTPUT_MAX],
             // The size field is the versioning, and one that says less than the
@@ -3513,6 +3747,281 @@ mod guest_tests {
         assert_eq!(
             unsafe { lowlat_host_kick_guest(handle, guest, -15000) },
             LOWLAT_OK
+        );
+        unsafe { lowlat_host_destroy(handle) };
+    }
+}
+
+#[cfg(test)]
+mod pad_sink_tests {
+    use super::start_tests::{config, handle};
+    use super::*;
+    use ::lowlat_host::padsink::Report;
+    use lowlat_core::pad::Product;
+    use lowlat_inject::uinput::Forwarded;
+
+    struct Polled {
+        status: lowlat_status,
+        guest: u32,
+        pad: u32,
+        type_: u32,
+        kind: u32,
+        len: u32,
+        dropped: u32,
+        report: [u8; LOWLAT_PAD_REPORT_MAX as usize],
+    }
+
+    fn poll(handle: *mut lowlat_host, timeout_ms: u32) -> Polled {
+        let mut polled = Polled {
+            status: LOWLAT_OK,
+            guest: 0,
+            pad: 0,
+            type_: 0,
+            kind: 0,
+            len: LOWLAT_PAD_REPORT_MAX,
+            dropped: 0,
+            report: [0; LOWLAT_PAD_REPORT_MAX as usize],
+        };
+        polled.status = unsafe {
+            lowlat_host_poll_pad_report(
+                handle,
+                timeout_ms,
+                &raw mut polled.guest,
+                &raw mut polled.pad,
+                &raw mut polled.type_,
+                &raw mut polled.kind,
+                polled.report.as_mut_ptr(),
+                &raw mut polled.len,
+                &raw mut polled.dropped,
+            )
+        };
+        polled
+    }
+
+    /// **The poll answers only a host started with the application as the
+    /// sink**, and refuses rather than waits otherwise; the buffer must hold
+    /// the longest report.
+    #[test]
+    fn the_poll_is_refused_unless_the_application_is_the_sink() {
+        let handle = handle();
+        assert_eq!(poll(handle, 0).status, LOWLAT_ERR_NOT_STARTED);
+        let cfg = config();
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_OK
+        );
+        let began = lowlat_common::clock::Time::now();
+        assert_eq!(poll(handle, 500).status, LOWLAT_ERR_NOT_STARTED);
+        assert!(
+            lowlat_common::clock::elapsed_ms(began) < 100.0,
+            "waited out a timeout for a report that cannot come"
+        );
+        assert_eq!(unsafe { lowlat_host_stop(handle) }, LOWLAT_OK);
+
+        let mut cfg = config();
+        cfg.pad_sink = lowlat_pad_sink::LOWLAT_PAD_SINK_APP as u8;
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_OK
+        );
+        let began = lowlat_common::clock::Time::now();
+        let polled = poll(handle, 30);
+        assert_eq!(polled.status, LOWLAT_TIMEOUT);
+        assert_eq!(polled.len, 0);
+        assert!(lowlat_common::clock::elapsed_ms(began) >= 25.0, "spun");
+        let mut len = 64u32;
+        let (mut guest, mut pad, mut type_, mut kind) = (0u32, 0u32, 0u32, 0u32);
+        let mut small = [0u8; 64];
+        assert_eq!(
+            unsafe {
+                lowlat_host_poll_pad_report(
+                    handle,
+                    0,
+                    &raw mut guest,
+                    &raw mut pad,
+                    &raw mut type_,
+                    &raw mut kind,
+                    small.as_mut_ptr(),
+                    &raw mut len,
+                    core::ptr::null_mut(),
+                )
+            },
+            LOWLAT_ERR_TOO_SMALL
+        );
+        assert_eq!(len, LOWLAT_PAD_REPORT_MAX);
+        unsafe { lowlat_host_destroy(handle) };
+    }
+
+    /// **What a guest's injector forwards comes out as the boundary names
+    /// it**: the guest, the pad, the product, the kind, the report and its
+    /// length; a pad's end with no report.
+    #[test]
+    fn a_forwarded_report_comes_out_named_and_a_pads_end_after_it() {
+        let handle = handle();
+        let mut cfg = config();
+        cfg.pad_sink = lowlat_pad_sink::LOWLAT_PAD_SINK_APP as u8;
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_OK
+        );
+        let calibration: &[u8] =
+            include_bytes!("../../../core/tests/data/pad/ds4/feature-calibration.bin");
+        let idle: &[u8; 64] = include_bytes!("../../../core/tests/data/pad/ds4/input-idle.bin");
+        let mut feature = [0u8; 64];
+        feature[..calibration.len()].copy_from_slice(calibration);
+        // As the guest thread does it, straight into the handle's queue.
+        let sink = unsafe { &(*handle).report };
+        sink.send(Report::of(
+            7,
+            Forwarded::Feature {
+                pad: 3,
+                product: Product::DualShock4,
+                len: calibration.len(),
+                report: feature,
+            },
+        ));
+        sink.send(Report::of(
+            7,
+            Forwarded::Input {
+                pad: 3,
+                product: Product::DualShock4,
+                report: *idle,
+            },
+        ));
+        sink.send(Report::of(
+            7,
+            Forwarded::Unplugged {
+                pad: 3,
+                product: Product::DualShock4,
+            },
+        ));
+
+        let polled = poll(handle, 1000);
+        assert_eq!(polled.status, LOWLAT_OK);
+        assert_eq!((polled.guest, polled.pad), (7, 3));
+        assert_eq!(polled.type_, lowlat_pad_type::LOWLAT_PAD_TYPE_DS4 as u32);
+        assert_eq!(
+            polled.kind,
+            lowlat_pad_report::LOWLAT_PAD_REPORT_FEATURE as u32
+        );
+        assert_eq!(polled.len as usize, calibration.len());
+        assert_eq!(&polled.report[..calibration.len()], calibration);
+        assert_eq!(polled.dropped, 0);
+
+        let polled = poll(handle, 1000);
+        assert_eq!(polled.status, LOWLAT_OK);
+        assert_eq!(
+            polled.kind,
+            lowlat_pad_report::LOWLAT_PAD_REPORT_INPUT as u32
+        );
+        assert_eq!(polled.len, 64);
+        assert_eq!(&polled.report[..64], idle);
+
+        let polled = poll(handle, 1000);
+        assert_eq!(polled.status, LOWLAT_OK);
+        assert_eq!(
+            polled.kind,
+            lowlat_pad_report::LOWLAT_PAD_REPORT_UNPLUG as u32
+        );
+        assert_eq!(polled.len, 0);
+        assert_eq!(poll(handle, 0).status, LOWLAT_TIMEOUT);
+        unsafe { lowlat_host_destroy(handle) };
+    }
+
+    /// **How long a report takes to reach a parked poll**, from the guest
+    /// thread's push to the application's return, at a wired DualSense's
+    /// rate. Not asserted -- the figure is the machine's -- but printed, for
+    /// the phase's gate (docs/05-host.md section 7.2 promises one
+    /// cross-thread wake). Run with `--ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement, not a check"]
+    fn the_polls_wake_is_measured() {
+        use std::time::{Duration, Instant};
+
+        let handle = handle();
+        let mut cfg = config();
+        cfg.pad_sink = lowlat_pad_sink::LOWLAT_PAD_SINK_APP as u8;
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_OK
+        );
+        const REPORTS: usize = 2000;
+        let sink = unsafe { (*handle).report.clone() };
+        let sent: std::sync::Arc<std::sync::Mutex<Vec<Instant>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::with_capacity(REPORTS)));
+        let stamps = std::sync::Arc::clone(&sent);
+        let producer = std::thread::spawn(move || {
+            for i in 0..REPORTS {
+                std::thread::sleep(Duration::from_millis(4));
+                let mut report = [0u8; 64];
+                report[..8].copy_from_slice(&u64::try_from(i).unwrap().to_le_bytes());
+                stamps.lock().unwrap().push(Instant::now());
+                sink.send(Report::of(
+                    1,
+                    Forwarded::Input {
+                        pad: 3,
+                        product: Product::DualSense,
+                        report,
+                    },
+                ));
+            }
+        });
+        let mut waits = Vec::with_capacity(REPORTS);
+        for _ in 0..REPORTS {
+            let polled = poll(handle, 1000);
+            let arrived = Instant::now();
+            assert_eq!(polled.status, LOWLAT_OK);
+            let i = usize::try_from(u64::from_le_bytes(polled.report[..8].try_into().unwrap()))
+                .unwrap();
+            let stamped = sent.lock().unwrap()[i];
+            waits.push(arrived.duration_since(stamped).as_secs_f64() * 1e6);
+        }
+        producer.join().unwrap();
+        waits.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        let at = |q: usize| waits[(waits.len() - 1) * q / 100];
+        println!(
+            "pad report poll wake, {REPORTS} reports at 250 Hz: p50={:.1}us p95={:.1}us p99={:.1}us max={:.1}us",
+            at(50),
+            at(95),
+            at(99),
+            waits[waits.len() - 1]
+        );
+        unsafe { lowlat_host_destroy(handle) };
+    }
+
+    /// The way back refuses a kind that does not go that way and a report no
+    /// pad takes, and says when nobody was there to take it.
+    #[test]
+    fn a_report_sent_back_is_checked_at_the_call() {
+        let handle = handle();
+        let report = [0x05u8; 32];
+        let output = lowlat_pad_report::LOWLAT_PAD_REPORT_OUTPUT as u32;
+        assert_eq!(
+            unsafe { lowlat_host_send_pad_report(handle, 1, 3, output, report.as_ptr(), 32) },
+            LOWLAT_ERR_NOT_STARTED
+        );
+        let cfg = config();
+        assert_eq!(
+            unsafe { lowlat_host_start(handle, &raw const cfg) },
+            LOWLAT_OK
+        );
+        let input = lowlat_pad_report::LOWLAT_PAD_REPORT_INPUT as u32;
+        assert_eq!(
+            unsafe { lowlat_host_send_pad_report(handle, 1, 3, input, report.as_ptr(), 32) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            unsafe { lowlat_host_send_pad_report(handle, 1, 3, output, report.as_ptr(), 0) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        let long = [0u8; 65];
+        assert_eq!(
+            unsafe { lowlat_host_send_pad_report(handle, 1, 3, output, long.as_ptr(), 65) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            unsafe { lowlat_host_send_pad_report(handle, 1, 3, output, report.as_ptr(), 32) },
+            LOWLAT_ERR_UNKNOWN_GUEST
         );
         unsafe { lowlat_host_destroy(handle) };
     }

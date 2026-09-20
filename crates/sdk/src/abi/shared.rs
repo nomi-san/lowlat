@@ -272,8 +272,49 @@ pub struct lowlat_rumble_event {
     pub reserved: [u8; 2],
 }
 
+/// Which controller a report came from, for `lowlat_client_send_pad_report`
+/// and `lowlat_host_poll_pad_report`.
+///
+/// **The product decides what the host presents**: a device of that model,
+/// with its own descriptor and identity, which the host's driver claims as
+/// the real thing. A pad reported as one product stays that product until
+/// it is unplugged.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_pad_type {
+    /// A DualShock 4, either generation.
+    LOWLAT_PAD_TYPE_DS4 = 1,
+    /// A DualSense.
+    LOWLAT_PAD_TYPE_DS5 = 2,
+}
+
+/// Which of a pad's reports travels, for `lowlat_client_send_pad_report`,
+/// [`lowlat_pad_report_event`], `lowlat_host_poll_pad_report` and
+/// `lowlat_host_send_pad_report`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_pad_report {
+    /// An input report, as the pad delivered it: what the pad is doing.
+    LOWLAT_PAD_REPORT_INPUT = 0,
+    /// An output report a virtual pad was written: motors, lights, effects.
+    /// The way back only.
+    LOWLAT_PAD_REPORT_OUTPUT = 1,
+    /// A feature report: calibration or firmware read from the pad on the
+    /// way in, a feature write to the virtual pad on the way back.
+    LOWLAT_PAD_REPORT_FEATURE = 2,
+    /// The pad is gone: unplugged by the guest, or with it. A host's poll
+    /// only, after the pad's last report, with no report and a length of
+    /// zero; an application destroys its device for the pad on it.
+    LOWLAT_PAD_REPORT_UNPLUG = 3,
+}
+
+/// The longest report `lowlat_client_send_pad_report` takes or
+/// [`lowlat_pad_report_event`] carries -- a wireless report with its framing
+/// -- and what a buffer given to `lowlat_host_poll_pad_report` must hold.
+pub const LOWLAT_PAD_REPORT_MAX: u32 = 78;
+
 /// What the host's virtual pad was written, for a pad this client sends as
-/// its own reports ([`lowlat_client_send_pad_report`]).
+/// its own reports (`lowlat_client_send_pad_report`).
 ///
 /// `report` points into a buffer the handle owns and is valid until the next
 /// `lowlat_client_poll_events` on that handle. An output report

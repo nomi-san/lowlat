@@ -477,40 +477,6 @@ pub struct lowlat_pad_state {
     pub rt: u8,
 }
 
-/// Which controller a report came from, for [`lowlat_client_send_pad_report`].
-///
-/// **The product decides what the host presents**: a device of that model,
-/// with its own descriptor and identity, which the host's driver claims as
-/// the real thing. A pad reported as one product stays that product until
-/// it is unplugged.
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum lowlat_pad_type {
-    /// A DualShock 4, either generation.
-    LOWLAT_PAD_TYPE_DS4 = 1,
-    /// A DualSense.
-    LOWLAT_PAD_TYPE_DS5 = 2,
-}
-
-/// Which of a pad's reports travels, for [`lowlat_client_send_pad_report`]
-/// and [`lowlat_pad_report_event`].
-#[repr(C)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum lowlat_pad_report {
-    /// An input report, as the pad delivered it: what the pad is doing.
-    LOWLAT_PAD_REPORT_INPUT = 0,
-    /// An output report the host's device was written: motors, lights,
-    /// effects. Received only.
-    LOWLAT_PAD_REPORT_OUTPUT = 1,
-    /// A feature report: calibration or firmware read from the pad on the
-    /// way in, a feature write to the host's device on the way back.
-    LOWLAT_PAD_REPORT_FEATURE = 2,
-}
-
-/// The longest report [`lowlat_client_send_pad_report`] takes or
-/// [`lowlat_pad_report_event`] carries: a wireless report with its framing.
-pub const LOWLAT_PAD_REPORT_MAX: u32 = 78;
-
 /// No decoder has been built yet: no parameter set has arrived.
 pub const LOWLAT_DECODER_NONE_YET: u32 = 0;
 /// A decoder exists and is being fed.

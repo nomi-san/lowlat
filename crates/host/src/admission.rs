@@ -1487,6 +1487,13 @@ impl Admission {
     ///
     /// **Asked of the stream rather than remembered here**, which is what makes
     /// a read-back the host's answer rather than a copy of the last call.
+    /// Whether report pads' reports go to the application rather than into
+    /// devices of this host's own ([`Config::pad_sink`]).
+    #[must_use]
+    pub fn forwards_pad_reports(&self) -> bool {
+        self.config.pad_sink.is_some()
+    }
+
     pub fn audio(&self) -> crate::stream::SoundSettings {
         self.stream
             .as_ref()
