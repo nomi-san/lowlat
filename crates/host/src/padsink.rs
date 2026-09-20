@@ -91,11 +91,23 @@ impl Report {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct State {
     queued: VecDeque<Report>,
     /// Dropped for want of room, reported with the next delivery.
     dropped: u32,
+}
+
+impl Default for State {
+    /// **Sized once, here.** The queue never holds more than its cap, so
+    /// with the room taken up front nothing on the per-report path
+    /// allocates.
+    fn default() -> Self {
+        Self {
+            queued: VecDeque::with_capacity(MAX_REPORTS),
+            dropped: 0,
+        }
+    }
 }
 
 impl State {

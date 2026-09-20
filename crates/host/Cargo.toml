@@ -25,6 +25,10 @@ libc.workspace = true
 lowlat-encode.workspace = true
 lowlat-inject.workspace = true
 
+[dev-dependencies]
+# The allocation counter behind the per-report path's assertion.
+lowlat-common = { workspace = true, features = ["alloc-counter"] }
+
 [target.'cfg(loom)'.dependencies]
 loom = "0.7"
 
