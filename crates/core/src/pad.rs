@@ -211,9 +211,15 @@ impl Feature {
 }
 
 /// A DualShock 4 answers its calibration under another identifier and with a
-/// checksum when it is wireless.
+/// checksum when it is wireless, and **with its gyro ranges in another
+/// order**: the USB answer interleaves each axis's positive and negative range
+/// (pitch, pitch, yaw, yaw, roll, roll), the wireless answer groups the three
+/// positive ranges ahead of the three negative ones. A host's driver reads the
+/// USB order from a USB device, so the answer is reordered as it is rewritten.
 const DS4_BT_CALIBRATION_ID: u8 = 0x05;
 const DS4_BT_CALIBRATION_LEN: usize = 41;
+/// Where the six gyro ranges sit in either answer, two bytes each.
+const DS4_CALIBRATION_RANGES_AT: usize = 7;
 
 /// The whole-pad message's bit for each button (docs/01-protocol.md 11.1).
 ///
@@ -446,6 +452,18 @@ pub fn normalize_feature(
         dst.copy_from_slice(report.get(..len).ok_or(Error::ShortPacket)?);
         if let Some(first) = dst.first_mut() {
             *first = Feature::Calibration.id(product);
+        }
+        // Grouped (+p +y +r -p -y -r) to interleaved (+p -p +y -y +r -r).
+        let at = DS4_CALIBRATION_RANGES_AT;
+        if let (Some(ranges), Some(grouped)) = (
+            dst.get_mut(at..at + 12)
+                .and_then(|r| <&mut [u8; 12]>::try_from(r).ok()),
+            report
+                .get(at..at + 12)
+                .and_then(|r| <[u8; 12]>::try_from(r).ok()),
+        ) {
+            let [p0, p1, y0, y1, r0, r1, mp0, mp1, my0, my1, mr0, mr1] = grouped;
+            *ranges = [p0, p1, mp0, mp1, y0, y1, my0, my1, r0, r1, mr0, mr1];
         }
         return Ok((Feature::Calibration, len));
     }
@@ -710,6 +728,11 @@ mod tests {
     const DS5_BT_CALIBRATION: &[u8] =
         include_bytes!("../tests/data/pad/ds5/bt-feature-calibration.bin");
     const DS5_BT_FIRMWARE: &[u8] = include_bytes!("../tests/data/pad/ds5/bt-feature-firmware.bin");
+    const DS4_BT_IDLE: &[u8; BT_INPUT_LEN] =
+        include_bytes!("../tests/data/pad/ds4/bt-input-idle.bin");
+    const DS4_BT_CALIBRATION: &[u8] =
+        include_bytes!("../tests/data/pad/ds4/bt-feature-calibration.bin");
+    const DS4_BT_FIRMWARE: &[u8] = include_bytes!("../tests/data/pad/ds4/bt-feature-firmware.bin");
 
     /// A report a real pad produced, at rest: every stick centred, nothing
     /// pressed, the hat neutral. The two products centre their sticks one
@@ -773,6 +796,55 @@ mod tests {
             (Feature::Firmware, 64)
         );
         assert_eq!(&feature[..64], DS5_FIRMWARE);
+    }
+
+    /// What the DualShock 4 on the desk sent over Bluetooth: the input
+    /// verifies under the input seed and normalises to a pad at rest with the
+    /// touch count where the USB form keeps it; the calibration answer
+    /// verifies under the feature seed and is rewritten to the USB identifier
+    /// with its gyro ranges interleaved -- this pad answers nominal ranges over
+    /// Bluetooth, three positive then three negative, which is exactly the
+    /// grouping the rewrite must undo; the firmware answer carries no
+    /// checksum and passes through, and it is not the USB one: the pad
+    /// reports another build over the air.
+    #[test]
+    fn the_wireless_dualshock_normalises_and_its_calibration_is_reordered() {
+        let mut out = [0u8; INPUT_LEN];
+        assert_eq!(
+            normalize_input(Product::DualShock4, DS4_BT_IDLE, &mut out).unwrap(),
+            Transport::Bluetooth
+        );
+        let s = state(Product::DualShock4, &out);
+        assert_eq!(s.buttons, 0);
+        assert_eq!((s.lt, s.rt), (0, 0));
+        assert_eq!((s.lx, s.ly, s.rx, s.ry), (128, -129, 128, -129));
+        assert_eq!(out[DS4_TOUCH_AT], 1);
+        assert_ne!(out[DS4_TOUCH_AT + 2] & 0x80, 0);
+
+        let mut feature = [0u8; FEATURE_MAX];
+        assert_eq!(
+            normalize_feature(Product::DualShock4, DS4_BT_CALIBRATION, &mut feature).unwrap(),
+            (Feature::Calibration, 37)
+        );
+        assert_eq!(feature[0], 0x02);
+        assert_eq!(&feature[1..7], &DS4_BT_CALIBRATION[1..7]);
+        // Grouped on the air: +0x2200 x3, then -0x2200 x3.
+        assert_eq!(
+            &DS4_BT_CALIBRATION[7..19],
+            &[0, 0x22, 0, 0x22, 0, 0x22, 0, 0xde, 0, 0xde, 0, 0xde]
+        );
+        // Interleaved for the driver: +, -, +, -, +, -.
+        assert_eq!(
+            &feature[7..19],
+            &[0, 0x22, 0, 0xde, 0, 0x22, 0, 0xde, 0, 0x22, 0, 0xde]
+        );
+        assert_eq!(&feature[19..37], &DS4_BT_CALIBRATION[19..37]);
+        assert_eq!(
+            normalize_feature(Product::DualShock4, DS4_BT_FIRMWARE, &mut feature).unwrap(),
+            (Feature::Firmware, 49)
+        );
+        assert_eq!(&feature[..49], DS4_BT_FIRMWARE);
+        assert_ne!(DS4_BT_FIRMWARE, DS4_FIRMWARE);
     }
 
     /// The button bits of each product's report, read into the one bit set
@@ -1005,12 +1077,20 @@ mod tests {
     }
 
     /// A wireless DualShock 4's calibration answer is rewritten to the USB
-    /// one: same content, the USB identifier, no checksum.
+    /// one: the USB identifier, no checksum, the gyro ranges interleaved from
+    /// their grouped order, everything else as it was.
     #[test]
     fn a_wireless_ds4_calibration_is_rewritten_to_the_usb_report() {
         let mut bt = [0u8; DS4_BT_CALIBRATION_LEN];
         bt[0] = DS4_BT_CALIBRATION_ID;
         bt[1..37].copy_from_slice(&DS4_CALIBRATION[1..]);
+        // Group the USB fixture's interleaved ranges as the air carries them.
+        for axis in 0..3 {
+            bt[7 + axis * 2..9 + axis * 2]
+                .copy_from_slice(&DS4_CALIBRATION[7 + axis * 4..9 + axis * 4]);
+            bt[13 + axis * 2..15 + axis * 2]
+                .copy_from_slice(&DS4_CALIBRATION[9 + axis * 4..11 + axis * 4]);
+        }
         bt_seal(CRC_SEED_FEATURE, &mut bt);
         let mut out = [0u8; FEATURE_MAX];
         assert_eq!(

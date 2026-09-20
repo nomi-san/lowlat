@@ -14,8 +14,9 @@ writes, under `<out>/<ds4|ds5>/`:
     input-held.bin            with --held: the first report showing a touch
                               contact and the Cross button, waited for
 
-A pad paired over Bluetooth writes the same set under a `bt-` prefix, in the
-wireless framing (no descriptor: the host presents the USB one).
+A pad paired over Bluetooth writes the calibration, firmware and input reports
+under a `bt-` prefix, in the wireless framing (no descriptor: the host presents
+the USB one; no pairing report: its checksum covers the addresses zeroed here).
 
     scripts/capture-pad-fixtures.py [--held] [<out>]
 
@@ -34,6 +35,12 @@ PRODUCTS = {0x09CC: "ds4", 0x05C4: "ds4", 0x0CE6: "ds5"}
 FEATURES = {
     "ds4": [("calibration", 0x02, 37), ("firmware", 0xA3, 49), ("pairing", 0x81, 7)],
     "ds5": [("calibration", 0x05, 41), ("firmware", 0x20, 64), ("pairing", 0x09, 20)],
+}
+# A DualShock 4 over Bluetooth answers its calibration under another
+# identifier, with a checksum, and its firmware report unchanged in shape.
+FEATURES_BT = {
+    "ds4": [("calibration", 0x05, 41), ("firmware", 0xA3, 49)],
+    "ds5": [("calibration", 0x05, 41), ("firmware", 0x20, 64)],
 }
 # Contact byte (bit 7 set = no finger) and the button byte carrying Cross, in
 # the USB report; the wireless report holds the same content further in.
@@ -81,9 +88,7 @@ def main(argv):
             if not wireless:
                 with open(f"/sys/class/hidraw/{name}/device/report_descriptor", "rb") as f:
                     write(f"{d}/descriptor.bin", f.read())
-            for label, rid, n in FEATURES[kind]:
-                if wireless and label == "pairing":
-                    continue  # a checksum over addresses that are then zeroed
+            for label, rid, n in (FEATURES_BT if wireless else FEATURES)[kind]:
                 data = read_feature(fd, rid, n)
                 if not data:
                     print(f"  feature 0x{rid:02x} answered empty, not written")
