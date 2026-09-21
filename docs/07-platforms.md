@@ -240,7 +240,11 @@ and inside a session we own.
 
 - One virtual device per guest, created at connect and destroyed at disconnect.
 - Keyboard, pointer buttons and wheel, relative motion, and absolute motion as a separate
-  device, since absolute and relative pointers cannot share one device cleanly.
+  device, since absolute and relative pointers cannot share one device cleanly. **The absolute
+  one is shaped exactly as an absolute mouse** (the three primary buttons, X and Y, the wheels,
+  the scan-code type), because the kernel's joystick handler takes any other device with an
+  absolute axis: the side buttons are the relative pointer's whichever pointer moved last
+  (*14.5, 2026-09-21*; the reason is under [§4.2](#42-gamepads-and-the-two-device-layers)).
 - Absolute coordinates map to the output's geometry at injection, rotation-aware.
 - Device creation needs write access to the input device node. The daemon gets it through a
   group and a rule, not through running as root ([§6](#6-privileges)).
@@ -355,9 +359,9 @@ rumble setting has been toggled on in its calibration page; its "identify" ping 
 nothing to the pad before that. A browser's Gamepad API on Linux vibrates only a pad whose
 joystick node number is below four -- it looks the device up by that number against the
 API's slot cap -- so every joystick node ahead of the virtual pad counts: a DualSense's
-motion sensors take one, and so does an absolute pointer that declares more than the three
-primary buttons, which the host's own absolute pointer does today (five; trimming it to
-three, with the side buttons on the relative pointer, is an open item). And on a machine
+motion sensors take one, and so did the host's own absolute pointer until it was shaped
+exactly as an absolute mouse (14.5: three buttons, not five; verified on the input layer --
+no joystick node, still a pointer to the input library). And on a machine
 that is host and client at once, the launcher owns the physical pad and the virtual one
 together, so a report relayed from the virtual pad and the launcher's own report to the
 physical pad can cancel each other's rumble; no real deployment has both pads on one machine.

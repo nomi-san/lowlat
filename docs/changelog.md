@@ -3,6 +3,17 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-21 - 14.5: the absolute pointer is no joystick
+
+### Changed
+- **The absolute pointer declares the three primary buttons, not five, and the scan-code
+  type** ([07 §4](07-platforms.md)): the kernel's joystick handler takes any device with an
+  absolute axis unless it is shaped exactly as an absolute mouse, and a pointer it takes
+  holds a joystick number ahead of a guest's own pads -- which a browser's vibration cannot
+  reach past the fourth ([07 §4.2](07-platforms.md)). The side buttons go to the relative
+  pointer whichever pointer moved last, and their releases follow them. Verified on the
+  input layer: no joystick node for the pointer, the input library still calls it a pointer.
+
 ## 2026-09-21 - 14.4: the rumble road, proven byte by byte
 
 ### Added

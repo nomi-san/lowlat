@@ -1896,6 +1896,13 @@ arbitration; a paired Bluetooth pad at the client, if one is paired.
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
 
+- 2026-09-21: **Gate leg 1 passed; Phase 7's absolute pointer reshaped (14.5).** The day on
+  rumble found nothing wrong with the relay and three things about its consumers
+  ([07 §4.2](07-platforms.md)); one of them was ours to fix: the absolute pointer's five
+  buttons made it a joystick to the kernel's handler, ahead of a guest's pads in the
+  numbering. It declares the three primary buttons now, with the side buttons on the
+  relative pointer.
+
 - 2026-09-20: **Phase 14 built, legs 1, 2 and 4 of its gate open.** Two things decided
   while building: the application that holds the devices is told a pad's end through the
   same poll as its reports, after the last of them, so the destroy rule holds in both modes
