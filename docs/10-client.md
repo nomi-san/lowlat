@@ -380,7 +380,10 @@ and 554 (three planes at sixteen), measured on the development machine; the per-
 allocates nothing on this side. Ten minutes from this host at 2560x1440 H.264, 120 pictures
 a second with a moving scene: decode 1.8 ms at the median and 2.2 at the 95th percentile,
 2.7 at most; the conversion 0.16 and 0.19 ms; the reader at most one message behind; the
-whole client process at 31 percent of one core and 290 MB resident.
+whole client process at 31 percent of one core and 290 MB resident. From the established
+host over the internet, at its own cadence and bitrate (few, large pictures on a still
+desktop, up to 60 KB each), decode 2.8 ms at the median and 7.9 at the 95th percentile:
+the software decoder's time follows the bits in a picture, not the rate.
 
 **One decoder is chosen at creation and there is no automatic fallback to another**
 (*2026-09-19*, *amended 2026-09-21*). An established client offers the second codec and
@@ -409,7 +412,9 @@ backends walked every hundred seconds, five moves: each answered by exactly one 
 (the host's log shows one reinitialisation per move and nothing else), the picture back
 within the second, the move to the vendor's costing about 35 pictures for its runtime's
 opening -- some three hundred milliseconds -- the move to software 9 and to the open stack
-2, and nothing behind by more than one message before or after any of them.
+2, and nothing behind by more than one message before or after any of them. Against the
+established host over the internet the same five moves cost one encoder build each on that
+host's own log -- six builds in all, the connect's and one per move, nothing else.
 
 **The creation-time probe builds a real decoder per combination** (*2026-09-19*) of codec,
 chroma and depth, and destroys it, rather than trusting a capability query: the vendor

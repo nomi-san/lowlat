@@ -821,9 +821,19 @@ exception as a mechanism rather than a sentence.
    to 290 MB resident (`local/logs/2026-09-21-c8-gate-h264-10min.log`). **Still owed**: the
    ten-bit leg -- the other seat again held the consensus at H.264 (the client declared
    `0x19`, the host answered "the stream carries what every seat can take"), so the run was
-   stopped at 69 s and a watcher starts it the moment the host serves no other seat; and the
-   established host's defaults on software.)
-3. [ ] The switch: hermetically, with test doubles, one request per switch, the queue never
+   stopped at 69 s and a watcher starts it the moment the host serves no other seat. *The
+   established host's defaults on software, the same evening*: ten minutes over the internet
+   (round trip 8 ms at the median, 282 at most), H.264 at 2560x1440 at that host's own
+   cadence -- 16 pictures a second at the median on its still desktop, 104 at most -- decode
+   2.8 ms at the median and 7.9 at the 95th percentile, because that host spends its bitrate
+   on few, large pictures (up to 60 KB each against 4 KB from this host, 7 Mbit/s on average
+   and 50 in bursts) and the software decoder's time follows the bits; the conversion 0.14
+   ms; behind at most 5 messages and 80 ms at the worst of the path, 240 late, 1 percent
+   loss at most; 17 percent of one core, 290 MB resident; its log shows one encoder build at
+   the connect and nothing else for the ten minutes
+   (`local/logs/2026-09-21-c8-gate-myhome1-software-defaults.log`, the host's own log in
+   `...-myhome1-stock-host-log.txt`).)
+3. [x] The switch: hermetically, with test doubles, one request per switch, the queue never
    closed, a held picture valid across it; live against this host the open stack, the
    vendor's and software each way every hundred seconds, each answered by one keyframe and
    the picture back within the second; once against the established host, whose log shows
@@ -845,8 +855,14 @@ exception as a mechanism rather than a sentence.
    vendor's, 1.9 / 0.16 on software, 120 pictures a second and never more than one message
    behind on all three; the skips in the first half (44, 75, 111 a segment) fell at the
    host's own stalls, the same three backends showing none in the second half
-   (`local/logs/2026-09-21-c8-gate-walk-100s.log`). **Owed**: the run against the
-   established host, whose log should show one encoder rebuild per switch.)
+   (`local/logs/2026-09-21-c8-gate-walk-100s.log`). *And against the established host, the
+   same evening*: 519 seconds over the internet, the same five moves, each answered by one
+   keyframe at the next encoder generation (the client's log counts generations 1 through
+   6), **and that host's own log shows exactly six encoder builds: one at the connect and
+   one per move, a hundred seconds apart, nothing else**; the picture back within the second
+   every time; decode at the median 2.2 ms on the open stack, 0.7 on the vendor's, 2.8 on
+   software at that host's 10 to 36 Mbit/s, never more than one message behind
+   (`...-c8-gate-myhome1-walk-100s.log`, `...-myhome1-stock-host-log.txt`). Passed.)
 4. [x] The process map after a run shows the LGPL pair and nothing copyleft, which is gate 4 as
    written; the ABI gate at minor 11; the workspace's checks. (*2026-09-21*: the ABI gate
    and the workspace's checks green; the pair in the map is the LGPL one named, the
