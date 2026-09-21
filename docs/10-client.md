@@ -581,8 +581,14 @@ else is the library's:
   it -- its own motor-only report, keeping the lightbar it last wrote, is the right answer.
 - **Whether to send reports at all is the application's policy.** An established host reads
   a DualSense's report only in a mode its owner set, and the library cannot tell one host
-  from another; the demo sends reports to this library's hosts and states to the rest,
-  knowing the peer's build from the host list.
+  from another -- nor can the demo, since the host list names the same build for every
+  host, so the demo sends reports when told to (`LOWLAT_PAD_RAW`) and states otherwise.
+  Tried against an established host (2026-09-21): in its DualSense mode a DualSense works
+  whole, both ways -- buttons, motion, touch, rumble, the lights; in its DualShock mode a
+  DualShock 4 works but for the motion sensors, which that mode never reads
+  ([impl-plan-client.md](impl-plan-client.md) C7). This library's own host reads the whole
+  report for both products, so the motion sensors of either reach it, on the device it
+  presents or through the application's sink alike ([05 §7.2](05-host.md)).
 
 The toolkit the demo is built on has no HID path on Linux, so the demo reads the pad's raw
 node itself beside the toolkit's controller events and drops those events for the pads it

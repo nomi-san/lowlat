@@ -665,7 +665,14 @@ once, here and under Phase 14; the rules are [10 §8](10-client.md), the wire
    sixteen-button state and the ten-byte touch block and writes nothing else into it -- the
    wire it defines for a DualShock 4 carries no motion, and its own client sends none.
    Motion is what the whole report on opcode 31 carries, which this library's host reads
-   (Phase 14).*
+   (Phase 14).* **The DualSense against the established host in its DualSense mode, not
+   promised (D8) and tried anyway, 2026-09-21 at the desk: everything.** *The pad appears
+   there as a DualSense; the sixteen buttons, the motion sensors, the touchpad and its click
+   all read there; rumble, the mute button's light, the lightbar and the player lights all
+   reach the physical pad here. That host's DualSense mode passes the whole report both
+   ways through its own virtual bus, which is exactly what this library sends and takes
+   back, so nothing is lost in either direction -- the DualShock 4's motion is lost there
+   only because that host's DualShock mode never reads it.*
 2. **Both pads against this host** and **the established client holding the DualSense against
    this host** are Phase 14's gate, run with it.
 3. The hermetic tests above; the ABI gate at minor 10; the census on the host names the two
