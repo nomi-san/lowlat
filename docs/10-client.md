@@ -380,7 +380,10 @@ and 554 (three planes at sixteen), measured on the development machine; the per-
 allocates nothing on this side. Ten minutes from this host at 2560x1440 H.264, 120 pictures
 a second with a moving scene: decode 1.8 ms at the median and 2.2 at the 95th percentile,
 2.7 at most; the conversion 0.16 and 0.19 ms; the reader at most one message behind; the
-whole client process at 31 percent of one core and 290 MB resident. From the established
+whole client process at 31 percent of one core and 290 MB resident. Ten minutes of HEVC
+ten-bit the same way: decode 2.98 ms at the median and 3.46 at the 95th percentile, the
+P010 conversion 0.42 and 0.71 ms, 120 pictures a second decoded throughout, 55 percent of
+one core, 360 MB resident. From the established
 host over the internet, at its own cadence and bitrate (few, large pictures on a still
 desktop, up to 60 KB each), decode 2.8 ms at the median and 7.9 at the 95th percentile:
 the software decoder's time follows the bits in a picture, not the rate.

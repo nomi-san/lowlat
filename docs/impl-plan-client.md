@@ -805,7 +805,7 @@ exception as a mechanism rather than a sentence.
    listing; an absent major refuses. The delay is none for every clip without bidirectional
    pictures and the declared depth for the rest. Conversions at 2560x1440: 74, 168, 147 and
    554 us for the four formats. Zero allocations over two hundred units after warm-up.)
-2. [ ] Ten minutes each on H.264 and ten-bit HEVC at 2560x1440 from this host through the
+2. [x] Ten minutes each on H.264 and ten-bit HEVC at 2560x1440 from this host through the
    software backend, and the defaults from the established host: decode and conversion per
    picture, pictures and skips a second, the reader's lag, the CPU. Numbers recorded, not
    judged: a software decoder is the floor, not the target. (*2026-09-21, smoke*: twenty-five
@@ -821,8 +821,19 @@ exception as a mechanism rather than a sentence.
    to 290 MB resident (`local/logs/2026-09-21-c8-gate-h264-10min.log`). **Still owed**: the
    ten-bit leg -- the other seat again held the consensus at H.264 (the client declared
    `0x19`, the host answered "the stream carries what every seat can take"), so the run was
-   stopped at 69 s and a watcher starts it the moment the host serves no other seat. *The
-   established host's defaults on software, the same evening*: ten minutes over the internet
+   stopped at 69 s. *The ten-bit leg, once the other seat had left (22:44)*: ten minutes of
+   HEVC ten-bit at 2560x1440 with a moving scene at 4.9 Mbit/s, the host reinitialising by
+   declaration once at the start and never asked for a keyframe after; 120.1 pictures a
+   second decoded throughout, decode 2.98 ms at the median, 3.46 at the 95th percentile and
+   3.90 at most, the P010 conversion 0.42 / 0.71 / 1.03 ms, the reader never more than one
+   message behind and 25 ms at most, nothing late, no loss, 55 percent of one core, 354 to
+   360 MB resident. The pictures shown fell from 120 a second in the first half to 108 in
+   the second with the rest arriving in pairs against the 120 Hz present -- a cadence
+   effect, not a loss: the host's own frame interval at the 99th percentile crept from 9.1
+   to 10.1 ms over the run and this decoder's median from 2.96 to 3.15 ms, the host, the
+   client, the moving scene and the compositor sharing one machine
+   (`local/logs/2026-09-21-c8-gate-hevc10-10min.log`). *The established host's defaults on
+   software, the same evening*: ten minutes over the internet
    (round trip 8 ms at the median, 282 at most), H.264 at 2560x1440 at that host's own
    cadence -- 16 pictures a second at the median on its still desktop, 104 at most -- decode
    2.8 ms at the median and 7.9 at the 95th percentile, because that host spends its bitrate
@@ -832,7 +843,7 @@ exception as a mechanism rather than a sentence.
    loss at most; 17 percent of one core, 290 MB resident; its log shows one encoder build at
    the connect and nothing else for the ten minutes
    (`local/logs/2026-09-21-c8-gate-myhome1-software-defaults.log`, the host's own log in
-   `...-myhome1-stock-host-log.txt`).)
+   `...-myhome1-stock-host-log.txt`). Passed.)
 3. [x] The switch: hermetically, with test doubles, one request per switch, the queue never
    closed, a held picture valid across it; live against this host the open stack, the
    vendor's and software each way every hundred seconds, each answered by one keyframe and

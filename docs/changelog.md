@@ -50,9 +50,9 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   its decoder opens. Last in the automatic order; listed last, named by version and licence
   and the directory it came from ([06 §3b](06-api.md), [§6](06-api.md)).
 - Every committed clip bit-exact through an LGPL 7.1 pair, the second codec's through an
-  8.x one; ten minutes from this host at 2560x1440 H.264 with motion, 120 pictures a second
-  decoded in 1.8 ms at the median, 31 percent of one core
-  ([impl-plan-client.md](impl-plan-client.md) C8 gate 1, 2).
+  8.x one; ten minutes from this host at 2560x1440 with motion, 120 pictures a second:
+  H.264 decoded in 1.8 ms at the median at 31 percent of one core, HEVC ten-bit in 3.0 ms
+  at 55 percent ([impl-plan-client.md](impl-plan-client.md) C8 gate 1, 2).
 
 ### Fixed
 - The automatic decoder order with a render node named stopped after the open stack
