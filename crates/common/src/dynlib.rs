@@ -78,6 +78,23 @@ impl Library {
         names.iter().find_map(|name| Self::open(name))
     }
 
+    /// Close a library that was opened only to be asked what it is, before
+    /// anything of it ran.
+    ///
+    /// **The one exception to the module note, and it is narrow for the
+    /// reason the note gives.** Unloading is unsafe for a runtime that keeps
+    /// thread-local storage in the static area, and for one that is not
+    /// built to be reopened; it is safe for a library that carries no such
+    /// segment and of which nothing but a constant-returning entry point has
+    /// been called. The caller has established both -- the codec libraries
+    /// this exists for carry no thread-local segment, checked on every build
+    /// at hand -- and closes a refused library so that it leaves the process
+    /// map rather than staying mapped and unused. A library the process
+    /// already held stays held: the loader counts references.
+    pub fn close(self) {
+        imp::close(self.handle.as_ptr());
+    }
+
     /// Resolve a symbol, or `None` if the library does not export it.
     ///
     /// # Safety
@@ -132,6 +149,12 @@ mod imp {
         // SAFETY: the caller guarantees `handle` is open; `name` is valid.
         unsafe { libc::dlsym(handle, name.as_ptr()) }
     }
+
+    pub(super) fn close(handle: *mut c_void) {
+        // SAFETY: the handle came from `open` and is used once here; the
+        // `Library` that held it is consumed by the call.
+        unsafe { libc::dlclose(handle) };
+    }
 }
 
 #[cfg(windows)]
@@ -143,6 +166,7 @@ mod imp {
     unsafe extern "system" {
         fn LoadLibraryA(name: *const u8) -> *mut c_void;
         fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
+        fn FreeLibrary(module: *mut c_void) -> i32;
     }
 
     pub(super) fn open(name: &CStr) -> *mut c_void {
@@ -153,6 +177,11 @@ mod imp {
     pub(super) unsafe fn symbol(handle: *mut c_void, name: &CStr) -> *mut c_void {
         // SAFETY: the caller guarantees `handle` is open; `name` is valid.
         unsafe { GetProcAddress(handle, name.as_ptr().cast()) }
+    }
+
+    pub(super) fn close(handle: *mut c_void) {
+        // SAFETY: the handle came from `open` and is used once here.
+        unsafe { FreeLibrary(handle) };
     }
 }
 
@@ -201,6 +230,26 @@ mod tests {
         assert!(library.is_some(), "the fallback name was never tried");
         assert!(Library::open_first(&[c"liblowlat-absent.so.999"]).is_none());
         assert!(Library::open_first(&[]).is_none());
+    }
+
+    /// A closed library leaves the process map, which is what closing a
+    /// refused codec library is for. The premise -- that the library was
+    /// not mapped before the open -- is asserted, so a library the runtime
+    /// happens to hold cannot make the check vacuous.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_closed_library_leaves_the_process() {
+        const NAME: &CStr = c"libresolv.so.2";
+        let mapped = || {
+            std::fs::read_to_string("/proc/self/maps")
+                .expect("the process map")
+                .contains("libresolv")
+        };
+        assert!(!mapped(), "libresolv was mapped before the open");
+        let library = Library::open(NAME).expect("libresolv did not open");
+        assert!(mapped(), "the open did not map it");
+        library.close();
+        assert!(!mapped(), "the close left it mapped");
     }
 
     #[test]

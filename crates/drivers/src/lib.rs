@@ -6,7 +6,10 @@
 //! that will not start. What is here is exactly that seam -- the generated
 //! bindings, the loaders that resolve the entry points, and the handles that
 //! bind a device -- shared by the encoders and the decoders so the two halves
-//! resolve one table rather than two that drift apart.
+//! resolve one table rather than two that drift apart. The one library here
+//! that is not a device's is the codec library the client decodes in
+//! software through, reached the same way and trusted only on its own word
+//! about its licence.
 //!
 //! Nothing here encodes or decodes a picture. The pipelines that do live
 //! above, in `lowlat-encode` and `lowlat-decode`.
@@ -14,4 +17,5 @@
 pub mod cuda;
 pub mod cuvid;
 pub mod ffi;
+pub mod lavc;
 pub mod va;
