@@ -39,12 +39,13 @@ pub enum lowlat_decoder {
     /// is taken off the wire and dropped. A client with nowhere to draw.
     LOWLAT_DECODER_NONE = 3,
     /// The machine's own codec library, loaded at runtime and only when it
-    /// answers that it is an LGPL build; a build that answers otherwise is
-    /// refused with [`LOWLAT_ERR_NO_DECODER_LICENCE`]. Looked for in the
-    /// environment (`LOWLAT_FFMPEG_DIR`, `LOWLAT_FFMPEG_VERSION`), in the
-    /// directory `lowlat_client_create_info.device` names when it names
-    /// one, beside the running executable, then the linker's own way; the
-    /// highest major of 4 through 9 that opens wins. Planes only.
+    /// answers that it is an LGPL build -- or a GPL one as well, in a library
+    /// reporting `LOWLAT_FEATURE_GPL_LIBAVCODEC`; a build that answers
+    /// otherwise is refused with [`LOWLAT_ERR_NO_DECODER_LICENCE`]. Looked
+    /// for in the environment (`LOWLAT_FFMPEG_DIR`, `LOWLAT_FFMPEG_VERSION`),
+    /// in the directory `lowlat_client_create_info.device` names when it
+    /// names one, beside the running executable, then the linker's own way;
+    /// the highest major of 4 through 9 that opens wins. Planes only.
     LOWLAT_DECODER_SOFTWARE = 4,
 }
 
@@ -152,10 +153,10 @@ pub struct lowlat_decoder_info {
 
 /// The `index`-th decoder this machine can open, in a fixed order: the
 /// open decoder on each render node that decodes, then the vendor's on
-/// each of its devices, then the software decoder when an LGPL codec
-/// library is found. Callers iterate from zero until this returns false.
-/// Each call probes the devices afresh, a few milliseconds, so it is for a
-/// startup or a settings screen, not a loop.
+/// each of its devices, then the software decoder when a codec library
+/// this build loads is found. Callers iterate from zero until this returns
+/// false. Each call probes the devices afresh, a few milliseconds, so it is
+/// for a startup or a settings screen, not a loop.
 ///
 /// A row is opened by creation with its `decoder` and `device`, and
 /// `frame_kind = LOWLAT_FRAME_HANDLE` on a row whose `handle` is set.

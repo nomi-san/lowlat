@@ -3,11 +3,11 @@
 //!
 //! One row per backend and device that decodes anything: the open stack on
 //! each render node it decodes through, then the vendor's interface on
-//! each of its devices, then the machine's own codec library when it is an
-//! LGPL build. Each row is probed the way creation probes it, so a row is a
-//! decoder creation would open, named by the same two values creation
-//! takes: the backend and the render node -- or, for software, the
-//! directory the pair was found in.
+//! each of its devices, then the machine's own codec library when it is a
+//! build this library loads. Each row is probed the way creation probes
+//! it, so a row is a decoder creation would open, named by the same two
+//! values creation takes: the backend and the render node -- or, for
+//! software, the directory the pair was found in.
 
 use std::ffi::CString;
 
@@ -143,7 +143,19 @@ mod tests {
                 assert!(RENDER_NODES.contains(&row.device.as_str()));
             }
             if row.backend == Backend::Software {
-                assert!(row.name.contains("LGPL"), "a software row not LGPL");
+                // The licence follows the version in the name, and it is
+                // one this build loads: LGPL always, GPL only with the
+                // feature that says so.
+                let licence = row
+                    .name
+                    .splitn(3, ' ')
+                    .nth(2)
+                    .expect("a name, a version, a licence");
+                assert!(
+                    lowlat_drivers::lavc::accepts(licence),
+                    "a software row of a licence this build refuses: {}",
+                    row.name
+                );
             }
         }
         let rank = |b: Backend| match b {

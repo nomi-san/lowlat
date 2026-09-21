@@ -62,6 +62,12 @@ jobs:
       - name: Tests
         run: cargo test --workspace --all-features
 
+      # `--all-features` above turns on `gpl-libavcodec`, which a release
+      # build never has: the codec library's licence rule as shipped, where
+      # a GPL pair -- the runner's own, when it has one -- is refused.
+      - name: Tests, the licence rule as shipped
+        run: cargo test -p lowlat-drivers --lib lavc
+
       - name: Build release
         run: cargo build --workspace --release
 

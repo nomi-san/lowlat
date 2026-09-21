@@ -8,6 +8,14 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+default = []
+# The codec library loader takes a GPL build of the pair as well as an LGPL
+# one. Off, a pair that does not answer LGPL is refused; on, the GPL's terms
+# apply to the combination the build makes, which is its maker's to accept.
+# Never on in a release build; `--all-features` turns it on.
+gpl-libavcodec = []
+
 [dependencies]
 lowlat-common.workspace = true
 # Opening the render node. No wrapper crate: one open and one close.

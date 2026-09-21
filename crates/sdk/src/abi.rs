@@ -122,15 +122,17 @@ pub enum lowlat_status {
     LOWLAT_ERR_NO_DECODER_PROFILE = -502,
     /// The decoder or the frame kind asked for is not in this build.
     LOWLAT_ERR_DECODER_UNSUPPORTED = -503,
-    /// A codec library was found and is not one this library may load: it
-    /// answered a licence other than the LGPL, and was closed unused.
+    /// A codec library was found and is not one this build may load: it
+    /// answered a licence other than the LGPL -- or than the GPL as well, in
+    /// a build reporting `LOWLAT_FEATURE_GPL_LIBAVCODEC` -- and was closed
+    /// unused.
     LOWLAT_ERR_NO_DECODER_LICENCE = -504,
 }
 
 /// The major version, raised only when something already published changes.
 pub const LOWLAT_ABI_MAJOR: u32 = 0;
 /// The minor version, raised when surface is appended.
-pub const LOWLAT_ABI_MINOR: u32 = 11;
+pub const LOWLAT_ABI_MINOR: u32 = 12;
 
 /// Major and minor, packed.
 ///
@@ -147,8 +149,16 @@ pub extern "C" fn lowlat_abi_version() -> u32 {
 pub const LOWLAT_FEATURE_HOST: u32 = 1;
 /// The client half is in this build: every `lowlat_client_*` entry point exists.
 pub const LOWLAT_FEATURE_CLIENT: u32 = 2;
+/// This build's software decoder loads a GPL build of the machine's codec
+/// library as well as an LGPL one (the `gpl-libavcodec` build feature; minor
+/// 12). A build without this bit refuses a GPL build with
+/// `LOWLAT_ERR_NO_DECODER_LICENCE`. The bit says what the build would load,
+/// not what it has: a codec library actually loaded is named with its
+/// licence by `lowlat_enum_decoders`.
+pub const LOWLAT_FEATURE_GPL_LIBAVCODEC: u32 = 4;
 
-/// Which halves this build of the library carries.
+/// Which halves this build of the library carries, and what else was
+/// decided when it was built.
 ///
 /// **Asked rather than probed.** A loader that resolves entry points by name
 /// would otherwise learn that a half is missing one unresolved symbol at a
@@ -165,6 +175,9 @@ pub extern "C" fn lowlat_features() -> u32 {
     }
     if cfg!(feature = "client") {
         bits |= LOWLAT_FEATURE_CLIENT;
+    }
+    if cfg!(feature = "gpl-libavcodec") {
+        bits |= LOWLAT_FEATURE_GPL_LIBAVCODEC;
     }
     bits
 }
@@ -420,6 +433,25 @@ mod tests {
         let packed = lowlat_abi_version();
         assert_eq!(packed >> 16, LOWLAT_ABI_MAJOR);
         assert_eq!(packed & 0xffff, LOWLAT_ABI_MINOR);
+    }
+
+    /// **The features say what this build decided**, each bit the build
+    /// feature of the same name: the halves, and whether the software
+    /// decoder loads a GPL codec library.
+    #[test]
+    fn the_features_are_the_builds_own() {
+        let bits = lowlat_features();
+        assert_eq!(bits & LOWLAT_FEATURE_HOST != 0, cfg!(feature = "host"));
+        assert_eq!(bits & LOWLAT_FEATURE_CLIENT != 0, cfg!(feature = "client"));
+        assert_eq!(
+            bits & LOWLAT_FEATURE_GPL_LIBAVCODEC != 0,
+            cfg!(feature = "gpl-libavcodec")
+        );
+        assert_eq!(
+            bits & !(LOWLAT_FEATURE_HOST | LOWLAT_FEATURE_CLIENT | LOWLAT_FEATURE_GPL_LIBAVCODEC),
+            0,
+            "a bit no feature names"
+        );
     }
 
     /// **Every status describes itself, and an undefined one still answers.**

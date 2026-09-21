@@ -30,6 +30,11 @@ host = [
 # The client half: the connecting side, decode and present, and every
 # `lowlat_client_*` entry point.
 client = ["dep:lowlat-client", "dep:lowlat-core", "dep:lowlat-net"]
+# The client's software decoder takes a GPL build of the machine's codec
+# library as well as an LGPL one. The default build never does: a build with
+# this on is its maker's combination, and the GPL's terms apply to it.
+# Reported by `lowlat_features` as `LOWLAT_FEATURE_GPL_LIBAVCODEC`.
+gpl-libavcodec = ["client", "lowlat-client/gpl-libavcodec"]
 
 [dependencies]
 lowlat-common.workspace = true

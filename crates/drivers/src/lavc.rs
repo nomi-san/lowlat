@@ -1,12 +1,15 @@
 //! The machine's own libavcodec, resolved by name at runtime, and only an
-//! LGPL build of it.
+//! LGPL build of it -- or a GPL one as well, in a build with the
+//! `gpl-libavcodec` feature, whose maker takes the GPL's terms for the
+//! combination it makes.
 //!
 //! **Nothing is shipped and nothing is linked.** The pair `libavutil` +
 //! `libavcodec` is looked for on the machine (docs/10-client.md section 5.1):
 //! in the environment first, then beside the running executable, then the
 //! dynamic linker's own way; majors 4 through 9, the highest that opens
 //! winning. Before any other entry point is called the pair is asked its
-//! licence, and one that does not answer `LGPL` is closed at once and refused.
+//! licence, and one that does not answer a licence this build loads
+//! ([`accepts`]) is closed at once and refused.
 //!
 //! **No header is pinned.** What is relied on is the same on every major
 //! accepted: the entry points below, the leading fields of a frame and a
@@ -122,7 +125,7 @@ pub enum Refusal {
     Layout,
     /// A pair opened and decodes neither codec.
     NoDecoder,
-    /// A pair opened and answered a licence other than the LGPL.
+    /// A pair opened and answered a licence this build does not load.
     Licence,
 }
 
@@ -134,12 +137,19 @@ impl core::fmt::Display for Refusal {
             Self::MissingSymbol => "codec library is missing an entry point",
             Self::Layout => "codec library lays its frames out unexpectedly",
             Self::NoDecoder => "codec library decodes neither codec",
-            Self::Licence => "codec library is not an LGPL build",
+            Self::Licence => "codec library answers a licence this build does not load",
         })
     }
 }
 
 impl std::error::Error for Refusal {}
+
+/// Whether a licence answer is one this build loads: the LGPL always; the
+/// GPL only in a build with the `gpl-libavcodec` feature; anything else --
+/// a build that answers `nonfree` -- never.
+pub fn accepts(licence: &str) -> bool {
+    licence.starts_with("LGPL") || (cfg!(feature = "gpl-libavcodec") && licence.starts_with("GPL"))
+}
 
 /// Where the pair was found.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -233,7 +243,8 @@ impl Place {
 struct Environment {
     dir: Option<PathBuf>,
     /// The major asked for; a value that is not a number is zero, which no
-    /// pair has, so a variable set wrongly refuses rather than walks.
+    /// pair has, so a variable set wrongly refuses rather than walks. Empty
+    /// is unset, as the directory's is.
     major: Option<u32>,
 }
 
@@ -245,6 +256,7 @@ impl Environment {
                 .map(PathBuf::from),
             major: std::env::var(VERSION_VARIABLE)
                 .ok()
+                .filter(|v| !v.trim().is_empty())
                 .map(|v| v.trim().parse::<u32>().unwrap_or(0)),
         }
     }
@@ -353,9 +365,9 @@ impl Lavc {
     }
 
     /// Everything asked of a pair before it is trusted, in the order the
-    /// rules require: the versions and the licence through the four
-    /// constant-returning entry points, nothing else until the licence has
-    /// answered; then the table, the formats, the codecs and the layouts.
+    /// rules require: the licence through its two constant-returning entry
+    /// points and nothing else until it has answered; then the versions
+    /// through two more, the table, the formats, the codecs and the layouts.
     #[allow(
         clippy::type_complexity,
         reason = "the pair travels back with its refusal"
@@ -378,23 +390,24 @@ impl Lavc {
                 }
             };
         }
-        let avcodec_version: Version = symbol!(codec, c"avcodec_version");
-        let avutil_version: Version = symbol!(util, c"avutil_version");
         let avcodec_licence: Licence = symbol!(codec, c"avcodec_license");
         let avutil_licence: Licence = symbol!(util, c"avutil_license");
-        // SAFETY: constant-returning entry points with no arguments.
-        let (codec_version, util_version) = unsafe { (avcodec_version(), avutil_version()) };
-        if codec_version >> 16 != avcodec || util_version >> 16 != avutil {
-            return Err((Refusal::Version, util, codec));
-        }
-        // SAFETY: as above; each returns a pointer to a static string.
+        let avcodec_version: Version = symbol!(codec, c"avcodec_version");
+        let avutil_version: Version = symbol!(util, c"avutil_version");
+        // SAFETY: constant-returning entry points with no arguments; each
+        // returns a pointer to a static string.
         let licence = unsafe { text(avcodec_licence()) };
         let util_licence = unsafe { text(avutil_licence()) };
-        if !(licence.starts_with("LGPL") && util_licence.starts_with("LGPL")) {
+        if !(accepts(&licence) && accepts(&util_licence)) {
             lowlat_common::log_info!(
                 "decode: libavcodec answered licence=\"{licence}\" avutil=\"{util_licence}\""
             );
             return Err((Refusal::Licence, util, codec));
+        }
+        // SAFETY: as above.
+        let (codec_version, util_version) = unsafe { (avcodec_version(), avutil_version()) };
+        if codec_version >> 16 != avcodec || util_version >> 16 != avutil {
+            return Err((Refusal::Version, util, codec));
         }
 
         let get_pix_fmt: GetPixFmt = symbol!(util, c"av_get_pix_fmt");
@@ -560,9 +573,24 @@ mod tests {
             .collect()
     }
 
+    /// **The GPL is loaded only by a build that says so.** The LGPL answers
+    /// are taken by every build, the GPL ones only with the `gpl-libavcodec`
+    /// feature, and a build that answers `nonfree` by none.
+    #[test]
+    fn the_licences_accepted_are_the_builds() {
+        assert!(accepts("LGPL version 2.1 or later"));
+        assert!(accepts("LGPL version 3 or later"));
+        let gpl = cfg!(feature = "gpl-libavcodec");
+        assert_eq!(accepts("GPL version 2 or later"), gpl);
+        assert_eq!(accepts("GPL version 3 or later"), gpl);
+        assert!(!accepts("nonfree and unredistributable"));
+        assert!(!accepts(""));
+    }
+
     /// **The pair is trusted only on its own word.** Whatever the default
-    /// search finds is accepted with an LGPL answer or refused with any
-    /// other, and a refused pair leaves nothing new in the process map.
+    /// search finds is accepted with an answer this build loads or refused
+    /// with any other, and a refused pair leaves nothing new in the process
+    /// map.
     #[cfg(target_os = "linux")]
     #[test]
     fn the_default_search_answers_with_its_own_licence() {
@@ -573,7 +601,7 @@ mod tests {
                     "loaded major {} version {:?} licence {:?} from {:?}",
                     loaded.major, loaded.version, loaded.licence, loaded.origin
                 );
-                assert!(loaded.licence.starts_with("LGPL"));
+                assert!(accepts(&loaded.licence));
                 assert!((4..=9).contains(&loaded.major));
             }
             Err(refusal @ (Refusal::Licence | Refusal::Absent)) => {

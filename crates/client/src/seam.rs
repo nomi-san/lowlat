@@ -362,8 +362,9 @@ fn probe_vaapi(node: &CString) -> Result<Caps, DecoderStage> {
     }
 }
 
-/// Probe the machine's own codec library: found, LGPL, laid out as expected
-/// and opening a codec, or refused with the stage that says which.
+/// Probe the machine's own codec library: found, of a licence this build
+/// loads, laid out as expected and opening a codec, or refused with the
+/// stage that says which.
 fn probe_software(dir: Option<&Path>) -> Result<Caps, DecoderStage> {
     let lavc = lowlat_drivers::lavc::Lavc::load(dir).map_err(|refusal| {
         use lowlat_drivers::lavc::Refusal;

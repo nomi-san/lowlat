@@ -8,6 +8,12 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+default = []
+# The software decoder takes a GPL build of the machine's codec library as
+# well as an LGPL one; see the drivers crate. Never on in a release build.
+gpl-libavcodec = ["lowlat-drivers/gpl-libavcodec"]
+
 [dependencies]
 lowlat-common.workspace = true
 lowlat-core.workspace = true

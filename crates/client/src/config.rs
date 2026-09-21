@@ -24,8 +24,9 @@ pub enum Backend {
     /// The vendor interface, on the card behind the render node named, or
     /// the first.
     Nvdec,
-    /// The machine's own codec library, an LGPL build of it or none; the
-    /// device names the directory it is taken from, or is empty for the
+    /// The machine's own codec library, an LGPL build of it -- or a GPL one
+    /// as well, in a build with the `gpl-libavcodec` feature -- or none;
+    /// the device names the directory it is taken from, or is empty for the
     /// search of its own.
     Software,
     /// No decoder at all: the session carries control and sound, and every
