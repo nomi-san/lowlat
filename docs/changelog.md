@@ -3,6 +3,17 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-21 - demo: the chords on Ctrl+Shift, a keyboard grab, a fullscreen toggle
+
+### Changed
+- **The demo's chords are `Ctrl+Shift` and a letter**
+  ([examples/client/README.md](../examples/client/README.md)): `I` grabs the keyboard
+  through the toolkit, so the
+  desktop's own keys -- the Windows key, its task switch -- go to the host while the window
+  has the focus, and the bare Windows key is then sent rather than dropped; `W` toggles
+  fullscreen; `D` cycles the host's output (was `Ctrl+Alt+O`); `F`, `R` and `C` as before,
+  under the new modifiers.
+
 ## 2026-09-21 - 14.5: the absolute pointer is no joystick
 
 ### Changed

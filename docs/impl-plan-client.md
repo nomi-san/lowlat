@@ -207,7 +207,8 @@ the rules are [10 §8](10-client.md).
   generated from the toolkit's own map crossed with the kernel's usage table (two
   directions, so a disagreement shows); a bare GUI key is dropped, as a chord modifier it
   is sent; repeats are forwarded as presses; both attached pads as the standard state,
-  unplug on removal. Ctrl+Alt chords are the demo's own: stretch or shrink (the rectangle
+  unplug on removal. Ctrl+Alt chords are the demo's own (*Ctrl+Shift since 2026-09-21, with a
+  keyboard grab and a fullscreen toggle beside them*): stretch or shrink (the rectangle
   re-sent), letting go of the pointer, and cycling the streamed output through the
   application protocol -- ids 10 and 9 asked, the answers 12 and 11 read from the user-data
   events, 11 sent back with the next `output` in the host's own configuration, whole, as a
