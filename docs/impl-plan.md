@@ -1779,7 +1779,7 @@ description it hands its browser, which is what lets a second browser family con
    and per-datagram time at p50, p95 and p99.
 7. The encode-latency report is seen on the wire every two seconds on both transports.
 
-## Phase 14 - The HID-layer pads: DualShock 4 and DualSense (built 2026-09-20; gate legs 1, 2 and 4 open)
+## Phase 14 - The HID-layer pads: DualShock 4 and DualSense (built 2026-09-20; gate leg 4 and leg 1's trigger effects open)
 
 **Planned 2026-09-20 with the client's C7** ([impl-plan-client.md](impl-plan-client.md)),
 interview of the same day; one phase across both documents, the client half first. The
@@ -1865,7 +1865,13 @@ day**, 14.0 to 14.3, the client half (C7) gated first against an established hos
    box the launcher owns the physical pad and the virtual one at once, so their reports can
    cancel each other's rumble -- a configuration no real deployment has.*
 2. **An established client holding the DualSense against this host**: the same, with the
-   output report applied by that client.
+   output report applied by that client. *Passed 2026-09-21 from the second machine, both
+   pads: the established client in its DualSense mode holding the DualSense, and in its
+   DualShock mode the DualShock 4, against the installed service here -- every input the
+   report carries (the sixteen buttons, motion, the touchpad and its click) and every
+   feedback the output report carries (rumble, the mute button's light, the lightbar, the
+   player lights), the output reports applied by that client as they came back on
+   opcode 33.*
 3. ~~The hermetic session in sink mode carries every report whole and in order, feature
    reports first, and drops the sixteen-button messages for a report pad; the wake latency is
    recorded.~~ *Passed 2026-09-20: the hermetic session (C7.1) and the sink's own tests
