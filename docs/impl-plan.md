@@ -1358,7 +1358,10 @@ decides what to do with them.
    libavcodec the machine already carries when that library answers that it is an LGPL
    build, asked before any other entry point is called; a pair that answers otherwise is
    closed at once and refused. The exception is a mechanism, and the map after a run shows
-   the LGPL pair and nothing copyleft.*
+   the LGPL pair and nothing copyleft. A build made from source with the `gpl-libavcodec`
+   feature takes a GPL pair as well and is outside this gate: it is its maker's combination
+   under the GPL's terms, it reports itself through `lowlat_features`, and no release build
+   carries it.*
 
 ---
 

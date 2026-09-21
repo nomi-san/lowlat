@@ -3,6 +3,21 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-21 - C8, a review and one build option: a GPL codec library by opt-in (minor 12)
+
+### Added
+- **The `gpl-libavcodec` build feature**, off by default and in no release build: the
+  software decoder takes a GPL build of the machine's codec library as well as an LGPL one;
+  `nonfree` stays refused. A build that opts in is its maker's combination under the GPL's
+  terms and says so through **`lowlat_features`** as `LOWLAT_FEATURE_GPL_LIBAVCODEC`, the
+  header being one for every build. CI tests the licence rule as shipped in a step of its
+  own. With the feature on, every committed clip decodes bit-exact through the
+  distribution's GPL 7.1 pair ([06 §2](06-api.md), [10 §5.1](10-client.md)).
+
+### Fixed
+- The loader asks the pair its licence before its versions, as every sentence about it
+  says; an empty `LOWLAT_FFMPEG_VERSION` is unset rather than a refusal.
+
 ## 2026-09-21 - C8, second half: a decoder chosen mid-session
 
 ### Added

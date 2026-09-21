@@ -682,7 +682,7 @@ once, here and under Phase 14; the rules are [10 §8](10-client.md), the wire
 ## Phase C8 - Software decode over the machine's own libavcodec, and a decoder chosen mid-session (planned 2026-09-21)
 
 **Planned 2026-09-21, interview of the same day.** Runs before C6, as C7 did: it changes the
-header (minor 11) and the demo, which C6 packages. The decisions are recorded once, here;
+header (minor 11, then 12) and the demo, which C6 packages. The decisions are recorded once, here;
 the rules are [10 §5.1](10-client.md), the surface [06 §3b](06-api.md).
 
 The deferred decision of "Later" is taken. **The library decodes in software through a
@@ -774,6 +774,17 @@ exception as a mechanism rather than a sentence.
   (`Ctrl+Shift+X`) and a timed walk (`LOWLAT_DECODER_EVERY`), C8.4.*
 - [x] Documentation closure: 10 §5.1, 06 §3b/§6/§7/§11, 09 §7a, 00 D14, gate 4 amended, the
   README's licence sentence. *2026-09-21.*
+- [x] **A GPL codec library by opt-in** (*added after the review, 2026-09-21*, C8.5, minor 12):
+  the `gpl-libavcodec` build feature, off by default and in no release build, has the loader
+  take a GPL pair as well as an LGPL one; `nonfree` stays refused by every build. The library
+  reports it as `LOWLAT_FEATURE_GPL_LIBAVCODEC`, since the header is one for every build and
+  the bit is the only way a loader learns what this one would load; the listing names
+  whatever was loaded with its licence. CI tests the rule as shipped in a step of its own,
+  because `--all-features` turns the feature on. With it, every committed clip decodes
+  bit-exact through the distribution's GPL 7.1 pair, the one documented exception unchanged.
+  The review found two things in the loader, fixed with it: the licence is asked before the
+  versions, as every sentence about it says; and an empty `LOWLAT_FFMPEG_VERSION` is unset,
+  as an empty `LOWLAT_FFMPEG_DIR` is.
 
 **Gate:**
 
@@ -821,7 +832,9 @@ exception as a mechanism rather than a sentence.
 4. [x] The process map after a run shows the LGPL pair and nothing copyleft, which is gate 4 as
    written; the ABI gate at minor 11; the workspace's checks. (*2026-09-21*: the ABI gate
    and the workspace's checks green; the pair in the map is the LGPL one named, the
-   distribution's GPL pair opened only to be asked and closed.)
+   distribution's GPL pair opened only to be asked and closed. *Later the same day*: the ABI
+   gate at minor 12 with the opt-in's feature bit; the workspace's checks green with the
+   feature off and on.)
 
 ## Later, and not in v1
 

@@ -64,6 +64,10 @@ including it, so a call into the missing half is a compile error rather than a l
 A plain include declares everything. `lowlat_features` reports the halves of the library
 actually loaded, as `LOWLAT_FEATURE_HOST | LOWLAT_FEATURE_CLIENT`, so a loader that resolves
 names one at a time learns once what it lacks rather than at whichever name it reached first.
+It reports one more thing decided at build time (minor 12): `LOWLAT_FEATURE_GPL_LIBAVCODEC`,
+set by a library built with the `gpl-libavcodec` feature, whose software decoder loads a GPL
+build of the machine's codec library as well as an LGPL one ([§3b](#3b-client)). The header
+is one for every build, so the bit is the only way a loader learns what this one would load.
 
 One handle owns one host session. `lowlat_host_destroy` stops hosting, disconnects every
 guest, joins every thread, and returns only when all of it has happened.
@@ -423,7 +427,12 @@ machine's own codec library -- loaded at runtime, never linked, and **only when 
 answers that it is an LGPL build**: before any other entry point is called it is asked its
 licence, and a build that answers otherwise is closed unused and refused with
 `LOWLAT_ERR_NO_DECODER_LICENCE`, a status of its own, so the person who has a codec library
-installed and is refused is told why rather than told to install one. The pair is looked for
+installed and is refused is told why rather than told to install one. **A library built with
+the `gpl-libavcodec` feature loads a GPL build as well** (*added 2026-09-21*, minor 12): the
+default build never does, and a build that opts in is its maker's combination, to which the
+GPL's terms apply; it says so through `lowlat_features` (`LOWLAT_FEATURE_GPL_LIBAVCODEC`),
+and the listing names whatever was loaded with its licence. A build answering `nonfree` is
+refused by every build. The pair is looked for
 in the environment (`LOWLAT_FFMPEG_DIR` a directory, `LOWLAT_FFMPEG_VERSION` a major of 4
 through 9; a pair named there that fails is the answer, never a walk), in the directory
 `lowlat_client_create_info.device` names when it names one, beside the running executable,
@@ -851,7 +860,8 @@ fills the `index`-th `lowlat_decoder_info` and answers true, or false past the l
 caller iterates from zero until false; the shape is the one an established client SDK's
 decoder list has. One row per backend and device that decodes anything, in a fixed order --
 the open interface on each render node that decodes, then the vendor's on each of its
-devices, then (minor 11) the software decoder when an LGPL codec library is found -- and
+devices, then (minor 11) the software decoder when a codec library the build loads is
+found (an LGPL one; a GPL one too with `LOWLAT_FEATURE_GPL_LIBAVCODEC`, §3b) -- and
 every row is probed exactly the way creation probes it, so a row is a decoder creation will
 open, named by the two values creation takes. Each call probes afresh, a few milliseconds:
 for a startup or a settings screen, not a loop.
@@ -1012,6 +1022,10 @@ Nothing moves.
 ([§3b](#3b-client), [§6](#6-enumeration)): `LOWLAT_DECODER_SOFTWARE`,
 `LOWLAT_ERR_NO_DECODER_LICENCE`, the software row last in `lowlat_enum_decoders`,
 `lowlat_client_set_decoder`, and the automatic order's two corrections. Nothing moves.
+
+**Minor 12** (2026-09-21) is one feature bit, `LOWLAT_FEATURE_GPL_LIBAVCODEC` ([§2](#2-lifecycle),
+[§3b](#3b-client)): set by a library built with the `gpl-libavcodec` feature, whose software
+decoder loads a GPL codec library as well as an LGPL one. Nothing moves.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected

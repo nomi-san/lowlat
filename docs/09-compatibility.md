@@ -333,7 +333,10 @@ the software decoder; the open stack lists the profile on some parts and the lib
 not ask for it there. **The software row exists only past a licence check**: the
 distribution this is developed on ships a GPL build, which is refused, so on a stock
 distribution the row is absent until an LGPL pair is placed beside the application or
-named in the environment.
+named in the environment -- or the library is built with the `gpl-libavcodec` feature,
+which takes the distribution's pair and is the builder's own combination under the GPL's
+terms ([10 §5.1](10-client.md)); with it, every committed clip decodes bit-exact through
+the distribution's 7.1 pair too.
 
 | Part | Interface | H.264 High | HEVC Main | HEVC Main 10 | HEVC 4:4:4, 8 and 10 | Handle | Evidence |
 |---|---|---|---|---|---|---|---|

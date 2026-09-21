@@ -199,7 +199,10 @@ Third-party components retain their own licenses. No copyleft library is linked,
 loaded but one: the encoders and the hardware decoders are reached through the drivers' own
 interfaces, and the client's software decoder is a libavcodec the machine already carries,
 used only when that library answers that it is an LGPL build. The check is made against the
-running process rather than the link graph.
+running process rather than the link graph. A library built from source with the
+`gpl-libavcodec` feature accepts a GPL libavcodec as well; that build is the builder's own
+combination, the GPL's terms apply to it, and it reports itself through `lowlat_features`.
+No release build carries the feature.
 
 ## Disclaimer
 

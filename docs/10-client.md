@@ -350,7 +350,11 @@ the pair (`libavutil`, `libavcodec`) is looked for in the environment (`LOWLAT_F
 majors 4 through 9 with the highest that opens winning, and before any other entry point
 is called it is asked its licence; a pair that does not answer `LGPL` is closed at once and
 reported as such, so on a distribution whose build is GPL the software row does not exist
-and the copyleft rule of [impl-plan.md](impl-plan.md) gate 4 holds by construction. No
+and the copyleft rule of [impl-plan.md](impl-plan.md) gate 4 holds by construction. **A
+library built with the `gpl-libavcodec` feature takes a GPL pair as well** (*added
+2026-09-21*): the default build never does; a build that opts in is its maker's combination,
+to which the GPL's terms apply, and it says so through `lowlat_features` so an application
+can tell the two builds apart; a pair answering `nonfree` is refused by every build. No
 header is pinned: the surface relied on is the same on every major accepted and is checked
 at load against the library that loaded; everything numbered that has moved between majors
 is resolved by name. The decoder's three-plane pictures leave in the same four formats the
