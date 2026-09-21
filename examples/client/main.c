@@ -60,6 +60,7 @@
 // withholds for touch is hidden here too. A rumble goes to the pad the host
 // named. The guest list is parsed here, with the toolkit's own reader.
 
+#include <dirent.h>
 #include <inttypes.h>
 #include <math.h>
 #include <pthread.h>
@@ -193,6 +194,10 @@ struct demo {
 		uint32_t id;
 		lowlat_pad_state state;
 		bool pending;
+		// Whether the pad's kernel driver names the face buttons by letter
+		// rather than by position (see letter_named), looked up once.
+		bool known;
+		bool letter_named;
 	} pads[8];
 	uint32_t pad_events;
 	uint32_t pad_sent;
@@ -629,6 +634,55 @@ static int32_t scaled(const MTY_Axis *a, int32_t lo, int32_t hi)
 // wire's own convention, so the values pass through as they are. (Until
 // 2026-09-19 the vertical axes were negated here, on a misread trace, and a
 // game on an established host looked the wrong way up.)
+// Whether the kernel driver behind a pad names its face buttons by letter.
+//
+// The input layer has two names for each of the upper face buttons, and two
+// conventions for using them: the PlayStation driver reports the button's
+// position (north, west), the Xbox driver reports its letter -- and the
+// letter codes are the position codes crossed (X is the north code, Y the
+// west). The toolkit reads every pad by position, which puts an Xbox pad's
+// X and Y on the wrong bits. The driver's name is on the device in sysfs,
+// found by the pad's identity.
+static bool letter_named(uint16_t vid, uint16_t pid)
+{
+	DIR *dir = opendir("/sys/class/input");
+	if (dir == NULL)
+		return false;
+	bool letters = false;
+	struct dirent *entry;
+	while (!letters && (entry = readdir(dir)) != NULL) {
+		unsigned node;
+		if (sscanf(entry->d_name, "event%u", &node) != 1)
+			continue;
+		char path[128];
+		unsigned v = 0, p = 0;
+		snprintf(path, sizeof path, "/sys/class/input/event%u/device/id/vendor", node);
+		FILE *f = fopen(path, "r");
+		if (f == NULL || fscanf(f, "%x", &v) != 1)
+			v = 0;
+		if (f != NULL)
+			fclose(f);
+		snprintf(path, sizeof path, "/sys/class/input/event%u/device/id/product", node);
+		f = fopen(path, "r");
+		if (f == NULL || fscanf(f, "%x", &p) != 1)
+			p = 0;
+		if (f != NULL)
+			fclose(f);
+		if (v != vid || p != pid)
+			continue;
+		snprintf(path, sizeof path, "/sys/class/input/event%u/device/device/driver", node);
+		char driver[256];
+		ssize_t n = readlink(path, driver, sizeof driver - 1);
+		if (n <= 0)
+			continue;
+		driver[n] = '\0';
+		const char *name = strrchr(driver, '/');
+		letters = strcmp(name != NULL ? name + 1 : driver, "xpad") == 0;
+	}
+	closedir(dir);
+	return letters;
+}
+
 static void on_controller(struct demo *d, const MTY_ControllerEvent *c)
 {
 	if (d->raw_only || (d->raw_on && raw_pads_owns_vendor(&d->raw, c->vid)))
@@ -643,13 +697,22 @@ static void on_controller(struct demo *d, const MTY_ControllerEvent *c)
 	}
 	if (slot == sizeof d->pads / sizeof d->pads[0])
 		return;
+	if (d->pads[slot].id != c->id || !d->pads[slot].known) {
+		d->pads[slot].known = true;
+		d->pads[slot].letter_named = letter_named(c->vid, c->pid);
+		if (d->pads[slot].letter_named)
+			printf("demo: pad %u (%04x:%04x) names its buttons by letter; X and Y read back\n",
+				c->id, c->vid, c->pid);
+	}
+	bool crossed = d->pads[slot].letter_named;
 	lowlat_pad_state fresh;
 	memset(&fresh, 0, sizeof fresh);
 	fresh.size = (uint32_t) sizeof fresh;
 	lowlat_pad_state *p = &fresh;
-	static const struct { MTY_CButton from; uint16_t to; } BITS[] = {
+	const struct { MTY_CButton from; uint16_t to; } BITS[] = {
 		{MTY_CBUTTON_A, LOWLAT_PAD_STATE_A}, {MTY_CBUTTON_B, LOWLAT_PAD_STATE_B},
-		{MTY_CBUTTON_X, LOWLAT_PAD_STATE_X}, {MTY_CBUTTON_Y, LOWLAT_PAD_STATE_Y},
+		{MTY_CBUTTON_X, crossed ? LOWLAT_PAD_STATE_Y : LOWLAT_PAD_STATE_X},
+		{MTY_CBUTTON_Y, crossed ? LOWLAT_PAD_STATE_X : LOWLAT_PAD_STATE_Y},
 		{MTY_CBUTTON_BACK, LOWLAT_PAD_STATE_BACK}, {MTY_CBUTTON_START, LOWLAT_PAD_STATE_START},
 		{MTY_CBUTTON_LEFT_THUMB, LOWLAT_PAD_STATE_LSTICK},
 		{MTY_CBUTTON_RIGHT_THUMB, LOWLAT_PAD_STATE_RSTICK},
