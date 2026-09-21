@@ -3,17 +3,20 @@
 //!
 //! One row per backend and device that decodes anything: the open stack on
 //! each render node it decodes through, then the vendor's interface on
-//! each of its devices. Each row is probed the way creation probes it, so a
-//! row is a decoder creation would open, named by the same two values
-//! creation takes: the backend and the render node.
+//! each of its devices, then the machine's own codec library when it is an
+//! LGPL build. Each row is probed the way creation probes it, so a row is a
+//! decoder creation would open, named by the same two values creation
+//! takes: the backend and the render node -- or, for software, the
+//! directory the pair was found in.
 
 use std::ffi::CString;
 
 use lowlat_core::video::Codec;
 use lowlat_decode::vaapi::Vaapi;
-use lowlat_decode::{Caps, nvdec, vaapi};
+use lowlat_decode::{Caps, nvdec, software, vaapi};
 use lowlat_drivers::cuda::Cuda;
 use lowlat_drivers::cuvid::Cuvid;
+use lowlat_drivers::lavc::{Lavc, Origin};
 
 use crate::config::Backend;
 use crate::seam::{RENDER_NODES, node_of};
@@ -98,6 +101,23 @@ pub fn enumerate() -> Vec<Available> {
             rows.extend(row);
         }
     }
+    if let Ok(lavc) = Lavc::load(None) {
+        rows.push(Available {
+            backend: Backend::Software,
+            device: match &lavc.origin {
+                Origin::Directory(dir) => dir.display().to_string(),
+                Origin::Default => String::new(),
+            },
+            name: format!(
+                "libavcodec {}.{}.{} {}",
+                lavc.version.0, lavc.version.1, lavc.version.2, lavc.licence
+            ),
+            caps: software::caps(&lavc),
+            handle: false,
+            max_h264: (0, 0),
+            max_hevc: (0, 0),
+        });
+    }
     rows
 }
 
@@ -114,21 +134,34 @@ mod tests {
         for row in &rows {
             println!("{row:?}");
             assert!(row.caps.any());
-            assert!(matches!(row.backend, Backend::Vaapi | Backend::Nvdec));
+            assert!(matches!(
+                row.backend,
+                Backend::Vaapi | Backend::Nvdec | Backend::Software
+            ));
             assert_eq!(row.handle, row.backend == Backend::Nvdec);
-            if !row.device.is_empty() {
+            if !row.device.is_empty() && row.backend != Backend::Software {
                 assert!(RENDER_NODES.contains(&row.device.as_str()));
             }
+            if row.backend == Backend::Software {
+                assert!(row.name.contains("LGPL"), "a software row not LGPL");
+            }
         }
-        let first_vendor = rows
-            .iter()
-            .position(|r| r.backend == Backend::Nvdec)
-            .unwrap_or(rows.len());
+        let rank = |b: Backend| match b {
+            Backend::Vaapi => 0,
+            Backend::Nvdec => 1,
+            _ => 2,
+        };
         assert!(
-            rows[first_vendor..]
-                .iter()
-                .all(|r| r.backend == Backend::Nvdec),
-            "the open stack's rows come first"
+            rows.windows(2)
+                .all(|w| rank(w[0].backend) <= rank(w[1].backend)),
+            "the open stack's rows, then the vendor's, then software"
+        );
+        assert!(
+            rows.iter()
+                .filter(|r| r.backend == Backend::Software)
+                .count()
+                <= 1,
+            "one software row at most"
         );
     }
 }

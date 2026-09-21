@@ -23,9 +23,12 @@ use super::shared::*;
 
 /// Which decoder a client is built on.
 ///
-/// **The choice is by index, as the host's encoder is; unset, the first
-/// that opens on the device named.** A machine without any is refused at
-/// creation with the stage named, exactly as a host without an encoder is.
+/// **The choice is by kind and render node, as the listing reports them;
+/// unset, the first that opens on the device named**: the open stack on
+/// that node or the first node that decodes, then the vendor's interface on
+/// the card behind it or any, then software. A machine without any is
+/// refused at creation with the stage named, exactly as a host without an
+/// encoder is.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum lowlat_decoder {
@@ -35,6 +38,14 @@ pub enum lowlat_decoder {
     /// No decoder: the session carries control and sound, and every picture
     /// is taken off the wire and dropped. A client with nowhere to draw.
     LOWLAT_DECODER_NONE = 3,
+    /// The machine's own codec library, loaded at runtime and only when it
+    /// answers that it is an LGPL build; a build that answers otherwise is
+    /// refused with [`LOWLAT_ERR_NO_DECODER_LICENCE`]. Looked for in the
+    /// environment (`LOWLAT_FFMPEG_DIR`, `LOWLAT_FFMPEG_VERSION`), in the
+    /// directory `lowlat_client_create_info.device` names when it names
+    /// one, beside the running executable, then the linker's own way; the
+    /// highest major of 4 through 9 that opens wins. Planes only.
+    LOWLAT_DECODER_SOFTWARE = 4,
 }
 
 /// How pictures leave the library.
@@ -90,7 +101,8 @@ pub struct lowlat_client_create_info {
     pub max_width: u32,
     pub max_height: u32,
     /// The render node the decoder opens, NUL-terminated; empty for the
-    /// first that decodes.
+    /// first that decodes. For the software decoder, the directory its
+    /// library pair is taken from, or empty for the search of its own.
     pub device: [c_char; LOWLAT_OUTPUT_MAX],
 }
 
@@ -106,9 +118,9 @@ pub struct lowlat_decoder_info {
     pub size: u32,
     /// Its position in the enumeration.
     pub index: u32,
-    /// One of [`lowlat_decoder`], `LOWLAT_DECODER_OPEN` or
-    /// `LOWLAT_DECODER_VENDOR`: what `lowlat_client_create_info.decoder`
-    /// names to open this one.
+    /// One of [`lowlat_decoder`], `LOWLAT_DECODER_OPEN`,
+    /// `LOWLAT_DECODER_VENDOR` or `LOWLAT_DECODER_SOFTWARE`: what
+    /// `lowlat_client_create_info.decoder` names to open this one.
     pub decoder: u32,
     /// The largest coded picture per codec, as the device reports it; zero
     /// where it does not say.
@@ -129,17 +141,21 @@ pub struct lowlat_decoder_info {
     pub reserved: [u8; 2],
     /// The render node, NUL-terminated, for `lowlat_client_create_info
     /// .device`; empty for the vendor's device when no node names it, which
-    /// creation takes as the first device.
+    /// creation takes as the first device. For the software row, the
+    /// directory the library pair was found in, or empty for the linker's
+    /// own search.
     pub device: [c_char; LOWLAT_OUTPUT_MAX],
-    /// The device's or driver's own name, NUL-terminated, for a label.
+    /// The device's or driver's own name, NUL-terminated, for a label; for
+    /// the software row, the library's version and its licence.
     pub name: [c_char; LOWLAT_DECODER_NAME_MAX],
 }
 
 /// The `index`-th decoder this machine can open, in a fixed order: the
 /// open decoder on each render node that decodes, then the vendor's on
-/// each of its devices. Callers iterate from zero until this returns
-/// false. Each call probes the devices afresh, a few milliseconds, so it
-/// is for a startup or a settings screen, not a loop.
+/// each of its devices, then the software decoder when an LGPL codec
+/// library is found. Callers iterate from zero until this returns false.
+/// Each call probes the devices afresh, a few milliseconds, so it is for a
+/// startup or a settings screen, not a loop.
 ///
 /// A row is opened by creation with its `decoder` and `device`, and
 /// `frame_kind = LOWLAT_FRAME_HANDLE` on a row whose `handle` is set.
@@ -173,6 +189,7 @@ pub unsafe extern "C" fn lowlat_enum_decoders(index: u32, out: *mut lowlat_decod
             index,
             decoder: match row.backend {
                 Backend::Nvdec => lowlat_decoder::LOWLAT_DECODER_VENDOR,
+                Backend::Software => lowlat_decoder::LOWLAT_DECODER_SOFTWARE,
                 _ => lowlat_decoder::LOWLAT_DECODER_OPEN,
             } as u32,
             max_width_h264: row.max_h264.0,
@@ -657,6 +674,9 @@ pub unsafe extern "C" fn lowlat_client_create(
                     code if code == lowlat_decoder::LOWLAT_DECODER_OPEN as u32 => Backend::Vaapi,
                     code if code == lowlat_decoder::LOWLAT_DECODER_VENDOR as u32 => Backend::Nvdec,
                     code if code == lowlat_decoder::LOWLAT_DECODER_NONE as u32 => Backend::None,
+                    code if code == lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32 => {
+                        Backend::Software
+                    }
                     _ => return LOWLAT_ERR_INVALID_ARGUMENT,
                 };
                 let kind = match info.frame_kind {
@@ -773,6 +793,7 @@ fn refused(error: ::lowlat_client::Error) -> lowlat_status {
                 DecoderStage::Device => LOWLAT_ERR_NO_DECODER_DEVICE,
                 DecoderStage::Profile => LOWLAT_ERR_NO_DECODER_PROFILE,
                 DecoderStage::Unsupported => LOWLAT_ERR_DECODER_UNSUPPORTED,
+                DecoderStage::Licence => LOWLAT_ERR_NO_DECODER_LICENCE,
             }
         }
         Error::TooManyHeld => LOWLAT_ERR_TOO_MANY_HELD,
@@ -1499,6 +1520,9 @@ pub unsafe extern "C" fn lowlat_client_get_status(
                     }
                     Some(::lowlat_client::seam::Opened::Nvdec(_)) => {
                         lowlat_decoder::LOWLAT_DECODER_VENDOR as u32
+                    }
+                    Some(::lowlat_client::seam::Opened::Software(_)) => {
+                        lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32
                     }
                     None => lowlat_decoder::LOWLAT_DECODER_NONE as u32,
                 },
@@ -2513,6 +2537,57 @@ mod tests {
         assert!(handle.is_null());
     }
 
+    /// **The software decoder is trusted only on the library's own word.**
+    /// Named by kind with a directory holding no pair, the answer is the
+    /// runtime stage; named with no directory, whatever the machine has
+    /// either opens as an LGPL build or is refused with the licence status,
+    /// the runtime status or the profile status -- never quietly taken.
+    #[test]
+    fn the_software_decoder_opens_an_lgpl_pair_or_names_the_stage() {
+        let mut handle: *mut lowlat_client = core::ptr::null_mut();
+        // A directory with no pair in it: the runtime stage, never a walk --
+        // unless the environment names a pair, which outranks the field.
+        if std::env::var_os("LOWLAT_FFMPEG_DIR").is_none() {
+            let mut info = no_decoder();
+            info.decoder = lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32;
+            let empty =
+                std::env::temp_dir().join(format!("lowlat-abi-empty-{}", std::process::id()));
+            std::fs::create_dir_all(&empty).expect("a temp dir");
+            put(&mut info.device, &empty.display().to_string());
+            assert_eq!(
+                unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
+                LOWLAT_ERR_NO_DECODER_RUNTIME
+            );
+            let _ = std::fs::remove_dir(&empty);
+        }
+
+        let mut info = no_decoder();
+        info.decoder = lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32;
+        let answer = unsafe { lowlat_client_create(&raw const info, &raw mut handle) };
+        match answer {
+            LOWLAT_OK => {
+                let mut status: lowlat_client_status = unsafe { core::mem::zeroed() };
+                status.size = core::mem::size_of::<lowlat_client_status>() as u32;
+                assert_eq!(
+                    unsafe { lowlat_client_get_status(handle, &raw mut status) },
+                    LOWLAT_OK
+                );
+                assert_eq!(
+                    status.backend,
+                    lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32
+                );
+                unsafe { lowlat_client_destroy(handle) };
+            }
+            LOWLAT_ERR_NO_DECODER_LICENCE
+            | LOWLAT_ERR_NO_DECODER_RUNTIME
+            | LOWLAT_ERR_NO_DECODER_PROFILE => {
+                assert!(handle.is_null());
+            }
+            other => panic!("the software decoder answered {other:?}"),
+        }
+        println!("software decoder: {answer:?}");
+    }
+
     /// The enumeration runs from zero until false, every row is one
     /// creation could open, and a bad out-parameter is false rather than a
     /// write. On a machine with no decoder the first call is the last.
@@ -2537,12 +2612,38 @@ mod tests {
             assert!(
                 row.decoder == lowlat_decoder::LOWLAT_DECODER_OPEN as u32
                     || row.decoder == lowlat_decoder::LOWLAT_DECODER_VENDOR as u32
+                    || row.decoder == lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32
             );
             assert!(row.h264 || row.hevc, "a row that decodes nothing");
             assert_eq!(
                 row.handle,
                 row.decoder == lowlat_decoder::LOWLAT_DECODER_VENDOR as u32
             );
+            if row.decoder == lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32 {
+                // The last row, and the one that opens by its kind and the
+                // directory it names, planes only.
+                let mut info = no_decoder();
+                info.decoder = row.decoder;
+                info.device = row.device;
+                let mut handle: *mut lowlat_client = core::ptr::null_mut();
+                assert_eq!(
+                    unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
+                    LOWLAT_OK,
+                    "the software row did not open by its own values"
+                );
+                unsafe { lowlat_client_destroy(handle) };
+                info.frame_kind = lowlat_frame_kind::LOWLAT_FRAME_HANDLE as u32;
+                assert_eq!(
+                    unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
+                    LOWLAT_ERR_DECODER_UNSUPPORTED
+                );
+                let mut next: lowlat_decoder_info = unsafe { core::mem::zeroed() };
+                next.size = core::mem::size_of::<lowlat_decoder_info>() as u32;
+                assert!(
+                    !unsafe { lowlat_enum_decoders(count + 1, &raw mut next) },
+                    "a row after the software row"
+                );
+            }
             assert_eq!(row.name[LOWLAT_DECODER_NAME_MAX - 1], 0, "terminated");
             let name = unsafe { core::ffi::CStr::from_ptr(row.name.as_ptr()) };
             let device = unsafe { core::ffi::CStr::from_ptr(row.device.as_ptr()) };

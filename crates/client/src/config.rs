@@ -15,7 +15,8 @@ pub const MAX_DIMENSION: u32 = 4096;
 /// Which decoder to build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Backend {
-    /// The first that opens on the device named.
+    /// The first that opens on the device named: the open stack, then the
+    /// vendor's interface, then software.
     #[default]
     Auto,
     /// The open-stack interface.
@@ -23,6 +24,10 @@ pub enum Backend {
     /// The vendor interface, on the card behind the render node named, or
     /// the first.
     Nvdec,
+    /// The machine's own codec library, an LGPL build of it or none; the
+    /// device names the directory it is taken from, or is empty for the
+    /// search of its own.
+    Software,
     /// No decoder at all: the session carries control and sound, and every
     /// picture is taken off the wire and dropped. A test peer, or a client
     /// with nowhere to draw.

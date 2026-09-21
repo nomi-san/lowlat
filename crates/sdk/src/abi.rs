@@ -122,12 +122,15 @@ pub enum lowlat_status {
     LOWLAT_ERR_NO_DECODER_PROFILE = -502,
     /// The decoder or the frame kind asked for is not in this build.
     LOWLAT_ERR_DECODER_UNSUPPORTED = -503,
+    /// A codec library was found and is not one this library may load: it
+    /// answered a licence other than the LGPL, and was closed unused.
+    LOWLAT_ERR_NO_DECODER_LICENCE = -504,
 }
 
 /// The major version, raised only when something already published changes.
 pub const LOWLAT_ABI_MAJOR: u32 = 0;
 /// The minor version, raised when surface is appended.
-pub const LOWLAT_ABI_MINOR: u32 = 10;
+pub const LOWLAT_ABI_MINOR: u32 = 11;
 
 /// Major and minor, packed.
 ///
@@ -170,7 +173,7 @@ pub extern "C" fn lowlat_features() -> u32 {
 ///
 /// A table rather than a match, because the value arriving is an integer and
 /// not necessarily one of these.
-const DESCRIPTIONS: [(lowlat_status, &CStr); 23] = [
+const DESCRIPTIONS: [(lowlat_status, &CStr); 24] = [
     (LOWLAT_OK, c"ok"),
     (LOWLAT_TIMEOUT, c"no event within the timeout"),
     (
@@ -229,6 +232,10 @@ const DESCRIPTIONS: [(lowlat_status, &CStr); 23] = [
     (
         LOWLAT_ERR_DECODER_UNSUPPORTED,
         c"the decoder or frame kind asked for is not in this build",
+    ),
+    (
+        LOWLAT_ERR_NO_DECODER_LICENCE,
+        c"a codec library was found and is not one this library may load",
     ),
 ];
 

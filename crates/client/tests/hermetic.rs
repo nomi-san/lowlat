@@ -1842,6 +1842,61 @@ fn the_session_decodes_the_clip_frame_for_frame() {
     );
 }
 
+/// **The hermetic session decodes through the software backend**, the
+/// machine's own codec library, frame for frame and one build, exactly as
+/// through the open stack -- the one backend a machine with no device can
+/// run this session on. Needs an LGPL pair (`LOWLAT_FFMPEG_DIR`), so it is
+/// off by default; the clip is the second codec's where the pair opens that
+/// codec alone.
+#[test]
+#[ignore = "needs an LGPL codec library pair"]
+fn the_session_decodes_the_clip_through_the_software_backend() {
+    let lavc = lowlat_drivers::lavc::Lavc::load(None)
+        .expect("an LGPL pair: name one with LOWLAT_FFMPEG_DIR");
+    let caps = lowlat_decode::software::caps(&lavc);
+    let (clip_name, sums_name) = if caps.h264 {
+        ("synthetic-720p-h264.bin", "synthetic-720p-h264.sums")
+    } else {
+        ("synthetic-720p-hevc.bin", "synthetic-720p-hevc.sums")
+    };
+    let backend = lowlat_decode::software::Backend::new(&lavc);
+    let units = clip(clip_name);
+    let expected = sums(sums_name);
+    let period = units.len() as u64;
+
+    let mut pair = Pair::with(13, clean(), backend, Some(units));
+    pair.run_for(2000.0);
+    assert!(pair.established());
+    pair.run_for(FRAME_MS * period as f64 * 3.0);
+    pair.host.streaming = false;
+    pair.run_for(2000.0);
+
+    let frames = pair.host.frames;
+    assert_eq!(pair.host.refused, 0);
+    assert_eq!(pair.guest.driver.skipped(), 0, "the reader fell behind");
+    assert_eq!(
+        pair.guest.pictures.len() as u64,
+        frames,
+        "a picture in did not come out"
+    );
+    for (n, got) in pair.guest.pictures.iter().enumerate() {
+        let want = expected[n % expected.len()];
+        assert_eq!(
+            *got, want,
+            "picture {n} differs from the reference decoder's"
+        );
+    }
+    assert_eq!(
+        pair.guest.builds, 1,
+        "an announced keyframe rebuilt the decoder"
+    );
+    println!(
+        "hermetic software decode: {clip_name}, {frames} pictures frame-for-frame, last decode {} us, conversion {} us",
+        pair.guest.feed.decoder().decode_us,
+        pair.guest.feed.decoder().readback_us
+    );
+}
+
 /// **Under the older framing every keyframe rebuilds the decoder and the
 /// picture continues** (docs/impl-plan-client.md C2 gate 3): the same clip
 /// from a host that ignores the declaration and announces nothing, so each

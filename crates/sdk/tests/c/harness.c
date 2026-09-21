@@ -645,7 +645,8 @@ int main(int argc, char **argv)
                 client_destroy(probe);
             } else if (opened == LOWLAT_ERR_NO_DECODER_RUNTIME
                        || opened == LOWLAT_ERR_NO_DECODER_DEVICE
-                       || opened == LOWLAT_ERR_NO_DECODER_PROFILE) {
+                       || opened == LOWLAT_ERR_NO_DECODER_PROFILE
+                       || opened == LOWLAT_ERR_NO_DECODER_LICENCE) {
                 printf("harness: no decoder here: %s\n", status_string(opened));
             } else {
                 fprintf(stderr, "harness: the decoder probe answered %d\n", (int) opened);

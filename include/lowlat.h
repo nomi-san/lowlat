@@ -42,7 +42,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 10
+#define LOWLAT_ABI_MINOR 11
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 #define LOWLAT_FEATURE_HOST 1
@@ -375,6 +375,9 @@ typedef enum lowlat_status {
     LOWLAT_ERR_NO_DECODER_PROFILE = -502,
     /// The decoder or the frame kind asked for is not in this build.
     LOWLAT_ERR_DECODER_UNSUPPORTED = -503,
+    /// A codec library was found and is not one this library may load: it
+    /// answered a licence other than the LGPL, and was closed unused.
+    LOWLAT_ERR_NO_DECODER_LICENCE = -504,
 } lowlat_status;
 
 #if (defined(LOWLAT_HOST) || defined(LOWLAT_CLIENT))
@@ -573,9 +576,12 @@ typedef enum lowlat_transport {
 #if defined(LOWLAT_CLIENT)
 /// Which decoder a client is built on.
 ///
-/// **The choice is by index, as the host's encoder is; unset, the first
-/// that opens on the device named.** A machine without any is refused at
-/// creation with the stage named, exactly as a host without an encoder is.
+/// **The choice is by kind and render node, as the listing reports them;
+/// unset, the first that opens on the device named**: the open stack on
+/// that node or the first node that decodes, then the vendor's interface on
+/// the card behind it or any, then software. A machine without any is
+/// refused at creation with the stage named, exactly as a host without an
+/// encoder is.
 typedef enum lowlat_decoder {
     LOWLAT_DECODER_AUTO = 0,
     LOWLAT_DECODER_OPEN = 1,
@@ -583,6 +589,14 @@ typedef enum lowlat_decoder {
     /// No decoder: the session carries control and sound, and every picture
     /// is taken off the wire and dropped. A client with nowhere to draw.
     LOWLAT_DECODER_NONE = 3,
+    /// The machine's own codec library, loaded at runtime and only when it
+    /// answers that it is an LGPL build; a build that answers otherwise is
+    /// refused with `LOWLAT_ERR_NO_DECODER_LICENCE`. Looked for in the
+    /// environment (`LOWLAT_FFMPEG_DIR`, `LOWLAT_FFMPEG_VERSION`), in the
+    /// directory `lowlat_client_create_info.device` names when it names
+    /// one, beside the running executable, then the linker's own way; the
+    /// highest major of 4 through 9 that opens wins. Planes only.
+    LOWLAT_DECODER_SOFTWARE = 4,
 } lowlat_decoder;
 
 /// How pictures leave the library.
@@ -1370,9 +1384,9 @@ typedef struct lowlat_decoder_info {
     uint32_t size;
     /// Its position in the enumeration.
     uint32_t index;
-    /// One of `lowlat_decoder`, `LOWLAT_DECODER_OPEN` or
-    /// `LOWLAT_DECODER_VENDOR`: what `lowlat_client_create_info.decoder`
-    /// names to open this one.
+    /// One of `lowlat_decoder`, `LOWLAT_DECODER_OPEN`,
+    /// `LOWLAT_DECODER_VENDOR` or `LOWLAT_DECODER_SOFTWARE`: what
+    /// `lowlat_client_create_info.decoder` names to open this one.
     uint32_t decoder;
     /// The largest coded picture per codec, as the device reports it; zero
     /// where it does not say.
@@ -1393,9 +1407,12 @@ typedef struct lowlat_decoder_info {
     uint8_t reserved[2];
     /// The render node, NUL-terminated, for `lowlat_client_create_info
     /// .device`; empty for the vendor's device when no node names it, which
-    /// creation takes as the first device.
+    /// creation takes as the first device. For the software row, the
+    /// directory the library pair was found in, or empty for the linker's
+    /// own search.
     char device[LOWLAT_OUTPUT_MAX];
-    /// The device's or driver's own name, NUL-terminated, for a label.
+    /// The device's or driver's own name, NUL-terminated, for a label; for
+    /// the software row, the library's version and its licence.
     char name[LOWLAT_DECODER_NAME_MAX];
 } lowlat_decoder_info;
 
@@ -1416,7 +1433,8 @@ typedef struct lowlat_client_create_info {
     uint32_t max_width;
     uint32_t max_height;
     /// The render node the decoder opens, NUL-terminated; empty for the
-    /// first that decodes.
+    /// first that decodes. For the software decoder, the directory its
+    /// library pair is taken from, or empty for the search of its own.
     char device[LOWLAT_OUTPUT_MAX];
 } lowlat_client_create_info;
 
@@ -2379,9 +2397,10 @@ lowlat_status lowlat_debug_panic(lowlat_host *hl) LOWLAT_NOEXCEPT;
 #if defined(LOWLAT_CLIENT)
 /// The `index`-th decoder this machine can open, in a fixed order: the
 /// open decoder on each render node that decodes, then the vendor's on
-/// each of its devices. Callers iterate from zero until this returns
-/// false. Each call probes the devices afresh, a few milliseconds, so it
-/// is for a startup or a settings screen, not a loop.
+/// each of its devices, then the software decoder when an LGPL codec
+/// library is found. Callers iterate from zero until this returns false.
+/// Each call probes the devices afresh, a few milliseconds, so it is for a
+/// startup or a settings screen, not a loop.
 ///
 /// A row is opened by creation with its `decoder` and `device`, and
 /// `frame_kind = LOWLAT_FRAME_HANDLE` on a row whose `handle` is set.

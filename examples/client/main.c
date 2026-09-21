@@ -22,8 +22,10 @@
 // `LOWLAT_SERVER` names the signaling service (kessel-ws.parsec.app by
 // default), `LOWLAT_DEVICE` a render node for the decoder (the first that
 // decodes by default), `LOWLAT_DECODER` one of `auto`, `open`, `vendor`,
-// `none`. The decoders this machine can open are printed at start, one
-// row each, and `LOWLAT_DECODER_INDEX` picks a row by its number instead.
+// `software`, `none`. The decoders this machine can open are printed at
+// start, one row each, and `LOWLAT_DECODER_INDEX` picks a row by its number
+// instead. The software row is the machine's own codec library, an LGPL
+// build of it or none; `LOWLAT_FFMPEG_DIR` names where its pair is.
 // `LOWLAT_HANDLE` asks for pictures as device handles, which the renderer
 // imports and draws with no copy through this process; only a decoder that
 // exports them (a row saying "handles") can be opened for that.
@@ -1484,7 +1486,8 @@ int main(void)
 	info.size = (uint32_t) sizeof info;
 	info.decoder = strcmp(decoder, "none") == 0 ? LOWLAT_DECODER_NONE
 		: strcmp(decoder, "open") == 0 ? LOWLAT_DECODER_OPEN
-		: strcmp(decoder, "vendor") == 0 ? LOWLAT_DECODER_VENDOR : LOWLAT_DECODER_AUTO;
+		: strcmp(decoder, "vendor") == 0 ? LOWLAT_DECODER_VENDOR
+		: strcmp(decoder, "software") == 0 ? LOWLAT_DECODER_SOFTWARE : LOWLAT_DECODER_AUTO;
 	// Pictures as device handles the renderer imports, on a decoder that
 	// exports them; the decoder is then the vendor's whatever was asked.
 	d.handles = getenv("LOWLAT_HANDLE") != NULL;
