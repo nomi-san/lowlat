@@ -194,10 +194,13 @@ struct demo {
 		uint32_t id;
 		lowlat_pad_state state;
 		bool pending;
-		// Whether the pad's kernel driver names the face buttons by letter
-		// rather than by position (see letter_named), looked up once.
+		// What sysfs says of the pad, looked up once: whether its kernel
+		// driver names the face buttons by letter rather than by position,
+		// and whether it is a pad the host on this same machine made (see
+		// pad_facts).
 		bool known;
 		bool letter_named;
+		bool hosts_own;
 	} pads[8];
 	uint32_t pad_events;
 	uint32_t pad_sent;
@@ -634,23 +637,30 @@ static int32_t scaled(const MTY_Axis *a, int32_t lo, int32_t hi)
 // wire's own convention, so the values pass through as they are. (Until
 // 2026-09-19 the vertical axes were negated here, on a misread trace, and a
 // game on an established host looked the wrong way up.)
-// Whether the kernel driver behind a pad names its face buttons by letter.
+// What sysfs says of a pad the toolkit reports, found by its identity.
 //
-// The input layer has two names for each of the upper face buttons, and two
-// conventions for using them: the PlayStation driver reports the button's
-// position (north, west), the Xbox driver reports its letter -- and the
-// letter codes are the position codes crossed (X is the north code, Y the
-// west). The toolkit reads every pad by position, which puts an Xbox pad's
-// X and Y on the wrong bits. The driver's name is on the device in sysfs,
-// found by the pad's identity.
-static bool letter_named(uint16_t vid, uint16_t pid)
+// **Letter-named buttons.** The input layer has two names for each of the
+// upper face buttons, and two conventions for using them: the PlayStation
+// driver reports the button's position (north, west), the Xbox driver
+// reports its letter -- and the letter codes are the position codes crossed
+// (X is the north code, Y the west). The toolkit reads every pad by
+// position, which puts an Xbox pad's X and Y on the wrong bits.
+//
+// **The host's own pads.** A demo run on the host's machine sees the pads
+// that host made from this demo's own states -- the toolkit reports them
+// like any other -- and sending them back makes more of them, up to the
+// host's cap. Such a pad names its location as the host's. The toolkit
+// gives no node for a controller, only its identity, so a real pad of the
+// same identity on that machine is kept out with them.
+static void pad_facts(uint16_t vid, uint16_t pid, bool *letter_named, bool *hosts_own)
 {
+	*letter_named = false;
+	*hosts_own = false;
 	DIR *dir = opendir("/sys/class/input");
 	if (dir == NULL)
-		return false;
-	bool letters = false;
+		return;
 	struct dirent *entry;
-	while (!letters && (entry = readdir(dir)) != NULL) {
+	while ((entry = readdir(dir)) != NULL) {
 		unsigned node;
 		if (sscanf(entry->d_name, "event%u", &node) != 1)
 			continue;
@@ -670,6 +680,14 @@ static bool letter_named(uint16_t vid, uint16_t pid)
 			fclose(f);
 		if (v != vid || p != pid)
 			continue;
+		snprintf(path, sizeof path, "/sys/class/input/event%u/device/phys", node);
+		f = fopen(path, "r");
+		if (f != NULL) {
+			char phys[64] = {0};
+			if (fgets(phys, sizeof phys, f) != NULL && strncmp(phys, "lowlat/", 7) == 0)
+				*hosts_own = true;
+			fclose(f);
+		}
 		snprintf(path, sizeof path, "/sys/class/input/event%u/device/device/driver", node);
 		char driver[256];
 		ssize_t n = readlink(path, driver, sizeof driver - 1);
@@ -677,10 +695,10 @@ static bool letter_named(uint16_t vid, uint16_t pid)
 			continue;
 		driver[n] = '\0';
 		const char *name = strrchr(driver, '/');
-		letters = strcmp(name != NULL ? name + 1 : driver, "xpad") == 0;
+		if (strcmp(name != NULL ? name + 1 : driver, "xpad") == 0)
+			*letter_named = true;
 	}
 	closedir(dir);
-	return letters;
 }
 
 static void on_controller(struct demo *d, const MTY_ControllerEvent *c)
@@ -698,12 +716,18 @@ static void on_controller(struct demo *d, const MTY_ControllerEvent *c)
 	if (slot == sizeof d->pads / sizeof d->pads[0])
 		return;
 	if (d->pads[slot].id != c->id || !d->pads[slot].known) {
+		d->pads[slot].id = c->id;
 		d->pads[slot].known = true;
-		d->pads[slot].letter_named = letter_named(c->vid, c->pid);
-		if (d->pads[slot].letter_named)
+		pad_facts(c->vid, c->pid, &d->pads[slot].letter_named, &d->pads[slot].hosts_own);
+		if (d->pads[slot].hosts_own)
+			printf("demo: pad %u (%04x:%04x) is the host's own on this machine; not sent\n",
+				c->id, c->vid, c->pid);
+		else if (d->pads[slot].letter_named)
 			printf("demo: pad %u (%04x:%04x) names its buttons by letter; X and Y read back\n",
 				c->id, c->vid, c->pid);
 	}
+	if (d->pads[slot].hosts_own)
+		return;
 	bool crossed = d->pads[slot].letter_named;
 	lowlat_pad_state fresh;
 	memset(&fresh, 0, sizeof fresh);
@@ -798,14 +822,19 @@ static void event_func(const MTY_Event *evt, void *opaque)
 		case MTY_EVENT_CONTROLLER:
 			on_controller(d, &evt->controller);
 			break;
-		case MTY_EVENT_DISCONNECT:
+		case MTY_EVENT_DISCONNECT: {
 			if (d->raw_only || (d->raw_on && raw_pads_owns_vendor(&d->raw, evt->controller.vid)))
 				break;
+			bool sent_ever = true;
 			for (size_t i = 0; i < sizeof d->pads / sizeof d->pads[0]; i++)
-				if (d->pads[i].id == evt->controller.id)
+				if (d->pads[i].id == evt->controller.id) {
+					sent_ever = !d->pads[i].hosts_own;
 					memset(&d->pads[i], 0, sizeof d->pads[i]);
-			lowlat_client_send_pad_unplug(d->client, evt->controller.id);
+				}
+			if (sent_ever)
+				lowlat_client_send_pad_unplug(d->client, evt->controller.id);
 			break;
+		}
 		case MTY_EVENT_FOCUS:
 			// Nothing stays held on a host whose window is no longer in
 			// front.
