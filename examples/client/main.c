@@ -9,13 +9,15 @@
 //
 // Keyboard, mouse and pads go to the host as the toolkit reports them; the
 // rectangle the picture is drawn into is told to the library, which maps
-// positions into the picture. Chords the demo keeps for itself, never sent:
-// Ctrl+Alt+F switches between the picture stretched to the window and shown
-// at its own size, Ctrl+Alt+R lets go of a pointer the host has captured
-// (and takes it again), Ctrl+Alt+O asks the host to stream its next output,
-// Ctrl+Alt+C cycles the colour preferences mid-session.
-// A bare Windows key is not sent, because the desktop here takes it and the
-// host would be left with the modifier held; it reaches the host on chords.
+// positions into the picture. Chords the demo keeps for itself, never sent,
+// Ctrl+Shift and a letter: I grabs the keyboard so the desktop's own keys go
+// to the host (and lets it go), W toggles fullscreen, D asks the host to
+// stream its next output, F switches between the picture stretched to the
+// window and shown at its own size, R lets go of a pointer the host has
+// captured (and takes it again), C cycles the colour preferences.
+// A bare Windows key is not sent while the keyboard is not grabbed, because
+// the desktop here takes it and the host would be left with the modifier
+// held; it reaches the host on chords, and whole once grabbed.
 //
 // `LOWLAT_SERVER` names the signaling service (kessel-ws.parsec.app by
 // default), `LOWLAT_DEVICE` a render node for the decoder (the first that
@@ -130,6 +132,9 @@ struct demo {
 	// The host's pointer mode, and whether the chord let go of it.
 	bool relative;
 	bool released;
+	// Whether the keyboard is grabbed: the desktop's own keys -- the GUI
+	// key, its task switch -- go to the host instead of to the desktop here.
+	bool grabbed;
 
 	// The host's pointer picture, kept at its native size; the toolkit is
 	// given it at the size it has in the drawn picture (the toolkit's own
@@ -542,11 +547,30 @@ static void cycle_video(struct demo *d)
 
 static void on_key(struct demo *d, const MTY_KeyEvent *k)
 {
-	// The demo's own chords, never sent. The release that follows one is
-	// sent and names a key the host never saw down, which it drops.
+	// The demo's own chords, Ctrl+Shift and a letter, never sent. The
+	// release that follows one is sent and names a key the host never saw
+	// down, which it drops.
 	if (k->pressed && (k->mod & (MTY_MOD_LCTRL | MTY_MOD_RCTRL))
-		&& (k->mod & (MTY_MOD_LALT | MTY_MOD_RALT))) {
+		&& (k->mod & (MTY_MOD_LSHIFT | MTY_MOD_RSHIFT))) {
 		switch (k->key) {
+			case MTY_KEY_I:
+				// The toolkit grabs the keyboard while the window has the
+				// focus, so the desktop's own keys reach the host; the
+				// grab follows the focus, and the release-all on losing
+				// it still runs.
+				d->grabbed = MTY_AppGrabKeyboard(d->app, !d->grabbed);
+				printf("demo: keyboard %s\n", d->grabbed ? "grabbed, the desktop's keys go to the host"
+					: "let go");
+				return;
+			case MTY_KEY_W: {
+				bool full = !MTY_WindowIsFullscreen(d->app, d->window);
+				MTY_WindowSetFullscreen(d->app, d->window, full);
+				printf("demo: %s\n", full ? "fullscreen" : "windowed");
+				return;
+			}
+			case MTY_KEY_D:
+				ask_outputs(d);
+				return;
 			case MTY_KEY_F:
 				atomic_store(&d->stretch, !atomic_load(&d->stretch));
 				printf("demo: %s\n", d->stretch ? "stretched to the window" : "at its own size");
@@ -556,9 +580,6 @@ static void on_key(struct demo *d, const MTY_KeyEvent *k)
 				apply_relative(d);
 				printf("demo: pointer %s\n", d->released ? "let go" : "taken");
 				return;
-			case MTY_KEY_O:
-				ask_outputs(d);
-				return;
 			case MTY_KEY_C:
 				cycle_video(d);
 				return;
@@ -566,7 +587,9 @@ static void on_key(struct demo *d, const MTY_KeyEvent *k)
 				break;
 		}
 	}
-	if (k->key == MTY_KEY_LWIN || k->key == MTY_KEY_RWIN)
+	// A bare GUI key is the desktop's unless the keyboard is grabbed: sent
+	// then, the host would be left holding the modifier the desktop took.
+	if ((k->key == MTY_KEY_LWIN || k->key == MTY_KEY_RWIN) && !d->grabbed)
 		return;
 	if (k->key >= MTY_KEY_MAX || KEY_USAGE[k->key] == 0)
 		return;
