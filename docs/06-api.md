@@ -419,8 +419,9 @@ established host an encoder rebuild, so it is for a person changing a setting. *
 kind stays the creation's**: a session of `LOWLAT_FRAME_HANDLE` refuses the call with
 `LOWLAT_ERR_DECODER_UNSUPPORTED`, because its device slots are bound to the device; changing
 that is a recreate. `LOWLAT_DECODER_NONE` is refused the same way. Measured against this
-host at 2560x1440: the open stack to the vendor's, to software, and round again every ten
-seconds, each answered by one keyframe and the picture back within the second.
+host at 2560x1440: the open stack to the vendor's, to software, and round again every
+hundred seconds, each answered by exactly one keyframe and the picture back within the
+second.
 
 `LOWLAT_DECODER_SOFTWARE` names the
 machine's own codec library -- loaded at runtime, never linked, and **only when the library

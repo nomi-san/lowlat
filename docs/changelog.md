@@ -31,9 +31,9 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   ([06 §3b](06-api.md), [10 §5.1](10-client.md)).
 - The demo moves to the next listed decoder on `Ctrl+Shift+X`, or every
   `LOWLAT_DECODER_EVERY` seconds. Against this host at 2560x1440, the open stack, the
-  vendor's and software walked every ten seconds: each move one reinitialisation on the
-  host's log and the picture back within the second
-  ([impl-plan-client.md](impl-plan-client.md) C8 gate 3).
+  vendor's and software walked every ten seconds and then every hundred for five moves:
+  each move exactly one reinitialisation on the host's log and the picture back within the
+  second ([impl-plan-client.md](impl-plan-client.md) C8 gate 3).
 
 ## 2026-09-21 - C8, first half: the software decoder (minor 11)
 
@@ -50,8 +50,9 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   its decoder opens. Last in the automatic order; listed last, named by version and licence
   and the directory it came from ([06 §3b](06-api.md), [§6](06-api.md)).
 - Every committed clip bit-exact through an LGPL 7.1 pair, the second codec's through an
-  8.x one; live from this host at 2560x1440 H.264, 120 pictures a second decoded in 1.2 to
-  1.8 ms ([impl-plan-client.md](impl-plan-client.md) C8 gate 1, 2).
+  8.x one; ten minutes from this host at 2560x1440 H.264 with motion, 120 pictures a second
+  decoded in 1.8 ms at the median, 31 percent of one core
+  ([impl-plan-client.md](impl-plan-client.md) C8 gate 1, 2).
 
 ### Fixed
 - The automatic decoder order with a render node named stopped after the open stack

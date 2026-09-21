@@ -377,9 +377,10 @@ loses none, and no host compared here sends the undeclared kind. The output dela
 stream's own: none for a stream without bidirectional pictures, its declared depth otherwise.
 The conversions at 2560x1440 cost 74 us (NV12), 168 (P010), 147 (three planes at eight bits)
 and 554 (three planes at sixteen), measured on the development machine; the per-unit path
-allocates nothing on this side. Live from this host at 2560x1440 H.264 at 120 pictures a
-second: decode 1.2 to 1.8 ms, the conversion 0.15 to 0.26 ms, the reader at most one message
-behind.
+allocates nothing on this side. Ten minutes from this host at 2560x1440 H.264, 120 pictures
+a second with a moving scene: decode 1.8 ms at the median and 2.2 at the 95th percentile,
+2.7 at most; the conversion 0.16 and 0.19 ms; the reader at most one message behind; the
+whole client process at 31 percent of one core and 290 MB resident.
 
 **One decoder is chosen at creation and there is no automatic fallback to another**
 (*2026-09-19*, *amended 2026-09-21*). An established client offers the second codec and
@@ -404,10 +405,11 @@ while no decoder exists. The frame kind is the queue's shape and stays the creat
 session of the handle kind refuses the call, because its device slots are bound to the
 device. A decoder that cannot serve the frame kind is refused where it is asked for, never
 answered with a frame of another kind. Measured against this host at 2560x1440, the three
-backends walked every ten seconds: each move answered by one keyframe (the host's log shows
-one reinitialisation per move and nothing else), the picture back within the second, the
-move to the vendor's costing about three hundred milliseconds of pictures for its runtime's
-opening and the others under a hundred.
+backends walked every hundred seconds, five moves: each answered by exactly one keyframe
+(the host's log shows one reinitialisation per move and nothing else), the picture back
+within the second, the move to the vendor's costing about 35 pictures for its runtime's
+opening -- some three hundred milliseconds -- the move to software 9 and to the open stack
+2, and nothing behind by more than one message before or after any of them.
 
 **The creation-time probe builds a real decoder per combination** (*2026-09-19*) of codec,
 chroma and depth, and destroys it, rather than trusting a capability query: the vendor

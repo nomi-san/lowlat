@@ -812,8 +812,17 @@ exception as a mechanism rather than a sentence.
    seconds from this host at 2560x1440 H.264, 120 pictures a second, decode 1.2 to 1.8 ms,
    conversion 0.15 to 0.26 ms, the reader at most one message behind, 285 MB resident; the
    ten-bit run could not be had because another guest was seated with the first codec, so
-   the room's consensus held the stream there -- the ten-minute runs wait for the host to be
-   free.)
+   the room's consensus held the stream there. *Later the same evening, the H.264 leg*: ten
+   minutes from this host at 2560x1440 with a moving scene at 4.1 Mbit/s, 119.9 pictures a
+   second on average, decode 1.78 ms at the median, 2.24 at the 95th percentile and 2.70 at
+   most, the conversion 0.16 / 0.19 / 0.23 ms, the reader never more than one message behind
+   and 17 ms at most, nothing late and no loss, 22 skips over 11 seconds all at the host's
+   own bitrate dips, the whole client process at 31 percent of one core with 13 threads, 286
+   to 290 MB resident (`local/logs/2026-09-21-c8-gate-h264-10min.log`). **Still owed**: the
+   ten-bit leg -- the other seat again held the consensus at H.264 (the client declared
+   `0x19`, the host answered "the stream carries what every seat can take"), so the run was
+   stopped at 69 s and a watcher starts it the moment the host serves no other seat; and the
+   established host's defaults on software.)
 3. [ ] The switch: hermetically, with test doubles, one request per switch, the queue never
    closed, a held picture valid across it; live against this host the open stack, the
    vendor's and software each way every hundred seconds, each answered by one keyframe and
@@ -826,9 +835,18 @@ exception as a mechanism rather than a sentence.
    each move one reinitialisation request on the host's log and the picture back within
    the second, the move to the vendor's costing about three hundred milliseconds of
    pictures for its runtime's opening, the others under a hundred
-   (`local/logs/2026-09-21-c8-switch-walk.log`). **Owed**: the hundred-second walk, and the
-   run against the established host, when the desk is free -- another guest was seated on
-   this host throughout, and its log shows the consensus over two seats holding.)
+   (`local/logs/2026-09-21-c8-switch-walk.log`). *Later the same evening, the hundred-second
+   walk against this host*: 519 seconds with a moving scene, five moves -- open stack ->
+   vendor -> software -> open stack -> vendor -> software -- the host's log showing exactly
+   five `peer asked to reinitialize`, one per move and a hundred seconds apart, nothing
+   else; the picture back within the second every time: the move to the vendor's cost 35
+   and 37 pictures (its runtime's opening), to software 9 and 9, to the open stack 2; per
+   backend decode / hand-out at the median 2.0 / 1.9 ms on the open stack, 0.6 / 0.5 on the
+   vendor's, 1.9 / 0.16 on software, 120 pictures a second and never more than one message
+   behind on all three; the skips in the first half (44, 75, 111 a segment) fell at the
+   host's own stalls, the same three backends showing none in the second half
+   (`local/logs/2026-09-21-c8-gate-walk-100s.log`). **Owed**: the run against the
+   established host, whose log should show one encoder rebuild per switch.)
 4. [x] The process map after a run shows the LGPL pair and nothing copyleft, which is gate 4 as
    written; the ABI gate at minor 11; the workspace's checks. (*2026-09-21*: the ABI gate
    and the workspace's checks green; the pair in the map is the LGPL one named, the
