@@ -3,6 +3,16 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-21 - demo: an Xbox pad's X and Y read back by letter
+
+### Fixed
+- **An Xbox pad's X and Y were crossed on every host.** The kernel's Xbox driver names the
+  upper face buttons by letter and the PlayStation driver by position, and the letter codes
+  are the position codes crossed; the toolkit reads every pad by position. The demo now
+  looks up the pad's driver in sysfs and crosses the two bits back for a pad the Xbox
+  driver holds. Found at Phase 14's gate with a wired third-party Xbox pad, the same on
+  this host and on an established one, which placed it in the client.
+
 ## 2026-09-21 - demo: the chords on Ctrl+Shift, a keyboard grab, a fullscreen toggle
 
 ### Changed
