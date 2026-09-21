@@ -3,6 +3,23 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-21 - C8, second half: a decoder chosen mid-session
+
+### Added
+- **`lowlat_client_set_decoder(cl, decoder, device)`**: another decoder before a session or
+  during one, probed on the caller's thread as creation probes; a kind that does not open
+  answers with its stage and nothing changes. During a session it is one act -- the
+  declaration re-masked and restated where it changed, the running decoder torn down, the
+  new runtime opened on the decode thread, and one keyframe request made by the replacement
+  once it exists -- the queue never closed, a held picture valid across it. A session of
+  the handle kind refuses it; so does `LOWLAT_DECODER_NONE`
+  ([06 §3b](06-api.md), [10 §5.1](10-client.md)).
+- The demo moves to the next listed decoder on `Ctrl+Shift+X`, or every
+  `LOWLAT_DECODER_EVERY` seconds. Against this host at 2560x1440, the open stack, the
+  vendor's and software walked every ten seconds: each move one reinitialisation on the
+  host's log and the picture back within the second
+  ([impl-plan-client.md](impl-plan-client.md) C8 gate 3).
+
 ## 2026-09-21 - C8, first half: the software decoder (minor 11)
 
 ### Added

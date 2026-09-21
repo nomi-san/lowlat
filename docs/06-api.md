@@ -394,10 +394,31 @@ lowlat_status lowlat_client_acquire_audio(lowlat_client *cl, uint32_t timeout_ms
                                           int16_t *samples, uint32_t *count);
 
 lowlat_status lowlat_client_set_video_config(lowlat_client *cl, const lowlat_client_video_config *cfg);
+lowlat_status lowlat_client_set_decoder(lowlat_client *cl, uint32_t decoder,
+                                        const char *device);                /* minor 11 */
 lowlat_status lowlat_client_get_metrics(lowlat_client *cl, lowlat_client_metrics *out);
 ```
 
-**Minor 11 (2026-09-21): the software decoder.** `LOWLAT_DECODER_SOFTWARE` names the
+**Minor 11 (2026-09-21): the software decoder, and a decoder chosen mid-session.**
+`lowlat_client_set_decoder(cl, decoder, device)` takes the kind and render node of creation
+and of the listing's rows (`LOWLAT_DECODER_AUTO` walks the automatic order again). The
+decoder is probed there and then, on the caller's thread, exactly as creation probes; a
+kind that does not open answers with its stage and **nothing changes** -- the running
+decoder keeps decoding. Before an attempt the choice is replaced and that is all. During a
+session it is one act: the declaration re-masked by the new decoder's capability and
+restated to the host where it changed, the running decoder torn down, the new one opened,
+and one keyframe request with the reinitialisation argument once the new decoder exists --
+so a keyframe never arrives for a decoder that is still opening, and a runtime that fails to
+open costs the host nothing; the picture resumes at the next keyframe, a picture the
+application holds stays valid, the queue never closes. Costs the host one keyframe and an
+established host an encoder rebuild, so it is for a person changing a setting. **The frame
+kind stays the creation's**: a session of `LOWLAT_FRAME_HANDLE` refuses the call with
+`LOWLAT_ERR_DECODER_UNSUPPORTED`, because its device slots are bound to the device; changing
+that is a recreate. `LOWLAT_DECODER_NONE` is refused the same way. Measured against this
+host at 2560x1440: the open stack to the vendor's, to software, and round again every ten
+seconds, each answered by one keyframe and the picture back within the second.
+
+`LOWLAT_DECODER_SOFTWARE` names the
 machine's own codec library -- loaded at runtime, never linked, and **only when the library
 answers that it is an LGPL build**: before any other entry point is called it is asked its
 licence, and a build that answers otherwise is closed unused and refused with
@@ -987,9 +1008,10 @@ three `pad_reports_*` status fields; the host half built with Phase 14 under the
 `lowlat_host_poll_pad_report` and `lowlat_host_send_pad_report`, `LOWLAT_PAD_REPORT_UNPLUG`.
 Nothing moves.
 
-**Minor 11** (2026-09-21) is the software decoder ([§3b](#3b-client), [§6](#6-enumeration)):
-`LOWLAT_DECODER_SOFTWARE`, `LOWLAT_ERR_NO_DECODER_LICENCE`, the software row last in
-`lowlat_enum_decoders`, and the automatic order's two corrections. Nothing moves.
+**Minor 11** (2026-09-21) is the software decoder and the decoder chosen mid-session
+([§3b](#3b-client), [§6](#6-enumeration)): `LOWLAT_DECODER_SOFTWARE`,
+`LOWLAT_ERR_NO_DECODER_LICENCE`, the software row last in `lowlat_enum_decoders`,
+`lowlat_client_set_decoder`, and the automatic order's two corrections. Nothing moves.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected

@@ -749,7 +749,7 @@ exception as a mechanism rather than a sentence.
   *C8.2, 2026-09-21. One addition: the stream's format in status is read off every picture
   rather than at the build alone, since a backend that reads no parameter set knows it no
   earlier.*
-- [ ] **A decoder chosen mid-session**: `lowlat_client_set_decoder(cl, decoder, device)`. The
+- [x] **A decoder chosen mid-session**: `lowlat_client_set_decoder(cl, decoder, device)`. The
   probe runs on the caller's thread exactly as creation's does; a backend that does not
   open answers with its stage and nothing changes. Before an attempt the choice is replaced
   and nothing else happens. During a session it is one act: the declaration re-masked by
@@ -763,11 +763,17 @@ exception as a mechanism rather than a sentence.
   are bound to the device; changing that is a recreate. **No automatic fallback of any
   kind is added**: a decoder that cannot serve the frame kind is refused where it is asked
   for, at creation or at this call, never answered with a frame of another kind.
-- [ ] The demo takes `LOWLAT_DECODER=software`, prints the row with its licence and origin,
+  *C8.4, 2026-09-21, with one refinement: the request is made by the replacement once it
+  exists rather than at the teardown, so a keyframe never arrives for a decoder still
+  opening and a runtime that fails to open costs the host nothing. The word to the decode
+  thread travels through the session thread behind the restated declaration, so a move that
+  also changes the declaration cannot cost two requests. `LOWLAT_DECODER_AUTO` is accepted
+  by the call and walks the automatic order again; `LOWLAT_DECODER_NONE` is refused.*
+- [x] The demo takes `LOWLAT_DECODER=software`, prints the row with its licence and origin,
   and cycles the rows mid-session through a chord. *The knob and the row, C8.2; the chord
-  comes with the switch.*
-- [ ] Documentation closure: 10 §5.1, 06 §3b/§6/§7/§11, 09 §7a, 00 D14, gate 4 amended, the
-  README's licence sentence. *The first half's, 2026-09-21.*
+  (`Ctrl+Shift+X`) and a timed walk (`LOWLAT_DECODER_EVERY`), C8.4.*
+- [x] Documentation closure: 10 §5.1, 06 §3b/§6/§7/§11, 09 §7a, 00 D14, gate 4 amended, the
+  README's licence sentence. *2026-09-21.*
 
 **Gate:**
 
@@ -797,13 +803,25 @@ exception as a mechanism rather than a sentence.
    ten-bit run could not be had because another guest was seated with the first codec, so
    the room's consensus held the stream there -- the ten-minute runs wait for the host to be
    free.)
-3. The switch: hermetically, with test doubles, one request per switch, the queue never
+3. [ ] The switch: hermetically, with test doubles, one request per switch, the queue never
    closed, a held picture valid across it; live against this host the open stack, the
    vendor's and software each way every hundred seconds, each answered by one keyframe and
    the picture back within the second; once against the established host, whose log shows
-   one encoder rebuild per switch.
-4. The process map after a run shows the LGPL pair and nothing copyleft, which is gate 4 as
-   written; the ABI gate at minor 11; the workspace's checks.
+   one encoder rebuild per switch. (*2026-09-21*: with test doubles, the loop that is
+   replaced returns the choice without asking, the replacement asks exactly once as its
+   first act, the queue stays open, an empty word moves nothing and an idle thread takes a
+   choice too. Live against this host at 2560x1440, every ten seconds for forty-eight:
+   open stack 2.0/1.9 ms -> vendor 0.6/0.5 -> software 1.3/0.16 -> open stack -> vendor,
+   each move one reinitialisation request on the host's log and the picture back within
+   the second, the move to the vendor's costing about three hundred milliseconds of
+   pictures for its runtime's opening, the others under a hundred
+   (`local/logs/2026-09-21-c8-switch-walk.log`). **Owed**: the hundred-second walk, and the
+   run against the established host, when the desk is free -- another guest was seated on
+   this host throughout, and its log shows the consensus over two seats holding.)
+4. [x] The process map after a run shows the LGPL pair and nothing copyleft, which is gate 4 as
+   written; the ABI gate at minor 11; the workspace's checks. (*2026-09-21*: the ABI gate
+   and the workspace's checks green; the pair in the map is the LGPL one named, the
+   distribution's GPL pair opened only to be asked and closed.)
 
 ## Later, and not in v1
 

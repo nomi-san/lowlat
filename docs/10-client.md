@@ -385,16 +385,25 @@ declared (§7), so what arrives is what was declared, and a stream the built dec
 take -- which can only be one the client did not declare -- ends the session with the
 decoder's status and the stage named. A quiet switch to a slower decoder ships a degraded
 stream without telling anyone, and the application cannot choose what it does not know
-about. **The application may choose, mid-session** (*planned 2026-09-21*, C8):
+about. **The application may choose, mid-session** (*built 2026-09-21*, C8):
 `lowlat_client_set_decoder` names another kind and node, is refused with the stage when it
 does not open and changes nothing then, and otherwise is one act -- the declaration
 re-masked by the new decoder's capability, the running decoder torn down, the new one
 opened on the decode thread, and exactly one keyframe request with the reinitialisation
 argument, the first of the two request cases of §5 -- so the picture resumes at the next
-keyframe and the queue never closes. The frame kind is the queue's shape and stays the
-creation's: a session of the handle kind refuses the call, because its device slots are
-bound to the device. A decoder that cannot serve the frame kind is refused where it is
-asked for, never answered with a frame of another kind.
+keyframe and the queue never closes. **The request is the replacement's, made once it
+exists**: the old decoder is torn down without asking, the new runtime opened, and the new
+decoder asks as its first act, so a keyframe never arrives for a decoder that is still
+opening and a runtime that fails to open costs the host nothing; the units that arrive
+meanwhile are dropped by the rule that ignores everything but a parameter-set-led unit
+while no decoder exists. The frame kind is the queue's shape and stays the creation's: a
+session of the handle kind refuses the call, because its device slots are bound to the
+device. A decoder that cannot serve the frame kind is refused where it is asked for, never
+answered with a frame of another kind. Measured against this host at 2560x1440, the three
+backends walked every ten seconds: each move answered by one keyframe (the host's log shows
+one reinitialisation per move and nothing else), the picture back within the second, the
+move to the vendor's costing about three hundred milliseconds of pictures for its runtime's
+opening and the others under a hundred.
 
 **The creation-time probe builds a real decoder per combination** (*2026-09-19*) of codec,
 chroma and depth, and destroys it, rather than trusting a capability query: the vendor
