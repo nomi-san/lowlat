@@ -10,7 +10,7 @@
 //!
 //! **No header is pinned.** What is relied on is the same on every major
 //! accepted: the entry points below, the leading fields of a frame and a
-//! packet, the padding a unit needs and one error code. Everything numbered
+//! packet, and two error codes. Everything numbered
 //! that has moved between majors, or could -- codec identifiers, pixel
 //! formats -- is resolved by name at load. The two field layouts are checked
 //! at load against the library that loaded, before a unit is ever fed.
@@ -37,10 +37,6 @@ pub const DIR_VARIABLE: &str = "LOWLAT_FFMPEG_DIR";
 /// The FFmpeg major (4 through 9) the pair must be, over the walk.
 pub const VERSION_VARIABLE: &str = "LOWLAT_FFMPEG_VERSION";
 
-/// Zero bytes every unit fed to a decoder must be followed by
-/// (`AV_INPUT_BUFFER_PADDING_SIZE`); a packet the library sizes carries
-/// them itself.
-pub const PADDING: usize = 64;
 /// `AVERROR(EAGAIN)`: the decoder wants a picture taken before it takes
 /// another unit, or has no picture ready yet.
 pub const EAGAIN: c_int = -(libc::EAGAIN);
@@ -409,7 +405,7 @@ impl Lavc {
         let packet_alloc: PacketAlloc = symbol!(codec, c"av_packet_alloc");
         let packet_free: PacketFree = symbol!(codec, c"av_packet_free");
         let new_packet: NewPacket = symbol!(codec, c"av_new_packet");
-        let loaded = Self {
+        let mut loaded = Self {
             frame_alloc,
             frame_free,
             frame_unref: symbol!(util, c"av_frame_unref"),
@@ -446,19 +442,44 @@ impl Lavc {
             ),
             licence,
             origin: place.origin(),
-            // SAFETY: a name lookup on the library's own registry.
-            decodes_h264: unsafe { !find_decoder_by_name(c"h264".as_ptr()).is_null() },
-            decodes_hevc: unsafe { !find_decoder_by_name(c"hevc".as_ptr()).is_null() },
+            decodes_h264: false,
+            decodes_hevc: false,
             _avcodec: codec,
             _avutil: util,
         };
-        if !(loaded.decodes_h264 || loaded.decodes_hevc) {
-            return Err((Refusal::NoDecoder, loaded._avutil, loaded._avcodec));
-        }
         if !loaded.layout_holds() {
             return Err((Refusal::Layout, loaded._avutil, loaded._avcodec));
         }
+        // **A codec is decoded only if its decoder opens**, not if its name
+        // is known: a build may carry a decoder it refuses to open without
+        // a device behind it, and the listing must say what a session will
+        // get.
+        loaded.decodes_h264 = loaded.opens(c"h264");
+        loaded.decodes_hevc = loaded.opens(c"hevc");
+        if !(loaded.decodes_h264 || loaded.decodes_hevc) {
+            return Err((Refusal::NoDecoder, loaded._avutil, loaded._avcodec));
+        }
         Ok(loaded)
+    }
+
+    /// Whether the decoder named opens, with no options and no stream: the
+    /// probe a listing and a build both rely on.
+    fn opens(&self, name: &CStr) -> bool {
+        // SAFETY: a lookup, an allocation and an open through the library's
+        // own entry points, the context freed once whatever the open said.
+        unsafe {
+            let codec = (self.find_decoder_by_name)(name.as_ptr());
+            if codec.is_null() {
+                return false;
+            }
+            let mut context = (self.alloc_context)(codec);
+            if context.is_null() {
+                return false;
+            }
+            let opened = (self.open)(context, codec, core::ptr::null_mut()) == 0;
+            (self.free_context)(&raw mut context);
+            opened
+        }
     }
 
     /// The two views checked against this library: a fresh frame points its
@@ -580,7 +601,13 @@ mod tests {
             loaded.version.0, named.0,
             "the reported major is the name's"
         );
-        assert!(loaded.decodes_h264 && loaded.decodes_hevc);
+        // Opened, not merely named: a pair at hand carries an H.264 decoder
+        // that refuses to open, and the listing must not promise it.
+        assert!(loaded.decodes_h264 || loaded.decodes_hevc);
+        println!(
+            "decodes h264 {} hevc {}",
+            loaded.decodes_h264, loaded.decodes_hevc
+        );
         assert_eq!(loaded.formats.yuv420p, 0);
         assert_eq!(loaded.formats.yuv444p, 5);
         let ten = if loaded.major == 4 { 64 } else { 62 };

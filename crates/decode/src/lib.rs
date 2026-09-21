@@ -7,7 +7,9 @@
 //! reference pictures a slice names and the buffer that holds them. That
 //! reading is what this crate mostly is (docs/10-client.md section 5.1); the
 //! backends beneath it hand the device what it asks for and read the picture
-//! back.
+//! back. The one backend that reads nothing is the software one, which hands
+//! whole units to the machine's own codec library and converts what comes
+//! back to the layouts the others hand out.
 //!
 //! **Nothing here allocates per unit.** The parser's state, the picture
 //! buffer and the parameter staging are fixed arrays sized by the coding
@@ -37,6 +39,7 @@ pub mod h264;
 pub mod hevc;
 pub mod nal;
 pub mod nvdec;
+pub mod software;
 pub mod vaapi;
 
 use lowlat_core::video::VideoHeader;

@@ -19,6 +19,9 @@ lowlat-drivers.workspace = true
 # The parameter-set writers, so what the encoders write is checked to parse
 # back to what they were told.
 lowlat-encode.workspace = true
+# The counting allocator, for the assertion that the software backend's
+# per-unit path allocates nothing on this side.
+lowlat-common = { workspace = true, features = ["alloc-counter"] }
 
 [lints]
 workspace = true
