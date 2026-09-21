@@ -3,6 +3,29 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-21 - 14.4: the rumble road, proven byte by byte
+
+### Added
+- **Two hardware tests and a tool** for what a consumer writes to a virtual pad: a
+  force-feedback effect played on the virtual pad's event node comes back as the driver's
+  own report with the motors set, both products (`a_rumble_on_the_virtual_pad_comes_back_as_
+  its_output_report`); a five-minute window that presents both products, keeps them alive
+  with idle reports, and prints every write that reaches them (`whatever_is_written_to_the_
+  virtual_pads_is_printed`); and `scripts/rumble-via-sdl.py`, which rumbles a pad through
+  SDL3's HIDAPI driver, the road a game takes. The demo's pad trace prints the head of every
+  report it writes back to the pad.
+
+### Fixed
+- **A set-report write keeps its own kind.** The descriptor's set-report event carries the
+  report type, and every one was taken as a feature write; a writer without the output
+  path would have had its output report written to the pad as a feature. A write dropped
+  for its size is now logged rather than silent.
+
+### Gate
+- Leg 1 passed on this machine with the installed service, both pads, all but the trigger
+  effects ([impl-plan.md](impl-plan.md) Phase 14); what the consumers themselves need is in
+  [07 §4.2](07-platforms.md).
+
 ## 2026-09-20 - 14.2 and 14.3: the application as the pad sink, and the package
 
 ### Added

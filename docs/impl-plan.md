@@ -1853,7 +1853,17 @@ day**, 14.0 to 14.3, the client half (C7) gated first against an established hos
    settings show the pad as the model it is, with gyro and touch live, and a lightbar colour
    set there and a rumble test there reach the physical pad at the desk; a title with native
    DualSense support, or a probe writing the output report over the virtual pad's raw node,
-   drives the trigger effects on the physical pad.
+   drives the trigger effects on the physical pad. *Passed 2026-09-21 with the installed
+   service, all but the trigger effects (not yet tried against a title; the whole DualSense
+   output report is what travels, and the launcher's own rumble report was watched arriving
+   at the virtual pad and going back). Both pads: touch, motion and the lightbar live in the
+   launcher's settings on 2026-09-20; rumble on 2026-09-21, from the launcher and from a
+   browser page. What the day between them taught, recorded in [07 §4.2](07-platforms.md):
+   the launcher rumbles a controller only once its per-controller rumble setting has been
+   toggled on, and its "identify" ping writes nothing before that; a browser's Gamepad API
+   on Linux vibrates only a pad whose joystick node number is below four; and on a loopback
+   box the launcher owns the physical pad and the virtual one at once, so their reports can
+   cancel each other's rumble -- a configuration no real deployment has.*
 2. **An established client holding the DualSense against this host**: the same, with the
    output report applied by that client.
 3. ~~The hermetic session in sink mode carries every report whole and in order, feature
@@ -1866,8 +1876,14 @@ day**, 14.0 to 14.3, the client half (C7) gated first against an established hos
 **Ahead of the gate, on this machine (2026-09-20):** the loopback -- the demo's raw pads to a
 by-hand host -- presented both pads, registered the virtual DualSense with the real pad's
 firmware version, put the driver's lightbar reports back on the physical pads, and delivered
-fifty thousand motion events in twelve seconds from the virtual DualSense's node. Legs 1 and 2
-need the installed service rebuilt from this tree (the unit's device policy changed in 14.3).
+fifty thousand motion events in twelve seconds from the virtual DualSense's node. **The rumble
+road, byte by byte (2026-09-21):** a force-feedback effect on the virtual pad's event node
+comes back as the driver's report with the motors set (the `a_rumble_on_the_virtual_pad`
+hardware test, both products); the launcher's SDL writes its own rumble report to the virtual
+pad's raw node (`scripts/rumble-via-sdl.py`, watched with the `whatever_is_written` window:
+DualShock 4 `05 01 00 00 ff ff`, DualSense `02 02 00 ff ff`); and the relayed bytes reach the
+physical pad unchanged (a USB capture on the physical DualShock 4 showed the relayed report,
+which the desk felt).
 
 **Watched, not decided:** the virtual pad's touchpad is a touchpad to the host's compositor
 and a guest's swipes move the host's pointer as a real pad's would, outside the one-pointer

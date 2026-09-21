@@ -345,6 +345,23 @@ input one: it is a second character device of the same class, and a closed polic
 allows the first alone refuses the second (measured), which reads as every report pad
 failing to be created.
 
+**What reads the virtual pad, and what each needs** (learned at the Phase 14 gate,
+2026-09-21). The kernel's driver claims it, so a consumer sees the real thing: the event
+nodes, the raw node, force feedback on the pad's event node, all of it answered from the
+peer's pad. Three things about the consumers themselves are worth knowing before a gate is
+called failed. The common game launcher drives the pad through its own SDL over the raw node
+(input, lightbar and rumble alike), and rumbles a controller only once that controller's
+rumble setting has been toggled on in its calibration page; its "identify" ping writes
+nothing to the pad before that. A browser's Gamepad API on Linux vibrates only a pad whose
+joystick node number is below four -- it looks the device up by that number against the
+API's slot cap -- so every joystick node ahead of the virtual pad counts: a DualSense's
+motion sensors take one, and so does an absolute pointer that declares more than the three
+primary buttons, which the host's own absolute pointer does today (five; trimming it to
+three, with the side buttons on the relative pointer, is an open item). And on a machine
+that is host and client at once, the launcher owns the physical pad and the virtual one
+together, so a report relayed from the virtual pad and the launcher's own report to the
+physical pad can cancel each other's rumble; no real deployment has both pads on one machine.
+
 **A virtual pad has to borrow a real controller's identity.** Everything that reads a gamepad
 decides what its buttons mean by looking the bus, vendor, product and version up in a table:
 browsers, the common controller libraries, and every per-title mapping people share. A device
