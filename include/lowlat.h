@@ -2550,6 +2550,42 @@ lowlat_status lowlat_client_set_viewport(lowlat_client *cl,
 lowlat_status lowlat_client_set_video_config(lowlat_client *cl,
                                              const lowlat_client_video_config *video) LOWLAT_NOEXCEPT;
 
+/// Choose another decoder, before a session or during one.
+///
+/// The kind and render node are those of creation and of the listing's rows
+/// (`LOWLAT_DECODER_AUTO` walks the automatic order again). The decoder is
+/// probed here, on the caller's thread, exactly as creation probes it; a
+/// kind that does not open answers with its stage -- `LOWLAT_ERR_NO_DECODER_
+/// RUNTIME`, `_DEVICE`, `_PROFILE` or `_LICENCE` -- and **nothing changes**,
+/// the running decoder keeps decoding. Before an attempt the choice is
+/// replaced and that is all. During a session it is one act: the
+/// declaration re-masked by the new decoder's capability and restated to
+/// the host where it changed, the running decoder torn down, the new one
+/// opened, and one keyframe request with the reinitialisation argument once
+/// the new decoder can take one, so the picture resumes at the next
+/// keyframe; a picture the application holds stays valid, the queue never
+/// closes. Costs the host one keyframe, and an established host an encoder
+/// rebuild, so it is for a person changing a setting rather than a loop.
+///
+/// **The frame kind stays the creation's**: a session created with
+/// `LOWLAT_FRAME_HANDLE` refuses this with `LOWLAT_ERR_DECODER_UNSUPPORTED`,
+/// because its device slots are bound to the device; changing that is a
+/// recreate. `LOWLAT_DECODER_NONE` is refused the same way.
+///
+/// @param[in] cl The handle from `lowlat_client_create`.
+/// @param[in] decoder One of `lowlat_decoder`, not `LOWLAT_DECODER_NONE`.
+/// @param[in] device The render node, or the software decoder's directory,
+/// NUL-terminated; null or empty for the first that decodes.
+/// @returns `LOWLAT_OK`, `LOWLAT_ERR_INVALID_ARGUMENT` for a value that
+/// is not a decoder, `LOWLAT_ERR_DECODER_UNSUPPORTED` for a handle session
+/// or `LOWLAT_DECODER_NONE`, or the stage the probe stopped at.
+///
+/// @attention `cl` came from `lowlat_client_create`; `device` is null or points at a
+/// NUL-terminated string.
+lowlat_status lowlat_client_set_decoder(lowlat_client *cl,
+                                        uint32_t decoder,
+                                        const char *device) LOWLAT_NOEXCEPT;
+
 /// A key, by the usage code of the physical key. A code of zero is no key
 /// and is not sent.
 ///

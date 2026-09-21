@@ -421,6 +421,11 @@ impl Frames {
         self.ring.close();
     }
 
+    /// Whether `close` was called.
+    pub fn closed(&self) -> bool {
+        self.ring.closed()
+    }
+
     /// Pictures published and not yet taken.
     pub fn ready(&self) -> usize {
         self.ring.ready()

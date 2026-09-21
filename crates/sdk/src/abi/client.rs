@@ -1082,6 +1082,72 @@ pub unsafe extern "C" fn lowlat_client_set_video_config(
     }
 }
 
+/// Choose another decoder, before a session or during one.
+///
+/// The kind and render node are those of creation and of the listing's rows
+/// (`LOWLAT_DECODER_AUTO` walks the automatic order again). The decoder is
+/// probed here, on the caller's thread, exactly as creation probes it; a
+/// kind that does not open answers with its stage -- `LOWLAT_ERR_NO_DECODER_
+/// RUNTIME`, `_DEVICE`, `_PROFILE` or `_LICENCE` -- and **nothing changes**,
+/// the running decoder keeps decoding. Before an attempt the choice is
+/// replaced and that is all. During a session it is one act: the
+/// declaration re-masked by the new decoder's capability and restated to
+/// the host where it changed, the running decoder torn down, the new one
+/// opened, and one keyframe request with the reinitialisation argument once
+/// the new decoder can take one, so the picture resumes at the next
+/// keyframe; a picture the application holds stays valid, the queue never
+/// closes. Costs the host one keyframe, and an established host an encoder
+/// rebuild, so it is for a person changing a setting rather than a loop.
+///
+/// **The frame kind stays the creation's**: a session created with
+/// `LOWLAT_FRAME_HANDLE` refuses this with [`LOWLAT_ERR_DECODER_UNSUPPORTED`],
+/// because its device slots are bound to the device; changing that is a
+/// recreate. `LOWLAT_DECODER_NONE` is refused the same way.
+///
+/// @param[in] cl The handle from [`lowlat_client_create`].
+/// @param[in] decoder One of [`lowlat_decoder`], not `LOWLAT_DECODER_NONE`.
+/// @param[in] device The render node, or the software decoder's directory,
+/// NUL-terminated; null or empty for the first that decodes.
+/// @returns [`LOWLAT_OK`], [`LOWLAT_ERR_INVALID_ARGUMENT`] for a value that
+/// is not a decoder, [`LOWLAT_ERR_DECODER_UNSUPPORTED`] for a handle session
+/// or `LOWLAT_DECODER_NONE`, or the stage the probe stopped at.
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`]; `device` is null or points at a
+/// NUL-terminated string.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_set_decoder(
+    cl: *mut lowlat_client,
+    decoder: u32,
+    device: *const c_char,
+) -> lowlat_status {
+    unsafe {
+        entered(cl, |handle| {
+            let backend = match decoder {
+                code if code == lowlat_decoder::LOWLAT_DECODER_AUTO as u32 => Backend::Auto,
+                code if code == lowlat_decoder::LOWLAT_DECODER_OPEN as u32 => Backend::Vaapi,
+                code if code == lowlat_decoder::LOWLAT_DECODER_VENDOR as u32 => Backend::Nvdec,
+                code if code == lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32 => Backend::Software,
+                code if code == lowlat_decoder::LOWLAT_DECODER_NONE as u32 => Backend::None,
+                _ => return LOWLAT_ERR_INVALID_ARGUMENT,
+            };
+            let device = if device.is_null() {
+                ""
+            } else {
+                match core::ffi::CStr::from_ptr(device).to_str() {
+                    Ok(text) => text,
+                    Err(_) => return LOWLAT_ERR_INVALID_ARGUMENT,
+                }
+            };
+            match handle.held().seam.set_decoder(backend, device) {
+                Ok(()) => LOWLAT_OK,
+                Err(error) => refused(error),
+            }
+        })
+    }
+}
+
 /// Hand one report to the session, or say there is none.
 fn report(cl: *mut lowlat_client, input: ::lowlat_client::input::Input) -> lowlat_status {
     // SAFETY: every caller is an entry point whose contract is that `cl`
@@ -2586,6 +2652,114 @@ mod tests {
             other => panic!("the software decoder answered {other:?}"),
         }
         println!("software decoder: {answer:?}");
+    }
+
+    /// **Another decoder, chosen before a session.** A value that is not a
+    /// decoder is refused as such, no decoder at all is refused as
+    /// unsupported, a kind that does not open answers with its stage and
+    /// leaves the choice as it was, and one that opens becomes the choice
+    /// status reports. A session of the handle kind refuses the call.
+    #[test]
+    fn the_decoder_is_chosen_again_or_refused_with_the_choice_kept() {
+        let mut handle: *mut lowlat_client = core::ptr::null_mut();
+        let info = no_decoder();
+        assert_eq!(
+            unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
+            LOWLAT_OK
+        );
+        let backend = |handle| {
+            let mut status: lowlat_client_status = unsafe { core::mem::zeroed() };
+            status.size = core::mem::size_of::<lowlat_client_status>() as u32;
+            assert_eq!(
+                unsafe { lowlat_client_get_status(handle, &raw mut status) },
+                LOWLAT_OK
+            );
+            status.backend
+        };
+        assert_eq!(backend(handle), lowlat_decoder::LOWLAT_DECODER_NONE as u32);
+        assert_eq!(
+            unsafe { lowlat_client_set_decoder(handle, 42, core::ptr::null()) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            unsafe {
+                lowlat_client_set_decoder(
+                    handle,
+                    lowlat_decoder::LOWLAT_DECODER_NONE as u32,
+                    core::ptr::null(),
+                )
+            },
+            LOWLAT_ERR_DECODER_UNSUPPORTED
+        );
+        let empty = std::env::temp_dir().join(format!("lowlat-abi-switch-{}", std::process::id()));
+        std::fs::create_dir_all(&empty).expect("a temp dir");
+        let empty_c = std::ffi::CString::new(empty.display().to_string()).expect("a path");
+        if std::env::var_os("LOWLAT_FFMPEG_DIR").is_none() {
+            assert_eq!(
+                unsafe {
+                    lowlat_client_set_decoder(
+                        handle,
+                        lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32,
+                        empty_c.as_ptr(),
+                    )
+                },
+                LOWLAT_ERR_NO_DECODER_RUNTIME
+            );
+            assert_eq!(
+                backend(handle),
+                lowlat_decoder::LOWLAT_DECODER_NONE as u32,
+                "a refused choice moved the decoder"
+            );
+        }
+        let _ = std::fs::remove_dir(&empty);
+        let software = unsafe {
+            lowlat_client_set_decoder(
+                handle,
+                lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32,
+                core::ptr::null(),
+            )
+        };
+        match software {
+            LOWLAT_OK => {
+                assert_eq!(
+                    backend(handle),
+                    lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32
+                );
+            }
+            LOWLAT_ERR_NO_DECODER_LICENCE
+            | LOWLAT_ERR_NO_DECODER_RUNTIME
+            | LOWLAT_ERR_NO_DECODER_PROFILE => {
+                assert_eq!(backend(handle), lowlat_decoder::LOWLAT_DECODER_NONE as u32);
+            }
+            other => panic!("the software choice answered {other:?}"),
+        }
+        println!("software chosen: {software:?}");
+        unsafe { lowlat_client_destroy(handle) };
+
+        // A session of the handle kind, where this machine has the vendor's
+        // decoder, refuses a move: its device slots are bound to the device.
+        let mut info = no_decoder();
+        info.decoder = lowlat_decoder::LOWLAT_DECODER_VENDOR as u32;
+        info.frame_kind = lowlat_frame_kind::LOWLAT_FRAME_HANDLE as u32;
+        if unsafe { lowlat_client_create(&raw const info, &raw mut handle) } == LOWLAT_OK {
+            assert_eq!(
+                unsafe {
+                    lowlat_client_set_decoder(
+                        handle,
+                        lowlat_decoder::LOWLAT_DECODER_OPEN as u32,
+                        core::ptr::null(),
+                    )
+                },
+                LOWLAT_ERR_DECODER_UNSUPPORTED
+            );
+            assert_eq!(
+                backend(handle),
+                lowlat_decoder::LOWLAT_DECODER_VENDOR as u32
+            );
+            unsafe { lowlat_client_destroy(handle) };
+        } else {
+            println!("no vendor decoder here: the handle session's refusal not exercised");
+        }
     }
 
     /// The enumeration runs from zero until false, every row is one

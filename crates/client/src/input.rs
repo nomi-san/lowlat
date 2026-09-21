@@ -103,6 +103,10 @@ pub(crate) enum Request {
     Viewport(Viewport),
     /// A new declaration: the flags, already masked by capability.
     Video(u32),
+    /// Another decoder, chosen by the application and already probed: the
+    /// declaration as the new decoder masks it. The choice itself waits for
+    /// the decode thread where the seam left it.
+    Decoder(u32),
 }
 
 /// Entries the ring between the two threads holds.

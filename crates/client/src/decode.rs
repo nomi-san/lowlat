@@ -6,8 +6,8 @@
 //! it; a full picture queue is never full, because the queue steals. The
 //! device is opened here, on this thread, and lives as long as it does.
 
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lowlat_common::events;
@@ -77,11 +77,17 @@ impl Backend for software::Backend<'_> {
     }
 }
 
+/// A decoder the application chose mid-session, left by the seam for the
+/// decode thread to take once the session thread has said the word.
+pub(crate) type Pending = Arc<Mutex<Option<Opened>>>;
+
 /// What the thread is handed.
 pub(crate) struct Attached {
     /// The decoder chosen at creation, or none: then units are taken and
     /// dropped.
     pub opened: Option<Opened>,
+    /// Where the next choice arrives.
+    pub pending: Pending,
     pub units: Units,
     pub frames: Arc<Frames>,
     pub telemetry: Arc<Telemetry>,
@@ -91,9 +97,45 @@ pub(crate) struct Attached {
     pub stopping: Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// Why a decoder's loop returned.
+#[derive(Debug, PartialEq, Eq)]
+enum Next {
+    /// The session is over.
+    Stop,
+    /// No decoder can serve the stream.
+    Failed,
+    /// The application chose another decoder: the old one is gone, and the
+    /// one named is to be opened on this thread.
+    Switch(Opened),
+}
+
+/// Everything a decoder's loop shares with the thread around it.
+struct Shared<'a> {
+    units: &'a Units,
+    frames: &'a Frames,
+    telemetry: &'a Telemetry,
+    shell: &'a WakeHandle,
+    stopping: &'a std::sync::atomic::AtomicBool,
+    pending: &'a Pending,
+}
+
+impl Shared<'_> {
+    /// The choice the application left, if the session thread has said so
+    /// since `seen`; `seen` follows the generation.
+    fn switch(&self, seen: &mut u32) -> Option<Opened> {
+        let generation = self.telemetry.switch.load(Ordering::Acquire);
+        if generation == *seen {
+            return None;
+        }
+        *seen = generation;
+        self.pending.lock().ok().and_then(|mut slot| slot.take())
+    }
+}
+
 pub(crate) fn run(args: Attached) {
     let Attached {
         opened,
+        pending,
         units,
         frames,
         telemetry,
@@ -101,99 +143,146 @@ pub(crate) fn run(args: Attached) {
         shell,
         stopping,
     } = args;
+    let shared = Shared {
+        units: &units,
+        frames: &frames,
+        telemetry: &telemetry,
+        shell: &shell,
+        stopping: &stopping,
+        pending: &pending,
+    };
 
-    // The runtimes are opened here, on this thread, and live as long as it
-    // does; the vendor's context is made current here, where every call
-    // against it is made.
-    match opened {
-        None => {
-            while !stopping.load(Ordering::Acquire) {
-                if units.take().is_none() {
-                    units.wait(IDLE_WAIT);
+    // The runtimes are opened here, on this thread, and live as long as the
+    // decoder built on them does; the vendor's context is made current
+    // here, where every call against it is made. A choice made mid-session
+    // comes back as `Switch`, and the loop goes round with it: the old
+    // runtime dropped, the new one opened, the queue never closed.
+    let mut opened = opened;
+    // Whether the decoder is a replacement, which asks for a keyframe once
+    // it can take one; the first never asks, the host's own start sends one.
+    let mut replacing = false;
+    loop {
+        let next = match opened {
+            None => idle(&shared),
+            Some(Opened::Vaapi(node)) => {
+                let Ok(va) = Vaapi::load() else {
+                    break Next::Failed;
+                };
+                let Ok(display) = va.open(&node) else {
+                    break Next::Failed;
+                };
+                let backend = vaapi::Backend::new(&display, frames.ceiling());
+                drive(backend, &shared, replacing)
+            }
+            Some(Opened::Nvdec(address)) => {
+                let Ok(cuda) = Cuda::load() else {
+                    break Next::Failed;
+                };
+                let device = match address {
+                    Some(address) => cuda.device_at(address),
+                    None => cuda.any_device(),
+                };
+                let Ok(device) = device else {
+                    break Next::Failed;
+                };
+                let Ok(context) = cuda.retain_primary(&device) else {
+                    break Next::Failed;
+                };
+                if context.make_current().is_err() {
+                    break Next::Failed;
                 }
+                let Ok(cuvid) = Cuvid::load() else {
+                    break Next::Failed;
+                };
+                // The queue's device slots are made through this runtime, and
+                // may outlive this thread while the application holds one, so
+                // the queue keeps its own reference to it.
+                let cuda = Arc::new(cuda);
+                if frames.kind() == FrameKind::Handle {
+                    frames.open_device(Arc::clone(&cuda), device);
+                }
+                let backend = nvdec::Backend::new(&cuda, &cuvid, frames.ceiling(), UNIT_BYTES);
+                drive(backend, &shared, replacing)
             }
-            frames.close();
-        }
-        Some(Opened::Vaapi(node)) => {
-            let Ok(va) = Vaapi::load() else {
-                fail(&telemetry, &emit, &frames);
-                return;
-            };
-            let Ok(display) = va.open(&node) else {
-                fail(&telemetry, &emit, &frames);
-                return;
-            };
-            let backend = vaapi::Backend::new(&display, frames.ceiling());
-            drive(
-                backend, &units, &frames, &telemetry, &emit, &shell, &stopping,
-            );
-        }
-        Some(Opened::Nvdec(address)) => {
-            let Ok(cuda) = Cuda::load() else {
-                fail(&telemetry, &emit, &frames);
-                return;
-            };
-            let device = match address {
-                Some(address) => cuda.device_at(address),
-                None => cuda.any_device(),
-            };
-            let Ok(device) = device else {
-                fail(&telemetry, &emit, &frames);
-                return;
-            };
-            let Ok(context) = cuda.retain_primary(&device) else {
-                fail(&telemetry, &emit, &frames);
-                return;
-            };
-            if context.make_current().is_err() {
-                fail(&telemetry, &emit, &frames);
-                return;
+            Some(Opened::Software(dir)) => {
+                // The same search creation ran, landing on the same pair.
+                let Ok(lavc) = Lavc::load(dir.as_deref()) else {
+                    break Next::Failed;
+                };
+                let backend = software::Backend::new(&lavc);
+                drive(backend, &shared, replacing)
             }
-            let Ok(cuvid) = Cuvid::load() else {
-                fail(&telemetry, &emit, &frames);
-                return;
-            };
-            // The queue's device slots are made through this runtime, and
-            // may outlive this thread while the application holds one, so
-            // the queue keeps its own reference to it.
-            let cuda = Arc::new(cuda);
-            if frames.kind() == FrameKind::Handle {
-                frames.open_device(Arc::clone(&cuda), device);
+        };
+        match next {
+            Next::Switch(choice) => {
+                opened = Some(choice);
+                replacing = true;
             }
-            let backend = nvdec::Backend::new(&cuda, &cuvid, frames.ceiling(), UNIT_BYTES);
-            drive(
-                backend, &units, &frames, &telemetry, &emit, &shell, &stopping,
-            );
+            other => break other,
         }
-        Some(Opened::Software(dir)) => {
-            // The same search creation ran, landing on the same pair.
-            let Ok(lavc) = Lavc::load(dir.as_deref()) else {
-                fail(&telemetry, &emit, &frames);
-                return;
-            };
-            let backend = software::Backend::new(&lavc);
-            drive(
-                backend, &units, &frames, &telemetry, &emit, &shell, &stopping,
-            );
+    }
+    .finish(&telemetry, &emit, &frames);
+}
+
+impl Next {
+    /// What the thread does last: the queue closed either way, and the
+    /// application told when no decoder can serve the stream.
+    fn finish(self, telemetry: &Telemetry, emit: &events::Sender<Event>, frames: &Frames) {
+        match self {
+            Next::Failed => fail(telemetry, emit, frames),
+            Next::Stop => frames.close(),
+            Next::Switch(_) => unreachable!("a switch is taken by the loop"),
         }
     }
 }
 
+/// No decoder: units are taken and dropped, until the session ends or the
+/// application chooses a decoder after all.
+fn idle(shared: &Shared<'_>) -> Next {
+    let mut switched = shared.telemetry.switch.load(Ordering::Acquire);
+    while !shared.stopping.load(Ordering::Acquire) {
+        if let Some(choice) = shared.switch(&mut switched) {
+            return Next::Switch(choice);
+        }
+        if shared.units.take().is_none() {
+            shared.units.wait(IDLE_WAIT);
+        }
+    }
+    Next::Stop
+}
+
 /// The loop: units in, pictures out, the policy between.
-fn drive<D: Backend>(
-    backend: D,
-    units: &Units,
-    frames: &Frames,
-    telemetry: &Telemetry,
-    emit: &events::Sender<Event>,
-    shell: &WakeHandle,
-    stopping: &std::sync::atomic::AtomicBool,
-) {
+fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
+    let Shared {
+        units,
+        frames,
+        telemetry,
+        shell,
+        stopping,
+        ..
+    } = *shared;
     let mut feed = Feed::new(backend);
     let mut reported = Smoothed::default();
     let mut reconfigured = telemetry.reconfigure.load(Ordering::Acquire);
+    let mut switched = telemetry.switch.load(Ordering::Acquire);
+
+    // A replacement decoder exists now, so the keyframe it needs is asked
+    // for now and not before: nothing the host sends is wasted on a decoder
+    // that was still opening, and a runtime that fails to open costs the
+    // host nothing.
+    if replacing && feed.reconfigure() == Decision::Request {
+        telemetry.request.store(true, Ordering::Release);
+        let _ = shell.notify();
+    }
 
     while !stopping.load(Ordering::Acquire) {
+        // The application chose another decoder: this one is torn down
+        // here, and the thread goes round to open the other. The request
+        // belongs to the other, once it exists.
+        if let Some(choice) = shared.switch(&mut switched) {
+            feed.replaced();
+            return Next::Switch(choice);
+        }
         // A declaration changed under the decoder: torn down here, and the
         // keyframe asked for, as one act.
         let generation = telemetry.reconfigure.load(Ordering::Acquire);
@@ -218,10 +307,7 @@ fn drive<D: Backend>(
                 telemetry.request.store(true, Ordering::Release);
                 let _ = shell.notify();
             }
-            Decision::Failed => {
-                fail(telemetry, emit, frames);
-                return;
-            }
+            Decision::Failed => return Next::Failed,
             Decision::Fed(Fed::Picture) => {
                 telemetry.decoder.store(1, Ordering::Relaxed);
                 take_pictures(&mut feed, frames, telemetry, header.as_ref(), &mut reported);
@@ -249,7 +335,7 @@ fn drive<D: Backend>(
             Ordering::Relaxed,
         );
     }
-    frames.close();
+    Next::Stop
 }
 
 /// Every picture the decoder has ready goes into the queue.
@@ -340,5 +426,206 @@ pub fn format_code(format: Format) -> u32 {
         Format::P010 => 2,
         Format::Yuv444 => 3,
         Format::Yuv444_16 => 4,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicBool, AtomicU32};
+
+    use lowlat_core::video::VideoHeader;
+    use lowlat_decode::Planes;
+
+    use super::*;
+
+    /// A backend that decodes nothing and counts what the loop does to it.
+    struct Fake {
+        destroyed: Arc<AtomicU32>,
+    }
+
+    impl Decoder for Fake {
+        fn build(&mut self, _: &VideoHeader) -> Result<(), Fault> {
+            Ok(())
+        }
+        fn feed(&mut self, _: &[u8]) -> Result<Fed, Fault> {
+            Ok(Fed::NeedMoreData)
+        }
+        fn take(&mut self, _: &mut Planes<'_>) -> Result<Option<Picture>, Fault> {
+            Ok(None)
+        }
+        fn destroy(&mut self) {
+            self.destroyed.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    impl Backend for Fake {
+        fn output(&self) -> Option<(u32, u32, Format)> {
+            None
+        }
+        fn timings(&self) -> (u32, u32) {
+            (0, 0)
+        }
+    }
+
+    struct Rig {
+        units: Units,
+        frames: Arc<Frames>,
+        telemetry: Arc<Telemetry>,
+        wake: lowlat_net::Wake,
+        stopping: Arc<AtomicBool>,
+        pending: Pending,
+    }
+
+    impl Rig {
+        fn new() -> Self {
+            Self {
+                units: Units::new(),
+                frames: Arc::new(Frames::new((64, 64), FrameKind::Planes)),
+                telemetry: Arc::new(Telemetry::default()),
+                wake: lowlat_net::Wake::new().expect("a wake"),
+                stopping: Arc::new(AtomicBool::new(false)),
+                pending: Arc::new(Mutex::new(None)),
+            }
+        }
+
+        /// Run one decoder's loop on its own thread until it returns.
+        fn drive(&self, fake: Fake, replacing: bool) -> std::thread::JoinHandle<Next> {
+            let units = self.units.clone();
+            let frames = Arc::clone(&self.frames);
+            let telemetry = Arc::clone(&self.telemetry);
+            let shell = self.wake.handle().expect("a handle");
+            let stopping = Arc::clone(&self.stopping);
+            let pending = Arc::clone(&self.pending);
+            std::thread::spawn(move || {
+                let shared = Shared {
+                    units: &units,
+                    frames: &frames,
+                    telemetry: &telemetry,
+                    shell: &shell,
+                    stopping: &stopping,
+                    pending: &pending,
+                };
+                super::drive(fake, &shared, replacing)
+            })
+        }
+
+        /// What the seam and the session thread do for a switch: the choice
+        /// left where the decode thread looks, then the word.
+        fn switch_to(&self, choice: Opened) {
+            *self.pending.lock().expect("the slot") = Some(choice);
+            self.telemetry.switch.fetch_add(1, Ordering::Release);
+            self.units.wake();
+        }
+    }
+
+    /// **A switch is one act with one request, and the queue stays open.**
+    /// The running loop returns the choice it was handed without asking for
+    /// anything; the loop that replaces it asks once, as soon as it runs,
+    /// so a keyframe never arrives for a decoder that is still opening; the
+    /// queue is closed by neither.
+    #[test]
+    fn a_switch_returns_the_choice_and_the_replacement_asks_once() {
+        let rig = Rig::new();
+        let destroyed = Arc::new(AtomicU32::new(0));
+        let first = rig.drive(
+            Fake {
+                destroyed: Arc::clone(&destroyed),
+            },
+            false,
+        );
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(
+            !rig.telemetry.request.load(Ordering::Acquire),
+            "the first loop asked"
+        );
+
+        rig.switch_to(Opened::Software(None));
+        let next = first.join().expect("the first loop");
+        assert_eq!(next, Next::Switch(Opened::Software(None)));
+        assert!(
+            !rig.telemetry.request.load(Ordering::Acquire),
+            "the loop that was replaced asked for a keyframe"
+        );
+        assert!(!rig.frames.closed(), "the switch closed the queue");
+        assert!(
+            rig.pending.lock().expect("the slot").is_none(),
+            "the choice was left behind"
+        );
+
+        let second = rig.drive(
+            Fake {
+                destroyed: Arc::clone(&destroyed),
+            },
+            true,
+        );
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(
+            rig.telemetry.request.swap(false, Ordering::AcqRel),
+            "the replacement did not ask"
+        );
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(
+            !rig.telemetry.request.load(Ordering::Acquire),
+            "the replacement asked twice"
+        );
+
+        rig.stopping.store(true, Ordering::Release);
+        rig.units.wake();
+        assert_eq!(second.join().expect("the second loop"), Next::Stop);
+        assert!(
+            !rig.frames.closed(),
+            "the loop closes nothing; the thread does"
+        );
+    }
+
+    /// A switch generation with no choice behind it moves nothing: the loop
+    /// carries on with the decoder it has.
+    #[test]
+    fn a_word_without_a_choice_changes_nothing() {
+        let rig = Rig::new();
+        let destroyed = Arc::new(AtomicU32::new(0));
+        let loop_ = rig.drive(
+            Fake {
+                destroyed: Arc::clone(&destroyed),
+            },
+            false,
+        );
+        rig.telemetry.switch.fetch_add(1, Ordering::Release);
+        rig.units.wake();
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(!loop_.is_finished(), "the loop returned on an empty word");
+        rig.stopping.store(true, Ordering::Release);
+        rig.units.wake();
+        assert_eq!(loop_.join().expect("the loop"), Next::Stop);
+    }
+
+    /// With no decoder at all the thread idles, and a choice made then is
+    /// taken the same way.
+    #[test]
+    fn an_idle_thread_takes_a_choice_too() {
+        let rig = Rig::new();
+        let units = rig.units.clone();
+        let frames = Arc::clone(&rig.frames);
+        let telemetry = Arc::clone(&rig.telemetry);
+        let shell = rig.wake.handle().expect("a handle");
+        let stopping = Arc::clone(&rig.stopping);
+        let pending = Arc::clone(&rig.pending);
+        let idle = std::thread::spawn(move || {
+            let shared = Shared {
+                units: &units,
+                frames: &frames,
+                telemetry: &telemetry,
+                shell: &shell,
+                stopping: &stopping,
+                pending: &pending,
+            };
+            super::idle(&shared)
+        });
+        std::thread::sleep(Duration::from_millis(20));
+        rig.switch_to(Opened::Vaapi(c"/dev/dri/renderD128".to_owned()));
+        assert_eq!(
+            idle.join().expect("the idle loop"),
+            Next::Switch(Opened::Vaapi(c"/dev/dri/renderD128".to_owned()))
+        );
     }
 }

@@ -87,6 +87,14 @@ impl<D: Decoder> Feed<D> {
         Decision::Request
     }
 
+    /// The application chose another decoder: this one is torn down and
+    /// **nothing is asked** -- the request belongs to the decoder that
+    /// replaces it, once it exists, so a keyframe never arrives for a decoder
+    /// that is still opening.
+    pub fn replaced(&mut self) {
+        self.teardown("another decoder chosen");
+    }
+
     /// One message off the video channel, header and all.
     pub fn feed(&mut self, content: &[u8]) -> Decision {
         let Ok(header) = video::parse(content) else {

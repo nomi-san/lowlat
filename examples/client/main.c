@@ -14,7 +14,8 @@
 // to the host (and lets it go), W toggles fullscreen, D asks the host to
 // stream its next output, F switches between the picture stretched to the
 // window and shown at its own size, R lets go of a pointer the host has
-// captured (and takes it again), C cycles the colour preferences.
+// captured (and takes it again), C cycles the colour preferences, X moves
+// the session to the next decoder this machine listed at start.
 // A bare Windows key is not sent while the keyboard is not grabbed, because
 // the desktop here takes it and the host would be left with the modifier
 // held; it reaches the host on chords, and whole once grabbed.
@@ -32,7 +33,8 @@
 // `LOWLAT_HEVC`, `LOWLAT_10BIT` and `LOWLAT_444` are the preferences the
 // attempt starts with: each is "prefer this if the host has it", masked by
 // what the decoder takes before anything is declared; `LOWLAT_SWITCH_EVERY`
-// walks them every that many seconds, as the chord does by hand.
+// walks them every that many seconds, as the chord does by hand, and
+// `LOWLAT_DECODER_EVERY` walks the decoders the same way.
 // `LOWLAT_FPS` asks the host for that rate through the application
 // protocol once the first picture is in; `LOWLAT_PRESENT_HZ` caps how often
 // a new picture is taken (the cached one is still drawn every refresh), so
@@ -126,6 +128,8 @@ struct demo {
 	double leave_at_ms;
 	// Cycle the preferences every so many seconds; zero for never.
 	uint64_t switch_every;
+	// Move to the next decoder every so many seconds; zero for never.
+	uint64_t decoder_every;
 
 	// Where the picture is drawn: stretched to the window, or at its own
 	// size when it fits. The rectangle last told to the library.
@@ -182,6 +186,12 @@ struct demo {
 
 	// The picture preferences, cycled by the chord.
 	lowlat_client_video_config video;
+
+	// The decoders this machine can open, as listed at start, and which of
+	// them the session decodes on; the chord moves to the next.
+	lowlat_decoder_info rows[8];
+	unsigned row_count;
+	unsigned row;
 
 	// The reader's lag, sampled once a second: thirty or more messages
 	// behind for sixty consecutive seconds is the warning every client
@@ -555,6 +565,24 @@ static void cycle_video(struct demo *d)
 	printf("demo: asked %s: %s\n", video_words(v), lowlat_status_string(s));
 }
 
+// The chord moves the session to the next decoder this machine listed at
+// start: one call, one keyframe; a row that does not open leaves the
+// session where it was and says so.
+static void cycle_decoder(struct demo *d)
+{
+	if (d->row_count < 2) {
+		printf("demo: one decoder here, nothing to move to\n");
+		return;
+	}
+	unsigned next = (d->row + 1) % d->row_count;
+	const lowlat_decoder_info *row = &d->rows[next];
+	lowlat_status s = lowlat_client_set_decoder(d->client, row->decoder, row->device);
+	printf("demo: decoder [%u] %s on %s: %s\n", row->index, row->name,
+		row->device[0] ? row->device : "any device", lowlat_status_string(s));
+	if (s == LOWLAT_OK)
+		d->row = next;
+}
+
 static void on_key(struct demo *d, const MTY_KeyEvent *k)
 {
 	// The demo's own chords, Ctrl+Shift and a letter, never sent. The
@@ -592,6 +620,9 @@ static void on_key(struct demo *d, const MTY_KeyEvent *k)
 				return;
 			case MTY_KEY_C:
 				cycle_video(d);
+				return;
+			case MTY_KEY_X:
+				cycle_decoder(d);
 				return;
 			default:
 				break;
@@ -1430,6 +1461,9 @@ static bool app_func(void *opaque)
 		// seconds.
 		if (d->switch_every > 0 && d->established && d->seconds % d->switch_every == 0)
 			cycle_video(d);
+		// And the same walk through the decoders this machine listed.
+		if (d->decoder_every > 0 && d->established && d->seconds % d->decoder_every == 0)
+			cycle_decoder(d);
 	}
 	return true;
 }
@@ -1455,6 +1489,7 @@ int main(void)
 	unsigned long present_hz = strtoul(env_or("LOWLAT_PRESENT_HZ", "0"), NULL, 10);
 	unsigned long seconds = strtoul(env_or("LOWLAT_SECONDS", "0"), NULL, 10);
 	unsigned long switch_every = strtoul(env_or("LOWLAT_SWITCH_EVERY", "0"), NULL, 10);
+	unsigned long decoder_every = strtoul(env_or("LOWLAT_DECODER_EVERY", "0"), NULL, 10);
 
 	if ((lowlat_features() & LOWLAT_FEATURE_CLIENT) == 0) {
 		fprintf(stderr, "demo: this library carries no client half\n");
@@ -1468,6 +1503,7 @@ int main(void)
 	memset(&d, 0, sizeof d);
 	d.ask_fps = (uint32_t) ask_fps;
 	d.switch_every = switch_every;
+	d.decoder_every = decoder_every;
 	d.poll_period_ms = present_hz > 0 ? 1000.0 / (double) present_hz : 0.0;
 	atomic_store(&d.stretch, true);
 	d.trace_pads = getenv("LOWLAT_PAD_TRACE") != NULL;
@@ -1512,12 +1548,30 @@ int main(void)
 		if (pick != NULL && strtoul(pick, NULL, 10) == row.index) {
 			info.decoder = row.decoder;
 			snprintf(info.device, sizeof info.device, "%s", row.device);
+			d.row = d.row_count;
 		}
+		if (d.row_count < sizeof d.rows / sizeof d.rows[0])
+			d.rows[d.row_count++] = row;
 	}
 	lowlat_status s = lowlat_client_create(&info, &d.client);
 	if (s != LOWLAT_OK) {
 		fprintf(stderr, "demo: no client: %s\n", lowlat_status_string(s));
 		return 1;
+	}
+	if (pick == NULL) {
+		// Which row creation settled on, so the chord moves from it: the
+		// backend as status reports it, on the device named if one was.
+		lowlat_client_status st;
+		memset(&st, 0, sizeof st);
+		st.size = (uint32_t) sizeof st;
+		lowlat_client_get_status(d.client, &st);
+		for (unsigned i = 0; i < d.row_count; i++) {
+			if (d.rows[i].decoder == st.backend
+				&& (device[0] == 0 || strcmp(d.rows[i].device, device) == 0)) {
+				d.row = i;
+				break;
+			}
+		}
 	}
 	printf("demo: rss_mb=%" PRIu64 " after creation\n", resident_mb());
 

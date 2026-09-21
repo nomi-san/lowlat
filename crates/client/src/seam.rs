@@ -280,10 +280,14 @@ pub struct Client {
     events: Option<events::Receiver<Event>>,
     telemetry: Arc<Telemetry>,
     units: Units,
-    /// The decoder opened at creation; none for a client without one.
+    /// The decoder opened at creation, or chosen since; none for a client
+    /// without one.
     opened: Option<Opened>,
     /// What that decoder takes, which the declaration is masked with.
     caps: Caps,
+    /// A decoder chosen mid-session, for the decode thread to take once the
+    /// session thread has said the word.
+    pending: crate::decode::Pending,
     frames: Arc<Frames>,
     /// The newest picture handed out, so the next acquire waits for newer.
     last_seq: u64,
@@ -533,6 +537,7 @@ impl Client {
             units: Units::new(),
             opened,
             caps,
+            pending: Arc::new(Mutex::new(None)),
             frames: Arc::new(Frames::new(decoding.ceiling(), decoding.kind)),
             last_seq: 0,
             sound: Arc::new(Mutex::new(Sound::new(packets.clone(), telemetry))),
@@ -540,7 +545,50 @@ impl Client {
         })
     }
 
-    /// The decoder opened at creation, if there is one.
+    /// Another decoder, chosen by the application: probed here, on the
+    /// caller's thread, exactly as creation probes; a kind that does not
+    /// open answers with its stage and **nothing changes**. Before an attempt
+    /// the choice is replaced and that is all. During a session it is one
+    /// act: the declaration re-masked by the new decoder's capability and
+    /// restated where it changed, the running decoder torn down, the new one
+    /// opened on the decode thread, and exactly one keyframe request once
+    /// it can take one. The frame kind is the queue's shape and stays the
+    /// creation's: a session of the handle kind refuses this, because its
+    /// device slots are bound to the device.
+    pub fn set_decoder(&mut self, backend: Backend, device: &str) -> Result<(), Error> {
+        if backend == Backend::None || self.frames.kind() == FrameKind::Handle {
+            return Err(Error::Decoder(DecoderStage::Unsupported));
+        }
+        let decoding = Decoding {
+            backend,
+            device: device.to_string(),
+            kind: self.frames.kind(),
+            ceiling: self.frames.ceiling(),
+        };
+        let (opened, caps) = choose(&decoding)?;
+        let Some(opened) = opened else {
+            return Err(Error::Decoder(DecoderStage::Unsupported));
+        };
+        self.opened = Some(opened.clone());
+        self.caps = caps;
+        let Some(attempt) = self.attempt.as_ref().filter(|a| a.thread.is_some()) else {
+            // No session: the next one starts on the new choice.
+            return Ok(());
+        };
+        let flags = attempt.config.video.flags(&caps);
+        self.telemetry
+            .declared_flags
+            .store(flags, Ordering::Relaxed);
+        if let Ok(mut slot) = self.pending.lock() {
+            *slot = Some(opened);
+        }
+        // The word travels behind the flags on the session thread, which
+        // restates the declaration first and then tells the decode thread.
+        self.request(Request::Decoder(flags));
+        Ok(())
+    }
+
+    /// The decoder opened at creation, or chosen since, if there is one.
     pub fn opened(&self) -> Option<&Opened> {
         self.opened.as_ref()
     }
@@ -809,6 +857,7 @@ impl Client {
         let stopping = Arc::new(AtomicBool::new(false));
         let decode_args = crate::decode::Attached {
             opened: self.opened.clone(),
+            pending: Arc::clone(&self.pending),
             units: self.units.clone(),
             frames: Arc::clone(&self.frames),
             telemetry: Arc::clone(&self.telemetry),

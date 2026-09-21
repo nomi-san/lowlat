@@ -188,6 +188,11 @@ pub struct Telemetry {
     /// Bumped by the loop when the declaration changed mid-session: the
     /// decode thread tears its decoder down and asks for a keyframe.
     pub reconfigure: AtomicU32,
+    /// Bumped by the loop when the application chose another decoder
+    /// mid-session, once the declaration has been restated: the decode
+    /// thread takes the pending choice, moves to it, and asks for a keyframe
+    /// once the new decoder can take one.
+    pub switch: AtomicU32,
     /// Pictures decoded and handed to the queue.
     pub decoded: AtomicU64,
     /// Pictures published and not yet taken by the application.
@@ -393,12 +398,34 @@ impl Driver {
     /// down and ask for the keyframe on the first. Before the session is
     /// established the new flags simply go into the initialization.
     pub fn set_flags(&mut self, session: &mut Session<'_>, flags: u32) {
-        if flags == self.init.flags {
+        if !self.restate(session, flags) {
             return;
+        }
+        self.telemetry.reconfigure.fetch_add(1, Ordering::Release);
+        self.units.wake();
+    }
+
+    /// The application chose another decoder mid-session: the declaration
+    /// restated where it changed, then the one word to the decode thread,
+    /// which moves to the choice it was handed and asks for the keyframe
+    /// once the new decoder can take one -- one request per switch, whether
+    /// or not the declaration moved with it.
+    pub fn switch_decoder(&mut self, session: &mut Session<'_>, flags: u32) {
+        self.restate(session, flags);
+        self.telemetry.switch.fetch_add(1, Ordering::Release);
+        self.units.wake();
+    }
+
+    /// The new declaration to the secondary streams, when it changed and the
+    /// session is established; stream 0's travels with the keyframe request.
+    /// Whether it changed.
+    fn restate(&mut self, session: &mut Session<'_>, flags: u32) -> bool {
+        if flags == self.init.flags {
+            return false;
         }
         self.init.flags = flags;
         if !self.established {
-            return;
+            return false;
         }
         for stream in [2, 1] {
             self.send_control(
@@ -412,8 +439,7 @@ impl Driver {
                 },
             );
         }
-        self.telemetry.reconfigure.fetch_add(1, Ordering::Release);
-        self.units.wake();
+        true
     }
 
     /// Whether the host has put this client in relative mode.
