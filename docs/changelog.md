@@ -3,6 +3,16 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-21 - Phase 14 closed
+
+### Gate
+- All four legs passed ([impl-plan.md](impl-plan.md) Phase 14): both pads through the
+  launcher and a browser on this machine, with rumble and the trigger effects; both pads from
+  the established client against this host; the hermetic session and the wake measured; a
+  sixteen-button pad beside a report pad from one guest. Against an established host, our
+  client's DualSense works whole in that host's DualSense mode and its DualShock 4 loses only
+  the motion, which that host never reads ([impl-plan-client.md](impl-plan-client.md) C7).
+
 ## 2026-09-21 - demo: an Xbox pad's X and Y read back by letter; the host's own pads kept out
 
 ### Fixed

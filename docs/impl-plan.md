@@ -1779,7 +1779,7 @@ description it hands its browser, which is what lets a second browser family con
    and per-datagram time at p50, p95 and p99.
 7. The encode-latency report is seen on the wire every two seconds on both transports.
 
-## Phase 14 - The HID-layer pads: DualShock 4 and DualSense (built 2026-09-20; gate legs 1-3 passed, leg 4 open)
+## Phase 14 - The HID-layer pads: DualShock 4 and DualSense (closed 2026-09-21)
 
 **Planned 2026-09-20 with the client's C7** ([impl-plan-client.md](impl-plan-client.md)),
 interview of the same day; one phase across both documents, the client half first. The
@@ -1846,7 +1846,7 @@ day**, 14.0 to 14.3, the client half (C7) gated first against an established hos
   could be made by the installed service -- the unit names it now.*
 - [x] Documentation closure.
 
-**Gate:**
+**Gate: passed 2026-09-21**, the four legs below.
 
 1. **Both ends here, both pads, the service on this machine**: the virtual pad's own nodes
    show the touch contacts and the motion sensors live; the game launcher's controller
@@ -1879,7 +1879,12 @@ day**, 14.0 to 14.3, the client half (C7) gated first against an established hos
    recorded.~~ *Passed 2026-09-20: the hermetic session (C7.1) and the sink's own tests
    (14.1b, 14.2); the wake recorded above.*
 4. Everything Phase 7's gate passed still passes with a sixteen-button pad beside a report
-   pad from the same guest.
+   pad from the same guest. *Passed 2026-09-21 on this machine: a wired third-party Xbox pad
+   as the sixteen-button pad beside the DualShock 4 as reports, from one guest, both live at
+   once and nothing crossed. The run found two client-side faults on the way, both fixed in
+   the demo: the Xbox pad's X and Y crossed (the toolkit reads the kernel's letter-named
+   codes as positions), and a loopback loop in which the demo relayed the host's own virtual
+   Xbox pads back as new pads up to the cap.*
 
 **Ahead of the gate, on this machine (2026-09-20):** the loopback -- the demo's raw pads to a
 by-hand host -- presented both pads, registered the virtual DualSense with the real pad's
