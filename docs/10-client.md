@@ -324,7 +324,7 @@ with the stage named rather than asking the host for keyframes it would fail on 
 |---|---|---|
 | VA-API | the driver's own interface, loaded at runtime | planes by read-back; the surface's own buffer descriptor, later |
 | NVDEC | the vendor's decode interface, loaded at runtime | planes by a device-to-host copy; an exportable slot filled by a device copy (§4) |
-| software | the machine's own libavcodec, loaded at runtime and only when it is an LGPL build (*planned 2026-09-21*, C8) | planes, converted from the decoder's own layout during the copy |
+| software | the machine's own libavcodec, loaded at runtime and only when it is an LGPL build (*built 2026-09-21*, C8) | planes, converted from the decoder's own layout during the copy |
 
 The choice is the application's, by kind and render node, as the listing reports them;
 unset, the first render node the open stack decodes on, then the vendor interface on any of
@@ -356,6 +356,26 @@ at load against the library that loaded; everything numbered that has moved betw
 is resolved by name. The decoder's three-plane pictures leave in the same four formats the
 hardware backends hand out, converted in the copy that hands them out, so no fifth format
 and no flag reaches the application.
+
+**As built** (*2026-09-21*): a codec counts as decoded only if its decoder opens, not if its
+name is known -- a pair at hand carries an H.264 decoder that refuses to open without a
+device behind it, and the listing must not promise it. The library's pixel formats are
+resolved by name because they are numbered differently on a 4.x pair than on 5.x and later
+(measured: the ten-bit formats sit two higher there). Slice threading, capped at four and by
+the machine's parallelism, and nothing else: the low-delay flag was measured on every
+committed clip and changed nothing, so it is not set. Every committed clip decodes bit-exact
+through an LGPL 7.1 pair and the second codec's through an 8.x one, full chroma and ten-bit
+included, with one documented exception: **a stream that reorders more than it declares
+loses a picture at each depth the library discovers** -- a picture arriving for an earlier
+place than the last one put out is dropped and the buffer deepened -- where the library's
+own readers hold such a picture; a stream that declares its reordering, or does not reorder,
+loses none, and no host compared here sends the undeclared kind. The output delay is the
+stream's own: none for a stream without bidirectional pictures, its declared depth otherwise.
+The conversions at 2560x1440 cost 74 us (NV12), 168 (P010), 147 (three planes at eight bits)
+and 554 (three planes at sixteen), measured on the development machine; the per-unit path
+allocates nothing on this side. Live from this host at 2560x1440 H.264 at 120 pictures a
+second: decode 1.2 to 1.8 ms, the conversion 0.15 to 0.26 ms, the reader at most one message
+behind.
 
 **One decoder is chosen at creation and there is no automatic fallback to another**
 (*2026-09-19*, *amended 2026-09-21*). An established client offers the second codec and

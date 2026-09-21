@@ -3,6 +3,35 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-21 - C8, first half: the software decoder (minor 11)
+
+### Added
+- **`LOWLAT_DECODER_SOFTWARE`**: the machine's own codec library, loaded at runtime and
+  only when it answers that it is an LGPL build; the pair looked for in the environment,
+  the directory named at creation, beside the executable, then the linker's way, the
+  highest major of 4 through 9 that opens winning; a build that answers otherwise is closed
+  unused and refused with **`LOWLAT_ERR_NO_DECODER_LICENCE`**. The leading fields relied on
+  are checked against the library that loaded, and every pixel format is resolved by name,
+  because a 4.x pair numbers them differently ([10 §5.1](10-client.md)).
+- The same four formats out of it as out of the hardware backends, converted in the
+  hand-out copy: 74 to 554 us at 2560x1440 for the four. A codec counts as decoded only if
+  its decoder opens. Last in the automatic order; listed last, named by version and licence
+  and the directory it came from ([06 §3b](06-api.md), [§6](06-api.md)).
+- Every committed clip bit-exact through an LGPL 7.1 pair, the second codec's through an
+  8.x one; live from this host at 2560x1440 H.264, 120 pictures a second decoded in 1.2 to
+  1.8 ms ([impl-plan-client.md](impl-plan-client.md) C8 gate 1, 2).
+
+### Fixed
+- The automatic decoder order with a render node named stopped after the open stack
+  instead of trying the vendor's interface on the card behind that node, and the handle
+  kind with a node named took any vendor device; both now do what the header's own
+  sentence says ([10 §5.1](10-client.md)).
+
+### Recorded
+- A stream that reorders more than it declares loses a picture at each depth the codec
+  library discovers, where the library's own readers hold it; no host compared here sends
+  such a stream. The low-delay flag changed nothing on any clip and is not set.
+
 ## 2026-09-21 - C8 planned: software decode over the machine's own libavcodec, a decoder chosen mid-session
 
 ### Decided

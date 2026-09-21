@@ -397,6 +397,28 @@ lowlat_status lowlat_client_set_video_config(lowlat_client *cl, const lowlat_cli
 lowlat_status lowlat_client_get_metrics(lowlat_client *cl, lowlat_client_metrics *out);
 ```
 
+**Minor 11 (2026-09-21): the software decoder.** `LOWLAT_DECODER_SOFTWARE` names the
+machine's own codec library -- loaded at runtime, never linked, and **only when the library
+answers that it is an LGPL build**: before any other entry point is called it is asked its
+licence, and a build that answers otherwise is closed unused and refused with
+`LOWLAT_ERR_NO_DECODER_LICENCE`, a status of its own, so the person who has a codec library
+installed and is refused is told why rather than told to install one. The pair is looked for
+in the environment (`LOWLAT_FFMPEG_DIR` a directory, `LOWLAT_FFMPEG_VERSION` a major of 4
+through 9; a pair named there that fails is the answer, never a walk), in the directory
+`lowlat_client_create_info.device` names when it names one, beside the running executable,
+then the linker's own way; the highest major that opens wins. It hands out the same four
+formats the hardware decoders do, planes only, so an application that draws NV12 and P010
+draws this decoder's pictures unchanged; `LOWLAT_FRAME_HANDLE` on it is refused at creation.
+`LOWLAT_DECODER_AUTO` reaches it last, after the open stack's nodes and the vendor's devices,
+so a machine with any hardware decoder never does; status `backend` says which was chosen.
+`lowlat_enum_decoders` lists it last, `name` carrying the library's version and its licence
+and `device` the directory it came from (empty for the linker's own search), every
+capability true where the library opens the second codec; a row's `decoder` and `device` open
+exactly that pair. Two corrections to the automatic order under the same minor: with a
+render node named it now tries the vendor's interface on the card behind that node after the
+open stack refuses (it stopped at the open stack), and the handle kind with a node named
+resolves the vendor's device from that node rather than taking any. Nothing moves.
+
 **Minor 9 (2026-09-19, evening): the cursor, rumble, the guest list, the client's
 metrics.** Three events join §5's set. `LOWLAT_EVENT_CURSOR` carries the pointer as the
 host described it -- hidden, relative, suppressed, the position it reappears at in window
@@ -489,12 +511,13 @@ capability rows), the size limits per codec, whether it hands out a handle, and 
 own name for a label.
 
 **Creation names the decoder** (minor 5). `lowlat_client_create_info` carries the backend by
-index (`LOWLAT_DECODER_AUTO`, the open interface, the vendor's from minor 8, or
-`LOWLAT_DECODER_NONE` for a client with nowhere to draw -- a test peer, a probe), the frame
-kind asked for, a ceiling on the picture the slots are sized for (4096 square when zero),
-and a render node (the first that decodes when empty). The decoder is opened here, not at
-the attempt, so a machine without one is refused at creation with the stage named:
-`LOWLAT_ERR_NO_DECODER_RUNTIME`, `_DEVICE` or `_PROFILE`.
+kind (`LOWLAT_DECODER_AUTO`, the open interface, the vendor's from minor 8, software from
+minor 11, or `LOWLAT_DECODER_NONE` for a client with nowhere to draw -- a test peer, a
+probe), the frame kind asked for, a ceiling on the picture the slots are sized for (4096
+square when zero), and a render node (the first that decodes when empty; for software, the
+directory of the library pair). The decoder is opened here, not at the attempt, so a machine
+without one is refused at creation with the stage named: `LOWLAT_ERR_NO_DECODER_RUNTIME`,
+`_DEVICE`, `_PROFILE` or `_LICENCE`.
 
 **The seam is the host's, mirrored.** A client makes the offer: `new_attempt` produces the
 credentials and certificate digest the application puts in it (its `port` is zero -- the
@@ -806,10 +829,11 @@ a call that answers nothing is worse than no call.
 fills the `index`-th `lowlat_decoder_info` and answers true, or false past the last, so a
 caller iterates from zero until false; the shape is the one an established client SDK's
 decoder list has. One row per backend and device that decodes anything, in a fixed order --
-the open interface on each render node that decodes, then the vendor's on each of its devices
--- and every row is probed exactly the way creation probes it, so a row is a decoder creation
-will open, named by the two values creation takes. Each call probes afresh, a few
-milliseconds: for a startup or a settings screen, not a loop.
+the open interface on each render node that decodes, then the vendor's on each of its
+devices, then (minor 11) the software decoder when an LGPL codec library is found -- and
+every row is probed exactly the way creation probes it, so a row is a decoder creation will
+open, named by the two values creation takes. Each call probes afresh, a few milliseconds:
+for a startup or a settings screen, not a loop.
 
 Two-call pattern: pass `NULL` to learn the count, then a buffer. **Nothing returned by this API
 is heap allocated on the caller's behalf**, so there is no free function and no ownership
@@ -962,6 +986,10 @@ three `pad_reports_*` status fields; the host half built with Phase 14 under the
 `pad_sink` in a reserved byte of `lowlat_host_config`, `lowlat_pad_sink`,
 `lowlat_host_poll_pad_report` and `lowlat_host_send_pad_report`, `LOWLAT_PAD_REPORT_UNPLUG`.
 Nothing moves.
+
+**Minor 11** (2026-09-21) is the software decoder ([§3b](#3b-client), [§6](#6-enumeration)):
+`LOWLAT_DECODER_SOFTWARE`, `LOWLAT_ERR_NO_DECODER_LICENCE`, the software row last in
+`lowlat_enum_decoders`, and the automatic order's two corrections. Nothing moves.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected

@@ -690,7 +690,7 @@ libavcodec the machine already carries, and only one under the LGPL**: nothing i
 built or bundled, and the copyleft rule of [impl-plan.md](impl-plan.md) gate 4 gains its one
 exception as a mechanism rather than a sentence.
 
-- [ ] **The loader** (`lowlat-drivers`): the pair `libavutil` + `libavcodec` opened by name at
+- [x] **The loader** (`lowlat-drivers`): the pair `libavutil` + `libavcodec` opened by name at
   runtime, never linked, majors 4 through 9 (`libavcodec.so.58` to `.so.63` with the
   `libavutil` each pairs with), **the highest that opens wins**. Where it is looked for, in
   order: the environment (`LOWLAT_FFMPEG_DIR` names a directory, `LOWLAT_FFMPEG_VERSION` a
@@ -714,8 +714,10 @@ exception as a mechanism rather than a sentence.
   ever fed. Every number that has moved between majors or could (codec identifiers, pixel
   formats) is resolved by name. The library's own log stays as it is: its level and its
   callback are process-global and the application may own them; it is silent on a healthy
-  stream.
-- [ ] **The backend** (`lowlat-decode`): the codec found by name from the header, opened with
+  stream. *C8.0, 2026-09-21. Built as planned, with one rule added at C8.1: a codec counts
+  as decoded only if its decoder opens, not if its name is known -- the two pairs another
+  application had installed carry an H.264 decoder that refuses to open without a device.*
+- [x] **The backend** (`lowlat-decode`): the codec found by name from the header, opened with
   slice threading capped at four and by the machine's parallelism and the low-delay flag;
   each unit copied once into a padded, reference-counted packet the library sizes (the
   padding it requires comes with it); a packet the decoder will not take until a picture is
@@ -726,7 +728,12 @@ exception as a mechanism rather than a sentence.
   chroma interleaved for NV12 and P010, ten-bit samples shifted to the high bits -- so an
   application sees one format set whatever decodes, and no flag exists to get wrong. A
   format change is never reported: the decoder reconfigures itself on a new parameter set.
-- [ ] **Chosen, listed, last in the automatic order** (`lowlat-client`, `lowlat-sdk`, minor 11):
+  *C8.1, 2026-09-21. The low-delay flag is not set: measured on every committed clip, it
+  changed nothing. One behaviour recorded rather than fixed, because it is the library's: a
+  stream that reorders more than it declares loses a picture at each depth the library
+  discovers, where the library's own readers hold it; no host compared here sends such a
+  stream, and the one committed clip that does is the test's documented exception.*
+- [x] **Chosen, listed, last in the automatic order** (`lowlat-client`, `lowlat-sdk`, minor 11):
   `LOWLAT_DECODER_SOFTWARE`, refused at creation with the stage when no LGPL pair loads;
   `lowlat_enum_decoders` gains its row last, named by the library's version and licence and
   the directory it came from, every capability true (each is proved by the fixtures);
@@ -739,6 +746,9 @@ exception as a mechanism rather than a sentence.
   where it stopped after the open stack; and the handle kind with a node named resolves the
   vendor's device from that node rather than taking any. The header's "by index, as the
   host's encoder is" becomes "by kind and render node, as the listing reports them".
+  *C8.2, 2026-09-21. One addition: the stream's format in status is read off every picture
+  rather than at the build alone, since a backend that reads no parameter set knows it no
+  earlier.*
 - [ ] **A decoder chosen mid-session**: `lowlat_client_set_decoder(cl, decoder, device)`. The
   probe runs on the caller's thread exactly as creation's does; a backend that does not
   open answers with its stage and nothing changes. Before an attempt the choice is replaced
@@ -754,22 +764,39 @@ exception as a mechanism rather than a sentence.
   kind is added**: a decoder that cannot serve the frame kind is refused where it is asked
   for, at creation or at this call, never answered with a frame of another kind.
 - [ ] The demo takes `LOWLAT_DECODER=software`, prints the row with its licence and origin,
-  and cycles the rows mid-session through a chord.
+  and cycles the rows mid-session through a chord. *The knob and the row, C8.2; the chord
+  comes with the switch.*
 - [ ] Documentation closure: 10 §5.1, 06 §3b/§6/§7/§11, 09 §7a, 00 D14, gate 4 amended, the
-  README's licence sentence.
+  README's licence sentence. *The first half's, 2026-09-21.*
 
 **Gate:**
 
-1. Every committed clip decodes bit-exact on the software backend through both LGPL pairs
+1. [x] Every committed clip decodes bit-exact on the software backend through both LGPL pairs
    on this machine (FFmpeg 4.3 and 8.x, named by `LOWLAT_FFMPEG_DIR`); the distribution's
    GPL pair is refused with the new status and absent from the listing; a major named by
    `LOWLAT_FFMPEG_VERSION` that is not present refuses rather than walks. The feed-to-take
    delay in pictures per fixture family equals the library's own readers' figure. The four
    conversions' cost at 2560x1440 recorded. Zero allocations per unit on this side.
-2. Ten minutes each on H.264 and ten-bit HEVC at 2560x1440 from this host through the
+   (*2026-09-21*: the two pairs another application installed open the second codec alone
+   -- their H.264 decoder refuses to open -- so an LGPL 7.1 pair was built from source for
+   the test, decoders only, not shipped: through it all twenty-one clips are bit-exact, the
+   one undeclared-reorder clip losing the picture the library drops at the depth's
+   discovery; through the 8.x pair every second-codec clip, full chroma and ten bits
+   included; the 4.3 pair loads through the loader with its formats numbered as measured
+   and its own dependency found by the linker. The distribution's GPL pair answers "GPL
+   version 2 or later" and is refused with `LOWLAT_ERR_NO_DECODER_LICENCE`, absent from the
+   listing; an absent major refuses. The delay is none for every clip without bidirectional
+   pictures and the declared depth for the rest. Conversions at 2560x1440: 74, 168, 147 and
+   554 us for the four formats. Zero allocations over two hundred units after warm-up.)
+2. [ ] Ten minutes each on H.264 and ten-bit HEVC at 2560x1440 from this host through the
    software backend, and the defaults from the established host: decode and conversion per
    picture, pictures and skips a second, the reader's lag, the CPU. Numbers recorded, not
-   judged: a software decoder is the floor, not the target.
+   judged: a software decoder is the floor, not the target. (*2026-09-21, smoke*: twenty-five
+   seconds from this host at 2560x1440 H.264, 120 pictures a second, decode 1.2 to 1.8 ms,
+   conversion 0.15 to 0.26 ms, the reader at most one message behind, 285 MB resident; the
+   ten-bit run could not be had because another guest was seated with the first codec, so
+   the room's consensus held the stream there -- the ten-minute runs wait for the host to be
+   free.)
 3. The switch: hermetically, with test doubles, one request per switch, the queue never
    closed, a held picture valid across it; live against this host the open stack, the
    vendor's and software each way every hundred seconds, each answered by one keyframe and

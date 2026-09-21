@@ -321,14 +321,19 @@ status and reports it; it cannot detect the condition itself and does not guess.
 ### §7a The client library, on Linux
 
 The above is any guest. **A guest running the client library of [10](10-client.md) does have
-a requirement**: a hardware decoder reached through the open interface or the vendor's,
-because the library decodes in hardware or refuses ([10 §5.1](10-client.md)). What it needs
-of the part is the decode entry point for the stream's profile -- H.264 High, HEVC Main, HEVC
-Main 10, and for full chroma the range-extensions profile -- which on the open stack every
-part that encodes in §3 to §5 also has, and many older ones besides. **Full chroma decode is
-declared only where the library has verified the surface it reads back**, which today is the
-vendor interface; the open stack lists the profile on some parts and the library does not
-ask for it there.
+a requirement**: a hardware decoder reached through the open interface or the vendor's, or
+(*2026-09-21*) an LGPL build of the codec library on the machine, because the library
+decodes in hardware, in software through that one library, or refuses
+([10 §5.1](10-client.md)). What it needs of the part is the decode entry point for the
+stream's profile -- H.264 High, HEVC Main, HEVC Main 10, and for full chroma the
+range-extensions profile -- which on the open stack every part that encodes in §3 to §5
+also has, and many older ones besides. **Full chroma decode is declared only where the
+library has verified the surface it reads back**, which today is the vendor interface and
+the software decoder; the open stack lists the profile on some parts and the library does
+not ask for it there. **The software row exists only past a licence check**: the
+distribution this is developed on ships a GPL build, which is refused, so on a stock
+distribution the row is absent until an LGPL pair is placed beside the application or
+named in the environment.
 
 | Part | Interface | H.264 High | HEVC Main | HEVC Main 10 | HEVC 4:4:4, 8 and 10 | Handle | Evidence |
 |---|---|---|---|---|---|---|---|
@@ -337,6 +342,7 @@ ask for it there.
 | Intel from Broadwell | VA-API | yes | Skylake and later | Kaby Lake and later | not asked for | no | from the driver's published profile tables; not run here |
 | NVIDIA RTX 5060 | the vendor's decode interface, driver 615 | yes | yes | yes | yes | yes, an opaque descriptor | **measured** (*2026-09-19*): every clip bit for bit, full chroma at both depths included; a 2560x1440 stream at 120 pictures a second decodes in 0.6 ms and reads back in 0.5-0.9 ms, or is copied on the device in 0.09 ms when handed out as a handle |
 | Other NVIDIA | the vendor's decode interface | from the interface's capability query | from the query | from the query | probed by building a decoder | yes | the creation-time probe builds a real decoder per combination, so a part that lacks one says so at creation; not run here |
+| Any processor | the machine's own codec library, an LGPL build of it | where its decoder opens | yes | yes | yes | no | **measured** (*2026-09-21*): every committed clip bit-exact through an LGPL 7.1 pair (one built for the test) and the second codec's through the 8.x and 4.3 pairs another application had installed, whose H.264 decoder refuses to open; from this host at 2560x1440 H.264, 120 pictures a second decoded in 1.2 to 1.8 ms and converted in 0.15 to 0.26 ms on the development machine's processor |
 
 ---
 
