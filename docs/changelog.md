@@ -3,9 +3,14 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
-## 2026-09-21 - demo: an Xbox pad's X and Y read back by letter
+## 2026-09-21 - demo: an Xbox pad's X and Y read back by letter; the host's own pads kept out
 
 ### Fixed
+- **On the host's own machine the demo relayed the host's virtual Xbox pads back as new
+  pads**, one more per pass up to the host's cap, since they are controllers to the toolkit
+  like any other; a browser on that machine then evicted the real pad from its four slots.
+  The demo now tells the host's pads by the location the host writes on them and never
+  sends them, so a loopback run makes exactly the pads the desk has.
 - **An Xbox pad's X and Y were crossed on every host.** The kernel's Xbox driver names the
   upper face buttons by letter and the PlayStation driver by position, and the letter codes
   are the position codes crossed; the toolkit reads every pad by position. The demo now

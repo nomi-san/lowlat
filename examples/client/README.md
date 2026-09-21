@@ -29,10 +29,12 @@ meanwhile. Off, they go as the sixteen-button pad every host takes. An
 established host reads the report only in a mode its owner set, and this
 library's hosts read it as it is, so which peer is on the other end is the
 application's to know: this one is told. `LOWLAT_PAD_RAW=only` drops every
-controller the toolkit reports as well, for a demo run on the host's own
-machine, where the virtual pads the host makes are controllers to the
-toolkit and would go back as states. `LOWLAT_PAD_TRACE` prints every report
-either way.
+controller the toolkit reports as well. On the host's own machine the
+virtual pads the host makes are controllers to the toolkit and would go back
+as states, making more of them; the demo tells them by the location the
+host writes on them and never sends them (a real pad of the same identity
+on that machine is kept out with them, since the toolkit names a controller
+by identity alone). `LOWLAT_PAD_TRACE` prints every report either way.
 
 Three more are for measuring rather than watching. `LOWLAT_FPS` asks the
 host for that frame rate through the application protocol once the first
