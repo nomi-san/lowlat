@@ -195,9 +195,11 @@ onto a Wayland compositor.
 
 MIT. See [LICENSE](LICENSE).
 
-Third-party components retain their own licenses. No copyleft library is linked or loaded:
-the encoders and the decoders are reached through the drivers' own interfaces, and the
-check is made against the running process rather than the link graph.
+Third-party components retain their own licenses. No copyleft library is linked, and none is
+loaded but one: the encoders and the hardware decoders are reached through the drivers' own
+interfaces, and the client's software decoder is a libavcodec the machine already carries,
+used only when that library answers that it is an LGPL build. The check is made against the
+running process rather than the link graph.
 
 ## Disclaimer
 

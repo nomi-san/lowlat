@@ -3,6 +3,23 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-21 - C8 planned: software decode over the machine's own libavcodec, a decoder chosen mid-session
+
+### Decided
+- The deferred software-decode question ([impl-plan-client.md](impl-plan-client.md) C8,
+  [10 §5.1](10-client.md)): the client decodes in software through a libavcodec the machine
+  already carries, loaded at runtime and only when it answers that it is an LGPL build;
+  nothing is shipped or built, and the copyleft rule of gate 4 gains that one exception as a
+  mechanism -- the pair is asked before any other entry point is called and a GPL build is
+  closed and refused with a status of its own. The pair is looked for in the environment,
+  beside the executable, then the linker's way, the highest major of 4 through 9 winning;
+  no header is pinned, the leading fields are checked against the library that loaded, and
+  every number that has moved between majors is resolved by name. The same four formats
+  leave it as leave the hardware backends, converted in the copy. It is last in the
+  automatic order. And the application may move a session to another decoder with one
+  call, one act and one keyframe; the frame kind stays the creation's. No automatic
+  fallback of any kind is added.
+
 ## 2026-09-21 - Phase 14 closed
 
 ### Gate

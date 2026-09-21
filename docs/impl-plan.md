@@ -1353,7 +1353,12 @@ decides what to do with them.
 4. **No copyleft library is loaded into the process**, checked at runtime against the process
    map after a stream has run -- not against the link graph, which a runtime load passes
    trivially while putting the library in exactly the place the check exists to prevent.
-   *Reworded 2026-08-27; as written it could not fail.*
+   *Reworded 2026-08-27; as written it could not fail.* *Amended 2026-09-21 with the one
+   exception ([impl-plan-client.md](impl-plan-client.md) C8): the client may load a
+   libavcodec the machine already carries when that library answers that it is an LGPL
+   build, asked before any other entry point is called; a pair that answers otherwise is
+   closed at once and refused. The exception is a mechanism, and the map after a run shows
+   the LGPL pair and nothing copyleft.*
 
 ---
 

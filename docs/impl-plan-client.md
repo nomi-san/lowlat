@@ -32,7 +32,8 @@ Recorded once, here; the reasoning is in [10-client.md](10-client.md) and [00 D1
 - Pictures leave the library by **acquire and release**, at most two held, with an optional
   fence on release; acquire is the poll. Planes or a device handle, the library saying which.
 - **Decoders: VA-API first, then NVDEC**, both loaded at runtime. No Vulkan Video decode.
-  **Software decode is deferred**, with its licence question attached; not in v1.
+  **Software decode is deferred**, with its licence question attached; not in v1. *Decided
+  2026-09-21 as C8: the machine's own libavcodec, loaded only when it is an LGPL build.*
 - The library decodes sound to PCM and hands it out packet by packet; **the application owns
   the audio device**, whose buffer is the playback window (*C4 moved the window there from
   the library*). Input is encoded by the library from the application's events.
@@ -678,16 +679,115 @@ once, here and under Phase 14; the rules are [10 §8](10-client.md), the wire
 3. The hermetic tests above; the ABI gate at minor 10; the census on the host names the two
    opcodes and nothing unexpected.
 
+## Phase C8 - Software decode over the machine's own libavcodec, and a decoder chosen mid-session (planned 2026-09-21)
+
+**Planned 2026-09-21, interview of the same day.** Runs before C6, as C7 did: it changes the
+header (minor 11) and the demo, which C6 packages. The decisions are recorded once, here;
+the rules are [10 §5.1](10-client.md), the surface [06 §3b](06-api.md).
+
+The deferred decision of "Later" is taken. **The library decodes in software through a
+libavcodec the machine already carries, and only one under the LGPL**: nothing is shipped,
+built or bundled, and the copyleft rule of [impl-plan.md](impl-plan.md) gate 4 gains its one
+exception as a mechanism rather than a sentence.
+
+- [ ] **The loader** (`lowlat-drivers`): the pair `libavutil` + `libavcodec` opened by name at
+  runtime, never linked, majors 4 through 9 (`libavcodec.so.58` to `.so.63` with the
+  `libavutil` each pairs with), **the highest that opens wins**. Where it is looked for, in
+  order: the environment (`LOWLAT_FFMPEG_DIR` names a directory, `LOWLAT_FFMPEG_VERSION` a
+  major; a pair named there that fails is a failure with the stage named, never a walk);
+  the directory of the running executable, where an application ships a pair beside
+  itself; the dynamic linker's own search. Always two files from one place, `libavutil`
+  first; the majors the pair reports of itself must equal the names it was opened by.
+  **Before any other entry point is called, the pair is asked its licence**
+  (`avcodec_license`, `avutil_license`): both must begin `LGPL`, or the pair is closed at
+  once, logged with its answer, and reported as `LOWLAT_ERR_NO_DECODER_LICENCE` (a new
+  status: "a decoder library was found and is not one this library may load"). Closing is
+  safe for exactly this library: no build of it carries a thread-local segment, which is
+  what makes unloading a device runtime unsafe ([07 §8](07-platforms.md)). The distribution
+  this is developed on ships a GPL build, which is refused; the LGPL pairs another
+  application installed on the same machine (FFmpeg 4.3 and 8.x) are accepted.
+  **No header is pinned and no binding is generated**: the surface relied on is the sixteen
+  entry points and the leading fields of two structures that are the same on every major
+  accepted, written down by hand, and **checked at load against the library that loaded** --
+  a freshly allocated frame must point its extended data at its own first field and report
+  no format, a freshly sized packet must report the size it was given -- before a unit is
+  ever fed. Every number that has moved between majors or could (codec identifiers, pixel
+  formats) is resolved by name. The library's own log stays as it is: its level and its
+  callback are process-global and the application may own them; it is silent on a healthy
+  stream.
+- [ ] **The backend** (`lowlat-decode`): the codec found by name from the header, opened with
+  slice threading capped at four and by the machine's parallelism and the low-delay flag;
+  each unit copied once into a padded, reference-counted packet the library sizes (the
+  padding it requires comes with it); a packet the decoder will not take until a picture is
+  drained is drained and offered again, never dropped; every picture ready is taken in
+  order, so a flush leaves none late; a decode error is the fault the keyframe policy
+  answers with one request. **The same four formats out as the hardware backends**: the
+  decoder's three-plane pictures are converted during the copy that hands them out --
+  chroma interleaved for NV12 and P010, ten-bit samples shifted to the high bits -- so an
+  application sees one format set whatever decodes, and no flag exists to get wrong. A
+  format change is never reported: the decoder reconfigures itself on a new parameter set.
+- [ ] **Chosen, listed, last in the automatic order** (`lowlat-client`, `lowlat-sdk`, minor 11):
+  `LOWLAT_DECODER_SOFTWARE`, refused at creation with the stage when no LGPL pair loads;
+  `lowlat_enum_decoders` gains its row last, named by the library's version and licence and
+  the directory it came from, every capability true (each is proved by the fixtures);
+  `LOWLAT_DECODER_AUTO` reaches it after the open stack's nodes and the vendor's devices,
+  so a machine with any hardware decoder never does, and status `backend` says which was
+  chosen. `create_info.device` for the software kind may name the directory the row was
+  found in, so the row round-trips through creation. Two corrections to `AUTO` folded in
+  because the same function is rewritten: with a render node named it now tries the open
+  stack on that node, then the vendor's interface on the card behind it, then software,
+  where it stopped after the open stack; and the handle kind with a node named resolves the
+  vendor's device from that node rather than taking any. The header's "by index, as the
+  host's encoder is" becomes "by kind and render node, as the listing reports them".
+- [ ] **A decoder chosen mid-session**: `lowlat_client_set_decoder(cl, decoder, device)`. The
+  probe runs on the caller's thread exactly as creation's does; a backend that does not
+  open answers with its stage and nothing changes. Before an attempt the choice is replaced
+  and nothing else happens. During a session it is one act: the declaration re-masked by
+  the new decoder's capability and restated where it changed, the running decoder torn
+  down, the new runtime opened on the decode thread, and exactly one keyframe request with
+  the reinitialisation argument -- the request that also applies the new declaration -- so
+  the picture resumes at the next keyframe; the queue is never closed, a picture the
+  application holds stays valid, and the units that arrive meanwhile are caught up over.
+  **The frame kind stays the creation's**: it is the queue's shape, and a session of the
+  handle kind refuses the call (`LOWLAT_ERR_DECODER_UNSUPPORTED`) because its device slots
+  are bound to the device; changing that is a recreate. **No automatic fallback of any
+  kind is added**: a decoder that cannot serve the frame kind is refused where it is asked
+  for, at creation or at this call, never answered with a frame of another kind.
+- [ ] The demo takes `LOWLAT_DECODER=software`, prints the row with its licence and origin,
+  and cycles the rows mid-session through a chord.
+- [ ] Documentation closure: 10 §5.1, 06 §3b/§6/§7/§11, 09 §7a, 00 D14, gate 4 amended, the
+  README's licence sentence.
+
+**Gate:**
+
+1. Every committed clip decodes bit-exact on the software backend through both LGPL pairs
+   on this machine (FFmpeg 4.3 and 8.x, named by `LOWLAT_FFMPEG_DIR`); the distribution's
+   GPL pair is refused with the new status and absent from the listing; a major named by
+   `LOWLAT_FFMPEG_VERSION` that is not present refuses rather than walks. The feed-to-take
+   delay in pictures per fixture family equals the library's own readers' figure. The four
+   conversions' cost at 2560x1440 recorded. Zero allocations per unit on this side.
+2. Ten minutes each on H.264 and ten-bit HEVC at 2560x1440 from this host through the
+   software backend, and the defaults from the established host: decode and conversion per
+   picture, pictures and skips a second, the reader's lag, the CPU. Numbers recorded, not
+   judged: a software decoder is the floor, not the target.
+3. The switch: hermetically, with test doubles, one request per switch, the queue never
+   closed, a held picture valid across it; live against this host the open stack, the
+   vendor's and software each way every hundred seconds, each answered by one keyframe and
+   the picture back within the second; once against the established host, whose log shows
+   one encoder rebuild per switch.
+4. The process map after a run shows the LGPL pair and nothing copyleft, which is gate 4 as
+   written; the ABI gate at minor 11; the workspace's checks.
+
 ## Later, and not in v1
 
 - **A Windows client**: the completion-port receive path in the shell ([02 §6](02-io-shell.md)),
   Media Foundation or NVDEC, shared textures with fences as the handle kind, the toolkit's
   D3D11 renderer. Its own phase when Linux is done; the design already names its handle.
-- **Software decode**: a decision, not a phase, and the licence question decides it
-  ([09 §9](09-compatibility.md)). Until then a machine without a hardware decoder is refused
-  with the stage named.
 - **A second stream, the browser pipe, pen and touch, the microphone uplink.** Each is known
   and none is needed for a client that streams.
+- **A session that changes its frame kind**: `lowlat_frame.kind` is already per frame, so a
+  mixed-kind session is expressible without a change to the surface; what it needs is a
+  queue that holds both kinds of slot at once. Not needed by anything that streams today.
 
 ### Deferred decisions, recorded 2026-09-16, decided 2026-09-19
 
@@ -716,6 +816,14 @@ slower decoder ever reopens them.
 
 Newest first.
 
+- 2026-09-21: C8 planned. The deferred software-decode decision is taken: the machine's own
+  libavcodec, loaded at runtime and only when it answers that it is an LGPL build, nothing
+  shipped; the pair searched for in the environment, beside the executable, then the
+  linker's own way, the highest major winning; no header pinned, the leading fields
+  checked against the library that loaded, every number that could move resolved by name;
+  the same four formats out, converted in the copy; last in the automatic order; and a
+  decoder chosen mid-session as one act with one keyframe request, the frame kind fixed at
+  creation. No automatic fallback of any kind. C8 runs before C6.
 - 2026-09-20: C7 planned with Phase 14. The pair recorded at C3 as later has its wire
   already (opcode 31 in, 33 out, raw reports); the library derives the standard state
   beside the report so every host has a pad; feature reports go first and are bounded;

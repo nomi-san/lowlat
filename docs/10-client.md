@@ -324,27 +324,57 @@ with the stage named rather than asking the host for keyframes it would fail on 
 |---|---|---|
 | VA-API | the driver's own interface, loaded at runtime | planes by read-back; the surface's own buffer descriptor, later |
 | NVDEC | the vendor's decode interface, loaded at runtime | planes by a device-to-host copy; an exportable slot filled by a device copy (§4) |
+| software | the machine's own libavcodec, loaded at runtime and only when it is an LGPL build (*planned 2026-09-21*, C8) | planes, converted from the decoder's own layout during the copy |
 
-The choice is the application's by index, as the host's encoder is; unset, the first render
-node the open stack decodes on, and the vendor interface only where there is none, so on a
-machine with both the vendor backend is chosen by index -- or by asking for handles, which
-only the vendor backend exports. The device is named as a render node for either backend;
-the vendor's resolves it to the card behind it. **What can be opened is listed** (*2026-09-19*):
-one row per backend and device that decodes anything, probed exactly as creation probes it,
-with what it decodes, its size limits and whether it exports a handle, so an application
-shows a menu or picks by capability rather than guessing at a name. Nothing is linked: a
-machine without either interface refuses with the stage named, exactly as a host without an
-encoder does. **Software decode is a decision deferred**, with its licence question attached
-([09 §9](09-compatibility.md)); v1 is hardware or nothing.
+The choice is the application's, by kind and render node, as the listing reports them;
+unset, the first render node the open stack decodes on, then the vendor interface on any of
+its devices, then software, so on a machine with both hardware interfaces the vendor
+backend is chosen by naming it -- or by asking for handles, which only the vendor backend
+exports -- and a machine with any hardware decoder never reaches software. With a render
+node named, the automatic order tries the open stack on that node, then the vendor's
+interface on the card behind it, then software (*corrected 2026-09-21: it stopped after the
+open stack, and the handle kind with a node named took any vendor device*). The device is
+named as a render node for either hardware backend; the vendor's resolves it to the card
+behind it; for software it may name the directory the pair was found in. **What can be
+opened is listed** (*2026-09-19*): one row per backend and device that decodes anything,
+probed exactly as creation probes it, with what it decodes, its size limits and whether it
+exports a handle, so an application shows a menu or picks by capability rather than
+guessing at a name; the software row comes last, named by the library's version and
+licence. Nothing is linked: a machine without any of the three refuses with the stage
+named, exactly as a host without an encoder does.
 
-**One decoder is chosen at creation and there is no fallback to another** (*2026-09-19*).
-An established client offers the second codec and both colour axes as preferences and, when
-its hardware cannot decode what arrives, quietly moves to a software path; here the
-preference is masked by capability before it is declared (§7), so what arrives is what was
-declared, and a stream the built decoder cannot take -- which can only be one the client did
-not declare -- ends the session with the decoder's status and the stage named. A quiet
-switch to a slower decoder ships a degraded stream without telling anyone, and the
-application cannot choose what it does not know about.
+**Software decode is the machine's own libavcodec, and only an LGPL one** (*decided
+2026-09-21*, [impl-plan-client.md](impl-plan-client.md) C8). Nothing is shipped or built:
+the pair (`libavutil`, `libavcodec`) is looked for in the environment (`LOWLAT_FFMPEG_DIR`,
+`LOWLAT_FFMPEG_VERSION`), beside the running executable, then the dynamic linker's own way,
+majors 4 through 9 with the highest that opens winning, and before any other entry point
+is called it is asked its licence; a pair that does not answer `LGPL` is closed at once and
+reported as such, so on a distribution whose build is GPL the software row does not exist
+and the copyleft rule of [impl-plan.md](impl-plan.md) gate 4 holds by construction. No
+header is pinned: the surface relied on is the same on every major accepted and is checked
+at load against the library that loaded; everything numbered that has moved between majors
+is resolved by name. The decoder's three-plane pictures leave in the same four formats the
+hardware backends hand out, converted in the copy that hands them out, so no fifth format
+and no flag reaches the application.
+
+**One decoder is chosen at creation and there is no automatic fallback to another**
+(*2026-09-19*, *amended 2026-09-21*). An established client offers the second codec and
+both colour axes as preferences and, when its hardware cannot decode what arrives, quietly
+moves to a software path; here the preference is masked by capability before it is
+declared (§7), so what arrives is what was declared, and a stream the built decoder cannot
+take -- which can only be one the client did not declare -- ends the session with the
+decoder's status and the stage named. A quiet switch to a slower decoder ships a degraded
+stream without telling anyone, and the application cannot choose what it does not know
+about. **The application may choose, mid-session** (*planned 2026-09-21*, C8):
+`lowlat_client_set_decoder` names another kind and node, is refused with the stage when it
+does not open and changes nothing then, and otherwise is one act -- the declaration
+re-masked by the new decoder's capability, the running decoder torn down, the new one
+opened on the decode thread, and exactly one keyframe request with the reinitialisation
+argument, the first of the two request cases of §5 -- so the picture resumes at the next
+keyframe and the queue never closes. The frame kind is the queue's shape and stays the
+creation's: a session of the handle kind refuses the call, because its device slots are
+bound to the device. A decoder that cannot serve the frame kind is refused where it is
+asked for, never answered with a frame of another kind.
 
 **The creation-time probe builds a real decoder per combination** (*2026-09-19*) of codec,
 chroma and depth, and destroys it, rather than trusting a capability query: the vendor
