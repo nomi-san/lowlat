@@ -404,7 +404,13 @@ impl HidPad {
                 event::GET_REPORT => self.answer(&event),
                 event::SET_REPORT => {
                     let id = get_u32(&event, at::REQUEST_ID);
-                    let written = self.written(&event, at::SET_DATA, at::SET_SIZE, FEATURE_REPORT);
+                    // A set-report carries its kind too: a writer without the
+                    // output path reaches this with an output report.
+                    let rtype = event
+                        .get(at::REQUEST_RTYPE)
+                        .copied()
+                        .unwrap_or(FEATURE_REPORT);
+                    let written = self.written(&event, at::SET_DATA, at::SET_SIZE, rtype);
                     self.reply(event::SET_REPORT_REPLY, id, 0, &[]);
                     if let Some(written) = written {
                         return Some(written);
@@ -433,8 +439,15 @@ impl HidPad {
         let data = event.get(data_at..data_at + size)?;
         // A report written without its identifier byte carries the device's
         // only one; the driver and the raw node both write it with the byte,
-        // so an empty or oversize write is dropped rather than guessed at.
+        // so an empty or oversize write is dropped rather than guessed at --
+        // and said, because a writer framing for the other transport looks
+        // like silence otherwise.
         if data.is_empty() || data.len() > WRITTEN_MAX {
+            lowlat_common::log_warn!(
+                "inject: pad write dropped, len={} id={:#04x} type={rtype}",
+                data.len(),
+                data.first().copied().unwrap_or(0)
+            );
             return None;
         }
         let mut report = [0u8; WRITTEN_MAX];
@@ -773,6 +786,64 @@ mod tests {
             drop(twin);
             drop(pad);
             std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
+    /// **A window onto what an application writes to the virtual pads.**
+    /// Both products are presented for five minutes and every write that
+    /// reaches the descriptor is printed with its time, kind, length and
+    /// head, as is any write dropped for its size. Not a check: run it with
+    /// `--nocapture` while a game launcher or a page drives the pads.
+    #[test]
+    #[ignore = "a window, not a check; needs /dev/uhid"]
+    fn whatever_is_written_to_the_virtual_pads_is_printed() {
+        lowlat_common::log::set_sink(|level, message| eprintln!("[{level:?}] {message}"));
+        let ds4 = HidPad::create(
+            "window",
+            1,
+            Product::DualShock4,
+            [0x02, 0x4c, 0x4c, 0x00, 0x02, 0x01],
+            Features::new(),
+        )
+        .expect("the DualShock 4");
+        let ds5 = HidPad::create(
+            "window",
+            2,
+            Product::DualSense,
+            [0x02, 0x4c, 0x4c, 0x00, 0x02, 0x02],
+            Features::new(),
+        )
+        .expect("the DualSense");
+        let ds4_idle: &[u8; pad::INPUT_LEN] =
+            include_bytes!("../../core/tests/data/pad/ds4/input-idle.bin");
+        let ds5_idle: &[u8; pad::INPUT_LEN] =
+            include_bytes!("../../core/tests/data/pad/ds5/input-idle.bin");
+        let mut pads = [(ds4, "DualShock4", ds4_idle), (ds5, "DualSense", ds5_idle)];
+        let began = std::time::Instant::now();
+        let mut fed = 0u64;
+        while began.elapsed() < std::time::Duration::from_secs(300) {
+            // Alive: an idle report every four milliseconds, a wired pad's
+            // rate, so a consumer that waits for input sees some.
+            if began.elapsed().as_millis() as u64 / 4 > fed {
+                fed += 1;
+                for (pad, _, idle) in &mut pads {
+                    if pad.started() {
+                        let _ = pad.input(idle);
+                    }
+                }
+            }
+            for (pad, name, _) in &mut pads {
+                while let Some(written) = pad.poll() {
+                    eprintln!(
+                        "{:8.3}s {name} {:?} len={} {:02x?}",
+                        began.elapsed().as_secs_f64(),
+                        written.kind,
+                        written.len,
+                        &written.report[..written.len.min(12)]
+                    );
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }
 
