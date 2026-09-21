@@ -102,6 +102,9 @@ const REL_HWHEEL_HI_RES: libc::c_int = 0x0c;
 const ABS_X: u16 = 0x00;
 const ABS_Y: u16 = 0x01;
 const BTN_FIRST: libc::c_int = 0x110;
+/// The last of the three primary buttons, and of what the absolute pointer
+/// declares.
+const BTN_MIDDLE: libc::c_int = 0x112;
 const BTN_LAST: libc::c_int = 0x114;
 
 /// Says the device points at a position rather than reporting a surface
@@ -1341,6 +1344,16 @@ fn pointer(guest: &str) -> Result<Node, Error> {
     Ok(node)
 }
 
+/// **Shaped as an absolute mouse, exactly.** The joystick handler takes any
+/// device with an absolute X axis unless it looks like one of the virtual
+/// tablets and remote-management mice: event types of precisely sync, key,
+/// relative, absolute and scan-code, axes of precisely X and Y, and keys of
+/// precisely the three primary buttons. One button more and this device is
+/// a joystick to everything that lists joystick nodes -- and it takes a
+/// joystick number ahead of a guest's real pads, which one consumer's
+/// vibration cannot reach past the fourth ([docs/07-platforms.md] section
+/// 4.2). So the side buttons live on the relative pointer alone, and the
+/// scan-code type is declared as a real mouse declares it.
 fn pointer_absolute(guest: &str) -> Result<Node, Error> {
     let node = Node::open()?;
     node.set(ioctl::SET_PROPBIT, INPUT_PROP_POINTER)?;
@@ -1348,7 +1361,9 @@ fn pointer_absolute(guest: &str) -> Result<Node, Error> {
     node.set(ioctl::SET_EVBIT, EV_KEY)?;
     node.set(ioctl::SET_EVBIT, EV_REL)?;
     node.set(ioctl::SET_EVBIT, EV_ABS)?;
-    for button in BTN_FIRST..=BTN_LAST {
+    node.set(ioctl::SET_EVBIT, EV_MSC)?;
+    node.set(ioctl::SET_MSCBIT, MSC_SCAN)?;
+    for button in BTN_FIRST..=BTN_MIDDLE {
         node.set(ioctl::SET_KEYBIT, button)?;
     }
     // **The wheels are on both pointers and the motion axes are not.** A
@@ -1921,6 +1936,36 @@ mod device_tests {
         assert!(
             Reader::gone("lowlat keyboard (guest 7)"),
             "the device outlived the handle"
+        );
+    }
+
+    /// **The absolute pointer is not a joystick.** The joystick handler
+    /// takes any device with an absolute X axis unless it is shaped exactly
+    /// like an absolute mouse, and a pointer it takes sits ahead of a guest's
+    /// pads in the joystick numbering (docs/07-platforms.md section 4.2).
+    #[test]
+    #[ignore = "creates real input devices"]
+    fn the_absolute_pointer_is_not_a_joystick() {
+        let mut devices = Devices::create("19").expect("create");
+        ready(&mut devices);
+        let mine = "lowlat pointer absolute (guest 19)";
+        let mut nodes = Vec::new();
+        for entry in std::fs::read_dir("/sys/class/input").expect("sysfs") {
+            let path = entry.expect("entry").path();
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+            let Some(name) = name else { continue };
+            let device = std::fs::read_to_string(path.join("device/name")).unwrap_or_default();
+            if device.trim() == mine {
+                nodes.push(name);
+            }
+        }
+        assert!(
+            nodes.iter().any(|n| n.starts_with("event")),
+            "the pointer has no event node: {nodes:?}"
+        );
+        assert!(
+            !nodes.iter().any(|n| n.starts_with("js")),
+            "the joystick handler took the absolute pointer: {nodes:?}"
         );
     }
 

@@ -822,9 +822,16 @@ impl Injector {
         }
         *held = pressed;
 
-        // Chosen once, on the way down, and remembered for the way up.
+        // Chosen once, on the way down, and remembered for the way up. The
+        // side buttons are the relative pointer's whichever pointer moved
+        // last: the absolute one declares the three primary buttons and no
+        // more, which is what keeps it a pointer to the joystick handler.
         let device = if pressed {
-            let device = self.pointer();
+            let device = if code == BTN_SIDE || code == BTN_EXTRA {
+                Device::Pointer
+            } else {
+                self.pointer()
+            };
             if let Some(slot) = self.pressed_on.get_mut(index) {
                 *slot = device;
             }
@@ -1634,6 +1641,40 @@ mod tests {
             axes(&out),
             vec![ABS_RANGE / 2, ABS_RANGE / 2, ABS_RANGE, ABS_RANGE]
         );
+    }
+
+    /// **The side buttons are the relative pointer's, whichever pointer
+    /// moved last.** The absolute pointer declares the three primary buttons
+    /// and no more, so a side button pressed after an absolute move goes to
+    /// the relative device, its release follows it there, and a primary
+    /// button beside it still lands on the absolute one.
+    #[test]
+    fn a_side_button_lands_on_the_relative_pointer() {
+        let mut inject = Injector::new(Extents::alone(1920, 1080));
+        let mut out = Recorder::default();
+        inject.on_control(&control(op::MOUSE_MOTION, 0, 100, 100), &mut out);
+        let mut down = Recorder::default();
+        inject.on_control(&control(op::MOUSE_BUTTON, 4, 1, 0), &mut down);
+        inject.on_control(&control(op::MOUSE_BUTTON, 5, 1, 0), &mut down);
+        inject.on_control(&control(op::MOUSE_BUTTON, 1, 1, 0), &mut down);
+        assert_eq!(
+            down.devices(),
+            vec![Device::Pointer, Device::Pointer, Device::PointerAbsolute]
+        );
+        assert_eq!(down.keys_at(1), vec![BTN_SIDE, BTN_EXTRA, BTN_LEFT]);
+        let mut up = Recorder::default();
+        inject.on_control(&control(op::MOUSE_BUTTON, 4, 0, 0), &mut up);
+        assert_eq!(up.devices(), vec![Device::Pointer]);
+        assert_eq!(up.keys_at(0), vec![BTN_SIDE]);
+        // The bulk release too: the side button still held goes to the
+        // relative device, the primary one to the absolute.
+        let mut gone = Recorder::default();
+        inject.release_all(&mut gone);
+        assert_eq!(
+            gone.devices(),
+            vec![Device::PointerAbsolute, Device::Pointer]
+        );
+        assert_eq!(gone.keys_at(0), vec![BTN_LEFT, BTN_EXTRA]);
     }
 
     /// **A release has to reach the device that took the press.** Which
