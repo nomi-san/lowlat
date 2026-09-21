@@ -365,6 +365,10 @@ no joystick node, still a pointer to the input library). And on a machine
 that is host and client at once, the launcher owns the physical pad and the virtual one
 together, so a report relayed from the virtual pad and the launcher's own report to the
 physical pad can cancel each other's rumble; no real deployment has both pads on one machine.
+The pad's speaker is not this layer's at all: a DualSense's is a USB audio device (or a
+Bluetooth audio profile) beside its HID interface, so it belongs to the machine the pad is
+plugged into -- the client's, whose application may play the session's sound through it --
+and the virtual pad here has none.
 
 **A virtual pad has to borrow a real controller's identity.** Everything that reads a gamepad
 decides what its buttons mean by looking the bus, vendor, product and version up in a table:

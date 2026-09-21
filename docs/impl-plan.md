@@ -1779,7 +1779,7 @@ description it hands its browser, which is what lets a second browser family con
    and per-datagram time at p50, p95 and p99.
 7. The encode-latency report is seen on the wire every two seconds on both transports.
 
-## Phase 14 - The HID-layer pads: DualShock 4 and DualSense (built 2026-09-20; gate leg 4 and leg 1's trigger effects open)
+## Phase 14 - The HID-layer pads: DualShock 4 and DualSense (built 2026-09-20; gate legs 1-3 passed, leg 4 open)
 
 **Planned 2026-09-20 with the client's C7** ([impl-plan-client.md](impl-plan-client.md)),
 interview of the same day; one phase across both documents, the client half first. The
@@ -1854,11 +1854,13 @@ day**, 14.0 to 14.3, the client half (C7) gated first against an established hos
    set there and a rumble test there reach the physical pad at the desk; a title with native
    DualSense support, or a probe writing the output report over the virtual pad's raw node,
    drives the trigger effects on the physical pad. *Passed 2026-09-21 with the installed
-   service, all but the trigger effects (not yet tried against a title; the whole DualSense
-   output report is what travels, and the launcher's own rumble report was watched arriving
-   at the virtual pad and going back). Both pads: touch, motion and the lightbar live in the
-   launcher's settings on 2026-09-20; rumble on 2026-09-21, from the launcher and from a
-   browser page. What the day between them taught, recorded in [07 §4.2](07-platforms.md):
+   service. Both pads: touch, motion and the lightbar live in the launcher's settings on
+   2026-09-20; rumble on 2026-09-21, from the launcher and from a browser page; the trigger
+   effects the same day, driven from this host and felt on the pad held by the established
+   client (leg 2's run -- the host side is the same whichever client holds the pad). The
+   pad's speaker is not this path's: it is fed by the client machine's own audio device for
+   the pad, which is where the client application plays the session's sound if it is told
+   to; on a loopback box that device is the host's too. What the day between them taught, recorded in [07 §4.2](07-platforms.md):
    the launcher rumbles a controller only once its per-controller rumble setting has been
    toggled on, and its "identify" ping writes nothing before that; a browser's Gamepad API
    on Linux vibrates only a pad whose joystick node number is below four; and on a loopback
