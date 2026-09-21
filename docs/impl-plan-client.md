@@ -679,7 +679,7 @@ once, here and under Phase 14; the rules are [10 §8](10-client.md), the wire
 3. The hermetic tests above; the ABI gate at minor 10; the census on the host names the two
    opcodes and nothing unexpected.
 
-## Phase C8 - Software decode over the machine's own libavcodec, and a decoder chosen mid-session (planned 2026-09-21)
+## Phase C8 - Software decode over the machine's own libavcodec, and a decoder chosen mid-session (planned 2026-09-21, closed 2026-09-21)
 
 **Planned 2026-09-21, interview of the same day.** Runs before C6, as C7 did: it changes the
 header (minor 11, then 12) and the demo, which C6 packages. The decisions are recorded once, here;

@@ -3,6 +3,18 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-21 - Phase C8 closed
+
+### Gate
+- All four items passed ([impl-plan-client.md](impl-plan-client.md) C8): every committed
+  clip bit-exact through the software decoder; ten minutes each of H.264 and HEVC ten-bit
+  at 2560x1440 from this host on software (1.8 and 3.0 ms a picture at the median, 31 and
+  55 percent of one core, never more than one message behind) and the established host's
+  defaults over the internet; the hundred-second walk over five moves against this host
+  and against the established host, each move exactly one keyframe on the host's log --
+  the established host's own log showing one encoder build per move and nothing else; the
+  process map after a run holding the LGPL pair and nothing copyleft.
+
 ## 2026-09-21 - C8, a review and one build option: a GPL codec library by opt-in (minor 12)
 
 ### Added
