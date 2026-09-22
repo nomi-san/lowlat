@@ -583,13 +583,52 @@ replayed, shows none at all, which is what a clean path reads.
 
 ## Phase C6 - Packaging and the second half of the header
 
-- [ ] The client-only build in the build workflow; the SDK tarball says which halves it
-  carries; the demo built and kept as an artifact.
-- [ ] Documentation closure: [06 §3b](06-api.md) verified against the header, [10](10-client.md)
-  against the code, [09](09-compatibility.md) gains what decodes on which part.
+**Planned 2026-09-15 for a header at minor 4; re-planned 2026-09-22 at minor 13**, interview
+of the same day, after C7 to C9 had each changed the header and the demo this phase packages.
+Nothing pending changes either again before Phase 11, which is the host's half. What the
+phase produces is the first client that leaves the development machine as an artifact, so
+its gate ends the way every phase's does: the artifact streams from the established host.
 
-**Gate:** the workflow produces the full library, the client-only library and the demo, and
-`lowlat_features()` on each says what it is.
+- [ ] **The client-only build checked on every push**, in the CI workflow rather than the
+  hand-started build: one lint step with the client feature alone and one with the host
+  feature alone, because every other step builds all features or the defaults, under which
+  a client-only breakage compiles; and the demo built there against the client-only
+  library, since it is the one thing that links the client symbols the way an application
+  does -- an unresolved name fails the link where a feature bit only says it was set. The
+  toolkit's shader compiler on the runner; the demo told where the library is rather than
+  building one of its own.
+- [ ] **Two libraries from the build workflow**, the full one and the client-only one, in
+  one job and in order, each copied out of the target directory before the next build lands
+  on the same file, so that no check reads the wrong object. Each in a tarball named for
+  what it carries -- the full one keeps its name, the client one says `client` -- with the
+  one header (an application defines `LOWLAT_NO_HOST` against the client build), 06 and
+  10, the licence, and a `FEATURES` line written by a small program that opens the
+  tarball's own copy and prints the ABI version and `lowlat_features()`, refusing a value
+  other than the one expected. The ABI gate's harness is not that program: it names an
+  object without the host half and stops, by design. The GPL bit is clear on both.
+- [ ] **The demo inside the client tarball**, as `bin/client` and nothing beside it: linked
+  against that tarball's library with a run path relative to itself, stripped as the
+  library is, the toolkit's licence notice as a second licence file because the binary
+  carries the toolkit. The demo prints the library's version and features as its first
+  line, before it asks for a peer, so every run's log names the object it ran against.
+- [ ] **Documentation closure**: the header's client half read once, top to bottom, against
+  [06 §3b](06-api.md), for a comment a later minor made false; [10](10-client.md) against
+  the code, its status line included; [06 §13](06-api.md), the README's status and platform
+  rows and its build section, and the document maps in [00](00-overview.md) and at the
+  head of this plan, all of which still describe a host with a client planned.
+  [09 §7a](09-compatibility.md) has carried what decodes on which part since C5 and is
+  verified rather than added to.
+
+**Gate:**
+
+1. The build workflow produces the full library, the client-only library and the demo; the
+   `FEATURES` lines read the two halves on the first and the client half alone on the
+   second, the demo's first line reads the client half, and the demo linked against the
+   client-only object with no name unresolved. Recorded with the run's number.
+2. The client tarball's own `bin/client`, downloaded from that run rather than built here,
+   streams from the established host for the usual ten minutes: the one check that can
+   catch a packaging fault -- a run path that does not resolve, a stripped object, a library
+   the runner's build resolved differently.
 
 ## Phase C7 - The pad reports: DualShock 4 and DualSense (planned 2026-09-20)
 
@@ -960,6 +999,15 @@ slower decoder ever reopens them.
 
 Newest first.
 
+- 2026-09-22: C6 re-planned at minor 13, after C7 to C9 had each changed what it packages.
+  The client-only build and the demo's link against it are checked on every push rather
+  than in the hand-started build; two tarballs from one job, each copied out before the
+  next build lands on the same file, each saying what it carries through a line a program
+  prints from the tarball's own copy; the demo inside the client tarball as a bare binary
+  with a run path relative to itself; the closure widened to the README and the document
+  maps, which still describe a host with a client planned; and a second gate item, the
+  tarball's own demo streaming from the established host, because nothing else in the gate
+  proves the shipped client streams.
 - 2026-09-21: C8 planned. The deferred software-decode decision is taken: the machine's own
   libavcodec, loaded at runtime and only when it answers that it is an LGPL build, nothing
   shipped; the pair searched for in the environment, beside the executable, then the
