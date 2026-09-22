@@ -1452,13 +1452,19 @@ eight-bit targets are the only thing the shader can address.
 1. [ ] **Decoded pixels match a ten-bit source on every backend that claims the depth**, with a
    count check that as many pictures were decoded as were submitted. An aggregate over zero
    pictures has scored well here before.
-   *Open on two of three backends.* The open stack is measured over sixty pictures against the
+   *Open on one of three backends.* The open stack is measured over sixty pictures against the
    source on both of its devices -- 53.9 dB, flat, where the same run read 13.1 before the
    device was told its depth -- and **the spread across the run is the reading, not the
-   average**: a stream that starts right and ends wrong has an average like a correct one. The
-   vendor and Vulkan backends have no such comparison; their streams decode and look right,
-   which is what the open stack's did while it was drifting. The source is also an eight-bit
-   picture widened rather than a real ten-bit one.
+   average**: a stream that starts right and ends wrong has an average like a correct one.
+   *The vendor backend measured 2026-09-22*: its ten-bit test now runs past its in-flight depth
+   (`LOWLAT_PICTURES`), and 120 pictures at 1920x1080 decoded by an outside decoder as Main 10
+   -- 120 of 120, the count checked -- read 88.2 dB in luma at worst and bit for bit on most,
+   no worse than 76 dB in either chroma plane, flat from the first picture to the last. The
+   Vulkan backend has no such comparison: it converts straight into the encoder's own picture
+   and nothing reads that back, so its stream decodes and looks right, which is what the open
+   stack's did while it was drifting; it needs a readback, or a reference of the conversion
+   computed on the processor, before it can be read. The source is also an eight-bit picture
+   widened rather than a real ten-bit one, on every backend.
 2. [x] **Two decoder families stream ten-bit HEVC end to end.** *Met 2026-08-30: a stock client
    on one platform's system decoder and a second on a software one, both live against this
    host on all three heads.* One family passing had already proved insufficient once: an
@@ -1486,9 +1492,17 @@ eight-bit targets are the only thing the shader can address.
    thing to name. No encoder on any of the three interfaces offers an H.264 profile above eight
    bits and one cannot express one at all, so the constraint belongs to the codec and naming a
    backend would suggest another might serve it.*
-5. [ ] **Status reports the live triple across a mid-session change**, read while it runs.
-   *The change is proven and the reading is not.* One live session moved the depth six times in
-   both directions, each rebuilding the encoder; nothing read the status while it did.
+5. [x] **Status reports the live triple across a mid-session change**, read while it runs.
+   *Met 2026-09-22.* The C# host, which reads `lowlat_host_get_status` once a second and prints
+   the triple when it changes, hosted this desktop on the vendor encoder while the client demo
+   moved its preferences every fifteen seconds; the printed line went `H264 4:2:0 8-bit`,
+   `HEVC 8-bit`, `HEVC 10-bit`, `HEVC 8-bit`, `HEVC 10-bit`, `H264 8-bit`, `HEVC 8-bit` -- one
+   encoder generation per move, seven in all -- and the client's decoded format followed
+   between NV12 and P010 at each depth change, on the vendor decoder. The two full-chroma
+   requests in the walk were held at 4:2:0 by this machine's census, whose second encoder
+   codes none, which is the degradation rule and not a reading fault. *Before this run the
+   change was proven and the reading was not: one live session had moved the depth six times
+   in both directions with nothing reading the status while it did.*
 
 ---
 

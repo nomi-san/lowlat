@@ -3,6 +3,20 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-22 - Phase 11.5: the vendor backend's ten-bit read against its source, the live triple read through the boundary
+
+### Gate
+- Gate 1's vendor half ([impl-plan.md](impl-plan.md) 11.5): the ten-bit test lengthened past
+  its in-flight depth, and 120 pictures of HEVC Main 10 from the vendor encoder decoded by an
+  outside decoder -- 120 of 120 -- read 88.2 dB in luma at worst and bit for bit on most,
+  chroma no worse than 76 dB, flat across the run. Open on the Vulkan backend alone, which
+  has no readback to compare against.
+- Gate 5 met: the C# host, reading `lowlat_host_get_status` once a second, printed the
+  codec, chroma and depth moving with a guest's requests -- ten-bit on, off, on and off
+  again across seven encoder generations -- while the guest's decoded format followed
+  between NV12 and P010. Full chroma stayed at 4:2:0 under this machine's census, as the
+  degradation rule says.
+
 ## 2026-09-22 - C6: the client-only build checked on every push, two tarballs, the demo packaged
 
 ### Added
