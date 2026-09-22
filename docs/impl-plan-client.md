@@ -584,7 +584,7 @@ replayed, shows none at all, which is what a clean path reads.
    negative can name several. The recent-loss figure peaked at 1.3 percent in a burst and
    read zero for most of the run.)
 
-## Phase C6 - Packaging and the second half of the header
+## Phase C6 - Packaging and the second half of the header (closed 2026-09-22)
 
 **Planned 2026-09-15 for a header at minor 4; re-planned 2026-09-22 at minor 13**, interview
 of the same day, after C7 to C9 had each changed the header and the demo this phase packages.
@@ -632,14 +632,29 @@ its gate ends the way every phase's does: the artifact streams from the establis
 
 **Gate:**
 
-1. The build workflow produces the full library, the client-only library and the demo; the
+1. [x] The build workflow produces the full library, the client-only library and the demo; the
    `FEATURES` lines read the two halves on the first and the client half alone on the
    second, the demo's first line reads the client half, and the demo linked against the
-   client-only object with no name unresolved. Recorded with the run's number.
-2. The client tarball's own `bin/client`, downloaded from that run rather than built here,
+   client-only object with no name unresolved. Recorded with the run's number. *Build run
+   35710471842 on `62a0f90`, 2026-09-22: `abi 0.13 features 0x3` with 60 exported names,
+   `0x2` with 32 and no host name among them, the tarball's own `bin/client` printing
+   `features=0x2` and leaving for want of a peer; the four artifacts uploaded. The CI run
+   on the same commit green in all four jobs, the sanitizers included.*
+2. [x] The client tarball's own `bin/client`, downloaded from that run rather than built here,
    streams from the established host for the usual ten minutes: the one check that can
    catch a packaging fault -- a run path that does not resolve, a stripped object, a library
-   the runner's build resolved differently.
+   the runner's build resolved differently. *2026-09-22, the artifact of that run against an
+   established host on macOS over the LAN, ten minutes: 16,140 pictures at the host's own
+   cadence (15 to 61 a second with what moved), decode 3.4 ms at the median (3.7 at the
+   95th percentile, 9.5 at most) and read-back 3.1 ms on the AMD part, never more than one
+   message behind, 25 skips in all, no loss, no late arrival, no retransmission asked,
+   sound at 50 packets a second while the host had any, the pointer's 44 pictures all
+   taken, 307 MB resident. A first attempt with the decoder left to the automatic order
+   ran on the discrete Intel part that now holds the first render node, whose one-lane
+   link read a picture of this size back in 15.5 ms and fell up to 37 messages behind the
+   host's 30 a second; stopped at 47 s and rerun with the node named. Not a packaging fault,
+   and recorded because the automatic order on a machine with such a part is the slowest
+   choice, which the listing's rows let an application avoid.*
 
 ## Phase C7 - The pad reports: DualShock 4 and DualSense (planned 2026-09-20)
 

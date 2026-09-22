@@ -40,6 +40,14 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   them without it); and the three system headers the demo's toolkit compiles its sound and
   image loaders against, which the runners lack.
 
+### Gate
+- Both items passed ([impl-plan-client.md](impl-plan-client.md) C6): the build workflow's
+  run produced the two libraries and the demo with the expected feature bits read from
+  each tarball's own copy, and that run's client tarball, downloaded rather than rebuilt,
+  streamed from an established host on macOS over the LAN for ten minutes -- 16,140
+  pictures, 3.4 ms to decode and 3.1 to read back at the median, never more than one
+  message behind, no loss. C6 closed, and with it the client's phases C0 to C9.
+
 ## 2026-09-22 - C9: full chroma on the open stack, the listing's labels (minor 13)
 
 ### Added
