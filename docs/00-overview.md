@@ -188,5 +188,5 @@ by definition. This table is the reason the project has the shape it does.
 | [09-compatibility.md](09-compatibility.md) | which hardware hosts, what sets each floor, and how each answer was established |
 | [10-client.md](10-client.md) | the client: the receive path, the frame queue, the keyframe policy, decode, sound, input |
 | [impl-plan.md](impl-plan.md) | phases 0 to 13 with verification gates |
-| [impl-plan-client.md](impl-plan-client.md) | the client's phases C0 to C6 and its gate |
+| [impl-plan-client.md](impl-plan-client.md) | the client's phases C0 to C9 and its gate |
 | [changelog.md](changelog.md) | working log, newest first |

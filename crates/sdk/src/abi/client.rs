@@ -141,7 +141,7 @@ pub struct lowlat_decoder_info {
     /// `lowlat_client_create_info.frame_kind = LOWLAT_FRAME_HANDLE` needs.
     pub handle: bool,
     /// Whether a decoder opened in this slot (minor 12). Clear, every
-    /// capability above is false and `name` says why: a node that is not
+    /// capability above is false and `driver` says why: a node that is not
     /// there, a device ordinal past the last, a codec library that is not
     /// one this build loads. A loop skips such rows.
     pub available: bool,
@@ -179,7 +179,7 @@ const DECODER_INFO_MINOR_12: usize = core::mem::offset_of!(lowlat_decoder_info, 
 /// milliseconds for most, some hundred and fifty for a vendor device whose
 /// five capabilities are each proved by a real decoder. A slot with nothing
 /// usable behind it still answers true, with `available` clear and the
-/// reason in `name`; the loop skips it. For a startup or a settings screen,
+/// reason in `driver`; the loop skips it. For a startup or a settings screen,
 /// not a per-frame call.
 ///
 /// An available row is opened by creation with its `decoder` and `device`,
@@ -349,7 +349,8 @@ pub struct lowlat_client_status {
     /// before a build.
     pub codec: u32,
     /// The decoder backend in use, one of `lowlat_decoder` as resolved at
-    /// creation: never `LOWLAT_DECODER_AUTO`.
+    /// creation or by `lowlat_client_set_decoder`: never
+    /// `LOWLAT_DECODER_AUTO`.
     pub backend: u32,
     /// Input reports dropped because the session thread was not keeping up.
     /// Nonzero means the loop is not running, not that input is fast.
@@ -616,9 +617,10 @@ pub struct lowlat_frame {
 /// A synchronisation object the application's device signals when it has
 /// finished reading a picture.
 ///
-/// **None is the only kind in this version**, because every picture leaves
-/// as planes that were copied; the shape is fixed so a handle path adds a
-/// kind rather than a call.
+/// **None is the only kind in this version**: a picture of the planes kind
+/// was copied, and one of the handle kind was copied on the device before
+/// the acquire returned, so either is reusable once released. The shape is
+/// fixed so a kind that needs one adds a kind rather than a call.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct lowlat_fence {
@@ -1869,7 +1871,8 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
 /// @param[in] frame The picture, as acquired.
 /// @param[in] done A fence the application's device signals when it has
 /// finished reading, or null for reusable now. **Null is the only value this
-/// version takes**: every picture leaves as copied planes.
+/// version takes**: every picture was copied before it was handed out, on
+/// the host or on the device, and is reusable once released.
 /// @returns [`LOWLAT_OK`] or [`LOWLAT_ERR_INVALID_ARGUMENT`].
 ///
 /// # Safety

@@ -1417,7 +1417,7 @@ typedef struct lowlat_decoder_info {
     /// `lowlat_client_create_info.frame_kind = LOWLAT_FRAME_HANDLE` needs.
     bool handle;
     /// Whether a decoder opened in this slot (minor 12). Clear, every
-    /// capability above is false and `name` says why: a node that is not
+    /// capability above is false and `driver` says why: a node that is not
     /// there, a device ordinal past the last, a codec library that is not
     /// one this build loads. A loop skips such rows.
     bool available;
@@ -1566,7 +1566,8 @@ typedef struct lowlat_client_status {
     /// before a build.
     uint32_t codec;
     /// The decoder backend in use, one of `lowlat_decoder` as resolved at
-    /// creation: never `LOWLAT_DECODER_AUTO`.
+    /// creation or by `lowlat_client_set_decoder`: never
+    /// `LOWLAT_DECODER_AUTO`.
     uint32_t backend;
     /// Input reports dropped because the session thread was not keeping up.
     /// Nonzero means the loop is not running, not that input is fast.
@@ -1717,9 +1718,10 @@ typedef struct lowlat_frame {
 /// A synchronisation object the application's device signals when it has
 /// finished reading a picture.
 ///
-/// **None is the only kind in this version**, because every picture leaves
-/// as planes that were copied; the shape is fixed so a handle path adds a
-/// kind rather than a call.
+/// **None is the only kind in this version**: a picture of the planes kind
+/// was copied, and one of the handle kind was copied on the device before
+/// the acquire returned, so either is reusable once released. The shape is
+/// fixed so a kind that needs one adds a kind rather than a call.
 typedef struct lowlat_fence {
     /// One of `lowlat_fence_kind`.
     uint32_t kind;
@@ -2431,7 +2433,7 @@ lowlat_status lowlat_debug_panic(lowlat_host *hl) LOWLAT_NOEXCEPT;
 /// milliseconds for most, some hundred and fifty for a vendor device whose
 /// five capabilities are each proved by a real decoder. A slot with nothing
 /// usable behind it still answers true, with `available` clear and the
-/// reason in `name`; the loop skips it. For a startup or a settings screen,
+/// reason in `driver`; the loop skips it. For a startup or a settings screen,
 /// not a per-frame call.
 ///
 /// An available row is opened by creation with its `decoder` and `device`,
@@ -2872,7 +2874,8 @@ lowlat_status lowlat_client_acquire_frame(lowlat_client *cl,
 /// @param[in] frame The picture, as acquired.
 /// @param[in] done A fence the application's device signals when it has
 /// finished reading, or null for reusable now. **Null is the only value this
-/// version takes**: every picture leaves as copied planes.
+/// version takes**: every picture was copied before it was handed out, on
+/// the host or on the device, and is reusable once released.
 /// @returns `LOWLAT_OK` or `LOWLAT_ERR_INVALID_ARGUMENT`.
 ///
 /// @attention `cl` came from `lowlat_client_create`; `frame` points to a

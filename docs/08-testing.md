@@ -260,7 +260,14 @@ condition.** A slow upward slope is a failure even when nothing crashes.
 Every commit: formatting, lints as errors, the ASCII check, dependency and license audit, unit
 and property tests, simulation, namespace fixtures where privilege allows, model checking,
 sanitizers on the Linux debug build, bounded fuzzing, and benchmarks with regression
-comparison.
+comparison. Each half of the library is linted alone as well as together, because a
+reference from one half into the other's crates compiles whenever both are present and
+fails only in the build a platform that can only be a client makes; and the client demo is
+linked against the client-only library, which is the one check that every client symbol an
+application links is there. The hand-started build workflow produces the library in both
+forms as tarballs, the client one with the demo inside, and a `FEATURES` line in each is
+read from the tarball's own copy of the library rather than from the build directory,
+where the two builds land on the same file.
 
 Nightly: unbounded fuzzing, the soak matrix, and the hardware suite on a machine with a GPU.
 

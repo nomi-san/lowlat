@@ -11,10 +11,11 @@ service are design inputs rather than afterthoughts.
 
 ## Status
 
-**Pre-release. A Linux machine hosts, and stock clients stream from it.** Everything below has
-been run against unmodified clients rather than argued for; the phase plan with each gate's
-result is [docs/impl-plan.md](docs/impl-plan.md), and the working log is
-[docs/changelog.md](docs/changelog.md).
+**Pre-release. A Linux machine hosts, and stock clients stream from it; the same library's
+other half is a client, and it streams from established hosts.** Everything below has been
+run against unmodified peers rather than argued for; the phase plans with each gate's result
+are [docs/impl-plan.md](docs/impl-plan.md) and [docs/impl-plan-client.md](docs/impl-plan-client.md),
+and the working log is [docs/changelog.md](docs/changelog.md).
 
 What works today, measured on one desktop (KDE Plasma on Wayland, Debian 13):
 
@@ -32,9 +33,13 @@ What works today, measured on one desktop (KDE Plasma on Wayland, Debian 13):
   ([examples/web-client](examples/web-client)).
 - **Packaged**: a system service that starts at boot, a helper and a tray that start with each
   login, a login tool, and a Debian package.
-
-In progress: **a client**, the other half of the same library and header, planned in
-[docs/impl-plan-client.md](docs/impl-plan-client.md).
+- **A client**, the other half of the same library and header, on Linux: pictures decoded
+  through the open stack, the vendor's interface, or the machine's own codec library where
+  it is an LGPL build, and handed out as planes or as a device handle; sound, input, the
+  host's pointer, a DualShock 4 or a DualSense sent as its own reports. Measured for ten
+  minutes at a time against an established host at every phase
+  ([docs/10-client.md](docs/10-client.md)). The C demo on the application toolkit is
+  [examples/client](examples/client).
 
 What does not, yet:
 
@@ -116,7 +121,9 @@ same signaling over a second pipe, a data channel on the attempt socket, and
 |---|---|
 | Linux host | primary target |
 | Windows host | planned |
-| Clients | any platform with a stock Parsec client, or a browser; nothing to install |
+| Linux client | the client half of the library, and the demo; what decodes on which part is [docs/09-compatibility.md](docs/09-compatibility.md) section 7a |
+| Windows client | planned, after Linux |
+| Guests of a host | any platform with a stock Parsec client, or a browser; nothing to install |
 
 Capture backends and their privilege requirements are covered in
 [docs/07-platforms.md](docs/07-platforms.md); which hardware can host, and which desktops have
@@ -153,6 +160,14 @@ against a synthetic source.
 The daemon needs access to `/dev/uinput` for input injection and to the display device for
 capture, which is a capability rather than a group. The privilege requirements, the device
 rules and the service unit are documented in [docs/07-platforms.md](docs/07-platforms.md).
+
+The library builds in two forms: whole, and with the client half alone
+(`cargo build -p lowlat-sdk --no-default-features --features client`); `lowlat_features()`
+says which one was loaded, and the header is the same for both. The client demo is
+`make -C examples/client`, which builds the application toolkit from its vendored tree
+first; that needs a C compiler, the shader compiler (`glslang-tools`) and the ALSA, PNG
+and JPEG headers. The build workflow produces both libraries as tarballs, the client one
+with the demo inside, each with a `FEATURES` line read from its own copy.
 
 ## Installing
 

@@ -2,8 +2,10 @@
 
 **Status:** designed 2026-09-15, interview of the same day; C1 and C2 built 2026-09-17, C3
 and C4 2026-09-18; C5's decode half planned, built and gated 2026-09-19, its second half
-planned and built the same evening.
-Built by [impl-plan-client.md](impl-plan-client.md).
+planned and built the same evening; C7 (the pad reports) 2026-09-20, C8 (the software
+decoder, a decoder chosen mid-session) 2026-09-21, C9 (full chroma on the open stack)
+2026-09-22; C6 (packaging) closes the set, and this document was read against the code
+once more at its closure. Built by [impl-plan-client.md](impl-plan-client.md).
 
 The client is the other half of the same protocol: it receives what [05](05-host.md) produces.
 Everything below the media -- the wire, the rings, acknowledgement and recovery, connectivity,
@@ -777,5 +779,6 @@ an earlier draft had a sound thread; a decode of a twentieth of a millisecond ea
 thread, and the second hand-off it would need is the one wake and copy the design saves).
 The decode thread never blocks the receive loop: a full pool leaves the backlog in the
 receive ring, where the catch-up of §3 sees it; the sound pool never blocks it either, it
-drops. Every rule of [02](02-io-shell.md) applies -- raw wakes for raw waits, no elevated
-priority inside the library, teardown that wakes every waiter.
+drops. The software decoder's slice workers are the one addition, capped by the machine's
+parallelism (§5.1). Every rule of [02](02-io-shell.md) applies -- raw wakes for raw waits,
+no elevated priority inside the library, teardown that wakes every waiter.

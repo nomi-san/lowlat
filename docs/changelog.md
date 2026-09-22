@@ -3,6 +3,43 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-22 - C6: the client-only build checked on every push, two tarballs, the demo packaged
+
+### Added
+- **Each half of the library linted alone on every push**, and the client demo linked
+  against the client-only library there: every other step builds all features or the
+  defaults, under which a reference from one half into the other's crates compiles, and
+  the demo is the one thing that links the client symbols the way an application does
+  ([08 §12](08-testing.md)). The demo's Makefile takes `LOWLAT_LIB`, a directory holding
+  the library to link, with a run path of `../lib` relative to the binary.
+- **The build workflow produces the library in both forms**, each in a tarball named for
+  what it carries, the client one with the demo inside as `bin/client` and the toolkit's
+  notice beside the licence. Both builds land on the same file, so each is copied out
+  before the next, and a `FEATURES` line in each tarball is written by a program that opens
+  the tarball's own copy, checks its version against the header that ships beside it and
+  refuses any feature bits but the expected ones. The demo names the library it loaded,
+  with its version and halves, as its first line and before it asks for a peer, so a
+  packaged demo can be asked what it carries and every run's log says what it ran against.
+- The documentation read against the header and the code once more, and the pages that
+  still described a host with a client planned brought up to date: the README's status,
+  platform rows and build section, [06 §2](06-api.md) and [§13](06-api.md), the document
+  maps, [10](10-client.md)'s status and thread rule.
+
+### Fixed
+- Five comments in the header's client half that a later minor had made false: an
+  unavailable decoder slot's reason is in `driver`, not `name` (minor 13), the backend in
+  the status is the one resolved at creation *or chosen since* (minor 11), and the fence
+  on release is null because every picture was copied before it was handed out -- on the
+  host for planes, on the device for a handle (minor 8) -- not because every picture is
+  planes. [06 §3b](06-api.md) and [§6](06-api.md) carried two of the same.
+- The client's code had never reached the CI workflow, which ran on the main branch alone.
+  Its first run on a machine with no decoder found a unit test creating a client with the
+  defaults, which ask for the first decoder that opens; the hermetic session's ring
+  storage, leaked on purpose so its sessions can be static, counted by the leak checker
+  (the blocks are kept reachable from a registry now, and the checker was shown to report
+  them without it); and the three system headers the demo's toolkit compiles its sound and
+  image loaders against, which the runners lack.
+
 ## 2026-09-22 - C9: full chroma on the open stack, the listing's labels (minor 13)
 
 ### Added

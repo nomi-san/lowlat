@@ -1,7 +1,10 @@
 # Implementation plan: the client
 
 **Status:** locked 2026-09-15, interview of the same day; C5 re-planned in two halves
-2026-09-19 and its decode half built and gated the same day. Phases C0 to C6 with verification gates; the design is [10-client.md](10-client.md) and the surface is [06 §3b](06-api.md).
+2026-09-19 and its decode half built and gated the same day; C7, C8 and C9 added and closed
+2026-09-20 to 2026-09-22, each ahead of C6, which they changed the surface of. Phases C0 to
+C9 with verification gates; the design is [10-client.md](10-client.md) and the surface is
+[06 §3b](06-api.md).
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox. Phase numbers are `C`
@@ -589,15 +592,18 @@ Nothing pending changes either again before Phase 11, which is the host's half. 
 phase produces is the first client that leaves the development machine as an artifact, so
 its gate ends the way every phase's does: the artifact streams from the established host.
 
-- [ ] **The client-only build checked on every push**, in the CI workflow rather than the
+- [x] **The client-only build checked on every push**, in the CI workflow rather than the
   hand-started build: one lint step with the client feature alone and one with the host
   feature alone, because every other step builds all features or the defaults, under which
   a client-only breakage compiles; and the demo built there against the client-only
   library, since it is the one thing that links the client symbols the way an application
   does -- an unresolved name fails the link where a feature bit only says it was set. The
   toolkit's shader compiler on the runner; the demo told where the library is rather than
-  building one of its own.
-- [ ] **Two libraries from the build workflow**, the full one and the client-only one, in
+  building one of its own. *C6.0, 2026-09-22; each check broken once before it was
+  trusted. The client's first run on a machine with no decoder found a unit test creating
+  a client with the defaults, the hermetic session's deliberate leak counted by the leak
+  checker, and three headers the toolkit compiles against; C6.2.*
+- [x] **Two libraries from the build workflow**, the full one and the client-only one, in
   one job and in order, each copied out of the target directory before the next build lands
   on the same file, so that no check reads the wrong object. Each in a tarball named for
   what it carries -- the full one keeps its name, the client one says `client` -- with the
@@ -605,19 +611,24 @@ its gate ends the way every phase's does: the artifact streams from the establis
   10, the licence, and a `FEATURES` line written by a small program that opens the
   tarball's own copy and prints the ABI version and `lowlat_features()`, refusing a value
   other than the one expected. The ABI gate's harness is not that program: it names an
-  object without the host half and stops, by design. The GPL bit is clear on both.
-- [ ] **The demo inside the client tarball**, as `bin/client` and nothing beside it: linked
+  object without the host half and stops, by design. The GPL bit is clear on both. *C6.1.*
+- [x] **The demo inside the client tarball**, as `bin/client` and nothing beside it: linked
   against that tarball's library with a run path relative to itself, stripped as the
   library is, the toolkit's licence notice as a second licence file because the binary
   carries the toolkit. The demo prints the library's version and features as its first
   line, before it asks for a peer, so every run's log names the object it ran against.
-- [ ] **Documentation closure**: the header's client half read once, top to bottom, against
+  *C6.1.*
+- [x] **Documentation closure**: the header's client half read once, top to bottom, against
   [06 §3b](06-api.md), for a comment a later minor made false; [10](10-client.md) against
   the code, its status line included; [06 §13](06-api.md), the README's status and platform
   rows and its build section, and the document maps in [00](00-overview.md) and at the
   head of this plan, all of which still describe a host with a client planned.
   [09 §7a](09-compatibility.md) has carried what decodes on which part since C5 and is
-  verified rather than added to.
+  verified rather than added to. *2026-09-22. The read found five comments a later minor
+  had made false -- an unavailable slot's reason named in `name` where minor 13 moved it
+  to `driver`, twice; the backend "as resolved at creation" where minor 11 lets a session
+  change it; the fence and the release described over copied planes alone where minor 8
+  added the handle kind -- and the same two facts in 06.*
 
 **Gate:**
 

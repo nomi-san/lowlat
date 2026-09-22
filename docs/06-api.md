@@ -51,11 +51,11 @@ void          lowlat_host_destroy(lowlat_host *hl);
 
 **One library, one header, two halves, and a handle type per half.** A host session is a
 `lowlat_host`, made by `lowlat_host_create` and used by every `lowlat_host_*` call; a client
-session will be a `lowlat_client` in the same way. The two are distinct opaque types rather
-than one handle in two roles, so a host call on a client handle fails to compile, which is
-the same rule the symbol prefix enforces at link time (§1, rule 6). What takes no handle --
-the version, the features, the status text, the log -- belongs to neither half and is in
-every build.
+session is a `lowlat_client` in the same way ([§3b](#3b-client)). The two are distinct opaque
+types rather than one handle in two roles, so a host call on a client handle fails to compile,
+which is the same rule the symbol prefix enforces at link time (§1, rule 6). What takes no
+handle -- the version, the features, the status text, the log -- belongs to neither half and
+is in every build.
 
 **Either half can be left out of a build.** A platform that can only be a client gets a
 library with no host in it and none of the host's display stack compiled; the header hides
@@ -579,9 +579,10 @@ and the one just acquired, so a swap has no gap -- and a third acquire is refuse
 `LOWLAT_ERR_TOO_MANY_HELD` rather than silently dropping one. `release_frame` may carry a
 fence the application's device signals when it has finished reading, which is what lets a
 decoder write into shared memory without waiting on the application's CPU; a null fence
-means reusable now, and **in this minor it is the only fence**: every picture leaves as
-planes that were copied, so `lowlat_fence` has one kind, none, and a fence of any other kind
-is refused. The rule 5 of §1 holds: no callback fires from inside the library.
+means reusable now, and **in this minor it is the only fence**: a picture of the planes kind
+was copied, and one of the handle kind was copied on the device before the acquire returned
+(§4 of [10](10-client.md)), so `lowlat_fence` has one kind, none, and a fence of any other
+kind is refused. The rule 5 of §1 holds: no callback fires from inside the library.
 
 **`lowlat_frame` carries either planes or a handle**, and says which. Planes are pointers,
 pitches and a format (`LOWLAT_FORMAT_NV12`, `LOWLAT_FORMAT_P010`) into memory valid for the
@@ -871,7 +872,7 @@ or an ordinal that is not there, under a millisecond for the codec library, and 
 a vendor device, whose five capabilities are each proved by building a real decoder; 200 ms
 for the whole table where the first shape cost 800 for three rows, because every call had
 re-probed the whole machine. A slot with nothing usable behind it still answers true, with
-`available` clear, every capability false and the reason in `name` -- a node that is not
+`available` clear, every capability false and the reason in `driver` -- a node that is not
 there, a device past the last, a codec library the build does not load -- and a loop skips
 it. An available row is a decoder creation will open, named by the two values creation
 takes; its `name` is a label for a menu, the interface and the card's maker (`VA-API
@@ -1077,12 +1078,14 @@ and struct blittability at once. It is the Phase 8 gate.
 
 ## §13 What is deliberately absent
 
-- **No client API.** lowlat is a host. The far side is an existing client.
-- **No signaling.** [04 §1](04-signaling.md).
-- **No callbacks on data paths.** Frames and the sound a host sends never cross this boundary;
-  the SDK captures and encodes internally. An application that wants the frames wants a
-  different product. **A guest's microphone is the one exception and it is still not a
-  callback**: it is polled, on a call of its own, and what crosses is samples.
+- **No signaling**, on either half. [04 §1](04-signaling.md).
+- **No callbacks on data paths.** The frames and the sound a host sends never cross this
+  boundary; the SDK captures and encodes internally, and an application that wants a host's
+  frames wants a different product. What the client half hands out -- pictures, sound,
+  events -- crosses on the application's own call, by acquire and poll
+  ([§3b](#3b-client)), never by a call from inside the library. **A guest's microphone is
+  the host's one exception and it is still not a callback**: it is polled, on a call of its
+  own, and what crosses is samples.
 - **No microphone device.** A shared library has no business creating a capture device in
   somebody's session -- it owns neither the session nor the naming nor the lifetime -- so what a
   host does with a guest's microphone is the application's decision. The SDK decodes and hands

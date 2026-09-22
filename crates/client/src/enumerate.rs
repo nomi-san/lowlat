@@ -52,7 +52,7 @@ const UNUSABLE: &str = "the codec library is not one this library can use";
 pub struct Available {
     pub backend: Backend,
     /// Whether a decoder opened here. Clear, the capabilities are all
-    /// false and `name` says why.
+    /// false and `driver` says why.
     pub available: bool,
     /// The render node, as creation names the device; empty when the
     /// vendor's device has no node this crate looks at, which creation
