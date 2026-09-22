@@ -3,6 +3,17 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-22 - an Intel Arc A380 on the open stack, measured
+
+### Measured
+- Every committed clip bit-exact through the vendor's media driver on an Arc A380, ten-bit
+  HEVC included; on a one-lane PCIe link the read-back is the cost -- 8 ms a picture for
+  NV12 and 16 for P010 at 2560x1440 against a decode of about a millisecond -- so the reader
+  keeps pace with 30 pictures a second and manages 58 of H.264 and 31 of HEVC ten-bit when
+  sent more, falling behind by the difference until the receive ring is full, as
+  [10 §4.1](10-client.md) says a decoder slower than its stream does; the loss the client
+  then reports is the full ring's, not the wire's ([09 §7a](09-compatibility.md)).
+
 ## 2026-09-22 - the decoder table fixed, one slot a call; the open stack's messages into the log
 
 ### Fixed
