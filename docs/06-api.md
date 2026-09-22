@@ -857,15 +857,24 @@ display, so today the answer is a consequence rather than a menu. Adding a funct
 a call that answers nothing is worse than no call.
 
 **The decoders are a menu, so they are listed** (minor 8). `lowlat_enum_decoders(index, out)`
-fills the `index`-th `lowlat_decoder_info` and answers true, or false past the last, so a
-caller iterates from zero until false; the shape is the one an established client SDK's
-decoder list has. One row per backend and device that decodes anything, in a fixed order --
-the open interface on each render node that decodes, then the vendor's on each of its
-devices, then (minor 11) the software decoder when a codec library the build loads is
-found (an LGPL one; a GPL one too with `LOWLAT_FEATURE_GPL_LIBAVCODEC`, §3b) -- and
-every row is probed exactly the way creation probes it, so a row is a decoder creation will
-open, named by the two values creation takes. Each call probes afresh, a few milliseconds:
-for a startup or a settings screen, not a loop.
+fills the `lowlat_decoder_info` of slot `index` and answers true, or false past the table's
+end, so a caller iterates from zero until false; the shape is the one an established client
+SDK's decoder list has. **The table is fixed and a call probes one slot** (*corrected
+2026-09-22*, minor 12): on Linux, slots 0 to 7 are the open interface on render nodes
+`renderD128` to `renderD135`, 8 to 15 the vendor's on its devices by ordinal, 16 the
+software decoder from the codec library's own search (an LGPL build; a GPL one too with
+`LOWLAT_FEATURE_GPL_LIBAVCODEC`, §3b). The same slot means the same thing on every machine
+and every call, and nothing is remembered between calls: a call opens its one slot exactly
+the way creation opens it and closes it again, so a loop costs every slot once -- measured
+on the development machine, 5 ms for the open interface on a node, microseconds for a node
+or an ordinal that is not there, under a millisecond for the codec library, and 190 ms for
+a vendor device, whose five capabilities are each proved by building a real decoder; 200 ms
+for the whole table where the first shape cost 800 for three rows, because every call had
+re-probed the whole machine. A slot with nothing usable behind it still answers true, with
+`available` clear, every capability false and the reason in `name` -- a node that is not
+there, a device past the last, a codec library the build does not load -- and a loop skips
+it. An available row is a decoder creation will open, named by the two values creation
+takes. For a startup or a settings screen, not a per-frame call.
 
 Two-call pattern: pass `NULL` to learn the count, then a buffer. **Nothing returned by this API
 is heap allocated on the caller's behalf**, so there is no free function and no ownership
@@ -1026,7 +1035,12 @@ Nothing moves.
 
 **Minor 12** (2026-09-21) is one feature bit, `LOWLAT_FEATURE_GPL_LIBAVCODEC` ([§2](#2-lifecycle),
 [§3b](#3b-client)): set by a library built with the `gpl-libavcodec` feature, whose software
-decoder loads a GPL codec library as well as an LGPL one. Nothing moves.
+decoder loads a GPL codec library as well as an LGPL one. And (2026-09-22) one bit in a
+reserved byte of `lowlat_decoder_info`, `available`, with the enumeration corrected to a
+fixed table of slots probed one at a time ([§6](#6-enumeration)): a slot with nothing behind
+it now answers true with the bit clear where the first shape listed only what opened, so a
+loop written against minor 11 that reads capabilities still works and one that counts rows
+now counts slots. Nothing moves.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected

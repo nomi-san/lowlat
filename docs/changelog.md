@@ -3,6 +3,21 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-22 - the decoder table fixed, one slot a call; the open stack's messages into the log
+
+### Fixed
+- **`lowlat_enum_decoders` re-probed the whole machine on every call**: 200 ms and seven
+  lines of the open stack's own chatter on standard error per index, 0.8 s for a loop over
+  three rows, where the documentation said a few milliseconds. The index now names a fixed
+  slot -- the open stack on each of eight render nodes, the vendor's device by ordinal, the
+  codec library -- and a call probes that slot alone: 200 ms for the whole table here, the
+  vendor's real decoders the bulk of it, nothing remembered between calls. A slot with
+  nothing usable behind it answers with the new **`available`** bit clear (a reserved byte,
+  minor 12) and the reason in its name, so a loop runs to the table's end
+  ([06 §6](06-api.md), [§11](06-api.md)).
+- The open stack's own messages go to this library's log per display rather than to the
+  application's standard error, on both halves.
+
 ## 2026-09-21 - Phase C8 closed
 
 ### Gate

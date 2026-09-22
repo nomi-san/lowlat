@@ -336,12 +336,15 @@ interface on the card behind it, then software (*corrected 2026-09-21: it stoppe
 open stack, and the handle kind with a node named took any vendor device*). The device is
 named as a render node for either hardware backend; the vendor's resolves it to the card
 behind it; for software it may name the directory the pair was found in. **What can be
-opened is listed** (*2026-09-19*): one row per backend and device that decodes anything,
-probed exactly as creation probes it, with what it decodes, its size limits and whether it
+opened is listed** (*2026-09-19*): a fixed table of slots -- the open stack on each of eight
+render nodes, the vendor's device by ordinal, the codec library last -- each probed exactly
+as creation probes it and alone, with what it decodes, its size limits and whether it
 exports a handle, so an application shows a menu or picks by capability rather than
-guessing at a name; the software row comes last, named by the library's version and
-licence. Nothing is linked: a machine without any of the three refuses with the stage
-named, exactly as a host without an encoder does.
+guessing at a name; a slot with nothing behind it says so and why (*corrected 2026-09-22*:
+the first shape re-probed the whole machine on every call). Nothing is linked: a machine
+without any of the three refuses with the stage named, exactly as a host without an encoder
+does. Nothing this library loads writes to the application's standard error: the open
+stack's own messages go to the library's log, per display.
 
 **Software decode is the machine's own libavcodec, and only an LGPL one** (*decided
 2026-09-21*, [impl-plan-client.md](impl-plan-client.md) C8). Nothing is shipped or built:
