@@ -35,15 +35,17 @@ jobs:
         run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       # The build itself needs nothing graphical: every encoder and graphics
-      # interface is loaded at runtime. cargo-deb is the one tool on top, and
-      # the toolkit's shader compiler for the demo, whose shader headers are
-      # made at build time rather than committed.
+      # interface is loaded at runtime. cargo-deb is the one tool on top. The
+      # demo's toolkit needs its shader compiler, since its shader headers are
+      # made at build time rather than committed, and the headers of the three
+      # libraries it declares from the system's own rather than by hand; it
+      # opens every one of them at run time all the same.
       - uses: taiki-e/install-action@cargo-deb
 
       - name: Install the toolkit's build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y glslang-tools bsdextrautils
+          sudo apt-get install -y glslang-tools bsdextrautils libasound2-dev libpng-dev libjpeg-dev
 
       - name: Cache
         uses: actions/cache@v6

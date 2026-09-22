@@ -23,8 +23,8 @@
 )]
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lowlat_client::driver::{Driver, REPORT_INTERVAL_MS, Telemetry, Units};
@@ -78,17 +78,31 @@ fn addr(last: u8) -> SocketAddr {
 }
 
 /// Ring storage that outlives the test, so the sessions can be `'static`.
+///
+/// Leaked on purpose, and each block's address kept in a registry so that
+/// a leak checker sees the blocks reachable at exit and reports only what
+/// the test did not mean to keep.
+static KEPT: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+fn keep<T>(block: Box<[T]>) -> &'static mut [T] {
+    let block = Box::leak(block);
+    KEPT.lock()
+        .unwrap()
+        .push(block.as_mut_ptr().expose_provenance());
+    block
+}
+
 fn leak_recv(slots: usize) -> (&'static mut [u8], &'static mut [SlotMeta]) {
     (
-        Box::leak(vec![0u8; BODY * slots].into_boxed_slice()),
-        Box::leak(vec![SlotMeta::default(); slots].into_boxed_slice()),
+        keep(vec![0u8; BODY * slots].into_boxed_slice()),
+        keep(vec![SlotMeta::default(); slots].into_boxed_slice()),
     )
 }
 
 fn leak_send(slots: usize) -> (&'static mut [u8], &'static mut [SendSlot]) {
     (
-        Box::leak(vec![0u8; BODY * slots].into_boxed_slice()),
-        Box::leak(vec![SendSlot::default(); slots].into_boxed_slice()),
+        keep(vec![0u8; BODY * slots].into_boxed_slice()),
+        keep(vec![SendSlot::default(); slots].into_boxed_slice()),
     )
 }
 

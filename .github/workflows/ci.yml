@@ -30,12 +30,16 @@ jobs:
       # colour matrix: comparing a converted desktop against its source is
       # nearly blind to one, because a desktop is mostly grey and a grey pixel
       # carries no colour for a matrix to act on.
-      # The toolkit's shader compiler is for the demo below: its shader
-      # headers are made at build time, not committed.
+      # The rest is for the demo below: the toolkit's shader compiler, since
+      # its shader headers are made at build time rather than committed, and
+      # the three libraries whose headers it compiles against -- it opens
+      # every library at run time, but these three it declares from the
+      # system's own headers.
       - name: Install a graphics driver for the conversion test
         run: |
           sudo apt-get update
-          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers libegl1 libgl1-mesa-dri libgbm1 vulkan-tools glslang-tools bsdextrautils
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers libegl1 libgl1-mesa-dri libgbm1 vulkan-tools \
+            glslang-tools bsdextrautils libasound2-dev libpng-dev libjpeg-dev
 
       # What the software driver on this runner offers, in the log, so a test
       # refused an interface can be read against the driver rather than

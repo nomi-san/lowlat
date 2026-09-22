@@ -2557,8 +2557,12 @@ mod tests {
     #[test]
     fn the_legacy_setting_offers_no_media_key() {
         let mut handle: *mut lowlat_client = core::ptr::null_mut();
+        // Without a decoder: the defaults ask for the first that opens, and
+        // a machine with none refuses the creation before the setting is
+        // ever read.
+        let info = no_decoder();
         assert_eq!(
-            unsafe { lowlat_client_create(core::ptr::null(), &raw mut handle) },
+            unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
             LOWLAT_OK
         );
         let mut cfg = lowlat_client_config {
