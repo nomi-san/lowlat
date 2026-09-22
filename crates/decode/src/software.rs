@@ -31,6 +31,19 @@ const EOF: c_int = -0x2046_4F45;
 const MAX_THREADS: usize = 4;
 const THREADS: [&CStr; MAX_THREADS] = [c"1", c"2", c"3", c"4"];
 
+/// The worker threads asked of the decoder on a machine with `parallelism`
+/// hardware threads: as many as the machine has, and never more than
+/// [`MAX_THREADS`]. **Never more than the machine has**: workers past the
+/// cores are not parallelism but contention, and on a two-core machine four
+/// of them starve the application's own threads -- the window's message
+/// pump among them -- which reads as the application hanging. The library
+/// raises no thread's priority for the same reason: it runs inside the
+/// application's process, and a worker above the application's threads
+/// inverts the order the application chose.
+fn slice_threads(parallelism: usize) -> usize {
+    parallelism.clamp(1, MAX_THREADS)
+}
+
 /// What a loaded pair decodes. The depth and chroma rows are the second
 /// codec's decoder's, which takes every profile the readers admit; each is
 /// proved by the fixtures rather than asserted.
@@ -201,9 +214,7 @@ impl Decoder for Backend<'_> {
         }
         self.context = context;
 
-        let threads = std::thread::available_parallelism()
-            .map_or(1, |n| n.get())
-            .clamp(1, MAX_THREADS);
+        let threads = slice_threads(std::thread::available_parallelism().map_or(1, |n| n.get()));
         let mut options: *mut AVDictionary = core::ptr::null_mut();
         // Slice threading and nothing else. The low-delay flag was measured
         // on every committed clip and changed nothing: a stream that declares
@@ -655,6 +666,19 @@ mod tests {
             .map(|c| u16::from_ne_bytes([c[0], c[1]]) << 6)
             .collect();
         assert_eq!(b, expect_b);
+    }
+
+    /// **The workers never outnumber the machine's threads**, and never
+    /// exceed four: one on one, two on two, four on sixteen.
+    #[test]
+    fn the_workers_follow_the_machine() {
+        assert_eq!(slice_threads(1), 1);
+        assert_eq!(slice_threads(2), 2);
+        assert_eq!(slice_threads(3), 3);
+        assert_eq!(slice_threads(4), 4);
+        assert_eq!(slice_threads(8), 4);
+        assert_eq!(slice_threads(16), 4);
+        assert_eq!(slice_threads(0), 1);
     }
 
     /// The end-of-stream code is the four tag bytes, negated, as the library

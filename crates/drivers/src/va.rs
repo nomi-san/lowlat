@@ -411,6 +411,77 @@ impl<'a> Display<'a> {
         Ok(profiles)
     }
 
+    /// The pixel formats, as four-character codes, that surfaces decoded
+    /// through `profile` at `rt_format` may take: what the driver offers,
+    /// asked through a configuration made and destroyed for the question.
+    /// Empty when the profile has no configuration or the driver does not
+    /// say.
+    pub fn pixel_formats(
+        &self,
+        profile: VAProfile,
+        entrypoint: VAEntrypoint,
+        rt_format: u32,
+    ) -> Vec<u32> {
+        use crate::ffi::va::{VAConfigAttribRTFormat, VASurfaceAttribPixelFormat};
+        let mut attrib = VAConfigAttrib {
+            type_: VAConfigAttribRTFormat,
+            value: rt_format,
+        };
+        let mut config: VAConfigID = 0;
+        // SAFETY: the attribute and the output are live locals.
+        let status = unsafe {
+            (self.va.create_config)(
+                self.raw,
+                profile,
+                entrypoint,
+                &raw mut attrib,
+                1,
+                &raw mut config,
+            )
+        };
+        if self.va.check(status).is_err() {
+            return Vec::new();
+        }
+        let mut found: c_uint = 0;
+        // SAFETY: a null array asks for the count alone.
+        let status = unsafe {
+            (self.va.query_surface_attributes)(
+                self.raw,
+                config,
+                core::ptr::null_mut(),
+                &raw mut found,
+            )
+        };
+        let mut formats = Vec::new();
+        if self.va.check(status).is_ok() && found > 0 {
+            // SAFETY: an attribute is plain data; zero is a valid one.
+            let mut attribs: Vec<VASurfaceAttrib> =
+                vec![unsafe { core::mem::zeroed() }; count(c_int::try_from(found).unwrap_or(0))];
+            // SAFETY: the array is writable for the count the driver gave.
+            let status = unsafe {
+                (self.va.query_surface_attributes)(
+                    self.raw,
+                    config,
+                    attribs.as_mut_ptr(),
+                    &raw mut found,
+                )
+            };
+            if self.va.check(status).is_ok() {
+                formats = attribs
+                    .iter()
+                    .take(count(c_int::try_from(found).unwrap_or(0)))
+                    .filter(|a| a.type_ == VASurfaceAttribPixelFormat)
+                    // SAFETY: a pixel format attribute carries an integer:
+                    // a four-character code, whose bits are what count.
+                    .map(|a| u32::from_ne_bytes(unsafe { a.value.value.i }.to_ne_bytes()))
+                    .collect();
+            }
+        }
+        // SAFETY: made above, destroyed once.
+        unsafe { (self.va.destroy_config)(self.raw, config) };
+        formats
+    }
+
     /// The driver's own description of itself, for a label. Empty when the
     /// driver gives none.
     pub fn vendor(&self) -> String {

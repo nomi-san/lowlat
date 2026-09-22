@@ -57,10 +57,13 @@ fn check(clip: &str, sums_name: &str, codec: Codec, ten_bit: bool) {
     let va = Vaapi::load().expect("runtime");
     let display = va.open(&node()).expect("render node");
     let caps = caps(&display).expect("caps");
-    let able = match (codec, ten_bit) {
-        (Codec::H264, _) => caps.h264,
-        (Codec::H265, false) => caps.hevc,
-        (Codec::H265, true) => caps.hevc_10,
+    let full_chroma = clip.contains("444");
+    let able = match (codec, ten_bit, full_chroma) {
+        (Codec::H264, _, _) => caps.h264,
+        (Codec::H265, false, false) => caps.hevc,
+        (Codec::H265, true, false) => caps.hevc_10,
+        (Codec::H265, false, true) => caps.hevc_444,
+        (Codec::H265, true, true) => caps.hevc_444_10,
     };
     if !able {
         println!("{clip}: the device does not decode this profile, skipped");
@@ -134,8 +137,7 @@ fn every_h264_fixture_decodes_to_the_reference_pictures() {
 fn every_hevc_fixture_decodes_to_the_reference_pictures() {
     for (clip, sums) in common::fixtures("hevc") {
         if clip.contains("444") {
-            // Full chroma is refused on this backend; the test below is its
-            // row.
+            // Full chroma has its own row below.
             continue;
         }
         let ten_bit = clip.contains("main10");
@@ -143,22 +145,37 @@ fn every_hevc_fixture_decodes_to_the_reference_pictures() {
     }
 }
 
-/// **Full chroma is refused, not decoded wrongly.** The base parameters
-/// would take a range-extended stream without a word and decode it to the
-/// wrong picture; the backend refuses the first unit as fatal instead, on
-/// every device, and the capability it reports says so.
+/// **Full chroma is decoded where the driver hands out a layout the
+/// backend reads, and refused everywhere else -- never decoded wrongly.**
+/// Where the capability says so, every full-chroma clip comes back bit for
+/// bit through the range-extension structures and the unpacking of the
+/// driver's surface layout; where it does not, the base parameters would
+/// take the stream without a word and decode it to the wrong picture, so
+/// the first unit is refused as fatal instead.
 #[test]
 #[ignore = "requires the open-stack driver"]
-fn the_full_chroma_fixtures_are_refused_on_this_backend() {
+fn the_full_chroma_fixtures_decode_where_the_display_takes_them() {
     let va = Vaapi::load().expect("runtime");
     let display = va.open(&node()).expect("render node");
     let caps = caps(&display).expect("caps");
-    assert!(!caps.hevc_444 && !caps.hevc_444_10);
-    for (clip, _) in common::fixtures("hevc") {
+    println!(
+        "full chroma: eight-bit {} ten-bit {}",
+        caps.hevc_444, caps.hevc_444_10
+    );
+    for (clip, sums) in common::fixtures("hevc") {
         if !clip.contains("444") {
             continue;
         }
         let ten_bit = clip.contains("10");
+        let able = if ten_bit {
+            caps.hevc_444_10
+        } else {
+            caps.hevc_444
+        };
+        if able {
+            check(&clip, &sums, Codec::H265, ten_bit);
+            continue;
+        }
         let mut backend = Backend::new(&display, (4096, 4096));
         backend.build(&header(Codec::H265, ten_bit)).expect("build");
         let first = &common::units(&clip)[0];

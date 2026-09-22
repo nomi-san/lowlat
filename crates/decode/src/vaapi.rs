@@ -9,17 +9,22 @@ use core::ffi::{CStr, c_int, c_uint, c_void};
 
 use lowlat_core::video::{Codec, VideoHeader};
 use lowlat_drivers::ffi::va::{
+    VA_FOURCC_444P, VA_FOURCC_AYUV, VA_FOURCC_NV12, VA_FOURCC_P010, VA_FOURCC_XYUV, VA_FOURCC_Y410,
     VA_INVALID_ID, VA_INVALID_SURFACE, VA_PICTURE_H264_BOTTOM_FIELD, VA_PICTURE_H264_INVALID,
     VA_PICTURE_H264_LONG_TERM_REFERENCE, VA_PICTURE_H264_SHORT_TERM_REFERENCE,
     VA_PICTURE_H264_TOP_FIELD, VA_PICTURE_HEVC_INVALID, VA_PICTURE_HEVC_LONG_TERM_REFERENCE,
     VA_PICTURE_HEVC_RPS_LT_CURR, VA_PICTURE_HEVC_RPS_ST_CURR_AFTER,
     VA_PICTURE_HEVC_RPS_ST_CURR_BEFORE, VA_RT_FORMAT_YUV420, VA_RT_FORMAT_YUV420_10,
-    VA_SLICE_DATA_FLAG_ALL, VABufferID, VAConfigAttrib, VAConfigAttribRTFormat, VAConfigID,
-    VAContextID, VAEntrypointVLD, VAIQMatrixBufferH264, VAIQMatrixBufferHEVC, VAIQMatrixBufferType,
-    VAImage, VAPictureH264, VAPictureHEVC, VAPictureParameterBufferH264,
-    VAPictureParameterBufferHEVC, VAPictureParameterBufferType, VAProfile, VAProfileH264High,
-    VAProfileHEVCMain, VAProfileHEVCMain10, VASliceDataBufferType, VASliceParameterBufferH264,
-    VASliceParameterBufferHEVC, VASliceParameterBufferType, VASurfaceID,
+    VA_RT_FORMAT_YUV444, VA_RT_FORMAT_YUV444_10, VA_SLICE_DATA_FLAG_ALL,
+    VA_SURFACE_ATTRIB_SETTABLE, VABufferID, VAConfigAttrib, VAConfigAttribRTFormat, VAConfigID,
+    VAContextID, VAEntrypointVLD, VAGenericValue, VAGenericValueTypeInteger, VAIQMatrixBufferH264,
+    VAIQMatrixBufferHEVC, VAIQMatrixBufferType, VAImage, VAPictureH264, VAPictureHEVC,
+    VAPictureParameterBufferH264, VAPictureParameterBufferHEVC,
+    VAPictureParameterBufferHEVCExtension, VAPictureParameterBufferType, VAProfile,
+    VAProfileH264High, VAProfileHEVCMain, VAProfileHEVCMain10, VAProfileHEVCMain444,
+    VAProfileHEVCMain444_10, VASliceDataBufferType, VASliceParameterBufferH264,
+    VASliceParameterBufferHEVC, VASliceParameterBufferHEVCExtension, VASliceParameterBufferType,
+    VASurfaceAttrib, VASurfaceAttribPixelFormat, VASurfaceID,
 };
 use lowlat_drivers::va;
 pub use lowlat_drivers::va::{Display, Error as RuntimeError, Vaapi};
@@ -68,18 +73,73 @@ impl From<va::Error> for Error {
 
 type Result<T> = core::result::Result<T, Error>;
 
-fn profile_for(codec: Codec, ten_bit: bool) -> VAProfile {
-    match (codec, ten_bit) {
-        (Codec::H264, _) => VAProfileH264High,
-        (Codec::H265, false) => VAProfileHEVCMain,
-        (Codec::H265, true) => VAProfileHEVCMain10,
+/// The stream's shape, which picks the profile, the surfaces' format and
+/// the layout the pictures leave in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Shape {
+    ten_bit: bool,
+    full_chroma: bool,
+}
+
+impl Shape {
+    fn profile(self, codec: Codec) -> VAProfile {
+        match (codec, self.ten_bit, self.full_chroma) {
+            (Codec::H264, _, _) => VAProfileH264High,
+            (Codec::H265, false, false) => VAProfileHEVCMain,
+            (Codec::H265, true, false) => VAProfileHEVCMain10,
+            (Codec::H265, false, true) => VAProfileHEVCMain444,
+            (Codec::H265, true, true) => VAProfileHEVCMain444_10,
+        }
+    }
+
+    fn rt_format(self) -> u32 {
+        match (self.ten_bit, self.full_chroma) {
+            (false, false) => VA_RT_FORMAT_YUV420,
+            (true, false) => VA_RT_FORMAT_YUV420_10,
+            (false, true) => VA_RT_FORMAT_YUV444,
+            (true, true) => VA_RT_FORMAT_YUV444_10,
+        }
+    }
+
+    fn format(self) -> Format {
+        match (self.ten_bit, self.full_chroma) {
+            (false, false) => Format::Nv12,
+            (true, false) => Format::P010,
+            (false, true) => Format::Yuv444,
+            (true, true) => Format::Yuv444_16,
+        }
     }
 }
 
-/// Ask a display what it decodes. **Full chroma is never reported here**:
-/// this backend's full-chroma surfaces are a layout no device it was built
-/// on can verify, so the profile is not asked for and such a stream is
-/// refused, whatever the device lists.
+/// The surface layouts this backend reads back, in the order it asks for
+/// them: planar first, since that is a plain copy, then the packed ones it
+/// unpacks.
+const FULL_CHROMA_FOURCCS: [u32; 3] = [VA_FOURCC_444P, VA_FOURCC_XYUV, VA_FOURCC_AYUV];
+const FULL_CHROMA_TEN_FOURCCS: [u32; 1] = [VA_FOURCC_Y410];
+
+/// The surface format the display would decode a full-chroma stream into
+/// that this backend can read, if any: the first of the layouts it reads
+/// among those the driver offers for the profile.
+fn full_chroma_fourcc(display: &Display<'_>, shape: Shape) -> Option<u32> {
+    let offered = display.pixel_formats(
+        shape.profile(Codec::H265),
+        VAEntrypointVLD,
+        shape.rt_format(),
+    );
+    let readable: &[u32] = if shape.ten_bit {
+        &FULL_CHROMA_TEN_FOURCCS
+    } else {
+        &FULL_CHROMA_FOURCCS
+    };
+    readable.iter().copied().find(|f| offered.contains(f))
+}
+
+/// Ask a display what it decodes. **Full chroma is reported only where the
+/// driver offers, for the full-chroma profile, a surface layout this
+/// backend reads back** -- planar, or the packed eight-bit and ten-bit
+/// layouts it unpacks -- verified on a device that decodes into them; a
+/// driver that lists the profile with a layout this backend does not know
+/// is not asked for it.
 pub fn caps(display: &Display<'_>) -> Result<Caps> {
     let profiles = display.profiles()?;
     let decodes = |profile: VAProfile| -> Result<bool> {
@@ -88,19 +148,30 @@ pub fn caps(display: &Display<'_>) -> Result<Caps> {
         }
         Ok(display.entrypoints(profile)?.contains(&VAEntrypointVLD))
     };
+    let full = |ten_bit: bool| -> Result<bool> {
+        let shape = Shape {
+            ten_bit,
+            full_chroma: true,
+        };
+        Ok(decodes(shape.profile(Codec::H265))? && full_chroma_fourcc(display, shape).is_some())
+    };
     Ok(Caps {
         h264: decodes(VAProfileH264High)?,
         hevc: decodes(VAProfileHEVCMain)?,
         hevc_10: decodes(VAProfileHEVCMain10)?,
-        hevc_444: false,
-        hevc_444_10: false,
+        hevc_444: full(false)?,
+        hevc_444_10: full(true)?,
     })
 }
 
 /// The largest coded picture a display decodes for a codec, as the driver
 /// reports it; zero where it does not say.
 pub fn limits(display: &Display<'_>, codec: Codec) -> (u32, u32) {
-    display.max_picture(profile_for(codec, false), VAEntrypointVLD)
+    let shape = Shape {
+        ten_bit: false,
+        full_chroma: false,
+    };
+    display.max_picture(shape.profile(codec), VAEntrypointVLD)
 }
 
 /// Open the runtime and a render node and ask what it decodes: the probe a
@@ -117,9 +188,12 @@ struct Staging {
     h264_picture: VAPictureParameterBufferH264,
     h264_matrix: VAIQMatrixBufferH264,
     h264_slices: Box<[VASliceParameterBufferH264; h264::MAX_SLICES]>,
-    hevc_picture: VAPictureParameterBufferHEVC,
+    /// The base parameters lead the extension structure, so one storage
+    /// serves both: a base-sized buffer for a stream at Main or Main 10,
+    /// the whole for one at a range-extension profile.
+    hevc_picture: VAPictureParameterBufferHEVCExtension,
     hevc_matrix: VAIQMatrixBufferHEVC,
-    hevc_slices: Box<[VASliceParameterBufferHEVC; hevc::MAX_SLICES]>,
+    hevc_slices: Box<[VASliceParameterBufferHEVCExtension; hevc::MAX_SLICES]>,
     ids: [VABufferID; BUFFERS],
     count: usize,
 }
@@ -130,7 +204,11 @@ pub struct Backend<'a> {
     /// The largest coded picture the caller's planes take.
     ceiling: (u32, u32),
     codec: Codec,
-    ten_bit: bool,
+    /// The stream's shape: the declaration's until the first parameter
+    /// set, then that set's.
+    shape: Shape,
+    /// The surface layout asked for, or zero for the driver's own choice.
+    fourcc: u32,
     config: Option<VAConfigID>,
     context: Option<VAContextID>,
     surfaces: [VASurfaceID; SURFACES],
@@ -150,7 +228,7 @@ impl core::fmt::Debug for Backend<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Backend")
             .field("codec", &self.codec)
-            .field("ten_bit", &self.ten_bit)
+            .field("shape", &self.shape)
             .field("context", &self.context)
             .field("coded", &(self.coded_width, self.coded_height))
             .finish()
@@ -169,7 +247,11 @@ impl<'a> Backend<'a> {
             display,
             ceiling,
             codec: Codec::H264,
-            ten_bit: false,
+            shape: Shape {
+                ten_bit: false,
+                full_chroma: false,
+            },
+            fourcc: 0,
             config: None,
             context: None,
             surfaces: [VA_INVALID_SURFACE; SURFACES],
@@ -244,11 +326,7 @@ impl<'a> Backend<'a> {
 
     /// The layout pictures come back in.
     pub fn format(&self) -> Format {
-        if self.ten_bit {
-            Format::P010
-        } else {
-            Format::Nv12
-        }
+        self.shape.format()
     }
 
     /// The size and layout the pictures [`Decoder::take`] hands out have,
@@ -261,15 +339,19 @@ impl<'a> Backend<'a> {
         (width > 0 && height > 0).then_some((width, height, self.format()))
     }
 
+    /// The configuration for the stream's shape, and the surface layout to
+    /// ask for with it: for full chroma the first the driver offers that
+    /// this backend reads, or no configuration at all.
     fn create_config(&mut self) -> Result<()> {
-        let profile = profile_for(self.codec, self.ten_bit);
+        let profile = self.shape.profile(self.codec);
+        self.fourcc = if self.shape.full_chroma {
+            full_chroma_fourcc(self.display, self.shape).ok_or(Error::NoProfile)?
+        } else {
+            0
+        };
         let mut attrib = VAConfigAttrib {
             type_: VAConfigAttribRTFormat,
-            value: if self.ten_bit {
-                VA_RT_FORMAT_YUV420_10
-            } else {
-                VA_RT_FORMAT_YUV420
-            },
+            value: self.shape.rt_format(),
         };
         let mut config: VAConfigID = 0;
         // SAFETY: the attribute is a live local, and the output too.
@@ -298,22 +380,36 @@ impl<'a> Backend<'a> {
         if width > self.ceiling.0 || height > self.ceiling.1 {
             return Err(Error::TooLarge);
         }
-        let rt_format = if self.ten_bit {
-            VA_RT_FORMAT_YUV420_10
-        } else {
-            VA_RT_FORMAT_YUV420
+        // The layout is named where one was chosen, so the read-back knows
+        // what it will map; otherwise the driver's own choice.
+        let mut attrib = VASurfaceAttrib {
+            type_: VASurfaceAttribPixelFormat,
+            flags: VA_SURFACE_ATTRIB_SETTABLE,
+            value: VAGenericValue {
+                type_: VAGenericValueTypeInteger,
+                value: lowlat_drivers::ffi::va::_VAGenericValue__bindgen_ty_1 {
+                    // The four-character code's bits, whatever the sign.
+                    i: i32::from_ne_bytes(self.fourcc.to_ne_bytes()),
+                },
+            },
         };
-        // SAFETY: the array is writable for the count passed; no attributes.
+        let (attribs, count): (*mut VASurfaceAttrib, c_uint) = if self.fourcc == 0 {
+            (core::ptr::null_mut(), 0)
+        } else {
+            (&raw mut attrib, 1)
+        };
+        // SAFETY: the array is writable for the count passed; the attribute
+        // is a live local for the call.
         let status = unsafe {
             (self.va().create_surfaces)(
                 self.display.raw(),
-                rt_format,
+                self.shape.rt_format(),
                 width,
                 height,
                 self.surfaces.as_mut_ptr(),
                 c_uint::try_from(SURFACES).unwrap_or(0),
-                core::ptr::null_mut(),
-                0,
+                attribs.cast(),
+                count,
             )
         };
         self.check(status)?;
@@ -362,6 +458,13 @@ impl<'a> Backend<'a> {
         }
         self.coded_width = 0;
         self.coded_height = 0;
+    }
+
+    fn destroy_config(&mut self) {
+        if let Some(config) = self.config.take() {
+            // SAFETY: created by this backend, destroyed once.
+            unsafe { (self.va().destroy_config)(self.display.raw(), config) };
+        }
     }
 
     fn surface(&self, slot: usize) -> VASurfaceID {
@@ -656,17 +759,31 @@ impl<'a> Backend<'a> {
         }
         let job = self.hevc.job().ok_or(Error::Status(-1))?;
         let (width, height) = (job.sps.width, job.sps.height);
-        // Full chroma and the range-extension tools are staged through
-        // parameter structures of their own, which no device this backend
-        // was verified on decodes; the base structures would decode such a
-        // stream wrongly without an error, so it is refused outright.
-        if job.sps.is_range_extended() {
+        // The parameter set says what the stream is. Full chroma at eight
+        // or ten bits is staged through the range-extension structures and
+        // decoded into a layout the read-back knows; anything else the
+        // range extensions allow -- half chroma, or the extension tools on
+        // a 4:2:0 stream -- has no profile here, and the base structures
+        // would decode such a stream wrongly without an error, so it is
+        // refused outright.
+        let shape = Shape {
+            ten_bit: job.sps.bit_depth_luma_minus8 > 0,
+            full_chroma: job.sps.chroma_format_idc == 3,
+        };
+        if job.sps.chroma_format_idc == 2 || (!shape.full_chroma && job.sps.is_range_extended()) {
             self.hevc.abandon();
             return Err(Error::NoProfile);
         }
         if self.context.is_none() {
+            if shape != self.shape {
+                // The declaration guessed the shape; the stream corrects it
+                // before anything is built on the guess.
+                self.destroy_config();
+                self.shape = shape;
+                self.create_config()?;
+            }
             self.create_context(width, height)?;
-        } else if width != self.coded_width || height != self.coded_height {
+        } else if width != self.coded_width || height != self.coded_height || shape != self.shape {
             self.hevc.abandon();
             return Ok(Fed::FormatChanged);
         }
@@ -709,8 +826,9 @@ impl<'a> Backend<'a> {
             .flatten()
             .ok_or(Error::Status(-1))?;
 
-        let picture = &mut self.staging.hevc_picture;
-        *picture = zeroed();
+        let extension = &mut self.staging.hevc_picture;
+        *extension = zeroed();
+        let picture = &mut extension.base;
         picture.CurrPic = VAPictureHEVC {
             picture_id: surface_of(current.slot),
             pic_order_cnt: current.poc,
@@ -878,6 +996,50 @@ impl<'a> Backend<'a> {
         } else {
             first.header.st_rps_bits
         };
+        let full_chroma = self.shape.full_chroma;
+        if full_chroma {
+            // The range-extension picture fields, both parameter sets'.
+            let rext = &mut extension.rext;
+            // SAFETY: the bitfield view of a zeroed word.
+            let rf = unsafe { &mut rext.range_extension_pic_fields.bits };
+            let range = &sps.range;
+            rf.set_transform_skip_rotation_enabled_flag(u32::from(
+                range.transform_skip_rotation_enabled,
+            ));
+            rf.set_transform_skip_context_enabled_flag(u32::from(
+                range.transform_skip_context_enabled,
+            ));
+            rf.set_implicit_rdpcm_enabled_flag(u32::from(range.implicit_rdpcm_enabled));
+            rf.set_explicit_rdpcm_enabled_flag(u32::from(range.explicit_rdpcm_enabled));
+            rf.set_extended_precision_processing_flag(u32::from(
+                range.extended_precision_processing,
+            ));
+            rf.set_intra_smoothing_disabled_flag(u32::from(range.intra_smoothing_disabled));
+            rf.set_high_precision_offsets_enabled_flag(u32::from(
+                range.high_precision_offsets_enabled,
+            ));
+            rf.set_persistent_rice_adaptation_enabled_flag(u32::from(
+                range.persistent_rice_adaptation_enabled,
+            ));
+            rf.set_cabac_bypass_alignment_enabled_flag(u32::from(
+                range.cabac_bypass_alignment_enabled,
+            ));
+            let prange = &pps.range;
+            rf.set_cross_component_prediction_enabled_flag(u32::from(
+                prange.cross_component_prediction_enabled,
+            ));
+            rf.set_chroma_qp_offset_list_enabled_flag(u32::from(
+                prange.chroma_qp_offset_list_enabled,
+            ));
+            rext.diff_cu_chroma_qp_offset_depth = prange.diff_cu_chroma_qp_offset_depth;
+            rext.chroma_qp_offset_list_len_minus1 = prange.chroma_qp_offset_list_len_minus1;
+            rext.log2_sao_offset_scale_luma = prange.log2_sao_offset_scale_luma;
+            rext.log2_sao_offset_scale_chroma = prange.log2_sao_offset_scale_chroma;
+            rext.log2_max_transform_skip_block_size_minus2 =
+                prange.log2_max_transform_skip_block_size_minus2;
+            rext.cb_qp_offset_list = prange.cb_qp_offset_list;
+            rext.cr_qp_offset_list = prange.cr_qp_offset_list;
+        }
 
         let matrix = &mut self.staging.hevc_matrix;
         matrix.ScalingList4x4 = pps.scaling.list_4x4;
@@ -890,10 +1052,11 @@ impl<'a> Backend<'a> {
         let slices = job.slices.len;
         let scaling_enabled = sps.scaling_list_enabled;
         for (i, slice) in job.slices.as_slice().iter().flatten().enumerate() {
-            let Some(out) = self.staging.hevc_slices.get_mut(i) else {
+            let Some(ext) = self.staging.hevc_slices.get_mut(i) else {
                 break;
             };
-            *out = zeroed();
+            *ext = zeroed();
+            let out = &mut ext.base;
             let h = &slice.header;
             out.slice_data_size = u32::try_from(slice.len).unwrap_or(0);
             out.slice_data_offset = 0;
@@ -943,9 +1106,9 @@ impl<'a> Backend<'a> {
             if let Some(w) = &h.weights {
                 out.luma_log2_weight_denom = w.luma_log2_denom;
                 out.delta_chroma_log2_weight_denom = w.delta_chroma_log2_denom;
-                // Eight bits: the base parameters, which is all this backend
-                // stages, take the offsets at the range every stream it
-                // admits stays within.
+                // Eight bits in the base parameters, the range every stream
+                // without the extensions stays within; the extension carries
+                // the offsets whole for a stream that may exceed it.
                 out.delta_luma_weight_l0 = w.l0.delta_luma_weight;
                 out.luma_offset_l0 = w.l0.luma_offset.map(narrow);
                 out.delta_chroma_weight_l0 = w.l0.delta_chroma_weight;
@@ -954,6 +1117,12 @@ impl<'a> Backend<'a> {
                 out.luma_offset_l1 = w.l1.luma_offset.map(narrow);
                 out.delta_chroma_weight_l1 = w.l1.delta_chroma_weight;
                 out.ChromaOffsetL1 = w.l1.chroma_offset.map(|pair| pair.map(narrow));
+                if full_chroma {
+                    ext.rext.luma_offset_l0 = w.l0.luma_offset;
+                    ext.rext.ChromaOffsetL0 = w.l0.chroma_offset;
+                    ext.rext.luma_offset_l1 = w.l1.luma_offset;
+                    ext.rext.ChromaOffsetL1 = w.l1.chroma_offset;
+                }
             }
             out.five_minus_max_num_merge_cand = h.five_minus_max_num_merge_cand;
             out.num_entry_point_offsets =
@@ -961,15 +1130,29 @@ impl<'a> Backend<'a> {
             out.entry_offset_to_subset_array = 0;
             out.slice_data_num_emu_prevn_bytes =
                 u16::try_from(h.header_escapes).unwrap_or(u16::MAX);
+            if full_chroma {
+                // SAFETY: the bitfield view of a zeroed word.
+                let ef = unsafe { &mut ext.rext.slice_ext_flags.bits };
+                ef.set_cu_chroma_qp_offset_enabled_flag(u32::from(h.cu_chroma_qp_offset_enabled));
+            }
         }
 
         self.staging.count = 0;
+        // A range-extension profile takes the whole extension structure,
+        // the base profiles the base alone, from the same storage.
+        let (picture_size, slice_size) = if full_chroma {
+            (
+                size_of::<VAPictureParameterBufferHEVCExtension>(),
+                size_of::<VASliceParameterBufferHEVCExtension>(),
+            )
+        } else {
+            (
+                size_of::<VAPictureParameterBufferHEVC>(),
+                size_of::<VASliceParameterBufferHEVC>(),
+            )
+        };
         let picture_ptr: *mut c_void = (&raw mut self.staging.hevc_picture).cast();
-        self.buffer(
-            VAPictureParameterBufferType,
-            picture_ptr,
-            size_of::<VAPictureParameterBufferHEVC>(),
-        )?;
+        self.buffer(VAPictureParameterBufferType, picture_ptr, picture_size)?;
         if scaling_enabled {
             let matrix_ptr: *mut c_void = (&raw mut self.staging.hevc_matrix).cast();
             self.buffer(
@@ -989,13 +1172,9 @@ impl<'a> Backend<'a> {
                 .staging
                 .hevc_slices
                 .get_mut(i)
-                .map(|s| (s as *mut VASliceParameterBufferHEVC).cast())
+                .map(|s| (s as *mut VASliceParameterBufferHEVCExtension).cast())
                 .ok_or(Error::TooLarge)?;
-            self.buffer(
-                VASliceParameterBufferType,
-                param_ptr,
-                size_of::<VASliceParameterBufferHEVC>(),
-            )?;
+            self.buffer(VASliceParameterBufferType, param_ptr, slice_size)?;
             let data = unit.get(offset..offset + len).ok_or(Error::Status(-1))?;
             self.buffer(
                 VASliceDataBufferType,
@@ -1064,50 +1243,183 @@ fn micros(ms: f64) -> u32 {
     us
 }
 
-/// Copy the visible planes out of a mapped image.
+/// Copy the visible planes out of a mapped image, in the layout the
+/// driver derived it to: the two-plane layouts as they are; the planar
+/// full-chroma layout as three copies; the packed ones unpacked, the
+/// ten-bit samples moved to the high bits as every other backend hands
+/// them out.
 fn copy_planes(
     image: &VAImage,
     mapped: *mut c_void,
     format: Format,
     out: &mut Planes<'_>,
 ) -> Result<()> {
-    if image.num_planes < 2 || mapped.is_null() {
+    if mapped.is_null() {
         return Err(Error::Status(-1));
     }
-    let sample = format.sample();
     let width = usize::from(image.width);
     let height = usize::from(image.height);
-    let row_bytes = width * sample;
-    let y_pitch = usize::try_from(image.pitches[0]).unwrap_or(0);
-    let uv_pitch = usize::try_from(image.pitches[1]).unwrap_or(0);
-    let y_offset = usize::try_from(image.offsets[0]).unwrap_or(0);
-    let uv_offset = usize::try_from(image.offsets[1]).unwrap_or(0);
     let total = usize::try_from(image.data_size).unwrap_or(0);
     // SAFETY: the driver mapped `data_size` bytes at `mapped`.
     let source = unsafe { core::slice::from_raw_parts(mapped.cast::<u8>(), total) };
-    let rows_y = height.min(out.y.len() / out.y_pitch.max(1));
-    for row in 0..rows_y {
-        let from = source
-            .get(y_offset + row * y_pitch..y_offset + row * y_pitch + row_bytes)
-            .ok_or(Error::Status(-1))?;
-        let to = out
-            .y
-            .get_mut(row * out.y_pitch..row * out.y_pitch + row_bytes)
-            .ok_or(Error::TooLarge)?;
-        to.copy_from_slice(from);
+    let plane = |index: usize| -> (usize, usize) {
+        (
+            usize::try_from(image.offsets.get(index).copied().unwrap_or(0)).unwrap_or(0),
+            usize::try_from(image.pitches.get(index).copied().unwrap_or(0)).unwrap_or(0),
+        )
+    };
+    let fourcc = image.format.fourcc;
+    match (format, fourcc, image.num_planes) {
+        (Format::Nv12 | Format::P010, VA_FOURCC_NV12 | VA_FOURCC_P010, 2) => {
+            let row_bytes = width * format.sample();
+            let (y_offset, y_pitch) = plane(0);
+            let (uv_offset, uv_pitch) = plane(1);
+            copy_rows(
+                source,
+                y_offset,
+                y_pitch,
+                out.y,
+                out.y_pitch,
+                row_bytes,
+                height,
+            )?;
+            copy_rows(
+                source,
+                uv_offset,
+                uv_pitch,
+                out.uv,
+                out.uv_pitch,
+                row_bytes,
+                height / 2,
+            )
+        }
+        (Format::Yuv444, VA_FOURCC_444P, 3) => {
+            let (y_offset, y_pitch) = plane(0);
+            let (u_offset, u_pitch) = plane(1);
+            let (v_offset, v_pitch) = plane(2);
+            copy_rows(source, y_offset, y_pitch, out.y, out.y_pitch, width, height)?;
+            copy_rows(
+                source,
+                u_offset,
+                u_pitch,
+                out.uv,
+                out.uv_pitch,
+                width,
+                height,
+            )?;
+            copy_rows(source, v_offset, v_pitch, out.v, out.v_pitch, width, height)
+        }
+        (Format::Yuv444, VA_FOURCC_XYUV | VA_FOURCC_AYUV, 1) => {
+            let (offset, pitch) = plane(0);
+            let rows = height.min(out.y.len() / out.y_pitch.max(1));
+            for row in 0..rows {
+                let from = source
+                    .get(offset + row * pitch..offset + row * pitch + 4 * width)
+                    .ok_or(Error::Status(-1))?;
+                let y = out
+                    .y
+                    .get_mut(row * out.y_pitch..row * out.y_pitch + width)
+                    .ok_or(Error::TooLarge)?;
+                let u = out
+                    .uv
+                    .get_mut(row * out.uv_pitch..row * out.uv_pitch + width)
+                    .ok_or(Error::TooLarge)?;
+                let v = out
+                    .v
+                    .get_mut(row * out.v_pitch..row * out.v_pitch + width)
+                    .ok_or(Error::TooLarge)?;
+                unpack_vuyx_row(from, y, u, v);
+            }
+            Ok(())
+        }
+        (Format::Yuv444_16, VA_FOURCC_Y410, 1) => {
+            let (offset, pitch) = plane(0);
+            let rows = height.min(out.y.len() / out.y_pitch.max(1));
+            for row in 0..rows {
+                let from = source
+                    .get(offset + row * pitch..offset + row * pitch + 4 * width)
+                    .ok_or(Error::Status(-1))?;
+                let y = out
+                    .y
+                    .get_mut(row * out.y_pitch..row * out.y_pitch + 2 * width)
+                    .ok_or(Error::TooLarge)?;
+                let u = out
+                    .uv
+                    .get_mut(row * out.uv_pitch..row * out.uv_pitch + 2 * width)
+                    .ok_or(Error::TooLarge)?;
+                let v = out
+                    .v
+                    .get_mut(row * out.v_pitch..row * out.v_pitch + 2 * width)
+                    .ok_or(Error::TooLarge)?;
+                unpack_y410_row(from, y, u, v);
+            }
+            Ok(())
+        }
+        _ => Err(Error::Status(-1)),
     }
-    let rows_uv = (height / 2).min(out.uv.len() / out.uv_pitch.max(1));
-    for row in 0..rows_uv {
+}
+
+/// `rows` rows of `row_bytes` from a plane of the mapping into a plane of
+/// the caller's, each at its own pitch; short output takes what fits.
+fn copy_rows(
+    source: &[u8],
+    offset: usize,
+    pitch: usize,
+    to: &mut [u8],
+    to_pitch: usize,
+    row_bytes: usize,
+    rows: usize,
+) -> Result<()> {
+    let rows = rows.min(to.len() / to_pitch.max(1));
+    for row in 0..rows {
         let from = source
-            .get(uv_offset + row * uv_pitch..uv_offset + row * uv_pitch + row_bytes)
+            .get(offset + row * pitch..offset + row * pitch + row_bytes)
             .ok_or(Error::Status(-1))?;
-        let to = out
-            .uv
-            .get_mut(row * out.uv_pitch..row * out.uv_pitch + row_bytes)
+        let dst = to
+            .get_mut(row * to_pitch..row * to_pitch + row_bytes)
             .ok_or(Error::TooLarge)?;
-        to.copy_from_slice(from);
+        dst.copy_from_slice(from);
     }
     Ok(())
+}
+
+/// One row of the packed eight-bit full-chroma layout -- V, U, Y and a
+/// fourth byte per sample, in that order in memory -- into three planes.
+fn unpack_vuyx_row(from: &[u8], y: &mut [u8], u: &mut [u8], v: &mut [u8]) {
+    for (((px, py), pu), pv) in from
+        .chunks_exact(4)
+        .zip(y.iter_mut())
+        .zip(u.iter_mut())
+        .zip(v.iter_mut())
+    {
+        if let [sv, su, sy, _] = px {
+            *py = *sy;
+            *pu = *su;
+            *pv = *sv;
+        }
+    }
+}
+
+/// One row of the packed ten-bit full-chroma layout -- a little-endian word
+/// per sample with U in its low ten bits, then Y, then V, then two bits
+/// unused -- into three planes of sixteen-bit samples with the value in the
+/// high ten bits, native order.
+fn unpack_y410_row(from: &[u8], y: &mut [u8], u: &mut [u8], v: &mut [u8]) {
+    for (((px, py), pu), pv) in from
+        .chunks_exact(4)
+        .zip(y.chunks_exact_mut(2))
+        .zip(u.chunks_exact_mut(2))
+        .zip(v.chunks_exact_mut(2))
+    {
+        if let [a, b, c, d] = px {
+            let word = u32::from_le_bytes([*a, *b, *c, *d]);
+            // Ten bits masked out of the word fit sixteen with the shift.
+            let ten = |shift: u32| u16::try_from((word >> shift) & 0x3ff).unwrap_or(0) << 6;
+            py.copy_from_slice(&ten(10).to_ne_bytes());
+            pu.copy_from_slice(&ten(0).to_ne_bytes());
+            pv.copy_from_slice(&ten(20).to_ne_bytes());
+        }
+    }
 }
 
 fn va_picture_h264_invalid() -> VAPictureH264 {
@@ -1161,7 +1473,12 @@ fn va_picture_h264_current(current: &h264::dpb::Current, surface: VASurfaceID) -
 impl Decoder for Backend<'_> {
     fn build(&mut self, header: &VideoHeader) -> core::result::Result<(), Fault> {
         self.codec = header.codec;
-        self.ten_bit = header.ten_bit;
+        // The declaration's guess at the shape; the first parameter set
+        // corrects it before anything is built on it.
+        self.shape = Shape {
+            ten_bit: header.ten_bit,
+            full_chroma: false,
+        };
         self.h264.reset();
         self.hevc.reset();
         self.create_config().map_err(|_| Fault::Fatal)
@@ -1213,15 +1530,104 @@ impl Decoder for Backend<'_> {
 
     fn destroy(&mut self) {
         self.destroy_context();
-        if let Some(config) = self.config.take() {
-            // SAFETY: created by this backend, destroyed once.
-            unsafe { (self.va().destroy_config)(self.display.raw(), config) };
-        }
+        self.destroy_config();
     }
 }
 
 impl Drop for Backend<'_> {
     fn drop(&mut self) {
         self.destroy();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The packed layouts unpacked against the same thing written plainly:
+    /// eight-bit samples in the order V, U, Y, X per word, and ten-bit ones
+    /// with U in a word's low bits, then Y, then V, moved to the high bits
+    /// of sixteen on the way out.
+    #[test]
+    fn the_packed_layouts_unpack_to_the_planes() {
+        let width = 13usize;
+        let mut packed = Vec::with_capacity(4 * width);
+        for i in 0..width {
+            let (y, u, v) = ((i * 7) as u8, (i * 11 + 3) as u8, (i * 13 + 5) as u8);
+            packed.extend_from_slice(&[v, u, y, 0xff]);
+        }
+        let (mut y, mut u, mut v) = (vec![0u8; width], vec![0u8; width], vec![0u8; width]);
+        unpack_vuyx_row(&packed, &mut y, &mut u, &mut v);
+        for i in 0..width {
+            assert_eq!(y[i], (i * 7) as u8, "y {i}");
+            assert_eq!(u[i], (i * 11 + 3) as u8, "u {i}");
+            assert_eq!(v[i], (i * 13 + 5) as u8, "v {i}");
+        }
+
+        let mut packed = Vec::with_capacity(4 * width);
+        let sample = |i: usize, k: usize| ((i * k + 1) % 1024) as u32;
+        for i in 0..width {
+            let word = sample(i, 79) | (sample(i, 37) << 10) | (sample(i, 53) << 20) | (3 << 30);
+            packed.extend_from_slice(&word.to_le_bytes());
+        }
+        let (mut y, mut u, mut v) = (
+            vec![0u8; 2 * width],
+            vec![0u8; 2 * width],
+            vec![0u8; 2 * width],
+        );
+        unpack_y410_row(&packed, &mut y, &mut u, &mut v);
+        for i in 0..width {
+            let read = |p: &[u8]| u16::from_ne_bytes([p[2 * i], p[2 * i + 1]]);
+            assert_eq!(read(&u), (sample(i, 79) << 6) as u16, "u {i}");
+            assert_eq!(read(&y), (sample(i, 37) << 6) as u16, "y {i}");
+            assert_eq!(read(&v), (sample(i, 53) << 6) as u16, "v {i}");
+            assert_eq!(read(&y) & 0x3f, 0, "the low bits are clear");
+        }
+    }
+
+    /// The shape picks the profile, the render-target format and the layout
+    /// out, and the base profiles are what a declaration guesses.
+    #[test]
+    fn the_shape_names_its_profile_and_layout() {
+        let cases = [
+            (
+                false,
+                false,
+                VAProfileHEVCMain,
+                VA_RT_FORMAT_YUV420,
+                Format::Nv12,
+            ),
+            (
+                true,
+                false,
+                VAProfileHEVCMain10,
+                VA_RT_FORMAT_YUV420_10,
+                Format::P010,
+            ),
+            (
+                false,
+                true,
+                VAProfileHEVCMain444,
+                VA_RT_FORMAT_YUV444,
+                Format::Yuv444,
+            ),
+            (
+                true,
+                true,
+                VAProfileHEVCMain444_10,
+                VA_RT_FORMAT_YUV444_10,
+                Format::Yuv444_16,
+            ),
+        ];
+        for (ten_bit, full_chroma, profile, rt, format) in cases {
+            let shape = Shape {
+                ten_bit,
+                full_chroma,
+            };
+            assert_eq!(shape.profile(Codec::H265), profile);
+            assert_eq!(shape.profile(Codec::H264), VAProfileH264High);
+            assert_eq!(shape.rt_format(), rt);
+            assert_eq!(shape.format(), format);
+        }
     }
 }
