@@ -2543,4 +2543,153 @@ mod tests {
             "the smallest coding block is eight, whatever the device accesses"
         );
     }
+
+    /// One picture of the run: a grey field with a coloured bar that moves
+    /// eight columns a picture and wraps, in blocks two pixels square so the
+    /// subsampled colour of every block is exact. Bar and field are colours
+    /// rather than grey so a wrong colour plane shows.
+    fn coloured_bar(width: u32, height: u32, index: u32) -> Vec<u8> {
+        const BAR: u32 = 64;
+        let mut pixels = vec![0u8; (width as usize) * (height as usize) * 4];
+        let left = (index * 8) % width;
+        for y in 0..height as usize {
+            for x in 0..width as usize {
+                let on = (u32::try_from(x).unwrap_or(0) + width - left) % width < BAR;
+                let rgb = if on {
+                    [200u8, 40, 40]
+                } else {
+                    [96u8, 128, 160]
+                };
+                let at = (y * width as usize + x) * 4;
+                pixels[at..at + 3].copy_from_slice(&rgb);
+                pixels[at + 3] = 255;
+            }
+        }
+        pixels
+    }
+
+    /// The ten-bit stream this backend produces, through the path the host
+    /// drives -- the conversion writing the encoder's own picture -- with
+    /// what the encoder was fed kept beside it for a decoder that is not
+    /// this code.
+    ///
+    /// **Nothing reads the encoder's picture back**, which is what left this
+    /// backend's depth unverified: the shader writes an image the encoder
+    /// alone reads. So every picture is converted twice from one source, once
+    /// into the encoder's picture and once into a target the conversion
+    /// device can read, and the second is what is kept -- the same shader on
+    /// the same input writes the same samples. The comparison is external
+    /// (`docs/impl-plan.md` 11.5, gate 1): decode the stream, compare every
+    /// picture against the file beside it, and read the spread across the
+    /// run rather than an average.
+    ///
+    /// `LOWLAT_VULKAN_NODE` names one display node; otherwise every node that
+    /// opens for encode and codes ten-bit HEVC is run. `LOWLAT_PICTURES`
+    /// lengthens the run, `LOWLAT_DUMP` names the stream's path.
+    #[test]
+    #[ignore = "requires a display device with an encode queue"]
+    fn it_encodes_ten_bit_from_the_conversion_and_the_stream_says_so() {
+        use std::path::PathBuf;
+
+        use lowlat_capture::convert::{Converter, Depth as PlaneDepth, TargetRef};
+
+        let (width, height) = (1920u32, 1080u32);
+        let pictures = std::env::var("LOWLAT_PICTURES")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(60);
+        let nodes: Vec<PathBuf> = match std::env::var("LOWLAT_VULKAN_NODE") {
+            Ok(node) => vec![PathBuf::from(node)],
+            Err(_) => (0..4)
+                .map(|n| PathBuf::from(format!("/dev/dri/card{n}")))
+                .collect(),
+        };
+
+        let mut seen = 0usize;
+        for node in nodes {
+            let Ok(capture) = lowlat_capture::vulkan::Device::for_display_and_encode(&node) else {
+                continue;
+            };
+            let Some((queue, family)) = capture.encode_queue() else {
+                continue;
+            };
+            let device = match Device::shared(capture.clone(), queue, family) {
+                Ok(device) => device,
+                Err(error) => {
+                    println!("{}: no encode over this interface, {error}", node.display());
+                    continue;
+                }
+            };
+            let caps = match device.caps_at(Codec::H265, Depth::Ten) {
+                Ok(caps) => caps,
+                Err(error) => {
+                    println!("{}: codes no ten-bit HEVC, {error}", node.display());
+                    continue;
+                }
+            };
+            if !caps.shared_picture {
+                println!(
+                    "{}: a copy stands between conversion and encode",
+                    node.display()
+                );
+                continue;
+            }
+            let mut encoder = device
+                .encoder(&caps, width, height, 20_000_000, 60, 2)
+                .expect("encoder");
+            let mut converter = Converter::new(&capture).expect("a conversion pipeline");
+            let twin = capture
+                .allocate_planar(width, height, PlaneDepth::Ten)
+                .expect("a readable ten-bit target");
+
+            let mut stream = Vec::new();
+            let mut fed: Vec<u8> = Vec::new();
+            for index in 0..pictures {
+                let slot = usize::try_from(index % 2).unwrap_or(0);
+                let (Some(planes), Some(image)) = (encoder.planes(slot), encoder.source(slot))
+                else {
+                    panic!("the encoder lends no planes for slot {slot}");
+                };
+                let lent = TargetRef::lent_to_encoder_at(image, planes, PlaneDepth::Ten);
+                let source = capture
+                    .upload_rgba(width, height, &coloured_bar(width, height, index))
+                    .expect("upload the picture");
+                converter
+                    .run(&capture, &source, &lent, false)
+                    .expect("convert into the encoder's picture");
+                converter
+                    .run(&capture, &source, &twin.target(), false)
+                    .expect("convert into the readable twin");
+                capture.release(source);
+                let (luma, chroma) = capture.read_nv12(&twin).expect("read the twin");
+                fed.extend_from_slice(&luma);
+                fed.extend_from_slice(&chroma);
+
+                encoder.submit_written(slot, index == 0).expect("submit");
+                encoder.wait().expect("wait");
+                match encoder.poll().expect("poll") {
+                    Poll::Ready { bitstream, .. } => stream.extend_from_slice(bitstream),
+                    Poll::Pending => panic!("picture {index} finished and reported nothing"),
+                }
+            }
+            capture.release_nv12(twin);
+            assert!(!stream.is_empty(), "the encoder produced no bytes");
+
+            let path = std::env::var("LOWLAT_DUMP")
+                .unwrap_or_else(|_| format!("/tmp/vulkan10-{seen}.h265"));
+            std::fs::write(&path, &stream).expect("write");
+            let beside = format!("{path}.p010");
+            std::fs::write(&beside, &fed).expect("write");
+            println!(
+                "{} ({}): wrote {path} and {beside} ({pictures} pictures)",
+                node.display(),
+                device.name()
+            );
+            seen += 1;
+        }
+        assert!(
+            seen > 0,
+            "no device encoded ten-bit HEVC over this interface"
+        );
+    }
 }
