@@ -261,21 +261,30 @@ mod tests {
         // every frame decoded without error the whole time. Only a comparison
         // against what went in finds that, and only over a run -- the picture
         // it spares is the first one.
+        // `LOWLAT_PICTURES` lengthens the run past the in-flight depth, with
+        // that many outstanding at most, because drift is a run's property.
+        let pictures = std::env::var("LOWLAT_PICTURES")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(IN_FLIGHT);
         let mut fed: Vec<u8> = Vec::new();
+        let mut submitted = 0usize;
         let mut collected = 0usize;
-        for index in 0..IN_FLIGHT {
-            let frame = source.acquire();
-            let width = usize::try_from(frame.width).unwrap_or(0);
-            let rows = usize::try_from(frame.height).unwrap_or(0);
-            fed.extend_from_slice(&widen(&frame.luma, width, rows));
-            fed.extend_from_slice(&widen(
-                &frame.chroma,
-                width.div_ceil(2) * 2,
-                rows.div_ceil(2),
-            ));
-            encoder.submit(&frame, index == 0).expect("submit");
-        }
-        while collected < IN_FLIGHT {
+        while collected < pictures {
+            if submitted < pictures && submitted - collected < IN_FLIGHT {
+                let frame = source.acquire();
+                let width = usize::try_from(frame.width).unwrap_or(0);
+                let rows = usize::try_from(frame.height).unwrap_or(0);
+                fed.extend_from_slice(&widen(&frame.luma, width, rows));
+                fed.extend_from_slice(&widen(
+                    &frame.chroma,
+                    width.div_ceil(2) * 2,
+                    rows.div_ceil(2),
+                ));
+                encoder.submit(&frame, submitted == 0).expect("submit");
+                submitted += 1;
+                continue;
+            }
             match encoder.poll().expect("poll") {
                 Poll::Ready { bitstream, .. } => {
                     stream.extend_from_slice(bitstream);
@@ -290,7 +299,7 @@ mod tests {
         std::fs::write(&path, &stream).expect("write");
         let beside = format!("{path}.p010");
         std::fs::write(&beside, &fed).expect("write");
-        println!("wrote {path} and {beside} ({IN_FLIGHT} pictures)");
+        println!("wrote {path} and {beside} ({pictures} pictures)");
     }
 
     /// The stream this backend produces, for an external parser to say what
