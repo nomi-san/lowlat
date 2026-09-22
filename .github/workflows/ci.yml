@@ -35,7 +35,7 @@ jobs:
       - name: Install a graphics driver for the conversion test
         run: |
           sudo apt-get update
-          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers libegl1 libgl1-mesa-dri libgbm1 vulkan-tools glslang-tools
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers libegl1 libgl1-mesa-dri libgbm1 vulkan-tools glslang-tools bsdextrautils
 
       # What the software driver on this runner offers, in the log, so a test
       # refused an interface can be read against the driver rather than

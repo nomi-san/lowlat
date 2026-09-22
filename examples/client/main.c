@@ -1476,6 +1476,17 @@ static const char *env_or(const char *name, const char *fallback)
 
 int main(void)
 {
+	// Whichever library the run path resolved to, first: every run's log
+	// then names the object it ran against, and a packaged demo can be
+	// asked what it carries without a peer.
+	uint32_t abi = lowlat_abi_version();
+	fprintf(stderr, "demo: library loaded, abi=%u.%u features=0x%x\n",
+		abi >> 16, abi & 0xffff, (unsigned) lowlat_features());
+	if ((lowlat_features() & LOWLAT_FEATURE_CLIENT) == 0) {
+		fprintf(stderr, "demo: this library carries no client half\n");
+		return 2;
+	}
+
 	const char *peer = getenv("LOWLAT_PEER");
 	const char *session = getenv("LOWLAT_SESSION");
 	if (peer == NULL || session == NULL) {
@@ -1491,10 +1502,6 @@ int main(void)
 	unsigned long switch_every = strtoul(env_or("LOWLAT_SWITCH_EVERY", "0"), NULL, 10);
 	unsigned long decoder_every = strtoul(env_or("LOWLAT_DECODER_EVERY", "0"), NULL, 10);
 
-	if ((lowlat_features() & LOWLAT_FEATURE_CLIENT) == 0) {
-		fprintf(stderr, "demo: this library carries no client half\n");
-		return 2;
-	}
 	lowlat_set_log_callback(log_line, NULL);
 	MTY_SetLogFunc(toolkit_line, NULL);
 	lowlat_set_log_level(LOWLAT_LOG_INFO);

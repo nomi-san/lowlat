@@ -2,9 +2,10 @@ name: build
 run-name: "build: ${{ inputs.name || github.ref_name }}"
 
 # Started by hand: a release build of the daemon, the Debian package, and the
-# SDK -- the shared library with its header in the usual lib/ and include/
-# layout -- kept as artifacts. Nothing here runs on a push; ci.yml is what
-# every push gets.
+# SDK in its two forms -- the full library, and the client-only library with
+# the demo inside its tarball -- each the shared library with its header in
+# the usual lib/ and include/ layout, kept as artifacts. Nothing here runs on
+# a push; ci.yml is what every push gets.
 on:
   workflow_dispatch:
     inputs:
@@ -34,8 +35,15 @@ jobs:
         run: echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       # The build itself needs nothing graphical: every encoder and graphics
-      # interface is loaded at runtime. cargo-deb is the one tool on top.
+      # interface is loaded at runtime. cargo-deb is the one tool on top, and
+      # the toolkit's shader compiler for the demo, whose shader headers are
+      # made at build time rather than committed.
       - uses: taiki-e/install-action@cargo-deb
+
+      - name: Install the toolkit's build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y glslang-tools bsdextrautils
 
       - name: Cache
         uses: actions/cache@v6
@@ -52,16 +60,58 @@ jobs:
       # **The header ships as committed, not regenerated here.** The ABI gate
       # in ci.yml is what proves the committed header matches the definitions
       # in the same commit, so this takes the file the gate passed.
+      #
+      # **Two libraries, one file.** Both builds of the library land on
+      # target/release/liblowlat.so, so each is copied into its tarball before
+      # the next build, and every check reads the tarball's own copy: the
+      # describe program opens it, prints its version and feature bits into
+      # FEATURES, and fails on any bits but the expected ones or a version
+      # other than the header's.
       - name: Assemble the SDK
         run: |
+          cc -std=c11 -Wall -Wextra -Werror -Iinclude -o describe crates/sdk/tests/c/describe.c -ldl
           sdk=lowlat-sdk-linux-x86_64-${{ steps.sha.outputs.short }}
           mkdir -p "$sdk/lib" "$sdk/include"
           cp target/release/liblowlat.so "$sdk/lib/"
           strip --strip-debug "$sdk/lib/liblowlat.so"
           cp include/lowlat.h "$sdk/include/"
-          cp LICENSE docs/06-api.md "$sdk/"
+          cp LICENSE docs/06-api.md docs/10-client.md "$sdk/"
+          ./describe "$sdk/lib/liblowlat.so" 0x3 | tee "$sdk/FEATURES"
           tar -czf "$sdk.tar.gz" "$sdk"
           ls -la "$sdk"/lib "$sdk"/include
+          nm -D --defined-only "$sdk/lib/liblowlat.so" | grep -c ' lowlat_'
+
+      - name: Build the client-only library
+        run: cargo build --release -p lowlat-sdk --no-default-features --features client
+
+      # The demo is linked against the tarball's own library, with a run path
+      # of ../lib relative to itself, and placed beside it as bin/client with
+      # nothing else; the toolkit it carries is under its own notice. Run
+      # from there with no peer, it names the library it loaded and leaves,
+      # which is the check that the run path resolves and the object is the
+      # client one.
+      - name: Assemble the client SDK, the demo inside it
+        run: |
+          sdk=lowlat-sdk-linux-x86_64-client-${{ steps.sha.outputs.short }}
+          mkdir -p "$sdk/lib" "$sdk/include" "$sdk/bin"
+          cp target/release/liblowlat.so "$sdk/lib/"
+          strip --strip-debug "$sdk/lib/liblowlat.so"
+          cp include/lowlat.h "$sdk/include/"
+          cp LICENSE docs/06-api.md docs/10-client.md "$sdk/"
+          cp third_party/matoya/LICENSE "$sdk/LICENSE.matoya"
+          ./describe "$sdk/lib/liblowlat.so" 0x2 | tee "$sdk/FEATURES"
+          make -C examples/client LOWLAT_LIB="$PWD/$sdk/lib" client
+          cp examples/client/client "$sdk/bin/"
+          strip --strip-debug "$sdk/bin/client"
+          set +e
+          "$sdk/bin/client" > demo.log 2>&1
+          status=$?
+          set -e
+          cat demo.log
+          test "$status" -eq 2
+          grep -q 'features=0x2' demo.log
+          tar -czf "$sdk.tar.gz" "$sdk"
+          ls -la "$sdk"/lib "$sdk"/include "$sdk"/bin
           nm -D --defined-only "$sdk/lib/liblowlat.so" | grep -c ' lowlat_'
 
       - name: Package
@@ -97,4 +147,11 @@ jobs:
         with:
           name: lowlat-sdk-linux-x86_64-${{ steps.sha.outputs.short }}
           path: lowlat-sdk-linux-x86_64-${{ steps.sha.outputs.short }}.tar.gz
+          if-no-files-found: error
+
+      - name: Upload the client SDK
+        uses: actions/upload-artifact@v4
+        with:
+          name: lowlat-sdk-linux-x86_64-client-${{ steps.sha.outputs.short }}
+          path: lowlat-sdk-linux-x86_64-client-${{ steps.sha.outputs.short }}.tar.gz
           if-no-files-found: error
