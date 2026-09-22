@@ -577,7 +577,7 @@ static void cycle_decoder(struct demo *d)
 	unsigned next = (d->row + 1) % d->row_count;
 	const lowlat_decoder_info *row = &d->rows[next];
 	lowlat_status s = lowlat_client_set_decoder(d->client, row->decoder, row->device);
-	printf("demo: decoder [%u] %s on %s: %s\n", row->index, row->name,
+	printf("demo: decoder [%u] %s (%s) on %s: %s\n", row->index, row->name, row->driver,
 		row->device[0] ? row->device : "any device", lowlat_status_string(s));
 	if (s == LOWLAT_OK)
 		d->row = next;
@@ -1540,12 +1540,12 @@ int main(void)
 	// available ones, the rest printed with their reason and passed over.
 	for (uint32_t i = 0; lowlat_enum_decoders(i, &row); i++) {
 		if (!row.available) {
-			printf("demo: decoder [%u] unavailable%s%s: %s\n", row.index,
-				row.device[0] ? " on " : "", row.device, row.name);
+			printf("demo: decoder [%u] %s unavailable%s%s: %s\n", row.index, row.name,
+				row.device[0] ? " on " : "", row.device, row.driver);
 			continue;
 		}
-		printf("demo: decoder [%u] %s on %s: h264 %ux%u, hevc %ux%u%s%s%s, %s\n",
-			row.index, row.name, row.device[0] ? row.device : "any device",
+		printf("demo: decoder [%u] %s (%s) on %s: h264 %ux%u, hevc %ux%u%s%s%s, %s\n",
+			row.index, row.name, row.driver, row.device[0] ? row.device : "any device",
 			row.max_width_h264, row.max_height_h264,
 			row.max_width_hevc, row.max_height_hevc,
 			row.hevc_10 ? ", 10-bit" : "",

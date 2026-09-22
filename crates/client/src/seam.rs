@@ -318,6 +318,20 @@ pub(crate) fn address_of(node: &str) -> Option<PciAddress> {
     PciAddress::parse(link.file_name()?.to_str()?)
 }
 
+/// The maker of the card behind a render node, by the vendor number the
+/// kernel's tree carries for its device; none for a node that is not there
+/// or a maker this crate does not name.
+pub(crate) fn vendor_of(node: &str) -> Option<&'static str> {
+    let name = std::path::Path::new(node).file_name()?.to_str()?;
+    let vendor = std::fs::read_to_string(format!("/sys/class/drm/{name}/device/vendor")).ok()?;
+    match vendor.trim() {
+        "0x8086" => Some("Intel"),
+        "0x1002" => Some("AMD"),
+        "0x10de" => Some("NVIDIA"),
+        _ => None,
+    }
+}
+
 /// The render node on a card, by its bus address: the inverse of
 /// [`address_of`], over the nodes this crate looks at.
 pub(crate) fn node_of(address: PciAddress) -> Option<&'static str> {

@@ -42,7 +42,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 12
+#define LOWLAT_ABI_MINOR 13
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 #define LOWLAT_FEATURE_HOST 1
@@ -1428,10 +1428,16 @@ typedef struct lowlat_decoder_info {
     /// directory the library pair was found in, or empty for the linker's
     /// own search.
     char device[LOWLAT_OUTPUT_MAX];
-    /// The device's or driver's own name, NUL-terminated, for a label; for
-    /// the software row, the library's version and its licence; for a slot
-    /// that is not available, the reason.
+    /// A label for a menu, NUL-terminated: the interface, and the card's
+    /// maker in brackets where it is known -- `VA-API [Intel]`, `VA-API
+    /// [AMD]`, `NVDEC [NVIDIA]`, `libavcodec [LGPL]`; the interface alone
+    /// for a slot with nothing behind it.
     char name[LOWLAT_DECODER_NAME_MAX];
+    /// The driver's own words, NUL-terminated (minor 13): its banner and
+    /// version for the open decoder, the device's product name for the
+    /// vendor's, the library's version and licence for software; for a slot
+    /// that is not available, why not. Filled only when `size` reaches it.
+    char driver[LOWLAT_DECODER_NAME_MAX];
 } lowlat_decoder_info;
 
 /// What a client is created with.
@@ -2432,10 +2438,11 @@ lowlat_status lowlat_debug_panic(lowlat_host *hl) LOWLAT_NOEXCEPT;
 /// and `frame_kind = LOWLAT_FRAME_HANDLE` on a row whose `handle` is set.
 ///
 /// @param[in] index The slot, from zero.
-/// @param[out] out One `lowlat_decoder_info` with `size` set, filled when
-/// there is a slot at `index`.
+/// @param[out] out One `lowlat_decoder_info` with `size` set, filled as
+/// far as `size` reaches when there is a slot at `index`: a caller built
+/// against an older header gets the fields it knows.
 /// @returns True with `out` filled; false past the table's end, or when
-/// `out` is null or its `size` is short.
+/// `out` is null or its `size` is shorter than the row ever was.
 ///
 /// @attention `out` is null or points to one `lowlat_decoder_info` whose `size` is
 /// set.

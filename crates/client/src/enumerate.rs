@@ -12,7 +12,9 @@
 //! so a loop runs to the end of the table and skips what it cannot use.
 //! An available row is a decoder creation would open, named by the same
 //! two values creation takes: the backend and the render node -- or, for
-//! software, the directory the pair was found in.
+//! software, the directory the pair was found in. Each row carries a
+//! label for a menu -- the interface and the card's maker, `VA-API [Intel]`
+//! -- and the driver's own words beside it.
 
 use std::ffi::CString;
 
@@ -24,7 +26,7 @@ use lowlat_drivers::cuvid::Cuvid;
 use lowlat_drivers::lavc::{Lavc, Origin, Refusal};
 
 use crate::config::Backend;
-use crate::seam::{RENDER_NODES, node_of};
+use crate::seam::{RENDER_NODES, node_of, vendor_of};
 
 /// The open stack's slots, one per render node this crate looks at.
 pub const OPEN_SLOTS: u32 = 8;
@@ -56,9 +58,14 @@ pub struct Available {
     /// vendor's device has no node this crate looks at, which creation
     /// takes as the first device.
     pub device: String,
-    /// The device's or driver's own name, for a label; for a slot that is
-    /// not available, the reason.
+    /// A label for a menu: the interface, and the card's maker in brackets
+    /// where it is known -- `VA-API [AMD]`, `NVDEC [NVIDIA]`,
+    /// `libavcodec [LGPL]`.
     pub name: String,
+    /// The driver's own words: its banner, the device's product name, the
+    /// library's version and licence; for a slot that is not available,
+    /// the reason.
+    pub driver: String,
     pub caps: Caps,
     /// Whether it hands pictures out as a handle.
     pub handle: bool,
@@ -70,12 +77,13 @@ pub struct Available {
 
 impl Available {
     /// A slot with nothing usable behind it.
-    fn unavailable(backend: Backend, device: &str, why: &str) -> Self {
+    fn unavailable(backend: Backend, device: &str, label: String, why: &str) -> Self {
         Self {
             backend,
             available: false,
             device: device.to_string(),
-            name: why.to_string(),
+            name: label,
+            driver: why.to_string(),
             caps: Caps::default(),
             handle: false,
             max_h264: (0, 0),
@@ -95,26 +103,36 @@ pub fn probe(slot: u32) -> Option<Available> {
     (slot == SLOTS - 1).then(codec_library)
 }
 
+/// The interface's label with a maker in brackets, or alone.
+fn label(interface: &str, maker: Option<&str>) -> String {
+    match maker {
+        Some(maker) => format!("{interface} [{maker}]"),
+        None => interface.to_string(),
+    }
+}
+
 /// The open stack on one render node.
 fn open_stack(node: &str) -> Available {
+    let name = label("VA-API", vendor_of(node));
     let Ok(va) = Vaapi::load() else {
-        return Available::unavailable(Backend::Vaapi, node, RUNTIME);
+        return Available::unavailable(Backend::Vaapi, node, name, RUNTIME);
     };
     let Ok(path) = CString::new(node) else {
-        return Available::unavailable(Backend::Vaapi, node, NO_NODE);
+        return Available::unavailable(Backend::Vaapi, node, name, NO_NODE);
     };
     let Ok(display) = va.open(&path) else {
-        return Available::unavailable(Backend::Vaapi, node, NO_NODE);
+        return Available::unavailable(Backend::Vaapi, node, name, NO_NODE);
     };
     let caps = vaapi::caps(&display).unwrap_or_default();
     if !caps.any() {
-        return Available::unavailable(Backend::Vaapi, node, PROFILE);
+        return Available::unavailable(Backend::Vaapi, node, name, PROFILE);
     }
     Available {
         backend: Backend::Vaapi,
         available: true,
         device: node.to_string(),
-        name: display.vendor(),
+        name,
+        driver: display.vendor(),
         caps,
         handle: false,
         max_h264: vaapi::limits(&display, Codec::H264),
@@ -125,37 +143,44 @@ fn open_stack(node: &str) -> Available {
 /// The vendor's interface on the device at one ordinal.
 fn vendor(ordinal: u32) -> Available {
     let Ok(cuda) = Cuda::load() else {
-        return Available::unavailable(Backend::Nvdec, "", RUNTIME);
+        return Available::unavailable(Backend::Nvdec, "", label("NVDEC", None), RUNTIME);
     };
     let Ok(device) = cuda.device(ordinal) else {
-        return Available::unavailable(Backend::Nvdec, "", NO_DEVICE);
+        return Available::unavailable(Backend::Nvdec, "", label("NVDEC", None), NO_DEVICE);
     };
     let node = node_of(device.address()).unwrap_or("");
+    let name = label("NVDEC", Some("NVIDIA"));
     let Ok(context) = cuda.retain_primary(&device) else {
-        return Available::unavailable(Backend::Nvdec, node, NO_CONTEXT);
+        return Available::unavailable(Backend::Nvdec, node, name, NO_CONTEXT);
     };
     if context.make_current().is_err() {
-        return Available::unavailable(Backend::Nvdec, node, NO_CONTEXT);
+        return Available::unavailable(Backend::Nvdec, node, name, NO_CONTEXT);
     }
     let row = match Cuvid::load() {
-        Err(_) => Available::unavailable(Backend::Nvdec, node, RUNTIME),
+        Err(_) => Available::unavailable(Backend::Nvdec, node, name, RUNTIME),
         Ok(cuvid) => {
             let caps = nvdec::caps(&cuvid);
             if caps.any() {
-                let mut name = [0u8; 96];
-                let len = cuda.device_name(&device, &mut name).unwrap_or(0);
+                let mut product = [0u8; 96];
+                let len = cuda.device_name(&device, &mut product).unwrap_or(0);
                 Available {
                     backend: Backend::Nvdec,
                     available: true,
                     device: node.to_string(),
-                    name: String::from_utf8_lossy(name.get(..len).unwrap_or(&[])).into_owned(),
+                    name,
+                    driver: String::from_utf8_lossy(product.get(..len).unwrap_or(&[])).into_owned(),
                     caps,
                     handle: true,
                     max_h264: nvdec::limits(&cuvid, Codec::H264),
                     max_hevc: nvdec::limits(&cuvid, Codec::H265),
                 }
             } else {
-                Available::unavailable(Backend::Nvdec, node, PROFILE)
+                Available::unavailable(
+                    Backend::Nvdec,
+                    node,
+                    label("NVDEC", Some("NVIDIA")),
+                    PROFILE,
+                )
             }
         }
     };
@@ -174,7 +199,9 @@ fn codec_library() -> Available {
                 Origin::Directory(dir) => dir.display().to_string(),
                 Origin::Default => String::new(),
             },
-            name: format!(
+            // The licence's first word: LGPL, or GPL under the opt-in.
+            name: label("libavcodec", lavc.licence.split(' ').next()),
+            driver: format!(
                 "libavcodec {}.{}.{} {}",
                 lavc.version.0, lavc.version.1, lavc.version.2, lavc.licence
             ),
@@ -186,6 +213,7 @@ fn codec_library() -> Available {
         Err(refusal) => Available::unavailable(
             Backend::Software,
             "",
+            label("libavcodec", None),
             match refusal {
                 Refusal::Absent => NO_PAIR,
                 Refusal::Licence => LICENCE,
@@ -222,19 +250,37 @@ mod tests {
                 Backend::Software
             };
             assert_eq!(row.backend, expected, "slot {slot}");
+            let interface = match row.backend {
+                Backend::Vaapi => "VA-API",
+                Backend::Nvdec => "NVDEC",
+                _ => "libavcodec",
+            };
+            assert!(
+                row.name == interface || row.name.starts_with(&format!("{interface} [")),
+                "a label off the grammar: {}",
+                row.name
+            );
+            assert!(
+                !row.driver.is_empty(),
+                "a slot without the driver's words or a reason"
+            );
             if row.available {
                 assert!(row.caps.any());
-                assert!(!row.name.is_empty());
                 assert_eq!(row.handle, row.backend == Backend::Nvdec);
                 if row.backend == Backend::Software {
-                    // The licence follows the version in the name, and it is
-                    // one this build loads: LGPL always, GPL only with the
-                    // feature that says so.
+                    // The licence follows the version in the driver's words,
+                    // and it is one this build loads: LGPL always, GPL only
+                    // with the feature that says so; its first word is the
+                    // label's.
                     let licence = row
-                        .name
+                        .driver
                         .splitn(3, ' ')
                         .nth(2)
                         .expect("a name, a version, a licence");
+                    assert_eq!(
+                        row.name,
+                        format!("libavcodec [{}]", licence.split(' ').next().unwrap_or(""))
+                    );
                     assert!(
                         lowlat_drivers::lavc::accepts(licence),
                         "a software row of a licence this build refuses: {}",
@@ -244,7 +290,6 @@ mod tests {
             } else {
                 assert!(!row.caps.any(), "an unavailable slot with a capability");
                 assert!(!row.handle);
-                assert!(!row.name.is_empty(), "an unavailable slot without a reason");
             }
         }
         // The open stack's slots name their node whether or not they opened.

@@ -152,11 +152,21 @@ pub struct lowlat_decoder_info {
     /// directory the library pair was found in, or empty for the linker's
     /// own search.
     pub device: [c_char; LOWLAT_OUTPUT_MAX],
-    /// The device's or driver's own name, NUL-terminated, for a label; for
-    /// the software row, the library's version and its licence; for a slot
-    /// that is not available, the reason.
+    /// A label for a menu, NUL-terminated: the interface, and the card's
+    /// maker in brackets where it is known -- `VA-API [Intel]`, `VA-API
+    /// [AMD]`, `NVDEC [NVIDIA]`, `libavcodec [LGPL]`; the interface alone
+    /// for a slot with nothing behind it.
     pub name: [c_char; LOWLAT_DECODER_NAME_MAX],
+    /// The driver's own words, NUL-terminated (minor 13): its banner and
+    /// version for the open decoder, the device's product name for the
+    /// vendor's, the library's version and licence for software; for a slot
+    /// that is not available, why not. Filled only when `size` reaches it.
+    pub driver: [c_char; LOWLAT_DECODER_NAME_MAX],
 }
+
+/// The row's size before `driver` was appended: the least a caller may
+/// pass, and what a caller built against an older header passes.
+const DECODER_INFO_MINOR_12: usize = core::mem::offset_of!(lowlat_decoder_info, driver);
 
 /// Slot `index` of the decoder table. **The table is fixed and each call
 /// probes one slot** (minor 12): on Linux, slots 0 to 7 are the open
@@ -176,10 +186,11 @@ pub struct lowlat_decoder_info {
 /// and `frame_kind = LOWLAT_FRAME_HANDLE` on a row whose `handle` is set.
 ///
 /// @param[in] index The slot, from zero.
-/// @param[out] out One [`lowlat_decoder_info`] with `size` set, filled when
-/// there is a slot at `index`.
+/// @param[out] out One [`lowlat_decoder_info`] with `size` set, filled as
+/// far as `size` reaches when there is a slot at `index`: a caller built
+/// against an older header gets the fields it knows.
 /// @returns True with `out` filled; false past the table's end, or when
-/// `out` is null or its `size` is short.
+/// `out` is null or its `size` is shorter than the row ever was.
 ///
 /// # Safety
 ///
@@ -192,7 +203,8 @@ pub unsafe extern "C" fn lowlat_enum_decoders(index: u32, out: *mut lowlat_decod
         let Some(out) = (unsafe { out.as_mut() }) else {
             return false;
         };
-        if (out.size as usize) < core::mem::size_of::<lowlat_decoder_info>() {
+        let size = out.size as usize;
+        if size < DECODER_INFO_MINOR_12 {
             return false;
         }
         let Some(row) = ::lowlat_client::enumerate::probe(index) else {
@@ -220,10 +232,23 @@ pub unsafe extern "C" fn lowlat_enum_decoders(index: u32, out: *mut lowlat_decod
             reserved: [0; 1],
             device: [0; LOWLAT_OUTPUT_MAX],
             name: [0; LOWLAT_DECODER_NAME_MAX],
+            driver: [0; LOWLAT_DECODER_NAME_MAX],
         };
         put(&mut info.device, &row.device);
         put(&mut info.name, &row.name);
-        *out = info;
+        put(&mut info.driver, &row.driver);
+        // As much of the row as the caller's size reaches, and no more:
+        // what lies past the caller's structure is the caller's.
+        let bytes = size.min(core::mem::size_of::<lowlat_decoder_info>());
+        // SAFETY: `out` is a live structure of at least `bytes` bytes by the
+        // caller's contract, `info` a whole one, both plain data.
+        unsafe {
+            core::ptr::copy_nonoverlapping(
+                (&raw const info).cast::<u8>(),
+                core::ptr::from_mut(out).cast::<u8>(),
+                bytes,
+            );
+        }
         true
     })
 }
@@ -2794,6 +2819,17 @@ mod tests {
             "a short size"
         );
 
+        // A caller built against the row as it was before `driver`: the
+        // fields it knows are filled, nothing past its size is touched.
+        let older = DECODER_INFO_MINOR_12 as u32;
+        let mut short: lowlat_decoder_info = unsafe { core::mem::zeroed() };
+        short.size = older;
+        short.driver[0] = 0x55;
+        assert!(unsafe { lowlat_enum_decoders(0, &raw mut short) });
+        assert_eq!(short.size, older, "the caller's size is the caller's");
+        assert_eq!(short.driver[0], 0x55, "written past the caller's size");
+        assert_ne!(short.name[0], 0, "the older fields were not filled");
+
         let slots = ::lowlat_client::enumerate::SLOTS;
         let mut count = 0;
         let mut available = 0;
@@ -2804,10 +2840,12 @@ mod tests {
             }
             assert_eq!(row.index, count);
             assert_eq!(row.name[LOWLAT_DECODER_NAME_MAX - 1], 0, "terminated");
+            assert_eq!(row.driver[LOWLAT_DECODER_NAME_MAX - 1], 0, "terminated");
             let name = unsafe { core::ffi::CStr::from_ptr(row.name.as_ptr()) };
+            let driver = unsafe { core::ffi::CStr::from_ptr(row.driver.as_ptr()) };
             let device = unsafe { core::ffi::CStr::from_ptr(row.device.as_ptr()) };
             println!(
-                "[{}] {} {:?} on {:?}: h264 {} hevc {} 10 {} 444 {} 444/10 {} handle {}",
+                "[{}] {} {:?} ({:?}) on {:?}: h264 {} hevc {} 10 {} 444 {} 444/10 {} handle {}",
                 row.index,
                 if row.available {
                     "available"
@@ -2815,6 +2853,7 @@ mod tests {
                     "unavailable"
                 },
                 name,
+                driver,
                 device,
                 row.h264,
                 row.hevc,
@@ -2831,9 +2870,19 @@ mod tests {
                 lowlat_decoder::LOWLAT_DECODER_SOFTWARE
             } as u32;
             assert_eq!(row.decoder, expected, "slot {count}");
+            let interface = match expected {
+                x if x == lowlat_decoder::LOWLAT_DECODER_OPEN as u32 => "VA-API",
+                x if x == lowlat_decoder::LOWLAT_DECODER_VENDOR as u32 => "NVDEC",
+                _ => "libavcodec",
+            };
+            let label = name.to_str().expect("a label in ASCII");
             assert!(
-                !name.to_bytes().is_empty(),
-                "a slot without a name or a reason"
+                label == interface || label.starts_with(&format!("{interface} [")),
+                "a label off the grammar: {label}"
+            );
+            assert!(
+                !driver.to_bytes().is_empty(),
+                "a slot without the driver's words or a reason"
             );
             if !row.available {
                 assert!(
