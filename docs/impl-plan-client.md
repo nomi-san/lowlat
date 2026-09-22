@@ -946,7 +946,7 @@ exception as a mechanism rather than a sentence.
    gate at minor 12 with the opt-in's feature bit; the workspace's checks green with the
    feature off and on.)
 
-## Phase C9 - Full chroma on the open stack, and the listing's labels (planned and built 2026-09-22)
+## Phase C9 - Full chroma on the open stack, and the listing's labels (closed 2026-09-22)
 
 **Planned and built the same day**, on a discrete Intel part plugged into the development
 machine. The open-stack backend had refused every range-extended stream because no device
@@ -983,9 +983,20 @@ for bit through it, which made the question a bounded one.
    chroma and refuses the clips as before; the packed layouts' unpacking against a plain
    reference. (*2026-09-22*: 24 of 24 on each of the four, 0 wrong, on the Intel part; the
    AMD part reports neither depth and refuses; the unit tests pass.)
-2. [ ] A live full-chroma stream through the open stack on the Intel part, from a host that
-   sends one. Owed: neither host at hand sends full chroma at its defaults; this host's own
-   full-chroma mode is an experiment behind a probe bypass.
+2. [x] A live full-chroma stream through the open stack on the Intel part, from a host that
+   sends one. *Passed 2026-09-22*, from this host in its full-chroma mode -- neither host at
+   hand sends it at its defaults, so the stream is the one this project's own host builds
+   when the census gate is opened by hand. Ten minutes of HEVC 4:4:4 eight bits at 2560x1440
+   with motion: 11,966 pictures at the twenty a second asked for, the format the full-chroma
+   one throughout, decode 1.83 ms at the median (1.87 at the 95th percentile), never more
+   than one message behind, no skip, no loss, no late arrival, what was asked for and what
+   was declared the same. Then five minutes of the ten-bit full-chroma layout at fifteen a
+   second: 4,476 pictures, the same figures, one message behind at most.
+   **The rate is asked for rather than taken**, because the part sits on a link one lane
+   wide and the read-back is 22 ms a picture at full chroma and 23 at ten bits: asked for
+   thirty the reader fell 88 messages behind in half a minute, which is the design's stated
+   limit for a decoder slower than its stream ([10 §4.1](10-client.md)) and not a fault of
+   this phase. The log of that attempt is kept beside the two runs.
 
 ## Later, and not in v1
 

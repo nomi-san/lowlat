@@ -3,6 +3,19 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-22 - C9 closed: a live full-chroma stream through the open stack
+
+### Gate
+- Gate 2 passed ([impl-plan-client.md](impl-plan-client.md) C9), on the discrete Intel part
+  against this project's own host in its full-chroma mode, since no host at hand sends full
+  chroma at its defaults: ten minutes of HEVC 4:4:4 at eight bits and 2560x1440 with motion
+  -- 11,966 pictures at the rate asked for, the full-chroma format throughout, decode 1.83 ms
+  at the median, never more than one message behind, no skip, no loss -- and five minutes of
+  the ten-bit full-chroma layout the same way. The rate is asked for rather than taken
+  because that part's link is one lane wide and the read-back is 22 ms a picture: asked for
+  more, the reader falls behind by the difference, which is what [10 §4.1](10-client.md)
+  says a decoder slower than its stream does.
+
 ## 2026-09-22 - Phase 11.5: the vendor backend's ten-bit read against its source, the live triple read through the boundary
 
 ### Gate
