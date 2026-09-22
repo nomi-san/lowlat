@@ -23,9 +23,9 @@
 // `LOWLAT_SERVER` names the signaling service (kessel-ws.parsec.app by
 // default), `LOWLAT_DEVICE` a render node for the decoder (the first that
 // decodes by default), `LOWLAT_DECODER` one of `auto`, `open`, `vendor`,
-// `software`, `none`. The decoders this machine can open are printed at
-// start, one row each, and `LOWLAT_DECODER_INDEX` picks a row by its number
-// instead. The software row is the machine's own codec library, an LGPL
+// `software`, `none`. The decoder table is printed at start, one slot a
+// line with the unavailable ones saying why, and `LOWLAT_DECODER_INDEX`
+// picks a slot instead. The software row is the machine's own codec library, an LGPL
 // build of it or none; `LOWLAT_FFMPEG_DIR` names where its pair is.
 // `LOWLAT_HANDLE` asks for pictures as device handles, which the renderer
 // imports and draws with no copy through this process; only a decoder that
@@ -189,7 +189,7 @@ struct demo {
 
 	// The decoders this machine can open, as listed at start, and which of
 	// them the session decodes on; the chord moves to the next.
-	lowlat_decoder_info rows[8];
+	lowlat_decoder_info rows[32];
 	unsigned row_count;
 	unsigned row;
 
@@ -1536,7 +1536,14 @@ int main(void)
 	lowlat_decoder_info row;
 	memset(&row, 0, sizeof row);
 	row.size = (uint32_t) sizeof row;
+	// The table is fixed and every slot answers; the rows kept are the
+	// available ones, the rest printed with their reason and passed over.
 	for (uint32_t i = 0; lowlat_enum_decoders(i, &row); i++) {
+		if (!row.available) {
+			printf("demo: decoder [%u] unavailable%s%s: %s\n", row.index,
+				row.device[0] ? " on " : "", row.device, row.name);
+			continue;
+		}
 		printf("demo: decoder [%u] %s on %s: h264 %ux%u, hevc %ux%u%s%s%s, %s\n",
 			row.index, row.name, row.device[0] ? row.device : "any device",
 			row.max_width_h264, row.max_height_h264,

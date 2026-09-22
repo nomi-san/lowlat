@@ -23,6 +23,15 @@ const LIBVA_DRM: [&CStr; 2] = [c"libva-drm.so.2", c"libva-drm.so"];
 
 pub type GetDisplayDrm = unsafe extern "C" fn(c_int) -> VADisplay;
 pub type Initialize = unsafe extern "C" fn(VADisplay, *mut c_int, *mut c_int) -> VAStatus;
+/// A message the runtime would otherwise print, with the context given when
+/// the callback was set.
+pub type MessageCallback = unsafe extern "C" fn(*mut core::ffi::c_void, *const c_char);
+/// Sets a display's error or info callback and returns the previous one.
+pub type SetMessageCallback = unsafe extern "C" fn(
+    VADisplay,
+    Option<MessageCallback>,
+    *mut core::ffi::c_void,
+) -> Option<MessageCallback>;
 pub type Terminate = unsafe extern "C" fn(VADisplay) -> VAStatus;
 pub type MaxNumProfiles = unsafe extern "C" fn(VADisplay) -> c_int;
 pub type QueryConfigProfiles =
@@ -192,6 +201,11 @@ pub struct Vaapi {
     pub max_num_image_formats: MaxNumImageFormats,
     pub query_image_formats: QueryImageFormats,
     pub get_display_drm: GetDisplayDrm,
+    /// The runtime's own messages, routed into this library's log per
+    /// display rather than written to the process's standard error; absent
+    /// on a runtime older than the ones that offer them, which then prints.
+    set_error_callback: Option<SetMessageCallback>,
+    set_info_callback: Option<SetMessageCallback>,
     /// Last, so both outlive the addresses taken from them.
     _libva_drm: Library,
     _libva: Library,
@@ -257,6 +271,8 @@ impl Vaapi {
                 get_display_drm: libva_drm
                     .symbol(c"vaGetDisplayDRM")
                     .ok_or(Error::MissingSymbol)?,
+                set_error_callback: libva.symbol(c"vaSetErrorCallback"),
+                set_info_callback: libva.symbol(c"vaSetInfoCallback"),
                 _libva_drm: libva_drm,
                 _libva: libva,
             })
@@ -307,6 +323,20 @@ impl Vaapi {
             return Err(Error::NoDevice);
         }
 
+        // The runtime's messages go to this library's log from here on,
+        // including what the initialisation below says while it looks for a
+        // driver; nothing this library loads writes to the process's
+        // standard error. Per display, so no global state is touched.
+        // SAFETY: the display is live; the callbacks take no context.
+        unsafe {
+            if let Some(set) = self.set_error_callback {
+                set(raw, Some(on_error), core::ptr::null_mut());
+            }
+            if let Some(set) = self.set_info_callback {
+                set(raw, Some(on_info), core::ptr::null_mut());
+            }
+        }
+
         let mut major: c_int = 0;
         let mut minor: c_int = 0;
         // SAFETY: both out pointers are to live locals.
@@ -325,6 +355,28 @@ impl Vaapi {
             version: (major, minor),
         })
     }
+}
+
+/// A message the runtime calls an error, into the log as a warning: what it
+/// says is diagnostic, and whether the call failed is its status.
+unsafe extern "C" fn on_error(_: *mut core::ffi::c_void, message: *const c_char) {
+    if message.is_null() {
+        return;
+    }
+    // SAFETY: the runtime hands a NUL-terminated string, live for the call.
+    let text = unsafe { CStr::from_ptr(message) }.to_string_lossy();
+    lowlat_common::log_warn!("vaapi: {}", text.trim_end());
+}
+
+/// A message the runtime calls information -- which driver it tried and
+/// what that answered -- into the log at debug.
+unsafe extern "C" fn on_info(_: *mut core::ffi::c_void, message: *const c_char) {
+    if message.is_null() {
+        return;
+    }
+    // SAFETY: as above.
+    let text = unsafe { CStr::from_ptr(message) }.to_string_lossy();
+    lowlat_common::log_debug!("vaapi: {}", text.trim_end());
 }
 
 impl<'a> Display<'a> {

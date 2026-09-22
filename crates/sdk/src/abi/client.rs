@@ -110,14 +110,15 @@ pub struct lowlat_client_create_info {
 /// The longest name a decoder's row carries.
 pub const LOWLAT_DECODER_NAME_MAX: usize = 128;
 
-/// One decoder this machine can open, as [`lowlat_enum_decoders`] reports
-/// it: what creation takes to open exactly this one, and what it decodes.
+/// One slot of the decoder table, as [`lowlat_enum_decoders`] reports it:
+/// what creation takes to open exactly this one, and what it decodes --
+/// or, with `available` clear, why nothing opens there.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct lowlat_decoder_info {
     /// Set by the caller to `sizeof(lowlat_decoder_info)`.
     pub size: u32,
-    /// Its position in the enumeration.
+    /// Its slot in the table, the `index` it was asked for.
     pub index: u32,
     /// One of [`lowlat_decoder`], `LOWLAT_DECODER_OPEN`,
     /// `LOWLAT_DECODER_VENDOR` or `LOWLAT_DECODER_SOFTWARE`: what
@@ -139,7 +140,12 @@ pub struct lowlat_decoder_info {
     /// Whether it hands pictures out as a handle: what
     /// `lowlat_client_create_info.frame_kind = LOWLAT_FRAME_HANDLE` needs.
     pub handle: bool,
-    pub reserved: [u8; 2],
+    /// Whether a decoder opened in this slot (minor 12). Clear, every
+    /// capability above is false and `name` says why: a node that is not
+    /// there, a device ordinal past the last, a codec library that is not
+    /// one this build loads. A loop skips such rows.
+    pub available: bool,
+    pub reserved: [u8; 1],
     /// The render node, NUL-terminated, for `lowlat_client_create_info
     /// .device`; empty for the vendor's device when no node names it, which
     /// creation takes as the first device. For the software row, the
@@ -147,24 +153,32 @@ pub struct lowlat_decoder_info {
     /// own search.
     pub device: [c_char; LOWLAT_OUTPUT_MAX],
     /// The device's or driver's own name, NUL-terminated, for a label; for
-    /// the software row, the library's version and its licence.
+    /// the software row, the library's version and its licence; for a slot
+    /// that is not available, the reason.
     pub name: [c_char; LOWLAT_DECODER_NAME_MAX],
 }
 
-/// The `index`-th decoder this machine can open, in a fixed order: the
-/// open decoder on each render node that decodes, then the vendor's on
-/// each of its devices, then the software decoder when a codec library
-/// this build loads is found. Callers iterate from zero until this returns
-/// false. Each call probes the devices afresh, a few milliseconds, so it is
-/// for a startup or a settings screen, not a loop.
+/// Slot `index` of the decoder table. **The table is fixed and each call
+/// probes one slot** (minor 12): on Linux, slots 0 to 7 are the open
+/// decoder on render nodes `renderD128` to `renderD135`, 8 to 15 the
+/// vendor's on its devices by ordinal, 16 the software decoder from the
+/// codec library's own search. The same slot means the same thing on every
+/// machine and every call, and nothing is remembered between calls: each
+/// call opens its one slot the way creation opens it and closes it again,
+/// so a loop from zero until false costs every slot once -- a few
+/// milliseconds for most, some hundred and fifty for a vendor device whose
+/// five capabilities are each proved by a real decoder. A slot with nothing
+/// usable behind it still answers true, with `available` clear and the
+/// reason in `name`; the loop skips it. For a startup or a settings screen,
+/// not a per-frame call.
 ///
-/// A row is opened by creation with its `decoder` and `device`, and
-/// `frame_kind = LOWLAT_FRAME_HANDLE` on a row whose `handle` is set.
+/// An available row is opened by creation with its `decoder` and `device`,
+/// and `frame_kind = LOWLAT_FRAME_HANDLE` on a row whose `handle` is set.
 ///
-/// @param[in] index The position, from zero.
+/// @param[in] index The slot, from zero.
 /// @param[out] out One [`lowlat_decoder_info`] with `size` set, filled when
-/// there is a decoder at `index`.
-/// @returns True with `out` filled; false past the last decoder, or when
+/// there is a slot at `index`.
+/// @returns True with `out` filled; false past the table's end, or when
 /// `out` is null or its `size` is short.
 ///
 /// # Safety
@@ -181,8 +195,7 @@ pub unsafe extern "C" fn lowlat_enum_decoders(index: u32, out: *mut lowlat_decod
         if (out.size as usize) < core::mem::size_of::<lowlat_decoder_info>() {
             return false;
         }
-        let rows = ::lowlat_client::enumerate::enumerate();
-        let Some(row) = usize::try_from(index).ok().and_then(|i| rows.get(i)) else {
+        let Some(row) = ::lowlat_client::enumerate::probe(index) else {
             return false;
         };
         let mut info = lowlat_decoder_info {
@@ -203,7 +216,8 @@ pub unsafe extern "C" fn lowlat_enum_decoders(index: u32, out: *mut lowlat_decod
             hevc_444: row.caps.hevc_444,
             hevc_444_10: row.caps.hevc_444_10,
             handle: row.handle,
-            reserved: [0; 2],
+            available: row.available,
+            reserved: [0; 1],
             device: [0; LOWLAT_OUTPUT_MAX],
             name: [0; LOWLAT_DECODER_NAME_MAX],
         };
@@ -2763,9 +2777,12 @@ mod tests {
         }
     }
 
-    /// The enumeration runs from zero until false, every row is one
-    /// creation could open, and a bad out-parameter is false rather than a
-    /// write. On a machine with no decoder the first call is the last.
+    /// **The table runs from zero until false, and every slot answers.**
+    /// A slot is the same thing on every call; an available row is one
+    /// creation opens by its own values, an unavailable one decodes
+    /// nothing and says why; a bad out-parameter is false rather than a
+    /// write. On a machine with no decoder every slot is unavailable, which
+    /// is an answer.
     #[test]
     fn the_decoders_enumerate_until_false() {
         assert!(!unsafe { lowlat_enum_decoders(0, core::ptr::null_mut()) });
@@ -2777,54 +2794,26 @@ mod tests {
             "a short size"
         );
 
+        let slots = ::lowlat_client::enumerate::SLOTS;
         let mut count = 0;
+        let mut available = 0;
         loop {
             row.size = core::mem::size_of::<lowlat_decoder_info>() as u32;
             if !unsafe { lowlat_enum_decoders(count, &raw mut row) } {
                 break;
             }
             assert_eq!(row.index, count);
-            assert!(
-                row.decoder == lowlat_decoder::LOWLAT_DECODER_OPEN as u32
-                    || row.decoder == lowlat_decoder::LOWLAT_DECODER_VENDOR as u32
-                    || row.decoder == lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32
-            );
-            assert!(row.h264 || row.hevc, "a row that decodes nothing");
-            assert_eq!(
-                row.handle,
-                row.decoder == lowlat_decoder::LOWLAT_DECODER_VENDOR as u32
-            );
-            if row.decoder == lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32 {
-                // The last row, and the one that opens by its kind and the
-                // directory it names, planes only.
-                let mut info = no_decoder();
-                info.decoder = row.decoder;
-                info.device = row.device;
-                let mut handle: *mut lowlat_client = core::ptr::null_mut();
-                assert_eq!(
-                    unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
-                    LOWLAT_OK,
-                    "the software row did not open by its own values"
-                );
-                unsafe { lowlat_client_destroy(handle) };
-                info.frame_kind = lowlat_frame_kind::LOWLAT_FRAME_HANDLE as u32;
-                assert_eq!(
-                    unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
-                    LOWLAT_ERR_DECODER_UNSUPPORTED
-                );
-                let mut next: lowlat_decoder_info = unsafe { core::mem::zeroed() };
-                next.size = core::mem::size_of::<lowlat_decoder_info>() as u32;
-                assert!(
-                    !unsafe { lowlat_enum_decoders(count + 1, &raw mut next) },
-                    "a row after the software row"
-                );
-            }
             assert_eq!(row.name[LOWLAT_DECODER_NAME_MAX - 1], 0, "terminated");
             let name = unsafe { core::ffi::CStr::from_ptr(row.name.as_ptr()) };
             let device = unsafe { core::ffi::CStr::from_ptr(row.device.as_ptr()) };
             println!(
-                "[{}] {:?} on {:?}: h264 {} hevc {} 10 {} 444 {} 444/10 {} handle {}",
+                "[{}] {} {:?} on {:?}: h264 {} hevc {} 10 {} 444 {} 444/10 {} handle {}",
                 row.index,
+                if row.available {
+                    "available"
+                } else {
+                    "unavailable"
+                },
                 name,
                 device,
                 row.h264,
@@ -2834,8 +2823,58 @@ mod tests {
                 row.hevc_444_10,
                 row.handle
             );
+            let expected = if count < ::lowlat_client::enumerate::OPEN_SLOTS {
+                lowlat_decoder::LOWLAT_DECODER_OPEN
+            } else if count < slots - 1 {
+                lowlat_decoder::LOWLAT_DECODER_VENDOR
+            } else {
+                lowlat_decoder::LOWLAT_DECODER_SOFTWARE
+            } as u32;
+            assert_eq!(row.decoder, expected, "slot {count}");
+            assert!(
+                !name.to_bytes().is_empty(),
+                "a slot without a name or a reason"
+            );
+            if !row.available {
+                assert!(
+                    !(row.h264 || row.hevc || row.hevc_10 || row.hevc_444 || row.hevc_444_10),
+                    "an unavailable slot with a capability"
+                );
+                assert!(!row.handle);
+                count += 1;
+                continue;
+            }
+            available += 1;
+            assert!(
+                row.h264 || row.hevc,
+                "an available row that decodes nothing"
+            );
+            assert_eq!(
+                row.handle,
+                row.decoder == lowlat_decoder::LOWLAT_DECODER_VENDOR as u32
+            );
+            // Every available row opens by its own values, planes; the
+            // software one refuses the handle kind.
+            let mut info = no_decoder();
+            info.decoder = row.decoder;
+            info.device = row.device;
+            let mut handle: *mut lowlat_client = core::ptr::null_mut();
+            assert_eq!(
+                unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
+                LOWLAT_OK,
+                "slot {count} did not open by its own values"
+            );
+            unsafe { lowlat_client_destroy(handle) };
+            if row.decoder == lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32 {
+                info.frame_kind = lowlat_frame_kind::LOWLAT_FRAME_HANDLE as u32;
+                assert_eq!(
+                    unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
+                    LOWLAT_ERR_DECODER_UNSUPPORTED
+                );
+            }
             count += 1;
         }
-        println!("{count} decoders");
+        assert_eq!(count, slots, "the table's length");
+        println!("{available} of {count} slots available");
     }
 }

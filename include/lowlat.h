@@ -1388,12 +1388,13 @@ typedef struct lowlat_event {
 #endif
 
 #if defined(LOWLAT_CLIENT)
-/// One decoder this machine can open, as `lowlat_enum_decoders` reports
-/// it: what creation takes to open exactly this one, and what it decodes.
+/// One slot of the decoder table, as `lowlat_enum_decoders` reports it:
+/// what creation takes to open exactly this one, and what it decodes --
+/// or, with `available` clear, why nothing opens there.
 typedef struct lowlat_decoder_info {
     /// Set by the caller to `sizeof(lowlat_decoder_info)`.
     uint32_t size;
-    /// Its position in the enumeration.
+    /// Its slot in the table, the `index` it was asked for.
     uint32_t index;
     /// One of `lowlat_decoder`, `LOWLAT_DECODER_OPEN`,
     /// `LOWLAT_DECODER_VENDOR` or `LOWLAT_DECODER_SOFTWARE`: what
@@ -1415,7 +1416,12 @@ typedef struct lowlat_decoder_info {
     /// Whether it hands pictures out as a handle: what
     /// `lowlat_client_create_info.frame_kind = LOWLAT_FRAME_HANDLE` needs.
     bool handle;
-    uint8_t reserved[2];
+    /// Whether a decoder opened in this slot (minor 12). Clear, every
+    /// capability above is false and `name` says why: a node that is not
+    /// there, a device ordinal past the last, a codec library that is not
+    /// one this build loads. A loop skips such rows.
+    bool available;
+    uint8_t reserved[1];
     /// The render node, NUL-terminated, for `lowlat_client_create_info
     /// .device`; empty for the vendor's device when no node names it, which
     /// creation takes as the first device. For the software row, the
@@ -1423,7 +1429,8 @@ typedef struct lowlat_decoder_info {
     /// own search.
     char device[LOWLAT_OUTPUT_MAX];
     /// The device's or driver's own name, NUL-terminated, for a label; for
-    /// the software row, the library's version and its licence.
+    /// the software row, the library's version and its licence; for a slot
+    /// that is not available, the reason.
     char name[LOWLAT_DECODER_NAME_MAX];
 } lowlat_decoder_info;
 
@@ -2407,20 +2414,27 @@ lowlat_status lowlat_debug_panic(lowlat_host *hl) LOWLAT_NOEXCEPT;
 #endif
 
 #if defined(LOWLAT_CLIENT)
-/// The `index`-th decoder this machine can open, in a fixed order: the
-/// open decoder on each render node that decodes, then the vendor's on
-/// each of its devices, then the software decoder when a codec library
-/// this build loads is found. Callers iterate from zero until this returns
-/// false. Each call probes the devices afresh, a few milliseconds, so it is
-/// for a startup or a settings screen, not a loop.
+/// Slot `index` of the decoder table. **The table is fixed and each call
+/// probes one slot** (minor 12): on Linux, slots 0 to 7 are the open
+/// decoder on render nodes `renderD128` to `renderD135`, 8 to 15 the
+/// vendor's on its devices by ordinal, 16 the software decoder from the
+/// codec library's own search. The same slot means the same thing on every
+/// machine and every call, and nothing is remembered between calls: each
+/// call opens its one slot the way creation opens it and closes it again,
+/// so a loop from zero until false costs every slot once -- a few
+/// milliseconds for most, some hundred and fifty for a vendor device whose
+/// five capabilities are each proved by a real decoder. A slot with nothing
+/// usable behind it still answers true, with `available` clear and the
+/// reason in `name`; the loop skips it. For a startup or a settings screen,
+/// not a per-frame call.
 ///
-/// A row is opened by creation with its `decoder` and `device`, and
-/// `frame_kind = LOWLAT_FRAME_HANDLE` on a row whose `handle` is set.
+/// An available row is opened by creation with its `decoder` and `device`,
+/// and `frame_kind = LOWLAT_FRAME_HANDLE` on a row whose `handle` is set.
 ///
-/// @param[in] index The position, from zero.
+/// @param[in] index The slot, from zero.
 /// @param[out] out One `lowlat_decoder_info` with `size` set, filled when
-/// there is a decoder at `index`.
-/// @returns True with `out` filled; false past the last decoder, or when
+/// there is a slot at `index`.
+/// @returns True with `out` filled; false past the table's end, or when
 /// `out` is null or its `size` is short.
 ///
 /// @attention `out` is null or points to one `lowlat_decoder_info` whose `size` is
