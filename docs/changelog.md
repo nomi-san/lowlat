@@ -3,6 +3,23 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-22 - C9: full chroma on the open stack, the listing's labels (minor 13)
+
+### Added
+- **Full chroma through the open stack where the driver decodes into a layout the library
+  reads**: the range-extension structures staged, the profile settled by the stream's own
+  parameter set, the packed eight-bit and ten-bit layouts a discrete Intel part hands out
+  unpacked in the read-back into the same two full-chroma formats the other backends give.
+  Reported only where such a layout is offered; verified bit for bit on the four committed
+  full-chroma clips on an Arc A380 ([10 §5.1](10-client.md), [09 §7a](09-compatibility.md)).
+- **Every decoder row a label**, `VA-API [Intel]`, `VA-API [AMD]`, `NVDEC [NVIDIA]`,
+  `libavcodec [LGPL]`, with the driver's own words in a new **`driver`** field appended to
+  `lowlat_decoder_info`; the row is filled as far as the caller's size reaches
+  ([06 §6](06-api.md), [§11](06-api.md)).
+- The software decoder's worker count is a named rule with a test: never more workers than
+  the machine has threads, and no thread of the library's raised above the application's
+  ([10 §5.1](10-client.md)).
+
 ## 2026-09-22 - an Intel Arc A380 on the open stack, measured
 
 ### Measured

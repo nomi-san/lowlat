@@ -874,7 +874,11 @@ re-probed the whole machine. A slot with nothing usable behind it still answers 
 `available` clear, every capability false and the reason in `name` -- a node that is not
 there, a device past the last, a codec library the build does not load -- and a loop skips
 it. An available row is a decoder creation will open, named by the two values creation
-takes. For a startup or a settings screen, not a per-frame call.
+takes; its `name` is a label for a menu, the interface and the card's maker (`VA-API
+[Intel]`, `NVDEC [NVIDIA]`, `libavcodec [LGPL]`), and `driver` (minor 13) the driver's own
+words -- its banner and version, the device's product name, the library's version and
+licence, or why the slot is unavailable. For a startup or a settings screen, not a per-frame
+call.
 
 Two-call pattern: pass `NULL` to learn the count, then a buffer. **Nothing returned by this API
 is heap allocated on the caller's behalf**, so there is no free function and no ownership
@@ -1041,6 +1045,13 @@ fixed table of slots probed one at a time ([§6](#6-enumeration)): a slot with n
 it now answers true with the bit clear where the first shape listed only what opened, so a
 loop written against minor 11 that reads capabilities still works and one that counts rows
 now counts slots. Nothing moves.
+
+**Minor 13** (2026-09-22) appends `driver` to `lowlat_decoder_info` ([§6](#6-enumeration)) and
+makes `name` a label: the interface and the card's maker -- `VA-API [Intel]`, `VA-API [AMD]`,
+`NVDEC [NVIDIA]`, `libavcodec [LGPL]` -- where it had carried the driver's own words, which
+now sit in `driver` together with a slot's reason for being unavailable. The row is filled as
+far as the caller's `size` reaches, so a caller built against minor 12 gets the fields it
+knows. Nothing moves.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected

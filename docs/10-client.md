@@ -322,7 +322,7 @@ with the stage named rather than asking the host for keyframes it would fail on 
 
 | backend | reached through | hands out |
 |---|---|---|
-| VA-API | the driver's own interface, loaded at runtime | planes by read-back; the surface's own buffer descriptor, later |
+| VA-API | the driver's own interface, loaded at runtime | planes by read-back, full chroma included where the driver decodes into a layout the library reads (*2026-09-22*, C9); the surface's own buffer descriptor, later |
 | NVDEC | the vendor's decode interface, loaded at runtime | planes by a device-to-host copy; an exportable slot filled by a device copy (§4) |
 | software | the machine's own libavcodec, loaded at runtime and only when it is an LGPL build (*built 2026-09-21*, C8) | planes, converted from the decoder's own layout during the copy |
 
@@ -341,7 +341,10 @@ render nodes, the vendor's device by ordinal, the codec library last -- each pro
 as creation probes it and alone, with what it decodes, its size limits and whether it
 exports a handle, so an application shows a menu or picks by capability rather than
 guessing at a name; a slot with nothing behind it says so and why (*corrected 2026-09-22*:
-the first shape re-probed the whole machine on every call). Nothing is linked: a machine
+the first shape re-probed the whole machine on every call). Each row carries a label for a
+menu -- the interface and the card's maker, `VA-API [Intel]`, `VA-API [AMD]`, `NVDEC
+[NVIDIA]`, `libavcodec [LGPL]` -- and the driver's own words beside it (*2026-09-22*, minor
+13). Nothing is linked: a machine
 without any of the three refuses with the stage named, exactly as a host without an encoder
 does. Nothing this library loads writes to the application's standard error: the open
 stack's own messages go to the library's log, per display.
@@ -370,7 +373,12 @@ device behind it, and the listing must not promise it. The library's pixel forma
 resolved by name because they are numbered differently on a 4.x pair than on 5.x and later
 (measured: the ten-bit formats sit two higher there). Slice threading, capped at four and by
 the machine's parallelism, and nothing else: the low-delay flag was measured on every
-committed clip and changed nothing, so it is not set. Every committed clip decodes bit-exact
+committed clip and changed nothing, so it is not set. **The workers never outnumber the
+machine's threads, and no thread of the library's is raised above the application's**: the
+library runs inside the application's process, and workers past the cores, or above the
+window's own thread, starve the message pump on a two-core machine and read as the
+application hanging -- a rule written down (*2026-09-22*) with its test, after a client
+generation compared here shipped exactly that fault. Every committed clip decodes bit-exact
 through an LGPL 7.1 pair and the second codec's through an 8.x one, full chroma and ten-bit
 included, with one documented exception: **a stream that reorders more than it declares
 loses a picture at each depth the library discovers** -- a picture arriving for an earlier
@@ -390,6 +398,20 @@ one core, 360 MB resident. From the established
 host over the internet, at its own cadence and bitrate (few, large pictures on a still
 desktop, up to 60 KB each), decode 2.8 ms at the median and 7.9 at the 95th percentile:
 the software decoder's time follows the bits in a picture, not the rate.
+
+**Full chroma on the open stack, where the driver's layout is one the library reads**
+(*built 2026-09-22*, C9). The open-stack backend refused every range-extended stream because
+no device it was built on could verify the surface it would read back. A discrete Intel
+part can: its driver decodes HEVC Main 4:4:4 at eight and ten bits into packed layouts --
+V, U, Y and a fourth byte per sample, and a word per sample with ten bits each of U, Y and
+V -- and the four committed full-chroma clips come back bit for bit through the
+range-extension parameter structures and an unpacking in the read-back copy, into the same
+two full-chroma formats the vendor's and the software backend hand out. The capability is
+reported only where the driver offers, for the profile, a layout the library reads (planar,
+or the two packed ones), so a part that lists the profile with another layout is not asked
+for it; the stream's own parameter set settles depth and chroma, the declaration only
+guesses, and a stream the range extensions allow but no profile here takes -- half chroma,
+the extension tools on a 4:2:0 stream -- is refused outright as before.
 
 **One decoder is chosen at creation and there is no automatic fallback to another**
 (*2026-09-19*, *amended 2026-09-21*). An established client offers the second codec and

@@ -881,6 +881,47 @@ exception as a mechanism rather than a sentence.
    gate at minor 12 with the opt-in's feature bit; the workspace's checks green with the
    feature off and on.)
 
+## Phase C9 - Full chroma on the open stack, and the listing's labels (planned and built 2026-09-22)
+
+**Planned and built the same day**, on a discrete Intel part plugged into the development
+machine. The open-stack backend had refused every range-extended stream because no device
+it was built on could verify the surface it would read back ([10 §5.1](10-client.md)); the
+part's driver decodes HEVC Main 4:4:4 at both depths into packed layouts, and the ffmpeg
+command-line tool's own hardware path brought the four committed full-chroma clips back bit
+for bit through it, which made the question a bounded one.
+
+- [x] **Full chroma where the driver's layout is one the backend reads** (`lowlat-decode`,
+  `lowlat-drivers`): the range-extension picture and slice structures staged for a
+  full-chroma stream (the base ones lead them, so one storage serves both), the profile and
+  render-target format from the stream's own parameter set rather than the declaration's
+  guess, surfaces asked for in the first layout the backend reads among those the driver
+  offers for the profile (planar, then the packed eight-bit and ten-bit ones), and the
+  read-back copy unpacking them into the two full-chroma formats the other backends hand
+  out. The capability is reported only where such a layout is offered; a driver listing the
+  profile with another layout is not asked for it, and a stream the range extensions allow
+  but no profile here takes is refused as before. *C9.0, 2026-09-22.*
+- [x] **The workers never outnumber the machine**, and no thread is raised: the software
+  decoder's slice-worker count is a named rule with a test, after a client generation
+  compared here hung a two-core machine with four workers above the window's own thread.
+  *C9.0.*
+- [x] **Every row a label and the driver's words** (`lowlat-client`, `lowlat-sdk`, minor 13):
+  `name` is the interface and the card's maker -- `VA-API [Intel]`, `VA-API [AMD]`, `NVDEC
+  [NVIDIA]`, `libavcodec [LGPL]` -- and `driver`, appended and filled as far as the caller's
+  size reaches, carries what `name` used to: the banner, the product, the version and
+  licence, or the reason a slot is unavailable. *C9.1.*
+- [x] Documentation: 10 §5.1, 06 §6/§11, 09 §7a, the changelog. *2026-09-22.*
+
+**Gate:**
+
+1. [x] The four committed full-chroma clips bit-exact through the open stack on the Intel
+   part, the rest of the clips unchanged there and on the AMD part, which reports no full
+   chroma and refuses the clips as before; the packed layouts' unpacking against a plain
+   reference. (*2026-09-22*: 24 of 24 on each of the four, 0 wrong, on the Intel part; the
+   AMD part reports neither depth and refuses; the unit tests pass.)
+2. [ ] A live full-chroma stream through the open stack on the Intel part, from a host that
+   sends one. Owed: neither host at hand sends full chroma at its defaults; this host's own
+   full-chroma mode is an experiment behind a probe bypass.
+
 ## Later, and not in v1
 
 - **A Windows client**: the completion-port receive path in the shell ([02 §6](02-io-shell.md)),
