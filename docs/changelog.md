@@ -9,8 +9,12 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - Gate 1's vendor half ([impl-plan.md](impl-plan.md) 11.5): the ten-bit test lengthened past
   its in-flight depth, and 120 pictures of HEVC Main 10 from the vendor encoder decoded by an
   outside decoder -- 120 of 120 -- read 88.2 dB in luma at worst and bit for bit on most,
-  chroma no worse than 76 dB, flat across the run. Open on the Vulkan backend alone, which
-  has no readback to compare against.
+  chroma no worse than 76 dB, flat across the run. And the Vulkan backend the same way,
+  through the path the host drives: nothing reads the encoder's picture back, so every
+  source picture is converted a second time into a readable target and that is what is
+  kept beside the stream; sixty pictures of a coloured bar over a coloured field decoded as
+  Main 10 -- 60 of 60 -- read 70.5 dB on the refresh picture and bit for bit on every
+  predicted one. Gate 1 is met on all three backends.
 - Gate 5 met: the C# host, reading `lowlat_host_get_status` once a second, printed the
   codec, chroma and depth moving with a guest's requests -- ten-bit on, off, on and off
   again across seven encoder generations -- while the guest's decoded format followed
