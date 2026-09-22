@@ -6,23 +6,37 @@
 # The toolkit is built from its own tree with its own makefile; the library
 # is the SDK crate's release build; the demo links the two. Nothing here
 # knows a package manager.
+#
+# LOWLAT_LIB names a directory holding a built liblowlat.so instead: no
+# library is built, the demo links the one there, and its run path is
+# ../lib relative to itself, which is where a packaged demo finds it.
 
 ROOT    := $(abspath ../..)
 MATOYA  := $(ROOT)/third_party/matoya
 ARCH    := $(shell uname -m)
 TARGET  := $(ROOT)/target/release
 
+ifeq ($(LOWLAT_LIB),)
+LIBDIR  := $(TARGET)
+LIBDEP  := $(TARGET)/liblowlat.so
+RPATH   := $(TARGET)
+else
+LIBDIR  := $(LOWLAT_LIB)
+LIBDEP  :=
+RPATH   := '$$ORIGIN/../lib'
+endif
+
 CFLAGS  := -std=c11 -D_POSIX_C_SOURCE=200809L -O2 -Wall -Wextra -Wno-unused-parameter \
            -I$(ROOT)/include -I$(MATOYA)/src
 LIBS    := $(MATOYA)/bin/linux/$(ARCH)/libmatoya.a \
-           -L$(TARGET) -llowlat -Wl,-rpath,$(TARGET) \
+           -L$(LIBDIR) -llowlat -Wl,-rpath,$(RPATH) \
            -lc -ldl -lpthread -lm
 
 SOURCES := main.c signaling.c pads.c
 
 all: client
 
-client: $(SOURCES) signaling.h pads.h keys.h $(MATOYA)/bin/linux/$(ARCH)/libmatoya.a $(TARGET)/liblowlat.so
+client: $(SOURCES) signaling.h pads.h keys.h $(MATOYA)/bin/linux/$(ARCH)/libmatoya.a $(LIBDEP)
 	$(CC) $(CFLAGS) -o $@ $(SOURCES) $(LIBS)
 
 $(MATOYA)/bin/linux/$(ARCH)/libmatoya.a:

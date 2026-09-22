@@ -2,7 +2,12 @@ name: ci
 
 on:
   push:
-    branches: [master, main]
+    branches:
+      - main
+      - feat/*
+      - fix/*
+      - release/*
+      - pre/*
   pull_request:
 
 env:
@@ -25,10 +30,12 @@ jobs:
       # colour matrix: comparing a converted desktop against its source is
       # nearly blind to one, because a desktop is mostly grey and a grey pixel
       # carries no colour for a matrix to act on.
+      # The toolkit's shader compiler is for the demo below: its shader
+      # headers are made at build time, not committed.
       - name: Install a graphics driver for the conversion test
         run: |
           sudo apt-get update
-          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers libegl1 libgl1-mesa-dri libgbm1 vulkan-tools
+          sudo apt-get install -y libvulkan1 mesa-vulkan-drivers libegl1 libgl1-mesa-dri libgbm1 vulkan-tools glslang-tools
 
       # What the software driver on this runner offers, in the log, so a test
       # refused an interface can be read against the driver rather than
@@ -59,6 +66,16 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+      # Each half alone. Everything else here builds all features or the
+      # defaults, under which a reference from one half into the other's
+      # crates compiles; it is an error only when that other half is absent,
+      # which is the build a platform that can only be a client makes.
+      - name: Clippy, the client half alone
+        run: cargo clippy -p lowlat-sdk --no-default-features --features client -- -D warnings
+
+      - name: Clippy, the host half alone
+        run: cargo clippy -p lowlat-sdk --no-default-features --features host -- -D warnings
+
       - name: Tests
         run: cargo test --workspace --all-features
 
@@ -70,6 +87,25 @@ jobs:
 
       - name: Build release
         run: cargo build --workspace --release
+
+      # The client-only library, copied out at once: it lands on the same
+      # file the release build above wrote, and any later build would land on
+      # it in turn, so nothing reads it from where cargo put it.
+      - name: Build the client-only library
+        run: |
+          cargo build --release -p lowlat-sdk --no-default-features --features client
+          mkdir -p "$RUNNER_TEMP/client-only/lib"
+          cp target/release/liblowlat.so "$RUNNER_TEMP/client-only/lib/"
+          if nm -D --defined-only "$RUNNER_TEMP/client-only/lib/liblowlat.so" | grep -q ' lowlat_host_'; then
+            echo "a host symbol in the client-only library"; exit 1
+          fi
+
+      # The demo linked against that copy: the one thing that links the client
+      # symbols the way an application does, so a name the client half lost
+      # fails here, at the link, rather than in somebody's integration. A
+      # feature bit only says which half was asked for.
+      - name: Build the demo against the client-only library
+        run: make -C examples/client LOWLAT_LIB="$RUNNER_TEMP/client-only/lib" client
 
   loom:
     name: model checking
