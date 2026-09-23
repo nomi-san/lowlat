@@ -5,7 +5,8 @@ and C4 2026-09-18; C5's decode half planned, built and gated 2026-09-19, its sec
 planned and built the same evening; C7 (the pad reports) 2026-09-20, C8 (the software
 decoder, a decoder chosen mid-session) 2026-09-21, C9 (full chroma on the open stack)
 2026-09-22; C6 (packaging) closes the set, and this document was read against the code
-once more at its closure. Built by [impl-plan-client.md](impl-plan-client.md).
+once more at its closure. §11, the relay, planned 2026-09-23 as C10. Built by
+[impl-plan-client.md](impl-plan-client.md).
 
 The client is the other half of the same protocol: it receives what [05](05-host.md) produces.
 Everything below the media -- the wire, the rings, acknowledgement and recovery, connectivity,
@@ -34,7 +35,7 @@ piece of shared code that changes.
 
 | | host | client |
 |---|---|---|
-| connectivity role | answers an offer; walks a base port per guest | makes the offer; one socket |
+| connectivity role | answers an offer; walks a base port per guest | makes the offer; one socket; allocates a relay when the application configures one (§11) |
 | session | one per guest, all fed by one encode | one |
 | the media path | capture, convert, encode, packetize | reassemble, decode, hand out |
 | the clock | the display's refresh paces the loop | there is no clock: the newest picture is shown when asked for |
@@ -782,3 +783,36 @@ receive ring, where the catch-up of §3 sees it; the sound pool never blocks it 
 drops. The software decoder's slice workers are the one addition, capped by the machine's
 parallelism (§5.1). Every rule of [02](02-io-shell.md) applies -- raw wakes for raw waits,
 no elevated priority inside the library, teardown that wakes every waiter.
+
+## §11 The relay
+
+*Planned 2026-09-23 as C10 ([impl-plan-client.md](impl-plan-client.md)). The rules are
+[03 §7](03-connectivity.md); this section is the client's side of them.*
+
+**The client allocates the relay, and the host never learns there is one.** An application
+that cannot reach a host directly -- a probe timeout, or a host it knows sits behind one
+forwarded port -- configures a relay with the attempt: the server as `host:port`, resolved like
+the reflexive servers, and a username and password. The credential is never logged and is
+cleared when it is dropped.
+
+**A relay configured makes the attempt a relay attempt**, and a relay attempt is relay-only:
+the socket talks to the relay alone, the attempt's candidate events carry the relayed address
+and then the readiness marker and nothing else, and every check goes through the relay. The
+relayed address goes out marked as a server-reflexive candidate, and its event is raised only
+once the relay's own address is permitted, so a host on the relay's machine has its first
+check pass.
+
+**The relay is one more framing on the same socket**, not a second transport: recognised by
+its source before anything is classified, unwrapped there, and wrapped on the way out for
+everything bound to the relayed peer -- checks, their answers and records alike -- so no answer
+can leave outside it. Its renewals are timers among the session's own, on the receive loop's
+thread, and nothing waits on the relay.
+
+**What the application sees.** Status carries the relayed address and whether the path is
+relayed. Three outcomes end an attempt the relay failed -- unreachable, refused, lost
+([03 §9](03-connectivity.md)) -- and the library retries none of them. A clean leave releases
+the allocation.
+
+**What it costs**: one more hop, whose far leg is local to the host's machine -- 0.8 ms of
+round trip against a direct session on the same pair, measured before this was written -- and
+4 bytes a datagram on the client's leg once the path is bound to a channel, 36 before that.

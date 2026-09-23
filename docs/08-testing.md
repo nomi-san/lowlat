@@ -68,6 +68,11 @@ What it is for:
   streaming and in under a second of simulated time.
 - **Adversarial conditions that a real network will not produce on demand**, such as a
   reordering window wide enough to expose an anti-replay bug on a reliable channel.
+- **The relay** ([03 §7](03-connectivity.md), C10): a relay server written from its
+  specification rather than from the client's codec, with a deployed relay's behaviours --
+  permissions that lapse at 300 seconds, a nonce that rotates, an allocation destroyed by a
+  send toward loopback -- so five minutes and a rotation run in milliseconds, and the relay on
+  the host's machine behind one forwarded port is a topology like the other six.
 
 What it is not for: performance. The simulator has no realistic timing and any latency number
 from it is meaningless.
@@ -80,7 +85,10 @@ under topologies the developer's network cannot produce.
 Fixtures: full cone, restricted cone, port restricted, symmetric, carrier-grade double
 translation, hairpin, and multihome -- a host carrying two addresses, probed at the
 secondary, where the peer's own port restricted translator is the assertion that the
-answer came back from the address that was asked (2026-08-29).
+answer came back from the address that was asked (2026-08-29). And, with C10, a real relay
+server and a host endpoint in one namespace behind one forwarded port, the client behind
+symmetric translation: the one fixture in which the relay's bytes come from somebody else's
+implementation.
 
 - Each fixture is a script that builds the topology, runs the case, and tears it down, leaving
   no state behind.
@@ -119,7 +127,7 @@ Every byte that arrives from the network is parsed by a fuzz target:
 - cleartext packets and the group acknowledgement
 - control messages and their bodies
 - connectivity check messages
-- relay framing
+- relay framing, and every answer, indication and channel message a relay can send (C10)
 - **the pointer's picture** ([10 §7](10-client.md)): the PNG a host sends, taken apart,
   inflated and unfiltered by the client's own reader, seeded with six pictures an
   established host sent in a recorded session. Those six are also fixtures: each decodes

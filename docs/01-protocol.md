@@ -346,8 +346,12 @@ Probing:
    acknowledged while smaller packets on the same channel are acknowledged is a failure at
    that size, and probing stops there for the session.
 4. Clamp at 1472 on a direct path.
-5. When relayed, subtract the relay framing before clamping: 36 bytes for a data indication,
-   4 bytes for channel data.
+5. When relayed, subtract the relay framing before clamping: 36 bytes for a data indication
+   toward an IPv4 peer and 48 toward an IPv6 one, each padded to four bytes, and 4 bytes for
+   channel data. The relay is the client's ([03 §7](03-connectivity.md)), so only the client
+   knows its path is relayed; a host's probes cross the relay's framing on the far leg without
+   knowing it. The ladder already fits: its top rung, 1400, plus the largest framing, 51
+   bytes, is under 1472.
 6. On any path change, reset to 1229 and probe again.
 
 A failed probe is indistinguishable from a peer with a smaller receive buffer, and the correct

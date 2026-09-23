@@ -163,34 +163,24 @@ gate is satisfied where the risk actually is.
    retransmission bound. *The frame-level form of this, bounded freeze with no reference chain
    broken, belongs to Gate A, where frames exist.*
 
-**Not in scope:** the relay (Phase 2b); gateway port mapping ([03 §6](03-connectivity.md));
-real sockets outside the fixtures and the two-machine run.
+**Not in scope:** the relay (Phase 2b, dropped; the client's C10); gateway port mapping
+([03 §6](03-connectivity.md)); real sockets outside the fixtures and the two-machine run.
 
 ---
 
-## Phase 2b - Relay
+## Phase 2b - Relay (dropped 2026-09-23)
 
-**Scheduled after Gate A, not after Phase 2.** Nothing before Gate A depends on it, and it has
-no test surface until Phase 2's fixtures exist. Kept here because it is connectivity work and
-belongs beside the rest of it; the plan's document order and its commit order differ for this
-one item only.
-
-- [ ] Relay client (RFC 5766): allocation, permissions, channel binding, refresh, and consent.
-- [ ] The relayed address is advertised as an ordinary candidate, so the peer needs no relay
-  support of its own ([03 §7](03-connectivity.md)).
-
-**Gate:**
-
-1. Relay fallback succeeds when direct connectivity fails, in the simulator and in the
-   symmetric namespace fixture.
-2. Relay framing overhead is accounted for in receive sizing; a full-size datagram survives the
-   relay path. *Named regression test.*
-3. A peer that does not answer checks arriving from the relayed address produces a typed
-   outcome rather than a path that silently carries nothing.
-
-**Scope:** client side only, against an ordinary external relay server. No server, no default
-address compiled in, and reaching the relay over a stream transport is deferred. The datagram
-clamp for both framings already landed in Phase 1 and is not re-litigated here.
+**Dropped: the relay is the client's, not the host's** ([00 D15](00-overview.md),
+[03 §7](03-connectivity.md)). This phase planned the host as a relay client against an
+external server. The deployment relaying is for puts the relay on the host's own machine
+behind one forwarded port, where a relay allocated by the host would hand the remote peer a
+private address; the arrangement works only when the connecting side allocates, and then it
+needs nothing of the host at all, so it serves every established host and not only this one.
+The work moved to the client plan's C10 ([impl-plan-client.md](impl-plan-client.md)), and its
+gate went with it: relay fallback in the simulator and a namespace fixture, relay framing in
+receive sizing, and a typed outcome for a relay that fails. The host needs nothing new -- a
+relayed address is an ordinary candidate to it -- and the datagram clamp for both framings,
+which landed in Phase 1, stays.
 
 ---
 
@@ -1936,6 +1926,11 @@ arbitration; a paired Bluetooth pad at the client, if one is paired.
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
 
+- 2026-09-23: **Phase 2b dropped; the relay is the client's.** The deployment relaying is for
+  puts the relay on the host's own machine behind one forwarded port, where only the
+  connecting side can allocate usefully, and a client-side relay asks nothing of any host. The
+  work and its gate moved to the client plan's C10 ([00 D15](00-overview.md),
+  [03 §7](03-connectivity.md)); the host needs nothing new.
 - 2026-09-21: **Gate leg 1 passed; Phase 7's absolute pointer reshaped (14.5).** The day on
   rumble found nothing wrong with the relay and three things about its consumers
   ([07 §4.2](07-platforms.md)); one of them was ours to fix: the absolute pointer's five

@@ -1,7 +1,8 @@
 # 03 - Connectivity
 
-**Status:** locked 2026-08-15. Implemented by `lowlat-core` (state machines) and `lowlat-net`
-(sockets), per [00-overview.md](00-overview.md) D4.
+**Status:** locked 2026-08-15; §7 rewritten 2026-09-23, when the relay moved from the host to
+the client ([00-overview.md](00-overview.md) D15). Implemented by `lowlat-core` (state
+machines) and `lowlat-net` (sockets), per [00-overview.md](00-overview.md) D4.
 
 Connectivity is inside the sans-IO boundary. Candidates and received packets go in, packets
 and events come out, and time is a parameter. This is not an aesthetic choice: the failures in
@@ -225,40 +226,129 @@ not depend on it, because the relay is ours.
 
 ## §7 Relay
 
-When no direct path exists, media can be forwarded through a relay allocated by us.
+When no direct path exists, media can be forwarded through a relay, and **the client is the
+one that allocates it** (*rewritten 2026-09-23*, [00 D15](00-overview.md): this section used
+to plan the host as the relay client, and that plan is dropped). The host takes no part: it is
+offered one more candidate, checks it like any other, and sends plain datagrams to it.
 
 **This is our addition, not a protocol requirement**, and the design consequence matters: the
-peer needs no relay support at all. We allocate, we advertise the relayed address as one of our
-candidates, and the peer sends there as it would to any other candidate. From the peer's side
+peer needs no relay support at all. We allocate, we advertise the relayed address as our
+candidate, and the peer sends there as it would to any other candidate. From the peer's side
 nothing is different.
 
 That matters more than it might appear, because **most peers have no relay of their own**. The
 protocol's native relay offering is a paid-tier feature, absent for free and consumer-tier
-users, and it is an endpoint both sides connect out to rather than a standard allocation. So
-relay availability cannot be assumed from the peer, cannot be negotiated, and must be
-transparent to it. A design that expected the far side to participate in relay setup would
-work for a minority of sessions.
+users, and it is an endpoint both sides connect out to rather than a standard allocation; it is
+neither used nor imitated here. So relay availability cannot be assumed from the peer, cannot
+be negotiated, and must be transparent to it. A design that expected the far side to
+participate in relay setup would work for a minority of sessions.
 
-Requirements:
+### §7.1 Where the relay runs
 
-- Standard relay allocation, permissions, and channel binding. Client side only; operating a
-  relay server is out of scope, and no default server address is compiled in.
-- **The peer must answer binding checks arriving from the relayed address.** If it does not,
-  the relay withholds media and the path silently produces nothing. This is a real failure
-  mode with real peers and is why §4 requires answering checks unconditionally.
-- **Receive buffers must account for relay framing.** The relay wraps our datagram in its own
-  header, so a buffer sized for the media datagram alone discards every full-size packet while
-  small control packets pass. It presents as a working connection that never shows video, and
-  it is independent of the network. Sizing is specified in [02 §5](02-io-shell.md) and is
-  derived from the protocol ceiling plus a fixed relay margin.
-- **Reaching the relay over a stream transport is deferred.** It cannot sit behind the sans-IO
-  boundary, where there is no async runtime and no transport security, so it is a shell concern
-  if it is ever wanted. The datagram transport is the whole of the first implementation.
+**The supported deployment puts the relay on the host's own machine**, and it is the reason
+the client is the one that allocates:
 
-**Scheduled after Gate A** ([impl-plan.md](impl-plan.md) Phase 2b). The host is a relay
-*client* against an ordinary external server. It is not a relay server, it does not run one
-alongside itself, and it does not reach one over loopback; a design that co-locates the two is
-a different component solving a different problem and nothing here is derived from it.
+- **One forwarded port.** The host's router forwards the relay's listening port and nothing
+  else. The relay's allocation range stays on the host's side of the router.
+- **The relayed address is the machine's own local address.** The relay is configured with no
+  external address, so the address it hands out is the one its sockets are bound to, and the
+  host reaches it by local delivery to its own address -- never through the router and never
+  over loopback. The host's traffic arrives at the relay from the host's own address and port,
+  unchanged.
+- **The client's side crosses anything.** The client talks to one server address for the life
+  of the session, an ordinary outbound flow that the strictest translation passes, so a client
+  that cannot be punched at all is still reached.
+- **Configuring the relay's external address breaks it.** The relayed address becomes the
+  router's public one, both legs hairpin through the router into an allocation range nobody
+  forwarded, and allocation and permission both succeed while no media ever arrives.
+- **Only the client can use this arrangement.** A relay allocated by the host on its own
+  machine would hand the remote peer a private address. Allocated by the client, the relayed
+  address only has to be reachable by the host, which is on the same machine.
+
+A relay on a public server works the same way from the client's side; nothing in the client
+depends on where the relay runs, only the deployment does. Operating a relay server is not
+this project's: nothing ships one, and no default server address is compiled in.
+
+### §7.2 A relay attempt
+
+**A relay attempt is relay-only.** When the application configures a relay, the attempt
+advertises the relayed address and the readiness marker and nothing else: no host candidate,
+no reflexive candidate, and no reflexive server is asked. Every check leaves through the
+relay. A host on the same network cannot quietly turn a relay attempt into a direct one, and
+the path an attempt reports is the path it uses.
+
+The order is fixed, and its third step is the one that matters:
+
+1. Allocate: the server's challenge, then the authenticated request.
+2. Permit the machine the relayed address belongs to -- the host's own, when the relay runs
+   there.
+3. **Only then** advertise the relayed address, and the readiness marker after it
+   ([04 §3](04-signaling.md)).
+
+A relayed address advertised before its permission exists has the host's first checks dropped
+at the relay, silently. The host keeps checking, but its punch now finishes after ours, and
+the media sent meanwhile reaches a reader still expecting checks: it presents at the host as
+unparseable connectivity messages and at the client as resends, and it costs the session its
+first second.
+
+- **Permissions are per address and independent.** After the relay's machine, each host
+  candidate's address is permitted as it arrives, so a host elsewhere on the relay's network is
+  reached too. A server that refuses one address refuses only that one, and a request that goes
+  unanswered is sent again. One request may name several addresses, but then one refusal sinks
+  all of them, so each goes alone. An IPv6 address is not asked for on an IPv4 allocation.
+- **Answers leave the way the check came.** A check that arrived through the relay is answered
+  through the relay, before the path exists and for as long as the session lasts, while the
+  host keeps checking the path it uses (§4). A relayed check answered from the socket directly
+  goes to an address the host cannot be reached at, and a host whose checks go unanswered
+  withholds media.
+- **Nothing is relayed toward a loopback address.** A candidate or a check source on loopback
+  is not permitted, not checked, and never sent to through the relay. A deployed relay destroys
+  the allocation that sends toward loopback, so one such candidate, hostile or mistaken, would
+  end the session.
+- **Media rides a channel.** Once the path exists it is bound to a channel, and media carries 4
+  bytes of framing instead of 36; checks travel as indications. A relay delivers both forms and
+  both are accepted, padded or not.
+- **The path follows the host.** After establishment the client sends to the address the
+  host's authenticated traffic arrives from, whichever of its candidates answered first.
+- **Receive buffers account for the framing.** The relay wraps each datagram in its own header,
+  so a buffer sized for the media datagram alone discards every full-size packet while small
+  control packets pass. It presents as a working connection that never shows video, and it is
+  independent of the network. Sizing is specified in [02 §5](02-io-shell.md), from the protocol
+  ceiling plus a fixed relay margin, which holds the largest indication: 51 bytes of framing,
+  toward an IPv6 peer.
+
+### §7.3 Keeping the relay
+
+- **A permission lasts 300 seconds, and traffic does not extend it.** Each is re-issued well
+  before it lapses, every 240 seconds, and a channel binding is renewed on the same cadence,
+  which renews its address's permission too. A permission left to lapse makes the relay drop
+  both directions without a word: the session freezes at five minutes and times out a minute
+  later.
+- **The allocation is refreshed at half its lifetime.** An answer with no lifetime, or a zero
+  one, is read as the lifetime asked for; otherwise the next refresh falls due in the past and
+  the requests storm.
+- **The class is two bits, and they are not adjacent.** A success response sets one of them
+  and an error response sets both, so an error carries the success bit as well. Reading one bit
+  takes every error for a success, and a refused renewal goes unnoticed until the permission
+  lapses.
+- **A stale nonce is a challenge.** A relay rotates its nonce every few minutes and answers the
+  next request with a stale-nonce error that carries the new one; the nonce is adopted and the
+  request sent again. A session that cannot do this dies at the first rotation.
+- **No exchange with the relay blocks the reader.** A request is state and a deadline in the
+  same stream the media arrives on; a reader that waits for one answer discards the media that
+  arrives meanwhile.
+- **Failure is typed and final** (§9). No answer to the allocation, a refused allocation, or a
+  hard error on a renewal mid-session ends the attempt with its own outcome; nothing is retried
+  forever.
+- **A clean leave releases the allocation**, with a refresh of zero lifetime, rather than
+  holding a relay port until it expires.
+
+### §7.4 Transport
+
+**Reaching the relay over a stream transport is deferred.** It cannot sit behind the sans-IO
+boundary, where there is no async runtime and no transport security, so it is a shell concern
+if it is ever wanted. The datagram transport is the whole of the first implementation, and the
+relayed address is IPv4.
 
 ## §8 Policy and the ladder
 
@@ -273,10 +363,12 @@ to reach back through a seam it does not own.
 So the ladder is:
 
 1. Direct punch with whatever candidates were gathered. Report the outcome.
-2. The application, seeing a typed failure, may start a new attempt with mapping or relay
-   enabled.
+2. The application, seeing a typed failure, may start a new attempt with a relay configured,
+   which makes it a relay attempt (§7.2), or with mapping enabled.
 
-The active path is reported so the application can display it and decide.
+An application that knows its host is reachable only through a relay may start with the relay
+attempt; nothing requires a failed direct attempt first. The active path is reported, relayed
+or direct, so the application can display it and decide.
 
 ## §9 Failure outcomes
 
@@ -288,7 +380,9 @@ completely between them.
 | peer gone | the other side abandoned the attempt | give up, inform the user |
 | no permission | rejected before connectivity began | do not retry |
 | probe timeout | probes sent, nothing answered | retry with mapping or relay |
-| relay unreachable | allocation failed or was blocked | retry direct, or a different relay |
+| relay unreachable | the relay never answered the allocation | retry direct, or a different relay |
+| relay refused | the relay refused the credentials or the allocation, or is full | fix the configuration; the same relay refuses again |
+| relay lost | a renewal was refused or went unanswered mid-session | reconnect; the relay has already let the allocation go |
 
 A probe timeout is the only one that justifies escalation. Retrying the others wastes the
 user's time and, on a rejection, looks like an attack to the far side.
@@ -349,6 +443,14 @@ whether the peer imposes any ordering requirement between candidate arrival and 
 probe.
 
 **Ours by design, with no peer-side counterpart:** the relay path in §7 in its entirety.
+
+**Confirmed 2026-09-23, with the deployment of §7.1 and an established host:** the host took
+the relayed address as an ordinary candidate, reached it by local delivery to its own address,
+and streamed at 0.8 ms more round trip than a direct session on the same pair. Measured against
+the same deployed relay the same day: it relays to its own machine's address with full-size
+datagrams intact, delivers channel data both ways, keeps its allocation range off the router,
+grants a permission for any address it is asked for, and destroys an allocation that sends
+toward loopback, which no closed port, hostless address or router hairpin did.
 
 **Confirmed against two browser families, 2026-09-12 and 2026-09-13:** the fixed controlled
 role against a full agent that is always controlling; sixteen pending answers under a check
