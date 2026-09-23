@@ -3,8 +3,9 @@
 #
 # The simulator proves the state machine against translation we described. This
 # proves it against translation somebody else implemented, which is the only
-# thing that checks the description. Six topologies, each stating the outcome it
-# expects, and half of them expect failure.
+# thing that checks the description. Each topology states the outcome it
+# expects, and several expect failure. The relay's pair runs a real relay
+# server, the machine's own turnserver, and is skipped where there is none.
 #
 # Requires root, and skips rather than fails when it cannot have it.
 #
@@ -41,6 +42,12 @@ LEFT_UFRAG=aaaa
 LEFT_PWD=passwordforaaaa
 RIGHT_UFRAG=bbbb
 RIGHT_PWD=passwordforbbbb
+
+# The relay on the host's machine: the one port its router forwards, and the
+# credential the relay attempt carries.
+RELAY_PORT=3478
+RELAY_USER=user
+RELAY_PASS=password
 
 pass=0
 fail=0
@@ -155,6 +162,47 @@ nat_restricted_cone() {
         meta l4proto udp update @contacted "{ ip daddr }" masquerade to ":$4" || return 1
     ip netns exec "$1" nft add rule ip nat pre iifname "$2" ip saddr @contacted \
         udp dport "$4" dnat to "$3:$4"
+}
+
+# ns ext_if inner_ip port relay_ip -> port restricted as above, with the
+# relay's one port forwarded to the machine inside: the only hole a relay on
+# the host's own machine needs, and the only inbound the guard lets through.
+nat_forwarded() {
+    nat_table "$1" || return 1
+    nat_guard "$1" || return 1
+    ip netns exec "$1" nft add rule ip nat guard iifname "$2" udp dport $RELAY_PORT accept || return 1
+    ip netns exec "$1" nft add rule ip nat guard iifname "$2" ct state new drop || return 1
+    ip netns exec "$1" nft add rule ip nat pre iifname "$2" udp dport $RELAY_PORT \
+        dnat to "$5:$RELAY_PORT" || return 1
+    ip netns exec "$1" nft add rule ip nat post oifname "$2" meta l4proto udp masquerade to ":$4"
+}
+
+# ns ip -> a real relay on that machine, configured as the deployment is: its
+# relayed addresses are the machine's own, with no external address, so the
+# relay range never needs the router.
+start_relay() {
+    cat >"$RUN/turnserver.conf" <<CONF
+listening-ip=$2
+listening-port=$RELAY_PORT
+relay-ip=$2
+min-port=49152
+max-port=49252
+lt-cred-mech
+user=$RELAY_USER:$RELAY_PASS
+realm=relay.example
+userdb=$RUN/turndb
+no-tls
+no-dtls
+no-cli
+verbose
+simple-log
+no-stdout-log
+log-file=$RUN/turn.log
+pidfile=$RUN/turn.pid
+CONF
+    ip netns exec "$1" turnserver -c "$RUN/turnserver.conf" >"$RUN/turn.out" 2>&1 &
+    echo $! >"$RUN/relay.pid"
+    sleep 1
 }
 
 # Start the reflexive server. It only ever reports the address it saw.
@@ -433,17 +481,83 @@ topology_hairpin() {
     judge "hairpin" established
 }
 
+# The deployment of docs/03-connectivity.md 7.1 against a real relay: the relay
+# and the host on one machine behind a router that forwards the relay's one
+# port, the client behind a symmetric translator no punch crosses. The host
+# offers its own address and nothing else; the client makes a relay attempt,
+# publishes the relayed address, and must reach the host through the relay.
+# The host is judged too: its path must be the relayed address.
+topology_relay_host_box() {
+    build_two_sided || return 1
+    nat_symmetric llgwa exta || return 1
+    nat_forwarded llgwb extb 192.168.20.2 $RIGHT_PORT 192.168.20.2 || return 1
+    start_server
+    start_relay llhb 192.168.20.2
+    echo "192.168.20.2:$RIGHT_PORT" >"$RUN/b.cand"
+    ip netns exec llha "$PEER" peer --bind "192.168.10.2:$LEFT_PORT" \
+        --relay "$RIGHT_PUBLIC:$RELAY_PORT" --relay-user "$RELAY_USER" --relay-pass "$RELAY_PASS" \
+        --publish "$RUN/a.cand" --await "$RUN/b.cand" \
+        --local-ufrag "$LEFT_UFRAG" --local-pwd "$LEFT_PWD" \
+        --remote-ufrag "$RIGHT_UFRAG" --remote-pwd "$RIGHT_PWD" \
+        --seed 161 --timeout-ms "$TIMEOUT_MS" $VERBOSE >"$RUN/a.out" 2>&1 &
+    local a=$!
+    start_peer llhb "192.168.20.2:$RIGHT_PORT" "$RUN/b.unused" "$RUN/a.cand" \
+        "$RIGHT_UFRAG" "$RIGHT_PWD" "$LEFT_UFRAG" "$LEFT_PWD" 178 "$RUN/b.out"
+    local b=$!
+    wait "$a" 2>/dev/null
+    wait "$b" 2>/dev/null
+
+    local relayed left right
+    relayed=$(grep -Eo '^relayed .*' "$RUN/a.out" | head -1 | cut -d' ' -f2)
+    left=$(grep -Eo '^(established|failed|timeout).*' "$RUN/a.out" | tail -1)
+    right=$(grep -Eo '^(established|failed|timeout).*' "$RUN/b.out" | tail -1)
+    if [[ $relayed == 192.168.20.2:* && $left == "established 192.168.20.2:$RIGHT_PORT" \
+        && $right == "established $relayed" ]]; then
+        pass=$((pass + 1))
+        log "  PASS relay-host-box: relayed at $relayed, left [$left] right [$right]"
+    else
+        fail=$((fail + 1))
+        log "  FAIL relay-host-box: relayed [$relayed], left [$left] right [$right]"
+    fi
+}
+
+# The same topology with the client making a direct attempt, which must fail,
+# so the case above passes on the relay rather than on a topology anything
+# could cross.
+topology_relay_host_box_without_relay() {
+    build_two_sided || return 1
+    nat_symmetric llgwa exta || return 1
+    nat_forwarded llgwb extb 192.168.20.2 $RIGHT_PORT 192.168.20.2 || return 1
+    start_server
+    echo "192.168.20.2:$RIGHT_PORT" >"$RUN/b.cand"
+    start_peer llha "192.168.10.2:$LEFT_PORT" "$RUN/a.cand" "$RUN/b.cand" \
+        "$LEFT_UFRAG" "$LEFT_PWD" "$RIGHT_UFRAG" "$RIGHT_PWD" 161 "$RUN/a.out"
+    local a=$!
+    start_peer llhb "192.168.20.2:$RIGHT_PORT" "$RUN/b.unused" "$RUN/a.cand" \
+        "$RIGHT_UFRAG" "$RIGHT_PWD" "$LEFT_UFRAG" "$LEFT_PWD" 178 "$RUN/b.out"
+    local b=$!
+    wait "$a" 2>/dev/null
+    wait "$b" 2>/dev/null
+    judge "relay-host-box-without-relay" failed
+}
+
 run_topology() {
     log "$1:"
     cleanup
     mkdir -p "$RUN"
+    if [[ $1 == relay-* ]] && ! command -v turnserver >/dev/null; then
+        log "  SKIP $1: no turnserver on this machine"
+        return
+    fi
     if ! "topology_$(echo "$1" | tr - _)"; then
         fail=$((fail + 1))
         log "  FAIL $1: could not build the topology"
     fi
-    if [[ -f $RUN/server.pid ]]; then
-        kill "$(cat "$RUN/server.pid")" 2>/dev/null
-    fi
+    for pid in server relay; do
+        if [[ -f $RUN/$pid.pid ]]; then
+            kill "$(cat "$RUN/$pid.pid")" 2>/dev/null
+        fi
+    done
     cleanup
 }
 
@@ -463,6 +577,7 @@ fi
 trap cleanup EXIT
 
 ALL="port-restricted full-cone restricted-cone symmetric carrier-grade hairpin multihome"
+ALL+=" relay-host-box relay-host-box-without-relay"
 if [[ $# -gt 0 ]]; then
     topologies=("$@")
 else

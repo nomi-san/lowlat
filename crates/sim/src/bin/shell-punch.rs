@@ -14,6 +14,11 @@
 //! The reflexive candidate is polled from the engine rather than read off a
 //! return value. A shell processes datagrams in batches and has nowhere to put a
 //! per-datagram result, which is exactly why the engine retains it.
+//!
+//! With `--relay host:port`, `--relay-user` and `--relay-pass` the endpoint
+//! makes a relay attempt instead (docs/03-connectivity.md 7.2): it publishes
+//! the relayed address once the relay has one, takes the peer's address as the
+//! host's own, and sends everything through the relay.
 
 use std::env;
 use std::fs;
@@ -27,6 +32,7 @@ use lowlat_core::channel::{RecvRing, SlotMeta};
 use lowlat_core::conn::{Conn, Credentials, Kind, State};
 use lowlat_core::endpoint::Endpoint;
 use lowlat_core::envelope::Envelope;
+use lowlat_core::relay::{Relay, State as RelayState};
 use lowlat_core::send::{SendRing, SendSlot};
 use lowlat_core::session::Session;
 use lowlat_net::{Shell, Socket, Wake};
@@ -114,13 +120,40 @@ fn peer(args: &[String]) -> Result<(), String> {
         )
         .map_err(|e| e.to_string())?;
 
+    let relay = match flag(args, "--relay") {
+        Some(server) => Some((
+            server
+                .parse::<SocketAddr>()
+                .map_err(|_| "bad --relay".to_string())?,
+            required(args, "--relay-user")?,
+            required(args, "--relay-pass")?,
+        )),
+        None => None,
+    };
+    let endpoint = match relay {
+        Some((server, username, password)) => Endpoint::relayed(
+            conn,
+            session,
+            Relay::new(server, username, password, [!seed_byte; 16], 0.0),
+        ),
+        None => Endpoint::new(conn, session),
+    };
+
     let socket = Socket::open(bind.port()).map_err(|e| format!("open {}: {e}", bind.port()))?;
     let wake = Wake::new().map_err(|e| format!("wake: {e}"))?;
-    let mut shell = Shell::new(socket, wake, Endpoint::new(conn, session));
+    let mut shell = Shell::new(socket, wake, endpoint);
+    // A relay attempt's peer is a host offering its own address; a direct
+    // attempt's peer publishes the address a reflexive server saw.
+    let peer_kind = if relay.is_some() {
+        Kind::Direct
+    } else {
+        Kind::Reflexive
+    };
 
     for pair in args.windows(2) {
         let (name, value) = (&pair[0], &pair[1]);
-        if name == "--server" {
+        // A relay attempt asks no reflexive server.
+        if name == "--server" && relay.is_none() {
             let server: SocketAddr = value.parse().map_err(|_| "bad --server".to_string())?;
             shell
                 .endpoint()
@@ -179,7 +212,7 @@ fn peer(args: &[String]) -> Result<(), String> {
         let turn = shell
             .turn(|endpoint| {
                 while let Ok(addr) = inbox.try_recv() {
-                    if endpoint.conn().add_candidate(addr, Kind::Reflexive).is_ok() {
+                    if endpoint.add_candidate(addr, peer_kind).is_ok() {
                         arrived = Some(addr);
                     }
                     // The rendezvous file is the whole of this fixture's
@@ -216,6 +249,17 @@ fn peer(args: &[String]) -> Result<(), String> {
             }
             published = true;
             println!("reflexive {mapped}");
+        }
+        if !published && let Some(relayed) = shell.endpoint().relay().and_then(Relay::relayed) {
+            if let Some(path) = publish.as_ref() {
+                fs::write(path, relayed.to_string()).map_err(|e| format!("publish: {e}"))?;
+            }
+            published = true;
+            println!("relayed {relayed}");
+        }
+        if let Some(RelayState::Failed(failure)) = shell.endpoint().relay().map(Relay::state) {
+            println!("failed {failure:?}");
+            return Ok(());
         }
 
         match shell.endpoint().conn().state() {
