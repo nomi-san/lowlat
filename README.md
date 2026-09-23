@@ -38,7 +38,10 @@ What works today, measured on one desktop (KDE Plasma on Wayland, Debian 13):
   it is an LGPL build, and handed out as planes or as a device handle; sound, input, the
   host's pointer, a DualShock 4 or a DualSense sent as its own reports. Measured for ten
   minutes at a time against an established host at every phase
-  ([docs/10-client.md](docs/10-client.md)). The C demo on the application toolkit is
+  ([docs/10-client.md](docs/10-client.md)). **A relay attempt** reaches a host no punch
+  reaches, through a relay on the host's own machine behind the one port its router forwards,
+  with no part taken by the host; streamed that way against an established host for a minute
+  so far, the twelve-minute gate still to run. The C demo on the application toolkit is
   [examples/client](examples/client).
 
 What does not, yet:

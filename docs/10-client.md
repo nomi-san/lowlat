@@ -786,8 +786,8 @@ no elevated priority inside the library, teardown that wakes every waiter.
 
 ## §11 The relay
 
-*Planned 2026-09-23 as C10 ([impl-plan-client.md](impl-plan-client.md)). The rules are
-[03 §7](03-connectivity.md); this section is the client's side of them.*
+*Planned and built 2026-09-23 as C10 ([impl-plan-client.md](impl-plan-client.md)), minor 14.
+The rules are [03 §7](03-connectivity.md); this section is the client's side of them.*
 
 **The client allocates the relay, and the host never learns there is one.** An application
 that cannot reach a host directly -- a probe timeout, or a host it knows sits behind one
@@ -811,8 +811,17 @@ thread, and nothing waits on the relay.
 **What the application sees.** Status carries the relayed address and whether the path is
 relayed. Three outcomes end an attempt the relay failed -- unreachable, refused, lost
 ([03 §9](03-connectivity.md)) -- and the library retries none of them. A clean leave releases
-the allocation.
+the allocation, **after the departure**: the relay's own requests leave ahead of anything else,
+so a release made at once would let the relay go before the departure crossed it, and it is
+made once the departure has had its grace instead. The session thread raises the relayed
+address the pass it becomes ready rather than on the reflexive candidates' slower cadence,
+because the pass that readies the relay may be the last for a while.
+
+**The media follows the host.** Once there is a path, media goes to wherever the host's
+authenticated records come from, and a channel is bound to it; a host whose traffic leaves
+through its own translator is checked at one address and speaks from another.
 
 **What it costs**: one more hop, whose far leg is local to the host's machine -- 0.8 ms of
-round trip against a direct session on the same pair, measured before this was written -- and
-4 bytes a datagram on the client's leg once the path is bound to a channel, 36 before that.
+round trip against a direct session on the same pair, measured before this was written with an
+earlier implementation; 27 ms at the median through the same relay with this one -- and 4 bytes
+a datagram on the client's leg once the path is bound to a channel, 36 before that.

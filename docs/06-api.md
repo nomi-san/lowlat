@@ -347,7 +347,7 @@ have moved by itself; an application that kept its own copy would mark the wrong
 **Planned 2026-09-15, built from 2026-09-17 by [impl-plan-client.md](impl-plan-client.md).**
 Everything below is in the header (minor 4 the session, minor 5 the pictures, minor 6 the
 input, minor 7 the sound, minor 8 the preferences and the handle, minor 9 the cursor and the
-metrics, minor 10 the pad reports); the header is the truth.
+metrics, minor 10 the pad reports, minor 14 the relay); the header is the truth.
 
 ```c
 lowlat_status lowlat_client_create(const lowlat_client_create_info *info, lowlat_client **out);
@@ -563,6 +563,21 @@ one takes the legacy path regardless. Nothing in the library speaks to a signali
 (D3); the example client does, itself. `end_connection` says goodbye on the control channel
 and gives the message a moment to arrive; it raises no event, because the application caused
 it.
+
+**A relay makes the attempt a relay attempt** (minor 14; [03 §7](03-connectivity.md),
+[10 §11](10-client.md)). `lowlat_client_config.relay` names it as `host:port`, resolved to its
+first IPv4 address, with `relay_username` and `relay_password` beside it; a relay without both,
+or whose name does not resolve, is refused as an invalid argument while the caller can still
+fix it. A relay attempt asks no reflexive server and raises no host candidate: its one
+candidate event is the relayed address, marked as a reflexive server's report, followed by the
+readiness event, and both come only once the relay has allocated and permitted its own
+machine. `lowlat_client_status` carries the relayed address and port once there is one, and
+`relayed`, whether the path goes through the relay. A relay that does not answer in time ends
+the attempt with `LOWLAT_OUTCOME_RELAY_UNREACHABLE`, one that refuses the credential or the
+allocation with `LOWLAT_OUTCOME_RELAY_REFUSED`, and one that lets the allocation go mid-session
+with `LOWLAT_OUTCOME_RELAY_LOST`; nothing is retried. The credential is never logged, the
+library clears every copy it takes, and a clean leave releases the allocation once the
+departure has gone through it.
 
 **The seam's types are shared.** `lowlat_candidate`, `lowlat_credentials`,
 `lowlat_transport`, `lowlat_event` and its bodies are declared for either half, so an
@@ -1053,6 +1068,15 @@ makes `name` a label: the interface and the card's maker -- `VA-API [Intel]`, `V
 now sit in `driver` together with a slot's reason for being unavailable. The row is filled as
 far as the caller's `size` reaches, so a caller built against minor 12 gets the fields it
 knows. Nothing moves.
+
+**Minor 14** (2026-09-23) is the relay ([§3b](#3b-client)): `relay`, `relay_username` and
+`relay_password` appended to `lowlat_client_config` with `LOWLAT_RELAY_CREDENTIAL_MAX`;
+`relay_address`, `relay_port` and `relayed` appended to `lowlat_client_status`; the outcomes
+`LOWLAT_OUTCOME_RELAY_UNREACHABLE`, `_REFUSED` and `_LOST`. Nothing moves. **Both structures
+are read and filled as far as the caller's `size` reaches**, with the size they had at minor
+13 as the least accepted. Until this minor each was refused unless `size` covered the whole
+of it, which would have refused every caller built against an earlier header the first time
+either grew; the rule above had not been kept for them, and is now.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected

@@ -72,7 +72,11 @@ What it is for:
   specification rather than from the client's codec, with a deployed relay's behaviours --
   permissions that lapse at 300 seconds, a nonce that rotates, an allocation destroyed by a
   send toward loopback -- so five minutes and a rotation run in milliseconds, and the relay on
-  the host's machine behind one forwarded port is a topology like the other six.
+  the host's machine behind one forwarded port is a topology like the other six. The network
+  gains what that needs: a router's forwarded port, and delivery between hosts behind one
+  translator. **The long run is made twice, through a relay that binds channels and one that
+  refuses them**, because a binding renews its address's permission too: a permission renewed
+  late passed with a channel bound and stalled the media at 305 s without one.
 
 What it is not for: performance. The simulator has no realistic timing and any latency number
 from it is meaningless.
@@ -88,7 +92,9 @@ secondary, where the peer's own port restricted translator is the assertion that
 answer came back from the address that was asked (2026-08-29). And, with C10, a real relay
 server and a host endpoint in one namespace behind one forwarded port, the client behind
 symmetric translation: the one fixture in which the relay's bytes come from somebody else's
-implementation.
+implementation. It is judged on both ends -- the client's path is the host's own address, the
+host's the relayed one -- and it runs beside the same topology without the relay, which must
+time out. It needs the relay server on the machine and is skipped where there is none.
 
 - Each fixture is a script that builds the topology, runs the case, and tears it down, leaving
   no state behind.
@@ -182,8 +188,10 @@ nothing and will silently stop covering anything the day someone changes it. The
 principle applies to every check in this document, and it has already caught one live example
 in this repository: a formatting check that reported success while examining zero files.
 
-Covered paths: receive, decrypt, dispatch, reassemble, packetize, encrypt, send, and the input
-path end to end.
+Covered paths: receive, decrypt, dispatch, reassemble, packetize, encrypt, send, the input
+path end to end, and the relayed path both ways, as indications and as channel data -- with the
+count of what crossed asserted too, because the first version of that test passed with no
+channel data crossing at all.
 
 **The browser pipe is exempt and measured instead** ([02 §7](02-io-shell.md)). Its record
 layer and association allocate by design, so the assertion would only ever fail there; the

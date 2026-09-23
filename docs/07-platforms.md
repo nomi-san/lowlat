@@ -888,3 +888,31 @@ Six of the ten were closed by one probe, run before Phase 0 rather than at Phase
 run of the same probe on different hardware closed the seventh (§3.2), and the first run of the
 real backend closed two more (§2.1, §3.3) while adding one of them to the list. The rest are all
 narrower than the questions they replaced.
+
+## §12 A relay on the host's machine
+
+*Added 2026-09-23 with C10 ([03 §7.1](03-connectivity.md)).* The deployment the client's relay
+is for runs a relay server on the host's own machine, and nothing about the host changes: it is
+offered one more candidate and checks it like any other. Operating the relay is the deployment's
+rather than this project's -- nothing ships one -- but its configuration decides whether the
+arrangement works at all, and three of its settings fail silently.
+
+- **Forward the relay's listening port, and nothing else.** The router forwards that one port
+  to the machine. The relay's allocation range stays on the machine's side of the router: the
+  host reaches a relayed address by local delivery to its own address, and nothing outside needs
+  to reach the range.
+- **Configure no external address.** Without one the relay hands out the machine's own address,
+  which is what the host reaches locally. With the router's public address configured, both
+  legs hairpin through the router into a range nobody forwarded, and allocation and permission
+  both succeed while no media ever arrives.
+- **Relay only to the machine's own network, and never to loopback.** Deny every peer and
+  allow the machine's network as the one exception. A relay that reads an allowed range only as
+  an exception to a denied one does nothing with the allowed range alone, and then relays to any
+  address for whoever holds the credential. Leave loopback refused: a deployed relay destroys
+  the allocation that sends toward loopback. The client asks for neither; anyone else holding
+  the credential can.
+- **Long-term credentials, or time-limited ones**, which the client takes unchanged. The
+  credential is configured into the client application, never logged by the library, and
+  cleared from every copy it takes.
+- **The allocation range bounds concurrent clients**: one relayed port each for as long as an
+  attempt lives, released on a clean leave.

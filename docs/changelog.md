@@ -3,6 +3,38 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-23 - C10 built: the relay, on the client
+
+### Added
+- **A relay attempt** ([03 §7](03-connectivity.md), [10 §11](10-client.md), minor 14): a relay
+  and its credential in the client's configuration make the attempt relay-only. It allocates,
+  permits the relay's own machine, and only then offers the relayed address and the readiness
+  marker; every check, answer and record leaves through the relay, media on a channel once one
+  is bound to where the host's traffic comes from. Permissions per address renewed at 240 s,
+  the allocation at half its lifetime, a stale nonce adopted, nothing relayed toward loopback,
+  and three typed ends: unreachable, refused, lost. A clean leave releases the allocation.
+  The host takes no part.
+- The relay's codec in the core, fuzzed, and the standard's long-term sample reproduced byte
+  for byte; `md-5` for the key the protocol fixes, `zeroize` to clear it.
+- A relay server in the simulator written from the standard, with a deployed relay's
+  behaviours, and a real one in the namespace fixtures beside the host behind one forwarded
+  port. The simulator's network gains a forwarded port and delivery on a shared network.
+- The demo takes `LOWLAT_RELAY`, `LOWLAT_RELAY_USER` and `LOWLAT_RELAY_PASS`.
+
+### Changed
+- `lowlat_client_config` and `lowlat_client_status` are read and filled as far as the caller's
+  `size` reaches; both were refused below their full size, which would have refused every
+  caller built against an earlier header ([06 §11](06-api.md)).
+
+### Gate
+- Gates 1 and 2 ([impl-plan-client.md](impl-plan-client.md) C10): 1083 tests, the relayed
+  round allocation-free both ways; nine simulated runs including sixteen minutes across three
+  permission lifetimes and two nonce rotations, made through a relay that binds channels and
+  one that does not, since a binding hides a permission renewed late; a real relay in
+  namespaces, its host's path the relayed address and the same topology without it timing out.
+- Live, a minute through the deployed relay to an established host on its machine: 27 ms of
+  round trip at the median, nothing lost or late. Gate 3's twelve minutes are open.
+
 ## 2026-09-22 - C9 closed: a live full-chroma stream through the open stack
 
 ### Gate

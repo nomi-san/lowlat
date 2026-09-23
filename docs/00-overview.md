@@ -171,7 +171,10 @@ by definition. This table is the reason the project has the shape it does.
 |---|---|
 | A port mapping created per attempt leaks. Use a persistent, connection-lifetime runner on a stable port | [03](03-connectivity.md) |
 | A relay client that does not answer relayed consent checks gets media withheld | [03](03-connectivity.md) |
-| A relay permission lasts 300 seconds and traffic does not extend it. Left unrenewed, the relay dropped both directions without a word and the session froze at five minutes | [03](03-connectivity.md) |
+| A relay permission lasts 300 seconds and traffic does not extend it. Left unrenewed, the relay dropped both directions without a word and the session froze at five minutes. A channel binding renews its address's permission too, which hides a permission renewed late for as long as a channel is bound | [03](03-connectivity.md) |
+| A relayed address advertised before the relay's own machine was permitted had the host's first checks dropped at the relay. The host finished its punch after ours and read the first media as malformed connectivity messages | [03](03-connectivity.md) |
+| A request to the relay awaited on the media socket discarded every datagram that arrived during the wait, and a stale-nonce answer among them was never seen. Every exchange with the relay is a deadline among the session's timers | [03](03-connectivity.md) |
+| A relayed send toward loopback destroyed the allocation that sent it, on a deployed relay. A loopback candidate, hostile or mistaken, ends the session if anything is relayed toward it | [03](03-connectivity.md) |
 | A response's class is two bits that are not adjacent, and an error response sets both, success bit included. Reading one bit took every error for a success -- the stale-nonce answer among them, which the parser also failed to read as a challenge -- and the session died when the relay rotated its nonce | [03](03-connectivity.md) |
 | A relay on the host's machine configured with its external address hairpins both legs through the router into an allocation range nobody forwarded. Allocation and permission succeed and no media ever arrives | [03](03-connectivity.md) |
 | A host firewall drops symmetric-NAT replies as unsolicited. Document the inbound rule | [03](03-connectivity.md) |

@@ -998,7 +998,7 @@ for bit through it, which made the question a bounded one.
    limit for a decoder slower than its stream ([10 §4.1](10-client.md)) and not a fault of
    this phase. The log of that attempt is kept beside the two runs.
 
-## Phase C10 - The relay (planned 2026-09-23)
+## Phase C10 - The relay (built 2026-09-23; gate 3 open)
 
 **Planned 2026-09-23, interview of the same day, and next**: ahead of C5's desk items, the
 host's Phase 12 seated runs, C9's gate on a second host and the host's Phase 11. The host's
@@ -1018,42 +1018,57 @@ directly, the same relay relays to its own machine's address with full-size data
 carries channel data both ways, keeps its allocation range off the router, grants a permission
 for any address, and destroys an allocation that sends toward loopback.
 
-- [ ] **The relay's codec** (`lowlat-core`): the allocation, refresh, permission,
+- [x] **The relay's codec** (`lowlat-core`): the allocation, refresh, permission,
   channel-binding and send messages built; answers, errors, challenges, addresses, lifetimes,
   data indications and channel data read; the long-term key and integrity; the class read
   with both of its bits. One new dependency, `md-5`, for the key alone. Fuzzed. *C10.1.*
-- [ ] **The relay in the endpoint** (`lowlat-core`): recognised by its source before any
+  Built: the standard's long-term sample reproduced byte for byte; both framings done in
+  place, nothing copied; `zeroize`, already in the graph, clears the key. Driven against the
+  deployed relay before anything else was built on it.
+- [x] **The relay in the endpoint** (`lowlat-core`): recognised by its source before any
   datagram is classified, unwrapped there and wrapped on the way out for everything bound to
   a relayed peer, its timers among the endpoint's. The attempt's order -- allocate, permit the
   relay's own address, only then advertise; permissions per address; a channel once the path
   exists; renewals at 240 s and at half the lifetime; the stale nonce; the path following the
   host; nothing toward loopback; a clean leave that releases; typed failures. Zero allocations
-  per relayed datagram. *C10.2.*
-- [ ] **A relay in the simulator** (`lowlat-sim`), written from the specification and not from
+  per relayed datagram. *C10.2.* Built: setup's deadline, five seconds, covers the allocation
+  and the relay's own machine; a refusal of that machine still ends setup, since a relay
+  elsewhere may refuse its own address; a success counts only under the key; the one mapping
+  probe is not sent through the relay.
+- [x] **A relay in the simulator** (`lowlat-sim`), written from the specification and not from
   our codec, because a client and a server written from one misreading agree with each other
   perfectly; with a deployed relay's behaviours -- permissions that lapse at 300 s, a nonce
   that rotates, an allocation destroyed by a send toward loopback. The host-machine topology
-  behind one forwarded port, and a symmetric client. *C10.3.*
-- [ ] **The relay attempt through the boundary** (`lowlat-client`, `lowlat-sdk`, minor 14): a
+  behind one forwarded port, and a symmetric client. *C10.3.* Built with a router's forwarded
+  port and delivery between hosts behind one translator added to the network.
+- [x] **The relay attempt through the boundary** (`lowlat-client`, `lowlat-sdk`, minor 14): a
   relay in `lowlat_client_config` -- the server as `host:port`, resolved like the reflexive
   servers, and the credential, never logged and cleared when dropped -- and a relay configured
   makes the attempt a relay attempt. Status gains the relayed address and whether the path is
-  relayed; three outcomes, unreachable, refused and lost. *C10.4.*
-- [ ] **The demo takes a relay from the environment** and never prints the credential.
-  *C10.5.*
-- [ ] **A real relay in the namespace fixtures**: a relay server and a host endpoint behind one
-  forwarded port, the client behind symmetric translation. *C10.6.*
-- [ ] Documentation: 06 §3b, 07 (the deployment), 10 §11 as built, the changelog.
+  relayed; three outcomes, unreachable, refused and lost. *C10.4.* Built: both structures are
+  now read and filled as far as the caller's size reaches, which they had not been
+  ([06 §11](06-api.md)); a hermetic session of this host's framing runs clean through the
+  simulated relay.
+- [x] **The demo takes a relay from the environment** and never prints the credential.
+  *C10.5.* A minute against an established host through the deployed relay: 27 ms, nothing
+  lost or late, a clean leave.
+- [x] **A real relay in the namespace fixtures**: a relay server and a host endpoint behind one
+  forwarded port, the client behind symmetric translation. *C10.6.* Beside the same topology
+  without the relay, which times out.
+- [x] Documentation: 06 §3b, 07 (the deployment), 10 §11 as built, the changelog.
 
 **Gate:**
 
-1. [ ] The workspace tests, the lints, the dependency policy and the ABI gate pass; zero
-   allocations on the relayed per-datagram path, both ways.
-2. [ ] Under the simulator: a symmetric client reaches the host through the relay and times
+1. [x] The workspace tests, the lints, the dependency policy and the ABI gate pass; zero
+   allocations on the relayed per-datagram path, both ways. *1083 tests; both framings, with
+   what crossed counted.*
+2. [x] Under the simulator: a symmetric client reaches the host through the relay and times
    out without it; full-size datagrams both ways, as indications and as channel data; three
    permission lifetimes and a nonce rotation crossed with the path kept; a loopback candidate
    never relayed; each outcome from its cause. Each check shown failing with its mechanism
-   taken out before it is trusted.
+   taken out before it is trusted. *Nine runs, and a real relay in namespaces besides. Two
+   runs could not fail until they changed: a late permission renewal is hidden while a
+   channel is bound, and loopback is stopped twice on the way out.*
 3. [ ] **Against an established host with the relay on its machine**: the demo through the
    relay, relay only, twelve minutes with motion on the host -- two permission lifetimes and
    the relay's nonce rotation crossed -- the host's log naming the relayed path and **no
@@ -1099,6 +1114,10 @@ slower decoder ever reopens them.
 
 Newest first.
 
+- 2026-09-23, later: C10 built through C10.6, gates 1 and 2 met; gate 3, twelve minutes against
+  an established host through the deployed relay, is open. The client structures of the
+  boundary had been refused below their full size and are now read and filled as far as the
+  caller's size reaches, which minor 14 was the first to need.
 - 2026-09-23: C10 planned, and the host's relay phase dropped for it. The relay is the
   client's: it serves every established host because it asks nothing of any host, and the
   deployment it is for, a relay on the host's own machine behind one forwarded port, works

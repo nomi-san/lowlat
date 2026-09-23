@@ -1,8 +1,9 @@
 # 03 - Connectivity
 
 **Status:** locked 2026-08-15; §7 rewritten 2026-09-23, when the relay moved from the host to
-the client ([00-overview.md](00-overview.md) D15). Implemented by `lowlat-core` (state
-machines) and `lowlat-net` (sockets), per [00-overview.md](00-overview.md) D4.
+the client ([00-overview.md](00-overview.md) D15), and built the same day (C10). Implemented
+by `lowlat-core` (state machines) and `lowlat-net` (sockets), per
+[00-overview.md](00-overview.md) D4.
 
 Connectivity is inside the sans-IO boundary. Candidates and received packets go in, packets
 and events come out, and time is a parameter. This is not an aesthetic choice: the failures in
@@ -323,7 +324,10 @@ first second.
   before it lapses, every 240 seconds, and a channel binding is renewed on the same cadence,
   which renews its address's permission too. A permission left to lapse makes the relay drop
   both directions without a word: the session freezes at five minutes and times out a minute
-  later.
+  later. **Each is renewed as though the other did not exist.** A bound channel hides a
+  permission renewed late, and a relay that binds no channel -- or a binding that lapses --
+  then exposes it; renewed at 300 seconds rather than before, the media stalled five seconds
+  later in the simulator, and not at all while a channel was bound.
 - **The allocation is refreshed at half its lifetime.** An answer with no lifetime, or a zero
   one, is read as the lifetime asked for; otherwise the next refresh falls due in the past and
   the requests storm.
@@ -380,7 +384,7 @@ completely between them.
 | peer gone | the other side abandoned the attempt | give up, inform the user |
 | no permission | rejected before connectivity began | do not retry |
 | probe timeout | probes sent, nothing answered | retry with mapping or relay |
-| relay unreachable | the relay never answered the allocation | retry direct, or a different relay |
+| relay unreachable | the relay did not answer in time to allocate and permit its own machine: five seconds | retry direct, or a different relay |
 | relay refused | the relay refused the credentials or the allocation, or is full | fix the configuration; the same relay refuses again |
 | relay lost | a renewal was refused or went unanswered mid-session | reconnect; the relay has already let the allocation go |
 
@@ -451,6 +455,19 @@ the same deployed relay the same day: it relays to its own machine's address wit
 datagrams intact, delivers channel data both ways, keeps its allocation range off the router,
 grants a permission for any address it is asked for, and destroys an allocation that sends
 toward loopback, which no closed port, hostless address or router hairpin did.
+
+**Built 2026-09-23 (C10), and confirmed three ways.** Against a relay written from the
+specification in the simulator, with a deployed relay's lapses, rotations and loopback rule:
+a symmetric client reaches the host through it and not without it, full-size datagrams cross
+both ways in both framings, and sixteen minutes cross every permission lifetime three times
+and two rotations with nothing lost. Against a real relay server in network namespaces,
+beside the host behind a router that forwards its one port, the client behind symmetric
+translation: the host's path is the relayed address, the machine's own, and the same
+topology without the relay times out. And live, through the deployed relay of the paragraph
+above to an established host on its machine: the relayed address was the machine's own, the
+path the host's own address through the relay, 27 ms of round trip at the median over a
+minute, nothing lost or late. The comparison with a direct session of this client on the same
+pair is the phase gate's.
 
 **Confirmed against two browser families, 2026-09-12 and 2026-09-13:** the fixed controlled
 role against a full agent that is always controlling; sixteen pending answers under a check
