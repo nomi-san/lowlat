@@ -17,6 +17,7 @@
 //! independent of the shape of whatever is being tested.
 
 pub mod nat;
+pub mod relay;
 
 use std::net::SocketAddr;
 
@@ -268,6 +269,14 @@ impl Sim {
     /// mapping opened by a datagram that never arrives is precisely the effect
     /// a reduced-TTL probe is after.
     pub fn send(&mut self, from: HostId, to: SocketAddr, ttl: u8, bytes: &[u8]) {
+        // Hosts behind the same innermost translator share its network and
+        // reach each other's own addresses directly, from their own address,
+        // crossing neither the translator nor a router.
+        if let Some((target, source)) = self.on_network(from, to) {
+            self.carry(target, source, bytes);
+            return;
+        }
+
         let source = self.translate_out(from, to);
 
         if u16::from(ttl) <= u16::from(self.link.hops) {
@@ -293,7 +302,22 @@ impl Sim {
         let Some((target, delivered_from)) = self.resolve(source, to) else {
             return;
         };
+        self.carry(target, delivered_from, bytes);
+    }
 
+    /// The host `to` names on the sender's own network, if it has one there.
+    fn on_network(&self, from: HostId, to: SocketAddr) -> Option<(HostId, SocketAddr)> {
+        let sender = self.hosts.get(from.0)?;
+        let network = sender.chain.first()?;
+        let index = self
+            .hosts
+            .iter()
+            .position(|host| host.internal == to && host.chain.first() == Some(network))?;
+        Some((HostId(index), sender.internal))
+    }
+
+    /// Put a datagram on the link toward `target`, under its conditions.
+    fn carry(&mut self, target: HostId, delivered_from: SocketAddr, bytes: &[u8]) {
         // The byte budget, when the link has one. It refills with time and
         // pays for whole datagrams: one that does not fit drops. One link,
         // one budget, because a per-direction pair would be speculative

@@ -15,6 +15,11 @@ lowlat-core.workspace = true
 lowlat-net.workspace = true
 # A browser session under the simulator wants an identity for each end.
 lowlat-crypto.workspace = true
+# The simulated relay's long-term credentials, written from the standard
+# rather than borrowed from the core. All three are in the graph already.
+hmac = "0.12"
+md-5 = "0.10"
+sha1 = "0.10"
 
 [lints]
 workspace = true

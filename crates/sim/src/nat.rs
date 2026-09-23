@@ -80,6 +80,8 @@ pub struct Nat {
     external_ip: IpAddr,
     next_port: u16,
     bindings: Vec<Binding>,
+    /// Ports forwarded to an inside socket, whoever sends to them.
+    forwards: Vec<(u16, SocketAddr)>,
 }
 
 impl Nat {
@@ -92,6 +94,7 @@ impl Nat {
             external_ip,
             next_port: FIRST_PORT,
             bindings: Vec::new(),
+            forwards: Vec::new(),
         }
     }
 
@@ -139,6 +142,14 @@ impl Nat {
         self
     }
 
+    /// Forward `external_port` to `internal`: anyone may send to it, and what
+    /// `internal` sends leaves from it. The one hole a deployment opens in its
+    /// router for a relay on the host's own machine.
+    pub fn with_forward(mut self, external_port: u16, internal: SocketAddr) -> Self {
+        self.forwards.push((external_port, internal));
+        self
+    }
+
     /// The address this translator presents to the outside.
     pub fn external_ip(&self) -> IpAddr {
         self.external_ip
@@ -165,6 +176,9 @@ impl Nat {
     /// reduced-TTL probe relies on: the mapping opens, the datagram never
     /// arrives.
     pub fn outbound(&mut self, internal: SocketAddr, dest: SocketAddr) -> SocketAddr {
+        if let Some((port, _)) = self.forwards.iter().find(|(_, inside)| *inside == internal) {
+            return SocketAddr::new(self.external_ip, *port);
+        }
         let key = self.key_for(internal, dest);
 
         if let Some(binding) = self.bindings.iter_mut().find(|b| b.key == key) {
@@ -191,6 +205,13 @@ impl Nat {
     /// port, or filtering rejects the sender. Both are ordinary and both are
     /// silent, which is why a punch failure looks like nothing happening.
     pub fn inbound(&self, from: SocketAddr, external_port: u16) -> Option<SocketAddr> {
+        if let Some((_, inside)) = self
+            .forwards
+            .iter()
+            .find(|(port, _)| *port == external_port)
+        {
+            return Some(*inside);
+        }
         let binding = self
             .bindings
             .iter()
@@ -209,9 +230,11 @@ impl Nat {
 
     /// Whether an internal socket already holds a mapping on `external_port`.
     pub fn owns(&self, external_port: u16) -> bool {
-        self.bindings
-            .iter()
-            .any(|b| b.external_port == external_port)
+        self.forwards.iter().any(|(port, _)| *port == external_port)
+            || self
+                .bindings
+                .iter()
+                .any(|b| b.external_port == external_port)
     }
 }
 

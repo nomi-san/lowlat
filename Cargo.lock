@@ -921,10 +921,13 @@ dependencies = [
 name = "lowlat-sim"
 version = "0.0.0"
 dependencies = [
+ "hmac",
  "lowlat-common",
  "lowlat-core",
  "lowlat-crypto",
  "lowlat-net",
+ "md-5",
+ "sha1",
 ]
 
 [[package]]
