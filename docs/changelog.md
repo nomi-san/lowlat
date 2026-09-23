@@ -22,6 +22,14 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - The demo takes `LOWLAT_RELAY`, `LOWLAT_RELAY_USER` and `LOWLAT_RELAY_PASS`.
 
 ### Changed
+- **A path is both directions** ([03 §5](03-connectivity.md)): a candidate that answered our
+  check, and a check of the peer's that we answered, whose answer leaves before any record
+  even while pacing holds it. On our answer alone the session's first records reached a peer
+  still reading checks, which it dropped as malformed: every connect of this client, direct
+  or relayed, showed a burst of them on an established host's log, and gate 3 failed on it.
+  The namespace fixture that withholds a candidate to force the answer's source can no
+  longer make a path by construction, and is judged on the probing side's check being
+  answered.
 - `lowlat_client_config` and `lowlat_client_status` are read and filled as far as the caller's
   `size` reaches; both were refused below their full size, which would have refused every
   caller built against an earlier header ([06 §11](06-api.md)).
@@ -33,7 +41,11 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   one that does not, since a binding hides a permission renewed late; a real relay in
   namespaces, its host's path the relayed address and the same topology without it timing out.
 - Live, a minute through the deployed relay to an established host on its machine: 27 ms of
-  round trip at the median, nothing lost or late. Gate 3's twelve minutes are open.
+  round trip at the median, nothing lost or late.
+- Gate 3's first run, twelve minutes through the deployed relay to the established host:
+  26 ms at the median and 27 at the worst, 688,343 fragments with nothing lost or late and no
+  resend asked for, and the host's log showing malformed connectivity messages at connect,
+  which failed it. Run again with a path made both directions.
 
 ## 2026-09-22 - C9 closed: a live full-chroma stream through the open stack
 

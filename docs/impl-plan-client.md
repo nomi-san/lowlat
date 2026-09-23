@@ -998,7 +998,7 @@ for bit through it, which made the question a bounded one.
    limit for a decoder slower than its stream ([10 §4.1](10-client.md)) and not a fault of
    this phase. The log of that attempt is kept beside the two runs.
 
-## Phase C10 - The relay (built 2026-09-23; gate 3 open)
+## Phase C10 - The relay (built 2026-09-23; gate 3 run again)
 
 **Planned 2026-09-23, interview of the same day, and next**: ahead of C5's desk items, the
 host's Phase 12 seated runs, C9's gate on a second host and the host's Phase 11. The host's
@@ -1056,6 +1056,14 @@ for any address, and destroys an allocation that sends toward loopback.
   forwarded port, the client behind symmetric translation. *C10.6.* Beside the same topology
   without the relay, which times out.
 - [x] Documentation: 06 §3b, 07 (the deployment), 10 §11 as built, the changelog.
+- [x] **A path is both directions** (`lowlat-core`), found by gate 3: our check answered and
+  the host's check answered by us, and nothing on the wire ahead of that answer, pacing or
+  not ([03 §5](03-connectivity.md)). *C10.7.* Every connect of this client had left a burst
+  of malformed connectivity messages on the established host's log, direct or relayed; the
+  relay had not caused them, and the ordering the relay attempt was written with could not
+  remove them. Each rule shown failing with its mechanism taken out; the namespace fixture
+  that forces the answer's source is judged on its check being answered, since it withholds
+  the candidate that would let the other side check back.
 
 **Gate:**
 
@@ -1073,7 +1081,9 @@ for any address, and destroys an allocation that sends toward loopback.
    relay, relay only, twelve minutes with motion on the host -- two permission lifetimes and
    the relay's nonce rotation crossed -- the host's log naming the relayed path and **no
    malformed connectivity message at connect**; round trip and overhead against a direct
-   session on the same pair, where 0.8 ms more is the figure to meet.
+   session on the same pair, where 0.8 ms more is the figure to meet. *First run
+   2026-09-23: twelve minutes, 26 ms at the median against 27 direct, nothing lost or late --
+   and the malformed messages at connect, which C10.7 answers. Run again.*
 4. [ ] Optional: the same against this host, with a relay beside it.
 
 ## Later, and not in v1
@@ -1114,6 +1124,10 @@ slower decoder ever reopens them.
 
 Newest first.
 
+- 2026-09-23, evening: gate 3's first run failed on its one host-side criterion. The host's
+  log showed malformed connectivity messages at connect, and so did every stored log of this
+  client's connects, direct ones included: a path was taken on our answer alone, while the
+  host was still reading checks. C10.7 makes a path both directions; the gate is run again.
 - 2026-09-23, later: C10 built through C10.6, gates 1 and 2 met; gate 3, twelve minutes against
   an established host through the deployed relay, is open. The client structures of the
   boundary had been refused below their full size and are now read and filled as far as the

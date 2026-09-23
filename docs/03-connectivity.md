@@ -1,7 +1,8 @@
 # 03 - Connectivity
 
 **Status:** locked 2026-08-15; §7 rewritten 2026-09-23, when the relay moved from the host to
-the client ([00-overview.md](00-overview.md) D15), and built the same day (C10). Implemented
+the client ([00-overview.md](00-overview.md) D15), and built the same day (C10), whose live gate
+made §5's path both directions. Implemented
 by `lowlat-core` (state machines) and `lowlat-net` (sockets), per
 [00-overview.md](00-overview.md) D4.
 
@@ -164,9 +165,12 @@ once, when a reflexive candidate exists:
 for each remote candidate, in arrival order:
     send binding request        -> full TTL, authenticated, repeating
     on binding response:
-        mark the candidate reachable
-        adopt it as the active path
-        stop probing others
+        the first candidate to answer is the path to be
+on binding request from the peer:
+    answer it                   -> before and after a path, always
+once both have happened:
+    adopt the path, stop probing others
+    send nothing before the answer that completed it
 ```
 
 *(Corrected 2026-08-29: this section previously showed a low-TTL probe per candidate. The
@@ -193,6 +197,17 @@ first.)*
   reflexive probes before the path exists leave unpinned, because nothing is proven yet.
 - The first candidate to answer wins. There is no priority ordering and no attempt to find a
   better path afterward; the cost of switching mid-stream exceeds the benefit.
+- **A path is both directions** (2026-09-23): a candidate has answered our check, and the peer
+  has checked us and been answered. The peer adopts its own path only when its own check is
+  answered, which can be a whole check interval after ours, and until then it reads every
+  datagram as a check. A path taken on our answer alone sent the session's first records --
+  the initialization, the declarations, the acknowledgement cadence -- to a reader that drops
+  them, and every connect of this client, direct or relayed, showed a burst of malformed
+  connectivity messages on an established host's log in the second before its session
+  began, where an established client's connect shows none. The answer that completes the
+  peer's punch leaves before any record, even while pacing holds it back. Nothing is lost by
+  waiting: a peer whose checks never reach us cannot begin its session either, and an
+  attempt answered but never checked ends like any other that found no path.
 - **Local-network candidates are probed alongside public ones**, not after. On a LAN the local
   path answers first by a wide margin and the correct path is chosen for free.
 
@@ -287,10 +302,10 @@ The order is fixed, and its third step is the one that matters:
    ([04 §3](04-signaling.md)).
 
 A relayed address advertised before its permission exists has the host's first checks dropped
-at the relay, silently. The host keeps checking, but its punch now finishes after ours, and
-the media sent meanwhile reaches a reader still expecting checks: it presents at the host as
-unparseable connectivity messages and at the client as resends, and it costs the session its
-first second.
+at the relay, silently. The host keeps checking, and the path waits for a check that gets
+through (§5): the session loses its first second. *(Before a path needed both directions, the
+media sent meanwhile reached a reader still expecting checks, and presented at the host as
+unparseable connectivity messages and at the client as resends.)*
 
 - **Permissions are per address and independent.** After the relay's machine, each host
   candidate's address is permitted as it arrives, so a host elsewhere on the relay's network is
