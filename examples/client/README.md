@@ -20,6 +20,13 @@ first that decodes by default), `LOWLAT_DECODER` picks `auto`, `open`,
 `vendor` or `none`, and `LOWLAT_SERVER` names the signaling service. The
 decoders this machine can open are printed at start, one numbered row each
 with what it decodes, and `LOWLAT_DECODER_INDEX` picks a row by number.
+`LOWLAT_RELAY=host:port` makes the attempt a relay attempt through that relay
+([docs/03-connectivity.md](../../docs/03-connectivity.md) section 7), with
+`LOWLAT_RELAY_USER` and `LOWLAT_RELAY_PASS` its credential, which is handed to
+the library and never printed: the relayed address is all the demo offers,
+every check goes through the relay, and the line at establishment says the
+path is relayed and where. A relay that does not answer, refuses the
+credential, or lets the allocation go ends the session with its own outcome.
 `LOWLAT_HEVC`, `LOWLAT_10BIT` and `LOWLAT_444` are the preferences the
 attempt starts with, masked by what the decoder takes; Ctrl+Shift+C cycles
 them live. `LOWLAT_HANDLE` asks for pictures as device handles, which the

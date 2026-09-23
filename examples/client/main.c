@@ -39,6 +39,10 @@
 // protocol once the first picture is in; `LOWLAT_PRESENT_HZ` caps how often
 // a new picture is taken (the cached one is still drawn every refresh), so
 // a stream faster than the presentation can be measured on one display;
+// `LOWLAT_RELAY=host:port` makes the attempt a relay attempt through that
+// relay, with `LOWLAT_RELAY_USER` and `LOWLAT_RELAY_PASS` its credential,
+// which is handed to the library and never printed: the relayed address is
+// all this side offers, and every check goes through the relay.
 // `LOWLAT_SECONDS` leaves cleanly after that long; `LOWLAT_DUMP_FRAME` names
 // a file the tenth picture's planes are written to, so what the renderer
 // was handed can be looked at with another tool. `LOWLAT_RAW_AUDIO` asks
@@ -1010,10 +1014,20 @@ static void pump_library(struct demo *d)
 			case LOWLAT_EVENT_READY:
 				signaling_candidate(&d->sig, "0.0.0.0", 0, false, false, true);
 				break;
-			case LOWLAT_EVENT_ESTABLISHED:
-				printf("demo: established with %s:%u\n", e.body.established.address,
-					(unsigned) e.body.established.port);
+			case LOWLAT_EVENT_ESTABLISHED: {
+				lowlat_client_status st;
+				memset(&st, 0, sizeof st);
+				st.size = (uint32_t) sizeof st;
+				lowlat_client_get_status(d->client, &st);
+				if (st.relayed)
+					printf("demo: established with %s:%u through the relay, relayed at %s:%u\n",
+						e.body.established.address, (unsigned) e.body.established.port,
+						st.relay_address, (unsigned) st.relay_port);
+				else
+					printf("demo: established with %s:%u\n", e.body.established.address,
+						(unsigned) e.body.established.port);
 				break;
+			}
 			case LOWLAT_EVENT_ENDED:
 				printf("demo: ended, outcome %d reason %d\n", (int) e.body.ended.outcome,
 					(int) e.body.ended.reason);
@@ -1603,8 +1617,19 @@ int main(void)
 	d.video.ten_bit = getenv("LOWLAT_10BIT") != NULL;
 	d.video.chroma_444 = getenv("LOWLAT_444") != NULL;
 	cfg.video = d.video;
+	const char *relay = getenv("LOWLAT_RELAY");
+	if (relay != NULL && relay[0] != '\0') {
+		snprintf(cfg.relay, sizeof cfg.relay, "%s", relay);
+		snprintf(cfg.relay_username, sizeof cfg.relay_username, "%s",
+			env_or("LOWLAT_RELAY_USER", ""));
+		snprintf(cfg.relay_password, sizeof cfg.relay_password, "%s",
+			env_or("LOWLAT_RELAY_PASS", ""));
+		printf("demo: a relay attempt through %s\n", relay);
+	}
 	printf("demo: asking %s\n", video_words(&d.video));
 	s = lowlat_client_new_attempt(d.client, &cfg, d.attempt, LOWLAT_TRANSPORT_BUD, &ours);
+	// The library has its own copy of the credential now.
+	memset(cfg.relay_password, 0, sizeof cfg.relay_password);
 	if (s != LOWLAT_OK) {
 		fprintf(stderr, "demo: no attempt: %s\n", lowlat_status_string(s));
 		return 1;
