@@ -58,8 +58,8 @@ pub const MAX_UFRAG: usize = 32;
 const TYPE_BINDING_REQUEST: u16 = 0x0001;
 const TYPE_BINDING_SUCCESS: u16 = 0x0101;
 
-const ATTR_USERNAME: u16 = 0x0006;
-const ATTR_MESSAGE_INTEGRITY: u16 = 0x0008;
+pub(crate) const ATTR_USERNAME: u16 = 0x0006;
+pub(crate) const ATTR_MESSAGE_INTEGRITY: u16 = 0x0008;
 const ATTR_XOR_MAPPED_ADDRESS: u16 = 0x0020;
 const ATTR_PRIORITY: u16 = 0x0024;
 const ATTR_FINGERPRINT: u16 = 0x8028;
@@ -220,7 +220,7 @@ impl<'a> Message<'a> {
             return false;
         }
 
-        let Ok(mac) = integrity_of(self.bytes, at, password) else {
+        let Ok(mac) = integrity_of(self.bytes, at, password.as_bytes()) else {
             return false;
         };
         let Some(carried) = self.bytes.get(at + 4..at + 24) else {
@@ -422,7 +422,7 @@ impl<'a> Writer<'a> {
 
         put_be16(buf, at, ATTR_MESSAGE_INTEGRITY)?;
         put_be16(buf, at + 2, 20)?;
-        let mac = integrity_of(buf, at, password)?;
+        let mac = integrity_of(buf, at, password.as_bytes())?;
         buf.get_mut(at + 4..at + 24)
             .ok_or(Error::BufferTooSmall)?
             .copy_from_slice(&mac);
@@ -446,7 +446,7 @@ impl<'a> Writer<'a> {
 }
 
 /// Iterates attributes between the header and the trailer.
-struct Attributes<'a> {
+pub(crate) struct Attributes<'a> {
     bytes: &'a [u8],
     at: usize,
     end: usize,
@@ -454,7 +454,7 @@ struct Attributes<'a> {
 }
 
 impl<'a> Attributes<'a> {
-    fn new(bytes: &'a [u8], end: usize) -> Self {
+    pub(crate) fn new(bytes: &'a [u8], end: usize) -> Self {
         Self {
             bytes,
             at: HEADER_LEN,
@@ -465,7 +465,7 @@ impl<'a> Attributes<'a> {
 
     /// Next attribute as type, value, and the offset just past its padding.
     #[allow(clippy::should_implement_trait)]
-    fn next(&mut self) -> Option<Result<(u16, &'a [u8], usize)>> {
+    pub(crate) fn next(&mut self) -> Option<Result<(u16, &'a [u8], usize)>> {
         if self.done || self.at + 4 > self.end {
             return None;
         }
@@ -506,8 +506,10 @@ impl<'a> Attributes<'a> {
 /// The substituted value claims the message ends after the integrity
 /// attribute, which is what both sides agree to hash. Feeding the digest in
 /// three pieces avoids copying the message to edit two bytes.
-fn integrity_of(bytes: &[u8], at: usize, password: &str) -> Result<[u8; 20]> {
-    let mut mac = HmacSha1::new_from_slice(password.as_bytes()).map_err(|_| Error::BadKeyLength)?;
+///
+/// `key` is a check's password, or a relay's long-term key.
+pub(crate) fn integrity_of(bytes: &[u8], at: usize, key: &[u8]) -> Result<[u8; 20]> {
+    let mut mac = HmacSha1::new_from_slice(key).map_err(|_| Error::BadKeyLength)?;
     let claimed = u16::try_from(at + 4).map_err(|_| Error::Oversized)?;
     mac.update(bytes.get(..2).ok_or(Error::Malformed)?);
     mac.update(&claimed.to_be_bytes());
@@ -527,7 +529,7 @@ fn fingerprint_of(bytes: &[u8], at: usize) -> Result<u32> {
 }
 
 /// Obfuscate an address into an attribute value, returning its length.
-fn encode_mapped(out: &mut [u8], addr: SocketAddr, tid: TransactionId) -> Result<usize> {
+pub(crate) fn encode_mapped(out: &mut [u8], addr: SocketAddr, tid: TransactionId) -> Result<usize> {
     let addr = canonical(addr);
     let cookie = MAGIC_COOKIE.to_be_bytes();
     let port = addr.port() ^ 0x2112;
@@ -561,7 +563,7 @@ fn encode_mapped(out: &mut [u8], addr: SocketAddr, tid: TransactionId) -> Result
 }
 
 /// Decode an obfuscated address back into a socket address.
-fn decode_mapped(value: &[u8], tid: TransactionId) -> Option<SocketAddr> {
+pub(crate) fn decode_mapped(value: &[u8], tid: TransactionId) -> Option<SocketAddr> {
     let family = *value.get(1)?;
     let port = u16::from_be_bytes([*value.get(2)?, *value.get(3)?]) ^ 0x2112;
     let cookie = MAGIC_COOKIE.to_be_bytes();
@@ -594,7 +596,7 @@ fn decode_mapped(value: &[u8], tid: TransactionId) -> Option<SocketAddr> {
     }
 }
 
-fn be16(bytes: &[u8], at: usize) -> Result<u16> {
+pub(crate) fn be16(bytes: &[u8], at: usize) -> Result<u16> {
     let slot = bytes.get(at..at + 2).ok_or(Error::Malformed)?;
     Ok(u16::from_be_bytes([
         *slot.first().ok_or(Error::Malformed)?,
@@ -602,14 +604,14 @@ fn be16(bytes: &[u8], at: usize) -> Result<u16> {
     ]))
 }
 
-fn be32(bytes: &[u8], at: usize) -> Result<u32> {
+pub(crate) fn be32(bytes: &[u8], at: usize) -> Result<u32> {
     let slot = bytes.get(at..at + 4).ok_or(Error::Malformed)?;
     let mut value = [0u8; 4];
     value.copy_from_slice(slot);
     Ok(u32::from_be_bytes(value))
 }
 
-fn put_be16(bytes: &mut [u8], at: usize, value: u16) -> Result<()> {
+pub(crate) fn put_be16(bytes: &mut [u8], at: usize, value: u16) -> Result<()> {
     bytes
         .get_mut(at..at + 2)
         .ok_or(Error::BufferTooSmall)?
@@ -671,7 +673,7 @@ mod tests {
         let naive: [u8; 20] = naive.finalize().into_bytes().into();
 
         assert_eq!(
-            &integrity_of(&buf[..len], at, PWD).unwrap()[..],
+            &integrity_of(&buf[..len], at, PWD.as_bytes()).unwrap()[..],
             &buf[at + 4..at + 24],
             "the digest on the wire is the one taken over the substituted length"
         );

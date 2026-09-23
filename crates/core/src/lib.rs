@@ -60,6 +60,7 @@ pub mod send;
 pub mod seq;
 pub mod session;
 pub mod stun;
+pub mod turn;
 pub mod video;
 
 pub use error::{Error, Result};

@@ -107,3 +107,10 @@ name = "cursor_png"
 path = "fuzz_targets/cursor_png.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "relay"
+path = "fuzz_targets/relay.rs"
+test = false
+doc = false
+bench = false

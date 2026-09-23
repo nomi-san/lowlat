@@ -18,6 +18,13 @@ aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }
 # default-features = false: fixed-size state on the stack, no alloc, no RNG.
 hmac = { version = "0.12", default-features = false }
 sha1 = { version = "0.10", default-features = false }
+# The relay's long-term key, a digest of the username, the realm and the
+# password. The protocol fixes the algorithm; nothing else here uses it. Same
+# family as the two above, the same reason for default-features = false.
+md-5 = { version = "0.10", default-features = false }
+# Clears that key when it is dropped. Already in the graph beneath the
+# credentials crate; without alloc here.
+zeroize = { version = "1", default-features = false }
 
 [dev-dependencies]
 lowlat-common = { workspace = true, features = ["alloc-counter"] }
