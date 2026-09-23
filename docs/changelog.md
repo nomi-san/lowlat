@@ -3,7 +3,7 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
-## 2026-09-23 - C10 built: the relay, on the client
+## 2026-09-23 - C10 closed: the relay, on the client
 
 ### Added
 - **A relay attempt** ([03 §7](03-connectivity.md), [10 §11](10-client.md), minor 14): a relay
@@ -42,10 +42,15 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   namespaces, its host's path the relayed address and the same topology without it timing out.
 - Live, a minute through the deployed relay to an established host on its machine: 27 ms of
   round trip at the median, nothing lost or late.
-- Gate 3's first run, twelve minutes through the deployed relay to the established host:
-  26 ms at the median and 27 at the worst, 688,343 fragments with nothing lost or late and no
-  resend asked for, and the host's log showing malformed connectivity messages at connect,
-  which failed it. Run again with a path made both directions.
+- Gate 3, twelve minutes through the deployed relay to the established host with motion:
+  26 ms at the median against 27 for a direct session on the same pair, 688,343 fragments
+  with nothing lost or late and no resend asked for -- and malformed connectivity messages on
+  the host's log at connect, which failed the first run. With the path made both directions,
+  a relayed session to the same host, restarted with its log cleared, showed none.
+- Gate 4, this project's host with a credentialed relay beside it on its machine, twelve and
+  a half minutes: the host's log naming the relayed path, nothing lost, and the relay's own
+  log showing every renewal granted, its rotated nonce refused twice and the requests granted
+  when sent again, and the allocation released at the leave.
 
 ## 2026-09-22 - C9 closed: a live full-chroma stream through the open stack
 

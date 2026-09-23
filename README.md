@@ -40,8 +40,9 @@ What works today, measured on one desktop (KDE Plasma on Wayland, Debian 13):
   minutes at a time against an established host at every phase
   ([docs/10-client.md](docs/10-client.md)). **A relay attempt** reaches a host no punch
   reaches, through a relay on the host's own machine behind the one port its router forwards,
-  with no part taken by the host; streamed that way against an established host for a minute
-  so far, the twelve-minute gate still to run. The C demo on the application toolkit is
+  with no part taken by the host; streamed that way for twelve minutes against an established
+  host at 26 ms against 27 direct, and against this project's own host with a relay beside
+  it. The C demo on the application toolkit is
   [examples/client](examples/client).
 
 What does not, yet:

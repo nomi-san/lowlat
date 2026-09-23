@@ -3,7 +3,7 @@
 **Status:** locked 2026-09-15, interview of the same day; C5 re-planned in two halves
 2026-09-19 and its decode half built and gated the same day; C7, C8 and C9 added and closed
 2026-09-20 to 2026-09-22, each ahead of C6, which they changed the surface of; C10, the
-relay, planned 2026-09-23 as the next piece of work. Phases C0 to C10 with verification
+relay, planned, built and closed 2026-09-23. Phases C0 to C10 with verification
 gates; the design is [10-client.md](10-client.md) and the surface is [06 §3b](06-api.md).
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
@@ -998,7 +998,7 @@ for bit through it, which made the question a bounded one.
    limit for a decoder slower than its stream ([10 §4.1](10-client.md)) and not a fault of
    this phase. The log of that attempt is kept beside the two runs.
 
-## Phase C10 - The relay (built 2026-09-23; gate 3 run again)
+## Phase C10 - The relay (closed 2026-09-23)
 
 **Planned 2026-09-23, interview of the same day, and next**: ahead of C5's desk items, the
 host's Phase 12 seated runs, C9's gate on a second host and the host's Phase 11. The host's
@@ -1077,14 +1077,29 @@ for any address, and destroys an allocation that sends toward loopback.
    taken out before it is trusted. *Nine runs, and a real relay in namespaces besides. Two
    runs could not fail until they changed: a late permission renewal is hidden while a
    channel is bound, and loopback is stopped twice on the way out.*
-3. [ ] **Against an established host with the relay on its machine**: the demo through the
+3. [x] **Against an established host with the relay on its machine**: the demo through the
    relay, relay only, twelve minutes with motion on the host -- two permission lifetimes and
    the relay's nonce rotation crossed -- the host's log naming the relayed path and **no
    malformed connectivity message at connect**; round trip and overhead against a direct
-   session on the same pair, where 0.8 ms more is the figure to meet. *First run
-   2026-09-23: twelve minutes, 26 ms at the median against 27 direct, nothing lost or late --
-   and the malformed messages at connect, which C10.7 answers. Run again.*
-4. [ ] Optional: the same against this host, with a relay beside it.
+   session on the same pair, where 0.8 ms more is the figure to meet. *Met 2026-09-23 in two
+   runs. Twelve minutes with motion (9.0 Mbit/s at the mean, 26 at the peak): 26 ms at the
+   median against 27 for a direct session on the same pair, 688,343 fragments with nothing
+   lost or late and no resend asked for, three permission renewals and two refreshes crossed
+   -- and malformed connectivity messages on the host's log at connect, which failed it and
+   which C10.7 answers. With C10.7, three minutes relayed to the same host, restarted with its
+   log cleared: none at connect. The host's path is the relayed address by construction, the
+   only candidate offered; the deployed relay's own log was not read, so its nonce rotation
+   is gate 4's to show.*
+4. [x] Optional: the same against this host, with a relay beside it. *Met 2026-09-23, the
+   desktop idle (0.2 Mbit/s at the mean, 3.2 at the peak; the motion was gate 3's), against
+   the installed host, which predates C10.7. A credentialed relay on the machine's own
+   address rotating its nonce every 600 s, the demo on an offscreen display on the same
+   machine, since a window on the captured desktop feeds its own input back to the host:
+   twelve and a half minutes, the host's log naming the relayed path, 80,936 fragments with
+   nothing lost, late or duplicated and no resend asked for. The relay's log shows three
+   permission renewals with the channel's, two refreshes, the rotated nonce refused twice
+   and both requests granted when sent again, and the allocation released at the leave.
+   Round trip under the millisecond relayed and direct, below what the status resolves.*
 
 ## Later, and not in v1
 
@@ -1124,6 +1139,9 @@ slower decoder ever reopens them.
 
 Newest first.
 
+- 2026-09-23, night: C10 closed. Gate 3 met in two runs, the second with C10.7 and no
+  malformed message at connect; gate 4 against this host with a relay beside it, where the
+  relay's own log showed its rotated nonce answered and the allocation released.
 - 2026-09-23, evening: gate 3's first run failed on its one host-side criterion. The host's
   log showed malformed connectivity messages at connect, and so did every stored log of this
   client's connects, direct ones included: a path was taken on our answer alone, while the

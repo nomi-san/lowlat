@@ -481,8 +481,12 @@ translation: the host's path is the relayed address, the machine's own, and the 
 topology without the relay times out. And live, through the deployed relay of the paragraph
 above to an established host on its machine: the relayed address was the machine's own, the
 path the host's own address through the relay, 27 ms of round trip at the median over a
-minute, nothing lost or late. The comparison with a direct session of this client on the same
-pair is the phase gate's.
+minute, nothing lost or late. Over the phase gate's twelve minutes: 26 ms at the median
+against 27 for a direct session of this client on the same pair, nothing lost or late, and --
+once §5's path was made both directions -- no malformed connectivity message on the host's
+log at connect. Against this project's own host with a credentialed relay beside it, twelve
+and a half minutes crossed every renewal, answered the relay's rotated nonce, and released
+the allocation at the leave.
 
 **Confirmed against two browser families, 2026-09-12 and 2026-09-13:** the fixed controlled
 role against a full agent that is always controlling; sixteen pending answers under a check

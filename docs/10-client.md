@@ -5,8 +5,8 @@ and C4 2026-09-18; C5's decode half planned, built and gated 2026-09-19, its sec
 planned and built the same evening; C7 (the pad reports) 2026-09-20, C8 (the software
 decoder, a decoder chosen mid-session) 2026-09-21, C9 (full chroma on the open stack)
 2026-09-22; C6 (packaging) closes the set, and this document was read against the code
-once more at its closure. §11, the relay, planned 2026-09-23 as C10. Built by
-[impl-plan-client.md](impl-plan-client.md).
+once more at its closure. §11, the relay, planned, built and closed 2026-09-23 as C10.
+Built by [impl-plan-client.md](impl-plan-client.md).
 
 The client is the other half of the same protocol: it receives what [05](05-host.md) produces.
 Everything below the media -- the wire, the rings, acknowledgement and recovery, connectivity,
@@ -786,8 +786,9 @@ no elevated priority inside the library, teardown that wakes every waiter.
 
 ## §11 The relay
 
-*Planned and built 2026-09-23 as C10 ([impl-plan-client.md](impl-plan-client.md)), minor 14.
-The rules are [03 §7](03-connectivity.md); this section is the client's side of them.*
+*Planned, built and closed 2026-09-23 as C10 ([impl-plan-client.md](impl-plan-client.md)),
+minor 14. The rules are [03 §7](03-connectivity.md); this section is the client's side of
+them.*
 
 **The client allocates the relay, and the host never learns there is one.** An application
 that cannot reach a host directly -- a probe timeout, or a host it knows sits behind one
