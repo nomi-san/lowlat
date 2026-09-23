@@ -768,17 +768,7 @@ impl<'a> Conn<'a> {
     fn next_transaction_id(&mut self) -> TransactionId {
         let counter = self.counter;
         self.counter = self.counter.wrapping_add(1);
-
-        let mut hash = Sha1::new();
-        hash.update(self.seed);
-        hash.update(counter.to_be_bytes());
-        let digest = hash.finalize();
-
-        let mut tid = [0u8; 12];
-        for (slot, byte) in tid.iter_mut().zip(digest.iter()) {
-            *slot = *byte;
-        }
-        TransactionId(tid)
+        derive_transaction_id(&self.seed, counter)
     }
 
     /// Role tiebreaker. Inert, because the role is fixed and no conflict can
@@ -791,6 +781,21 @@ impl<'a> Conn<'a> {
         }
         value
     }
+}
+
+/// The identifier for the `counter`th transaction under `seed`: the first
+/// twelve bytes of a digest of the two.
+pub(crate) fn derive_transaction_id(seed: &[u8; 16], counter: u32) -> TransactionId {
+    let mut hash = Sha1::new();
+    hash.update(seed);
+    hash.update(counter.to_be_bytes());
+    let digest = hash.finalize();
+
+    let mut tid = [0u8; 12];
+    for (slot, byte) in tid.iter_mut().zip(digest.iter()) {
+        *slot = *byte;
+    }
+    TransactionId(tid)
 }
 
 #[cfg(test)]

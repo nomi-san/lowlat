@@ -21,6 +21,14 @@
 //! An output carries where it goes and how it must be sent, because a mapping
 //! probe leaves at a TTL that must be restored afterwards and a shell cannot be
 //! trusted to remember an obligation that is not in the type.
+//!
+//! **A relay attempt goes through the relay and nowhere else**
+//! (docs/03-connectivity.md 7.2). The relay is recognised by its address
+//! before anything is classified, because nothing it sends is shaped like a
+//! check; what it relays is unwrapped and classified as though it had come
+//! from the peer. Everything bound for a peer leaves wrapped -- checks, their
+//! answers and records alike -- so no answer can leave outside the relay, and
+//! nothing leaves toward a peer until the relayed address may be offered.
 
 use core::fmt;
 use core::net::{IpAddr, SocketAddr};
@@ -28,8 +36,11 @@ use core::net::{IpAddr, SocketAddr};
 use crate::channel::Drops;
 use crate::conn::{self, Conn, Egress, Ttl};
 use crate::demux::{self, Datagram};
-use crate::error::Result;
+use crate::error::{Error, Result};
+use crate::relay::{self, Relay};
 use crate::session::{self, Health, Pressure, Session};
+use crate::stun;
+use crate::turn;
 
 /// What an inbound datagram turned out to be.
 ///
@@ -42,6 +53,8 @@ pub enum Inbound<I = session::Inbound> {
     Connectivity(conn::Inbound),
     /// A record for the media half.
     Media(I),
+    /// The relay answered one of our requests.
+    Relay,
 }
 
 /// A failure of the media half that the peer did not cause by leaving.
@@ -136,6 +149,8 @@ pub trait Media: fmt::Debug {
 pub struct Endpoint<'a, M: Media = Session<'a>> {
     conn: Conn<'a>,
     session: M,
+    /// The relay a relay attempt goes through; `None` for a direct attempt.
+    relay: Option<Relay<'a>>,
 }
 
 impl<'a, M: Media> Endpoint<'a, M> {
@@ -144,12 +159,51 @@ impl<'a, M: Media> Endpoint<'a, M> {
     /// Both are built by the caller, because a session needs ring storage and
     /// key material that arrive from different places at different times.
     pub fn new(conn: Conn<'a>, session: M) -> Self {
-        Self { conn, session }
+        Self {
+            conn,
+            session,
+            relay: None,
+        }
+    }
+
+    /// The same, for a relay attempt: everything goes through `relay`.
+    pub fn relayed(conn: Conn<'a>, session: M, relay: Relay<'a>) -> Self {
+        Self {
+            conn,
+            session,
+            relay: Some(relay),
+        }
     }
 
     /// The connectivity engine, for candidates and outcome.
     pub fn conn(&mut self) -> &mut Conn<'a> {
         &mut self.conn
+    }
+
+    /// The relay, in a relay attempt: its state, and the relayed address to
+    /// offer once there is one.
+    pub fn relay(&self) -> Option<&Relay<'a>> {
+        self.relay.as_ref()
+    }
+
+    /// The relay, to release on a clean leave.
+    pub fn relay_mut(&mut self) -> Option<&mut Relay<'a>> {
+        self.relay.as_mut()
+    }
+
+    /// Offer a remote candidate.
+    ///
+    /// In a relay attempt only what the relay can reach is kept, and the
+    /// relay is asked to admit its address: an IPv6 address is out of an IPv4
+    /// allocation's reach, and nothing is ever relayed toward loopback.
+    pub fn add_candidate(&mut self, addr: SocketAddr, kind: conn::Kind) -> Result<()> {
+        if let Some(relay) = self.relay.as_mut() {
+            if !relay::reachable(addr) {
+                return Ok(());
+            }
+            relay.permit(stun::canonical(addr).ip());
+        }
+        self.conn.add_candidate(addr, kind)
     }
 
     /// The media half, for messages.
@@ -190,11 +244,44 @@ impl<'a, M: Media> Endpoint<'a, M> {
         now_ms: f64,
         scratch: &mut [u8],
     ) -> Result<Inbound<M::Inbound>> {
+        let Some(relay) = self.relay.as_mut() else {
+            return self.deliver(datagram, from, local, now_ms, scratch);
+        };
+        // A relay attempt talks to the relay alone.
+        if stun::canonical(from) != relay.server() {
+            return Err(Error::Malformed);
+        }
+        let Some((peer, data)) = relay.unwrap(datagram, local, now_ms)? else {
+            return Ok(Inbound::Relay);
+        };
+        let inbound = self.deliver(data, peer, None, now_ms, scratch)?;
+        // The path follows the host: once there is one, media goes wherever
+        // the host's authenticated traffic comes from.
+        if let (Inbound::Media(_), Some(_), Some(relay)) =
+            (&inbound, self.conn.path(), self.relay.as_mut())
+        {
+            relay.follow(peer);
+        }
+        Ok(inbound)
+    }
+
+    /// Classify a datagram as the peer sent it and hand it to its engine.
+    fn deliver(
+        &mut self,
+        datagram: &[u8],
+        from: SocketAddr,
+        local: Option<IpAddr>,
+        now_ms: f64,
+        scratch: &mut [u8],
+    ) -> Result<Inbound<M::Inbound>> {
         match demux::classify(datagram) {
             Datagram::Check => {
                 let inbound = self.conn.process_input(datagram, from, local)?;
-                if let conn::Inbound::PathEstablished(_) = inbound {
+                if let conn::Inbound::PathEstablished(path) = inbound {
                     self.session.path_ready(now_ms);
+                    if let Some(relay) = self.relay.as_mut() {
+                        relay.follow(path);
+                    }
                 }
                 Ok(Inbound::Connectivity(inbound))
             }
@@ -204,8 +291,11 @@ impl<'a, M: Media> Endpoint<'a, M> {
         }
     }
 
-    /// Housekeeping for both engines.
+    /// Housekeeping for both engines, and the relay.
     pub fn poll(&mut self, now_ms: f64) {
+        if let Some(relay) = self.relay.as_mut() {
+            relay.poll(now_ms);
+        }
         self.conn.poll(now_ms);
         self.session.poll(now_ms);
     }
@@ -218,9 +308,17 @@ impl<'a, M: Media> Endpoint<'a, M> {
     /// connectivity engine alone would poll pointlessly once a path was chosen,
     /// because a finished attempt asks for no wakeups at all.
     pub fn next_timer_ms(&self, now_ms: f64) -> f64 {
-        self.conn
-            .next_timer_ms(now_ms)
-            .min(self.session.next_timer_ms(now_ms))
+        let session = self.session.next_timer_ms(now_ms);
+        match &self.relay {
+            None => self.conn.next_timer_ms(now_ms).min(session),
+            // The punch waits for the relayed address, so until there is one
+            // its deadlines would only wake the loop to send nothing.
+            Some(relay) if relay.relayed().is_none() => relay.next_timer_ms(now_ms).min(session),
+            Some(relay) => relay
+                .next_timer_ms(now_ms)
+                .min(self.conn.next_timer_ms(now_ms))
+                .min(session),
+        }
     }
 
     /// Emit the next datagram, with where it goes and how to send it.
@@ -229,6 +327,9 @@ impl<'a, M: Media> Endpoint<'a, M> {
     /// owed to a peer that reads silence as unreachable; and until a path
     /// exists there is nowhere to send media anyway.
     pub fn get_output(&mut self, now_ms: f64, out: &mut [u8]) -> Option<Result<Egress>> {
+        if self.relay.is_some() {
+            return self.relayed_output(now_ms, out);
+        }
         if let Some(result) = self.conn.get_output(now_ms, out) {
             return Some(result);
         }
@@ -248,6 +349,83 @@ impl<'a, M: Media> Endpoint<'a, M> {
             }),
             Err(error) => Err(error),
         })
+    }
+
+    /// Everything a relay attempt sends goes to the relay: its own requests
+    /// first, then checks and their answers as indications, then media, on
+    /// a channel once one is bound to where it goes.
+    fn relayed_output(&mut self, now_ms: f64, out: &mut [u8]) -> Option<Result<Egress>> {
+        let relay = self.relay.as_mut()?;
+        if let Some(result) = relay.get_output(now_ms, out) {
+            return Some(result.map(|len| to_relay(relay, len)));
+        }
+        // Nothing goes toward a peer before the relayed address may be offered.
+        relay.relayed()?;
+
+        let head = turn::INDICATION_HEADER_V4;
+        loop {
+            // Room for any check is asked for first: the engine gives up an
+            // owed answer as it emits it, and one written into too little
+            // room would be lost.
+            let Some(body) = out.get_mut(head..head + stun::MAX_BUILT) else {
+                return Some(Err(Error::BufferTooSmall));
+            };
+            let Some(result) = self.conn.get_output(now_ms, body) else {
+                break;
+            };
+            let egress = match result {
+                Ok(egress) => egress,
+                Err(error) => return Some(Err(error)),
+            };
+            // The mapping probe opens a mapping on the path that crosses
+            // translation. Through the relay there is none to open, and it
+            // would reach the host at full length ahead of the readiness
+            // marker.
+            if egress.ttl == Ttl::Probe || !relay.relayable(egress.to) {
+                continue;
+            }
+            let tid = relay.indication_id();
+            return Some(
+                turn::wrap_indication(out, tid, egress.to, egress.len)
+                    .map(|len| to_relay(relay, len)),
+            );
+        }
+        self.relayed_media(now_ms, out)
+    }
+
+    /// Media toward the peer, once there is a path, framed for the relay.
+    fn relayed_media(&mut self, now_ms: f64, out: &mut [u8]) -> Option<Result<Egress>> {
+        let path = self.conn.path()?;
+        let relay = self.relay.as_mut()?;
+        let to = relay.destination().unwrap_or(path);
+        let channel = relay.channel_for(to, now_ms);
+        let head = match channel {
+            Some(_) => turn::CHANNEL_HEADER_LEN,
+            None => turn::indication_header_len(to),
+        };
+        let Some(body) = out.get_mut(head..) else {
+            return Some(Err(Error::BufferTooSmall));
+        };
+        let len = match self.session.get_output(now_ms, body)? {
+            Ok(len) => len,
+            Err(error) => return Some(Err(error)),
+        };
+        let framed = match channel {
+            Some(number) => turn::wrap_channel(out, number, len),
+            None => turn::wrap_indication(out, relay.indication_id(), to, len),
+        };
+        Some(framed.map(|len| to_relay(relay, len)))
+    }
+}
+
+/// A datagram for the relay: to its address, from the local address its own
+/// datagrams arrive at.
+fn to_relay(relay: &Relay<'_>, len: usize) -> Egress {
+    Egress {
+        to: relay.server(),
+        ttl: Ttl::Default,
+        len,
+        from: relay.local(),
     }
 }
 
@@ -293,12 +471,12 @@ mod tests {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(198, 51, 100, last)), port)
     }
 
-    fn endpoint<'a>(
+    fn parts<'a>(
         arena: &'a mut Arena,
         ours: (&'a str, &'a str),
         theirs: (&'a str, &'a str),
         seed: u8,
-    ) -> Endpoint<'a> {
+    ) -> (Conn<'a>, Session<'a>) {
         let conn = Conn::new(
             Credentials {
                 local_ufrag: ours.0,
@@ -322,6 +500,16 @@ mod tests {
                 SendRing::new(&mut arena.send_bodies, &mut arena.send_meta, SLOT, CHANNEL).unwrap(),
             )
             .unwrap();
+        (conn, session)
+    }
+
+    fn endpoint<'a>(
+        arena: &'a mut Arena,
+        ours: (&'a str, &'a str),
+        theirs: (&'a str, &'a str),
+        seed: u8,
+    ) -> Endpoint<'a> {
+        let (conn, session) = parts(arena, ours, theirs, seed);
         Endpoint::new(conn, session)
     }
 
@@ -582,5 +770,506 @@ mod tests {
                 .unwrap(),
             Inbound::Media(_)
         ));
+    }
+
+    mod relayed {
+        use super::*;
+        use crate::conn::Kind;
+        use crate::turn::Key;
+        use crate::turn::testing::{
+            allocated, challenge, channel_data, channel_of, granted, kind_of, peer_of,
+            relayed as relayed_datagram, signed, unwrapped,
+        };
+
+        const USER: &str = "user";
+        const PASS: &str = "password";
+        const REALM: &[u8] = b"relay.example";
+        const NONCE: &[u8] = b"5d1b0a4f3c2e7a90";
+
+        fn server() -> SocketAddr {
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(203, 0, 113, 1)), 3478)
+        }
+
+        /// The relayed address: the relay's own machine.
+        fn relayed_addr() -> SocketAddr {
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)), 50_048)
+        }
+
+        /// The host, on the relay's machine.
+        fn host_addr() -> SocketAddr {
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)), 22_974)
+        }
+
+        /// The client, relayed; the host, direct and none the wiser.
+        fn client<'a>(arena: &'a mut Arena) -> Endpoint<'a> {
+            let (conn, session) = parts(
+                arena,
+                (LEFT_UFRAG, LEFT_PWD),
+                (RIGHT_UFRAG, RIGHT_PWD),
+                0xA1,
+            );
+            Endpoint::relayed(
+                conn,
+                session,
+                Relay::new(server(), USER, PASS, [0x5E; 16], 0.0),
+            )
+        }
+
+        fn host<'a>(arena: &'a mut Arena) -> Endpoint<'a> {
+            endpoint(
+                arena,
+                (RIGHT_UFRAG, RIGHT_PWD),
+                (LEFT_UFRAG, LEFT_PWD),
+                0xB2,
+            )
+        }
+
+        enum Carried {
+            Answer(Vec<u8>),
+            ToPeer(SocketAddr, Vec<u8>),
+            Dropped,
+        }
+
+        /// A relay as far as these tests need one: every request answered, and
+        /// datagrams carried both ways as a relay frames them.
+        struct FakeRelay {
+            key: Key,
+            permitted: Vec<IpAddr>,
+            channels: Vec<(u16, SocketAddr)>,
+            /// Every peer a datagram was carried to, and whether it was media.
+            carried: Vec<(SocketAddr, bool)>,
+            /// Every channel data message the client sent.
+            channel_messages: usize,
+        }
+
+        impl FakeRelay {
+            fn new() -> Self {
+                Self {
+                    key: Key::long_term(USER, REALM, PASS),
+                    permitted: Vec::new(),
+                    channels: Vec::new(),
+                    carried: Vec::new(),
+                    channel_messages: 0,
+                }
+            }
+
+            fn carry(&mut self, sent: &[u8]) -> Carried {
+                if sent[0] >> 6 == 0b01 {
+                    self.channel_messages += 1;
+                    let number = u16::from_be_bytes([sent[0], sent[1]]);
+                    return match self.channels.iter().find(|(bound, _)| *bound == number) {
+                        Some((_, peer)) => Carried::ToPeer(*peer, unwrapped(sent).1),
+                        None => Carried::Dropped,
+                    };
+                }
+                match kind_of(sent) {
+                    0x0003 if !signed(sent) => Carried::Answer(challenge(sent, 401, REALM, NONCE)),
+                    0x0003 => {
+                        Carried::Answer(allocated(sent, relayed_addr(), Some(600), &self.key))
+                    }
+                    0x0004 => Carried::Answer(granted(sent, Some(600), &self.key)),
+                    0x0008 => {
+                        self.permitted.push(peer_of(sent).unwrap().ip());
+                        Carried::Answer(granted(sent, None, &self.key))
+                    }
+                    0x0009 => {
+                        let peer = peer_of(sent).unwrap();
+                        self.channels.push((channel_of(sent).unwrap(), peer));
+                        self.permitted.push(peer.ip());
+                        Carried::Answer(granted(sent, None, &self.key))
+                    }
+                    0x0016 => {
+                        let (peer, data) = unwrapped(sent);
+                        let peer = peer.unwrap();
+                        if self.permitted.contains(&peer.ip()) {
+                            Carried::ToPeer(peer, data)
+                        } else {
+                            Carried::Dropped
+                        }
+                    }
+                    other => panic!("the relay was sent {other:#06x}"),
+                }
+            }
+
+            /// A peer's datagram for the client, framed as a relay frames it:
+            /// on a channel once one is bound to the peer. Dropped without a
+            /// permission, as a relay drops it.
+            fn to_client(&self, from: SocketAddr, data: &[u8]) -> Option<Vec<u8>> {
+                if !self.permitted.contains(&from.ip()) {
+                    return None;
+                }
+                Some(match self.channels.iter().find(|(_, peer)| *peer == from) {
+                    Some((number, _)) => channel_data(*number, data),
+                    None => relayed_datagram(from, data),
+                })
+            }
+        }
+
+        /// One pass through the relay in both directions. Everything the
+        /// client sends must go to the relay; the host's datagrams reach the
+        /// client as the relay frames them, seen from `host_seen`.
+        fn through(
+            client: &mut Endpoint<'_>,
+            host: &mut Endpoint<'_>,
+            relay: &mut FakeRelay,
+            host_seen: SocketAddr,
+            now: f64,
+        ) {
+            let mut wire = [0u8; 2048];
+            let mut scratch = [0u8; 2048];
+            while let Some(result) = client.get_output(now, &mut wire) {
+                let egress = result.unwrap();
+                assert_eq!(
+                    egress.to,
+                    server(),
+                    "a relay attempt sent outside the relay"
+                );
+                match relay.carry(&wire[..egress.len]) {
+                    Carried::Answer(answer) => {
+                        client
+                            .process_input(&answer, server(), None, now, &mut scratch)
+                            .unwrap();
+                    }
+                    Carried::ToPeer(peer, data) => {
+                        relay
+                            .carried
+                            .push((peer, demux::classify(&data) == Datagram::Record));
+                        let _ = host.process_input(&data, relayed_addr(), None, now, &mut scratch);
+                    }
+                    Carried::Dropped => {}
+                }
+            }
+            while let Some(result) = host.get_output(now, &mut wire) {
+                let egress = result.unwrap();
+                if let Some(framed) = relay.to_client(host_seen, &wire[..egress.len]) {
+                    let _ = client.process_input(&framed, server(), None, now, &mut scratch);
+                }
+            }
+        }
+
+        /// Run until the relayed address may be offered, then hand it to the
+        /// host as signaling would, with the readiness marker after it.
+        fn offer(client: &mut Endpoint<'_>, host: &mut Endpoint<'_>, relay: &mut FakeRelay) -> f64 {
+            let mut now = 0.0;
+            while client.relay().unwrap().relayed().is_none() {
+                assert!(now < 1_000.0, "the relay never became ready");
+                through(client, host, relay, host_addr(), now);
+                now += 10.0;
+            }
+            host.conn()
+                .add_candidate(client.relay().unwrap().relayed().unwrap(), Kind::Reflexive)
+                .unwrap();
+            host.conn().set_peer_ready();
+            client.conn().set_peer_ready();
+            now
+        }
+
+        /// Punch through the relay: both sides find a path.
+        fn punch(
+            client: &mut Endpoint<'_>,
+            host: &mut Endpoint<'_>,
+            relay: &mut FakeRelay,
+            mut now: f64,
+        ) -> f64 {
+            while client.path().is_none() || host.path().is_none() {
+                assert!(now < 5_000.0, "no path through the relay");
+                through(client, host, relay, host_addr(), now);
+                now += 10.0;
+                client.poll(now);
+                host.poll(now);
+            }
+            now
+        }
+
+        /// The whole of a relay attempt against a host that knows nothing of
+        /// it: the host is handed one ordinary candidate, and a message
+        /// crosses each way.
+        #[test]
+        fn a_relay_attempt_punches_and_carries_a_message_through_the_relay() {
+            let (mut client_arena, mut host_arena) = (Arena::new(), Arena::new());
+            let mut client = client(&mut client_arena);
+            let mut host = host(&mut host_arena);
+            let mut relay = FakeRelay::new();
+            client.add_candidate(host_addr(), Kind::Direct).unwrap();
+
+            let now = offer(&mut client, &mut host, &mut relay);
+            let mut now = punch(&mut client, &mut host, &mut relay, now);
+            assert_eq!(client.path(), Some(host_addr()));
+            assert_eq!(host.path(), Some(relayed_addr()));
+
+            client
+                .session()
+                .send_message(CHANNEL, b"to", b"host")
+                .unwrap();
+            host.session()
+                .send_message(CHANNEL, b"to", b"client")
+                .unwrap();
+            for _ in 0..8 {
+                through(&mut client, &mut host, &mut relay, host_addr(), now);
+                now += 10.0;
+            }
+            let mut out = [0u8; 64];
+            let len = host
+                .session()
+                .take_message(CHANNEL, &mut out)
+                .unwrap()
+                .unwrap();
+            assert_eq!(&out[..len], b"tohost");
+            let len = client
+                .session()
+                .take_message(CHANNEL, &mut out)
+                .unwrap()
+                .unwrap();
+            assert_eq!(&out[..len], b"toclient");
+        }
+
+        /// Before the relayed address may be offered, nothing goes toward a
+        /// peer, whatever candidates have arrived and however long the relay
+        /// takes to answer: only the allocation and then the relay's own
+        /// machine's permission, in that order.
+        #[test]
+        fn nothing_leaves_toward_a_peer_before_the_relay_is_ready() {
+            let mut arena = Arena::new();
+            let mut client = client(&mut arena);
+            client.add_candidate(host_addr(), Kind::Direct).unwrap();
+            client.conn().set_peer_ready();
+            let mut relay = FakeRelay::new();
+            let mut wire = [0u8; 2048];
+            let mut scratch = [0u8; 2048];
+
+            // Everything sent at `now`, each kept for an answer given later.
+            let mut drain = |client: &mut Endpoint<'_>, now: f64| {
+                let mut sent = Vec::new();
+                while let Some(result) = client.get_output(now, &mut wire) {
+                    sent.push(wire[..result.unwrap().len].to_vec());
+                }
+                sent
+            };
+            let mut answer = |client: &mut Endpoint<'_>, sent: &[u8], now: f64| {
+                let Carried::Answer(answer) = relay.carry(sent) else {
+                    panic!("not a request");
+                };
+                client
+                    .process_input(&answer, server(), None, now, &mut scratch)
+                    .unwrap();
+            };
+
+            let first = drain(&mut client, 0.0);
+            assert_eq!(
+                first.iter().map(|sent| kind_of(sent)).collect::<Vec<_>>(),
+                [0x0003]
+            );
+            answer(&mut client, &first[0], 30.0);
+            let second = drain(&mut client, 30.0);
+            assert_eq!(
+                second.iter().map(|sent| kind_of(sent)).collect::<Vec<_>>(),
+                [0x0003]
+            );
+            answer(&mut client, &second[0], 60.0);
+            let third = drain(&mut client, 60.0);
+            assert_eq!(
+                third.iter().map(|sent| kind_of(sent)).collect::<Vec<_>>(),
+                [0x0008]
+            );
+
+            // The permission goes unanswered past the check cadence, and still
+            // nothing goes toward the host.
+            assert!(drain(&mut client, 60.0 + conn::CHECK_CADENCE_MS + 100.0).is_empty());
+            answer(&mut client, &third[0], 700.0);
+            let checks = drain(&mut client, 700.0);
+            assert_eq!(
+                checks.iter().map(|sent| kind_of(sent)).collect::<Vec<_>>(),
+                [0x0016]
+            );
+            assert_eq!(unwrapped(&checks[0]).0, Some(host_addr()));
+        }
+
+        /// A check that came through the relay is answered through the relay.
+        /// Answered from the socket straight to the host's address, it goes
+        /// where the host cannot be reached, and a host whose checks go
+        /// unanswered withholds media.
+        #[test]
+        fn a_check_through_the_relay_is_answered_through_the_relay() {
+            let (mut client_arena, mut host_arena) = (Arena::new(), Arena::new());
+            let mut client = client(&mut client_arena);
+            let mut host = host(&mut host_arena);
+            let mut relay = FakeRelay::new();
+            let now = offer(&mut client, &mut host, &mut relay);
+
+            let mut wire = [0u8; 2048];
+            let mut scratch = [0u8; 2048];
+            let check = host.get_output(now, &mut wire).unwrap().unwrap();
+            let framed = relay.to_client(host_addr(), &wire[..check.len]).unwrap();
+            assert!(matches!(
+                client
+                    .process_input(&framed, server(), None, now, &mut scratch)
+                    .unwrap(),
+                Inbound::Connectivity(conn::Inbound::CheckAnswered)
+            ));
+
+            let answer = client.get_output(now, &mut wire).unwrap().unwrap();
+            assert_eq!(answer.to, server());
+            let (peer, data) = unwrapped(&wire[..answer.len]);
+            assert_eq!(peer, Some(host_addr()));
+            assert_eq!(&data[..2], &[0x01, 0x01], "not a check's answer");
+        }
+
+        /// A deployed relay destroys the allocation that sends toward
+        /// loopback. A loopback candidate is not permitted and never checked,
+        /// and a datagram the relay claims came from loopback is not taken.
+        #[test]
+        fn a_loopback_candidate_is_never_relayed() {
+            let (mut client_arena, mut host_arena) = (Arena::new(), Arena::new());
+            let mut client = client(&mut client_arena);
+            let mut host = host(&mut host_arena);
+            let mut relay = FakeRelay::new();
+            let loopback = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 22_974);
+            client.add_candidate(loopback, Kind::Direct).unwrap();
+            client.add_candidate(host_addr(), Kind::Direct).unwrap();
+            assert_eq!(client.conn().candidate_count(), 1, "loopback was kept");
+
+            let now = offer(&mut client, &mut host, &mut relay);
+            let now = punch(&mut client, &mut host, &mut relay, now);
+            assert!(
+                relay.permitted.iter().all(|ip| !ip.is_loopback()),
+                "loopback permitted"
+            );
+            assert!(
+                relay
+                    .carried
+                    .iter()
+                    .all(|(peer, _)| !peer.ip().is_loopback()),
+                "relayed toward loopback"
+            );
+
+            // A relay that relays from loopback anyway is not believed.
+            relay.permitted.push(loopback.ip());
+            let mut wire = [0u8; 2048];
+            let mut scratch = [0u8; 2048];
+            host.conn()
+                .add_candidate(addr(99, 9), Kind::Direct)
+                .unwrap();
+            let check = host.get_output(now, &mut wire).unwrap().unwrap();
+            let framed = relay.to_client(loopback, &wire[..check.len]).unwrap();
+            assert!(
+                client
+                    .process_input(&framed, server(), None, now, &mut scratch)
+                    .is_err()
+            );
+            assert_eq!(client.conn().candidate_count(), 1);
+        }
+
+        /// Media goes where the host's authenticated traffic comes from. A
+        /// host behind a translator on the relay's network is checked at one
+        /// address and speaks from another, and media sent to the first goes
+        /// nowhere.
+        #[test]
+        fn the_path_follows_the_host() {
+            let (mut client_arena, mut host_arena) = (Arena::new(), Arena::new());
+            let mut client = client(&mut client_arena);
+            let mut host = host(&mut host_arena);
+            let mut relay = FakeRelay::new();
+            let translated = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 50)), 40_000);
+            client.add_candidate(host_addr(), Kind::Direct).unwrap();
+            client.add_candidate(translated, Kind::Direct).unwrap();
+
+            let now = offer(&mut client, &mut host, &mut relay);
+            let mut now = punch(&mut client, &mut host, &mut relay, now);
+            assert_eq!(client.path(), Some(host_addr()));
+
+            host.session()
+                .send_message(CHANNEL, &[], b"from elsewhere")
+                .unwrap();
+            for _ in 0..4 {
+                through(&mut client, &mut host, &mut relay, translated, now);
+                now += 10.0;
+            }
+            relay.carried.clear();
+            client
+                .session()
+                .send_message(CHANNEL, &[], b"after it")
+                .unwrap();
+            for _ in 0..4 {
+                through(&mut client, &mut host, &mut relay, translated, now);
+                now += 10.0;
+            }
+            let media: Vec<_> = relay.carried.iter().filter(|(_, media)| *media).collect();
+            assert!(!media.is_empty(), "no media went");
+            assert!(
+                media.iter().all(|(peer, _)| *peer == translated),
+                "media did not follow: {media:?}"
+            );
+        }
+
+        /// Media rides a channel once one is bound to where it goes: four
+        /// bytes of framing rather than thirty-six. Until the binding is
+        /// answered it goes as indications, and nothing waits for it.
+        #[test]
+        fn media_rides_a_channel_once_bound() {
+            let (mut client_arena, mut host_arena) = (Arena::new(), Arena::new());
+            let mut client = client(&mut client_arena);
+            let mut host = host(&mut host_arena);
+            let mut relay = FakeRelay::new();
+            client.add_candidate(host_addr(), Kind::Direct).unwrap();
+            let now = offer(&mut client, &mut host, &mut relay);
+            let mut now = punch(&mut client, &mut host, &mut relay, now);
+            for _ in 0..4 {
+                through(&mut client, &mut host, &mut relay, host_addr(), now);
+                now += 10.0;
+            }
+            assert_eq!(relay.channels, [(turn::FIRST_CHANNEL, host_addr())]);
+
+            let before = relay.channel_messages;
+            client
+                .session()
+                .send_message(CHANNEL, &[], b"on the channel")
+                .unwrap();
+            let mut wire = [0u8; 2048];
+            let mut sent = None;
+            while let Some(result) = client.get_output(now, &mut wire) {
+                let egress = result.unwrap();
+                if wire[0] >> 6 == 0b01 {
+                    sent = Some(egress.len);
+                }
+                let _ = relay.carry(&wire[..egress.len]);
+            }
+            let len = sent.expect("no channel data");
+            assert!(relay.channel_messages > before);
+            let (_, data) = unwrapped(&wire[..len]);
+            assert_eq!(len, turn::CHANNEL_HEADER_LEN + data.len());
+        }
+
+        /// A relay attempt talks to the relay alone. A datagram from anywhere
+        /// else is not taken, however it is shaped -- not even one framed
+        /// exactly as the relay frames what it relays.
+        #[test]
+        fn a_relay_attempt_takes_nothing_from_outside_the_relay() {
+            let (mut client_arena, mut host_arena) = (Arena::new(), Arena::new());
+            let mut client = client(&mut client_arena);
+            let mut host = host(&mut host_arena);
+            let mut relay = FakeRelay::new();
+            let now = offer(&mut client, &mut host, &mut relay);
+
+            let mut wire = [0u8; 2048];
+            let mut scratch = [0u8; 2048];
+            let check = host.get_output(now, &mut wire).unwrap().unwrap();
+            let check = wire[..check.len].to_vec();
+            let framed = relay.to_client(host_addr(), &check).unwrap();
+            let stranger = addr(66, 3478);
+            for datagram in [&check, &framed] {
+                assert_eq!(
+                    client.process_input(datagram, stranger, None, now, &mut scratch),
+                    Err(Error::Malformed)
+                );
+            }
+            assert_eq!(client.conn().candidate_count(), 0);
+            // The same framing from the relay is taken.
+            assert!(
+                client
+                    .process_input(&framed, server(), None, now, &mut scratch)
+                    .is_ok()
+            );
+            assert_eq!(client.conn().candidate_count(), 1);
+        }
     }
 }

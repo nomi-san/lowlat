@@ -211,12 +211,14 @@ pub fn encode_channel_bind(
 /// peer and 48 toward an IPv6 one, with padding to four bytes after the
 /// datagram.
 pub fn indication_header_len(peer: SocketAddr) -> usize {
-    let address = match stun::canonical(peer) {
-        SocketAddr::V4(_) => 8,
-        SocketAddr::V6(_) => 20,
-    };
-    HEADER_LEN + 4 + address + 4
+    match stun::canonical(peer) {
+        SocketAddr::V4(_) => INDICATION_HEADER_V4,
+        SocketAddr::V6(_) => INDICATION_HEADER_V4 + 12,
+    }
 }
+
+/// What an indication puts ahead of a datagram bound for an IPv4 peer.
+pub const INDICATION_HEADER_V4: usize = HEADER_LEN + 4 + 8 + 4;
 
 /// Frame, in place, the `len` bytes the caller already wrote at
 /// `out[indication_header_len(peer)..]` as an indication toward `peer`.
@@ -593,13 +595,247 @@ impl<'a> Builder<'a> {
     }
 }
 
+/// The relay's side of the wire, for tests: its answers and relayed datagrams
+/// built, and a client's requests read back, from the layout rather than
+/// through the codec, so a misreading the two shared could not pass.
+#[cfg(test)]
+pub(crate) mod testing {
+    use super::*;
+    use hmac::{Hmac, Mac};
+    use sha1::Sha1;
+    use std::vec::Vec;
+
+    /// An address attribute's value, obfuscated as the standard lays it out.
+    pub(crate) fn xor_address(addr: SocketAddr, tid: TransactionId) -> Vec<u8> {
+        let mut mask = MAGIC_COOKIE.to_be_bytes().to_vec();
+        mask.extend_from_slice(&tid.0);
+        let (family, octets) = match addr.ip() {
+            IpAddr::V4(ip) => (0x01, ip.octets().to_vec()),
+            IpAddr::V6(ip) => (0x02, ip.octets().to_vec()),
+        };
+        let mut value = std::vec![0, family];
+        value.extend_from_slice(&(addr.port() ^ 0x2112).to_be_bytes());
+        value.extend(octets.iter().zip(mask.iter()).map(|(a, b)| a ^ b));
+        value
+    }
+
+    /// Append an attribute and correct the length.
+    pub(crate) fn append(out: &mut Vec<u8>, attr: u16, value: &[u8]) {
+        out.extend_from_slice(&attr.to_be_bytes());
+        out.extend_from_slice(&(value.len() as u16).to_be_bytes());
+        out.extend_from_slice(value);
+        out.resize(out.len().next_multiple_of(4), 0);
+        let length = (out.len() - HEADER_LEN) as u16;
+        out[2..4].copy_from_slice(&length.to_be_bytes());
+    }
+
+    /// A message as a relay lays it out: the header, the attributes in the
+    /// order given, and integrity under `key` when there is one.
+    pub(crate) fn message(
+        kind: u16,
+        tid: TransactionId,
+        attributes: &[(u16, &[u8])],
+        key: Option<&Key>,
+    ) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&kind.to_be_bytes());
+        out.extend_from_slice(&[0, 0]);
+        out.extend_from_slice(&MAGIC_COOKIE.to_be_bytes());
+        out.extend_from_slice(&tid.0);
+        for (attr, value) in attributes {
+            append(&mut out, *attr, value);
+        }
+        if let Some(key) = key {
+            // The digest covers a length that already counts its own attribute.
+            let length = (out.len() - HEADER_LEN + 24) as u16;
+            out[2..4].copy_from_slice(&length.to_be_bytes());
+            let mut mac = Hmac::<Sha1>::new_from_slice(&key.0).unwrap();
+            mac.update(&out);
+            let digest = mac.finalize().into_bytes();
+            append(&mut out, ATTR_MESSAGE_INTEGRITY, &digest);
+        }
+        out
+    }
+
+    /// A request read back attribute by attribute.
+    pub(crate) fn attributes_of(bytes: &[u8]) -> Vec<(u16, Vec<u8>)> {
+        let length = usize::from(u16::from_be_bytes([bytes[2], bytes[3]]));
+        assert_eq!(
+            length,
+            bytes.len() - HEADER_LEN,
+            "the length misses the end"
+        );
+        let mut at = HEADER_LEN;
+        let mut out = Vec::new();
+        while at < bytes.len() {
+            let attr = u16::from_be_bytes([bytes[at], bytes[at + 1]]);
+            let len = usize::from(u16::from_be_bytes([bytes[at + 2], bytes[at + 3]]));
+            out.push((attr, bytes[at + 4..at + 4 + len].to_vec()));
+            at += 4 + len.next_multiple_of(4);
+        }
+        assert_eq!(at, bytes.len(), "the attributes overran the message");
+        out
+    }
+
+    /// True if a message that ends in its integrity attribute is right under
+    /// `key`.
+    pub(crate) fn authenticates(bytes: &[u8], key: &Key) -> bool {
+        let at = bytes.len() - 24;
+        let mut mac = Hmac::<Sha1>::new_from_slice(&key.0).unwrap();
+        mac.update(&bytes[..at]);
+        bytes[at..at + 4] == [0x00, 0x08, 0x00, 0x14]
+            && mac.finalize().into_bytes()[..] == bytes[at + 4..]
+    }
+
+    /// A request's method and class.
+    pub(crate) fn kind_of(request: &[u8]) -> u16 {
+        u16::from_be_bytes([request[0], request[1]])
+    }
+
+    pub(crate) fn tid_of(request: &[u8]) -> TransactionId {
+        TransactionId(request[8..20].try_into().unwrap())
+    }
+
+    fn find(request: &[u8], attr: u16) -> Option<Vec<u8>> {
+        attributes_of(request)
+            .into_iter()
+            .find(|(kind, _)| *kind == attr)
+            .map(|(_, value)| value)
+    }
+
+    /// Whether a request carries the credentials and integrity.
+    pub(crate) fn signed(request: &[u8]) -> bool {
+        find(request, ATTR_USERNAME).is_some() && find(request, ATTR_MESSAGE_INTEGRITY).is_some()
+    }
+
+    /// The nonce a request carries.
+    pub(crate) fn nonce_of(request: &[u8]) -> Option<Vec<u8>> {
+        find(request, ATTR_NONCE)
+    }
+
+    /// The lifetime a request asks for.
+    pub(crate) fn lifetime_of(request: &[u8]) -> Option<u32> {
+        find(request, ATTR_LIFETIME).map(|value| u32::from_be_bytes(value[..4].try_into().unwrap()))
+    }
+
+    /// The peer a permission or a channel request names.
+    pub(crate) fn peer_of(request: &[u8]) -> Option<SocketAddr> {
+        stun::decode_mapped(&find(request, ATTR_XOR_PEER_ADDRESS)?, tid_of(request))
+    }
+
+    /// The channel a binding request names.
+    pub(crate) fn channel_of(request: &[u8]) -> Option<u16> {
+        find(request, ATTR_CHANNEL_NUMBER).map(|value| u16::from_be_bytes([value[0], value[1]]))
+    }
+
+    /// The first challenge, or a stale nonce, answering `request`.
+    pub(crate) fn challenge(request: &[u8], code: u16, realm: &[u8], nonce: &[u8]) -> Vec<u8> {
+        let error = [0, 0, (code / 100) as u8, (code % 100) as u8];
+        message(
+            kind_of(request) | CLASS_ERROR,
+            tid_of(request),
+            &[
+                (ATTR_ERROR_CODE, &error),
+                (ATTR_NONCE, nonce),
+                (ATTR_REALM, realm),
+            ],
+            None,
+        )
+    }
+
+    /// A refusal of `request`: the code and nothing else.
+    pub(crate) fn refusal(request: &[u8], code: u16) -> Vec<u8> {
+        let error = [0, 0, (code / 100) as u8, (code % 100) as u8];
+        message(
+            kind_of(request) | CLASS_ERROR,
+            tid_of(request),
+            &[(ATTR_ERROR_CODE, &error)],
+            None,
+        )
+    }
+
+    /// An allocation granted: the relayed address and the lifetime, when
+    /// there is one, under `key`.
+    pub(crate) fn allocated(
+        request: &[u8],
+        relayed: SocketAddr,
+        lifetime_s: Option<u32>,
+        key: &Key,
+    ) -> Vec<u8> {
+        let tid = tid_of(request);
+        let address = xor_address(relayed, tid);
+        let lifetime = lifetime_s.map(u32::to_be_bytes);
+        let mut attributes = std::vec![(ATTR_XOR_RELAYED_ADDRESS, &address[..])];
+        if let Some(lifetime) = &lifetime {
+            attributes.push((ATTR_LIFETIME, &lifetime[..]));
+        }
+        message(
+            kind_of(request) | CLASS_SUCCESS,
+            tid,
+            &attributes,
+            Some(key),
+        )
+    }
+
+    /// Any other request granted under `key`: a refresh with the lifetime,
+    /// when there is one, the rest bare.
+    pub(crate) fn granted(request: &[u8], lifetime_s: Option<u32>, key: &Key) -> Vec<u8> {
+        let lifetime = lifetime_s.map(u32::to_be_bytes);
+        let mut attributes = Vec::new();
+        if let Some(lifetime) = &lifetime {
+            attributes.push((ATTR_LIFETIME, &lifetime[..]));
+        }
+        message(
+            kind_of(request) | CLASS_SUCCESS,
+            tid_of(request),
+            &attributes,
+            Some(key),
+        )
+    }
+
+    /// A peer's datagram, relayed as an indication.
+    pub(crate) fn relayed(peer: SocketAddr, data: &[u8]) -> Vec<u8> {
+        let tid = TransactionId([0x6E; 12]);
+        message(
+            METHOD_DATA | CLASS_INDICATION,
+            tid,
+            &[
+                (ATTR_DATA, data),
+                (ATTR_XOR_PEER_ADDRESS, &xor_address(peer, tid)),
+            ],
+            None,
+        )
+    }
+
+    /// A peer's datagram, relayed on a channel.
+    pub(crate) fn channel_data(number: u16, data: &[u8]) -> Vec<u8> {
+        let mut out = number.to_be_bytes().to_vec();
+        out.extend_from_slice(&(data.len() as u16).to_be_bytes());
+        out.extend_from_slice(data);
+        out
+    }
+
+    /// The datagram an indication or channel message from the client carries,
+    /// and the peer it is bound for when the framing names one.
+    pub(crate) fn unwrapped(sent: &[u8]) -> (Option<SocketAddr>, Vec<u8>) {
+        if sent[0] >> 6 == 0b01 {
+            return (None, sent[CHANNEL_HEADER_LEN..].to_vec());
+        }
+        assert_eq!(
+            kind_of(sent),
+            METHOD_SEND | CLASS_INDICATION,
+            "not an indication"
+        );
+        (peer_of(sent), find(sent, ATTR_DATA).unwrap())
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::testing::{append, attributes_of, authenticates, xor_address};
     use super::*;
     use crate::demux::{self, Datagram};
     use core::net::{Ipv4Addr, Ipv6Addr};
-    use hmac::{Hmac, Mac};
-    use sha1::Sha1;
     use std::vec::Vec;
 
     const TID: TransactionId = TransactionId([
@@ -625,54 +861,8 @@ mod tests {
         )
     }
 
-    /// An address attribute's value, obfuscated as the standard lays it out.
-    /// Written here rather than through the codec, so a misreading the two
-    /// shared could not pass.
-    fn xor_address(addr: SocketAddr, tid: TransactionId) -> Vec<u8> {
-        let mut mask = MAGIC_COOKIE.to_be_bytes().to_vec();
-        mask.extend_from_slice(&tid.0);
-        let (family, octets) = match addr.ip() {
-            IpAddr::V4(ip) => (0x01, ip.octets().to_vec()),
-            IpAddr::V6(ip) => (0x02, ip.octets().to_vec()),
-        };
-        let mut value = std::vec![0, family];
-        value.extend_from_slice(&(addr.port() ^ 0x2112).to_be_bytes());
-        value.extend(octets.iter().zip(mask.iter()).map(|(a, b)| a ^ b));
-        value
-    }
-
-    /// Append an attribute and correct the length.
-    fn append(out: &mut Vec<u8>, attr: u16, value: &[u8]) {
-        out.extend_from_slice(&attr.to_be_bytes());
-        out.extend_from_slice(&(value.len() as u16).to_be_bytes());
-        out.extend_from_slice(value);
-        out.resize(out.len().next_multiple_of(4), 0);
-        let length = (out.len() - HEADER_LEN) as u16;
-        out[2..4].copy_from_slice(&length.to_be_bytes());
-    }
-
-    /// A message as a relay lays it out: the header, the attributes in the
-    /// order given, and integrity under `key` when there is one. Written from
-    /// the layout rather than through the codec, for the same reason.
     fn message(kind: u16, attributes: &[(u16, &[u8])], key: Option<&Key>) -> Vec<u8> {
-        let mut out = Vec::new();
-        out.extend_from_slice(&kind.to_be_bytes());
-        out.extend_from_slice(&[0, 0]);
-        out.extend_from_slice(&MAGIC_COOKIE.to_be_bytes());
-        out.extend_from_slice(&TID.0);
-        for (attr, value) in attributes {
-            append(&mut out, *attr, value);
-        }
-        if let Some(key) = key {
-            // The digest covers a length that already counts its own attribute.
-            let length = (out.len() - HEADER_LEN + 24) as u16;
-            out[2..4].copy_from_slice(&length.to_be_bytes());
-            let mut mac = Hmac::<Sha1>::new_from_slice(&key.0).unwrap();
-            mac.update(&out);
-            let digest = mac.finalize().into_bytes();
-            append(&mut out, ATTR_MESSAGE_INTEGRITY, &digest);
-        }
-        out
+        super::testing::message(kind, TID, attributes, key)
     }
 
     fn response(bytes: &[u8]) -> Response<'_> {
@@ -680,36 +870,6 @@ mod tests {
             Inbound::Response(response) => response,
             other => panic!("expected an answer, got {other:?}"),
         }
-    }
-
-    /// A request read back attribute by attribute, from the layout.
-    fn attributes_of(bytes: &[u8]) -> Vec<(u16, Vec<u8>)> {
-        let length = usize::from(u16::from_be_bytes([bytes[2], bytes[3]]));
-        assert_eq!(
-            length,
-            bytes.len() - HEADER_LEN,
-            "the length misses the end"
-        );
-        let mut at = HEADER_LEN;
-        let mut out = Vec::new();
-        while at < bytes.len() {
-            let attr = u16::from_be_bytes([bytes[at], bytes[at + 1]]);
-            let len = usize::from(u16::from_be_bytes([bytes[at + 2], bytes[at + 3]]));
-            out.push((attr, bytes[at + 4..at + 4 + len].to_vec()));
-            at += 4 + len.next_multiple_of(4);
-        }
-        assert_eq!(at, bytes.len(), "the attributes overran the message");
-        out
-    }
-
-    /// True if a message that ends in its integrity attribute is right under
-    /// `key`, computed from the layout.
-    fn authenticates(bytes: &[u8], key: &Key) -> bool {
-        let at = bytes.len() - 24;
-        let mut mac = Hmac::<Sha1>::new_from_slice(&key.0).unwrap();
-        mac.update(&bytes[..at]);
-        bytes[at..at + 4] == [0x00, 0x08, 0x00, 0x14]
-            && mac.finalize().into_bytes()[..] == bytes[at + 4..]
     }
 
     /// Assert a request's method, identifier and leading attributes, and that

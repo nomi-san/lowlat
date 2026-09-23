@@ -56,6 +56,7 @@ pub mod packet;
 pub mod pad;
 pub mod pmtu;
 pub mod png;
+pub mod relay;
 pub mod send;
 pub mod seq;
 pub mod session;
