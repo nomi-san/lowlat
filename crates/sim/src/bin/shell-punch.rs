@@ -202,6 +202,7 @@ fn peer(args: &[String]) -> Result<(), String> {
     }
 
     let mut published = false;
+    let mut reached = false;
     let mut settled_at: Option<f64> = None;
 
     loop {
@@ -260,6 +261,10 @@ fn peer(args: &[String]) -> Result<(), String> {
         if let Some(RelayState::Failed(failure)) = shell.endpoint().relay().map(Relay::state) {
             println!("failed {failure:?}");
             return Ok(());
+        }
+        if !reached && let Some(addr) = shell.endpoint().conn().reachable() {
+            reached = true;
+            println!("reachable {addr}");
         }
 
         match shell.endpoint().conn().state() {

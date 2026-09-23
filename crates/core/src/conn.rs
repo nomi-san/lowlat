@@ -94,8 +94,8 @@ pub struct Egress {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum Failure {
-    /// Checks were sent and nothing answered. The only outcome that justifies
-    /// escalating to a relay.
+    /// Checks were sent and no path was proven: nothing answered, or the peer
+    /// never checked us. The only outcome that justifies escalating to a relay.
     ProbeTimeout,
     /// The attempt had no candidate to check before the window closed.
     NoCandidates,
@@ -107,7 +107,8 @@ pub enum Failure {
 pub enum State {
     /// Checking whatever candidates have arrived.
     Checking,
-    /// A candidate answered and is now the path. Checks stop.
+    /// A candidate answered and the peer checked us: the candidate is now the
+    /// path. Checks stop.
     Established(SocketAddr),
     /// Over.
     Failed(Failure),
@@ -119,7 +120,11 @@ pub enum State {
 pub enum Inbound {
     /// A peer checked us. A response is queued.
     CheckAnswered,
-    /// A peer answered our check and this address became the path.
+    /// The first answer to our checks came from this address. It becomes the
+    /// path once the peer has checked us as well.
+    Reachable(SocketAddr),
+    /// Both directions are proven and this address became the path: it
+    /// answered our check, and the peer has checked us.
     PathEstablished(SocketAddr),
     /// A reflexive server reported the address it sees us at. Emit it to the
     /// application as a candidate.
@@ -268,6 +273,11 @@ pub struct Conn<'a> {
     pending: [Option<(SocketAddr, TransactionId, Option<IpAddr>)>; MAX_PENDING],
 
     state: State,
+    /// The first candidate to answer our checks, with the local address the
+    /// answer arrived at: the path, once the peer has checked us too.
+    answered: Option<(SocketAddr, Option<IpAddr>)>,
+    /// Whether the peer has checked us and been answered.
+    checked: bool,
     /// Whether the peer has said it is listening. Full-length checks toward
     /// translated-path candidates wait for this; direct candidates and the
     /// probe do not.
@@ -294,6 +304,8 @@ impl<'a> Conn<'a> {
             servers: [None; MAX_SERVERS],
             pending: [None; MAX_PENDING],
             state: State::Checking,
+            answered: None,
+            checked: false,
             peer_ready: false,
             local: None,
             started_ms: now_ms,
@@ -329,6 +341,15 @@ impl<'a> Conn<'a> {
             State::Established(addr) => Some(addr),
             _ => None,
         }
+    }
+
+    /// The candidate that answered our checks first, once one has.
+    ///
+    /// It becomes the path when the peer has checked us too. Until then, and
+    /// for an attempt that ends without the peer's check, it says our checks
+    /// got through while the peer's did not.
+    pub fn reachable(&self) -> Option<SocketAddr> {
+        self.answered.map(|(addr, _)| addr)
     }
 
     /// The local address the path was proven at, once there is one.
@@ -464,7 +485,8 @@ impl<'a> Conn<'a> {
                 // Answering is unconditional and stays that way after a path is
                 // chosen. A peer that stops seeing answers withdraws the path,
                 // and on a relayed path it withholds media entirely.
-                Ok(Inbound::CheckAnswered)
+                self.checked = true;
+                Ok(self.establish().unwrap_or(Inbound::CheckAnswered))
             }
             Method::BindingSuccess => {
                 let tid = message.transaction_id();
@@ -505,23 +527,47 @@ impl<'a> Conn<'a> {
                 };
                 let addr = candidate.addr;
 
-                if matches!(self.state, State::Checking) {
-                    // The first candidate to answer wins, and nothing looks for
-                    // a better path afterwards: switching mid-stream costs more
-                    // than the improvement is worth.
-                    //
-                    // The address the winning answer arrived at is latched with
-                    // it: the peer proved this exact address pair, and every
-                    // later send keeps it rather than letting the routing
-                    // table move the source mid-session.
-                    self.state = State::Established(addr);
-                    self.local = local;
-                    Ok(Inbound::PathEstablished(addr))
-                } else {
-                    Ok(Inbound::Redundant)
+                if !matches!(self.state, State::Checking) || self.answered.is_some() {
+                    return Ok(Inbound::Redundant);
                 }
+                // The first candidate to answer wins, and nothing looks for a
+                // better path afterwards: switching mid-stream costs more than
+                // the improvement is worth.
+                //
+                // The address the winning answer arrived at is latched with it:
+                // the peer proved this exact address pair, and every later send
+                // keeps it rather than letting the routing table move the source
+                // mid-session.
+                self.answered = Some((addr, local));
+                Ok(self.establish().unwrap_or(Inbound::Reachable(addr)))
             }
         }
+    }
+
+    /// Choose the path once both directions are proven: a candidate answered
+    /// our check, and the peer checked us and was answered.
+    ///
+    /// Our answer alone is not enough. The peer declares its own path only
+    /// when its own check is answered, and until then it reads every datagram
+    /// as a check: a record sent on the strength of our answer alone reaches
+    /// a reader that drops it.
+    fn establish(&mut self) -> Option<Inbound> {
+        let (addr, local) = self.answered?;
+        if !self.checked || !matches!(self.state, State::Checking) {
+            return None;
+        }
+        self.state = State::Established(addr);
+        self.local = local;
+        Some(Inbound::PathEstablished(addr))
+    }
+
+    /// Whether an answer is owed and not yet on the wire.
+    ///
+    /// Nothing may overtake one. The answer that completes the peer's punch
+    /// is what moves the peer off reading checks, and a record that arrives
+    /// ahead of it is read as a malformed check and dropped.
+    pub fn owes_answer(&self) -> bool {
+        self.pending.iter().flatten().next().is_some()
     }
 
     /// Housekeeping. Closes the window when it expires.
@@ -856,6 +902,22 @@ mod tests {
         stun::encode_binding_response(out, message.transaction_id(), from, THEIR_PWD).unwrap()
     }
 
+    /// The peer checks us, arriving at `local`. It signs with our password,
+    /// because from its side we are the remote.
+    fn check_us(conn: &mut Conn<'_>, from: SocketAddr, local: Option<IpAddr>) -> Inbound {
+        let mut theirs = [0u8; 256];
+        let len = stun::encode_binding_request(
+            &mut theirs,
+            TransactionId([0x5C; 12]),
+            THEIRS,
+            OURS,
+            [0; 8],
+            OUR_PWD,
+        )
+        .unwrap();
+        conn.process_input(&theirs[..len], from, local).unwrap()
+    }
+
     #[test]
     fn the_first_datagram_is_a_probe_and_only_the_first() {
         let mut conn = conn();
@@ -1030,6 +1092,7 @@ mod tests {
         let mut conn = conn();
         let peer = addr(1, 4000);
         conn.add_candidate(peer, Kind::Reflexive).unwrap();
+        assert_eq!(check_us(&mut conn, peer, None), Inbound::CheckAnswered);
 
         let sent = drain(&mut conn, 0.0);
         let (egress, buf) = sent.last().copied().unwrap();
@@ -1044,21 +1107,110 @@ mod tests {
         assert_eq!(conn.path(), Some(peer));
     }
 
+    /// The peer leaves its own punch only when its own check is answered, and
+    /// until then reads everything as a check. Our answer alone says nothing
+    /// about that, so it is not a path: the path waits for the peer's check,
+    /// and our answer to it goes out first.
     #[test]
-    fn checks_stop_once_a_path_is_chosen() {
+    fn an_answer_alone_is_not_a_path() {
         let mut conn = conn();
         let peer = addr(1, 4000);
-        conn.add_candidate(peer, Kind::Reflexive).unwrap();
-        conn.add_candidate(addr(2, 4000), Kind::Reflexive).unwrap();
+        conn.add_candidate(peer, Kind::Direct).unwrap();
 
+        let sent = drain(&mut conn, 0.0);
+        let (egress, buf) = sent.last().copied().unwrap();
+        let mut response = [0u8; 256];
+        let len = answer(&buf, egress.len, addr(9, 5000), &mut response);
+        assert_eq!(
+            conn.process_input(&response[..len], peer, None).unwrap(),
+            Inbound::Reachable(peer)
+        );
+        assert_eq!(conn.state(), State::Checking);
+        assert_eq!(conn.path(), None);
+
+        assert_eq!(
+            check_us(&mut conn, peer, None),
+            Inbound::PathEstablished(peer)
+        );
+        assert_eq!(conn.path(), Some(peer));
+        assert!(conn.owes_answer(), "the answer that completes it is owed");
+    }
+
+    /// First to answer wins even when the path waits for the peer's check: a
+    /// later answer in between does not move it.
+    #[test]
+    fn the_first_answer_stays_the_path_while_the_peer_has_not_checked() {
+        let mut conn = conn();
+        let (first, second) = (addr(1, 4000), addr(2, 4000));
+        conn.add_candidate(first, Kind::Direct).unwrap();
+        conn.add_candidate(second, Kind::Direct).unwrap();
+
+        let sent = drain(&mut conn, 0.0);
+        let mut response = [0u8; 256];
+        for target in [first, second] {
+            let (egress, buf) = sent.iter().find(|(e, _)| e.to == target).copied().unwrap();
+            let len = answer(&buf, egress.len, addr(9, 5000), &mut response);
+            let inbound = conn.process_input(&response[..len], target, None).unwrap();
+            let expected = if target == first {
+                Inbound::Reachable(first)
+            } else {
+                Inbound::Redundant
+            };
+            assert_eq!(inbound, expected);
+        }
+
+        assert_eq!(
+            check_us(&mut conn, second, None),
+            Inbound::PathEstablished(first)
+        );
+    }
+
+    /// Answered but never checked is no path, and the window closes on it
+    /// like any other attempt that found none.
+    #[test]
+    fn an_attempt_the_peer_never_checks_times_out() {
+        let mut conn = conn();
+        let peer = addr(1, 4000);
+        conn.add_candidate(peer, Kind::Direct).unwrap();
         let sent = drain(&mut conn, 0.0);
         let (egress, buf) = sent.last().copied().unwrap();
         let mut response = [0u8; 256];
         let len = answer(&buf, egress.len, addr(9, 5000), &mut response);
         conn.process_input(&response[..len], peer, None).unwrap();
 
+        conn.poll(PUNCH_WINDOW_MS);
+        assert_eq!(conn.state(), State::Failed(Failure::ProbeTimeout));
+    }
+
+    #[test]
+    fn checks_stop_once_a_path_is_chosen() {
+        let mut conn = conn();
+        let peer = addr(1, 4000);
+        conn.add_candidate(peer, Kind::Reflexive).unwrap();
+        conn.add_candidate(addr(2, 4000), Kind::Reflexive).unwrap();
+        conn.set_peer_ready();
+
+        let sent = drain(&mut conn, 0.0);
+        let (egress, buf) = sent
+            .iter()
+            .find(|(e, _)| e.to == peer && e.ttl == Ttl::Default)
+            .copied()
+            .unwrap();
+        let mut response = [0u8; 256];
+        let len = answer(&buf, egress.len, addr(9, 5000), &mut response);
+        conn.process_input(&response[..len], peer, None).unwrap();
         assert!(
-            drain(&mut conn, 600.0).is_empty(),
+            !drain(&mut conn, 600.0).is_empty(),
+            "stopped checking on an answer alone"
+        );
+
+        check_us(&mut conn, peer, None);
+        assert_eq!(conn.path(), Some(peer));
+        let sent = drain(&mut conn, 1_200.0);
+        assert!(
+            sent.iter()
+                .all(|(e, buf)| Message::parse(&buf[..e.len]).unwrap().method()
+                    == Method::BindingSuccess),
             "kept probing after the path was chosen"
         );
     }
@@ -1070,14 +1222,16 @@ mod tests {
         let mut conn = conn();
         let peer = addr(1, 4000);
         conn.add_candidate(peer, Kind::Reflexive).unwrap();
+        check_us(&mut conn, peer, None);
         let sent = drain(&mut conn, 0.0);
         let (egress, buf) = sent.last().copied().unwrap();
         let mut response = [0u8; 256];
         let len = answer(&buf, egress.len, addr(9, 5000), &mut response);
         conn.process_input(&response[..len], peer, None).unwrap();
+        assert_eq!(conn.path(), Some(peer));
 
-        // Now the peer checks us. It signs with our password, because from its
-        // side we are the remote.
+        // Now the peer checks us again. It signs with our password, because
+        // from its side we are the remote.
         let mut theirs = [0u8; 256];
         let len = stun::encode_binding_request(
             &mut theirs,
@@ -1115,11 +1269,13 @@ mod tests {
         let mut conn = conn();
         let peer = addr(1, 4000);
         conn.add_candidate(peer, Kind::Reflexive).unwrap();
+        check_us(&mut conn, peer, None);
         let sent = drain(&mut conn, 0.0);
         let (egress, buf) = sent.last().copied().unwrap();
         let mut response = [0u8; 256];
         let len = answer(&buf, egress.len, addr(9, 5000), &mut response);
         conn.process_input(&response[..len], peer, None).unwrap();
+        assert_eq!(conn.path(), Some(peer));
         assert!(conn.next_timer_ms(600.0).is_infinite());
 
         let mut theirs = [0u8; 256];
@@ -1186,6 +1342,7 @@ mod tests {
         let peer = addr(1, 4000);
         conn.add_candidate(peer, Kind::Reflexive).unwrap();
         conn.set_peer_ready();
+        check_us(&mut conn, peer, None);
 
         // The first round leaves, and the peer's answer to it is built now
         // but will arrive late.
@@ -1308,6 +1465,10 @@ mod tests {
         let len = answer(&buf, egress.len, addr(9, 5000), &mut response);
         conn.process_input(&response[..len], peer, Some(proven))
             .unwrap();
+        // The peer's check completes the path wherever it arrived; the
+        // address latched is still the one the winning answer proved.
+        let elsewhere = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 4));
+        check_us(&mut conn, peer, Some(elsewhere));
 
         assert_eq!(conn.state(), State::Established(peer));
         assert_eq!(

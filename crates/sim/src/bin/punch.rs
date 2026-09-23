@@ -167,6 +167,7 @@ fn peer(args: &[String]) -> Result<(), String> {
 
     let started = Instant::now();
     let mut published = false;
+    let mut reached = false;
     let mut settled_at: Option<f64> = None;
     let mut tx = [0u8; 512];
     let mut rx = [0u8; 2048];
@@ -236,6 +237,10 @@ fn peer(args: &[String]) -> Result<(), String> {
         }
 
         conn.poll(started.elapsed().as_secs_f64() * 1000.0);
+        if !reached && let Some(addr) = conn.reachable() {
+            reached = true;
+            println!("reachable {addr}");
+        }
         match conn.state() {
             State::Established(addr) => {
                 if settled_at.is_none() {

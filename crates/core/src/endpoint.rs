@@ -333,6 +333,10 @@ impl<'a, M: Media> Endpoint<'a, M> {
         if let Some(result) = self.conn.get_output(now_ms, out) {
             return Some(result);
         }
+        // An answer that pacing holds back holds the session with it.
+        if self.conn.owes_answer() {
+            return None;
+        }
 
         // No path, no destination. The session may have output ready; it waits.
         let to = self.conn.path()?;
@@ -389,6 +393,9 @@ impl<'a, M: Media> Endpoint<'a, M> {
                 turn::wrap_indication(out, tid, egress.to, egress.len)
                     .map(|len| to_relay(relay, len)),
             );
+        }
+        if self.conn.owes_answer() {
+            return None;
         }
         self.relayed_media(now_ms, out)
     }
@@ -684,6 +691,76 @@ mod tests {
         let mut wire = [0u8; 512];
         assert!(endpoint.get_output(0.0, &mut wire).is_none());
         assert_eq!(endpoint.path(), None);
+    }
+
+    /// The peer reads checks until its own check is answered. No record goes
+    /// out on the strength of our answer alone, and none overtakes the answer
+    /// that completes the path, even while pacing holds that answer back.
+    #[test]
+    fn no_record_overtakes_the_answer_that_completes_the_path() {
+        let mut arena = Arena::new();
+        let mut left = endpoint(
+            &mut arena,
+            (LEFT_UFRAG, LEFT_PWD),
+            (RIGHT_UFRAG, RIGHT_PWD),
+            0xA1,
+        );
+        let peer = addr(20, 6000);
+        left.conn().add_candidate(peer, conn::Kind::Direct).unwrap();
+        let mut wire = [0u8; 512];
+        let mut scratch = [0u8; 512];
+
+        // Our check leaves and the peer answers it.
+        let check = left.get_output(0.0, &mut wire).unwrap().unwrap();
+        let tid = stun::Message::parse(&wire[..check.len])
+            .unwrap()
+            .transaction_id();
+        let mut answer = [0u8; 256];
+        let len =
+            stun::encode_binding_response(&mut answer, tid, addr(10, 5000), RIGHT_PWD).unwrap();
+        left.process_input(&answer[..len], peer, None, 1.0, &mut scratch)
+            .unwrap();
+        assert_eq!(left.path(), None, "an answer alone made a path");
+        left.session().send_message(CHANNEL, &[], b"early").unwrap();
+        assert!(left.get_output(20.0, &mut wire).is_none());
+
+        // The cadence checks again, and the peer's own check lands inside the
+        // pacing gap after it.
+        let recheck = left
+            .get_output(conn::CHECK_CADENCE_MS, &mut wire)
+            .unwrap()
+            .unwrap();
+        assert_eq!(demux::classify(&wire[..recheck.len]), Datagram::Check);
+        let mut theirs = [0u8; 256];
+        let len = stun::encode_binding_request(
+            &mut theirs,
+            stun::TransactionId([0x5C; 12]),
+            RIGHT_UFRAG,
+            LEFT_UFRAG,
+            [0; 8],
+            LEFT_PWD,
+        )
+        .unwrap();
+        let at = conn::CHECK_CADENCE_MS + 1.0;
+        left.process_input(&theirs[..len], peer, None, at, &mut scratch)
+            .unwrap();
+        assert_eq!(left.path(), Some(peer));
+
+        assert!(
+            left.get_output(at, &mut wire).is_none(),
+            "a record overtook the answer pacing held"
+        );
+        let first = left
+            .get_output(at + conn::PACING_MS, &mut wire)
+            .unwrap()
+            .unwrap();
+        let reply = stun::Message::parse(&wire[..first.len]).unwrap();
+        assert_eq!(reply.method(), stun::Method::BindingSuccess);
+        let next = left
+            .get_output(at + conn::PACING_MS, &mut wire)
+            .unwrap()
+            .unwrap();
+        assert_eq!(demux::classify(&wire[..next.len]), Datagram::Record);
     }
 
     /// A shell arming from one engine alone gets the wrong answer in both
@@ -1082,6 +1159,100 @@ mod tests {
                 [0x0016]
             );
             assert_eq!(unwrapped(&checks[0]).0, Some(host_addr()));
+        }
+
+        /// Everything the client sends at `now`: the relay's own requests
+        /// answered, and what goes toward the host kept, as the host gets it.
+        fn toward_host(client: &mut Endpoint<'_>, relay: &mut FakeRelay, now: f64) -> Vec<Vec<u8>> {
+            let mut wire = [0u8; 2048];
+            let mut scratch = [0u8; 2048];
+            let mut sent = Vec::new();
+            while let Some(result) = client.get_output(now, &mut wire) {
+                match relay.carry(&wire[..result.unwrap().len]) {
+                    Carried::Answer(answer) => {
+                        client
+                            .process_input(&answer, server(), None, now, &mut scratch)
+                            .unwrap();
+                    }
+                    Carried::ToPeer(_, data) => sent.push(data),
+                    Carried::Dropped => {}
+                }
+            }
+            sent
+        }
+
+        /// Through the relay as directly: nothing reaches the host on the
+        /// strength of our answer alone, and no record overtakes the answer
+        /// that completes its punch, even while pacing holds that answer.
+        #[test]
+        fn no_record_overtakes_the_answer_through_the_relay() {
+            let mut arena = Arena::new();
+            let mut client = client(&mut arena);
+            let mut relay = FakeRelay::new();
+            client.add_candidate(host_addr(), Kind::Direct).unwrap();
+            let mut scratch = [0u8; 2048];
+
+            let mut now = 0.0;
+            let mut sent = Vec::new();
+            while client.relay().unwrap().relayed().is_none() {
+                sent.extend(toward_host(&mut client, &mut relay, now));
+                now += 10.0;
+            }
+            let check = sent
+                .iter()
+                .find(|data| demux::classify(data) == Datagram::Check)
+                .expect("no check toward the host");
+            let tid = stun::Message::parse(check).unwrap().transaction_id();
+            let mut datagram = [0u8; 256];
+            let len = stun::encode_binding_response(&mut datagram, tid, relayed_addr(), RIGHT_PWD)
+                .unwrap();
+            let answer = relayed_datagram(host_addr(), &datagram[..len]);
+            client
+                .process_input(&answer, server(), None, now, &mut scratch)
+                .unwrap();
+            assert_eq!(client.path(), None, "an answer alone made a path");
+            client
+                .session()
+                .send_message(CHANNEL, &[], b"early")
+                .unwrap();
+            assert!(toward_host(&mut client, &mut relay, now + 20.0).is_empty());
+
+            // The cadence checks again, and the host's own check lands inside
+            // the pacing gap after it.
+            let at = now + conn::CHECK_CADENCE_MS;
+            assert!(
+                toward_host(&mut client, &mut relay, at)
+                    .iter()
+                    .any(|data| demux::classify(data) == Datagram::Check),
+                "no check at the cadence, fixture broken"
+            );
+            let len = stun::encode_binding_request(
+                &mut datagram,
+                stun::TransactionId([0x5C; 12]),
+                RIGHT_UFRAG,
+                LEFT_UFRAG,
+                [0; 8],
+                LEFT_PWD,
+            )
+            .unwrap();
+            let theirs = relayed_datagram(host_addr(), &datagram[..len]);
+            client
+                .process_input(&theirs, server(), None, at + 1.0, &mut scratch)
+                .unwrap();
+            assert_eq!(client.path(), Some(host_addr()));
+
+            assert!(
+                toward_host(&mut client, &mut relay, at + 1.0).is_empty(),
+                "a record overtook the answer pacing held"
+            );
+            let sent = toward_host(&mut client, &mut relay, at + 1.0 + conn::PACING_MS);
+            let reply = stun::Message::parse(&sent[0]).unwrap();
+            assert_eq!(reply.method(), stun::Method::BindingSuccess);
+            assert!(
+                sent[1..]
+                    .iter()
+                    .any(|data| demux::classify(data) == Datagram::Record)
+            );
         }
 
         /// A check that came through the relay is answered through the relay.

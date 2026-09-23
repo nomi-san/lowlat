@@ -387,15 +387,16 @@ topology_carrier_grade() {
 # binding response must leave from the secondary: the kernel's own source
 # selection picks the primary, the translator sees a source the inside never
 # contacted, and the answer dies there. The translator is the assertion --
-# no packet capture, the guard either passes the right source or the punch
-# never completes.
+# no packet capture, the guard either passes the right source or the check
+# is never answered.
 #
-# The left side is expected to fail, and that is the topology's artifice
-# rather than a defect: it is never probed at its primary, so its own checks
-# (unpinned until a path is proven) leave from an address the right side's
-# translator never admitted. A real peer is handed both candidates and opens
-# the filter for each; this fixture withholds one to force the response path
-# it exists to check.
+# Neither side establishes, and that is the topology's artifice rather than a
+# defect: the left is never probed at its primary, so its own checks (unpinned
+# until a path is proven) leave from an address the right side's translator
+# never admitted, and a path needs the checks of both sides through. A real
+# peer is handed both candidates and opens the filter for each; this fixture
+# withholds one to force the response path it exists to check, so the probing
+# side is judged on its check being answered rather than on a path.
 topology_multihome() {
     mkns llnet llgwb llha llhb || return 1
     wire llha inta 203.0.113.9/29 llnet neta 203.0.113.14/29 || return 1
@@ -430,12 +431,13 @@ topology_multihome() {
     wait "$a" 2>/dev/null
     wait "$b" 2>/dev/null
 
-    # Judged on the probing side alone: it must establish at the secondary,
-    # which its translator only lets happen when the answer came from it.
+    # Judged on the probing side alone: its check must be answered at the
+    # secondary, which its translator only lets happen when the answer came
+    # from it.
     local left right
     left=$(grep -Eo '^(established|failed|timeout).*' "$RUN/a.out" | tail -1)
     right=$(grep -Eo '^(established|failed|timeout).*' "$RUN/b.out" | tail -1)
-    if [[ $right == "established 203.0.113.10:$LEFT_PORT" ]]; then
+    if grep -qx "reachable 203.0.113.10:$LEFT_PORT" "$RUN/b.out"; then
         pass=$((pass + 1))
         log "  PASS multihome: probed at the secondary and answered from it, right [$right] left [$left]"
     else
