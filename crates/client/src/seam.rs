@@ -158,6 +158,14 @@ pub enum Outcome {
     /// No decoder can serve the stream: the device is gone, was never
     /// usable, or the stream is one it cannot decode.
     DecoderFailed,
+    /// The relay did not answer in time to allocate and permit.
+    RelayUnreachable,
+    /// The relay refused the credentials or the allocation, or is full. The
+    /// same relay refuses again.
+    RelayRefused,
+    /// A renewal was refused, or went unanswered until what it renewed
+    /// lapsed; the relay has let the allocation go.
+    RelayLost,
 }
 
 /// What a seam call can refuse.
@@ -817,6 +825,11 @@ impl Client {
             );
         }
         let seed = lowlat_crypto::transaction_seed().map_err(|_| Error::Crypto)?;
+        let relay_seed = lowlat_crypto::transaction_seed().map_err(|_| Error::Crypto)?;
+        // What an earlier attempt's relay left in the status is not this
+        // attempt's.
+        self.telemetry.relayed.store(0, Ordering::Relaxed);
+        self.telemetry.path_relayed.store(false, Ordering::Relaxed);
 
         let socket = lowlat_net::Socket::open_or_any_port(0).map_err(|_| Error::Io)?;
         let bound = socket.local_addr().map_err(|_| Error::Io)?.port();
@@ -833,6 +846,8 @@ impl Client {
         let args = crate::shell::Attached {
             socket,
             servers: attempt.config.servers.clone(),
+            relay: attempt.config.relay.clone(),
+            relay_seed,
             ours: (attempt.ours.ufrag.clone(), attempt.ours.pwd.clone()),
             theirs: (theirs.ufrag.clone(), theirs.pwd.clone()),
             material,
@@ -887,17 +902,22 @@ impl Client {
         attempt.decode = Some((decode, stopping));
         self.last_seq = 0;
 
-        let shared = attempt.config.shared_address_space;
-        for ip in lowlat_net::host_addresses(shared) {
-            self.emit.send(Event::Candidate {
-                addr: SocketAddr::new(ip, bound),
-                from_stun: false,
-                lan: true,
-            });
+        // A relay attempt offers the relayed address and nothing else, once the
+        // relay has one; the session thread raises it and the readiness
+        // marker after it.
+        if attempt.config.relay.is_none() {
+            let shared = attempt.config.shared_address_space;
+            for ip in lowlat_net::host_addresses(shared) {
+                self.emit.send(Event::Candidate {
+                    addr: SocketAddr::new(ip, bound),
+                    from_stun: false,
+                    lan: true,
+                });
+            }
+            // After the candidates, which is the order a peer expects: "that
+            // is all of mine, now yours".
+            self.emit.send(Event::Ready);
         }
-        // After the candidates, which is the order a peer expects: "that is
-        // all of mine, now yours".
-        self.emit.send(Event::Ready);
         Ok(())
     }
 

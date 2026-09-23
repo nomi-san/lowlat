@@ -17,12 +17,14 @@ use lowlat_core::control::CONTROL_CHANNEL;
 use lowlat_core::endpoint::Endpoint;
 use lowlat_core::envelope::{Cipher, Envelope};
 use lowlat_core::init::Init;
+use lowlat_core::relay::{Relay, State as RelayState};
 use lowlat_core::send::{SendRing, SendSlot};
 use lowlat_core::session::Session;
 use lowlat_net::{Running, Shell, Socket, Wake};
 use std::sync::atomic::Ordering;
 
-use crate::driver::{Driver, Telemetry, Units};
+use crate::config;
+use crate::driver::{Driver, Telemetry, Units, pack_relayed};
 use crate::input::{RING_DEPTH, Request};
 use crate::seam::{Arrival, Ask, Event, Outcome};
 use crate::sound::Packets;
@@ -38,6 +40,10 @@ const REPORT_EVERY: u32 = 16;
 pub(crate) struct Attached {
     pub socket: Socket,
     pub servers: Vec<SocketAddr>,
+    /// The relay a relay attempt goes through, and the seed its transaction
+    /// identifiers are derived from.
+    pub relay: Option<config::Relay>,
+    pub relay_seed: [u8; 16],
     pub ours: (String, String),
     pub theirs: (String, String),
     pub material: [u8; 36],
@@ -85,6 +91,8 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
     let Attached {
         socket,
         servers,
+        relay,
+        relay_seed,
         ours,
         theirs,
         material,
@@ -110,8 +118,12 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
         seed,
         0.0,
     );
-    for server in &servers {
-        let _ = conn.add_server(*server);
+    // A relay attempt asks no reflexive server: its socket talks to the
+    // relay alone.
+    if relay.is_none() {
+        for server in &servers {
+            let _ = conn.add_server(*server);
+        }
     }
 
     // Allocated once, here, and lent to the rings for the life of the
@@ -159,10 +171,25 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
         });
         return;
     }
-    let mut shell = Shell::new(socket, wake, Endpoint::new(conn, session));
+    let endpoint = match &relay {
+        Some(relay) => Endpoint::relayed(
+            conn,
+            session,
+            Relay::new(
+                relay.server,
+                &relay.username,
+                &relay.password,
+                relay_seed,
+                0.0,
+            ),
+        ),
+        None => Endpoint::new(conn, session),
+    };
+    let mut shell = Shell::new(socket, wake, endpoint);
     let _ = epoch.set(shell.base());
     let mut driver = Driver::new(init, units, packets, emit.clone(), Arc::clone(&telemetry));
     let mut reported: Vec<SocketAddr> = Vec::new();
+    let mut offered = false;
     let mut pass: u32 = 0;
 
     while !running.stopping() {
@@ -176,7 +203,7 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
             while let Ok(arrival) = arrivals.try_recv() {
                 match arrival {
                     Arrival::Candidate(addr, kind) => {
-                        let _ = endpoint.conn().add_candidate(addr, kind);
+                        let _ = endpoint.add_candidate(addr, kind);
                     }
                     Arrival::PeerReady => endpoint.conn().set_peer_ready(),
                 }
@@ -221,14 +248,39 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
             driver.leave(shell.endpoint().session(), now);
         }
         if driver.left(now) || (leaving && !driver.established()) {
+            release(&mut shell);
             // The application caused this; it needs no event back.
             telemetry.state.store(2, Ordering::Relaxed);
             return;
         }
         if let Some(outcome) = ended {
+            release(&mut shell);
             telemetry.state.store(2, Ordering::Relaxed);
             emit.send(Event::Ended { outcome });
             return;
+        }
+
+        // A relay attempt offers the relayed address once the relay's own
+        // machine is permitted, then says it has offered everything. Looked
+        // at every pass: the pass that readies the relay may be the last for
+        // a while.
+        if !offered
+            && let Some(std::net::SocketAddr::V4(relayed)) =
+                shell.endpoint().relay().and_then(Relay::relayed)
+        {
+            offered = true;
+            telemetry
+                .relayed
+                .store(pack_relayed(relayed), Ordering::Relaxed);
+            lowlat_common::log_info!("client: the relay is ready, relayed={relayed}");
+            // Marked as a reflexive server's report: what a peer checks
+            // after the readiness marker and draws its one probe toward.
+            emit.send(Event::Candidate {
+                addr: std::net::SocketAddr::V4(relayed),
+                from_stun: true,
+                lan: false,
+            });
+            emit.send(Event::Ready);
         }
 
         pass = pass.wrapping_add(1);
@@ -253,4 +305,17 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
         }
     }
     telemetry.state.store(2, Ordering::Relaxed);
+}
+
+/// Release the relay's allocation on the way out, rather than hold a relay
+/// port until it expires. After everything else, so a departure goes out
+/// through the relay before the relay is let go.
+fn release(shell: &mut Shell<'_, Session<'_>>) {
+    let Some(relay) = shell.endpoint().relay_mut() else {
+        return;
+    };
+    if matches!(relay.state(), RelayState::Setup | RelayState::Ready(_)) {
+        relay.release();
+        let _ = shell.turn(|_| {});
+    }
 }

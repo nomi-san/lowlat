@@ -303,7 +303,25 @@ pub struct lowlat_client_config {
     /// Reflexive servers, consulted for this client's own mapped address,
     /// each as `host:port`, NUL-terminated.
     pub servers: [[c_char; LOWLAT_SERVER_MAX]; LOWLAT_SERVERS_MAX],
+    /// The relay to go through (minor 14), as `host:port`, NUL-terminated;
+    /// empty for a direct attempt. **Set, the attempt is a relay attempt**:
+    /// it offers the relayed address and nothing else, asks no reflexive
+    /// server, and every check goes through the relay. Read only when `size`
+    /// reaches it.
+    pub relay: [c_char; LOWLAT_SERVER_MAX],
+    /// The relay's credential (minor 14), NUL-terminated, both required
+    /// with a relay. Never logged, and every copy the library takes is
+    /// cleared when it is done with it.
+    pub relay_username: [c_char; LOWLAT_RELAY_CREDENTIAL_MAX],
+    pub relay_password: [c_char; LOWLAT_RELAY_CREDENTIAL_MAX],
 }
+
+/// The longest relay username or password this boundary carries.
+pub const LOWLAT_RELAY_CREDENTIAL_MAX: usize = 128;
+
+/// The configuration's size before the relay was appended: the least a
+/// caller may pass, and what a caller built against an older header passes.
+const CONFIG_MINOR_13: usize = core::mem::offset_of!(lowlat_client_config, relay);
 
 /// The session as it stands.
 #[repr(C)]
@@ -398,7 +416,19 @@ pub struct lowlat_client_status {
     pub pad_reports_sent: u32,
     pub pad_reports_received: u32,
     pub pad_reports_dropped: u32,
+    /// The relayed address a relay attempt offered, NUL-terminated, and its
+    /// port (minor 14): empty until the relay has one, and for a direct
+    /// attempt. Filled only when `size` reaches it.
+    pub relay_address: [c_char; LOWLAT_ADDRESS_MAX],
+    pub relay_port: u16,
+    /// Whether the path goes through the relay (minor 14).
+    pub relayed: bool,
+    pub reserved: u8,
 }
+
+/// The status's size before the relay's fields were appended: the least a
+/// caller may pass, and what a caller built against an older header passes.
+const STATUS_MINOR_13: usize = core::mem::offset_of!(lowlat_client_status, relay_address);
 
 /// What one channel did, seen from the receiving end.
 ///
@@ -801,12 +831,31 @@ fn configured(cfg: &lowlat_client_config) -> Option<::lowlat_client::Config> {
             }
         }
     }
+    // A relay needs a credential, and one whose name resolves: the first
+    // IPv4 address it has, the family most paths carry.
+    let relay = match taken(&cfg.relay)? {
+        "" => None,
+        text => {
+            let found = ::lowlat_net::addrs::resolve_server(text);
+            let server = found
+                .iter()
+                .find(|addr| addr.is_ipv4())
+                .or(found.first())
+                .copied()?;
+            let username = taken(&cfg.relay_username).filter(|text| !text.is_empty())?;
+            let password = taken(&cfg.relay_password).filter(|text| !text.is_empty())?;
+            Some(::lowlat_client::config::Relay::new(
+                server, username, password,
+            ))
+        }
+    };
     Some(::lowlat_client::Config {
         video: video_of(&cfg.video),
         raw_audio: cfg.raw_audio,
         legacy_cipher: cfg.legacy_cipher,
         servers,
         shared_address_space: cfg.shared_address_space,
+        relay,
     })
 }
 
@@ -894,17 +943,33 @@ pub unsafe extern "C" fn lowlat_client_new_attempt(
                 }
                 _ => return LOWLAT_ERR_INVALID_ARGUMENT,
             };
-            let config = match cfg.as_ref() {
-                Some(cfg) => {
-                    if (cfg.size as usize) < core::mem::size_of::<lowlat_client_config>() {
-                        return LOWLAT_ERR_INVALID_ARGUMENT;
-                    }
-                    match configured(cfg) {
-                        Some(config) => config,
-                        None => return LOWLAT_ERR_INVALID_ARGUMENT,
-                    }
+            let config = if cfg.is_null() {
+                ::lowlat_client::Config::default()
+            } else {
+                // As far as the caller's size reaches: a caller built against
+                // an older header passed less, and what lies past its
+                // structure is its own. The rest reads as zero, which is a
+                // direct attempt.
+                let size = core::ptr::addr_of!((*cfg).size).read_unaligned() as usize;
+                if size < CONFIG_MINOR_13 {
+                    return LOWLAT_ERR_INVALID_ARGUMENT;
                 }
-                None => ::lowlat_client::Config::default(),
+                // SAFETY: every field is plain data for which zero is valid.
+                let mut copy: lowlat_client_config = core::mem::zeroed();
+                // SAFETY: the caller's structure is at least `size` bytes by
+                // its contract; the copy is a whole one, both plain data.
+                core::ptr::copy_nonoverlapping(
+                    cfg.cast::<u8>(),
+                    (&raw mut copy).cast::<u8>(),
+                    size.min(core::mem::size_of::<lowlat_client_config>()),
+                );
+                let config = configured(&copy);
+                zeroize::Zeroize::zeroize(&mut copy.relay_username);
+                zeroize::Zeroize::zeroize(&mut copy.relay_password);
+                match config {
+                    Some(config) => config,
+                    None => return LOWLAT_ERR_INVALID_ARGUMENT,
+                }
             };
             let mut held = handle.held();
             let credentials = match held.seam.new_attempt(attempt, config, transport) {
@@ -1582,10 +1647,11 @@ pub unsafe extern "C" fn lowlat_client_get_status(
 ) -> lowlat_status {
     unsafe {
         entered(cl, |handle| {
-            let Some(out) = out.as_mut() else {
+            if out.is_null() {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
-            };
-            if (out.size as usize) < core::mem::size_of::<lowlat_client_status>() {
+            }
+            let size = core::ptr::addr_of!((*out).size).read_unaligned();
+            if (size as usize) < STATUS_MINOR_13 {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             }
             let held = handle.held();
@@ -1604,8 +1670,8 @@ pub unsafe extern "C" fn lowlat_client_get_status(
                     _ => LOWLAT_CLIENT_CONNECTING,
                 }
             };
-            *out = lowlat_client_status {
-                size: out.size,
+            let mut status = lowlat_client_status {
+                size,
                 state,
                 disconnect,
                 rtt_ms: t.rtt_ms.load(Ordering::Relaxed),
@@ -1653,7 +1719,29 @@ pub unsafe extern "C" fn lowlat_client_get_status(
                 pad_reports_sent: t.pad_reports_sent.load(Ordering::Relaxed),
                 pad_reports_received: t.pad_reports_received.load(Ordering::Relaxed),
                 pad_reports_dropped: t.pad_reports_dropped.load(Ordering::Relaxed),
+                relay_address: [0; LOWLAT_ADDRESS_MAX],
+                relay_port: 0,
+                relayed: t.path_relayed.load(Ordering::Relaxed),
+                reserved: 0,
             };
+            if let Some(relayed) =
+                ::lowlat_client::driver::unpack_relayed(t.relayed.load(Ordering::Relaxed))
+            {
+                put_address(
+                    &mut status.relay_address,
+                    &mut status.relay_port,
+                    &std::net::SocketAddr::V4(relayed),
+                );
+            }
+            // As much as the caller's size reaches, and no more: a caller
+            // built against an older header gets the fields it knows.
+            // SAFETY: `out` is at least `size` bytes by the caller's
+            // contract; `status` is a whole one, both plain data.
+            core::ptr::copy_nonoverlapping(
+                (&raw const status).cast::<u8>(),
+                out.cast::<u8>(),
+                (size as usize).min(core::mem::size_of::<lowlat_client_status>()),
+            );
             LOWLAT_OK
         })
     }
@@ -2144,6 +2232,9 @@ fn described(
                 Outcome::Disconnected(status) => (LOWLAT_OUTCOME_DISCONNECTED, *status),
                 Outcome::Unreadable => (LOWLAT_OUTCOME_CONTROL_STALLED, 0),
                 Outcome::DecoderFailed => (LOWLAT_OUTCOME_DECODER_FAILED, 0),
+                Outcome::RelayUnreachable => (LOWLAT_OUTCOME_RELAY_UNREACHABLE, 0),
+                Outcome::RelayRefused => (LOWLAT_OUTCOME_RELAY_REFUSED, 0),
+                Outcome::RelayLost => (LOWLAT_OUTCOME_RELAY_LOST, 0),
             };
             lowlat_event {
                 kind: LOWLAT_EVENT_ENDED,
@@ -2440,12 +2531,39 @@ mod tests {
             pad_reports_sent: 0,
             pad_reports_received: 0,
             pad_reports_dropped: 0,
+            relay_address: [0; LOWLAT_ADDRESS_MAX],
+            relay_port: 7,
+            relayed: true,
+            reserved: 0,
         };
         assert_eq!(
             unsafe { lowlat_client_get_status(handle, &raw mut status) },
             LOWLAT_OK
         );
         assert_eq!(status.state, LOWLAT_CLIENT_IDLE);
+        assert_eq!(taken(&status.relay_address), Some(""));
+        assert_eq!((status.relay_port, status.relayed), (0, false));
+        // A caller built against the header before the relay's fields gets
+        // the fields it knows and nothing past them; one shorter still is
+        // refused.
+        status.size = u32::try_from(STATUS_MINOR_13).unwrap();
+        status.relay_port = 7;
+        status.state = 99;
+        assert_eq!(
+            unsafe { lowlat_client_get_status(handle, &raw mut status) },
+            LOWLAT_OK
+        );
+        assert_eq!(status.state, LOWLAT_CLIENT_IDLE);
+        assert_eq!(
+            status.relay_port, 7,
+            "a field past the caller's size was written"
+        );
+        status.size -= 1;
+        assert_eq!(
+            unsafe { lowlat_client_get_status(handle, &raw mut status) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        status.size = core::mem::size_of::<lowlat_client_status>() as u32;
         // The client's own figures: readable before a session, every one
         // zero, and a structure without its size refused.
         let mut metrics = lowlat_client_metrics {
@@ -2584,6 +2702,9 @@ mod tests {
             reserved: 0,
             server_count: 0,
             servers: [[0; LOWLAT_SERVER_MAX]; LOWLAT_SERVERS_MAX],
+            relay: [0; LOWLAT_SERVER_MAX],
+            relay_username: [0; LOWLAT_RELAY_CREDENTIAL_MAX],
+            relay_password: [0; LOWLAT_RELAY_CREDENTIAL_MAX],
         };
         let mut ours = lowlat_credentials {
             size: core::mem::size_of::<lowlat_credentials>() as u32,
@@ -2626,6 +2747,78 @@ mod tests {
             },
             LOWLAT_ERR_INVALID_ARGUMENT
         );
+        unsafe { lowlat_client_destroy(handle) };
+    }
+
+    /// The relay is read only when the caller's size reaches it, so a
+    /// caller built against the header before it makes a direct attempt
+    /// whatever lies past its structure; and a relay is refused without a
+    /// credential or with a name that does not resolve, while the caller can
+    /// still fix it.
+    #[test]
+    fn a_relay_is_read_only_where_the_size_reaches_and_needs_a_credential() {
+        let mut handle: *mut lowlat_client = core::ptr::null_mut();
+        let info = no_decoder();
+        assert_eq!(
+            unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
+            LOWLAT_OK
+        );
+        // SAFETY: plain data, for which zero is the default.
+        let mut cfg: lowlat_client_config = unsafe { core::mem::zeroed() };
+        let mut ours = lowlat_credentials {
+            size: core::mem::size_of::<lowlat_credentials>() as u32,
+            port: 0,
+            reserved: 0,
+            ufrag: [0; LOWLAT_ICE_MAX],
+            pwd: [0; LOWLAT_ICE_MAX],
+            fingerprint: [0; LOWLAT_FINGERPRINT_MAX],
+            aes256: [0; LOWLAT_ICE_MAX],
+        };
+        let mut attempt = |cfg: &lowlat_client_config| {
+            let status = unsafe {
+                lowlat_client_new_attempt(
+                    handle,
+                    cfg,
+                    c"relay".as_ptr(),
+                    lowlat_transport::LOWLAT_TRANSPORT_BUD as u32,
+                    &raw mut ours,
+                )
+            };
+            unsafe { lowlat_client_end_connection(handle) };
+            status
+        };
+
+        // An older caller: the relay's bytes are garbage it never set.
+        put(&mut cfg.relay, "no-such-host.invalid:3478");
+        cfg.size = u32::try_from(CONFIG_MINOR_13).unwrap();
+        assert_eq!(
+            attempt(&cfg),
+            LOWLAT_OK,
+            "a field past the caller's size was read"
+        );
+        cfg.size -= 1;
+        assert_eq!(attempt(&cfg), LOWLAT_ERR_INVALID_ARGUMENT);
+
+        cfg.size = core::mem::size_of::<lowlat_client_config>() as u32;
+        assert_eq!(
+            attempt(&cfg),
+            LOWLAT_ERR_INVALID_ARGUMENT,
+            "an unresolvable relay"
+        );
+        put(&mut cfg.relay, "203.0.113.1:3478");
+        assert_eq!(
+            attempt(&cfg),
+            LOWLAT_ERR_INVALID_ARGUMENT,
+            "a relay with no credential"
+        );
+        put(&mut cfg.relay_username, "user");
+        assert_eq!(
+            attempt(&cfg),
+            LOWLAT_ERR_INVALID_ARGUMENT,
+            "a relay with no password"
+        );
+        put(&mut cfg.relay_password, "password");
+        assert_eq!(attempt(&cfg), LOWLAT_OK);
         unsafe { lowlat_client_destroy(handle) };
     }
 

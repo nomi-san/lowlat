@@ -29,7 +29,7 @@ host = [
 ]
 # The client half: the connecting side, decode and present, and every
 # `lowlat_client_*` entry point.
-client = ["dep:lowlat-client", "dep:lowlat-core", "dep:lowlat-net"]
+client = ["dep:lowlat-client", "dep:lowlat-core", "dep:lowlat-net", "dep:zeroize"]
 # The client's software decoder takes a GPL build of the machine's codec
 # library as well as an LGPL one. The default build never does: a build with
 # this on is its maker's combination, and the GPL's terms apply to it.
@@ -46,6 +46,9 @@ lowlat-crypto = { workspace = true, optional = true }
 lowlat-audio = { workspace = true, optional = true }
 lowlat-encode = { workspace = true, optional = true }
 lowlat-inject = { workspace = true, optional = true }
+# Clears the copy of a relay's credential the boundary takes from the
+# caller's configuration. Already in the graph beneath the credentials crate.
+zeroize = { version = "1", optional = true }
 
 [lints]
 workspace = true

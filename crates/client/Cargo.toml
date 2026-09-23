@@ -27,6 +27,9 @@ lowlat-drivers.workspace = true
 lowlat-audio.workspace = true
 # The inflate under the pointer's picture.
 miniz_oxide.workspace = true
+# The relay's credential, cleared when the configuration holding it is
+# dropped. Already in the graph beneath the credentials crate.
+zeroize = "1"
 
 [dev-dependencies]
 # The hermetic session's other end: the host crate's own framing and

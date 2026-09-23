@@ -25,6 +25,7 @@ use lowlat_core::control::{self, CONTROL_CHANNEL, Control, op};
 use lowlat_core::cursor;
 use lowlat_core::endpoint::Endpoint;
 use lowlat_core::init::{self, Init};
+use lowlat_core::relay::{self, Failure, Relay};
 use lowlat_core::session::{Health, Session};
 use lowlat_core::video::{self, METADATA_LEN, VIDEO_HEADER_LEN};
 use lowlat_core::{Error, conn};
@@ -240,6 +241,41 @@ pub struct Telemetry {
     pub loss_30s: [AtomicU32; CHANNELS],
     /// How long the session has been established, in milliseconds.
     pub connected_ms: AtomicU32,
+    /// The relayed address a relay attempt offered, as [`pack_relayed`]
+    /// writes it; zero until the relay has one, and for a direct attempt.
+    pub relayed: AtomicU64,
+    /// Whether the path goes through the relay.
+    pub path_relayed: AtomicBool,
+}
+
+/// A relayed address in one word, so it is published without a lock: the
+/// IPv4 address in the low thirty-two bits, the port above it, and bit 48 set
+/// so that no address at all reads as zero. The relayed family is IPv4.
+pub fn pack_relayed(addr: std::net::SocketAddrV4) -> u64 {
+    u64::from(addr.ip().to_bits()) | (u64::from(addr.port()) << 32) | (1 << 48)
+}
+
+/// The address [`pack_relayed`] wrote, if it wrote one.
+pub fn unpack_relayed(word: u64) -> Option<std::net::SocketAddrV4> {
+    if word & (1 << 48) == 0 {
+        return None;
+    }
+    let ip = u32::try_from(word & 0xFFFF_FFFF).ok()?;
+    let port = u16::try_from((word >> 32) & 0xFFFF).ok()?;
+    Some(std::net::SocketAddrV4::new(
+        std::net::Ipv4Addr::from_bits(ip),
+        port,
+    ))
+}
+
+/// What a failed relay ends the session with.
+fn relay_outcome(relay: &Relay<'_>) -> Option<Outcome> {
+    match relay.state() {
+        relay::State::Failed(Failure::Unreachable) => Some(Outcome::RelayUnreachable),
+        relay::State::Failed(Failure::Refused) => Some(Outcome::RelayRefused),
+        relay::State::Failed(_) => Some(Outcome::RelayLost),
+        _ => None,
+    }
 }
 
 /// One session's driver.
@@ -492,10 +528,19 @@ impl Driver {
         endpoint: &mut Endpoint<'_, Session<'_>>,
         now_ms: f64,
     ) -> Option<Outcome> {
+        // The relay's end is its own, typed, and comes before the punch's:
+        // an attempt whose relay failed can only time out after it.
+        if let Some(outcome) = endpoint.relay().and_then(relay_outcome) {
+            lowlat_common::log_info!("client: the relay ended the attempt, outcome={outcome:?}");
+            return Some(outcome);
+        }
         match endpoint.conn().state() {
             conn::State::Established(addr) if !self.established => {
                 self.established = true;
                 self.established_ms = now_ms;
+                self.telemetry
+                    .path_relayed
+                    .store(endpoint.relay().is_some(), Ordering::Relaxed);
                 self.loss_sampled_ms = now_ms;
                 self.telemetry.state.store(1, Ordering::Relaxed);
                 self.start(endpoint.session());

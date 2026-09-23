@@ -38,13 +38,15 @@ use lowlat_core::conn::{self, Conn, Credentials};
 use lowlat_core::control::{self, CONTROL_CHANNEL, Control, op};
 use lowlat_core::endpoint::Endpoint;
 use lowlat_core::envelope::Envelope;
+use lowlat_core::relay::Relay as ClientRelay;
 use lowlat_core::send::{SendRing, SendSlot};
 use lowlat_core::session::Session;
 use lowlat_core::video::{Codec, Rotation, VideoHeader};
 use lowlat_host::session::Negotiation;
 use lowlat_host::video::Packetiser;
 use lowlat_inject::event::{Device, Extents, Injector, Sink};
-use lowlat_sim::{HostId, Link, Sim};
+use lowlat_sim::relay::Relay;
+use lowlat_sim::{HostId, Link, Nat, NatId, Sim};
 
 const LEFT: (&str, &str) = ("aaaaaaaa", "passwordforaaaaaaaaaaaaa");
 const RIGHT: (&str, &str) = ("bbbbbbbb", "passwordforbbbbbbbbbbbbb");
@@ -242,8 +244,12 @@ impl Sink for Injected {
 
 impl Host {
     fn new(sim: &mut Sim) -> Self {
-        let addr = addr(20);
-        let id = sim.add_host(addr, &[]);
+        Self::at(sim, addr(20), &[])
+    }
+
+    /// The host at `addr`, behind `chain`.
+    fn at(sim: &mut Sim, addr: SocketAddr, chain: &[NatId]) -> Self {
+        let id = sim.add_host(addr, chain);
         let mut packetiser = Packetiser::new(1920, 1080, Rotation::None, false);
         packetiser.set_colour(Codec::H264, false, false);
         Self {
@@ -533,8 +539,19 @@ struct Guest<D: Decoder> {
 
 impl<D: Decoder> Guest<D> {
     fn new(sim: &mut Sim, decoder: D) -> Self {
-        let addr = addr(10);
-        let id = sim.add_host(addr, &[]);
+        let endpoint = Endpoint::new(conn(LEFT, RIGHT, 0xA1), client_session());
+        Self::at(sim, addr(10), &[], endpoint, decoder)
+    }
+
+    /// The client at `addr`, behind `chain`, on `endpoint`.
+    fn at(
+        sim: &mut Sim,
+        addr: SocketAddr,
+        chain: &[NatId],
+        endpoint: Endpoint<'static, Session<'static>>,
+        decoder: D,
+    ) -> Self {
+        let id = sim.add_host(addr, chain);
         let (emit, events) = events::queue();
         let units = Units::new();
         let packets = Packets::new();
@@ -549,7 +566,7 @@ impl<D: Decoder> Guest<D> {
         Self {
             id,
             addr,
-            endpoint: Endpoint::new(conn(LEFT, RIGHT, 0xA1), client_session()),
+            endpoint,
             driver,
             units,
             feed: Feed::new(decoder),
@@ -679,6 +696,10 @@ struct Pair<D: Decoder> {
     sim: Sim,
     host: Host,
     guest: Guest<D>,
+    /// The relay a relayed pair goes through, and whether the host has been
+    /// handed the relayed address yet.
+    relay: Option<Relay>,
+    offered: bool,
 }
 
 impl Pair<Recorder> {
@@ -693,7 +714,13 @@ impl<D: Decoder> Pair<D> {
         let mut host = Host::new(&mut sim);
         host.clip = clip;
         let guest = Guest::new(&mut sim, decoder);
-        let mut pair = Self { sim, host, guest };
+        let mut pair = Self {
+            sim,
+            host,
+            guest,
+            relay: None,
+            offered: true,
+        };
         pair.guest
             .endpoint
             .conn()
@@ -727,10 +754,28 @@ impl<D: Decoder> Pair<D> {
         while let Some(arrival) = self.sim.next_arrival() {
             let endpoint = if arrival.host == self.host.id {
                 &mut self.host.endpoint
-            } else {
+            } else if arrival.host == self.guest.id {
                 &mut self.guest.endpoint
+            } else {
+                if let Some(relay) = self.relay.as_mut() {
+                    relay.receive(&mut self.sim, &arrival);
+                }
+                continue;
             };
             let _ = endpoint.process_input(&arrival.bytes, arrival.from, None, now, &mut scratch);
+        }
+        // Signaling, at once: the relayed address once there is one, and the
+        // readiness marker after it.
+        if !self.offered
+            && let Some(relayed) = self.guest.endpoint.relay().and_then(ClientRelay::relayed)
+        {
+            self.host
+                .endpoint
+                .conn()
+                .add_candidate(relayed, conn::Kind::marked(false, true))
+                .unwrap();
+            self.host.endpoint.conn().set_peer_ready();
+            self.offered = true;
         }
         self.sim.advance_ms(TICK_MS);
         let now = self.sim.now_ms();
@@ -758,6 +803,67 @@ impl<D: Decoder> Pair<D> {
                 self.host.endpoint.conn().state(),
                 conn::State::Established(_)
             )
+    }
+}
+
+/// The host's machine, where the relay also runs in the deployment of
+/// docs/03-connectivity.md 7.1.
+fn the_box(port: u16) -> SocketAddr {
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 1, 20)), port)
+}
+
+impl Pair<Recorder> {
+    /// The same pair through the relay: the host on the relay's machine
+    /// behind a router that forwards the relay's one port, the client behind
+    /// a translator no punch crosses, and a relay attempt. The host knows
+    /// nothing of the relay.
+    fn relayed(seed: u64, link: Link) -> Self {
+        let mut sim = Sim::new(seed).with_link(link);
+        let public = |last| IpAddr::V4(Ipv4Addr::new(203, 0, 113, last));
+        let router =
+            sim.add_nat(Nat::port_restricted(public(2)).with_forward(50_085, the_box(3478)));
+        let relay = Relay::new(
+            &mut sim,
+            the_box(3478),
+            the_box(0).ip(),
+            &[router],
+            "user",
+            "password",
+        );
+        let host = Host::at(&mut sim, the_box(22_974), &[router]);
+        let translator = sim.add_nat(Nat::symmetric(public(1)));
+        let endpoint = Endpoint::relayed(
+            conn(LEFT, RIGHT, 0xA1),
+            client_session(),
+            ClientRelay::new(
+                SocketAddr::new(public(2), 50_085),
+                "user",
+                "password",
+                [0x5E; 16],
+                0.0,
+            ),
+        );
+        let client = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 168, 9, 10)), 5000);
+        let guest = Guest::at(
+            &mut sim,
+            client,
+            &[translator],
+            endpoint,
+            Recorder::default(),
+        );
+        let mut pair = Self {
+            sim,
+            host,
+            guest,
+            relay: Some(relay),
+            offered: false,
+        };
+        pair.guest
+            .endpoint
+            .add_candidate(the_box(22_974), conn::Kind::Direct)
+            .unwrap();
+        pair.guest.endpoint.conn().set_peer_ready();
+        pair
     }
 }
 
@@ -792,7 +898,10 @@ fn session_is_clean(seed: u64, link: Link) {
 }
 
 fn session_is_clean_with(seed: u64, link: Link, raw_audio: bool) {
-    let mut pair = Pair::new(seed, link);
+    session_is_clean_in(Pair::new(seed, link), link, raw_audio);
+}
+
+fn session_is_clean_in(mut pair: Pair<Recorder>, link: Link, raw_audio: bool) {
     pair.host.raw_audio = raw_audio;
     pair.run_for(2000.0);
     assert!(pair.established(), "the pair did not establish");
@@ -999,6 +1108,30 @@ fn session_is_clean_with(seed: u64, link: Link, raw_audio: bool) {
             "recent loss {loss} against a link at {expected}"
         );
     }
+}
+
+/// The whole session through the relay, against a host that is handed one
+/// ordinary candidate and knows nothing more: every frame whole and in
+/// order, every sound packet, the census agreeing opcode for opcode.
+#[test]
+fn a_session_is_clean_through_the_relay() {
+    let mut pair = Pair::relayed(0x5E1A_7ED0, clean());
+    pair.run_for(2000.0);
+    assert!(
+        pair.established(),
+        "the pair did not establish through the relay"
+    );
+    let relayed = pair.guest.endpoint.relay().and_then(ClientRelay::relayed);
+    assert_eq!(
+        pair.host.endpoint.path(),
+        relayed,
+        "the host's path is not the relayed address"
+    );
+    assert!(
+        pair.guest.telemetry.path_relayed.load(Ordering::Relaxed),
+        "the status would not say the path is relayed"
+    );
+    session_is_clean_in(pair, clean(), false);
 }
 
 #[test]

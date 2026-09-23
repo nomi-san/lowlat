@@ -42,7 +42,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 13
+#define LOWLAT_ABI_MINOR 14
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 #define LOWLAT_FEATURE_HOST 1
@@ -142,6 +142,9 @@
 #if defined(LOWLAT_CLIENT)
 /// The longest name a decoder's row carries.
 #define LOWLAT_DECODER_NAME_MAX 128
+
+/// The longest relay username or password this boundary carries.
+#define LOWLAT_RELAY_CREDENTIAL_MAX 128
 
 /// The sound codec on the wire, as `lowlat_client_status.audio_codec`
 /// reports it.
@@ -462,6 +465,16 @@ typedef enum lowlat_outcome {
     /// No decoder can serve the stream: the device is gone, was never
     /// usable, or the stream is one it cannot decode. Client only.
     LOWLAT_OUTCOME_DECODER_FAILED = 11,
+    /// The relay did not answer in time to allocate and permit. Retry direct,
+    /// or through a different relay. Client only, minor 14.
+    LOWLAT_OUTCOME_RELAY_UNREACHABLE = 12,
+    /// The relay refused the credential or the allocation, or is full; the
+    /// same relay refuses again. Client only, minor 14.
+    LOWLAT_OUTCOME_RELAY_REFUSED = 13,
+    /// A renewal was refused, or went unanswered until what it renewed
+    /// lapsed, mid-session; the relay has let the allocation go. Client only,
+    /// minor 14.
+    LOWLAT_OUTCOME_RELAY_LOST = 14,
 } lowlat_outcome;
 
 /// The longest output identity carried across this boundary.
@@ -1508,6 +1521,17 @@ typedef struct lowlat_client_config {
     /// Reflexive servers, consulted for this client's own mapped address,
     /// each as `host:port`, NUL-terminated.
     char servers[LOWLAT_SERVERS_MAX][LOWLAT_SERVER_MAX];
+    /// The relay to go through (minor 14), as `host:port`, NUL-terminated;
+    /// empty for a direct attempt. **Set, the attempt is a relay attempt**:
+    /// it offers the relayed address and nothing else, asks no reflexive
+    /// server, and every check goes through the relay. Read only when `size`
+    /// reaches it.
+    char relay[LOWLAT_SERVER_MAX];
+    /// The relay's credential (minor 14), NUL-terminated, both required
+    /// with a relay. Never logged, and every copy the library takes is
+    /// cleared when it is done with it.
+    char relay_username[LOWLAT_RELAY_CREDENTIAL_MAX];
+    char relay_password[LOWLAT_RELAY_CREDENTIAL_MAX];
 } lowlat_client_config;
 
 /// A whole pad at one moment, for `lowlat_client_send_pad_state`.
@@ -1615,6 +1639,14 @@ typedef struct lowlat_client_status {
     uint32_t pad_reports_sent;
     uint32_t pad_reports_received;
     uint32_t pad_reports_dropped;
+    /// The relayed address a relay attempt offered, NUL-terminated, and its
+    /// port (minor 14): empty until the relay has one, and for a direct
+    /// attempt. Filled only when `size` reaches it.
+    char relay_address[LOWLAT_ADDRESS_MAX];
+    uint16_t relay_port;
+    /// Whether the path goes through the relay (minor 14).
+    bool relayed;
+    uint8_t reserved;
 } lowlat_client_status;
 
 /// What one channel did, seen from the receiving end.

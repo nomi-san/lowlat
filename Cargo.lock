@@ -787,6 +787,7 @@ dependencies = [
  "lowlat-net",
  "lowlat-sim",
  "miniz_oxide",
+ "zeroize",
 ]
 
 [[package]]
@@ -915,6 +916,7 @@ dependencies = [
  "lowlat-host",
  "lowlat-inject",
  "lowlat-net",
+ "zeroize",
 ]
 
 [[package]]

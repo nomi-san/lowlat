@@ -106,6 +106,16 @@ pub enum lowlat_outcome {
     /// No decoder can serve the stream: the device is gone, was never
     /// usable, or the stream is one it cannot decode. Client only.
     LOWLAT_OUTCOME_DECODER_FAILED = 11,
+    /// The relay did not answer in time to allocate and permit. Retry direct,
+    /// or through a different relay. Client only, minor 14.
+    LOWLAT_OUTCOME_RELAY_UNREACHABLE = 12,
+    /// The relay refused the credential or the allocation, or is full; the
+    /// same relay refuses again. Client only, minor 14.
+    LOWLAT_OUTCOME_RELAY_REFUSED = 13,
+    /// A renewal was refused, or went unanswered until what it renewed
+    /// lapsed, mid-session; the relay has let the allocation go. Client only,
+    /// minor 14.
+    LOWLAT_OUTCOME_RELAY_LOST = 14,
 }
 
 /// A local candidate for the application to forward.

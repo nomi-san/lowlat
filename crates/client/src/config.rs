@@ -1,9 +1,11 @@
 //! What a client asks for, and the initialization it becomes.
 
+use std::fmt;
 use std::net::SocketAddr;
 
 use lowlat_core::init::{self, Init};
 pub use lowlat_decode::Caps;
+use zeroize::Zeroizing;
 
 /// The largest picture the current client generation declares it will take.
 /// Not a decoder limit read from anything: it is the figure every peer of
@@ -150,6 +152,36 @@ impl Video {
     }
 }
 
+/// A relay to go through, and the credential it takes
+/// (docs/03-connectivity.md 7).
+///
+/// **The credential is never rendered and is cleared when dropped.** Every
+/// copy of a configuration carries its own, and each goes when it does.
+#[derive(Clone)]
+pub struct Relay {
+    pub server: SocketAddr,
+    pub username: Zeroizing<String>,
+    pub password: Zeroizing<String>,
+}
+
+impl Relay {
+    pub fn new(server: SocketAddr, username: &str, password: &str) -> Self {
+        Self {
+            server,
+            username: Zeroizing::new(username.to_owned()),
+            password: Zeroizing::new(password.to_owned()),
+        }
+    }
+}
+
+impl fmt::Debug for Relay {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Relay")
+            .field("server", &self.server)
+            .finish_non_exhaustive()
+    }
+}
+
 /// A client's settings.
 #[derive(Debug, Clone, Default)]
 pub struct Config {
@@ -165,6 +197,10 @@ pub struct Config {
     pub servers: Vec<SocketAddr>,
     /// Offer addresses from the carrier-grade shared range.
     pub shared_address_space: bool,
+    /// A relay to go through. Set, the attempt is a relay attempt: it offers
+    /// the relayed address and nothing else, and every check goes through
+    /// the relay.
+    pub relay: Option<Relay>,
 }
 
 impl Config {
