@@ -39,6 +39,9 @@
 // protocol once the first picture is in; `LOWLAT_PRESENT_HZ` caps how often
 // a new picture is taken (the cached one is still drawn every refresh), so
 // a stream faster than the presentation can be measured on one display;
+// `LOWLAT_STUN` names reflexive servers, `host:port` separated by commas, up
+// to four: without one a direct attempt offers only this machine's own
+// addresses, which a host behind its own translator cannot answer.
 // `LOWLAT_RELAY=host:port` makes the attempt a relay attempt through that
 // relay, with `LOWLAT_RELAY_USER` and `LOWLAT_RELAY_PASS` its credential,
 // which is handed to the library and never printed: the relayed address is
@@ -1617,6 +1620,13 @@ int main(void)
 	d.video.ten_bit = getenv("LOWLAT_10BIT") != NULL;
 	d.video.chroma_444 = getenv("LOWLAT_444") != NULL;
 	cfg.video = d.video;
+	const char *stun = getenv("LOWLAT_STUN");
+	for (const char *at = stun; at != NULL && *at != '\0' && cfg.server_count < LOWLAT_SERVERS_MAX;) {
+		size_t len = strcspn(at, ",");
+		if (len > 0 && len < LOWLAT_SERVER_MAX)
+			snprintf(cfg.servers[cfg.server_count++], LOWLAT_SERVER_MAX, "%.*s", (int) len, at);
+		at += len + (at[len] == ',');
+	}
 	const char *relay = getenv("LOWLAT_RELAY");
 	if (relay != NULL && relay[0] != '\0') {
 		snprintf(cfg.relay, sizeof cfg.relay, "%s", relay);
