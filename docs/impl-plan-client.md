@@ -459,8 +459,16 @@ path.
    in the vendored tree. The full-chroma row stays open on the host. *2026-09-24*: an
    established host that sends full chroma when asked streamed it at both depths to the
    vendor backend by handle, briefly, at the desk (the range item of the second half), and
-   by planes for a hundred seconds at each depth in the second half's ten-minute walk; ten
-   minutes of the handle route at full chroma is the one part not run.)
+   by planes for a hundred seconds at each depth in the second half's ten-minute walk.
+   *Later the same day*, with that host playing a looping video and its sound, the handle
+   route at full chroma for ten minutes at each depth, which closes the row
+   (`local/logs/2026-09-24-c5-handle444-may085-*`): at eight bits 14,425 pictures, the
+   video's 24 a second, decode 0.88 ms at the median and 1.7 at most, the device copy 0.10 ms
+   and 0.23 at most; at ten bits 14,324 pictures, decode 0.91 ms and 1.5 at most, the device
+   copy 0.15 ms and 0.31 at most. Each the full-chroma format throughout from one decoder
+   build, the full range, the reader at most one message behind, no skip, a clean leave;
+   nothing late at eight bits, and at ten one burst of 13 late arrivals in one second that
+   cost no picture.)
 3. [x] Against an established host: at the defaults as C2's gate ran, then with the second codec
    and ten-bit asked, following what its encoder gives; the round trip moves off its seed
    within seconds of connecting; its own log shows this client's decode latency.
@@ -622,9 +630,12 @@ replayed, shows none at all, which is what a clean path reads.
    throughout, pointer pictures and guest lists arriving, a clean leave. That host's desktop
    was mostly still (8 to 11 pictures a second at the median) and **silent**, so these runs
    carried no sound; sound against an established host is C4's gate and the unattended half
-   above. The ten-bit and full-chroma streams the item asks of this host came from the
-   established one, which sends both when asked; this host's own were run on 2026-09-19
-   (ten-bit) and at C9 (full chroma).)
+   above. *Later the same day* it played a looping video with its sound, and the first
+   half's two ten-minute handle runs carried it: fifty packets a second decoded, 29,867 and
+   29,864, none dropped or refused and no resync, the playback queue between 36 and 104 ms,
+   through the output device moved in each run. The ten-bit and full-chroma streams the
+   item asks of this host came from the established one, which sends both when asked; this
+   host's own were run on 2026-09-19 (ten-bit) and at C9 (full chroma).)
 3. [x] The demo's panel and this host's roster agree on the figures they share: the round
    trip, the rate, the decode time the host re-publishes; the negatives this client sent
    against the fragments the host resent on them. (*2026-09-19*: on the same line, this
@@ -711,7 +722,7 @@ its gate ends the way every phase's does: the artifact streams from the establis
    and recorded because the automatic order on a machine with such a part is the slowest
    choice, which the listing's rows let an application avoid.*
 
-## Phase C7 - The pad reports: DualShock 4 and DualSense (planned 2026-09-20)
+## Phase C7 - The pad reports: DualShock 4 and DualSense (planned 2026-09-20, closed 2026-09-21)
 
 **Planned 2026-09-20 with the host's Phase 14** ([impl-plan.md](impl-plan.md)), interview of
 the same day. Executed **before C6** and after C5's owed desk items: packaging the demo and
@@ -1194,6 +1205,9 @@ slower decoder ever reopens them.
 
 Newest first.
 
+- 2026-09-24, evening: the one part of C5's decode-half gate not run -- ten minutes of the
+  handle route at full chroma -- run at each depth against an established host playing a
+  looping video, whose sound the same runs carried; clean at both.
 - 2026-09-24, later: C5 closed. Gate C in full passed against an established host: the desk
   items confirmed by the person at the desk once two faults they found were fixed -- relative
   deltas scaled by the drawn size, which made drags slower than the hand, and a demo loop

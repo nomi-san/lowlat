@@ -31,6 +31,12 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   every hundred seconds through every format that host sends -- full chroma at both depths on
   the vendor's decoder -- with no fault, nothing lost or late, and a clean leave. That host
   was silent, so those runs carried no sound. C5 is closed.
+- *Later the same day*, with that host playing a looping video and its sound: ten minutes at
+  each depth of full chroma handed out as a device handle, the one part of the decode half's
+  gate not yet run. Each the full-chroma format throughout from one decoder build, decode
+  about 0.9 ms and the device copy 0.10 ms at eight bits and 0.15 at ten, the reader at most
+  one message behind, no skip, a clean leave; fifty sound packets a second decoded, none
+  dropped and no resync.
 
 ## 2026-09-24 - C5: the picture's range, from the stream
 
