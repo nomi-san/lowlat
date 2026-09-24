@@ -1366,9 +1366,10 @@ pub unsafe extern "C" fn lowlat_client_send_mouse_wheel(
 }
 
 /// A pointer position in the window's units, mapped into the picture through
-/// the viewport; or a delta when relative, scaled by the picture's size
-/// against the viewport's. An absolute position before a viewport is set is
-/// not sent.
+/// the viewport; or a delta when relative, sent as the device reported it and
+/// not scaled by the size the picture is drawn at, so the host's pointer
+/// moves as far as a mouse of its own would. An absolute position before a
+/// viewport is set is not sent.
 ///
 /// @param[in] cl The handle from [`lowlat_client_create`].
 /// @param[in] x The position, or the delta.

@@ -261,22 +261,6 @@ impl Mapper {
         )
     }
 
-    /// A delta scaled by the ratio of the picture to the rectangle, so a
-    /// picture drawn at half size still turns the host's pointer by the
-    /// distance the hand moved.
-    fn delta(&self, dx: i32, dy: i32) -> (i32, i32) {
-        if !self.mapped() {
-            return (dx, dy);
-        }
-        let v = self.viewport;
-        let one = |d: i32, picture: i64, extent: i32| -> i32 {
-            let magnitude = scale(i64::from(d).abs(), picture, i64::from(extent));
-            let signed = if d < 0 { -magnitude } else { magnitude };
-            i32::try_from(signed).unwrap_or(d)
-        };
-        (one(dx, self.picture.0, v.w), one(dy, self.picture.1, v.h))
-    }
-
     /// A picture position back into the window, for the warp that leaves
     /// relative mode. The inverse of [`Self::to_picture`] without the bump.
     pub(crate) fn to_window(&self, x: u16, y: u16) -> (i32, i32) {
@@ -316,14 +300,17 @@ impl Mapper {
                 button, pressed, ..
             } => Some(Wire::bare(op::MOUSE_BUTTON, button, u32::from(pressed), 0)),
             Input::Wheel { x, y } => Some(Wire::bare(op::MOUSE_WHEEL, signed(x), signed(y), 0)),
+            // **A delta goes as the device reported it**, whatever size the
+            // picture is drawn at: it is the hand's motion in the mouse's own
+            // counts, not a distance in the window, and the host moves its
+            // pointer by it as by a mouse of its own. Scaled by the drawn
+            // ratio, a picture stretched to a larger window dragged and
+            // aimed slower than the hand.
             Input::Motion {
                 x,
                 y,
                 relative: true,
-            } => {
-                let (dx, dy) = self.delta(x, y);
-                Some(Wire::bare(op::MOUSE_MOTION, 1, signed(dx), signed(dy)))
-            }
+            } => Some(Wire::bare(op::MOUSE_MOTION, 1, signed(x), signed(y))),
             Input::Motion { .. } if !self.mapped() => None,
             Input::Motion { x, y, .. } => {
                 let (px, py) = self.to_picture(x, y);
@@ -664,29 +651,24 @@ mod tests {
         );
     }
 
-    /// Relative deltas are scaled by the picture-to-rectangle ratio, sign
-    /// kept, and pass through unscaled before the mapping exists.
+    /// Relative deltas go as the device reported them, sign kept, with the
+    /// picture drawn at half its size, at twice it, and before any mapping
+    /// exists.
     #[test]
-    fn deltas_scale_with_the_picture() {
-        let mut m = mapper(
-            Viewport {
-                x: 0,
-                y: 0,
-                w: 960,
-                h: 540,
-            },
-            1920,
-            1080,
-            Rotation::None,
-        );
-        let w = m
-            .encode(&Input::Motion {
-                x: -3,
-                y: 7,
-                relative: true,
-            })
-            .unwrap();
-        assert_eq!((w.a0, w.a1 as i32, w.a2 as i32), (1, -6, 14));
+    fn deltas_pass_through_whatever_the_picture_is_drawn_at() {
+        let at = |w: i32, h: i32| mapper(Viewport { x: 0, y: 0, w, h }, 1920, 1080, Rotation::None);
+        for mut m in [at(960, 540), at(3840, 2160), Mapper::default()] {
+            for (x, y) in [(-3, 7), (1, -1), (-120, 45)] {
+                let w = m
+                    .encode(&Input::Motion {
+                        x,
+                        y,
+                        relative: true,
+                    })
+                    .unwrap();
+                assert_eq!((w.a0, w.a1 as i32, w.a2 as i32), (1, x, y));
+            }
+        }
     }
 
     /// A key of code zero is nothing; the mask and the press travel as given.
