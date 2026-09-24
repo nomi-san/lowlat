@@ -29,7 +29,11 @@
 // build of it or none; `LOWLAT_FFMPEG_DIR` names where its pair is.
 // `LOWLAT_HANDLE` asks for pictures as device handles, which the renderer
 // imports and draws with no copy through this process; only a decoder that
-// exports them (a row saying "handles") can be opened for that.
+// exports them (a row saying "handles") can be opened for that, and only
+// GL draws them. `LOWLAT_GFX=vk` draws planes through Vulkan instead of GL.
+// `LOWLAT_VSYNC=0` presents a picture the moment it is drawn rather than at
+// the display's next refresh: the lowest latency, torn where a picture
+// lands mid-scan.
 // `LOWLAT_HEVC`, `LOWLAT_10BIT` and `LOWLAT_444` are the preferences the
 // attempt starts with: each is "prefer this if the host has it", masked by
 // what the decoder takes before anything is declared; `LOWLAT_SWITCH_EVERY`
@@ -58,7 +62,10 @@
 // Once a second a line goes to stdout with the presentation cadence as
 // numbers rather than a judgement: presents and pictures in the second,
 // repeats (a present with no new picture) and skips (pictures published and
-// never shown, because a newer one had arrived), the decoder's figures, the
+// never shown, because a newer one had arrived), the wait from a new picture
+// in hand to its present returning (on average and at most: the draw and the
+// display's next refresh), how many refreshes each picture stayed up for
+// (one, two, three, four or more), the decoder's figures, the
 // reader's lag, and the process's resident set; then this side's figures
 // for the video channel (fragments, late arrivals, negatives sent, the
 // recent loss) beside the host's figures for this guest as its last guest
@@ -109,7 +116,24 @@ struct demo {
 	atomic_bool picture_full_range;
 	// Whether pictures arrive as device handles, asked at creation.
 	bool handles;
+	// The graphics interface drawn through: GL, the one that imports device
+	// handles, or Vulkan, for planes.
+	MTY_GFX gfx;
+	// Whether a present waits for the display's refresh.
+	bool vsync;
 	pthread_t presenter;
+	// Presentation, the presenting thread's: the display's refresh period and
+	// when the picture on screen was first presented; for the second, the
+	// wait from a new picture in hand to its present returning -- the draw
+	// and the display's next refresh -- summed, counted and at its longest,
+	// and how many refreshes each picture replaced stayed up for: one, two,
+	// three, four or more.
+	double refresh_ms;
+	double shown_at_ms;
+	atomic_uint swap_sum_us;
+	atomic_uint swap_count;
+	atomic_uint swap_max_us;
+	atomic_uint held[4];
 
 	// Sound: the device, on a thread of its own that acquires and queues.
 	// The device's own buffer paces playback and absorbs the drift; a
@@ -1138,6 +1162,12 @@ static void report(struct demo *d)
 	uint32_t pictures = atomic_exchange(&d->pictures, 0);
 	uint32_t repeats = atomic_exchange(&d->repeats, 0);
 	uint32_t skips = atomic_exchange(&d->skips, 0);
+	uint32_t swap_sum_us = atomic_exchange(&d->swap_sum_us, 0);
+	uint32_t swap_count = atomic_exchange(&d->swap_count, 0);
+	uint32_t swap_max_us = atomic_exchange(&d->swap_max_us, 0);
+	uint32_t held[4];
+	for (uint32_t i = 0; i < 4; i++)
+		held[i] = atomic_exchange(&d->held[i], 0);
 	uint32_t snd = atomic_exchange(&d->snd_packets, 0);
 	uint32_t snd_frames = atomic_exchange(&d->snd_frames, 0);
 	uint32_t snd_q_min = atomic_exchange(&d->snd_q_min, UINT32_MAX);
@@ -1153,6 +1183,7 @@ static void report(struct demo *d)
 	m.size = (uint32_t) sizeof m;
 	lowlat_client_get_metrics(d->client, &m);
 	printf("demo: t=%" PRIu64 " presents=%u polls=%u pictures=%u repeats=%u skips=%u "
+		"gfx=%s vsync=%d swap_ms=%.1f/%.1f held=%u/%u/%u/%u "
 		"codec=%s decode_us=%u readback_us=%u encode_us=%u queue=%u behind=%u behind_ms=%u "
 		"rtt_ms=%u mbit=%.1f decoded=%" PRIu64 " rss_mb=%" PRIu64 " keys=%u btn=%u wheel=%u "
 		"motion=%u pad=%u pad_events=%u pad_raw=%u pad_out=%u pad_in=%u pad_in_dropped=%u "
@@ -1164,7 +1195,10 @@ static void report(struct demo *d)
 		" loss30=%.4f cursor=%u misses=%u refused=%u rumble=%u "
 		"guest=%u owner=%d rosters=%u h_rtt=%.1f h_mbps=%.2f h_enc=%.2f h_dec=%.2f "
 		"h_packets=%d h_fast=%d h_slow=%d h_cg=%d\n",
-		d->seconds, presents, polls, pictures, repeats, skips, codec,
+		d->seconds, presents, polls, pictures, repeats, skips,
+		d->gfx == MTY_GFX_VK ? "vk" : "gl", (int) d->vsync,
+		swap_count > 0 ? (double) swap_sum_us / (double) swap_count / 1000.0 : 0.0,
+		(double) swap_max_us / 1000.0, held[0], held[1], held[2], held[3], codec,
 		st.decode_us, st.readback_us, st.encode_us, st.queue_depth, st.behind, st.behind_ms,
 		st.rtt_ms, mbit, st.decoded, rss, d->keys_sent, d->buttons_sent, d->wheels_sent,
 		d->motions_sent, d->pad_sent, d->pad_events, d->raw.reports, d->raw.outputs,
@@ -1216,7 +1250,7 @@ static void report(struct demo *d)
 			: format == LOWLAT_FORMAT_YUV444 ? "444"
 			: format == LOWLAT_FORMAT_YUV444_16 ? "444 10bit" : "8bit";
 		snprintf(title, sizeof title,
-			"lowlat | %ux%u %s %s%s%s | asked %s | %s | %u fps | rtt %u/%.0f ms | enc %.1f ms | "
+			"lowlat | %ux%u %s %s%s%s | asked %s | %s %s%s | %u fps | rtt %u/%.0f ms | enc %.1f ms | "
 			"dec %.1f ms | rb %.1f ms | q %u behind %u | skips %u | %.1f/%.1f Mbit/s | "
 			"loss %.2f%% | snd %u ms | rss %" PRIu64 " MB | guest %u%s%s%s%s%s",
 			width, atomic_load(&d->picture_height), codec, colour,
@@ -1228,6 +1262,7 @@ static void report(struct demo *d)
 			st.backend == LOWLAT_DECODER_OPEN ? "open planes"
 				: st.backend == LOWLAT_DECODER_VENDOR ? (d->handles ? "vendor handles" : "vendor planes")
 				: "no decoder",
+			d->gfx == MTY_GFX_VK ? "vk" : "gl", d->vsync ? "" : " no vsync",
 			pictures, st.rtt_ms, d->host_rtt_ms, (double) st.encode_us / 1000.0,
 			(double) st.decode_us / 1000.0, (double) st.readback_us / 1000.0, st.queue_depth,
 			st.behind, skips, mbit, d->host_mbps, (double) m.video.loss_30s * 100.0,
@@ -1278,11 +1313,13 @@ static void dump_once(struct demo *d, const lowlat_frame *f)
 static void *present_loop(void *opaque)
 {
 	struct demo *d = opaque;
-	if (!MTY_WindowSetGFX(d->app, d->window, MTY_GFX_GL, true)) {
+	if (!MTY_WindowSetGFX(d->app, d->window, d->gfx, d->vsync)) {
 		fprintf(stderr, "demo: no graphics context\n");
 		atomic_store(&d->quit, true);
 		return NULL;
 	}
+	uint32_t refresh = MTY_WindowGetRefreshRate(d->app, d->window);
+	d->refresh_ms = 1000.0 / (double) (refresh > 0 ? refresh : 60);
 	// A handle is only drawable on a context that imports one: asked once,
 	// before any picture, rather than found out per frame.
 	if (d->handles && !MTY_WindowIsValidHardwareFrame(d->app, d->window, NULL, NULL)) {
@@ -1292,18 +1329,29 @@ static void *present_loop(void *opaque)
 	}
 	while (!atomic_load(&d->quit)) {
 		double t = now_ms();
-		// The poll: the newest picture, or nothing new. Under a cap it runs
-		// on the first refresh at or past the cap's period (three quarters
-		// of it, so a refresh a little early still counts), so the display
-		// shows every refresh and the picture changes at the cap's cadence.
+		double taken_ms = 0.0;
+		// The poll: the newest picture, or nothing new. **It waits for the
+		// picture** rather than presenting the one on screen again and
+		// looking afterwards: a present blocks until the display's next
+		// refresh, so a picture arriving meanwhile would be taken a refresh
+		// later and shown a refresh after that. Waiting, it is drawn the
+		// moment it arrives and shown at the next refresh; the one on
+		// screen is presented again only when nothing came in the wait, which
+		// keeps the window drawn while the stream is still. Under a cap it
+		// runs on the first refresh at or past the cap's period (three
+		// quarters of it, so a refresh a little early still counts), without
+		// waiting, so the display shows every refresh and the picture changes
+		// at the cap's cadence.
 		if (d->poll_period_ms <= 0.0 || t - d->last_poll_ms >= d->poll_period_ms * 0.75) {
 			d->last_poll_ms = t;
 			atomic_fetch_add(&d->polls, 1);
 			lowlat_frame fresh;
 			memset(&fresh, 0, sizeof fresh);
 			fresh.size = (uint32_t) sizeof fresh;
-			lowlat_status s = lowlat_client_acquire_frame(d->client, 0, 0, &fresh);
+			uint32_t wait_ms = d->poll_period_ms > 0.0 ? 0 : 20;
+			lowlat_status s = lowlat_client_acquire_frame(d->client, 0, wait_ms, &fresh);
 			if (s == LOWLAT_OK) {
+				taken_ms = now_ms();
 				if (d->showing)
 					lowlat_client_release_frame(d->client, &d->shown, NULL);
 				if (d->showing && fresh.sequence > d->last_sequence + 1)
@@ -1327,9 +1375,8 @@ static void *present_loop(void *opaque)
 			}
 		}
 
-		// Drawn every iteration, new or not: a renderer that re-presents
-		// the cached picture on every refresh is what keeps the window's
-		// cadence the display's rather than the stream's.
+		// Drawn every iteration, new or not: after a new picture, or after
+		// a wait that brought none, so a still stream's window is drawn too.
 		if (d->showing) {
 			const lowlat_frame *f = &d->shown;
 			bool deep = f->format == LOWLAT_FORMAT_P010 || f->format == LOWLAT_FORMAT_YUV444_16;
@@ -1389,6 +1436,21 @@ static void *present_loop(void *opaque)
 		}
 		MTY_WindowPresent(d->app, d->window);
 		atomic_fetch_add(&d->presents, 1);
+		// A new picture's wait from hand to screen, and how long the one it
+		// replaced stayed up, in refreshes.
+		if (taken_ms > 0.0) {
+			double shown = now_ms();
+			uint32_t swap_us = (uint32_t) ((shown - taken_ms) * 1000.0);
+			atomic_fetch_add(&d->swap_sum_us, swap_us);
+			atomic_fetch_add(&d->swap_count, 1);
+			if (swap_us > atomic_load(&d->swap_max_us))
+				atomic_store(&d->swap_max_us, swap_us);
+			if (d->shown_at_ms > 0.0) {
+				uint32_t n = (uint32_t) ((shown - d->shown_at_ms) / d->refresh_ms + 0.5);
+				atomic_fetch_add(&d->held[n >= 4 ? 3 : (n > 0 ? n - 1 : 0)], 1);
+			}
+			d->shown_at_ms = shown;
+		}
 	}
 	if (d->showing)
 		lowlat_client_release_frame(d->client, &d->shown, NULL);
@@ -1559,6 +1621,18 @@ int main(void)
 	// Pictures as device handles the renderer imports, on a decoder that
 	// exports them; the decoder is then the vendor's whatever was asked.
 	d.handles = getenv("LOWLAT_HANDLE") != NULL;
+	d.gfx = strcmp(env_or("LOWLAT_GFX", "gl"), "vk") == 0 ? MTY_GFX_VK : MTY_GFX_GL;
+	if (d.handles && d.gfx != MTY_GFX_GL) {
+		fprintf(stderr, "demo: device handles are drawn through GL only; LOWLAT_GFX=vk takes planes\n");
+		return 2;
+	}
+	// Without the refresh the capped loop, which does not wait for a
+	// picture, would be paced by nothing at all.
+	d.vsync = strcmp(env_or("LOWLAT_VSYNC", "1"), "0") != 0;
+	if (!d.vsync && present_hz > 0) {
+		fprintf(stderr, "demo: LOWLAT_PRESENT_HZ is paced by the display's refresh and needs vsync\n");
+		return 2;
+	}
 	info.frame_kind = d.handles ? LOWLAT_FRAME_HANDLE : LOWLAT_FRAME_PLANES;
 	snprintf(info.device, sizeof info.device, "%s", device);
 
