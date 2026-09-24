@@ -586,6 +586,16 @@ here; the rules are [10 §7](10-client.md) and §9, the surface [06 §3b](06-api
   as often as behind. Closed. One stall is unexplained: three pictures held 58, 49 and 25 ms
   in the library once in five minutes by planes, with nothing lost and no input; it is
   looked at if it comes back.
+- [x] **The full range is the application's to ask for** (*2026-09-24*, minor 17). Bit 3 of
+  the declaration, which this client had set on every attempt as a base flag, is full range:
+  an established host on the vendor's encoder coded the full range with it and the video
+  range without it, the same picture minutes apart, 8 percent of luma below 16 against 0.2.
+  So the library declared, for every application, that its renderer reads each picture's
+  range. `lowlat_client_video_config.full_range` (the reserved byte) says so instead, declared
+  as asked and never masked by the decoder; zeroed, the video range, which a renderer that
+  never reads `full_range` draws right. The demo asks for it, since its renderer takes it,
+  and `LOWLAT_FULL_RANGE=0` asks for the video range. The host half is the host plan's
+  (Phase 11).
 
 **Built 2026-09-19, evening, deviations from the text above:** the picture already delivered,
 named or sent again, travels as its checksum alone -- the first live run against this host
@@ -1224,6 +1234,8 @@ slower decoder ever reopens them.
 
 Newest first.
 
+- 2026-09-24, night: the full range becomes the application's to ask for (minor 17), once
+  the declaration bit taken for a base flag turned out to be full range.
 - 2026-09-24, night: the drag remainder measured and closed. Minor 16 stamps every picture
   with its arrival; beside the established client, arrival to present is 1.3 ms by planes and
   0.7 by handle, and this client's own input does not hold the video back.

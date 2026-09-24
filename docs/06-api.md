@@ -348,7 +348,7 @@ have moved by itself; an application that kept its own copy would mark the wrong
 Everything below is in the header (minor 4 the session, minor 5 the pictures, minor 6 the
 input, minor 7 the sound, minor 8 the preferences and the handle, minor 9 the cursor and the
 metrics, minor 10 the pad reports, minor 14 the relay, minor 15 the picture's range, minor 16
-its arrival time); the header is the truth.
+its arrival time, minor 17 the range asked for); the header is the truth.
 
 ```c
 lowlat_status lowlat_client_create(const lowlat_client_create_info *info, lowlat_client **out);
@@ -611,9 +611,14 @@ presents is a skip -- and **`full_range`**, whether its samples span the whole o
 rather than the video range, as the stream's own parameter set says (minor 15), so a
 renderer needs nothing from the stream itself. The samples are handed out as coded and never
 converted: the renderer's conversion takes the range, and one that assumes the video range
-draws a full-range picture darker, its blacks crushed and its contrast raised. Hosts send
-either (*corrected 2026-09-24*: an established host was seen sending the full range, where
-the first recorded one sent the video range). **`arrived_us`** (minor 16) is when the message
+draws a full-range picture darker, its blacks crushed and its contrast raised. **Which range
+arrives is asked for** (minor 17): `lowlat_client_video_config.full_range` says the
+application's renderer takes the full range, and the library declares it as asked, never
+masked by the decoder, which decodes either range alike; a host that acts on it codes the
+full range when every seat asked, and otherwise the video range. Zeroed, it asks for the
+video range, which a renderer that never reads `full_range` draws right (*corrected
+2026-09-24*: this said hosts send either unasked; the declaration had asked for the full
+range on every attempt). **`arrived_us`** (minor 16) is when the message
 the picture was decoded from was taken off the network, in microseconds of
 `CLOCK_MONOTONIC`, the clock an application reads by that name, or zero where it is not
 known: read against that clock at the acquire, it is the picture's time in the library, and
@@ -1105,6 +1110,12 @@ configuration and the status, corrected for the frame the first time it grows.
 appended to `lowlat_frame`, when the message the picture came from was taken off the network,
 on `CLOCK_MONOTONIC`. Nothing moves, and a caller built against minor 14 or 15 gets the fields
 it knows.
+
+**Minor 17** (2026-09-24) is the range asked for ([§3b](#3b-client)): the reserved byte of
+`lowlat_client_video_config` becomes `full_range`, the application's word that its renderer
+takes the full range. The library had declared that on every attempt; now it declares it
+only when asked. Nothing moves, and a caller built against an earlier minor, which passed
+zero there, asks for the video range.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected

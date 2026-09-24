@@ -3,6 +3,31 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-24 - C5: the full range is the application's to ask for; minor 17
+
+### Fixed
+- **The declaration no longer asks for the full range on every application's behalf**
+  ([01 §11](01-protocol.md), [06 §3b](06-api.md), [10 §7](10-client.md), minor 17). Bit 3 of
+  a declaration, set on every attempt as a base flag that meant nothing, is full range: an
+  established host on the vendor's encoder codes the full range when every seat sets it and
+  the video range otherwise, measured on the same picture minutes apart, 8 percent of luma
+  below 16 with it and 0.2 without. Each picture has said its range since minor 15, but a
+  renderer that never reads it drew those pictures darker. `lowlat_client_video_config.
+  full_range`, the reserved byte until now, is the application's word that its renderer
+  takes it: declared as asked and never masked by the decoder, which decodes either range
+  alike; zeroed, the video range.
+
+### Changed
+- `FLAG_BASE` is `FLAG_FULL_RANGE`. The host behaves as before: it puts the bit into every
+  declaration it records, as its mark that a seat has declared, and codes the video range
+  whatever is declared. What it owes is in [impl-plan.md](impl-plan.md) Phase 11.
+- The demo asks for the full range, since its renderer takes it; `LOWLAT_FULL_RANGE=0` asks
+  for the video range.
+
+### Corrected
+- 01 §11's flag table, 10 §4 and 06 §3b: bit 3 is full range, and the range is asked for by
+  the client and decided by the host rather than chosen by the host unasked.
+
 ## 2026-09-24 - C5: every picture says when it arrived; minor 16
 
 ### Added

@@ -1088,11 +1088,22 @@ The flag bits:
 |---|---|---|
 | 0 | `0x01` | HEVC |
 | 1 | `0x02` | 4:4:4 chroma, which implies HEVC |
-| 3 | `0x08` | base flag, **always set** |
+| 3 | `0x08` | full range: the sender's renderer takes samples across the whole of their depth |
 | 4 | `0x10` | 10-bit, which implies HEVC |
 
-**Bit 2 is not 10-bit**, and reading it as such is a mistake that has been made. The base flag at
-bit 3 is set on every offer, so `_flags` of 8 alone is the ordinary case: H.264, 8-bit, 4:2:0.
+**Bit 2 is not 10-bit**, and reading it as such is a mistake that has been made.
+
+**Bit 3 is full range** (*corrected 2026-09-24*; this table called it a base flag, set on every
+offer and meaning nothing). A peer sets it when its renderer converts with the stream's own
+range, and a host may then code the samples across the whole of their depth, saying so in the
+parameter set's range flag. It is a preference like bits 1 and 4, met through the room's
+intersection, so one peer that cannot draw the full range keeps the room in the video range.
+Current established clients set it in every declaration, which is why `_flags` of 8 alone is
+their ordinary case -- H.264, 8-bit, 4:2:0, full range -- and older ones never set it.
+Measured against an established host on the vendor's encoder, the same picture minutes apart:
+declared, the full range, 8 percent of luma below 16; clear, the video range, 0.2 percent.
+Not every host acts on it, and a host whose build fails takes it off after full chroma and
+before the second codec.
 
 **Both "implies HEVC" notes are the sender's own rule and the receiver enforces it too**, so
 neither is advisory. A host that codes what these name promotes the codec with them rather than

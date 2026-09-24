@@ -200,10 +200,13 @@ quarter turn is a transform at present time), colour depth, chroma layout, the g
 belongs to, and **whether its samples span the full range** (*added 2026-09-24*, minor 15).
 The range is the parameter set's video signal type, read by the library's own readers for
 the hardware backends and asked of the codec library for software; a set that says nothing
-means the video range, as the standard infers. Nothing on the wire negotiates it and nothing
-here converts it: a host's encoder chooses, and hosts differ -- one established host sends
-the full range at every codec and depth, measured at luma 0 to 255 with a fifth of its
-samples outside 16 to 235, where the first recorded one sent the video range. The samples
+means the video range, as the standard infers. **The client asks and the host decides**
+(*corrected 2026-09-24*; this said nothing on the wire negotiates it): the declaration's
+full-range bit says the application's renderer takes it (§7, [01 §11](01-protocol.md)), and
+a host that acts on the bit codes the full range when every seat declared it. One
+established host does, at every codec and depth, measured at luma 0 to 255 with a fifth of
+its samples outside 16 to 235, and codes the video range when the bit is clear; a host may
+also leave it unmet. Nothing here converts it. The samples
 leave as they were coded and the renderer is told, since a conversion here
 would cost a pass over every picture and spend precision; a renderer that assumes the video
 range draws such a picture with its blacks crushed and its contrast raised, which is how it
@@ -628,10 +631,13 @@ application names what it would like -- the second codec, ten-bit colour, full c
 the video block of the attempt's configuration; the library ANDs that with what the decoder
 it opened at creation decodes (§5.1) and declares the result in the initialization's flags
 and the two secondary declarations, with the wire's own implication that depth and chroma
-imply the second codec and neither is declared without it. Defaults off: a client of ours at
-its defaults asks a host for exactly what every established client asks at its defaults,
-and full chroma at ten bits is nearly twice the bytes of the same picture at eight-bit
-4:2:0, which is not a choice the library makes for the application. A change mid-session
+imply the second codec and neither is declared without it. **The fourth preference is the
+range** (*minor 17, 2026-09-24*): the application says whether its renderer takes the full
+range, and the library declares that as asked, since the decoder decodes either range alike
+and converts nothing, so there is nothing of it to mask. Defaults off: a client of ours at its
+defaults asks for H.264 in the video range, which a renderer that never reads a picture's
+range draws right, and full chroma at ten bits is nearly twice the bytes of the same picture
+at eight-bit 4:2:0 -- neither is a choice the library makes for the application. A change mid-session
 goes out as the encoder configuration with the reinitialisation argument, paired with the
 decoder's teardown -- the first request case of §5. What the stream then turns out to be is
 the decoder's to follow, from the header and the parameter sets, and status carries all

@@ -1313,6 +1313,14 @@ decides what to do with them.
 - [ ] Per-guest pressure gate and the skip-until-keyframe cascade, expressed so a skip cannot
   be issued without latching the pending-keyframe state.
 - [ ] Consensus actuators and the degraded-guest event.
+- [ ] **The full-range bit, read for what it is** (*found 2026-09-24*). Bit 3 of a declaration
+  is full range, the sender's word that its renderer takes it ([01 §11](01-protocol.md)), and
+  not a base flag. This host puts it into every declaration it records, as the mark that a
+  seat has declared at all, which is safe only while the stream is coded in the video range
+  whatever is declared. Owed: a mark of its own for "declared", so a seat that declared zero
+  still votes, and then the choice -- code the full range when every seat asked, the
+  conversion writing it and the parameter sets saying so, or leave it unmet, which a
+  preference allows. The client half is done ([impl-plan-client.md](impl-plan-client.md) C5).
 - [ ] **One quality setting on the boundary, and the two levers under it**
   ([05 §4.1](05-host.md), [06 §quality](06-api.md)). `lowlat_quality` in the host configuration, three
   values, settled when hosting starts, zero meaning the low-latency end so a zeroed structure
