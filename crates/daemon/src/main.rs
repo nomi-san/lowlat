@@ -7,7 +7,7 @@
 //! Four inbound actions map onto the seam's four calls, and the seam's event
 //! queue maps back onto two outbound actions. Nothing else here is protocol.
 //!
-//!   KESSEL_WS_SERVER=... KESSEL_SESSION=... lowlatd [--name NAME] [--port N]
+//!   KESSEL_SESSION=... [KESSEL_WS_SERVER=...] lowlatd [--name NAME] [--port N]
 //!   lowlatd session
 
 use std::net::SocketAddr;
@@ -32,6 +32,10 @@ const MAX_GUESTS: u32 = 4;
 
 /// Base port every guest's bind walks from.
 const DEFAULT_PORT: u16 = 9000;
+
+/// The signaling service when none is named: the public one, which is the only
+/// one a login's session is good for, so an install finishes with the login.
+const DEFAULT_SERVER: &str = "kessel-ws.parsec.app";
 
 /// Reflexive servers, for discovering our own mapped address.
 ///
@@ -260,6 +264,22 @@ fn read(path: &str) -> String {
     std::fs::read_to_string(path)
         .map(|s| s.trim().to_string())
         .unwrap_or_default()
+}
+
+/// The signaling address from what the configuration names: the public service
+/// when it names none, and a name without a scheme is a secure socket.
+fn signaling_url(configured: &str) -> String {
+    let named = configured.trim();
+    let server = if named.is_empty() {
+        DEFAULT_SERVER
+    } else {
+        named
+    };
+    if server.contains("://") {
+        server.to_string()
+    } else {
+        format!("wss://{server}")
+    }
 }
 
 /// Guests currently admitted, in the width the wire uses.
@@ -915,21 +935,15 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // not yet logged in is an expected state, and a unit that failed on it
     // would be restarted into it every few seconds until somebody did; so
     // this says what is missing and where it goes, and exits cleanly.
-    let configured = std::env::var("KESSEL_WS_SERVER").unwrap_or_default();
     let session = std::env::var("KESSEL_SESSION").unwrap_or_default();
-    let configured = configured.trim();
-    if configured.is_empty() || session.trim().is_empty() {
+    if session.trim().is_empty() {
         lowlat_common::log_warn!(
-            "lowlatd: not configured, KESSEL_WS_SERVER and KESSEL_SESSION are read from \
-             /etc/lowlat/lowlatd.env and lowlat-login --install obtains the session"
+            "lowlatd: not logged in, KESSEL_SESSION is read from /etc/lowlat/lowlatd.env and \
+             lowlat-login --install obtains it"
         );
         return Ok(());
     }
-    let server = if configured.contains("://") {
-        configured.to_string()
-    } else {
-        format!("wss://{configured}")
-    };
+    let server = signaling_url(&std::env::var("KESSEL_WS_SERVER").unwrap_or_default());
     let hostname = read("/proc/sys/kernel/hostname");
     let name = flag("--name").unwrap_or(if hostname.is_empty() {
         "lowlat".to_string()
@@ -1748,5 +1762,21 @@ mod role_tests {
             program_of(["--output", "card0:DP-1", "--session"]),
             Program::Service
         );
+    }
+}
+
+#[cfg(test)]
+mod signaling_tests {
+    use super::signaling_url;
+
+    /// **An install finishes with the login alone.** The configuration file
+    /// ships the server empty and the login fills in the session only, so an
+    /// empty server is the public service and not a service left unconfigured.
+    #[test]
+    fn an_empty_server_is_the_public_service() {
+        assert_eq!(signaling_url(""), "wss://kessel-ws.parsec.app");
+        assert_eq!(signaling_url("  "), "wss://kessel-ws.parsec.app");
+        assert_eq!(signaling_url("relay.example"), "wss://relay.example");
+        assert_eq!(signaling_url("ws://127.0.0.1:8080"), "ws://127.0.0.1:8080");
     }
 }
