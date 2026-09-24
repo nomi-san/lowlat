@@ -300,6 +300,7 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
         };
         let bytes = unit.bytes();
         let header = video::parse(bytes).ok();
+        let stamp = unit.stamp();
         let decision = feed.feed(bytes);
         drop(unit);
 
@@ -316,6 +317,7 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
                     frames,
                     telemetry,
                     header.as_ref(),
+                    stamp,
                     &mut reported,
                     &mut range,
                 );
@@ -338,6 +340,7 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
                         frames,
                         telemetry,
                         header.as_ref(),
+                        stamp,
                         &mut reported,
                         &mut range,
                     );
@@ -353,13 +356,15 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
     Next::Stop
 }
 
-/// Every picture the decoder has ready goes into the queue. `range` is the
-/// last picture's, for the log.
+/// Every picture the decoder has ready goes into the queue, carrying the
+/// arrival stamp of the unit just fed. `range` is the last picture's, for
+/// the log.
 fn take_pictures<D: Backend>(
     feed: &mut Feed<D>,
     frames: &Frames,
     telemetry: &Telemetry,
     header: Option<&video::VideoHeader>,
+    stamp: u32,
     reported: &mut Smoothed,
     range: &mut Option<bool>,
 ) {
@@ -419,6 +424,7 @@ fn take_pictures<D: Backend>(
                     generation: header.map_or(0, |h| h.frame_id),
                     order: picture.order,
                     full_range: picture.full_range,
+                    arrived: Some(stamp),
                     // The queue's, written at publish.
                     pitch: 0,
                     uv_offset: 0,

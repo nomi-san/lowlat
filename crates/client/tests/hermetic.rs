@@ -27,7 +27,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lowlat_client::driver::{Driver, REPORT_INTERVAL_MS, Telemetry, Units};
+use lowlat_client::driver::{Driver, REPORT_INTERVAL_MS, Telemetry, Units, stamp_age_us};
 use lowlat_client::feed::{Decision, Decoder, Fault, Fed, Feed};
 use lowlat_client::sound::{Packets, Sound};
 use lowlat_client::{AUDIO_CHANNEL, BODY, Config, Event, Outcome, VIDEO_CHANNEL};
@@ -535,6 +535,9 @@ struct Guest<D: Decoder> {
     /// The declaration generation last acted on, as the decode thread keeps
     /// it.
     reconfigured: u32,
+    /// Each unit's age when it was taken, from its arrival stamp, in
+    /// microseconds.
+    ages: Vec<u32>,
 }
 
 impl<D: Decoder> Guest<D> {
@@ -585,6 +588,7 @@ impl<D: Decoder> Guest<D> {
             planes: (vec![0u8; 1280 * 720 * 2], vec![0u8; 1280 * 360 * 2]),
             deepest_lag: lowlat_client::Lag::default(),
             reconfigured: 0,
+            ages: Vec::new(),
         }
     }
 
@@ -629,6 +633,7 @@ impl<D: Decoder> Guest<D> {
             if unit.metadata() {
                 self.metadata_seen += 1;
             }
+            self.ages.push(stamp_age_us(now, unit.stamp()));
             if let Some(generation) = self.driver.generation(0) {
                 self.feed.announce_generation(generation);
             }
@@ -1254,6 +1259,37 @@ fn nothing_is_skipped_when_no_keyframe_is_ahead() {
     for (at, (frame, _)) in units.iter().enumerate() {
         assert_eq!(*frame, at as u64, "the backlog was not decoded in order");
     }
+}
+
+/// **A unit carries when it was taken off the wire.** Taken on the pass
+/// that completed it, a unit has no age; held back, its age is the time it
+/// waited, because the stamp is the pass's and not the consumer's.
+#[test]
+fn a_unit_carries_when_it_arrived() {
+    let mut pair = Pair::new(6, clean());
+    pair.run_for(2000.0);
+    assert!(pair.established());
+    pair.run_for(200.0);
+    let taken = pair.guest.ages.len();
+    assert!(taken > 10, "only {taken} units were taken");
+    assert!(
+        pair.guest.ages.iter().all(|&age| age == 0),
+        "a unit taken on its own pass was aged: {:?}",
+        pair.guest.ages
+    );
+    // Held back for less than a keyframe interval, so nothing is skipped
+    // and the first unit taken after waited the whole stall.
+    pair.guest.ages.clear();
+    pair.guest.consuming = false;
+    let stall_ms = FRAME_MS * 30.0;
+    pair.run_for(stall_ms);
+    pair.guest.consuming = true;
+    pair.run_for(TICK_MS);
+    let oldest = f64::from(pair.guest.ages.iter().copied().max().unwrap_or(0));
+    assert!(
+        oldest >= (stall_ms - FRAME_MS) * 1000.0 && oldest <= (stall_ms + TICK_MS) * 1000.0,
+        "the oldest unit after a {stall_ms:.0} ms stall was {oldest} us old"
+    );
 }
 
 /// **Nothing is skipped over a gap.** A keyframe whose tail is still in

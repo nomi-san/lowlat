@@ -650,6 +650,13 @@ pub struct lowlat_frame {
     /// blacks crushed and its contrast raised. Filled only when `size`
     /// reaches it.
     pub full_range: bool,
+    /// When the message the picture was decoded from was taken off the
+    /// network, in microseconds of `CLOCK_MONOTONIC`, the clock an
+    /// application reads by that name; zero where it is not known (minor
+    /// 16). Against a reading of that clock at acquire it is the picture's
+    /// time in the library, and after a present its time to the screen.
+    /// Filled only when `size` reaches it.
+    pub arrived_us: u64,
 }
 
 /// The frame's size before `full_range` was appended: the least a caller
@@ -1894,7 +1901,14 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
                 Ok(None) => return LOWLAT_TIMEOUT,
                 Err(_) => return LOWLAT_ERR_TOO_MANY_HELD,
             };
-            handle.held().seam.set_last_seq(taken.seq);
+            let arrived_us = {
+                let mut held = handle.held();
+                held.seam.set_last_seq(taken.seq);
+                taken
+                    .frame
+                    .arrived
+                    .map_or(0, |stamp| held.seam.arrived_us(stamp))
+            };
             let pitch = u32::try_from(taken.pitch).unwrap_or(u32::MAX);
             let full_chroma = taken.frame.format.full_chroma();
             let planes = match taken.handle {
@@ -1967,6 +1981,7 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
                 handle_size: taken.handle.map_or(0, |h| h.size as u64),
                 modifier: 0,
                 full_range: taken.frame.full_range,
+                arrived_us,
             };
             // As much as the caller's size reaches, and no more: a caller
             // built against an older header gets the fields it knows.
@@ -2495,6 +2510,7 @@ mod tests {
             handle_size: 0,
             modifier: 0,
             full_range: false,
+            arrived_us: 0,
         };
         assert_eq!(
             unsafe { lowlat_client_acquire_frame(handle, 0, 0, &raw mut frame) },

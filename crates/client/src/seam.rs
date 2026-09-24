@@ -652,6 +652,22 @@ impl Client {
         self.last_seq = self.last_seq.max(seq);
     }
 
+    /// When an arrival stamp was taken, in microseconds of the named
+    /// monotonic clock: its age on the session loop's epoch, taken from a
+    /// reading of that clock made at once. Zero without a running loop or
+    /// the clock.
+    pub fn arrived_us(&self, stamp: u32) -> u64 {
+        let Some(epoch) = self.attempt.as_ref().and_then(|a| a.epoch.get().copied()) else {
+            return 0;
+        };
+        let named = lowlat_common::clock::monotonic_us();
+        if named == 0 {
+            return 0;
+        }
+        let age = crate::driver::stamp_age_us(lowlat_common::clock::elapsed_ms(epoch), stamp);
+        named.saturating_sub(u64::from(age))
+    }
+
     /// The application is done with a picture.
     pub fn release_frame(&mut self, index: usize) {
         self.frames.release(index);

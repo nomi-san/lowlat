@@ -46,7 +46,29 @@ const MAX_INBOUND: usize = control::USER_DATA_MAX + control::CONTROL_HEADER_LEN;
 const STREAMS: usize = 3;
 
 /// The pool's tag on a unit that is keyframe metadata rather than a picture.
+/// The tag's other 31 bits are the unit's arrival stamp.
 pub const TAG_METADATA: u32 = 1;
+
+/// An arrival stamp: microseconds since the loop's epoch in 31 bits, so it
+/// wraps every 35 minutes. Only an age is ever read from one, and no unit
+/// waits anywhere near that long.
+const STAMP_MASK: u32 = 0x7fff_ffff;
+
+/// The stamp for a pass at `now_ms` on the loop's epoch.
+pub fn stamp_us(now_ms: f64) -> u32 {
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "microseconds since the loop's epoch, wrapping as the stamp does"
+    )]
+    let us = (now_ms.max(0.0) * 1000.0) as u64;
+    u32::try_from(us & u64::from(STAMP_MASK)).unwrap_or(0)
+}
+
+/// How long before `now_ms` a stamp was taken, on the same epoch.
+pub fn stamp_age_us(now_ms: f64, stamp: u32) -> u32 {
+    stamp_us(now_ms).wrapping_sub(stamp) & STAMP_MASK
+}
 
 /// How often the client reports its decode times: on the clock, not per
 /// picture, so a still desktop still reports and the round-trip estimate,
@@ -133,6 +155,12 @@ impl Unit<'_> {
     /// The message content: the ten-byte video header and the bitstream.
     pub fn bytes(&self) -> &[u8] {
         self.frame.bytes()
+    }
+
+    /// When the unit was taken off the wire: the stamp of the pass that
+    /// completed it.
+    pub fn stamp(&self) -> u32 {
+        self.frame.tag() >> 1
     }
 
     /// Keyframe metadata rather than a picture.
@@ -570,7 +598,7 @@ impl Driver {
         if let Some(outcome) = self.drain_control(endpoint.session()) {
             return Some(outcome);
         }
-        if let Some(outcome) = self.drain_video(endpoint.session()) {
+        if let Some(outcome) = self.drain_video(endpoint.session(), now_ms) {
             return Some(outcome);
         }
         if let Some(outcome) = self.drain_audio(endpoint.session(), now_ms) {
@@ -1042,13 +1070,14 @@ impl Driver {
         });
     }
 
-    /// Every complete access unit on the video channel, into the pool.
+    /// Every complete access unit on the video channel, into the pool,
+    /// stamped with the pass that completed it.
     ///
     /// Before each take, if the reader is more than one message behind, look
     /// ahead for an announced keyframe and skip to it. **The producer never
     /// blocks**: a full pool leaves the backlog in the receive ring, where the
     /// next pass's look-ahead sees it.
-    fn drain_video(&mut self, session: &mut Session<'_>) -> Option<Outcome> {
+    fn drain_video(&mut self, session: &mut Session<'_>, now_ms: f64) -> Option<Outcome> {
         loop {
             let pending = session.pending_messages(VIDEO_CHANNEL);
             if pending == 0 {
@@ -1088,7 +1117,7 @@ impl Driver {
                         .set_picture(header.width, header.height, header.rotation);
                 }
             }
-            let tag = if is_metadata { TAG_METADATA } else { 0 };
+            let tag = (stamp_us(now_ms) << 1) | if is_metadata { TAG_METADATA } else { 0 };
             // **The pool never refuses here.** The ring is as deep as the
             // pool has slots, so a slot that was free has a place in it.
             if writer.publish(tag, &[&self.units.ring]) == 0 {
@@ -1318,5 +1347,21 @@ impl Driver {
             session.srtt_ms().max(0.0).min(f64::from(u32::MAX)) as u32,
             Ordering::Relaxed,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An age reads across the stamp's wrap: a stamp taken a millisecond
+    /// before its 31 bits run out, read two after, is three milliseconds old.
+    #[test]
+    fn an_age_reads_across_the_stamps_wrap() {
+        let wrap_ms = f64::from(STAMP_MASK) / 1000.0;
+        let stamp = stamp_us(wrap_ms - 1.0);
+        assert!(stamp_us(wrap_ms + 2.0) < stamp, "the stamp did not wrap");
+        assert_eq!(stamp_age_us(wrap_ms + 2.0, stamp), 3000);
+        assert_eq!(stamp_age_us(5.0, stamp_us(5.0)), 0);
     }
 }

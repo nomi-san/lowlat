@@ -65,7 +65,10 @@
 // never shown, because a newer one had arrived), the wait from a new picture
 // in hand to its present returning (on average and at most: the draw and the
 // display's next refresh), how many refreshes each picture stayed up for
-// (one, two, three, four or more), the decoder's figures, the
+// (one, two, three, four or more), a new picture's time from its arrival
+// to its present returning and, of that, to the acquire that took it (on
+// average and at most; `LOWLAT_LATENCY_TRACE` prints both per picture, with
+// the motion sent so far), the decoder's figures, the
 // reader's lag, and the process's resident set; then this side's figures
 // for the video channel (fragments, late arrivals, negatives sent, the
 // recent loss) beside the host's figures for this guest as its last guest
@@ -134,6 +137,19 @@ struct demo {
 	atomic_uint swap_count;
 	atomic_uint swap_max_us;
 	atomic_uint held[4];
+	// A new picture's time from its arrival, as the library stamps it: to
+	// the acquire that took it, which is the library's share, and to its
+	// present returning. Summed, counted and at their longest for the
+	// second; with `LOWLAT_LATENCY_TRACE`, a line per picture.
+	atomic_uint lat_sum_us;
+	atomic_uint lat_count;
+	atomic_uint lat_max_us;
+	atomic_uint lib_sum_us;
+	atomic_uint lib_max_us;
+	bool trace_latency;
+	// Every motion sent, never cleared, for the per-picture line to say how
+	// much input went out while the picture was on its way.
+	atomic_uint motions_total;
 
 	// Sound: the device, on a thread of its own that acquires and queues.
 	// The device's own buffer paces playback and absorbs the drift; a
@@ -883,6 +899,7 @@ static void event_func(const MTY_Event *evt, void *opaque)
 		case MTY_EVENT_MOTION:
 			sent(d, lowlat_client_send_mouse_motion(d->client, evt->motion.x, evt->motion.y,
 				evt->motion.relative), &d->motions_sent);
+			atomic_fetch_add(&d->motions_total, 1);
 			break;
 		case MTY_EVENT_CONTROLLER:
 			on_controller(d, &evt->controller);
@@ -1168,6 +1185,11 @@ static void report(struct demo *d)
 	uint32_t held[4];
 	for (uint32_t i = 0; i < 4; i++)
 		held[i] = atomic_exchange(&d->held[i], 0);
+	uint32_t lat_sum_us = atomic_exchange(&d->lat_sum_us, 0);
+	uint32_t lat_count = atomic_exchange(&d->lat_count, 0);
+	uint32_t lat_max_us = atomic_exchange(&d->lat_max_us, 0);
+	uint32_t lib_sum_us = atomic_exchange(&d->lib_sum_us, 0);
+	uint32_t lib_max_us = atomic_exchange(&d->lib_max_us, 0);
 	uint32_t snd = atomic_exchange(&d->snd_packets, 0);
 	uint32_t snd_frames = atomic_exchange(&d->snd_frames, 0);
 	uint32_t snd_q_min = atomic_exchange(&d->snd_q_min, UINT32_MAX);
@@ -1183,7 +1205,7 @@ static void report(struct demo *d)
 	m.size = (uint32_t) sizeof m;
 	lowlat_client_get_metrics(d->client, &m);
 	printf("demo: t=%" PRIu64 " presents=%u polls=%u pictures=%u repeats=%u skips=%u "
-		"gfx=%s vsync=%d swap_ms=%.1f/%.1f held=%u/%u/%u/%u "
+		"gfx=%s vsync=%d swap_ms=%.1f/%.1f held=%u/%u/%u/%u lat_ms=%.2f/%.2f lib_ms=%.2f/%.2f "
 		"codec=%s decode_us=%u readback_us=%u encode_us=%u queue=%u behind=%u behind_ms=%u "
 		"rtt_ms=%u mbit=%.1f decoded=%" PRIu64 " rss_mb=%" PRIu64 " keys=%u btn=%u wheel=%u "
 		"motion=%u pad=%u pad_events=%u pad_raw=%u pad_out=%u pad_in=%u pad_in_dropped=%u "
@@ -1198,7 +1220,11 @@ static void report(struct demo *d)
 		d->seconds, presents, polls, pictures, repeats, skips,
 		d->gfx == MTY_GFX_VK ? "vk" : "gl", (int) d->vsync,
 		swap_count > 0 ? (double) swap_sum_us / (double) swap_count / 1000.0 : 0.0,
-		(double) swap_max_us / 1000.0, held[0], held[1], held[2], held[3], codec,
+		(double) swap_max_us / 1000.0, held[0], held[1], held[2], held[3],
+		lat_count > 0 ? (double) lat_sum_us / (double) lat_count / 1000.0 : 0.0,
+		(double) lat_max_us / 1000.0,
+		lat_count > 0 ? (double) lib_sum_us / (double) lat_count / 1000.0 : 0.0,
+		(double) lib_max_us / 1000.0, codec,
 		st.decode_us, st.readback_us, st.encode_us, st.queue_depth, st.behind, st.behind_ms,
 		st.rtt_ms, mbit, st.decoded, rss, d->keys_sent, d->buttons_sent, d->wheels_sent,
 		d->motions_sent, d->pad_sent, d->pad_events, d->raw.reports, d->raw.outputs,
@@ -1330,6 +1356,7 @@ static void *present_loop(void *opaque)
 	while (!atomic_load(&d->quit)) {
 		double t = now_ms();
 		double taken_ms = 0.0;
+		uint64_t arrived_us = 0;
 		// The poll: the newest picture, or nothing new. **It waits for the
 		// picture** rather than presenting the one on screen again and
 		// looking afterwards: a present blocks until the display's next
@@ -1352,6 +1379,7 @@ static void *present_loop(void *opaque)
 			lowlat_status s = lowlat_client_acquire_frame(d->client, 0, wait_ms, &fresh);
 			if (s == LOWLAT_OK) {
 				taken_ms = now_ms();
+				arrived_us = fresh.arrived_us;
 				if (d->showing)
 					lowlat_client_release_frame(d->client, &d->shown, NULL);
 				if (d->showing && fresh.sequence > d->last_sequence + 1)
@@ -1450,6 +1478,24 @@ static void *present_loop(void *opaque)
 				atomic_fetch_add(&d->held[n >= 4 ? 3 : (n > 0 ? n - 1 : 0)], 1);
 			}
 			d->shown_at_ms = shown;
+			// Zero from a library that does not stamp; both clocks are the
+			// monotonic one, so a stamp past the acquire is not one.
+			double arrived_ms = (double) arrived_us / 1000.0;
+			if (arrived_us != 0 && arrived_ms <= taken_ms) {
+				uint32_t lib_us = (uint32_t) ((taken_ms - arrived_ms) * 1000.0);
+				uint32_t lat_us = (uint32_t) ((shown - arrived_ms) * 1000.0);
+				atomic_fetch_add(&d->lat_sum_us, lat_us);
+				atomic_fetch_add(&d->lat_count, 1);
+				if (lat_us > atomic_load(&d->lat_max_us))
+					atomic_store(&d->lat_max_us, lat_us);
+				atomic_fetch_add(&d->lib_sum_us, lib_us);
+				if (lib_us > atomic_load(&d->lib_max_us))
+					atomic_store(&d->lib_max_us, lib_us);
+				if (d->trace_latency)
+					printf("lat: t_ms=%.1f seq=%" PRIu64 " lib_us=%u present_us=%u total_us=%u "
+						"motions=%u\n", shown - d->started_ms, d->last_sequence, lib_us,
+						lat_us - lib_us, lat_us, atomic_load(&d->motions_total));
+			}
 		}
 	}
 	if (d->showing)
@@ -1601,6 +1647,7 @@ int main(void)
 	d.poll_period_ms = present_hz > 0 ? 1000.0 / (double) present_hz : 0.0;
 	atomic_store(&d.stretch, true);
 	d.trace_pads = getenv("LOWLAT_PAD_TRACE") != NULL;
+	d.trace_latency = getenv("LOWLAT_LATENCY_TRACE") != NULL;
 	d.trace_audio = getenv("LOWLAT_AUDIO_TRACE") != NULL;
 	// A DualShock 4 or a DualSense sent as its own report, which an
 	// established host takes only in a mode its owner set; this library's

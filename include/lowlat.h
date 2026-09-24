@@ -42,7 +42,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 15
+#define LOWLAT_ABI_MINOR 16
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 #define LOWLAT_FEATURE_HOST 1
@@ -1753,6 +1753,13 @@ typedef struct lowlat_frame {
     /// blacks crushed and its contrast raised. Filled only when `size`
     /// reaches it.
     bool full_range;
+    /// When the message the picture was decoded from was taken off the
+    /// network, in microseconds of `CLOCK_MONOTONIC`, the clock an
+    /// application reads by that name; zero where it is not known (minor
+    /// 16). Against a reading of that clock at acquire it is the picture's
+    /// time in the library, and after a present its time to the screen.
+    /// Filled only when `size` reaches it.
+    uint64_t arrived_us;
 } lowlat_frame;
 
 /// A synchronisation object the application's device signals when it has

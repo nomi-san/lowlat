@@ -37,6 +37,30 @@ pub fn elapsed_ms(begin: Time) -> f64 {
     diff_ms(begin, Time::now())
 }
 
+/// Now, in microseconds of `CLOCK_MONOTONIC`: the reading an application
+/// takes of the same clock by that name, for a time handed across the
+/// boundary. Read directly rather than converted from a [`Time`], whose
+/// base is not promised to be that clock.
+#[cfg(unix)]
+pub fn monotonic_us() -> u64 {
+    let mut now = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `now` is a valid, properly aligned timespec we own.
+    unsafe {
+        libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut now);
+    }
+    u64::try_from(now.tv_sec).unwrap_or(0) * 1_000_000
+        + u64::try_from(now.tv_nsec).unwrap_or(0) / 1000
+}
+
+/// No clock by that name here: zero, which a reader takes as not known.
+#[cfg(not(unix))]
+pub fn monotonic_us() -> u64 {
+    0
+}
+
 /// The tail of a sleep that is spun rather than slept. Requesting a sleep this
 /// short from the scheduler is a busy wait with extra steps.
 ///
@@ -186,5 +210,26 @@ mod tests {
         let begin = Time::now();
         precise_sleep(Duration::from_millis(5));
         assert!(elapsed_ms(begin) >= 5.0);
+    }
+
+    /// The named clock in microseconds, not another unit: an interval read
+    /// on it agrees with the same interval read on ours.
+    #[cfg(unix)]
+    #[test]
+    fn the_named_clock_counts_microseconds() {
+        let begin = Time::now();
+        let first = monotonic_us();
+        precise_sleep(Duration::from_millis(20));
+        let second = monotonic_us();
+        let ours_us = elapsed_ms(begin) * 1000.0;
+        let named_us = (second - first) as f64;
+        assert!(
+            named_us >= 20_000.0,
+            "read {named_us} us over a 20 ms sleep"
+        );
+        assert!(
+            (ours_us - named_us).abs() < 2_000.0,
+            "{named_us} us against {ours_us}"
+        );
     }
 }

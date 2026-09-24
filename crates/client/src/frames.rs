@@ -78,6 +78,8 @@ pub struct Frame {
     pub order: i32,
     /// The samples span the whole range, as the stream's parameter set says.
     pub full_range: bool,
+    /// The arrival stamp of the unit the picture was decoded from.
+    pub arrived: Option<u32>,
     /// Bytes a row, every plane. **The queue's, set at publish** from the
     /// planes it lent; whatever is given here is replaced.
     pub pitch: usize,
@@ -100,6 +102,7 @@ impl Frame {
         generation: 0,
         order: 0,
         full_range: false,
+        arrived: None,
         pitch: 0,
         uv_offset: 0,
         v_offset: 0,
