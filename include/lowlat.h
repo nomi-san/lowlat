@@ -42,7 +42,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 14
+#define LOWLAT_ABI_MINOR 15
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 #define LOWLAT_FEATURE_HOST 1
@@ -1745,6 +1745,14 @@ typedef struct lowlat_frame {
     uint64_t handle_size;
     /// The layout modifier, for a kind that has one; zero otherwise.
     uint64_t modifier;
+    /// The samples span the whole range of their depth (0 to 255 at eight
+    /// bits) rather than the video range (16 to 235 for luma, 16 to 240 for
+    /// chroma), as the stream's own parameter set says (minor 15). Nothing
+    /// is converted, so a renderer takes this into its conversion: one that
+    /// assumes the video range shows a full-range picture darker, its
+    /// blacks crushed and its contrast raised. Filled only when `size`
+    /// reaches it.
+    bool full_range;
 } lowlat_frame;
 
 /// A synchronisation object the application's device signals when it has
@@ -2888,13 +2896,16 @@ lowlat_status lowlat_client_get_metrics(lowlat_client *cl,
 /// @param[in] cl The handle.
 /// @param[in] stream The stream, zero in this version.
 /// @param[in] timeout_ms How long to wait. Zero polls.
-/// @param[out] frame The picture, when `LOWLAT_OK`.
+/// @param[out] frame The picture, when `LOWLAT_OK`: one `lowlat_frame`
+/// with `size` set, filled as far as `size` reaches, so a caller built
+/// against an older header gets the fields it knows.
 /// @returns `LOWLAT_OK`, `LOWLAT_TIMEOUT` with nothing newer in time,
 /// `LOWLAT_ERR_TOO_MANY_HELD`, `LOWLAT_ERR_NOT_STARTED` with no session, or
-/// `LOWLAT_ERR_INVALID_ARGUMENT`.
+/// `LOWLAT_ERR_INVALID_ARGUMENT`, which a `size` shorter than the structure
+/// had at minor 14 is too.
 ///
-/// @attention `cl` came from `lowlat_client_create`; `frame` points to one
-/// `lowlat_frame` whose `size` is set.
+/// @attention `cl` came from `lowlat_client_create`; `frame` points to a
+/// `lowlat_frame` of at least the `size` it states.
 lowlat_status lowlat_client_acquire_frame(lowlat_client *cl,
                                           uint8_t stream,
                                           uint32_t timeout_ms,

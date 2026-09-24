@@ -106,6 +106,7 @@ struct demo {
 	atomic_uint picture_height;
 	atomic_uint picture_rotation;
 	atomic_uint picture_format;
+	atomic_bool picture_full_range;
 	// Whether pictures arrive as device handles, asked at creation.
 	bool handles;
 	pthread_t presenter;
@@ -1215,10 +1216,11 @@ static void report(struct demo *d)
 			: format == LOWLAT_FORMAT_YUV444 ? "444"
 			: format == LOWLAT_FORMAT_YUV444_16 ? "444 10bit" : "8bit";
 		snprintf(title, sizeof title,
-			"lowlat | %ux%u %s %s%s | asked %s | %s | %u fps | rtt %u/%.0f ms | enc %.1f ms | "
+			"lowlat | %ux%u %s %s%s%s | asked %s | %s | %u fps | rtt %u/%.0f ms | enc %.1f ms | "
 			"dec %.1f ms | rb %.1f ms | q %u behind %u | skips %u | %.1f/%.1f Mbit/s | "
 			"loss %.2f%% | snd %u ms | rss %" PRIu64 " MB | guest %u%s%s%s%s%s",
 			width, atomic_load(&d->picture_height), codec, colour,
+			atomic_load(&d->picture_full_range) ? " full" : "",
 			rotation == LOWLAT_ROTATION_90 ? " 90deg"
 				: rotation == LOWLAT_ROTATION_180 ? " 180deg"
 				: rotation == LOWLAT_ROTATION_270 ? " 270deg" : "",
@@ -1269,7 +1271,8 @@ static void dump_once(struct demo *d, const lowlat_frame *f)
 			fwrite(f->planes[p].data + (size_t) r * f->planes[p].pitch, 1, row, out);
 	}
 	fclose(out);
-	printf("demo: dumped picture %ux%u format=%u to %s\n", f->width, f->height, f->format, path);
+	printf("demo: dumped picture %ux%u format=%u full_range=%d to %s\n", f->width, f->height,
+		f->format, (int) f->full_range, path);
 }
 
 static void *present_loop(void *opaque)
@@ -1311,6 +1314,7 @@ static void *present_loop(void *opaque)
 				atomic_store(&d->picture_height, fresh.height);
 				atomic_store(&d->picture_rotation, fresh.rotation);
 				atomic_store(&d->picture_format, fresh.format);
+				atomic_store(&d->picture_full_range, fresh.full_range);
 				atomic_store(&d->picture_width, fresh.width);
 				atomic_fetch_add(&d->pictures, 1);
 				dump_once(d, &fresh);
@@ -1373,6 +1377,10 @@ static void *present_loop(void *opaque)
 			// toolkit's multiply is for samples in the low bits, and applied
 			// here it saturates the chroma into a uniform magenta.
 			desc.multiplyYUV = false;
+			// The range is the stream's, per picture. Left at the video
+			// range, a full-range picture is drawn darker, its blacks
+			// crushed and its contrast raised.
+			desc.fullRangeYUV = f->full_range;
 			MTY_WindowDrawQuad(d->app, d->window,
 				f->kind == LOWLAT_FRAME_HANDLE ? (const void *) &hw : (const void *) f->planes[0].data,
 				&desc);

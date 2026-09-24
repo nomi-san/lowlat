@@ -149,12 +149,16 @@ pub fn scaling_lists(
     Ok(())
 }
 
-/// What the VUI carries that a decoder acts on.
+/// What the VUI carries that a decoder or a renderer acts on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Vui {
     /// From `bitstream_restriction`, if it was coded.
     pub max_num_reorder_frames: Option<u32>,
     pub max_dec_frame_buffering: Option<u32>,
+    /// The samples span their depth's whole range rather than the video
+    /// range. Clear when the stream says nothing, which is what the
+    /// standard infers.
+    pub video_full_range: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -300,6 +304,7 @@ fn hrd_parameters(r: &mut BitReader<'_>) -> Result<()> {
 }
 
 fn vui_parameters(r: &mut BitReader<'_>) -> Result<Vui> {
+    let mut vui = Vui::default();
     if r.flag()? {
         // aspect_ratio_info_present
         let idc = r.u8(8)?;
@@ -315,7 +320,7 @@ fn vui_parameters(r: &mut BitReader<'_>) -> Result<Vui> {
     if r.flag()? {
         // video_signal_type_present
         r.skip(3)?; // video_format
-        r.flag()?; // video_full_range
+        vui.video_full_range = r.flag()?;
         if r.flag()? {
             // colour_description_present
             r.skip(8)?;
@@ -346,7 +351,6 @@ fn vui_parameters(r: &mut BitReader<'_>) -> Result<Vui> {
         r.flag()?; // low_delay_hrd
     }
     r.flag()?; // pic_struct_present
-    let mut vui = Vui::default();
     if r.flag()? {
         // bitstream_restriction
         r.flag()?; // motion_vectors_over_pic_boundaries

@@ -642,7 +642,19 @@ pub struct lowlat_frame {
     pub handle_size: u64,
     /// The layout modifier, for a kind that has one; zero otherwise.
     pub modifier: u64,
+    /// The samples span the whole range of their depth (0 to 255 at eight
+    /// bits) rather than the video range (16 to 235 for luma, 16 to 240 for
+    /// chroma), as the stream's own parameter set says (minor 15). Nothing
+    /// is converted, so a renderer takes this into its conversion: one that
+    /// assumes the video range shows a full-range picture darker, its
+    /// blacks crushed and its contrast raised. Filled only when `size`
+    /// reaches it.
+    pub full_range: bool,
 }
+
+/// The frame's size before `full_range` was appended: the least a caller
+/// may pass, and what a caller built against an older header passes.
+const FRAME_MINOR_14: usize = core::mem::offset_of!(lowlat_frame, full_range);
 
 /// A synchronisation object the application's device signals when it has
 /// finished reading a picture.
@@ -1833,15 +1845,18 @@ pub unsafe extern "C" fn lowlat_client_get_metrics(
 /// @param[in] cl The handle.
 /// @param[in] stream The stream, zero in this version.
 /// @param[in] timeout_ms How long to wait. Zero polls.
-/// @param[out] frame The picture, when [`LOWLAT_OK`].
+/// @param[out] frame The picture, when [`LOWLAT_OK`]: one [`lowlat_frame`]
+/// with `size` set, filled as far as `size` reaches, so a caller built
+/// against an older header gets the fields it knows.
 /// @returns [`LOWLAT_OK`], [`LOWLAT_TIMEOUT`] with nothing newer in time,
 /// [`LOWLAT_ERR_TOO_MANY_HELD`], [`LOWLAT_ERR_NOT_STARTED`] with no session, or
-/// [`LOWLAT_ERR_INVALID_ARGUMENT`].
+/// [`LOWLAT_ERR_INVALID_ARGUMENT`], which a `size` shorter than the structure
+/// had at minor 14 is too.
 ///
 /// # Safety
 ///
-/// `cl` came from [`lowlat_client_create`]; `frame` points to one
-/// [`lowlat_frame`] whose `size` is set.
+/// `cl` came from [`lowlat_client_create`]; `frame` points to a
+/// [`lowlat_frame`] of at least the `size` it states.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn lowlat_client_acquire_frame(
     cl: *mut lowlat_client,
@@ -1851,10 +1866,13 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
 ) -> lowlat_status {
     unsafe {
         entered(cl, |handle| {
-            let Some(frame) = frame.as_mut() else {
+            if frame.is_null() {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
-            };
-            if (frame.size as usize) < core::mem::size_of::<lowlat_frame>() || stream != 0 {
+            }
+            // Read through the pointer, never a reference to the whole: a
+            // caller built against an older header passes a shorter one.
+            let size = core::ptr::addr_of!((*frame).size).read_unaligned();
+            if (size as usize) < FRAME_MINOR_14 || stream != 0 {
                 return LOWLAT_ERR_INVALID_ARGUMENT;
             }
             // The queue and the last sequence are read under the lock and
@@ -1919,8 +1937,8 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
                     },
                 ],
             };
-            *frame = lowlat_frame {
-                size: frame.size,
+            let filled = lowlat_frame {
+                size,
                 kind: if taken.handle.is_some() {
                     lowlat_frame_kind::LOWLAT_FRAME_HANDLE
                 } else {
@@ -1947,7 +1965,17 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
                 allocation: taken.handle.map_or(0, |h| h.allocation),
                 handle_size: taken.handle.map_or(0, |h| h.size as u64),
                 modifier: 0,
+                full_range: taken.frame.full_range,
             };
+            // As much as the caller's size reaches, and no more: a caller
+            // built against an older header gets the fields it knows.
+            // SAFETY: `frame` is at least `size` bytes by the caller's
+            // contract; `filled` is a whole one, both plain data.
+            core::ptr::copy_nonoverlapping(
+                (&raw const filled).cast::<u8>(),
+                frame.cast::<u8>(),
+                (size as usize).min(core::mem::size_of::<lowlat_frame>()),
+            );
             LOWLAT_OK
         })
     }
@@ -2465,11 +2493,26 @@ mod tests {
             allocation: 0,
             handle_size: 0,
             modifier: 0,
+            full_range: false,
         };
         assert_eq!(
             unsafe { lowlat_client_acquire_frame(handle, 0, 0, &raw mut frame) },
             LOWLAT_ERR_NOT_STARTED
         );
+        // A caller built against minor 14 stamps the size the frame had then:
+        // taken, where one byte less is not.
+        frame.size = FRAME_MINOR_14 as u32;
+        assert_eq!(
+            unsafe { lowlat_client_acquire_frame(handle, 0, 0, &raw mut frame) },
+            LOWLAT_ERR_NOT_STARTED,
+            "a frame of minor 14's size was refused"
+        );
+        frame.size = FRAME_MINOR_14 as u32 - 1;
+        assert_eq!(
+            unsafe { lowlat_client_acquire_frame(handle, 0, 0, &raw mut frame) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        frame.size = core::mem::size_of::<lowlat_frame>() as u32;
         let fence = lowlat_fence {
             kind: 7,
             handle: 0,

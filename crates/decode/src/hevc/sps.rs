@@ -459,6 +459,10 @@ pub struct Sps {
     pub used_by_curr_pic_lt_sps: [bool; MAX_LT_SPS],
     pub temporal_mvp_enabled: bool,
     pub strong_intra_smoothing_enabled: bool,
+    /// From the VUI: the samples span their depth's whole range rather than
+    /// the video range. Clear when the stream says nothing, which is what
+    /// the standard infers. Not the range extension, which is `range`.
+    pub video_full_range: bool,
     pub range: RangeExtension,
 }
 
@@ -614,11 +618,14 @@ pub fn parse(payload: &[u8]) -> Result<Sps> {
     }
     let temporal_mvp_enabled = r.flag()?;
     let strong_intra_smoothing_enabled = r.flag()?;
-    // The VUI is walked, not kept: it stands between here and the
-    // extensions, which the device has to be told about.
-    if r.flag()? {
-        vui_parameters(&mut r, u32::from(max_sub_layers_minus1))?;
-    }
+    // The VUI is walked for the one field a renderer needs: it stands
+    // between here and the extensions, which the device has to be told
+    // about.
+    let video_full_range = if r.flag()? {
+        vui_parameters(&mut r, u32::from(max_sub_layers_minus1))?
+    } else {
+        false
+    };
     let mut range = RangeExtension::default();
     if r.flag()? {
         // sps_extension_present: the range extension is read; the
@@ -688,13 +695,16 @@ pub fn parse(payload: &[u8]) -> Result<Sps> {
         used_by_curr_pic_lt_sps,
         temporal_mvp_enabled,
         strong_intra_smoothing_enabled,
+        video_full_range,
         range,
     })
 }
 
-/// Walk `vui_parameters()` to its end. Nothing in it decodes a picture;
-/// it is read only because the extensions follow it.
-fn vui_parameters(r: &mut BitReader<'_>, max_sub_layers_minus1: u32) -> Result<()> {
+/// Walk `vui_parameters()` to its end, keeping `video_full_range_flag`.
+/// Nothing in it decodes a picture; it is read because the extensions
+/// follow it and the range is what a renderer needs.
+fn vui_parameters(r: &mut BitReader<'_>, max_sub_layers_minus1: u32) -> Result<bool> {
+    let mut full_range = false;
     if r.flag()? {
         // aspect_ratio_info_present
         if r.u8(8)? == 255 {
@@ -706,7 +716,8 @@ fn vui_parameters(r: &mut BitReader<'_>, max_sub_layers_minus1: u32) -> Result<(
     }
     if r.flag()? {
         // video_signal_type_present
-        r.skip(4)?; // video_format, video_full_range
+        r.skip(3)?; // video_format
+        full_range = r.flag()?;
         if r.flag()? {
             r.skip(24)?; // colour_primaries, transfer, matrix_coeffs
         }
@@ -741,7 +752,7 @@ fn vui_parameters(r: &mut BitReader<'_>, max_sub_layers_minus1: u32) -> Result<(
             r.ue()?;
         }
     }
-    Ok(())
+    Ok(full_range)
 }
 
 /// Walk `hrd_parameters()` to its end.

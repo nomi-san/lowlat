@@ -329,6 +329,7 @@ fn placeholder_sps() -> Sps {
         used_by_curr_pic_lt_sps: [false; sps::MAX_LT_SPS],
         temporal_mvp_enabled: false,
         strong_intra_smoothing_enabled: false,
+        video_full_range: false,
         range: sps::RangeExtension::default(),
     }
 }

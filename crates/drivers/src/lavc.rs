@@ -15,8 +15,9 @@
 //! accepted: the entry points below, the leading fields of a frame and a
 //! packet, and two error codes. Everything numbered
 //! that has moved between majors, or could -- codec identifiers, pixel
-//! formats -- is resolved by name at load. The two field layouts are checked
-//! at load against the library that loaded, before a unit is ever fed.
+//! formats, the colour range -- is resolved by name at load. The two field
+//! layouts are checked at load against the library that loaded, before a
+//! unit is ever fed.
 
 use core::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use std::ffi::CString;
@@ -98,6 +99,9 @@ pub type DictFree = unsafe extern "C" fn(*mut *mut AVDictionary);
 /// codec context is one, a frame is not.
 pub type OptGetInt = unsafe extern "C" fn(*mut c_void, *const c_char, c_int, *mut i64) -> c_int;
 pub type GetPixFmt = unsafe extern "C" fn(*const c_char) -> c_int;
+/// A colour range's number from its name; negative for a name the library
+/// does not know.
+pub type ColorRangeFromName = unsafe extern "C" fn(*const c_char) -> c_int;
 pub type GetPixFmtName = unsafe extern "C" fn(c_int) -> *const c_char;
 pub type FindDecoderByName = unsafe extern "C" fn(*const c_char) -> *const AVCodec;
 pub type AllocContext = unsafe extern "C" fn(*const AVCodec) -> *mut AVCodecContext;
@@ -199,6 +203,11 @@ pub struct Lavc {
     pub send_packet: SendPacket,
     pub receive_frame: ReceiveFrame,
     pub formats: Formats,
+    /// The full range's number, which a codec context's `color_range`
+    /// option reads once the stream's parameter set says its samples span
+    /// the whole range; negative if the library does not know the name,
+    /// which no context reads.
+    pub full_range: c_int,
     /// The FFmpeg major, 4 through 9.
     pub major: u32,
     /// `libavcodec`'s own version, `(major, minor, micro)`.
@@ -411,6 +420,7 @@ impl Lavc {
         }
 
         let get_pix_fmt: GetPixFmt = symbol!(util, c"av_get_pix_fmt");
+        let color_range_from_name: ColorRangeFromName = symbol!(util, c"av_color_range_from_name");
         let find_decoder_by_name: FindDecoderByName =
             symbol!(codec, c"avcodec_find_decoder_by_name");
         let frame_alloc: FrameAlloc = symbol!(util, c"av_frame_alloc");
@@ -447,6 +457,8 @@ impl Lavc {
                     yuv444p10le: get_pix_fmt(c"yuv444p10le".as_ptr()),
                 }
             },
+            // SAFETY: a name lookup on a static table, as the formats'.
+            full_range: unsafe { color_range_from_name(c"pc".as_ptr()) },
             major,
             version: (
                 codec_version >> 16,

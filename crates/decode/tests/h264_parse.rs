@@ -108,6 +108,32 @@ fn the_synthetic_clip_reads_with_one_reference_and_no_reordering() {
     assert_eq!(pictures, 120);
 }
 
+/// The range a renderer needs is read from the parameter set: the clip an
+/// encoder was told to make in the full range reads as such, and every other
+/// as the video range, which is also what a set that says nothing means.
+#[test]
+fn the_full_range_is_read_from_the_parameter_set() {
+    let mut clips: Vec<String> = common::fixtures("h264")
+        .into_iter()
+        .map(|(clip, _)| clip)
+        .collect();
+    clips.push("synthetic-720p-h264.bin".to_string());
+    let mut full = 0;
+    for clip in &clips {
+        let mut stream = Stream::new();
+        let units = common::units(clip);
+        assert_eq!(stream.read(&units[0]).unwrap(), Read::Picture, "{clip}");
+        let expected = clip.contains("full-range");
+        assert_eq!(
+            stream.active_sps().unwrap().vui.video_full_range,
+            expected,
+            "{clip}"
+        );
+        full += usize::from(expected);
+    }
+    assert_eq!(full, 1, "the full-range clip was not among {clips:?}");
+}
+
 #[test]
 fn a_unit_without_parameter_sets_first_is_refused_not_decoded() {
     let clip = "synthetic-720p-h264.bin";

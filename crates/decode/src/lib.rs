@@ -172,6 +172,11 @@ pub struct Picture {
     /// bitstream's own count; it says which picture this is, not when to
     /// show it.
     pub order: i32,
+    /// The samples span their depth's whole range rather than the video
+    /// range (16 to 235 at eight bits), as the stream's parameter set says.
+    /// Nothing is converted: a renderer that assumes the video range shows
+    /// such a picture with its blacks crushed and its contrast raised.
+    pub full_range: bool,
 }
 
 /// A video decoder, as the client's feed drives one.

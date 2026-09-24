@@ -76,6 +76,8 @@ pub struct Frame {
     pub generation: u32,
     /// The picture's order in its stream, from the bitstream.
     pub order: i32,
+    /// The samples span the whole range, as the stream's parameter set says.
+    pub full_range: bool,
     /// Bytes a row, every plane. **The queue's, set at publish** from the
     /// planes it lent; whatever is given here is replaced.
     pub pitch: usize,
@@ -97,6 +99,7 @@ impl Frame {
         rotation: Rotation::None,
         generation: 0,
         order: 0,
+        full_range: false,
         pitch: 0,
         uv_offset: 0,
         v_offset: 0,

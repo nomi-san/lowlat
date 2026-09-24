@@ -1516,15 +1516,22 @@ impl Decoder for Backend<'_> {
             Codec::H265 => self.hevc.dpb.taken(slot),
         }
         read.map_err(|_| Fault::Unrecoverable)?;
-        let (width, height) = match self.codec {
-            Codec::H264 => self.h264.active_sps().map_or((0, 0), |s| s.visible()),
-            Codec::H265 => self.hevc.active_sps().map_or((0, 0), |s| s.visible()),
+        let ((width, height), full_range) = match self.codec {
+            Codec::H264 => self
+                .h264
+                .active_sps()
+                .map_or(((0, 0), false), |s| (s.visible(), s.vui.video_full_range)),
+            Codec::H265 => self
+                .hevc
+                .active_sps()
+                .map_or(((0, 0), false), |s| (s.visible(), s.video_full_range)),
         };
         Ok(Some(Picture {
             format: self.format(),
             width,
             height,
             order,
+            full_range,
         }))
     }
 

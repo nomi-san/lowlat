@@ -148,6 +148,32 @@ impl<'a> Backend<'a> {
         self.held_output()
     }
 
+    /// Whether the held picture's samples span the whole range. Said two
+    /// ways, both read: an older major hands out a layout's full-range twin,
+    /// a newer one the plain layout with the range on the decoder, which
+    /// reads it from the stream's parameter set.
+    fn held_full_range(&self) -> bool {
+        // SAFETY: the frame is live and holds a picture.
+        let format = unsafe { core::ptr::addr_of!((*self.frame).format).read() };
+        let f = &self.lavc.formats;
+        if format == f.yuvj420p || format == f.yuvj444p {
+            return true;
+        }
+        let mut range: i64 = -1;
+        // SAFETY: the context is live while a picture is held, and its first
+        // field is its option class, which is all the lookup reads; the name
+        // is a NUL-terminated literal and the output a live local.
+        let rc = unsafe {
+            (self.lavc.opt_get_int)(
+                self.context.cast(),
+                c"color_range".as_ptr(),
+                0,
+                &raw mut range,
+            )
+        };
+        rc >= 0 && range == i64::from(self.lavc.full_range)
+    }
+
     /// Tell the decoder the stream ended, so what it still holds comes out
     /// through [`Decoder::take`]; a test's need, since a live stream never
     /// ends this way. Nothing is fed after it.
@@ -335,6 +361,7 @@ impl Decoder for Backend<'_> {
             return Ok(None);
         };
         let started = lowlat_common::clock::Time::now();
+        let full_range = self.held_full_range();
         // SAFETY: the frame is live and holds a picture of `width` x
         // `height`, whose planes the library owns until the release below.
         let converted = unsafe { convert(&*self.frame, format, width, height, out) };
@@ -350,6 +377,7 @@ impl Decoder for Backend<'_> {
             width,
             height,
             order,
+            full_range,
         }))
     }
 

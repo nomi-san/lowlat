@@ -131,6 +131,35 @@ fn the_full_chroma_fixtures_read_as_the_range_extensions_profile() {
     }
 }
 
+/// The range a renderer needs is read from the parameter set, at either
+/// depth: the clips an encoder was told to make in the full range read as
+/// such, and every other as the video range, which is also what a set that
+/// says nothing means. The walk goes on through the rest of the VUI to the
+/// extension flag, which the full-chroma clips check.
+#[test]
+fn the_full_range_is_read_from_the_parameter_set() {
+    let mut clips: Vec<String> = common::fixtures("hevc")
+        .into_iter()
+        .map(|(clip, _)| clip)
+        .collect();
+    clips.push("synthetic-720p-hevc.bin".to_string());
+    clips.push("synthetic-720p-hevc10.bin".to_string());
+    let mut full = 0;
+    for clip in &clips {
+        let mut stream = Stream::new();
+        let units = common::units(clip);
+        assert_eq!(stream.read(&units[0]).unwrap(), Read::Picture, "{clip}");
+        let expected = clip.contains("full-range");
+        assert_eq!(
+            stream.active_sps().unwrap().video_full_range,
+            expected,
+            "{clip}"
+        );
+        full += usize::from(expected);
+    }
+    assert_eq!(full, 2, "a full-range clip was not among {clips:?}");
+}
+
 #[test]
 fn a_truncated_unit_is_refused_not_a_panic() {
     let units = common::units("synthetic-720p-hevc.bin");

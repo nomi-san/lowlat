@@ -1763,6 +1763,7 @@ mod tests {
             vui: Vui {
                 max_num_reorder_frames: Some(0),
                 max_dec_frame_buffering: Some(4),
+                video_full_range: false,
             },
         }
     }

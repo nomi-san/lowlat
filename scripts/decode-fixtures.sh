@@ -70,5 +70,12 @@ make_fixture hevc-444             hevc yuv444p   144x144 -c:v libx265 -preset me
 make_fixture hevc-444-main10      hevc yuv444p10le 144x144 -c:v libx265 -preset fast -x265-params "bframes=2:keyint=12:aud=1:log-level=error"
 make_fixture hevc-nvenc-444       hevc yuv444p   256x256 -c:v hevc_nvenc -preset p1 -tune ll -rc cbr -b:v 1M -bf 0 -g 12 -profile:v rext -aud 1
 make_fixture hevc-nvenc-444-10    hevc yuv444p16le 256x256 -c:v hevc_nvenc -preset p1 -tune ll -rc cbr -b:v 1500k -bf 0 -g 12 -profile:v rext -aud 1
+# The full range: samples over the whole of their depth, which the parameter
+# set says and a renderer has to be told; every other clip is the video
+# range. The name is the test's expectation. The reference keeps the samples
+# as coded (checked: the lowest luma is 0 in each).
+make_fixture h264-full-range      h264 yuv420p   128x128 -color_range pc -c:v libx264 -preset fast -bf 0 -refs 1 -x264-params "keyint=12:aud=1"
+make_fixture hevc-full-range      hevc yuv420p   144x144 -color_range pc -c:v libx265 -preset fast -x265-params "bframes=0:keyint=12:aud=1:log-level=error"
+make_fixture hevc-main10-full-range hevc yuv420p10le 144x144 -color_range pc -c:v libx265 -preset fast -x265-params "bframes=0:keyint=12:aud=1:log-level=error"
 
 ls -l "$out"

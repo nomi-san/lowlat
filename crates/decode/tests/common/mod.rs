@@ -111,6 +111,14 @@ pub fn decode_clip_with<D: Decoder>(
             else {
                 break;
             };
+            // A clip's name says its range, and every picture of it says
+            // the same whatever decoded it.
+            assert_eq!(
+                picture.full_range,
+                clip.contains("full-range"),
+                "{clip}: picture {} is in the wrong range",
+                sums.len()
+            );
             let format = picture.format;
             let w = picture.width as usize * format.sample();
             let h = picture.height as usize;

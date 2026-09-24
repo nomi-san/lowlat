@@ -263,6 +263,7 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
     } = *shared;
     let mut feed = Feed::new(backend);
     let mut reported = Smoothed::default();
+    let mut range = None;
     let mut reconfigured = telemetry.reconfigure.load(Ordering::Acquire);
     let mut switched = telemetry.switch.load(Ordering::Acquire);
 
@@ -310,7 +311,14 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
             Decision::Failed => return Next::Failed,
             Decision::Fed(Fed::Picture) => {
                 telemetry.decoder.store(1, Ordering::Relaxed);
-                take_pictures(&mut feed, frames, telemetry, header.as_ref(), &mut reported);
+                take_pictures(
+                    &mut feed,
+                    frames,
+                    telemetry,
+                    header.as_ref(),
+                    &mut reported,
+                    &mut range,
+                );
             }
             Decision::Built(fed) => {
                 telemetry.decoder.store(1, Ordering::Relaxed);
@@ -325,7 +333,14 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
                     Ordering::Relaxed,
                 );
                 if fed == Fed::Picture {
-                    take_pictures(&mut feed, frames, telemetry, header.as_ref(), &mut reported);
+                    take_pictures(
+                        &mut feed,
+                        frames,
+                        telemetry,
+                        header.as_ref(),
+                        &mut reported,
+                        &mut range,
+                    );
                 }
             }
             _ => {}
@@ -338,13 +353,15 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
     Next::Stop
 }
 
-/// Every picture the decoder has ready goes into the queue.
+/// Every picture the decoder has ready goes into the queue. `range` is the
+/// last picture's, for the log.
 fn take_pictures<D: Backend>(
     feed: &mut Feed<D>,
     frames: &Frames,
     telemetry: &Telemetry,
     header: Option<&video::VideoHeader>,
     reported: &mut Smoothed,
+    range: &mut Option<bool>,
 ) {
     loop {
         // The layout before the take: the planes are the picture's own size.
@@ -384,6 +401,16 @@ fn take_pictures<D: Backend>(
                 telemetry
                     .decode_reported_us
                     .store(reported.push(sample_ms), Ordering::Relaxed);
+                // Said when it is learned and when it changes, never per
+                // picture: a renderer told the wrong range shows a picture
+                // that decodes perfectly and looks wrong.
+                if *range != Some(picture.full_range) {
+                    *range = Some(picture.full_range);
+                    lowlat_common::log_info!(
+                        "client: picture range set, full_range={}",
+                        picture.full_range
+                    );
+                }
                 filling.publish(Frame {
                     format: picture.format,
                     width: picture.width,
@@ -391,6 +418,7 @@ fn take_pictures<D: Backend>(
                     rotation: header.map_or(video::Rotation::None, |h| h.rotation),
                     generation: header.map_or(0, |h| h.frame_id),
                     order: picture.order,
+                    full_range: picture.full_range,
                     // The queue's, written at publish.
                     pitch: 0,
                     uv_offset: 0,
