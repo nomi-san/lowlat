@@ -170,6 +170,8 @@ by definition. This table is the reason the project has the shape it does.
 | Lesson | Rule lives in |
 |---|---|
 | A decoder that reported every picture in the video range handed a host's full-range pictures to a renderer that crushed their blacks and raised their contrast, on every backend at once. Hosts differ; the range is read from each stream's parameter set and travels with every picture | [10](10-client.md) |
+| Relative motion scaled by the size the picture was drawn at moved the host's pointer slower than the hand whenever the picture was stretched. A mouse's counts are not window pixels: they go as reported, and only motion made up from a device that reports positions is scaled | [10](10-client.md) |
+| A renderer that presented the picture on screen again and looked for a new one only afterwards showed every picture a refresh late, because the present waits for the refresh. Wait for the picture, then present it | [10](10-client.md) |
 
 ### Connectivity
 

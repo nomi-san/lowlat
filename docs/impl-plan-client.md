@@ -3,8 +3,8 @@
 **Status:** locked 2026-09-15, interview of the same day; C5 re-planned in two halves
 2026-09-19 and its decode half built and gated the same day; C7, C8 and C9 added and closed
 2026-09-20 to 2026-09-22, each ahead of C6, which they changed the surface of; C10, the
-relay, planned, built and closed 2026-09-23. Phases C0 to C10 with verification
-gates; the design is [10-client.md](10-client.md) and the surface is [06 §3b](06-api.md).
+relay, planned, built and closed 2026-09-23; C5 closed 2026-09-24 at the desk against an
+established host. Phases C0 to C10 with verification gates; the design is [10-client.md](10-client.md) and the surface is [06 §3b](06-api.md).
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox. Phase numbers are `C`
@@ -194,7 +194,8 @@ the rules are [10 §8](10-client.md).
   the picture wrongly.
 - [x] The `lowlat_client_send_*` calls, one per kind (*a tagged structure until C3.5, split so a call site is checked where it is written*), and the rules of [10 §8](10-client.md): the transform into
   the picture's pixels with the edge bump and the clamp, the rotation swapped back, relative
-  deltas scaled by the picture-to-drawn ratio, the press-outside guard evaluated at the
+  deltas scaled by the picture-to-drawn ratio (*corrected 2026-09-24, C5: deltas go as the
+  device reported them*), the press-outside guard evaluated at the
   press's own position, the keyboard code guard, pad state deduplicated per identifier,
   release-all on the application's word. Keyboard codes are usage codes and the modifier
   mask is the event's own, in the wire's bit numbering (`LOWLAT_MOD_*`); the application
@@ -324,7 +325,7 @@ the rules are [10 §6](10-client.md).
    this host: 50 packets a second, the age between the wire and the call 0 to 1 ms, the
    device's queue 56 to 76 ms, no drop, refusal or resync in twenty-five seconds.*
 
-## Phase C5 - The rest of the client, and NVDEC
+## Phase C5 - The rest of the client, and NVDEC (closed 2026-09-24)
 
 **Planned 2026-09-19, interview of the same day, in two halves.** The decode half is planned
 here and **built and gated the same day**, with two rows left open on the host's side; the
@@ -457,8 +458,9 @@ path.
    also found the toolkit's renderer freezing the picture after a switch to ten bits, fixed
    in the vendored tree. The full-chroma row stays open on the host. *2026-09-24*: an
    established host that sends full chroma when asked streamed it at both depths to the
-   vendor backend by handle, briefly, at the desk (the range item of the second half); the
-   planes route and ten minutes of it are still owed.)
+   vendor backend by handle, briefly, at the desk (the range item of the second half), and
+   by planes for a hundred seconds at each depth in the second half's ten-minute walk; ten
+   minutes of the handle route at full chroma is the one part not run.)
 3. [x] Against an established host: at the defaults as C2's gate ran, then with the second codec
    and ten-bit asked, following what its encoder gives; the round trip moves off its seed
    within seconds of connecting; its own log shows this client's decode latency.
@@ -538,6 +540,25 @@ here; the rules are [10 §7](10-client.md) and §9, the surface [06 §3b](06-api
   title. Three full-range clips (eight-bit H.264 and HEVC, ten-bit HEVC) join the fixtures;
   the readers' test and every backend's fixture run check each picture's range, and each
   check was shown failing with its mechanism taken out.
+- [x] **A relative delta goes as the device reported it** (*found at the desk 2026-09-24*).
+  A window dragged on the established host, which captures the pointer for the drag, moved
+  slower than the hand: the library scaled every delta by the picture's size against the
+  drawn rectangle, 0.75 for that host's 1920x1080 stretched into a 2560x1440 window. An
+  established client scales only motion its toolkit made up from a device that reports
+  positions; a mouse's counts go as they are. The mapper passes deltas through, its test
+  checks a picture drawn at half and at twice its size and before any mapping, and fails
+  with the scaling put back. The person at the desk: as fast as the established client.
+- [x] **The demo draws a picture the moment it arrives** (*found at the desk 2026-09-24*).
+  Beside an established client on one host, a dragged window trailed by 15 to 30 pixels in
+  screen captures: the present loop showed the picture on screen again every refresh and
+  looked for a new one only after that present returned, so a picture arriving mid-refresh
+  reached the screen a refresh late. The loop now waits in acquire (up to 20 ms) and presents
+  a picture as soon as it has one, the one on screen again only when the wait brought
+  nothing; `LOWLAT_VSYNC=0` presents without waiting for the refresh, as that client does;
+  `LOWLAT_GFX=vk` draws planes through Vulkan, which paced no better than GL here; the
+  second's line carries the wait from a picture in hand to its present and how many
+  refreshes each picture stayed up. After: level with that client, but for a few pixels in
+  about one capture in twenty, during mouse-driven drags only.
 
 **Built 2026-09-19, evening, deviations from the text above:** the picture already delivered,
 named or sent again, travels as its checksum alone -- the first live run against this host
@@ -559,7 +580,7 @@ replayed, shows none at all, which is what a clean path reads.
    every event in order; the miss delivers the position alone; the recent loss on the video
    channel reads 0.3 to 2 times the link's one percent after thirty simulated seconds, zero
    and no negative on a clean link, late arrivals without negatives under reorder alone.)
-2. [ ] Gate C in full: ten minutes against an established host with picture, sound, input, the
+2. [x] Gate C in full: ten minutes against an established host with picture, sound, input, the
    cursor and relative mode, from a cold connect, on both backends; then the same against
    this host with its ten-bit and 4:4:4 streams. (*2026-09-19, the unattended half*,
    `local/logs/2026-09-19-c5-gateC-*`: against the established host over the internet at
@@ -588,7 +609,22 @@ replayed, shows none at all, which is what a clean path reads.
    travels with every picture (the item above), and the same desk session, 130 seconds on the
    vendor's decoder by handle with the preferences walked through H.264, HEVC, HEVC 4:4:4,
    ten-bit HEVC and ten-bit HEVC 4:4:4 -- every one of which that host sends when asked --
-   kept the full range throughout. The rest of the desk items are still owed.)
+   kept the full range throughout. *Passed 2026-09-24*, against that host: **the desk items
+   confirmed by the person at the desk**, input, the pointer and relative mode among them,
+   with the two faults they found fixed first (the two items above); and the unattended
+   half from cold connects, ten minutes on each backend with the preferences walked every
+   hundred seconds (`local/logs/2026-09-24-c5-gateC-may085-*`): the open stack 599 s
+   through H.264, HEVC and ten-bit HEVC (the second card decodes no full chroma, so the
+   declaration masked it), decode 2.0 to 3.4 ms and read-back 1.7 to 2.6; the vendor's by
+   planes 599 s through H.264, HEVC, ten-bit HEVC and **full chroma at both depths**, decode
+   0.4 to 0.9 ms and read-back 0.3 to 1.0 -- six decoder builds each, one per move, no
+   fault, the reader at most one message behind, nothing lost or late, the full range
+   throughout, pointer pictures and guest lists arriving, a clean leave. That host's desktop
+   was mostly still (8 to 11 pictures a second at the median) and **silent**, so these runs
+   carried no sound; sound against an established host is C4's gate and the unattended half
+   above. The ten-bit and full-chroma streams the item asks of this host came from the
+   established one, which sends both when asked; this host's own were run on 2026-09-19
+   (ten-bit) and at C9 (full chroma).)
 3. [x] The demo's panel and this host's roster agree on the figures they share: the round
    trip, the rate, the decode time the host re-publishes; the negatives this client sent
    against the fragments the host resent on them. (*2026-09-19*: on the same line, this
@@ -1158,6 +1194,11 @@ slower decoder ever reopens them.
 
 Newest first.
 
+- 2026-09-24, later: C5 closed. Gate C in full passed against an established host: the desk
+  items confirmed by the person at the desk once two faults they found were fixed -- relative
+  deltas scaled by the drawn size, which made drags slower than the hand, and a demo loop
+  that looked for a new picture only after presenting the old one again, a refresh late --
+  and ten unattended minutes on each backend with every format that host sends walked.
 - 2026-09-24: C5 gains the picture's range (minor 15), found at the desk: an established
   host sent full-range pictures that every backend handed out as the video range. The range
   is the stream's, read from its parameter set, carried per picture and never converted;

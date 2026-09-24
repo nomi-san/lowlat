@@ -3,6 +3,35 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-24 - C5 closed: relative motion as the device reported it, a picture drawn as it arrives
+
+### Fixed
+- **A relative delta goes to the host as the device reported it** ([10 §8](10-client.md),
+  [06 §3b](06-api.md)). It was scaled by the picture's size against the rectangle it was
+  drawn into, so a 1920x1080 host stretched into a 2560x1440 window moved its pointer at
+  three quarters of the hand, and a window dragged on a host that captures the pointer for
+  the drag lagged behind it. A mouse's counts are not window pixels; motion made up from a
+  device that reports positions is the application's to scale.
+- **The demo draws a picture the moment it arrives** ([10 §4](10-client.md)). Its loop showed
+  the picture on screen again every refresh and looked for a new one only after that present
+  returned, which waits for the refresh, so a picture arriving mid-refresh reached the screen
+  a refresh late: beside an established client on the same host a dragged window trailed by
+  15 to 30 pixels. It now waits in acquire and presents what arrives, the picture on screen
+  again only after a wait that brought nothing.
+
+### Added
+- The demo's `LOWLAT_VSYNC=0`, presenting without waiting for the refresh, and
+  `LOWLAT_GFX=vk`, planes drawn through Vulkan; the second's line carries the wait from a
+  picture in hand to its present and how many refreshes each picture stayed up.
+
+### Gate
+- Gate C in full passed ([impl-plan-client.md](impl-plan-client.md) C5): the desk items
+  confirmed by the person at the desk against an established host, after the two fixes
+  above; ten unattended minutes from a cold connect on each backend, the preferences walked
+  every hundred seconds through every format that host sends -- full chroma at both depths on
+  the vendor's decoder -- with no fault, nothing lost or late, and a clean leave. That host
+  was silent, so those runs carried no sound. C5 is closed.
+
 ## 2026-09-24 - C5: the picture's range, from the stream
 
 ### Fixed

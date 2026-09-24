@@ -127,6 +127,15 @@ a quarter of a gigabyte resident before a picture existed. Here a client at 1080
 newer than the last one handed out, discards any older ready pictures on the way, and lends
 the newest. A picture stays valid until it is released; the application presents it as often
 as it likes in between, which is what a renderer that re-presents on every iteration needs.
+**A renderer waits in acquire, not in its present** (*2026-09-24*). A present that waits
+for the display's refresh holds the thread that would take the next picture, so a loop that
+presents the picture on screen again and polls afterwards takes a picture arriving
+mid-refresh a refresh late and shows it a refresh after that. Waiting in acquire, the
+picture is drawn the moment it is published and shown at the next refresh, or at once
+without vsync; the one on screen is presented again only when a wait brings nothing. Beside
+an established client on one host, the demo's window trailed by 15 to 30 pixels of a
+dragged window before its loop was turned round, and kept level after, but for a few
+pixels in about one capture in twenty.
 **Release carries an optional fence**: a synchronisation object the application's device
 signals when it has finished reading the picture, so a decoder writing straight into shared
 memory waits on the application's GPU rather than on its CPU. A null fence means "reusable
@@ -644,9 +653,16 @@ vocabulary ([01 §11.1](01-protocol.md)) and applies the rules every client appl
 - **Pointer positions are transformed into the picture's own pixels.** A window position is
   mapped through the rectangle into the picture, in the orientation the picture is shown
   (a rotated stream's coordinates are swapped back), then clamped to the picture; a position
-  one short of the far edge is bumped onto it so the far edge is reachable. Relative motion
-  is sent as deltas scaled by the ratio of the picture to the rectangle, so a picture drawn
-  at half size still turns the host's pointer by the distance the hand moved.
+  one short of the far edge is bumped onto it so the far edge is reachable. **Relative
+  motion is sent as the device reported it**, whatever size the picture is drawn at: a
+  delta is the hand's motion in the mouse's own counts, not a distance in the window, and
+  the host moves its pointer by it as by a mouse of its own (*corrected 2026-09-24*: this
+  said deltas were scaled by the ratio of the picture to the rectangle, and so they were
+  until then; a picture stretched to a larger window dragged and aimed slower than the
+  hand, which a person noticed dragging a window beside an established client. An
+  established client scales only relative motion its toolkit made up from a device that
+  reports positions, a tablet or a remote pointer, whose steps are the window's pixels; an
+  application with such motion scales it before handing it over).
 - **A button press outside the picture is not sent; its release always is**, so a drag that
   leaves the window ends cleanly on the host. The guard is evaluated at the press's own
   position, which the application reports with the press.

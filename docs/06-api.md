@@ -641,7 +641,11 @@ bits included because a host keeps its own locks in step from them; mouse button
 buttons by index, pad axes and pad state bits have their `LOWLAT_*` names, and the two pad
 forms number the buttons differently on purpose, as the wire does. A press outside the
 rectangle is not sent and a release always is; a key of code zero is not sent; an unchanged
-pad state is not repeated. **The call never blocks**: reports cross a fixed ring to the
+pad state is not repeated. **A relative motion is sent as the device reported it**, not
+scaled by the size the picture is drawn at (*corrected 2026-09-24*: it was scaled, and a
+picture stretched to a larger window moved the host's pointer slower than the hand); motion
+an application makes up from a device that reports positions is its own to scale. **The
+call never blocks**: reports cross a fixed ring to the
 session thread, and a ring that fills -- a thread that is not running -- drops the newest and
 counts it in `lowlat_client_status.input_dropped`.
 
