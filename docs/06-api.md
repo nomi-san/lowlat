@@ -347,8 +347,8 @@ have moved by itself; an application that kept its own copy would mark the wrong
 **Planned 2026-09-15, built from 2026-09-17 by [impl-plan-client.md](impl-plan-client.md).**
 Everything below is in the header (minor 4 the session, minor 5 the pictures, minor 6 the
 input, minor 7 the sound, minor 8 the preferences and the handle, minor 9 the cursor and the
-metrics, minor 10 the pad reports, minor 14 the relay, minor 15 the picture's range); the
-header is the truth.
+metrics, minor 10 the pad reports, minor 14 the relay, minor 15 the picture's range, minor 16
+its arrival time); the header is the truth.
 
 ```c
 lowlat_status lowlat_client_create(const lowlat_client_create_info *info, lowlat_client **out);
@@ -613,7 +613,12 @@ renderer needs nothing from the stream itself. The samples are handed out as cod
 converted: the renderer's conversion takes the range, and one that assumes the video range
 draws a full-range picture darker, its blacks crushed and its contrast raised. Hosts send
 either (*corrected 2026-09-24*: an established host was seen sending the full range, where
-the first recorded one sent the video range).
+the first recorded one sent the video range). **`arrived_us`** (minor 16) is when the message
+the picture was decoded from was taken off the network, in microseconds of
+`CLOCK_MONOTONIC`, the clock an application reads by that name, or zero where it is not
+known: read against that clock at the acquire, it is the picture's time in the library, and
+after the present its time to the screen, which is what a latency figure needs and nothing in
+the stream can say.
 
 **Sound is decoded, not played** (minor 7). `acquire_audio` hands out one packet a call,
 signed sixteen-bit stereo at 48 kHz, in the order the host sent them, as many frames as the
@@ -1095,6 +1100,11 @@ depth. Nothing moves. **`lowlat_client_acquire_frame` fills the frame as far as 
 `size` reaches**, with the size it had at minor 14 as the least accepted: until this minor it
 refused a frame unless `size` covered the whole of it, the fault minor 14 corrected for the
 configuration and the status, corrected for the frame the first time it grows.
+
+**Minor 16** (2026-09-24) is the picture's arrival time ([§3b](#3b-client)): `arrived_us`
+appended to `lowlat_frame`, when the message the picture came from was taken off the network,
+on `CLOCK_MONOTONIC`. Nothing moves, and a caller built against minor 14 or 15 gets the fields
+it knows.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected

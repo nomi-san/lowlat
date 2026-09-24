@@ -4,7 +4,7 @@
 2026-09-19 and its decode half built and gated the same day; C7, C8 and C9 added and closed
 2026-09-20 to 2026-09-22, each ahead of C6, which they changed the surface of; C10, the
 relay, planned, built and closed 2026-09-23; C5 closed 2026-09-24 at the desk against an
-established host. Phases C0 to C10 with verification gates; the design is [10-client.md](10-client.md) and the surface is [06 §3b](06-api.md).
+established host, its last row and the drag remainder the same night. Phases C0 to C10 with verification gates; the design is [10-client.md](10-client.md) and the surface is [06 §3b](06-api.md).
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox. Phase numbers are `C`
@@ -567,6 +567,25 @@ here; the rules are [10 §7](10-client.md) and §9, the surface [06 §3b](06-api
   second's line carries the wait from a picture in hand to its present and how many
   refreshes each picture stayed up. After: level with that client, but for a few pixels in
   about one capture in twenty, during mouse-driven drags only.
+- [x] **Every picture says when it arrived** (*2026-09-24*, minor 16), to measure that
+  remainder rather than argue about it. The session thread stamps each message with the pass
+  that completed it, the stamp rides the unit and the picture, and `lowlat_frame.arrived_us`
+  hands it out on the monotonic clock an application reads; the demo prints, a second at a
+  time, a new picture's time from arrival to its acquire and to its present returning, and
+  with `LOWLAT_LATENCY_TRACE` a line per picture with the motion it had sent so far. The
+  hermetic session checks that a unit taken on the pass that completed it has no age and one
+  held back has the time it waited, and the stamp's wrap has its own test; each was shown
+  failing with its mechanism taken out. Beside the established client, the person at the desk
+  dragging windows through both, presents not waiting for the refresh
+  (`local/logs/2026-09-24-lag-may085-*`): from arrival to the present returning, 1.32 ms at
+  the median and 2.31 at the 99th percentile by planes over 21,705 pictures, 0.67 and 1.37 by
+  handle over 11,077; the library's share outside the decode and the copy about 40 us;
+  pictures with this client's own motion in flight the same as the rest. The remainder is
+  the planes route's read-back and upload, about the half millisecond a one-frame lag in a
+  twentieth of captures needs; by handle the person at the desk saw this client ahead about
+  as often as behind. Closed. One stall is unexplained: three pictures held 58, 49 and 25 ms
+  in the library once in five minutes by planes, with nothing lost and no input; it is
+  looked at if it comes back.
 
 **Built 2026-09-19, evening, deviations from the text above:** the picture already delivered,
 named or sent again, travels as its checksum alone -- the first live run against this host
@@ -1205,6 +1224,9 @@ slower decoder ever reopens them.
 
 Newest first.
 
+- 2026-09-24, night: the drag remainder measured and closed. Minor 16 stamps every picture
+  with its arrival; beside the established client, arrival to present is 1.3 ms by planes and
+  0.7 by handle, and this client's own input does not hold the video back.
 - 2026-09-24, evening: the one part of C5's decode-half gate not run -- ten minutes of the
   handle route at full chroma -- run at each depth against an established host playing a
   looping video, whose sound the same runs carried; clean at both.

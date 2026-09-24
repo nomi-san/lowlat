@@ -3,6 +3,28 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-24 - C5: every picture says when it arrived; minor 16
+
+### Added
+- **`lowlat_frame.arrived_us`** ([06 §3b](06-api.md), [10 §4](10-client.md), minor 16): when
+  the message a picture was decoded from was taken off the network, in microseconds of
+  `CLOCK_MONOTONIC`, or zero where that is not known. The session thread stamps each message
+  with the pass that completed it and the stamp travels with the unit and the picture, so an
+  application can time a picture from the network to its own present. Filled as far as the
+  caller's `size` reaches, like the rest of the frame.
+- The demo's second line gains a new picture's time from arrival to its acquire and to its
+  present returning; `LOWLAT_LATENCY_TRACE` prints both per picture, with the motion sent so
+  far.
+
+### Measured
+- Beside an established client on the same host, windows dragged through both and presents
+  not waiting for the refresh: from arrival to the present returning, 1.32 ms at the median
+  and 2.31 at the 99th percentile by planes, 0.67 and 1.37 by handle; the library's share
+  outside the decode and the copy is about 40 us, and pictures with this client's own pointer
+  motion in flight read the same as the rest. The few pixels a dragged window still trailed
+  by in one capture in twenty are the planes route's read-back and upload; by handle this
+  client's picture was seen ahead about as often as behind.
+
 ## 2026-09-24 - C5 closed: relative motion as the device reported it, a picture drawn as it arrives
 
 ### Fixed

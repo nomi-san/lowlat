@@ -136,6 +136,20 @@ without vsync; the one on screen is presented again only when a wait brings noth
 an established client on one host, the demo's window trailed by 15 to 30 pixels of a
 dragged window before its loop was turned round, and kept level after, but for a few
 pixels in about one capture in twenty.
+**Every picture says when it arrived** (*minor 16, 2026-09-24*). The session thread stamps
+each message with the pass that completed it, the stamp travels with the unit to the decode
+thread and with the picture into the queue, and the acquire hands it out on the monotonic
+clock an application reads, so the application can time a picture from the network to its
+own present. Measured that way beside the established client above, the user dragging
+windows through both and presents not waiting for the refresh: from arrival to the present
+returning, 1.32 ms at the median and 2.31 at the 99th percentile when the picture is handed
+out as planes -- the read-back and the renderer's upload are most of it -- and 0.67 and 1.37
+ms as a device handle; outside the decode and the copy, the library's own share is about 40
+us. Pictures with this client's pointer motion in flight read the same as the rest, so input
+sent on the session's thread does not hold the video back. A one-frame lag in one capture in
+twenty needs only a mean difference of half a millisecond or so -- a twentieth of a frame at
+the rates a drag runs at -- which is what the planes route's read-back and upload cost; by
+handle the person at the desk saw this client's picture ahead about as often as behind.
 **Release carries an optional fence**: a synchronisation object the application's device
 signals when it has finished reading the picture, so a decoder writing straight into shared
 memory waits on the application's GPU rather than on its CPU. A null fence means "reusable
