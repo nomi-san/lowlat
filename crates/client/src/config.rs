@@ -81,10 +81,10 @@ impl Decoding {
 /// What the application would like of the picture, for the one stream.
 ///
 /// **Preferences, not requirements.** Each is "this if the host has it"; the
-/// library masks them with what its decoder was verified to decode before
-/// declaring anything, so a stream the decoder cannot take is never asked
-/// for, and follows whatever the host then sends. Defaults off: a client at
-/// its defaults asks for what every established client asks at its defaults.
+/// library masks the codec and colour ones with what its decoder was verified
+/// to decode before declaring anything, so a stream the decoder cannot take is
+/// never asked for, and follows whatever the host then sends. Defaults off: a
+/// client at its defaults asks for H.264 in the video range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Video {
     /// The size asked of the host, or zero for no preference.
@@ -100,6 +100,12 @@ pub struct Video {
     pub ten_bit: bool,
     /// Full chroma, which implies the second codec.
     pub chroma_444: bool,
+    /// The application's renderer takes the full range: its conversion reads
+    /// each picture's range, so the host may send samples spanning the whole
+    /// of their depth. **Declared as asked, never masked by the decoder**,
+    /// which decodes either range alike and converts nothing; off asks for
+    /// the video range, which a renderer that assumes it draws right.
+    pub full_range: bool,
 }
 
 impl Video {
@@ -110,12 +116,17 @@ impl Video {
     ///
     /// **Everything a host may send under the declaration must decode.** A
     /// host that cannot meet a declaration takes its axes off in order --
-    /// ten-bit, then full chroma, then the second codec -- so a declared
-    /// pair needs its eight-bit row and its subsampled row as well as itself.
+    /// ten-bit, then full chroma, then the full range, then the second codec
+    /// -- so a declared pair needs its eight-bit row and its subsampled row
+    /// as well as itself. The range needs nothing of the decoder.
     pub fn flags(&self, caps: &Caps) -> u32 {
-        let mut flags = init::FLAG_BASE;
+        let mut flags = if self.full_range {
+            init::FLAG_FULL_RANGE
+        } else {
+            0
+        };
         if !caps.h264 {
-            // Nothing decodes: the declaration is the base alone, and the
+            // Nothing decodes: the declaration is the range alone, and the
             // session is one with nowhere to draw.
             return flags;
         }
@@ -229,7 +240,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lowlat_core::init::{FLAG_10BIT, FLAG_BASE, FLAG_COLOR444, FLAG_HEVC};
+    use lowlat_core::init::{FLAG_10BIT, FLAG_COLOR444, FLAG_FULL_RANGE, FLAG_HEVC};
 
     const EVERYTHING: Caps = Caps {
         h264: true,
@@ -240,8 +251,36 @@ mod tests {
     };
 
     #[test]
-    fn the_defaults_declare_the_base_alone_whatever_the_decoder_takes() {
-        assert_eq!(Video::default().flags(&EVERYTHING), FLAG_BASE);
+    fn the_defaults_declare_the_first_codec_in_the_video_range() {
+        assert_eq!(Video::default().flags(&EVERYTHING), 0);
+    }
+
+    /// The range is the renderer's to take, so it is declared as asked: a
+    /// decoder that takes nothing, or only the first codec, leaves it on.
+    #[test]
+    fn the_full_range_is_declared_as_asked_whatever_the_decoder_takes() {
+        let full = Video {
+            full_range: true,
+            ..Video::default()
+        };
+        assert_eq!(full.flags(&EVERYTHING), FLAG_FULL_RANGE);
+        assert_eq!(full.flags(&Caps::default()), FLAG_FULL_RANGE);
+        let all = Video {
+            hevc: true,
+            ten_bit: true,
+            chroma_444: true,
+            full_range: true,
+            ..Video::default()
+        };
+        assert_eq!(
+            all.flags(&EVERYTHING),
+            FLAG_FULL_RANGE | FLAG_HEVC | FLAG_10BIT | FLAG_COLOR444
+        );
+        let h264_only = Caps {
+            h264: true,
+            ..Caps::default()
+        };
+        assert_eq!(all.flags(&h264_only), FLAG_FULL_RANGE);
     }
 
     #[test]
@@ -254,7 +293,7 @@ mod tests {
         };
         assert_eq!(
             all.flags(&EVERYTHING),
-            FLAG_BASE | FLAG_HEVC | FLAG_10BIT | FLAG_COLOR444
+            FLAG_HEVC | FLAG_10BIT | FLAG_COLOR444
         );
         // A device with the second codec at eight-bit 4:2:0 and ten bits,
         // as the open stack here: chroma comes off, depth stays.
@@ -263,22 +302,19 @@ mod tests {
             hevc_444_10: false,
             ..EVERYTHING
         };
-        assert_eq!(all.flags(&ten_only), FLAG_BASE | FLAG_HEVC | FLAG_10BIT);
+        assert_eq!(all.flags(&ten_only), FLAG_HEVC | FLAG_10BIT);
         // Full chroma at eight bits only: depth comes off, chroma stays.
         let no_deep_chroma = Caps {
             hevc_444_10: false,
             ..EVERYTHING
         };
-        assert_eq!(
-            all.flags(&no_deep_chroma),
-            FLAG_BASE | FLAG_HEVC | FLAG_COLOR444
-        );
-        // No second codec at all: nothing but the base.
+        assert_eq!(all.flags(&no_deep_chroma), FLAG_HEVC | FLAG_COLOR444);
+        // No second codec at all: the first codec, declared as nothing.
         let h264_only = Caps {
             h264: true,
             ..Caps::default()
         };
-        assert_eq!(all.flags(&h264_only), FLAG_BASE);
+        assert_eq!(all.flags(&h264_only), 0);
     }
 
     #[test]
@@ -287,14 +323,11 @@ mod tests {
             ten_bit: true,
             ..Video::default()
         };
-        assert_eq!(ten.flags(&EVERYTHING), FLAG_BASE | FLAG_HEVC | FLAG_10BIT);
+        assert_eq!(ten.flags(&EVERYTHING), FLAG_HEVC | FLAG_10BIT);
         let full = Video {
             chroma_444: true,
             ..Video::default()
         };
-        assert_eq!(
-            full.flags(&EVERYTHING),
-            FLAG_BASE | FLAG_HEVC | FLAG_COLOR444
-        );
+        assert_eq!(full.flags(&EVERYTHING), FLAG_HEVC | FLAG_COLOR444);
     }
 }

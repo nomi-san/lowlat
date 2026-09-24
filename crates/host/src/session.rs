@@ -161,12 +161,14 @@ impl Negotiation {
                 );
                 match init::parse(message.body) {
                     Ok(asked) => {
-                        // **The base bit is put in whether or not the peer
-                        // sent it.** Every native declaration carries it and a
+                        // **The full-range bit is put in whether or not the
+                        // peer sent it**, as the mark of a declaration: a
                         // browser's carries only the codec bit, so without it
-                        // a browser declaring the base codec would declare
+                        // a browser declaring the first codec would declare
                         // zero, which the consensus reads as no declaration.
-                        self.flags = asked.flags | init::FLAG_BASE;
+                        // Safe only because this host never acts on the bit:
+                        // it codes the video range whatever is declared.
+                        self.flags = asked.flags | init::FLAG_FULL_RANGE;
                         self.asked = Some(asked);
                         self.state = State::Ready;
                     }
@@ -200,7 +202,7 @@ impl Negotiation {
                 if message.a0 != PRIMARY_STREAM {
                     return true;
                 }
-                self.flags = message.a1 | init::FLAG_BASE;
+                self.flags = message.a1 | init::FLAG_FULL_RANGE;
                 if message.a2 != 0 {
                     self.reconfigure = true;
                 }
@@ -357,7 +359,7 @@ mod tests {
 
         assert!(guest.on_control(&control(op::INIT, 124, 0, 0, RECORDED)));
         assert_eq!(guest.state(), State::Ready);
-        assert_eq!(guest.flags(), lowlat_core::init::FLAG_BASE);
+        assert_eq!(guest.flags(), lowlat_core::init::FLAG_FULL_RANGE);
         assert_eq!(guest.asked().expect("asked").refresh_rate, 60);
     }
 
@@ -386,7 +388,7 @@ mod tests {
         ));
         assert_eq!(
             guest.flags(),
-            lowlat_core::init::FLAG_BASE,
+            lowlat_core::init::FLAG_FULL_RANGE,
             "a late initialisation changed a settled stream"
         );
     }
@@ -410,7 +412,7 @@ mod tests {
         );
         assert_eq!(
             guest.flags(),
-            lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC,
+            lowlat_core::init::FLAG_FULL_RANGE | lowlat_core::init::FLAG_HEVC,
             "the first place did not declare on its own"
         );
         assert!(
@@ -428,14 +430,14 @@ mod tests {
     fn a_declaration_about_another_stream_is_not_this_streams() {
         let mut guest = Negotiation::opened(0.0);
         guest.on_control(&control(op::INIT, 124, 0, 0, RECORDED));
-        assert_eq!(guest.flags(), lowlat_core::init::FLAG_BASE);
+        assert_eq!(guest.flags(), lowlat_core::init::FLAG_FULL_RANGE);
 
         // What a stock client sends first: the secondary streams.
         assert!(guest.on_control(&control(op::ENCODER_CONFIG, 2, 0x09, 0, &[])));
         assert!(guest.on_control(&control(op::ENCODER_CONFIG, 1, 0x09, 1, &[])));
         assert_eq!(
             guest.flags(),
-            lowlat_core::init::FLAG_BASE,
+            lowlat_core::init::FLAG_FULL_RANGE,
             "another stream's capability was taken for this one"
         );
         assert!(
@@ -537,10 +539,10 @@ mod tests {
         assert!(guest.latency_report(4000.0, 0).is_some());
     }
 
-    /// A declaration without the base bit -- a browser's, which carries only
-    /// the codec bit -- counts as a declaration rather than as none.
+    /// A declaration without the full-range bit -- a browser's, which carries
+    /// only the codec bit -- counts as a declaration rather than as none.
     #[test]
-    fn a_declaration_without_the_base_flag_still_counts() {
+    fn a_declaration_without_the_full_range_bit_still_counts() {
         let mut guest = Negotiation::opened(0.0);
         guest.on_control(&control(
             op::INIT,
@@ -550,11 +552,11 @@ mod tests {
             b"{\"_version\":1,\"_max_w\":60000,\"_max_h\":60000,\"_flags\":0,\
 \"resolutionX\":0,\"resolutionY\":0,\"refreshRate\":60,\"mediaContainer\":0}\0",
         ));
-        assert_eq!(guest.flags(), lowlat_core::init::FLAG_BASE);
+        assert_eq!(guest.flags(), lowlat_core::init::FLAG_FULL_RANGE);
         guest.on_control(&control(op::ENCODER_CONFIG, 0, 1, 1, &[]));
         assert_eq!(
             guest.flags(),
-            lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC
+            lowlat_core::init::FLAG_FULL_RANGE | lowlat_core::init::FLAG_HEVC
         );
     }
 

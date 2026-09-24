@@ -29,9 +29,12 @@ pub const NO_LIMIT: u32 = 60000;
 pub const FLAG_HEVC: u32 = 0x01;
 /// 4:4:4 chroma, which implies HEVC.
 pub const FLAG_COLOR444: u32 = 0x02;
-/// **Set on every offer.** A base flag rather than a capability, so its
-/// presence says nothing and its absence would be the surprise.
-pub const FLAG_BASE: u32 = 0x08;
+/// Full range: the sender's renderer takes samples spanning the whole of their
+/// depth, so a host may code the picture that way, and the parameter set says
+/// which it did. A preference like the three beside it, met or not by the
+/// room's intersection; a sender whose renderer draws the video range alone
+/// leaves it clear.
+pub const FLAG_FULL_RANGE: u32 = 0x08;
 /// Ten-bit, which implies HEVC. **Bit four, not bit two**, and reading it at
 /// bit two is a mistake that has been made before.
 pub const FLAG_10BIT: u32 = 0x10;
@@ -348,7 +351,7 @@ mod tests {
             version: VERSION,
             max_width: 0,
             max_height: 0,
-            flags: FLAG_BASE,
+            flags: FLAG_FULL_RANGE,
             resolution_x: 2560,
             resolution_y: 1440,
             media_container: 0,
@@ -388,18 +391,22 @@ mod tests {
         assert_eq!(init.version, 1);
         assert_eq!(init.max_width, NO_LIMIT);
         assert_eq!(init.max_height, NO_LIMIT);
-        assert_eq!(init.flags, FLAG_BASE);
+        assert_eq!(init.flags, FLAG_FULL_RANGE);
         assert_eq!(init.resolution_x, 0);
         assert_eq!(init.resolution_y, 0);
         assert_eq!(init.media_container, 0);
         assert_eq!(init.refresh_rate, 60);
     }
 
-    /// The base flag alone is the ordinary case, and it is not a capability.
+    /// The full-range bit alone is a recorded client's ordinary declaration,
+    /// and it asks for no codec, depth or chroma.
     #[test]
-    fn the_base_flag_alone_asks_for_nothing() {
+    fn the_full_range_bit_alone_asks_for_nothing_else() {
         let init = parse(RECORDED).expect("parsed");
-        assert!(!init.hevc(), "the base flag was read as a codec request");
+        assert!(
+            !init.hevc(),
+            "the full-range bit was read as a codec request"
+        );
         assert!(!init.color444());
         assert!(!init.ten_bit());
     }
@@ -562,7 +569,7 @@ mod tests {
             version: VERSION,
             max_width: 4096,
             max_height: 4096,
-            flags: FLAG_BASE,
+            flags: FLAG_FULL_RANGE,
             resolution_x: 2560,
             resolution_y: 1440,
             media_container: 0,

@@ -512,8 +512,8 @@ fn a_full_session_replays_the_received_direction() {
                             "the no-limit sentinel was read as a limit"
                         );
                         assert!(
-                            asked.flags & init::FLAG_BASE != 0,
-                            "the base flag was absent from a real offer"
+                            asked.flags & init::FLAG_FULL_RANGE != 0,
+                            "a recorded offer did not ask for the full range"
                         );
                         inits_accepted += 1;
                     }

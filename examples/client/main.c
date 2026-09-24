@@ -38,7 +38,9 @@
 // attempt starts with: each is "prefer this if the host has it", masked by
 // what the decoder takes before anything is declared; `LOWLAT_SWITCH_EVERY`
 // walks them every that many seconds, as the chord does by hand, and
-// `LOWLAT_DECODER_EVERY` walks the decoders the same way.
+// `LOWLAT_DECODER_EVERY` walks the decoders the same way. The full range is
+// asked for too, because the renderer takes each picture's range;
+// `LOWLAT_FULL_RANGE=0` asks for the video range instead.
 // `LOWLAT_FPS` asks the host for that rate through the application
 // protocol once the first picture is in; `LOWLAT_PRESENT_HZ` caps how often
 // a new picture is taken (the cached one is still drawn every refresh), so
@@ -1748,6 +1750,9 @@ int main(void)
 	d.video.hevc = getenv("LOWLAT_HEVC") != NULL;
 	d.video.ten_bit = getenv("LOWLAT_10BIT") != NULL;
 	d.video.chroma_444 = getenv("LOWLAT_444") != NULL;
+	// The renderer converts with each picture's range, so it takes either.
+	const char *range = getenv("LOWLAT_FULL_RANGE");
+	d.video.full_range = range == NULL || strcmp(range, "0") != 0;
 	cfg.video = d.video;
 	const char *stun = getenv("LOWLAT_STUN");
 	for (const char *at = stun; at != NULL && *at != '\0' && cfg.server_count < LOWLAT_SERVERS_MAX;) {

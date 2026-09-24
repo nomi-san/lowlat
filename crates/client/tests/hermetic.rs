@@ -1391,7 +1391,7 @@ fn a_preference_changed_mid_session_costs_one_request_and_one_build() {
     assert_eq!(builds, 1);
 
     // The second codec asked for, as the seam would push it after the mask.
-    let flags = lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC;
+    let flags = lowlat_core::init::FLAG_FULL_RANGE | lowlat_core::init::FLAG_HEVC;
     pair.guest
         .driver
         .set_flags(pair.guest.endpoint.session(), flags);

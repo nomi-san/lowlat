@@ -2424,9 +2424,10 @@ fn occupied_seats(shared: &Shared) -> usize {
 /// granted, which would leave the peer building a decoder for a stream it will
 /// never receive.
 ///
-/// **The base flag is not a capability and is not listed here.** It is set on
-/// every declaration and means nothing; testing it as one reports a refusal on
-/// every ordinary request, which is what it did.
+/// **The full-range bit is not listed here.** This host codes the video range
+/// whatever is declared, and the bit is a preference, so it is never refused;
+/// testing it as a capability reported a refusal on every ordinary request,
+/// which is what it did while it was taken for a base flag.
 /// The depth the conversion targets are allocated at, which must be the depth
 /// the encoder was built for.
 ///
@@ -2445,9 +2446,10 @@ fn colour_of(config: &Config) -> lowlat_capture::convert::Depth {
 /// Capability bits a peer can declare that this pipeline cannot emit on the
 /// named codec, regardless of the machine.
 ///
-/// **The base flag is not a capability and is not listed here.** It is set on
-/// every declaration and means nothing; testing it as one reports a refusal on
-/// every ordinary request, which is what it did.
+/// **The full-range bit is not listed here.** This host codes the video range
+/// whatever is declared, and the bit is a preference, so it is never refused;
+/// testing it as a capability reported a refusal on every ordinary request,
+/// which is what it did while it was taken for a base flag.
 fn not_emitted(codec: Codec) -> u32 {
     let mut refused = 0;
     // **Ten bits is HEVC only, and full chroma is too**, and that is the
@@ -4548,8 +4550,8 @@ fn consensus(shared: &Shared, active: &[Active]) -> u32 {
             // its seat the moment it is streamable and its declaration reaches
             // the seat a pass later, so counting that gap as "can decode
             // nothing" drags the stream down to the base codec and back again.
-            // Every real declaration carries the base flag, so zero is only
-            // ever the gap.
+            // Every declaration is recorded with the full-range bit put in
+            // (the session's negotiation), so zero is only ever the gap.
             if declared == 0 {
                 continue;
             }
@@ -5742,8 +5744,8 @@ mod tests {
 
     #[test]
     fn the_consensus_is_what_every_seat_can_decode() {
-        const BASE: u32 = lowlat_core::init::FLAG_BASE;
-        const HEVC: u32 = lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC;
+        const BASE: u32 = lowlat_core::init::FLAG_FULL_RANGE;
+        const HEVC: u32 = lowlat_core::init::FLAG_FULL_RANGE | lowlat_core::init::FLAG_HEVC;
 
         let (shared, _stream, _arrivals) = parked();
         let active = [seat_of(0), seat_of(1)];
@@ -5771,7 +5773,7 @@ mod tests {
     /// two encoder rebuilds and two keyframes for nothing.
     #[test]
     fn a_seat_that_has_not_declared_does_not_vote() {
-        const HEVC: u32 = lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC;
+        const HEVC: u32 = lowlat_core::init::FLAG_FULL_RANGE | lowlat_core::init::FLAG_HEVC;
 
         let (shared, _stream, _arrivals) = parked();
         let active = [seat_of(0), seat_of(1)];
@@ -5787,8 +5789,11 @@ mod tests {
         // And once it does declare, it counts.
         shared.seats[1]
             .flags
-            .store(lowlat_core::init::FLAG_BASE, Ordering::Relaxed);
-        assert_eq!(consensus(&shared, &active), lowlat_core::init::FLAG_BASE);
+            .store(lowlat_core::init::FLAG_FULL_RANGE, Ordering::Relaxed);
+        assert_eq!(
+            consensus(&shared, &active),
+            lowlat_core::init::FLAG_FULL_RANGE
+        );
     }
 
     /// A seat carries its occupant's declaration and not the last one's.
@@ -5799,7 +5804,7 @@ mod tests {
             .seats()
             .take(wake_handle(), wake_handle())
             .expect("a seat");
-        held.declare(lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC);
+        held.declare(lowlat_core::init::FLAG_FULL_RANGE | lowlat_core::init::FLAG_HEVC);
         held.request_reconfigure();
         drop(held);
 
@@ -5995,7 +6000,7 @@ mod tests {
             .seats()
             .take(wake_handle(), wake_handle())
             .expect("a seat");
-        hold.declare(lowlat_core::init::FLAG_BASE);
+        hold.declare(lowlat_core::init::FLAG_FULL_RANGE);
         shared.set_sound(true, false, 128);
 
         let mut roster = Roster::default();
@@ -6288,8 +6293,8 @@ mod tests {
             .seats()
             .take(wake_handle(), wake_handle())
             .expect("a seat");
-        first.declare(lowlat_core::init::FLAG_BASE);
-        second.declare(lowlat_core::init::FLAG_BASE);
+        first.declare(lowlat_core::init::FLAG_FULL_RANGE);
+        second.declare(lowlat_core::init::FLAG_FULL_RANGE);
 
         // One pass to admit both, which is the state a rebuild inherits.
         let mut roster = Roster::default();
@@ -6342,7 +6347,7 @@ mod tests {
             .seats()
             .take(wake_handle(), wake_handle())
             .expect("a seat");
-        held.declare(lowlat_core::init::FLAG_BASE);
+        held.declare(lowlat_core::init::FLAG_FULL_RANGE);
 
         let mut roster = Roster::default();
         let ticker = watcher(&shared, |shared| shared.seats[0].ring.pop().is_some());
@@ -6383,19 +6388,19 @@ mod tests {
         drop(held);
     }
 
-    /// **The base flag is set on every declaration and means nothing.**
-    /// Counting it as a capability this pipeline does not emit reported a
-    /// refusal on every ordinary request for the second codec, which is what
-    /// it did until a live run showed the line.
+    /// **The full-range bit is a preference, never refused.** Counting it as a
+    /// capability this pipeline does not emit reported a refusal on every
+    /// ordinary request for the second codec, which is what it did until a
+    /// live run showed the line.
     #[test]
-    fn the_base_flag_is_not_a_capability_that_can_be_refused() {
+    fn the_full_range_bit_is_not_a_capability_that_can_be_refused() {
         for codec in [Codec::H264, Codec::H265] {
             assert_eq!(
-                lowlat_core::init::FLAG_BASE & not_emitted(codec),
+                lowlat_core::init::FLAG_FULL_RANGE & not_emitted(codec),
                 0,
-                "the always-set flag is being read as a request on {codec:?}"
+                "the full-range bit is being read as a request on {codec:?}"
             );
-            let ordinary = lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC;
+            let ordinary = lowlat_core::init::FLAG_FULL_RANGE | lowlat_core::init::FLAG_HEVC;
             assert_eq!(
                 ordinary & not_emitted(codec),
                 0,
@@ -6474,7 +6479,7 @@ mod tests {
             .seats()
             .take(wake_handle(), wake_handle())
             .expect("a seat");
-        held.declare(lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC);
+        held.declare(lowlat_core::init::FLAG_FULL_RANGE | lowlat_core::init::FLAG_HEVC);
         held.request_reconfigure();
 
         let mut roster = Roster::default();
@@ -6554,7 +6559,7 @@ mod tests {
             .seats()
             .take(wake_handle(), wake_handle())
             .expect("a seat");
-        held.declare(lowlat_core::init::FLAG_BASE | lowlat_core::init::FLAG_HEVC);
+        held.declare(lowlat_core::init::FLAG_FULL_RANGE | lowlat_core::init::FLAG_HEVC);
 
         let mut roster = Roster::default();
         let forced = Arc::new(AtomicU32::new(0));
@@ -6629,7 +6634,7 @@ mod tests {
             .seats()
             .take(wake_handle(), wake_handle())
             .expect("a seat");
-        held.declare(lowlat_core::init::FLAG_BASE);
+        held.declare(lowlat_core::init::FLAG_FULL_RANGE);
 
         let mut roster = Roster::default();
         let mut encoder = fake_encoder();
@@ -6691,7 +6696,7 @@ mod tests {
                 .seats()
                 .take(wake_handle(), wake_handle())
                 .expect("a seat");
-            held.declare(lowlat_core::init::FLAG_BASE);
+            held.declare(lowlat_core::init::FLAG_FULL_RANGE);
 
             let mut roster = Roster::default();
             let mut encoder = fake_encoder();

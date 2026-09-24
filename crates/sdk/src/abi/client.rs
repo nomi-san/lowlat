@@ -257,11 +257,11 @@ pub unsafe extern "C" fn lowlat_enum_decoders(index: u32, out: *mut lowlat_decod
 ///
 /// What the application would like of the picture, for the one stream.
 ///
-/// **Preferences, not requirements.** Each of the three is "this if the host
-/// has it": the library masks them with what its decoder was verified to
-/// decode before declaring anything, so a stream the decoder cannot take is
-/// never asked for, and follows whatever the host then sends. Zeroed is the
-/// sensible default and what every established client asks at its defaults.
+/// **Preferences, not requirements.** Each is "this if the host has it": the
+/// library masks the codec and the two colour axes with what its decoder was
+/// verified to decode before declaring anything, so a stream the decoder
+/// cannot take is never asked for, and follows whatever the host then sends.
+/// Zeroed is the sensible default: H.264 in the video range.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct lowlat_client_video_config {
@@ -278,7 +278,13 @@ pub struct lowlat_client_video_config {
     pub ten_bit: bool,
     /// Full chroma, which implies the second codec.
     pub chroma_444: bool,
-    pub reserved: u8,
+    /// The application's renderer takes the full range (minor 17): its
+    /// conversion reads `lowlat_frame.full_range`, so a host may send samples
+    /// spanning the whole of their depth. Declared as asked, never masked by
+    /// the decoder, which decodes either range alike. False asks for the
+    /// video range, which a renderer that assumes it draws right; a caller
+    /// built against minor 16 or earlier passed zero here, and gets that.
+    pub full_range: bool,
 }
 
 /// **Zeroed is the sensible default**: no size request, no colour
@@ -884,6 +890,7 @@ fn video_of(video: &lowlat_client_video_config) -> ::lowlat_client::config::Vide
         hevc: video.hevc,
         ten_bit: video.ten_bit,
         chroma_444: video.chroma_444,
+        full_range: video.full_range,
     }
 }
 
@@ -2754,7 +2761,7 @@ mod tests {
                 hevc: false,
                 ten_bit: false,
                 chroma_444: false,
-                reserved: 0,
+                full_range: false,
             },
             raw_audio: false,
             legacy_cipher: true,

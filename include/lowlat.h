@@ -42,7 +42,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 16
+#define LOWLAT_ABI_MINOR 17
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 #define LOWLAT_FEATURE_HOST 1
@@ -1479,11 +1479,11 @@ typedef struct lowlat_client_create_info {
 ///
 /// What the application would like of the picture, for the one stream.
 ///
-/// **Preferences, not requirements.** Each of the three is "this if the host
-/// has it": the library masks them with what its decoder was verified to
-/// decode before declaring anything, so a stream the decoder cannot take is
-/// never asked for, and follows whatever the host then sends. Zeroed is the
-/// sensible default and what every established client asks at its defaults.
+/// **Preferences, not requirements.** Each is "this if the host has it": the
+/// library masks the codec and the two colour axes with what its decoder was
+/// verified to decode before declaring anything, so a stream the decoder
+/// cannot take is never asked for, and follows whatever the host then sends.
+/// Zeroed is the sensible default: H.264 in the video range.
 typedef struct lowlat_client_video_config {
     /// The picture size asked of the host, or zero for no preference.
     ///
@@ -1498,7 +1498,13 @@ typedef struct lowlat_client_video_config {
     bool ten_bit;
     /// Full chroma, which implies the second codec.
     bool chroma_444;
-    uint8_t reserved;
+    /// The application's renderer takes the full range (minor 17): its
+    /// conversion reads `lowlat_frame.full_range`, so a host may send samples
+    /// spanning the whole of their depth. Declared as asked, never masked by
+    /// the decoder, which decodes either range alike. False asks for the
+    /// video range, which a renderer that assumes it draws right; a caller
+    /// built against minor 16 or earlier passed zero here, and gets that.
+    bool full_range;
 } lowlat_client_video_config;
 
 /// **Zeroed is the sensible default**: no size request, no colour
