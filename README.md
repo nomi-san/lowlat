@@ -32,7 +32,7 @@ What works today, measured on one desktop (KDE Plasma on Wayland, Debian 13):
 - **Browsers** as guests over a second pipe on the same signaling, including a page of our own
   ([examples/web-client](examples/web-client)).
 - **Packaged**: a system service that starts at boot, a helper and a tray that start with each
-  login, a login tool, and a Debian package.
+  login, a login tool, a Debian package, and an install script for distributions without one.
 - **A client**, the other half of the same library and header, on Linux: pictures decoded
   through the open stack, the vendor's interface, or the machine's own codec library where
   it is an LGPL build, and handed out as planes or as a device handle; sound, input, the
@@ -186,10 +186,29 @@ sudo lowlat-login --install
 
 The package carries the service and its unit, a login tool, the two user units that start the
 session helper and the tray with each graphical session, and `/etc/lowlat/lowlatd.env`, where
-the signaling server and the session live; that file is a conffile and survives upgrades. The
-service starts at boot and, until it has been logged in, says so and exits. Where the login
-screen should be reachable too, the example under `/usr/share/doc/lowlat/` moves the greeter
-onto a Wayland compositor.
+the session lives, and the signaling server when it is not the public one; that file is a
+conffile and survives upgrades. The service starts at boot and, until it has been logged in,
+says so and exits; the login is the whole of the setup. Where the login screen should be
+reachable too, the example under `/usr/share/doc/lowlat/` moves the greeter onto a Wayland
+compositor.
+
+Where there is no package, `packaging/install.sh` puts the same files in the same places and
+enables the same units; the build is yours and the install is root's:
+
+```sh
+cargo build --release -p lowlatd
+sudo packaging/install.sh
+sudo lowlat-login --install
+```
+
+`--uninstall` takes it all away again but the configuration, which carries the login's
+session; `DESTDIR` stages the files under a root of its own and touches nothing else, for a
+distribution's package recipe. What the machine needs at run time is loaded, not linked:
+`python3` for the login tool; a sound server speaking the PulseAudio protocol (PipeWire's
+pulse server is one) and its client library; and the user-space driver of the GPU that
+encodes -- NVIDIA's for NVENC; for VA-API, Mesa's on AMD or Intel's media driver; the Vulkan
+loader for Vulkan Video. A Mesa built without the H.264 and HEVC codecs, as some
+distributions ship it, offers VA-API no encoder at all.
 
 ## Documentation
 

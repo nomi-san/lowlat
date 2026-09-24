@@ -1633,7 +1633,14 @@ and deciding its shape without one of its two customers in front of it.
   The privilege it needs was measured rather than assumed: `CAP_SYS_ADMIN`, with group membership
   alone reporting the display as unreachable ([07 §6.1](07-platforms.md)). *Packaged
   2026-09-14 as a Debian package built by `cargo deb`, with the login tool and the session
-  side's user units; an rpm and a tarball with an install script are to follow.*
+  side's user units; an rpm and a tarball with an install script are to follow.* *2026-09-24:
+  `packaging/install.sh` is the install script, the package's files and units for a
+  distribution without it, staged under `DESTDIR` for a distribution's own recipe; run on
+  this machine it replaced the packaged service, which came back up and was reached.
+  the first install by somebody else, on another distribution, stopped twice: the login tool
+  refused the 201 a created session is answered with, and the service took the signaling
+  server the configuration file ships empty for no configuration at all. Both fixed; an
+  install finishes with the login alone.*
 - [x] **The session channel**: length-prefixed frames on a Unix stream socket at a known path,
   JSON bodies, a first frame carrying version, role and capability, peer credentials as the
   identity, and one helper to a session with the newest winning.

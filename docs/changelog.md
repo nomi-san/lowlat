@@ -3,6 +3,28 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-24 - Packaging: an install finishes with the login alone
+
+### Fixed
+- **The login tool takes the answer a successful login is given.** A created session is
+  answered 201, and the tool took only 200, so it reported the login refused, left the
+  session it had created on the account and never configured the service. Found by the
+  first install on a distribution other than this one's; either answer is taken now.
+- **The service needs the session and nothing else** ([impl-plan.md](impl-plan.md) Phase
+  12). The configuration file ships the signaling server empty and the login fills in the
+  session alone, so a new install stayed "not configured" after a successful login. An empty
+  server is the public service now, a name without a scheme is a secure socket as before,
+  and the service's message names the session as the one thing missing.
+
+### Added
+- **`packaging/install.sh`**, for a distribution without the package: the package's files
+  at the package's paths and modes, the configuration kept when it exists, the service
+  enabled and restarted and the session side's units enabled for every user;
+  `--uninstall` removes all but the configuration, and `DESTDIR` stages the files for a
+  distribution's own recipe without touching the machine. Staged, the tree matches the
+  package's; run here as root, it replaced the packaged service, which came back up with the
+  server left empty, advertised itself, and served a guest.
+
 ## 2026-09-24 - C5: the full range is the application's to ask for; minor 17
 
 ### Fixed
