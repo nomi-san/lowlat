@@ -165,6 +165,12 @@ by definition. This table is the reason the project has the shape it does.
 | Detecting relative pointer mode from cursor clip geometry misses the entire hide-without-clip class. Use the cursor visibility signal | [05](05-host.md) |
 | Adapter LUIDs change across reboots and driver reloads. Discover at runtime, never persist | [07](07-platforms.md) |
 
+### Client pipeline
+
+| Lesson | Rule lives in |
+|---|---|
+| A decoder that reported every picture in the video range handed a host's full-range pictures to a renderer that crushed their blacks and raised their contrast, on every backend at once. Hosts differ; the range is read from each stream's parameter set and travels with every picture | [10](10-client.md) |
+
 ### Connectivity
 
 | Lesson | Rule lives in |

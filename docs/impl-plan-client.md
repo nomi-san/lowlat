@@ -455,7 +455,10 @@ path.
    libraries were unloaded per build and the C library's static thread-local area ran out
    ([07 §8](07-platforms.md)) -- and the walk then ran forty switches without it. The gate
    also found the toolkit's renderer freezing the picture after a switch to ten bits, fixed
-   in the vendored tree. The full-chroma row stays open on the host.)
+   in the vendored tree. The full-chroma row stays open on the host. *2026-09-24*: an
+   established host that sends full chroma when asked streamed it at both depths to the
+   vendor backend by handle, briefly, at the desk (the range item of the second half); the
+   planes route and ten minutes of it are still owed.)
 3. [x] Against an established host: at the defaults as C2's gate ran, then with the second codec
    and ten-bit asked, following what its encoder gives; the round trip moves off its seed
    within seconds of connecting; its own log shows this client's decode latency.
@@ -524,6 +527,17 @@ here; the rules are [10 §7](10-client.md) and §9, the surface [06 §3b](06-api
   drawn ratio; hides its pointer while the host's is suppressed; rumbles the pad the host
   named; parses the guest list with its toolkit, shows owner and permissions in the title
   and draws the host's figures for this guest on its line beside its own.
+- [x] **The picture's range, from the stream** (*found at the desk 2026-09-24*, minor 15). An
+  established host sent the full range -- declared in its parameter set, luma 0 to 255 in its
+  samples -- and every picture was handed out as if in the video range, so the demo drew it
+  darker, its blacks crushed and its contrast raised. The readers keep the parameter set's
+  range flag, the software backend asks the codec library (the full-range twin of a layout,
+  or the decoder's range, resolved by name), and `lowlat_frame.full_range` carries it; the
+  frame is filled as far as the caller's size reaches, so a caller built against minor 14
+  still acquires. The demo hands it to the toolkit's conversion and shows `full` in its
+  title. Three full-range clips (eight-bit H.264 and HEVC, ten-bit HEVC) join the fixtures;
+  the readers' test and every backend's fixture run check each picture's range, and each
+  check was shown failing with its mechanism taken out.
 
 **Built 2026-09-19, evening, deviations from the text above:** the picture already delivered,
 named or sent again, travels as its checksum alone -- the first live run against this host
@@ -569,7 +583,12 @@ replayed, shows none at all, which is what a clean path reads.
    the native size or of exactly half of it snaps there, and anything else is halved by box
    averaging while at least twice the target and then resampled bilinearly. The toolkit's
    own cursor-size call is empty on this platform and on Windows, so the scaling is the
-   application's everywhere.)
+   application's everywhere. *2026-09-24, at the desk against another established host*: its
+   pictures arrived in the full range and were drawn as the video range; the range now
+   travels with every picture (the item above), and the same desk session, 130 seconds on the
+   vendor's decoder by handle with the preferences walked through H.264, HEVC, HEVC 4:4:4,
+   ten-bit HEVC and ten-bit HEVC 4:4:4 -- every one of which that host sends when asked --
+   kept the full range throughout. The rest of the desk items are still owed.)
 3. [x] The demo's panel and this host's roster agree on the figures they share: the round
    trip, the rate, the decode time the host re-publishes; the negatives this client sent
    against the fragments the host resent on them. (*2026-09-19*: on the same line, this
@@ -1139,6 +1158,10 @@ slower decoder ever reopens them.
 
 Newest first.
 
+- 2026-09-24: C5 gains the picture's range (minor 15), found at the desk: an established
+  host sent full-range pictures that every backend handed out as the video range. The range
+  is the stream's, read from its parameter set, carried per picture and never converted;
+  the frame is filled as far as the caller's size reaches, which its first growth needed.
 - 2026-09-23, night: C10 closed. Gate 3 met in two runs, the second with C10.7 and no
   malformed message at connect; gate 4 against this host with a relay beside it, where the
   relay's own log showed its rotated nonce answered and the allocation released.

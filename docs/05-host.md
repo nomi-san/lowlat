@@ -117,7 +117,11 @@ complaint about picture quality and gets attributed to the encoder or the bitrat
 **Range is limited, measured from a recorded stream.** The parameter set of a real 1080p60
 session declares `yuv420p`, limited range, BT.709 primaries, matrix and transfer. So the far
 side's renderer supporting a full-range path says only that it can be told to use one, not
-that anything asks it to. Limited range is:
+that anything asks it to. *Corrected 2026-09-24: something does ask. Another established
+host sends the full range at every codec and depth, declared in its parameter set and true of
+its samples, so a receiver reads the range from the stream ([10 §4](10-client.md)); the
+recorded session was one host, not the protocol. This host stays at the limited range and
+says so.* Limited range is:
 
 ```
 y = y * (219/255) + 16/255

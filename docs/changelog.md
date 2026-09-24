@@ -3,6 +3,39 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-24 - C5: the picture's range, from the stream
+
+### Fixed
+- **A full-range picture is said to be one** ([10 §4](10-client.md), [06 §3b](06-api.md),
+  minor 15). An established host sent the full range at every codec and depth, declared in its
+  parameter set and true of its samples (luma 0 to 255, a fifth of them outside 16 to 235),
+  and every picture was handed out as if in the video range: drawn that way it was darker, its
+  blacks crushed and its contrast raised. The readers of both codecs keep the parameter set's
+  range flag, where they walked past it; the software backend asks the codec library, which
+  says it as a layout's full-range twin on older majors and as the decoder's range on newer
+  ones, the number for it resolved by name like the pixel formats; and `lowlat_frame` gains
+  `full_range`. The samples are handed out as coded, never converted.
+- **`lowlat_client_acquire_frame` fills the frame as far as the caller's `size` reaches**, with
+  minor 14's size the least accepted ([06 §11](06-api.md)); it refused a frame unless `size`
+  covered the whole of it, which the frame's first growth would have turned into a refusal of
+  every caller built against an earlier header.
+
+### Added
+- The demo hands the range to the toolkit's conversion and shows `full` in its title; the
+  library logs the range when it is learned and when it changes.
+- Three full-range clips, eight-bit H.264 and HEVC and ten-bit HEVC, from two independent
+  encoders; the reference keeps their samples as coded.
+- The readers' test checks every clip's range, and every backend's fixture run checks each
+  picture's; each check was shown failing with its mechanism taken out.
+
+### Gate
+- Every committed clip, the three new ones included, decodes bit-exact with the right range on
+  the open stack's two parts, the vendor's, and software through three majors of the codec
+  library. Live against the established host that sends the full range: the pictures carry it
+  on the open stack and the vendor's decoder, a saved picture spans luma 0 to 255, and the
+  person at the desk saw the picture right through H.264, HEVC and HEVC 4:4:4 at eight and
+  ten bits, every one of which that host sends when asked.
+
 ## 2026-09-23 - C10 closed: the relay, on the client
 
 ### Added

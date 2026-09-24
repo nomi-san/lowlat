@@ -347,7 +347,8 @@ have moved by itself; an application that kept its own copy would mark the wrong
 **Planned 2026-09-15, built from 2026-09-17 by [impl-plan-client.md](impl-plan-client.md).**
 Everything below is in the header (minor 4 the session, minor 5 the pictures, minor 6 the
 input, minor 7 the sound, minor 8 the preferences and the handle, minor 9 the cursor and the
-metrics, minor 10 the pad reports, minor 14 the relay); the header is the truth.
+metrics, minor 10 the pad reports, minor 14 the relay, minor 15 the picture's range); the
+header is the truth.
 
 ```c
 lowlat_status lowlat_client_create(const lowlat_client_create_info *info, lowlat_client **out);
@@ -606,7 +607,13 @@ shared texture and fence -- the application imports into its own device. The app
 names the kind it wants in `lowlat_client_create_info` and is told the kind it got; a decoder
 that cannot export lends planes, and in this minor every decoder does. Every picture also
 carries size, rotation, generation and a sequence number -- a gap between two consecutive
-presents is a skip -- so a renderer needs nothing from the stream itself.
+presents is a skip -- and **`full_range`**, whether its samples span the whole of their depth
+rather than the video range, as the stream's own parameter set says (minor 15), so a
+renderer needs nothing from the stream itself. The samples are handed out as coded and never
+converted: the renderer's conversion takes the range, and one that assumes the video range
+draws a full-range picture darker, its blacks crushed and its contrast raised. Hosts send
+either (*corrected 2026-09-24*: an established host was seen sending the full range, where
+the first recorded one sent the video range).
 
 **Sound is decoded, not played** (minor 7). `acquire_audio` hands out one packet a call,
 signed sixteen-bit stereo at 48 kHz, in the order the host sent them, as many frames as the
@@ -1077,6 +1084,13 @@ are read and filled as far as the caller's `size` reaches**, with the size they 
 13 as the least accepted. Until this minor each was refused unless `size` covered the whole
 of it, which would have refused every caller built against an earlier header the first time
 either grew; the rule above had not been kept for them, and is now.
+
+**Minor 15** (2026-09-24) is the picture's range ([§3b](#3b-client)): `full_range` appended to
+`lowlat_frame`, true when the stream's parameter set says its samples span the whole of their
+depth. Nothing moves. **`lowlat_client_acquire_frame` fills the frame as far as the caller's
+`size` reaches**, with the size it had at minor 14 as the least accepted: until this minor it
+refused a frame unless `size` covered the whole of it, the fault minor 14 corrected for the
+configuration and the status, corrected for the frame the first time it grows.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected

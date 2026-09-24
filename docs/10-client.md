@@ -173,8 +173,18 @@ pitch stays the library's and no tiled-image layout has to be negotiated.
 
 Each picture carries what the header and the bitstream said about it: size, rotation (applied
 by the renderer, not the decoder -- the picture arrives as the display was encoded, and a
-quarter turn is a transform at present time), colour depth, chroma layout, and the generation
-it belongs to.
+quarter turn is a transform at present time), colour depth, chroma layout, the generation it
+belongs to, and **whether its samples span the full range** (*added 2026-09-24*, minor 15).
+The range is the parameter set's video signal type, read by the library's own readers for
+the hardware backends and asked of the codec library for software; a set that says nothing
+means the video range, as the standard infers. Nothing on the wire negotiates it and nothing
+here converts it: a host's encoder chooses, and hosts differ -- one established host sends
+the full range at every codec and depth, measured at luma 0 to 255 with a fifth of its
+samples outside 16 to 235, where the first recorded one sent the video range. The samples
+leave as they were coded and the renderer is told, since a conversion here
+would cost a pass over every picture and spend precision; a renderer that assumes the video
+range draws such a picture with its blacks crushed and its contrast raised, which is how it
+was found.
 
 ### §4.1 What latest-wins costs, and what it cannot do
 
@@ -368,7 +378,8 @@ header is pinned: the surface relied on is the same on every major accepted and 
 at load against the library that loaded; everything numbered that has moved between majors
 is resolved by name. The decoder's three-plane pictures leave in the same four formats the
 hardware backends hand out, converted in the copy that hands them out, so no fifth format
-and no flag reaches the application.
+reaches the application and no flag says where in sixteen bits a ten-bit sample sits: it is
+in the high bits whatever decoded it.
 
 **As built** (*2026-09-21*): a codec counts as decoded only if its decoder opens, not if its
 name is known -- a pair at hand carries an H.264 decoder that refuses to open without a
