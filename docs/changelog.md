@@ -20,6 +20,13 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - The demo visits several peers in turn on one handle: `LOWLAT_PEER` takes a
   comma-separated list, each held for `LOWLAT_SECONDS` and left for the next.
 
+### Changed
+- **The demo's signaling socket lives as long as its attempt's negotiation.** It stayed
+  open for the whole session, was read on every loop pass, and a clean session ended by
+  withdrawing its offer. It closes once the path is established, the offer withdrawn only
+  for an attempt that never came up, and each attempt opens its own; live, three attempts
+  across two hosts held theirs for one to three seconds each.
+
 ### Measured
 - The demo on one handle through an established host, the same host again, then a second
   one: the first and third came up, and between them the status read connecting with every
