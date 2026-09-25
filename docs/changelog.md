@@ -18,6 +18,13 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   unit 257 back before, and decodes to the reference on both device interfaces and the
   software backend after.
 
+### Changed
+- **The demo keeps its window's size rather than asking the display on every pass.** The
+  picture's rectangle asked for it every millisecond, a round trip to the display each; it
+  is read once the window exists and again on the toolkit's size and move events. Live on a
+  headless display against an established host, the event loop woke 742 times a second
+  where it had 1435, and a resize still refits the picture.
+
 ## 2026-09-25 - C5: a new attempt starts from nothing the last session left
 
 ### Fixed
