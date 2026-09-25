@@ -3,6 +3,18 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-25 - C5: a departure holds nothing else up
+
+### Fixed
+- **A call made while the session leaves is answered at once** ([06 §3b](06-api.md),
+  [10 §10](10-client.md)). `lowlat_client_end_connection` held the handle's lock through the
+  departure's grace and both joins, half a second on an established session, and every other
+  call takes that lock, so input, status and acquire made on another thread meanwhile waited
+  the whole of it. The attempt is taken out under the lock and left outside it: a status read
+  50 ms into a departure answered in 451 ms before and 7 us after. Until the departure is
+  over a new attempt is refused with `LOWLAT_ERR_ALREADY_STARTED`, because the leaving threads
+  share the unit pool, the picture queue and the sound pool with the next session.
+
 ## 2026-09-24 - Packaging: an install finishes with the login alone
 
 ### Fixed

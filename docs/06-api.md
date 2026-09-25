@@ -563,7 +563,10 @@ it clear the session is keyed from the host's media key in the answer, and an an
 one takes the legacy path regardless. Nothing in the library speaks to a signaling service
 (D3); the example client does, itself. `end_connection` says goodbye on the control channel
 and gives the message a moment to arrive; it raises no event, because the application caused
-it.
+it. **That moment holds nothing else up** (*2026-09-25*): the attempt is taken out first and
+the waiting is done outside the handle, so a call made on another thread meanwhile is
+answered at once, as for a handle with no attempt, and a new attempt is refused with
+`LOWLAT_ERR_ALREADY_STARTED` until the departure is over.
 
 **A relay makes the attempt a relay attempt** (minor 14; [03 §7](03-connectivity.md),
 [10 §11](10-client.md)). `lowlat_client_config.relay` names it as `host:port`, resolved to its

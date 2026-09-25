@@ -829,7 +829,11 @@ The decode thread never blocks the receive loop: a full pool leaves the backlog 
 receive ring, where the catch-up of §3 sees it; the sound pool never blocks it either, it
 drops. The software decoder's slice workers are the one addition, capped by the machine's
 parallelism (§5.1). Every rule of [02](02-io-shell.md) applies -- raw wakes for raw waits,
-no elevated priority inside the library, teardown that wakes every waiter.
+no elevated priority inside the library, teardown that wakes every waiter -- and one more of
+the application's thread: **a call that waits holds nothing another call needs** (*2026-09-25*:
+a departure had held the handle through its grace and both joins, half a second in which
+input, status and acquire made on any other thread waited too; the attempt is taken out
+under the lock now and left outside it).
 
 ## §11 The relay
 

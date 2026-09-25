@@ -596,6 +596,18 @@ here; the rules are [10 §7](10-client.md) and §9, the surface [06 §3b](06-api
   never reads `full_range` draws right. The demo asks for it, since its renderer takes it,
   and `LOWLAT_FULL_RANGE=0` asks for the video range. The host half is the host plan's
   (Phase 11).
+- [x] **A departure holds nothing else up** (*2026-09-25*). Found reviewing the client's
+  threads for two-core machines: `lowlat_client_end_connection` held the handle's lock
+  through the departure's grace and both joins, half a second on an established session, and
+  every other call takes that lock, so input, status and acquire made on another thread
+  meanwhile waited the whole of it. The attempt is taken out under the lock and left outside
+  it, and a new attempt is refused as already started until the leaving threads are joined,
+  because they share the unit pool, the picture queue and the sound pool with the next
+  session. `a_call_made_while_the_session_leaves_is_answered_at_once` runs a session through
+  the boundary against this host's admission on loopback and reads the status 50 ms into
+  the departure: 451 ms to answer before, 7 us after; it was shown failing both ways, with
+  the lock held and with the refusal taken out. Live against the established host the demo
+  leaves as before.
 
 **Built 2026-09-19, evening, deviations from the text above:** the picture already delivered,
 named or sent again, travels as its checksum alone -- the first live run against this host
@@ -1234,6 +1246,8 @@ slower decoder ever reopens them.
 
 Newest first.
 
+- 2026-09-25: a departure holds nothing else up; ending a connection had held the handle
+  through its half-second grace.
 - 2026-09-24, night: the full range becomes the application's to ask for (minor 17), once
   the declaration bit taken for a base flag turned out to be full range.
 - 2026-09-24, night: the drag remainder measured and closed. Minor 16 stamps every picture
