@@ -159,7 +159,8 @@ every waiter so none is stranded by a session that has gone; the next attempt on
 handle takes waiters again from its offer on, and lets go of any picture the last session
 left untaken, so its first acquire is never handed the last session's picture. The queue
 had stayed closed: after a reconnect every acquire came back at once, and a renderer paced
-by the wait would have spun.
+by the wait would have spun. The rest of what a session leaves -- its events, its figures,
+its access units -- is let go at the same moment ([06 §3b](06-api.md)).
 
 **A picture leaves the library one of two ways, and the library chooses which it can offer.**
 As **planes**: pointers, pitches and a format (`NV12`, `P010`, or the 4:4:4 layouts) into

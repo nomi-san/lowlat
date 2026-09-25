@@ -622,6 +622,28 @@ here; the rules are [10 §7](10-client.md) and §9, the surface [06 §3b](06-api
   while the loop looked alive, and alive meant only that no stop had been asked for, so every
   departure ran to the cap on its grace: 501 ms, where the loop returns after 263. The seam's
   loopback test times the departure, under both ciphers, and failed at 501 ms before.
+- [x] **A new attempt starts from nothing the last session left** (*2026-09-25*). The next
+  attempt on a handle read as over until its session came up, was handed the last session's
+  untaken events under its own name, and carried that session's figures and up to four of
+  its access units. It starts on fresh figures now, with the event queue and the unit pool
+  emptied. `a_new_attempt_starts_from_nothing_the_last_session_left` leaves a message of the
+  host's untaken, ends the session and offers again: before, the message came out and the
+  status read over; after, nothing comes out, the status reads connecting and the control
+  channel's count is zero. The event queue's clear and the unit pool's have tests of their
+  own; every check was shown failing with its part taken out. **Live**, the demo now visits
+  several peers in turn on one handle (`LOWLAT_PEER` a list, each for `LOWLAT_SECONDS`):
+  the established host, the same host again, then the second one, thirty seconds each
+  (`local/logs/2026-09-25-reconnect-*`). The first session decoded 385 pictures; the second
+  attempt's answer arrived unparseable -- the demo's toolkit reported a JSON parse error at
+  byte 259, where an answer is 742 bytes -- so it never began and was left after its thirty
+  seconds, a loss seen once before on a single attempt; the third, the second host over IPv6,
+  came up with its sound and decoded 575. Between sessions the status read connecting, no
+  codec, every count zero; the process went from 16 threads to 10 and back to 16, no thread
+  outliving its session, and its resident set from 383 MB to 222 and up to 428 at the second
+  host's size. Thirteen more attempts with the signaling frames logged, twelve to the first
+  host and one to the second between them, all came up, every message one whole frame. The
+  toolkit's reader takes the first frame of a fragmented message for the whole of it and
+  drops the rest, which would explain the lost answer; it was not caught doing so.
 
 **Built 2026-09-19, evening, deviations from the text above:** the picture already delivered,
 named or sent again, travels as its checksum alone -- the first live run against this host
@@ -1260,6 +1282,8 @@ slower decoder ever reopens them.
 
 Newest first.
 
+- 2026-09-25: a new attempt starts from nothing the last session left; live, the demo moved
+  between two established hosts on one handle, one answer lost to the signaling socket.
 - 2026-09-25: a second session on one handle waits for its pictures, and a departure ends
   when the session's loop does, 263 ms where it took 501.
 - 2026-09-25: a departure holds nothing else up; ending a connection had held the handle

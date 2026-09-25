@@ -3,6 +3,30 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-25 - C5: a new attempt starts from nothing the last session left
+
+### Fixed
+- **Attempts follow one another on one handle** ([06 §3b](06-api.md)). The next attempt read
+  as over until its session came up, was handed the last session's untaken events under its
+  own name, and carried that session's figures and up to four of its access units. It
+  starts on fresh figures now -- connecting, every count from zero -- with the event queue
+  and the unit pool emptied.
+- **The demo no longer spins while no session is up.** Its sound and presenting threads
+  asked the library to wait, were answered at once and asked again: 1.2 s of a core at
+  every connect. They wait themselves now; the sound thread spent 24 ms over a
+  ninety-second run with three connects.
+
+### Added
+- The demo visits several peers in turn on one handle: `LOWLAT_PEER` takes a
+  comma-separated list, each held for `LOWLAT_SECONDS` and left for the next.
+
+### Measured
+- The demo on one handle through an established host, the same host again, then a second
+  one: the first and third came up, and between them the status read connecting with every
+  count at zero and the thread count fell back to its idle ten. The second attempt's answer
+  arrived unparseable and was lost; thirteen more attempts with the signaling frames
+  logged all came up. See the client plan's C5 item.
+
 ## 2026-09-25 - C5: a second session waits for its pictures; a departure ends with its loop
 
 ### Fixed

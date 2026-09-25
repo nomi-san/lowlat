@@ -566,7 +566,11 @@ and gives the message a moment to arrive; it raises no event, because the applic
 it. **That moment holds nothing else up** (*2026-09-25*): the attempt is taken out first and
 the waiting is done outside the handle, so a call made on another thread meanwhile is
 answered at once, as for a handle with no attempt, and a new attempt is refused with
-`LOWLAT_ERR_ALREADY_STARTED` until the departure is over.
+`LOWLAT_ERR_ALREADY_STARTED` until the departure is over. **Attempts follow one another on one
+handle** (*2026-09-25*), and each starts from nothing the last session left: events the
+application had not taken are dropped rather than handed out under the new attempt's name,
+the status reads as connecting and every figure counts from zero, and no picture or access
+unit of the last session reaches the next.
 
 **A relay makes the attempt a relay attempt** (minor 14; [03 §7](03-connectivity.md),
 [10 §11](10-client.md)). `lowlat_client_config.relay` names it as `host:port`, resolved to its
