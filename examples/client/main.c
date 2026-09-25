@@ -1617,6 +1617,8 @@ static bool begin_attempt(struct demo *d)
 	memset(&cfg, 0, sizeof cfg);
 	cfg.size = (uint32_t) sizeof cfg;
 	cfg.raw_audio = getenv("LOWLAT_RAW_AUDIO") != NULL;
+	// No media key offered, so the session takes the legacy 128-bit cipher.
+	cfg.legacy_cipher = getenv("LOWLAT_LEGACY_CIPHER") != NULL;
 	cfg.video = d->video;
 	const char *stun = getenv("LOWLAT_STUN");
 	for (const char *at = stun; at != NULL && *at != '\0' && cfg.server_count < LOWLAT_SERVERS_MAX;) {
