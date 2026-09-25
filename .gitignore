@@ -123,3 +123,4 @@ examples/csharp/bin/
 examples/csharp/obj/
 examples/client/client
 examples/client/probe-import
+examples/client/ws-check

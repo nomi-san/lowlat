@@ -54,8 +54,17 @@ probe-import: probe-import.c $(MATOYA)/bin/linux/$(ARCH)/libmatoya.a
 	$(CC) $(CFLAGS) -I$(MATOYA)/deps -o $@ probe-import.c \
 		$(MATOYA)/bin/linux/$(ARCH)/libmatoya.a -lc -ldl -lpthread -lm
 
+# The toolkit's websocket reader against a loopback server that sends
+# messages in fragments. Needs no library build and no network.
+ws-check: ws-check.c $(MATOYA)/bin/linux/$(ARCH)/libmatoya.a
+	$(CC) $(CFLAGS) -o $@ ws-check.c $(MATOYA)/bin/linux/$(ARCH)/libmatoya.a \
+		-lc -ldl -lpthread -lm
+
+check: ws-check
+	./ws-check
+
 clean:
-	rm -f client probe-import
+	rm -f client probe-import ws-check
 
 FORCE:
 

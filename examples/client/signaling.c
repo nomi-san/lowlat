@@ -144,8 +144,12 @@ enum signaling_event signaling_poll(struct signaling *sig, uint32_t timeout_ms,
 	}
 
 	MTY_JSON *message = MTY_JSONParse(text);
-	if (message == NULL)
+	if (message == NULL) {
+		// The toolkit names where the parse stopped; the length says whether
+		// that was the end of a message cut short.
+		fprintf(stderr, "signaling: a message did not parse, bytes=%zu\n", strlen(text));
 		return SIGNALING_NOTHING;
+	}
 	enum signaling_event event = SIGNALING_NOTHING;
 	const char *action = MTY_JSONObjGetStringPtr(message, "action");
 	const MTY_JSON *payload = MTY_JSONObjGetItem(message, "payload");

@@ -33,6 +33,7 @@ struct MTY_WebSocket {
 };
 
 #define WS_HEADER_SIZE   14
+#define WS_CONTROL_MAX   125
 #define WS_PING_INTERVAL 60000.0f
 #define WS_PONG_TO       (WS_PING_INTERVAL * 3.0f)
 #define WS_MAGIC         "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -389,13 +390,15 @@ static bool ws_write(MTY_WebSocket *ctx, const void *buf, size_t size, uint8_t o
 	return mty_net_write(ctx->net, ctx->buf, size + o);;
 }
 
-static bool ws_read(MTY_WebSocket *ctx, void *buf, size_t size, uint8_t *opcode, uint32_t timeout, size_t *read)
+static bool ws_read(MTY_WebSocket *ctx, void *buf, size_t size, uint8_t *ctrl, uint8_t *opcode,
+	bool *fin, uint32_t timeout, size_t *read)
 {
 	// First two bytes contain most control information
 	uint8_t hbuf[WS_HEADER_SIZE];
 	if (!mty_net_read(ctx->net, hbuf, 2, timeout))
 		return false;
 
+	*fin = hbuf[0] & 0x80;
 	*opcode = hbuf[0] & 0xF;
 	*read = hbuf[1] & 0x7F;
 
@@ -416,6 +419,13 @@ static bool ws_read(MTY_WebSocket *ctx, void *buf, size_t size, uint8_t *opcode,
 
 	} else if (*read == 127) {
 		*read = (size_t) MTY_SwapFromBE64(*((uint64_t *) hbuf));
+	}
+
+	// A control frame's payload goes to ctrl, so one arriving between the
+	// fragments of a message leaves what is gathered of it alone
+	if (*opcode & 0x8) {
+		buf = ctrl;
+		size = WS_CONTROL_MAX;
 	}
 
 	// Check bounds
@@ -504,34 +514,69 @@ MTY_Async MTY_WebSocketRead(MTY_WebSocket *ctx, uint32_t timeout, char *msg, siz
 	MTY_Async r = mty_net_poll(ctx->net, timeout);
 
 	if (r == MTY_ASYNC_OK) {
-		uint8_t opcode = WS_OPCODE_CONTINUE;
 		memset(msg, 0, size);
 
-		size_t read = 0;
-		if (!ws_read(ctx, msg, size - 1, &opcode, 1000, &read))
-			return MTY_ASYNC_ERROR;
+		// A message may arrive in fragments: a text or binary frame without
+		// 'fin', then continuation frames up to one with it, and control
+		// frames may come between them. The fragments are gathered into msg
+		// in order, and only a whole message is handed out.
+		uint8_t ctrl[WS_CONTROL_MAX] = {0};
+		bool begun = false;
+		bool text = false;
+		size_t total = 0;
 
-		switch (opcode) {
-			case WS_OPCODE_PING:
-				r = ws_write(ctx, msg, read, WS_OPCODE_PONG) ? MTY_ASYNC_CONTINUE : MTY_ASYNC_ERROR;
-				break;
-			case WS_OPCODE_PONG:
-				ctx->last_pong = MTY_GetTime();
+		while (true) {
+			uint8_t opcode = WS_OPCODE_CONTINUE;
+			bool fin = true;
+			size_t read = 0;
+			if (!ws_read(ctx, msg + total, size - 1 - total, ctrl, &opcode, &fin, 1000, &read))
+				return MTY_ASYNC_ERROR;
+
+			if (opcode & 0x8) {
+				if (opcode == WS_OPCODE_PING) {
+					if (!ws_write(ctx, ctrl, read, WS_OPCODE_PONG))
+						return MTY_ASYNC_ERROR;
+
+				} else if (opcode == WS_OPCODE_PONG) {
+					ctx->last_pong = MTY_GetTime();
+
+				} else if (opcode == WS_OPCODE_CLOSE) {
+					r = MTY_ASYNC_DONE;
+					memcpy(&ctx->close_code, ctrl, 2);
+					ctx->close_code = read >= 2 ? MTY_SwapFromBE16(ctx->close_code) : 0;
+					break;
+				}
+
+				// Between fragments the rest of the message is still to come
+				if (begun)
+					continue;
+
 				r = MTY_ASYNC_CONTINUE;
-				break;
-			case WS_OPCODE_TEXT:
-				if (read == 0)
-					r = MTY_ASYNC_CONTINUE;
-				break;
-			case WS_OPCODE_CLOSE: {
-				r = MTY_ASYNC_DONE;
-				memcpy(&ctx->close_code, msg, 2);
-				ctx->close_code = MTY_SwapFromBE16(ctx->close_code);
 				break;
 			}
-			default:
-				r = MTY_ASYNC_CONTINUE;
+
+			if (opcode == WS_OPCODE_CONTINUE) {
+				// A continuation of nothing is dropped
+				if (!begun) {
+					r = MTY_ASYNC_CONTINUE;
+					break;
+				}
+
+			} else {
+				// A new message may not begin before the last one's final fragment
+				if (begun)
+					return MTY_ASYNC_ERROR;
+
+				begun = true;
+				text = opcode == WS_OPCODE_TEXT;
+			}
+
+			total += read;
+
+			if (fin) {
+				r = text && total > 0 ? MTY_ASYNC_OK : MTY_ASYNC_CONTINUE;
 				break;
+			}
 		}
 	}
 

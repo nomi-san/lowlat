@@ -111,6 +111,12 @@ jobs:
       - name: Build the demo against the client-only library
         run: make -C examples/client LOWLAT_LIB="$RUNNER_TEMP/client-only/lib" client
 
+      # The websocket reader the demo's signaling reads through, against a
+      # loopback server that sends messages in fragments: only whole ones
+      # may come out. Needs no network.
+      - name: The toolkit's websocket reader
+        run: make -C examples/client check
+
   loom:
     name: model checking
     runs-on: ubuntu-latest
