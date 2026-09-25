@@ -643,7 +643,13 @@ here; the rules are [10 §7](10-client.md) and §9, the surface [06 §3b](06-api
   host's size. Thirteen more attempts with the signaling frames logged, twelve to the first
   host and one to the second between them, all came up, every message one whole frame. The
   toolkit's reader takes the first frame of a fragmented message for the whole of it and
-  drops the rest, which would explain the lost answer; it was not caught doing so.
+  drops the rest, which would explain the lost answer; it was not caught doing so. **The
+  reader gathers fragments since** (*2026-09-25*, the vendored toolkit's record has the
+  change): `ws-check`, a loopback server sending an answer's length in three fragments with
+  control frames between them, handed out the first 259 bytes before and the whole message
+  after, and runs in CI; the demo now prints the length of a message that does not parse,
+  which tells a cut from a malformed one. Live after it, 27 attempts across both hosts, all
+  up.
 - [x] **A stream silent about its reordering stays in time past its frame number's wrap**
   (*2026-09-25*). Found measuring the vendor backend's waits on clips from the vendor
   encoder at its defaults: from picture 257 on, the device's map took 5 us, because the
@@ -1320,6 +1326,8 @@ slower decoder ever reopens them.
 
 Newest first.
 
+- 2026-09-25: the demo's toolkit gathers a signaling message sent in fragments, the likely
+  cause of the answer lost twice; checked on loopback, in CI.
 - 2026-09-25: the handle path's copy is waited on asleep; the whole context left as it is,
   and the planes route's page-locked read-back measured and written down as later work.
 - 2026-09-25: a stream silent about its reordering stays in time past its frame number's

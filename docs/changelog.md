@@ -3,6 +3,25 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-25 - Demo: the toolkit's websocket reader hands out whole messages
+
+### Fixed
+- **A signaling message sent in fragments reaches the demo whole.** The vendored toolkit's
+  reader took one frame for the message: a text frame without its final bit came out as
+  though whole, cut short, and the continuation frames after it were dropped. That fits the
+  answer the demo lost twice to a parse error, at byte 259 and 275 of a 742-byte message; it
+  was never caught happening live. The reader gathers the fragments now, answering pings,
+  noting pongs and taking a close that arrive between them; the change is recorded in the
+  toolkit's provenance file. When a message still does not parse, the demo prints its
+  length, which tells a message cut short from a malformed one.
+
+### Added
+- `make -C examples/client check`: the reader against a loopback server that sends a
+  message whole, an answer's length in three fragments with a ping and a pong between them,
+  one whose last fragment comes 200 ms late, a binary one, an empty one and a close. Before
+  the fix it handed out the answer's first 259 bytes; CI runs it after building the demo.
+  Live after the fix, 27 attempts across both established hosts all came up.
+
 ## 2026-09-25 - C5: the handle path's copy is waited on asleep
 
 ### Changed

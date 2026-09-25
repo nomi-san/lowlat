@@ -13,7 +13,10 @@ the toolkit's build needs the shader compiler and the ALSA, PNG and JPEG
 headers. `make LOWLAT_LIB=<dir>` links a library already built there instead,
 with a run path of `../lib` relative to the binary, which is how the build
 workflow packages the demo beside the client-only library. The demo's first
-line names the library it loaded, its version and its halves.
+line names the library it loaded, its version and its halves. `make check`
+runs the toolkit's websocket reader, which the signaling reads through,
+against a loopback server that sends messages in fragments; it needs no
+library and no network.
 The token is what `lowlat-login` produces; the peer id is the host's, as its
 service prints it. `LOWLAT_DEVICE` names a render node for the decoder (the
 first that decodes by default), `LOWLAT_DECODER` picks `auto`, `open`,
