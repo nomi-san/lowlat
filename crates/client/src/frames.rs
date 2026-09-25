@@ -432,6 +432,13 @@ impl Frames {
         self.ring.closed()
     }
 
+    /// Pictures are coming again, from the next session's decode thread: the
+    /// queue takes waiters, and a picture the last session left untaken is
+    /// let go. Only with no decode thread running.
+    pub fn reopen(&self) {
+        self.ring.reopen();
+    }
+
     /// Pictures published and not yet taken.
     pub fn ready(&self) -> usize {
         self.ring.ready()

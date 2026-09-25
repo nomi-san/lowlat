@@ -822,6 +822,11 @@ impl Client {
             return Err(Error::Busy);
         }
         let mut ours = lowlat_crypto::credentials().map_err(|_| Error::Crypto)?;
+        // The last session's departure closed the queue so no waiter was
+        // stranded; this one's pictures are waited for again from here, the
+        // answer's wait included. No decode thread runs: there is no attempt
+        // and none is leaving.
+        self.frames.reopen();
         if config.legacy_cipher {
             ours.aes256 = String::new();
         }

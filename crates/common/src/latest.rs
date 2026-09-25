@@ -262,6 +262,21 @@ impl<T: Copy, const N: usize> Latest<T, N> {
         self.closed.load(core::sync::atomic::Ordering::Acquire) != 0
     }
 
+    /// Take waiters again after a close, for the producer that comes next.
+    /// **Called with no producer running.** A slot published before the close
+    /// and never taken is let go, since it belongs to what closed; a held one
+    /// stays held until it is given back.
+    pub fn reopen(&self) {
+        for slot in &self.slots {
+            // The consumer may be taking the same slot: one of the two wins
+            // it, and a slot taken is never let go here.
+            let _ = slot
+                .state
+                .compare_exchange(READY, FREE, Ordering::AcqRel, Ordering::Relaxed);
+        }
+        self.closed.store(0, core::sync::atomic::Ordering::Release);
+    }
+
     /// Published slots not yet taken. For the metrics.
     pub fn ready(&self) -> usize {
         self.slots
@@ -368,6 +383,40 @@ mod tests {
     }
 
     #[test]
+    fn a_reopened_ring_waits_again_and_forgets_what_the_close_left() {
+        let ring = Latest::<u32, 4>::new(0);
+        // One picture taken and still held, one published and never taken,
+        // then the close.
+        let index = ring.begin().unwrap();
+        ring.set(index, 6);
+        ring.publish(index);
+        let held = ring.acquire(0, Duration::ZERO).unwrap();
+        let index = ring.begin().unwrap();
+        ring.set(index, 7);
+        ring.publish(index);
+        ring.close();
+
+        ring.reopen();
+        assert!(!ring.closed());
+        let began = std::time::Instant::now();
+        assert!(
+            ring.acquire(0, Duration::from_millis(50)).is_none(),
+            "what the close left was handed out after the reopen"
+        );
+        assert!(
+            began.elapsed() >= Duration::from_millis(40),
+            "a reopened ring came back at once"
+        );
+        assert_eq!(ring.held(), 1, "the reopen let go of a held slot");
+        assert!(ring.release(held.index));
+        // What the next producer publishes comes out as ever.
+        let index = ring.begin().unwrap();
+        ring.set(index, 8);
+        ring.publish(index);
+        assert_eq!(ring.acquire(0, Duration::ZERO).unwrap().payload, 8);
+    }
+
+    #[test]
     fn a_publish_wakes_a_waiter() {
         let ring = std::sync::Arc::new(Latest::<u32, 4>::new(0));
         let waiter = {
@@ -432,6 +481,37 @@ mod loom_tests {
 
             consumer.join().expect("consumer");
             producer.join().expect("producer");
+        });
+    }
+
+    /// The consumer and a reopen race for a slot the close left published:
+    /// one of them has it, and a slot the consumer took is never let go
+    /// under it.
+    #[test]
+    fn a_reopen_never_lets_go_of_a_slot_the_consumer_took() {
+        loom::model(|| {
+            let ring = loom::sync::Arc::new(Latest::<[u32; 2], 2>::new([0, 0]));
+            let index = ring.begin().expect("a slot");
+            ring.set(index, [1, 1]);
+            ring.publish(index);
+            ring.close();
+
+            let consumer = {
+                let ring = ring.clone();
+                loom::thread::spawn(move || ring.acquire(0, Duration::ZERO))
+            };
+            ring.reopen();
+            match consumer.join().expect("consumer") {
+                Some(taken) => {
+                    assert_eq!(taken.payload, [1, 1], "a torn payload");
+                    assert_eq!(ring.held(), 1, "a slot the consumer took was let go");
+                }
+                None => assert_eq!(
+                    ring.ready() + ring.held(),
+                    0,
+                    "the slot the close left outlived the reopen"
+                ),
+            }
         });
     }
 }

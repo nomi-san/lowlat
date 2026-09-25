@@ -3205,16 +3205,12 @@ mod tests {
         println!("{available} of {count} slots available");
     }
 
-    /// A session through the boundary against the host's own admission on
-    /// loopback, the exchange relayed by hand as a signaling service would:
-    /// the handle with its session up, and the host holding the other end.
+    /// The host's own admission, one guest and no stream: the peer the
+    /// session tests here connect to on loopback.
     #[cfg(feature = "host")]
-    fn a_session() -> (*mut lowlat_client, ::lowlat_host::admission::Admission) {
-        use ::lowlat_core::conn::Kind;
-        use ::lowlat_host::admission::{self, Admission, Event as HostEvent};
-        use std::time::Instant;
-
-        let mut host = Admission::new(admission::Config {
+    fn a_host() -> ::lowlat_host::admission::Admission {
+        use ::lowlat_host::admission::{self, Admission};
+        Admission::new(admission::Config {
             microphone: None,
             pad_sink: None,
             exclusive_pointer: false,
@@ -3226,13 +3222,12 @@ mod tests {
             max_guests: 1,
             servers: Vec::new(),
             stream: None,
-        });
-        let mut handle: *mut lowlat_client = core::ptr::null_mut();
-        let info = no_decoder();
-        assert_eq!(
-            unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
-            LOWLAT_OK
-        );
+        })
+    }
+
+    /// Attempt `id` on the handle: the credentials for its offer.
+    #[cfg(feature = "host")]
+    fn an_offer(handle: *mut lowlat_client, id: &core::ffi::CStr) -> lowlat_credentials {
         let mut ours: lowlat_credentials = unsafe { core::mem::zeroed() };
         ours.size = core::mem::size_of::<lowlat_credentials>() as u32;
         assert_eq!(
@@ -3240,16 +3235,49 @@ mod tests {
                 lowlat_client_new_attempt(
                     handle,
                     core::ptr::null(),
-                    c"a".as_ptr(),
+                    id.as_ptr(),
                     lowlat_transport::LOWLAT_TRANSPORT_BUD as u32,
                     &raw mut ours,
                 )
             },
             LOWLAT_OK
         );
+        ours
+    }
+
+    /// A session through the boundary against the host's own admission on
+    /// loopback, the exchange relayed by hand as a signaling service would:
+    /// the handle with its session up, and the host holding the other end.
+    #[cfg(feature = "host")]
+    fn a_session() -> (*mut lowlat_client, ::lowlat_host::admission::Admission) {
+        let mut host = a_host();
+        let mut handle: *mut lowlat_client = core::ptr::null_mut();
+        let info = no_decoder();
+        assert_eq!(
+            unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
+            LOWLAT_OK
+        );
+        let ours = an_offer(handle, c"a");
+        connect(handle, &mut host, c"a", &ours);
+        (handle, host)
+    }
+
+    /// Attempt `id`, offered with `ours`, through to a session with `host`.
+    #[cfg(feature = "host")]
+    fn connect(
+        handle: *mut lowlat_client,
+        host: &mut ::lowlat_host::admission::Admission,
+        id: &core::ffi::CStr,
+        ours: &lowlat_credentials,
+    ) {
+        use ::lowlat_core::conn::Kind;
+        use ::lowlat_host::admission::{self, Event as HostEvent};
+        use std::time::Instant;
+
+        let name = id.to_str().expect("an identifier in text");
         let text = |field: &[c_char]| taken(field).expect("a terminated field").to_string();
         host.new_attempt(
-            "a",
+            name,
             admission::Peer {
                 ufrag: text(&ours.ufrag),
                 pwd: text(&ours.pwd),
@@ -3261,7 +3289,7 @@ mod tests {
             },
         )
         .expect("the host registered the offer");
-        let answer = host.begin_p2p("a", 0).expect("the host answered");
+        let answer = host.begin_p2p(name, 0).expect("the host answered");
         let mut theirs: lowlat_credentials = unsafe { core::mem::zeroed() };
         theirs.size = core::mem::size_of::<lowlat_credentials>() as u32;
         put(&mut theirs.ufrag, &answer.ufrag);
@@ -3269,7 +3297,7 @@ mod tests {
         put(&mut theirs.fingerprint, &answer.fingerprint);
         put(&mut theirs.aes256, &answer.aes256);
         assert_eq!(
-            unsafe { lowlat_client_begin_p2p(handle, c"a".as_ptr(), &raw const theirs) },
+            unsafe { lowlat_client_begin_p2p(handle, id.as_ptr(), &raw const theirs) },
             LOWLAT_OK
         );
 
@@ -3283,7 +3311,7 @@ mod tests {
                 address: [0; LOWLAT_ADDRESS_MAX],
             };
             put(&mut cand.address, &addr.ip().to_string());
-            unsafe { lowlat_client_add_candidate(handle, c"a".as_ptr(), &raw const cand) };
+            unsafe { lowlat_client_add_candidate(handle, id.as_ptr(), &raw const cand) };
         };
         let marker: std::net::SocketAddr = "1.2.3.4:1234".parse().expect("an address");
         let began = Instant::now();
@@ -3311,38 +3339,44 @@ mod tests {
                             .and_then(|text| text.parse().ok())
                             .expect("an address");
                         host.add_candidate(
-                            "a",
+                            name,
                             std::net::SocketAddr::new(ip, cand.port),
                             false,
                             Kind::marked(cand.lan, cand.from_stun),
                         );
                     }
                     lowlat_event_type::LOWLAT_EVENT_READY => {
-                        host.add_candidate("a", marker, true, Kind::Direct);
+                        host.add_candidate(name, marker, true, Kind::Direct);
                     }
                     lowlat_event_type::LOWLAT_EVENT_ESTABLISHED => client_up = true,
                     lowlat_event_type::LOWLAT_EVENT_ENDED => panic!("the client ended"),
                     _ => {}
                 }
             }
+            // What the host says of an earlier attempt, its departure read
+            // late, is not this one's.
             while let Some(received) = host.poll_event() {
                 match received.event {
                     HostEvent::Candidate {
+                        attempt,
                         addr,
                         from_stun,
                         lan,
                         ..
-                    } => candidate(addr, false, from_stun, lan),
-                    HostEvent::Ready { .. } => candidate(marker, true, false, false),
-                    HostEvent::Established { .. } => host_up = true,
-                    HostEvent::Ended { outcome, .. } => panic!("the host ended: {outcome:?}"),
+                    } if attempt == name => candidate(addr, false, from_stun, lan),
+                    HostEvent::Ready { attempt } if attempt == name => {
+                        candidate(marker, true, false, false);
+                    }
+                    HostEvent::Established { attempt, .. } if attempt == name => host_up = true,
+                    HostEvent::Ended { attempt, outcome } if attempt == name => {
+                        panic!("the host ended: {outcome:?}")
+                    }
                     _ => {}
                 }
             }
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(client_up && host_up, "the pair did not establish");
-        (handle, host)
     }
 
     /// **A call made while the session leaves is answered at once**, not
@@ -3426,6 +3460,55 @@ mod tests {
         }
         assert_eq!(outcome, Some(HostOutcome::PeerLeft(0)));
         host.end_connection("a");
+        unsafe { lowlat_client_destroy(handle) };
+    }
+
+    /// **A second session on the same handle waits for its pictures as the
+    /// first did.** A departure closes the picture queue so no waiter is left
+    /// stranded, and the next attempt takes waiters again from the moment it
+    /// is made, before its answer as well as after. Without that, every
+    /// acquire after a reconnect comes back at once and a render loop paced
+    /// by the wait spins. There is no decoder, so no picture ever comes and
+    /// every acquire here runs to its timeout.
+    #[cfg(feature = "host")]
+    #[test]
+    fn a_second_session_on_the_handle_waits_for_its_pictures() {
+        use std::time::Instant;
+
+        let waited = |handle: *mut lowlat_client| {
+            let mut frame: lowlat_frame = unsafe { core::mem::zeroed() };
+            frame.size = core::mem::size_of::<lowlat_frame>() as u32;
+            let began = Instant::now();
+            let status = unsafe { lowlat_client_acquire_frame(handle, 0, 100, &raw mut frame) };
+            (status, began.elapsed())
+        };
+        let (handle, mut host) = a_session();
+        let (status, first) = waited(handle);
+        assert_eq!(status, LOWLAT_TIMEOUT);
+        assert!(
+            first >= Duration::from_millis(80),
+            "the first session's acquire came back after {first:?}, so there is nothing to compare"
+        );
+        unsafe { lowlat_client_end_connection(handle) };
+        host.end_connection("a");
+
+        let ours = an_offer(handle, c"b");
+        let (status, offered) = waited(handle);
+        assert_eq!(status, LOWLAT_TIMEOUT);
+        assert!(
+            offered >= Duration::from_millis(80),
+            "an acquire after the next offer came back after {offered:?}"
+        );
+        connect(handle, &mut host, c"b", &ours);
+        let (status, second) = waited(handle);
+        assert_eq!(status, LOWLAT_TIMEOUT);
+        assert!(
+            second >= Duration::from_millis(80),
+            "the second session's acquire came back after {second:?}"
+        );
+
+        unsafe { lowlat_client_end_connection(handle) };
+        host.end_connection("b");
         unsafe { lowlat_client_destroy(handle) };
     }
 }
