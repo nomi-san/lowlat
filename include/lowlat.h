@@ -2530,7 +2530,8 @@ void lowlat_client_destroy(lowlat_client *cl) LOWLAT_NOEXCEPT;
 /// **Nothing is sent and no socket is opened.** The application puts what
 /// comes back into its offer over its own signaling and calls
 /// `lowlat_client_begin_p2p` with the answer. One attempt at a time; a second
-/// while one exists is refused with `LOWLAT_ERR_ALREADY_STARTED`.
+/// while one exists, or while an ended one is still leaving on another thread,
+/// is refused with `LOWLAT_ERR_ALREADY_STARTED`.
 ///
 /// @param[in] cl The handle from `lowlat_client_create`.
 /// @param[in] cfg What to ask of the host. May be null, which takes every default.
@@ -2589,6 +2590,10 @@ lowlat_status lowlat_client_begin_p2p(lowlat_client *cl,
 /// leaving cleanly; the message is given a moment to arrive. **No event is
 /// raised**: the application caused this. A handle with no attempt is left as
 /// it is.
+///
+/// **The wait holds nothing else up.** Calls made on other threads while this
+/// one waits are answered at once, as for a handle with no attempt, and a new
+/// attempt is refused with `LOWLAT_ERR_ALREADY_STARTED` until this returns.
 ///
 /// @param[in] cl The handle from `lowlat_client_create`.
 ///

@@ -305,6 +305,62 @@ pub struct Client {
     /// for the decode alone and never for the wait, so two callers serialise
     /// and each takes the next packet.
     sound: Arc<Mutex<Sound>>,
+    /// Set while an attempt taken out by [`Client::detach`] is still leaving:
+    /// its threads share the unit pool, the picture queue and the sound pool
+    /// with whatever session comes next, so no next one begins until it is
+    /// cleared.
+    leaving: Arc<AtomicBool>,
+}
+
+/// An attempt taken out of its client and still leaving: everything the
+/// departure and the joins need, so they run without the client and whatever
+/// lock the client is behind.
+#[derive(Debug)]
+pub struct Leaving {
+    attempt: Attempt,
+    units: Units,
+    frames: Arc<Frames>,
+    sound: Arc<Mutex<Sound>>,
+    packets: Packets,
+    leaving: Arc<AtomicBool>,
+}
+
+impl Leaving {
+    /// The departure and the joins: the one call that waits.
+    pub fn finish(mut self) {
+        let attempt = &mut self.attempt;
+        if let (Some(ask), Some(thread)) = (attempt.ask.as_ref(), attempt.thread.as_mut()) {
+            // A clean departure says so on the control channel, and the loop
+            // gives the message its grace before it stops itself.
+            if ask.send(Ask::Leave).is_ok() {
+                let _ = thread.wake_handle().notify();
+                let began = lowlat_common::clock::Time::now();
+                while thread.alive()
+                    && lowlat_common::clock::elapsed_ms(began) < LEAVE_GRACE_MS * 2.0
+                {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }
+            thread.stop();
+        }
+        if let Some((decode, stopping)) = attempt.decode.take() {
+            // Teardown wakes before it joins: the flag, then the word the
+            // thread waits on, then the picture queue's waiters.
+            stopping.store(true, Ordering::Release);
+            self.units.wake();
+            self.frames.close();
+            let _ = decode.join();
+        }
+        // What the session left in the sound pool is its own; the next
+        // session's first packet is not to wait behind it.
+        if let Ok(mut sound) = self.sound.lock() {
+            sound.clear();
+        }
+        self.packets.wake();
+        // Release: everything above is done before a new attempt, which
+        // loads the mark with Acquire, can begin.
+        self.leaving.store(false, Ordering::Release);
+    }
 }
 
 /// Which stage a probe's refusal names.
@@ -565,6 +621,7 @@ impl Client {
             last_seq: 0,
             sound: Arc::new(Mutex::new(Sound::new(packets.clone(), telemetry))),
             packets,
+            leaving: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -758,7 +815,10 @@ impl Client {
         if transport == Transport::Web {
             return Err(Error::Transport);
         }
-        if self.attempt.is_some() {
+        // An attempt still leaving is still one: its threads are running.
+        // Acquire, pairing with the Release that clears the mark once they
+        // are joined.
+        if self.attempt.is_some() || self.leaving.load(Ordering::Acquire) {
             return Err(Error::Busy);
         }
         let mut ours = lowlat_crypto::credentials().map_err(|_| Error::Crypto)?;
@@ -940,37 +1000,30 @@ impl Client {
     /// Leave, or abandon an attempt that never began. Emits nothing: the
     /// application caused this.
     pub fn end_connection(&mut self, id: &str) {
-        let Some(mut attempt) = self.attempt.take_if(|attempt| attempt.id == id) else {
-            return;
-        };
-        if let (Some(ask), Some(thread)) = (attempt.ask.as_ref(), attempt.thread.as_mut()) {
-            // A clean departure says so on the control channel, and the loop
-            // gives the message its grace before it stops itself.
-            if ask.send(Ask::Leave).is_ok() {
-                let _ = thread.wake_handle().notify();
-                let began = lowlat_common::clock::Time::now();
-                while thread.alive()
-                    && lowlat_common::clock::elapsed_ms(began) < LEAVE_GRACE_MS * 2.0
-                {
-                    std::thread::sleep(Duration::from_millis(5));
-                }
-            }
-            thread.stop();
+        if let Some(leaving) = self.detach(id) {
+            leaving.finish();
         }
-        if let Some((decode, stopping)) = attempt.decode.take() {
-            // Teardown wakes before it joins: the flag, then the word the
-            // thread waits on, then the picture queue's waiters.
-            stopping.store(true, Ordering::Release);
-            self.units.wake();
-            self.frames.close();
-            let _ = decode.join();
-        }
-        // What the session left in the sound pool is its own; the next
-        // session's first packet is not to wait behind it.
-        if let Ok(mut sound) = self.sound.lock() {
-            sound.clear();
-        }
-        self.packets.wake();
+    }
+
+    /// Take the attempt out to leave it, and wait for nothing. From here the
+    /// client answers as having no attempt and refuses a new one until
+    /// [`Leaving::finish`] has joined the threads: the departure's grace and
+    /// the joins take a quarter of a second or more, and a caller holding the
+    /// client behind a lock makes every other call wait that long unless it
+    /// finishes outside it.
+    pub fn detach(&mut self, id: &str) -> Option<Leaving> {
+        let attempt = self.attempt.take_if(|attempt| attempt.id == id)?;
+        // Relaxed: set and read by whoever holds the client exclusively; only
+        // the clearing crosses to another thread.
+        self.leaving.store(true, Ordering::Relaxed);
+        Some(Leaving {
+            attempt,
+            units: self.units.clone(),
+            frames: Arc::clone(&self.frames),
+            sound: Arc::clone(&self.sound),
+            packets: self.packets.clone(),
+            leaving: Arc::clone(&self.leaving),
+        })
     }
 
     /// Hand the session thread one request and wake it.
