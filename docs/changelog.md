@@ -3,6 +3,30 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-25 - Records sealed by a vetted library, lent to the core
+
+### Changed
+- **A live session's records are sealed and opened by `ring`** ([01 §4.1](01-protocol.md),
+  [00 D4](00-overview.md)). Host and client both key a session's cipher on the thread that
+  runs it (`lowlat_crypto::Record`) and lend it to the core's envelope (`Envelope::lent`).
+  The core keeps its portable cipher as the reference, and for its own tests, simulator and
+  fuzzing: the library always brings a random source, which the core must be unable to
+  reach. Through the envelope, AES-256, on the development machine: a 1200-byte datagram
+  seals in 147 ns and opens in 133, against 692 and 689; a 64-byte one in 59 and 58, against
+  84 and 68; the 99th percentile within 3 ns of the median throughout. A four-guest session
+  at 40 Mbps spends a quarter of one percent of a core on it rather than 1.2, and the
+  client's receive about a fifth as much as before.
+- `ring` 0.17 was already in the graph as the signaling TLS provider; it now links into both
+  halves of the library too. Nothing new is duplicated and the licences are unchanged.
+
+### Measured
+- The lent cipher writes the records the portable one writes, byte for byte, at every length
+  from empty through 300 bytes, at each side of the group boundaries past it and at a full
+  datagram, under both ciphers, and each opens the other's; a record touched in its counter,
+  its tag or either end of its body is refused. Each check was shown failing with its part
+  broken: a seal under the wrong nonce, an open that accepts anything. Live, the client
+  streamed from both established hosts, sound and video, with every record through it.
+
 ## 2026-09-25 - Demo: the toolkit's websocket reader hands out whole messages
 
 ### Fixed

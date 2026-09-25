@@ -115,6 +115,25 @@ There is no associated data. The envelope header is not authenticated.
 The counter MUST increase monotonically per sender for the life of a session. A session that
 would wrap it is torn down rather than reusing a nonce.
 
+### §4.1 The cipher is lent to the core
+
+The core owns the envelope -- the layout, the derived nonce, the counter's limit -- and a
+portable implementation of the cipher, which is the reference and what runs inside the
+core's own tests, simulator and fuzzing. **A live session's records are sealed and opened by
+`ring`**, keyed by the thread that runs the session and lent to its envelope for the
+session's life. That library picks the processor's widest AES and carry-less multiply
+instructions at run time and constant-time software where there are none. It cannot live in
+the core, because it always brings a random source (D4).
+
+The two are interchangeable and tested to be: the same ciphertext and the same tag for every
+length through a full datagram under both ciphers, and each opens what the other sealed. A
+peer cannot tell which one sealed a record.
+
+Measured on this project's development machine, through the envelope, AES-256: a 1200-byte
+datagram seals in 147 ns and opens in 133 lent, against 692 and 689 portable; a 64-byte one in
+59 and 58, against 84 and 68. For a host serving four guests at 40 Mbps that is a quarter of
+one percent of a core rather than 1.2 percent.
+
 ## §5 Cleartext packets
 
 ### §5.1 Data packet

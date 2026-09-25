@@ -1941,6 +1941,11 @@ arbitration; a paired Bluetooth pad at the client, if one is paired.
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
 
+- 2026-09-25: **Phase 1's envelope keeps its layout and lends out its cipher.** A live
+  session's records are sealed by a vetted library, keyed on the session's thread and lent
+  to the core's envelope, about five times the portable cipher on a full datagram; the core
+  keeps the portable one as the reference ([01 §4.1](01-protocol.md), [00 D4](00-overview.md)).
+
 - 2026-09-23: **Phase 2b dropped; the relay is the client's.** The deployment relaying is for
   puts the relay on the host's own machine behind one forwarded port, where only the
   connecting side can allocate usefully, and a client-side relay asks nothing of any host. The
