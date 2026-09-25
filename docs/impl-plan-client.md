@@ -644,6 +644,23 @@ here; the rules are [10 §7](10-client.md) and §9, the surface [06 §3b](06-api
   host and one to the second between them, all came up, every message one whole frame. The
   toolkit's reader takes the first frame of a fragmented message for the whole of it and
   drops the rest, which would explain the lost answer; it was not caught doing so.
+- [x] **A stream silent about its reordering stays in time past its frame number's wrap**
+  (*2026-09-25*). Found measuring the vendor backend's waits on clips from the vendor
+  encoder at its defaults: from picture 257 on, the device's map took 5 us, because the
+  picture being mapped had been decoded sixteen units earlier. Under order counts that
+  follow the frame number, the offset that carries the count across the wrap was derived
+  after the frame number it is compared against had been replaced, so it never advanced;
+  every later count restarted low, and a stream that declares nothing about its reordering
+  took each picture for a late one, stopping for sixteen pictures and running sixteen
+  behind. A stream that declares its depth never showed it, which covers this host's three
+  encoders and the established hosts tried here (both ran past 256 pictures with the map
+  still waiting on each decode). `h264-nvenc-wrap`, 300 pictures of the vendor encoder's
+  defaults, joins the fixtures with
+  `a_stream_silent_about_reordering_leaves_as_it_arrives_past_a_frame_number_wrap`, which
+  checks the clip is the case (order count type 2, no depth stated, past the wrap) and that
+  every picture leaves as it is decoded with its count rising: unit 257 was held back
+  before. It decodes to the reference through both device interfaces (the open stack on
+  two cards) and the software backend.
 
 **Built 2026-09-19, evening, deviations from the text above:** the picture already delivered,
 named or sent again, travels as its checksum alone -- the first live run against this host
@@ -1282,6 +1299,8 @@ slower decoder ever reopens them.
 
 Newest first.
 
+- 2026-09-25: a stream silent about its reordering stays in time past its frame number's
+  wrap; it had stopped for sixteen pictures there and run sixteen behind.
 - 2026-09-25: a new attempt starts from nothing the last session left; live, the demo moved
   between two established hosts on one handle, one answer lost to the signaling socket.
 - 2026-09-25: a second session on one handle waits for its pictures, and a departure ends

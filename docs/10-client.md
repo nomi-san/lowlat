@@ -509,7 +509,10 @@ allocated per unit: the parser's state, the picture buffer and the parameter sta
 fixed arrays sized by the standards, and a unit that needs more than they hold is refused,
 never truncated. A stream that declares nothing about its reordering is held back only as
 far as it proves it must: a bidirectional slice or a jump in the picture order holds one
-picture, a picture that arrives late holds one more.
+picture, a picture that arrives late holds one more. The order counts that follow the frame
+number run on across its wrap (*2026-09-25*): a count that restarted there made every later
+picture read as a late one, and such a stream stopped for sixteen pictures and then ran
+sixteen behind.
 
 **The read-back is the cost of planes** (*measured 2026-09-17*, this machine, 1080p, the
 open-stack driver): about 2 ms a picture live, as much as the decode itself, and nearly all

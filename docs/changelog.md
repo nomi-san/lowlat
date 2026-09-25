@@ -3,6 +3,21 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-25 - C5: a stream silent about reordering stays in time past a frame number wrap
+
+### Fixed
+- **A stream that says nothing about its reordering stays in time past its frame number's
+  wrap** ([10 §5.1](10-client.md)). Under order counts that follow the frame number, the
+  count restarted low at the first wrap: the offset that carries it on was derived after
+  the frame number it is compared against had been replaced. A stream that declares its
+  reordering never showed it; one that declares nothing took every later picture for a late
+  one, and its output stopped for sixteen pictures and then ran sixteen behind for the rest
+  of the session, 133 ms at 120 pictures a second. The vendor encoder at its defaults writes
+  such a stream; this host's three encoders and the established hosts tried here declare
+  their depth. A clip of it, 300 pictures past the wrap at 256, joins the fixtures: it held
+  unit 257 back before, and decodes to the reference on both device interfaces and the
+  software backend after.
+
 ## 2026-09-25 - C5: a new attempt starts from nothing the last session left
 
 ### Fixed
