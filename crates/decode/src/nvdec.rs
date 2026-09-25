@@ -17,7 +17,7 @@
 use core::ffi::c_int;
 
 use lowlat_core::video::{Codec, VideoHeader};
-use lowlat_drivers::cuda::{self, Cuda, Stream};
+use lowlat_drivers::cuda::{self, Cuda, Event, Stream};
 use lowlat_drivers::cuvid::{self, Cuvid};
 use lowlat_drivers::ffi::cuvid::{
     CUVIDDECODECAPS, CUVIDDECODECREATEINFO, CUVIDH264DPBENTRY, CUVIDPICPARAMS, CUVIDPROCPARAMS,
@@ -223,8 +223,9 @@ pub struct Backend<'a> {
     /// of it, and where each begins.
     bitstream: Vec<u8>,
     offsets: Box<[u32; MAX_SLICES]>,
-    /// The stream the device copies run on, made at the first.
-    stream: Option<Stream>,
+    /// The stream the device copies run on, and the event recorded behind
+    /// them that the copy's end is waited on by, made at the first.
+    stream: Option<(Stream, Event)>,
     /// The last decode and read-back, in microseconds, for the log.
     pub decode_us: u32,
     pub readback_us: u32,
@@ -796,17 +797,20 @@ impl<'a> Backend<'a> {
     }
 
     /// As [`Self::read_back`], to device memory: the mapped picture is
-    /// copied plane by plane on this backend's stream and the stream is
-    /// waited for before the picture is unmapped, so the bytes are in
-    /// `out` when this returns and whatever imports that memory may read
+    /// copied plane by plane on this backend's stream and the copies are
+    /// waited for, asleep, before the picture is unmapped, so the bytes are
+    /// in `out` when this returns and whatever imports that memory may read
     /// them with no fence of its own.
     fn copy_to_device(&mut self, slot: usize, out: &DevicePlanes) -> Result<()> {
         let shape = self.shape.ok_or(Error::NoProfile)?;
         let format = shape.format();
         if self.stream.is_none() {
-            self.stream = Some(self.cuda.create_stream()?);
+            self.stream = Some((
+                self.cuda.create_stream()?,
+                self.cuda.create_waitable_event()?,
+            ));
         }
-        let stream = self.stream.as_ref().ok_or(Error::NoProfile)?;
+        let (stream, copied) = self.stream.as_ref().ok_or(Error::NoProfile)?;
         let decoder = self.decoder.as_ref().ok_or(Error::NoProfile)?;
         let started = lowlat_common::clock::Time::now();
         let mut proc_params: CUVIDPROCPARAMS = zeroed();
@@ -845,7 +849,7 @@ impl<'a> Backend<'a> {
                 break;
             }
         }
-        let waited = self.cuda.synchronize(stream);
+        let waited = copied.record(stream).and_then(|()| copied.wait());
         let unmapped = decoder.unmap(ptr);
         let done = lowlat_common::clock::Time::now();
         self.decode_us = micros(lowlat_common::clock::diff_ms(started, synced));

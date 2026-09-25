@@ -22,8 +22,8 @@ use std::os::fd::OwnedFd;
 use lowlat_common::dynlib::Library;
 
 use crate::ffi::cuda::{
-    CU_EVENT_DISABLE_TIMING, CUDA_ERROR_NOT_READY, CUDA_SUCCESS, CUcontext, CUdevice, CUdeviceptr,
-    CUevent, CUresult, CUstream,
+    CU_EVENT_BLOCKING_SYNC, CU_EVENT_DISABLE_TIMING, CUDA_ERROR_NOT_READY, CUDA_SUCCESS, CUcontext,
+    CUdevice, CUdeviceptr, CUevent, CUresult, CUstream,
 };
 
 /// Versioned first, as with the encoder runtime.
@@ -49,6 +49,7 @@ type EventCreate = unsafe extern "C" fn(*mut CUevent, c_uint) -> CUresult;
 type EventDestroy = unsafe extern "C" fn(CUevent) -> CUresult;
 type EventRecord = unsafe extern "C" fn(CUevent, CUstream) -> CUresult;
 type EventQuery = unsafe extern "C" fn(CUevent) -> CUresult;
+type EventSynchronize = unsafe extern "C" fn(CUevent) -> CUresult;
 type ImportExternalMemory = unsafe extern "C" fn(
     *mut crate::ffi::cuda::CUexternalMemory,
     *const crate::ffi::cuda::CUDA_EXTERNAL_MEMORY_HANDLE_DESC,
@@ -61,7 +62,6 @@ type ExternalMemoryGetMappedBuffer = unsafe extern "C" fn(
 type DestroyExternalMemory = unsafe extern "C" fn(crate::ffi::cuda::CUexternalMemory) -> CUresult;
 type Memcpy2DAsync =
     unsafe extern "C" fn(*const crate::ffi::cuda::CUDA_MEMCPY2D, CUstream) -> CUresult;
-type StreamSynchronize = unsafe extern "C" fn(CUstream) -> CUresult;
 type MemGetAllocationGranularity =
     unsafe extern "C" fn(*mut usize, *const MemAllocationProp, c_uint) -> CUresult;
 type MemCreate = unsafe extern "C" fn(
@@ -326,11 +326,11 @@ pub struct Cuda {
     event_destroy: EventDestroy,
     event_record: EventRecord,
     event_query: EventQuery,
+    event_synchronize: EventSynchronize,
     import_external_memory: ImportExternalMemory,
     external_memory_get_mapped_buffer: ExternalMemoryGetMappedBuffer,
     destroy_external_memory: DestroyExternalMemory,
     memcpy_2d_async: Memcpy2DAsync,
-    stream_synchronize: StreamSynchronize,
     mem_get_allocation_granularity: MemGetAllocationGranularity,
     mem_create: MemCreate,
     mem_release: MemRelease,
@@ -408,6 +408,9 @@ impl Cuda {
                 event_query: library
                     .symbol(c"cuEventQuery")
                     .ok_or(Error::MissingSymbol)?,
+                event_synchronize: library
+                    .symbol(c"cuEventSynchronize")
+                    .ok_or(Error::MissingSymbol)?,
                 import_external_memory: library
                     .symbol(c"cuImportExternalMemory")
                     .ok_or(Error::MissingSymbol)?,
@@ -419,9 +422,6 @@ impl Cuda {
                     .ok_or(Error::MissingSymbol)?,
                 memcpy_2d_async: library
                     .symbol(c"cuMemcpy2DAsync_v2")
-                    .ok_or(Error::MissingSymbol)?,
-                stream_synchronize: library
-                    .symbol(c"cuStreamSynchronize")
                     .ok_or(Error::MissingSymbol)?,
                 mem_get_allocation_granularity: library
                     .symbol(c"cuMemGetAllocationGranularity")
@@ -740,7 +740,8 @@ impl Cuda {
 
     /// Queue a copy of `rows` of `row_bytes` between two pitched device
     /// addresses on `stream`. **Returns before the copy is done**: the
-    /// caller waits on the stream before either side is touched again.
+    /// caller waits for an event recorded behind it before either side is
+    /// touched again.
     ///
     /// # Safety
     ///
@@ -778,12 +779,6 @@ impl Cuda {
         // SAFETY: the descriptor is live for the call, which reads it whole
         // before returning; the addresses are the caller's contract.
         check(unsafe { (self.memcpy_2d_async)(&raw const copy, stream.raw) })
-    }
-
-    /// Wait until everything queued on `stream` has run.
-    pub fn synchronize(&self, stream: &Stream) -> Result<()> {
-        // SAFETY: the handle is valid for the life of the stream.
-        check(unsafe { (self.stream_synchronize)(stream.raw) })
     }
 }
 
@@ -1008,12 +1003,14 @@ impl Drop for Stream {
     }
 }
 
-/// A marker recorded into a stream, which can be tested without blocking.
+/// A marker recorded into a stream, which can be tested without blocking or
+/// waited on.
 #[derive(Debug)]
 pub struct Event {
     raw: CUevent,
     record: EventRecord,
     query: EventQuery,
+    synchronize: EventSynchronize,
     destroy: EventDestroy,
 }
 
@@ -1041,6 +1038,14 @@ impl Event {
             other => Err(Error::Status(other)),
         }
     }
+
+    /// Block until the recorded point is reached. The thread sleeps on an
+    /// event from [`Cuda::create_waitable_event`]; on any other the wait
+    /// follows the context's own policy, which by default spins throughout.
+    pub fn wait(&self) -> Result<()> {
+        // SAFETY: the handle is valid for the life of `self`.
+        check(unsafe { (self.synchronize)(self.raw) })
+    }
 }
 
 impl Drop for Event {
@@ -1066,15 +1071,31 @@ impl Cuda {
 
     /// An event for completion only.
     pub fn create_event(&self) -> Result<Event> {
+        // Timing is disabled because only the fact of completion is wanted,
+        // and keeping it costs a synchronisation the query would otherwise
+        // not need.
+        self.event(CU_EVENT_DISABLE_TIMING)
+    }
+
+    /// An event for completion only, whose wait sleeps until the device
+    /// reaches it. The context's own waits spin: the thread spends the whole
+    /// wait on a core, and on a machine whose cores are all busy it is
+    /// preempted mid-spin and sees the completion a scheduling slice late.
+    /// The context is shared with the application, so the sleep is asked of
+    /// the one event rather than of the context.
+    pub fn create_waitable_event(&self) -> Result<Event> {
+        self.event(CU_EVENT_BLOCKING_SYNC | CU_EVENT_DISABLE_TIMING)
+    }
+
+    fn event(&self, flags: c_uint) -> Result<Event> {
         let mut raw: CUevent = core::ptr::null_mut();
-        // SAFETY: the out pointer is to a live local. Timing is disabled
-        // because only the fact of completion is wanted, and keeping it costs
-        // a synchronisation the query would otherwise not need.
-        check(unsafe { (self.event_create)(&raw mut raw, CU_EVENT_DISABLE_TIMING) })?;
+        // SAFETY: the out pointer is to a live local.
+        check(unsafe { (self.event_create)(&raw mut raw, flags) })?;
         Ok(Event {
             raw,
             record: self.event_record,
             query: self.event_query,
+            synchronize: self.event_synchronize,
             destroy: self.event_destroy,
         })
     }
