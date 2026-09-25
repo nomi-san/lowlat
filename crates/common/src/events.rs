@@ -193,6 +193,18 @@ impl<E: Queued> Sender<E> {
         self.shared.arrivals.fetch_add(1, Ordering::Release);
         crate::wait::notify_one(&self.shared.arrivals);
     }
+
+    /// Drop everything queued and not yet taken, and the count of what was
+    /// dropped before it. **For the side that knows an era ended** -- a
+    /// session the application left and replaced with another -- whose events
+    /// would otherwise be handed out as though the next one had raised them.
+    /// Not a way for a consumer to catch up.
+    pub fn clear(&self) {
+        let mut state = self.shared.state();
+        state.queued.clear();
+        state.bytes = 0;
+        state.dropped = 0;
+    }
 }
 
 /// Where events are taken from. **One consumer**, which is what lets the
@@ -365,6 +377,32 @@ mod tests {
 
         // And the count is reported once, not on every event after it.
         assert_eq!(receiver.try_recv().expect("the next").dropped, 0);
+    }
+
+    /// **A clear takes everything, and the count with it**, the one event a
+    /// full queue may not discard included: what comes after is delivered as
+    /// the first of its era, with nothing reported lost before it.
+    #[test]
+    fn a_clear_leaves_nothing_of_what_came_before() {
+        let (sender, receiver) = queue();
+        sender.send(Event::Fatal { reason: -15000 });
+        for index in 0..MAX_EVENTS + 10 {
+            sender.send(ready(&index.to_string()));
+        }
+        // Half the byte budget, held when the clear comes.
+        sender.send(user_data(MAX_BYTES / 2));
+        sender.clear();
+        assert!(receiver.try_recv().is_none(), "an event outlived the clear");
+
+        sender.send(ready("next"));
+        let taken = receiver.try_recv().expect("the next era's first");
+        assert_eq!(taken.event, ready("next"));
+        assert_eq!(taken.dropped, 0, "the last era's losses were reported");
+        // And the byte budget starts empty: two bodies of half of it fit
+        // without the first being dropped to make room for the second.
+        sender.send(user_data(MAX_BYTES / 2));
+        sender.send(user_data(MAX_BYTES / 2));
+        assert_eq!(receiver.try_recv().expect("the first body").dropped, 0);
     }
 
     /// **The one event a full queue may not discard.** Everything else is one

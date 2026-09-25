@@ -3511,4 +3511,87 @@ mod tests {
         host.end_connection("b");
         unsafe { lowlat_client_destroy(handle) };
     }
+
+    /// **A new attempt starts from nothing the last session left.** An event
+    /// the application never took is not handed out afterwards under the new
+    /// attempt's name, and the status and the figures describe the new
+    /// attempt -- connecting rather than over, nothing counted -- until its
+    /// own session says otherwise.
+    #[cfg(feature = "host")]
+    #[test]
+    fn a_new_attempt_starts_from_nothing_the_last_session_left() {
+        use std::time::Instant;
+
+        let read = |handle: *mut lowlat_client| {
+            let mut status: lowlat_client_status = unsafe { core::mem::zeroed() };
+            status.size = core::mem::size_of::<lowlat_client_status>() as u32;
+            let mut metrics: lowlat_client_metrics = unsafe { core::mem::zeroed() };
+            metrics.size = core::mem::size_of::<lowlat_client_metrics>() as u32;
+            assert_eq!(
+                unsafe { lowlat_client_get_status(handle, &raw mut status) },
+                LOWLAT_OK
+            );
+            assert_eq!(
+                unsafe { lowlat_client_get_metrics(handle, &raw mut metrics) },
+                LOWLAT_OK
+            );
+            (status, metrics)
+        };
+        let (handle, mut host) = a_session();
+        // A message from the host that the application never takes: sent,
+        // and waited for until the control channel has counted it.
+        let (_, before) = read(handle);
+        let guests = host.guests();
+        assert!(host.send_user_data(guests[0].number, 5, b"left behind"));
+        let began = Instant::now();
+        let (status, metrics) = loop {
+            let (status, metrics) = read(handle);
+            if metrics.control.messages > before.control.messages
+                || began.elapsed() > Duration::from_secs(5)
+            {
+                break (status, metrics);
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(
+            metrics.control.messages > before.control.messages,
+            "the host's message never arrived"
+        );
+        assert_eq!(status.state, LOWLAT_CLIENT_ESTABLISHED);
+        assert!(metrics.connected_ms > 0);
+        unsafe { lowlat_client_end_connection(handle) };
+        host.end_connection("a");
+
+        an_offer(handle, c"b");
+        let mut event = core::mem::MaybeUninit::<lowlat_event>::uninit();
+        assert_eq!(
+            unsafe {
+                lowlat_client_poll_events(
+                    handle,
+                    0,
+                    event.as_mut_ptr(),
+                    core::ptr::null_mut(),
+                    core::ptr::null_mut(),
+                )
+            },
+            LOWLAT_TIMEOUT,
+            "an event the last session left came out under the new attempt"
+        );
+        let (status, metrics) = read(handle);
+        assert_eq!(
+            status.state, LOWLAT_CLIENT_CONNECTING,
+            "the new attempt read as the last session's state"
+        );
+        assert_eq!(
+            metrics.connected_ms, 0,
+            "the last session's time carried over"
+        );
+        assert_eq!(
+            metrics.control.messages, 0,
+            "the last session's messages were counted as the new attempt's"
+        );
+
+        unsafe { lowlat_client_end_connection(handle) };
+        unsafe { lowlat_client_destroy(handle) };
+    }
 }

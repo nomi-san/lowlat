@@ -822,10 +822,21 @@ impl Client {
             return Err(Error::Busy);
         }
         let mut ours = lowlat_crypto::credentials().map_err(|_| Error::Crypto)?;
-        // The last session's departure closed the queue so no waiter was
-        // stranded; this one's pictures are waited for again from here, the
-        // answer's wait included. No decode thread runs: there is no attempt
-        // and none is leaving.
+        // **The attempt starts from nothing the last session left**, and no
+        // thread of that session is running: there is no attempt and none is
+        // leaving. Its figures are not this one's, so the status reads as
+        // connecting and counts from zero; its events are not handed out under
+        // this one's name; its units are not the next decoder's first.
+        let telemetry = Arc::new(Telemetry::default());
+        if let Ok(mut sound) = self.sound.lock() {
+            *sound = Sound::new(self.packets.clone(), Arc::clone(&telemetry));
+        }
+        self.telemetry = telemetry;
+        self.emit.clear();
+        self.units.clear();
+        // The departure closed the queue so no waiter was stranded; this
+        // attempt's pictures are waited for again from here, the answer's
+        // wait included.
         self.frames.reopen();
         if config.legacy_cipher {
             ours.aes256 = String::new();

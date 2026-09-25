@@ -143,6 +143,13 @@ impl Units {
     pub fn queued(&self) -> usize {
         self.ring.len()
     }
+
+    /// Let go of every unit handed over and not yet taken: they belong to a
+    /// stream that has ended. The consumer's side, taken while no consumer
+    /// runs.
+    pub fn clear(&self) {
+        while self.take().is_some() {}
+    }
 }
 
 /// One access unit, header included, as it came off the wire.
@@ -1363,5 +1370,36 @@ mod tests {
         assert!(stamp_us(wrap_ms + 2.0) < stamp, "the stamp did not wrap");
         assert_eq!(stamp_age_us(wrap_ms + 2.0, stamp), 3000);
         assert_eq!(stamp_age_us(5.0, stamp_us(5.0)), 0);
+    }
+
+    /// Units a stream left handed over and untaken are let go by a clear,
+    /// and every slot is the producer's again for the stream after it.
+    #[test]
+    fn a_clear_lets_go_of_the_units_left_behind() {
+        let units = Units::new();
+        let publish = |units: &Units, byte: u8| {
+            let mut writer = units.pool.acquire().expect("a free slot");
+            assert!(writer.fill_with(|slot| {
+                slot[..4].fill(byte);
+                Some(4)
+            }));
+            assert_eq!(writer.publish(0, &[&units.ring]), 1);
+        };
+        for byte in 0..UNIT_SLOTS as u8 {
+            publish(&units, byte);
+        }
+        assert_eq!(units.queued(), UNIT_SLOTS);
+
+        units.clear();
+        assert_eq!(units.queued(), 0);
+        assert!(units.take().is_none(), "a unit outlived the clear");
+        // Every slot came back: the next stream fills all of them.
+        for byte in 0..UNIT_SLOTS as u8 {
+            publish(&units, 10 + byte);
+        }
+        assert_eq!(
+            units.take().expect("the next stream's first").bytes(),
+            &[10; 4]
+        );
     }
 }
