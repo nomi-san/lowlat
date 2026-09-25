@@ -191,9 +191,12 @@ struct demo {
 	uint64_t decoder_every;
 
 	// Where the picture is drawn: stretched to the window, or at its own
-	// size when it fits. The rectangle last told to the library.
+	// size when it fits. The rectangle last told to the library, and the
+	// window's size it was fitted to: kept from the toolkit's events rather
+	// than asked of the display on every pass, which is a round trip each.
 	atomic_bool stretch;
 	int32_t viewport[4];
+	MTY_Size window_size;
 
 	// The host's pointer mode, and whether the chord let go of it.
 	bool relative;
@@ -936,6 +939,12 @@ static void event_func(const MTY_Event *evt, void *opaque)
 				lowlat_client_send_release_all(d->client);
 			apply_relative(d);
 			break;
+		case MTY_EVENT_SIZE:
+		case MTY_EVENT_MOVE:
+			// A notice that both resizes and moves the window arrives as a
+			// move alone, so either one reads the size again.
+			d->window_size = MTY_WindowGetSize(d->app, d->window);
+			break;
 		default:
 			break;
 	}
@@ -949,7 +958,7 @@ static void place_picture(struct demo *d)
 	int32_t rect[4] = {0, 0, 0, 0};
 	uint32_t width = atomic_load(&d->picture_width);
 	if (width != 0) {
-		MTY_Size size = MTY_WindowGetSize(d->app, d->window);
+		MTY_Size size = d->window_size;
 		uint32_t height = atomic_load(&d->picture_height);
 		uint32_t rotation = atomic_load(&d->picture_rotation);
 		bool turned = rotation == LOWLAT_ROTATION_90 || rotation == LOWLAT_ROTATION_270;
@@ -1897,6 +1906,7 @@ int main(void)
 		fprintf(stderr, "demo: no window\n");
 		return 1;
 	}
+	d.window_size = MTY_WindowGetSize(d.app, d.window);
 	MTY_AppSetTimeout(d.app, 1);
 	d.second_began = now_ms();
 	d.started_ms = d.second_began;
