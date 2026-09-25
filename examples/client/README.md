@@ -57,7 +57,10 @@ picture is in, the way a settings panel does. `LOWLAT_PRESENT_HZ` caps how
 often a new picture is taken: the cached one is still drawn on every refresh,
 so on a display faster than the cap the stream is above the presentation
 rate with both clocks still the display's. `LOWLAT_SECONDS` leaves cleanly
-after that long, as closing the window does.
+after that long, as closing the window does. `LOWLAT_PEER` may name several
+hosts, separated by commas: they are visited in turn on the one handle, each
+for `LOWLAT_SECONDS`, the session with one left and an attempt made to the
+next -- a reconnect, the same host named twice included.
 
 Once a second a line goes to stdout with the presentation cadence as numbers:
 presents and polls in the second (equal without a cap), new pictures, repeats

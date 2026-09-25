@@ -104,6 +104,15 @@ struct demo {
 	lowlat_client *client;
 	struct signaling sig;
 	char attempt[LOWLAT_ATTEMPT_MAX];
+	// The hosts to visit, in order, on the one handle: each held for the
+	// stay and left for the next, which is a reconnect. The service and the
+	// session every attempt is offered through.
+	char peers[8][64];
+	unsigned peer_count;
+	unsigned peer_at;
+	double stay_ms;
+	const char *server;
+	const char *session;
 	MTY_App *app;
 	MTY_Window window;
 	bool begun;
@@ -376,6 +385,7 @@ static void apply_relative(struct demo *d)
 }
 
 static void ask_outputs(struct demo *d);
+static const char *env_or(const char *name, const char *fallback);
 
 // The drawn size of the picture as shown (a quarter turn swaps its sides),
 // or zero before there is one.
@@ -1402,6 +1412,11 @@ static void *present_loop(void *opaque)
 				}
 			} else {
 				atomic_fetch_add(&d->repeats, 1);
+				// Between one session and the next the library has nothing
+				// to wait on and answers at once, so the wait is made here
+				// rather than spun.
+				if (s == LOWLAT_ERR_NOT_STARTED)
+					MTY_Sleep(20);
 			}
 		}
 
@@ -1517,6 +1532,11 @@ static void *sound_loop(void *opaque)
 	while (!atomic_load(&d->quit)) {
 		uint32_t count = 8000;
 		lowlat_status s = lowlat_client_acquire_audio(d->client, 100, pcm, &count);
+		// Before a session is up, and between one and the next, the library
+		// has nothing to wait on and answers at once, so the wait is made here
+		// rather than spun: a core for as long as a connect takes.
+		if (s == LOWLAT_ERR_NOT_STARTED)
+			MTY_Sleep(20);
 		if (s != LOWLAT_OK)
 			continue;
 		lowlat_client_status st;
@@ -1568,6 +1588,98 @@ static void *sound_loop(void *opaque)
 	return NULL;
 }
 
+// An attempt to the peer the list is at: an identifier, the credentials the
+// library mints for the offer, the service's socket and the offer itself.
+// The configuration is read from the environment each time; the
+// preferences are the ones in force, the chord's moves included.
+static bool begin_attempt(struct demo *d)
+{
+	const char *peer = d->peers[d->peer_at];
+	attempt_id(d->attempt, sizeof d->attempt);
+	lowlat_credentials ours;
+	memset(&ours, 0, sizeof ours);
+	ours.size = (uint32_t) sizeof ours;
+	// The attempt's configuration: the defaults, but for sound asked
+	// uncompressed when the knob says so.
+	lowlat_client_config cfg;
+	memset(&cfg, 0, sizeof cfg);
+	cfg.size = (uint32_t) sizeof cfg;
+	cfg.raw_audio = getenv("LOWLAT_RAW_AUDIO") != NULL;
+	cfg.video = d->video;
+	const char *stun = getenv("LOWLAT_STUN");
+	for (const char *at = stun; at != NULL && *at != '\0' && cfg.server_count < LOWLAT_SERVERS_MAX;) {
+		size_t len = strcspn(at, ",");
+		if (len > 0 && len < LOWLAT_SERVER_MAX)
+			snprintf(cfg.servers[cfg.server_count++], LOWLAT_SERVER_MAX, "%.*s", (int) len, at);
+		at += len + (at[len] == ',');
+	}
+	const char *relay = getenv("LOWLAT_RELAY");
+	if (relay != NULL && relay[0] != '\0') {
+		snprintf(cfg.relay, sizeof cfg.relay, "%s", relay);
+		snprintf(cfg.relay_username, sizeof cfg.relay_username, "%s",
+			env_or("LOWLAT_RELAY_USER", ""));
+		snprintf(cfg.relay_password, sizeof cfg.relay_password, "%s",
+			env_or("LOWLAT_RELAY_PASS", ""));
+		printf("demo: a relay attempt through %s\n", relay);
+	}
+	printf("demo: asking %s\n", video_words(&d->video));
+	lowlat_status s = lowlat_client_new_attempt(d->client, &cfg, d->attempt,
+		LOWLAT_TRANSPORT_BUD, &ours);
+	// The library has its own copy of the credential now.
+	memset(cfg.relay_password, 0, sizeof cfg.relay_password);
+	if (s != LOWLAT_OK) {
+		fprintf(stderr, "demo: no attempt: %s\n", lowlat_status_string(s));
+		return false;
+	}
+	if (!signaling_connect(&d->sig, d->server, d->session, peer, d->attempt))
+		return false;
+	if (!signaling_offer(&d->sig, &ours))
+		return false;
+	printf("demo: offered attempt %s to %s\n", d->attempt, peer);
+	return true;
+}
+
+// The reconnect: the session left, the service's socket closed, what the
+// session told this side forgotten, and an attempt to the next peer on the
+// same handle. The picture on the screen stays until the next one comes.
+static bool next_peer(struct demo *d)
+{
+	double began = now_ms();
+	lowlat_client_end_connection(d->client);
+	signaling_close(&d->sig);
+	printf("demo: left %s in %.0f ms\n", d->peers[d->peer_at], now_ms() - began);
+	d->begun = false;
+	d->established = false;
+	d->asked = false;
+	d->last_video_bytes = 0;
+	// Told again once the next session's first picture is in, whatever its
+	// size.
+	atomic_store(&d->picture_width, 0);
+	memset(d->viewport, 0, sizeof d->viewport);
+	if (d->relative) {
+		d->relative = false;
+		apply_relative(d);
+	}
+	d->number = 0;
+	d->owner = false;
+	d->perm_mouse = false;
+	d->perm_keyboard = false;
+	d->perm_gamepad = false;
+	d->rosters = 0;
+	d->host_rtt_ms = 0.0;
+	d->host_mbps = 0.0;
+	d->host_encode_ms = 0.0;
+	d->host_decode_ms = 0.0;
+	d->host_packets = 0;
+	d->host_fast_rts = 0;
+	d->host_slow_rts = 0;
+	d->host_cg_events = 0;
+	d->behind_seconds = 0;
+	d->behind_warned = false;
+	d->peer_at++;
+	return begin_attempt(d);
+}
+
 // The main thread: the toolkit's events, the two pumps, the pads, the
 // rectangle and the figures, at the toolkit's own cadence.
 static bool app_func(void *opaque)
@@ -1577,8 +1689,16 @@ static bool app_func(void *opaque)
 	pump_library(d);
 	double t = now_ms();
 	if (d->leave_at_ms > 0.0 && t >= d->leave_at_ms) {
-		printf("demo: leaving after %" PRIu64 " s\n", d->seconds);
-		atomic_store(&d->quit, true);
+		if (d->peer_at + 1 < d->peer_count) {
+			printf("demo: leaving %s after %" PRIu64 " s, for %s\n", d->peers[d->peer_at],
+				d->seconds, d->peers[d->peer_at + 1]);
+			if (!next_peer(d))
+				atomic_store(&d->quit, true);
+			d->leave_at_ms = now_ms() + d->stay_ms;
+		} else {
+			printf("demo: leaving after %" PRIu64 " s\n", d->seconds);
+			atomic_store(&d->quit, true);
+		}
 	}
 	if (atomic_load(&d->quit))
 		return false;
@@ -1643,6 +1763,21 @@ int main(void)
 
 	struct demo d;
 	memset(&d, 0, sizeof d);
+	// One peer, or several separated by commas: visited in order on the one
+	// handle, each for LOWLAT_SECONDS, which a list therefore needs.
+	for (const char *at = peer; *at != '\0' && d.peer_count < sizeof d.peers / sizeof d.peers[0];) {
+		size_t len = strcspn(at, ",");
+		if (len > 0 && len < sizeof d.peers[0])
+			snprintf(d.peers[d.peer_count++], sizeof d.peers[0], "%.*s", (int) len, at);
+		at += len + (at[len] == ',');
+	}
+	if (d.peer_count == 0 || (d.peer_count > 1 && seconds == 0)) {
+		fprintf(stderr, "demo: LOWLAT_PEER names no peer, or names several without LOWLAT_SECONDS\n");
+		return 2;
+	}
+	d.stay_ms = (double) seconds * 1000.0;
+	d.server = server;
+	d.session = session;
 	d.ask_fps = (uint32_t) ask_fps;
 	d.switch_every = switch_every;
 	d.decoder_every = decoder_every;
@@ -1737,53 +1872,14 @@ int main(void)
 	}
 	printf("demo: rss_mb=%" PRIu64 " after creation\n", resident_mb());
 
-	attempt_id(d.attempt, sizeof d.attempt);
-	lowlat_credentials ours;
-	memset(&ours, 0, sizeof ours);
-	ours.size = (uint32_t) sizeof ours;
-	// The attempt's configuration: the defaults, but for sound asked
-	// uncompressed when the knob says so.
-	lowlat_client_config cfg;
-	memset(&cfg, 0, sizeof cfg);
-	cfg.size = (uint32_t) sizeof cfg;
-	cfg.raw_audio = getenv("LOWLAT_RAW_AUDIO") != NULL;
 	d.video.hevc = getenv("LOWLAT_HEVC") != NULL;
 	d.video.ten_bit = getenv("LOWLAT_10BIT") != NULL;
 	d.video.chroma_444 = getenv("LOWLAT_444") != NULL;
 	// The renderer converts with each picture's range, so it takes either.
 	const char *range = getenv("LOWLAT_FULL_RANGE");
 	d.video.full_range = range == NULL || strcmp(range, "0") != 0;
-	cfg.video = d.video;
-	const char *stun = getenv("LOWLAT_STUN");
-	for (const char *at = stun; at != NULL && *at != '\0' && cfg.server_count < LOWLAT_SERVERS_MAX;) {
-		size_t len = strcspn(at, ",");
-		if (len > 0 && len < LOWLAT_SERVER_MAX)
-			snprintf(cfg.servers[cfg.server_count++], LOWLAT_SERVER_MAX, "%.*s", (int) len, at);
-		at += len + (at[len] == ',');
-	}
-	const char *relay = getenv("LOWLAT_RELAY");
-	if (relay != NULL && relay[0] != '\0') {
-		snprintf(cfg.relay, sizeof cfg.relay, "%s", relay);
-		snprintf(cfg.relay_username, sizeof cfg.relay_username, "%s",
-			env_or("LOWLAT_RELAY_USER", ""));
-		snprintf(cfg.relay_password, sizeof cfg.relay_password, "%s",
-			env_or("LOWLAT_RELAY_PASS", ""));
-		printf("demo: a relay attempt through %s\n", relay);
-	}
-	printf("demo: asking %s\n", video_words(&d.video));
-	s = lowlat_client_new_attempt(d.client, &cfg, d.attempt, LOWLAT_TRANSPORT_BUD, &ours);
-	// The library has its own copy of the credential now.
-	memset(cfg.relay_password, 0, sizeof cfg.relay_password);
-	if (s != LOWLAT_OK) {
-		fprintf(stderr, "demo: no attempt: %s\n", lowlat_status_string(s));
+	if (!begin_attempt(&d))
 		return 1;
-	}
-
-	if (!signaling_connect(&d.sig, server, session, peer, d.attempt))
-		return 1;
-	if (!signaling_offer(&d.sig, &ours))
-		return 1;
-	printf("demo: offered attempt %s to %s\n", d.attempt, peer);
 
 	d.app = MTY_AppCreate(0, app_func, event_func, &d);
 	if (d.app == NULL) {
