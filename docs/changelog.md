@@ -26,6 +26,17 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   its tag or either end of its body is refused. Each check was shown failing with its part
   broken: a seal under the wrong nonce, an open that accepts anything. Live, the client
   streamed from both established hosts, sound and video, with every record through it.
+- **Live on this host, rebuilt with it, both ciphers.** Under AES-256: our client, then the
+  established Android and macOS clients beside it, three guests at once for two and a half
+  minutes. Under the legacy 128-bit cipher: the established Android client of an older
+  generation, which offers no media key, for three and a half minutes, and our client asking
+  for it. Every session carried video and sound; none had a datagram refused, a resend
+  asked or a sound packet dropped, and the established clients each left cleanly.
+
+### Added
+- The demo's `LOWLAT_LEGACY_CIPHER` offers no media key, so the session takes the legacy
+  128-bit cipher, keyed from the host's certificate digest, as an older client's would. The
+  library has taken the request since its first client release; the demo never asked.
 
 ## 2026-09-25 - Demo: the toolkit's websocket reader hands out whole messages
 

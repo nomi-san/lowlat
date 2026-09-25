@@ -33,7 +33,9 @@ the library and never printed: the relayed address is all the demo offers,
 every check goes through the relay, and the line at establishment says the
 path is relayed and where. A relay that does not answer, refuses the
 credential, or lets the allocation go ends the session with its own outcome.
-`LOWLAT_HEVC`, `LOWLAT_10BIT` and `LOWLAT_444` are the preferences the
+`LOWLAT_LEGACY_CIPHER` offers no media key, so the host answers for the
+legacy 128-bit cipher, keyed from its certificate digest, as an older client
+would. `LOWLAT_HEVC`, `LOWLAT_10BIT` and `LOWLAT_444` are the preferences the
 attempt starts with, masked by what the decoder takes; Ctrl+Shift+C cycles
 them live. `LOWLAT_HANDLE` asks for pictures as device handles, which the
 toolkit's renderer imports and draws with nothing copied through this
