@@ -3,6 +3,29 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-25 - C5: the handle path's copy is waited on asleep
+
+### Changed
+- **The vendor backend's copy into a device slot is waited on asleep** ([10 §4](10-client.md)).
+  It was waited for on its stream, and a wait in the vendor's context spins by default: the
+  decode thread held a core for the whole copy, and on a machine whose cores were all busy
+  it was preempted mid-spin and saw the end a scheduling slice late. An event made to block
+  is recorded behind the copies and waited on instead. Back to back at 2160p, paced at 120
+  pictures a second: 110 us of CPU a picture down to 32, for 20-30 us more wait; with the
+  decode thread and two busy threads on two cores, the 99th percentile was 5.3-6.2 ms in
+  three runs of four before and 1.6-1.8 ms in every run after.
+
+### Measured
+- **Where the vendor backend's waits spin, and why the context keeps its flags.** The
+  interface's own wait for a decode sleeps (30-40 us of CPU across a 0.44-1.65 ms map); only
+  our copy waits spin. Telling the whole context to sleep halves the planes route's CPU but
+  slows its read-back, which the driver stages through its own buffer in chunks and waits on
+  each: 332 -> 446 us a picture at 1080p and 1003 -> 1424 at 2160p. Reading back into
+  page-locked memory with a sleeping wait takes the staging out: 26 us of CPU a picture at
+  2160p where the route spends 1023 today, at the same 1.0 ms, and a 99th percentile of
+  2.5 ms on two busy cores against 5.9. It is written down in the client plan as later work,
+  since it changes how the picture queue's slots are backed.
+
 ## 2026-09-25 - C5: a stream silent about reordering stays in time past a frame number wrap
 
 ### Fixed

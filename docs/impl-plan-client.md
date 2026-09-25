@@ -661,6 +661,19 @@ here; the rules are [10 §7](10-client.md) and §9, the surface [06 §3b](06-api
   every picture leaves as it is decoded with its count rising: unit 257 was held back
   before. It decodes to the reference through both device interfaces (the open stack on
   two cards) and the software backend.
+- [x] **The handle path's copy is waited on asleep** (*2026-09-25*). Found reviewing the
+  client's threads for two-core machines: the vendor context's waits spin by default, and the
+  copy into a device slot was waited for on its stream. Measured through the backend itself,
+  paced at 120 pictures a second on clips of the vendor encoder, the interface's own wait
+  for a decode sleeps; our two copy waits spin. Telling the whole context to sleep was
+  measured and refused: it halves the planes route's CPU but slows that read-back by
+  0.1-0.4 ms a picture, and the application shares the context. So the handle path records
+  an event made to block behind its copies and waits on that. Back to back at 2160p: 110 us
+  of CPU a picture down to 32, 20-30 us more wait with the cores free; with the decode thread
+  and two busy threads on two cores, the 99th percentile was 5.3-6.2 ms in three runs of four
+  before, the spinning wait preempted after the copy had ended, and 1.6-1.8 ms in every run
+  after. The device route's test still reads every clip back to the reference. The planes
+  route keeps its spin; the way out of it is below, under later work.
 
 **Built 2026-09-19, evening, deviations from the text above:** the picture already delivered,
 named or sent again, travels as its checksum alone -- the first live run against this host
@@ -1271,6 +1284,14 @@ for any address, and destroys an allocation that sends toward loopback.
 - **A session that changes its frame kind**: `lowlat_frame.kind` is already per frame, so a
   mixed-kind session is expressible without a change to the surface; what it needs is a
   queue that holds both kinds of slot at once. Not needed by anything that streams today.
+- **The vendor backend's planes read back into page-locked memory** (*measured
+  2026-09-25*): the read-back into ordinary memory is staged by the driver through its own
+  buffer, the thread copying out of it and waiting on each chunk -- spinning, since a
+  sleeping chunk wait slows it by 0.1-0.4 ms. Into page-locked memory it is one transfer and
+  one wait: at 2160p 26 us of CPU a picture against 1023, at the same 1.0 ms, and a 99th
+  percentile of 2.5 ms on two busy cores against 5.9. It needs the queue's host slots
+  registered with the device while that backend runs, against slots that are backed only
+  when first used and a decoder that can change mid-session.
 
 ### Deferred decisions, recorded 2026-09-16, decided 2026-09-19
 
@@ -1299,6 +1320,8 @@ slower decoder ever reopens them.
 
 Newest first.
 
+- 2026-09-25: the handle path's copy is waited on asleep; the whole context left as it is,
+  and the planes route's page-locked read-back measured and written down as later work.
 - 2026-09-25: a stream silent about its reordering stays in time past its frame number's
   wrap; it had stopped for sixteen pictures there and run sixteen behind.
 - 2026-09-25: a new attempt starts from nothing the last session left; live, the demo moved

@@ -179,12 +179,19 @@ is gone, and what remains runs at the device's own bandwidth: **at 2560x1440 the
 was 0.5-0.9 ms a picture and the device copy is 0.09 ms**, and the repeats and skips the
 read-back's jitter produced at 120 pictures a second (five of each in some seconds) are
 gone with it. The copy is queued on the backend's own stream behind the interface's map and
-the stream is waited for before the picture is unmapped, so acquire returns with the bytes
-in place and a null fence stays correct on this kind; a real fence is a refinement rather
-than a requirement. The descriptor is the kind NVIDIA's GL and Vulkan import as external
-memory; the second kind, a buffer descriptor with its layout modifier, is the open stack's,
-which can export the decoded surface itself with no copy at all but must then hold that
-surface out of the decoder's pool for the lease, which is the fence's job; it comes later.
+waited for before the picture is unmapped, so acquire returns with the bytes in place and a
+null fence stays correct on this kind; a real fence is a refinement rather than a
+requirement. **The wait sleeps** (*2026-09-25*): it is on an event made to block, recorded
+behind the copies, because a wait in the vendor's context spins by default -- the decode
+thread held a core for the whole copy, and with every core busy it was preempted mid-spin
+and saw the end a scheduling slice late, a 99th percentile of 5-6 ms on two busy cores in
+most runs where the sleeping wait held 1.6-1.8 ms in all. The context's own flags stay as
+they are: the application shares that context, and a context-wide sleep slows the planes
+route's read-back, which the driver stages through its own buffer in chunks and waits on
+each. The descriptor is the kind NVIDIA's GL and Vulkan import as external memory; the
+second kind, a buffer descriptor with its layout modifier, is the open stack's, which can
+export the decoded surface itself with no copy at all but must then hold that surface out
+of the decoder's pool for the lease, which is the fence's job; it comes later.
 
 **Device slots are sized at the stream's size, never at the ceiling.** Device memory is
 real where the host-memory slots' reserve is virtual: full chroma at sixteen bits is 200 MB a
