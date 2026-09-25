@@ -108,6 +108,56 @@ fn the_synthetic_clip_reads_with_one_reference_and_no_reordering() {
     assert_eq!(pictures, 120);
 }
 
+/// The vendor encoder left to its defaults reorders nothing and says
+/// nothing about it, under order counts that follow the frame number. Every
+/// picture leaves as soon as it is decoded, before the frame number wraps
+/// and after: the count carries on rising, where one that restarted would
+/// read as a picture belonging before those already out.
+#[test]
+fn a_stream_silent_about_reordering_leaves_as_it_arrives_past_a_frame_number_wrap() {
+    let clip = "fixtures/h264-nvenc-wrap.bin";
+    let units = common::units(clip);
+    let mut stream = Stream::new();
+    let mut last = None;
+    for (n, unit) in units.iter().enumerate() {
+        assert_eq!(
+            stream.read(unit).unwrap(),
+            Read::Picture,
+            "{clip}: unit {n}"
+        );
+        if n == 0 {
+            // What makes the clip this case, checked so that a regenerated
+            // clip which stopped being it fails here.
+            let sps = &stream.job().unwrap().sps;
+            assert_eq!(sps.pic_order_cnt_type, 2, "{clip}");
+            assert_eq!(sps.reorder_frames(), None, "{clip} states its reordering");
+            assert!(
+                units.len() > sps.max_frame_num() as usize + 16,
+                "{clip}: {} pictures do not pass the wrap at {}",
+                units.len(),
+                sps.max_frame_num()
+            );
+        }
+        stream.finish().unwrap();
+        let out = stream.next_output().unwrap_or_else(|| {
+            panic!(
+                "{clip}: unit {n} held its picture back, reorder depth {}",
+                stream.dpb.reorder()
+            )
+        });
+        stream.dpb.taken(out.slot);
+        assert!(stream.next_output().is_none(), "{clip}: unit {n}");
+        if let Some(last) = last {
+            assert!(
+                out.poc > last,
+                "{clip}: unit {n} counted {} after {last}",
+                out.poc
+            );
+        }
+        last = Some(out.poc);
+    }
+}
+
 /// The range a renderer needs is read from the parameter set: the clip an
 /// encoder was told to make in the full range reads as such, and every other
 /// as the video range, which is also what a set that says nothing means.

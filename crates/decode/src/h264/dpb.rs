@@ -1437,12 +1437,15 @@ impl Dpb {
                 self.previous.poc_lsb = lsb;
             }
         }
-        self.previous.frame_num = frame_num;
+        // The offset is derived against the previous picture's frame number,
+        // so it is taken before that number is replaced; replaced first, a
+        // wrap never advances it and every later count restarts low.
         self.previous.frame_num_offset = if current.mmco5 {
             0
         } else {
             self.frame_num_offset(sps, header)
         };
+        self.previous.frame_num = frame_num;
         self.previous.mmco5 = current.mmco5;
         self.previous.mmco5_bottom = matches!(current.structure, Structure::Field(Parity::Bottom));
         self.previous.top_poc_after_mmco5 = top_poc;

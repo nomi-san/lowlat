@@ -19,9 +19,10 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 
 frames=24
+rate=30
 src() {
     # A moving test pattern; -r fixes the timestamps the encoder paces by.
-    echo "-f lavfi -i testsrc2=size=$1:rate=30 -frames:v $frames -r 30"
+    echo "-f lavfi -i testsrc2=size=$1:rate=$rate -frames:v $frames -r $rate"
 }
 
 make_fixture() {
@@ -55,6 +56,10 @@ make_fixture h264-mbaff           h264 yuv420p 128x128 -c:v libx264 -preset medi
 # The vendor encoder's shape: what an established host sends.
 make_fixture h264-nvenc-ll        h264 yuv420p 256x256 -c:v h264_nvenc -preset p1 -tune ll -rc cbr -b:v 1M -bf 0 -g 12 -aud 1
 make_fixture h264-nvenc-bframes   h264 yuv420p 256x256 -c:v h264_nvenc -preset p4 -bf 2 -b_ref_mode middle -g 12 -aud 1
+# Past the frame number's wrap: left to its defaults, the vendor encoder counts
+# frame numbers up to 256 under order count type 2 and says nothing about
+# reordering. Paced at 300 a second, the 300 pictures cost one second of the rate.
+frames=300 rate=300 make_fixture h264-nvenc-wrap h264 yuv420p 256x256 -c:v h264_nvenc -preset p1 -tune ll -rc cbr -b:v 400k -bf 0 -g 600 -aud 1
 
 # HEVC.
 make_fixture hevc-ipp             hevc yuv420p   144x144 -c:v libx265 -preset fast -x265-params "bframes=0:keyint=12:aud=1:log-level=error"
