@@ -200,7 +200,16 @@ fn session_under(legacy: bool) {
         0
     );
 
+    // The departure is given its grace and no more: the session's loop
+    // returns once the message has had it, and the leave ends there rather
+    // than at the cap on waiting for it.
+    let began = Instant::now();
     client.end_connection("a");
+    let left = began.elapsed();
+    assert!(
+        left >= Duration::from_millis(200) && left < Duration::from_millis(450),
+        "the departure took {left:?}"
+    );
     // The host reads the departure and reports it.
     let began = Instant::now();
     let mut left = false;

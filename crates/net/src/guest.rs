@@ -82,9 +82,16 @@ impl Guest {
         &self.notify
     }
 
-    /// True while the loop is still meant to be running.
+    /// True while the loop is running: not stopped, and not returned on its
+    /// own. A loop that ends itself -- a departure given its grace, a
+    /// transport that failed -- is seen here as soon as its thread is done,
+    /// not only once `stop` has been asked for.
     pub fn alive(&self) -> bool {
         !self.running.stopping()
+            && self
+                .thread
+                .as_ref()
+                .is_some_and(|thread| !thread.is_finished())
     }
 
     /// Signal, wake, and join.
