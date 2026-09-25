@@ -1083,6 +1083,9 @@ static void pump_library(struct demo *d)
 				else
 					printf("demo: established with %s:%u\n", e.body.established.address,
 						(unsigned) e.body.established.port);
+				// The service has done its part: the socket goes, and the
+				// next attempt opens its own.
+				signaling_close(&d->sig, false);
 				break;
 			}
 			case LOWLAT_EVENT_ENDED:
@@ -1646,7 +1649,9 @@ static bool next_peer(struct demo *d)
 {
 	double began = now_ms();
 	lowlat_client_end_connection(d->client);
-	signaling_close(&d->sig);
+	// Still open only for an attempt that never came up, whose offer is
+	// withdrawn.
+	signaling_close(&d->sig, true);
 	printf("demo: left %s in %.0f ms\n", d->peers[d->peer_at], now_ms() - began);
 	d->begun = false;
 	d->established = false;
@@ -1926,7 +1931,7 @@ int main(void)
 		MTY_AudioDestroy(&d.audio);
 	raw_pads_close(&d.raw, d.client);
 	lowlat_client_end_connection(d.client);
-	signaling_close(&d.sig);
+	signaling_close(&d.sig, true);
 	lowlat_client_destroy(d.client);
 	MTY_JSONDestroy(&d.outputs);
 	MTY_JSONDestroy(&d.config);

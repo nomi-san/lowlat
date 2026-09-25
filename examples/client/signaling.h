@@ -26,7 +26,10 @@ enum signaling_event {
 
 bool signaling_connect(struct signaling *sig, const char *server, const char *session,
 	const char *peer, const char *attempt);
-void signaling_close(struct signaling *sig);
+// One socket per attempt, closed once the path is up or the attempt is given
+// up; `cancel` withdraws the offer first, for an attempt that never came up.
+// Closing a closed socket does nothing, and nothing is sent on one.
+void signaling_close(struct signaling *sig, bool cancel);
 bool signaling_offer(struct signaling *sig, const lowlat_credentials *ours);
 bool signaling_candidate(struct signaling *sig, const char *address, uint16_t port, bool lan,
 	bool from_stun, bool sync);

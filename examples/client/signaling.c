@@ -25,6 +25,12 @@ static MTY_JSON *versions(void)
 
 static bool send_message(struct signaling *sig, const char *action, MTY_JSON *payload)
 {
+	// Closed once the path is up: what the library still raises after that
+	// has nowhere to go and needs nowhere.
+	if (sig->ws == NULL) {
+		MTY_JSONDestroy(&payload);
+		return false;
+	}
 	MTY_JSON *message = MTY_JSONObjCreate();
 	MTY_JSONObjSetInt(message, "version", 1);
 	MTY_JSONObjSetString(message, "action", action);
@@ -62,13 +68,15 @@ bool signaling_connect(struct signaling *sig, const char *server, const char *se
 	return true;
 }
 
-void signaling_close(struct signaling *sig)
+void signaling_close(struct signaling *sig, bool cancel)
 {
 	if (sig->ws != NULL) {
-		MTY_JSON *payload = MTY_JSONObjCreate();
-		MTY_JSONObjSetString(payload, "to", sig->peer);
-		MTY_JSONObjSetString(payload, "attempt_id", sig->attempt);
-		send_message(sig, "offer_cancel", payload);
+		if (cancel) {
+			MTY_JSON *payload = MTY_JSONObjCreate();
+			MTY_JSONObjSetString(payload, "to", sig->peer);
+			MTY_JSONObjSetString(payload, "attempt_id", sig->attempt);
+			send_message(sig, "offer_cancel", payload);
+		}
 		MTY_WebSocketDestroy(&sig->ws);
 	}
 }
