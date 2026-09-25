@@ -608,6 +608,20 @@ here; the rules are [10 §7](10-client.md) and §9, the surface [06 §3b](06-api
   the departure: 451 ms to answer before, 7 us after; it was shown failing both ways, with
   the lock held and with the refusal taken out. Live against the established host the demo
   leaves as before.
+- [x] **A second session waits for its pictures** (*2026-09-25*). A departure closes the
+  picture queue so no waiter is stranded, and nothing opened it again: after a reconnect on
+  the same handle every acquire came back at once, and a renderer paced by the wait would
+  spin. The next attempt reopens it from its offer on and lets go of a picture the last
+  session left untaken. `a_second_session_on_the_handle_waits_for_its_pictures` runs two
+  sessions on one handle through the boundary against this host's admission: the first
+  session's acquire waits its 100 ms, and after the reconnect the same call came back in 4 us
+  before and waits its 100 ms after, from the next offer on. The ring's reopen has a test of
+  its own and a model check of the reopen racing the consumer for a slot the close left
+  ready, each shown failing with its part taken out.
+- [x] **A departure ends when the session's loop does** (*2026-09-25*). The leave waited
+  while the loop looked alive, and alive meant only that no stop had been asked for, so every
+  departure ran to the cap on its grace: 501 ms, where the loop returns after 263. The seam's
+  loopback test times the departure, under both ciphers, and failed at 501 ms before.
 
 **Built 2026-09-19, evening, deviations from the text above:** the picture already delivered,
 named or sent again, travels as its checksum alone -- the first live run against this host
@@ -1246,6 +1260,8 @@ slower decoder ever reopens them.
 
 Newest first.
 
+- 2026-09-25: a second session on one handle waits for its pictures, and a departure ends
+  when the session's loop does, 263 ms where it took 501.
 - 2026-09-25: a departure holds nothing else up; ending a connection had held the handle
   through its half-second grace.
 - 2026-09-24, night: the full range becomes the application's to ask for (minor 17), once

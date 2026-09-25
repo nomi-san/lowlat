@@ -154,6 +154,12 @@ handle the person at the desk saw this client's picture ahead about as often as 
 signals when it has finished reading the picture, so a decoder writing straight into shared
 memory waits on the application's GPU rather than on its CPU. A null fence means "reusable
 now", which is the right answer for a picture that was copied.
+**A departure closes the queue and the next attempt opens it** (*2026-09-25*). Closing wakes
+every waiter so none is stranded by a session that has gone; the next attempt on the same
+handle takes waiters again from its offer on, and lets go of any picture the last session
+left untaken, so its first acquire is never handed the last session's picture. The queue
+had stayed closed: after a reconnect every acquire came back at once, and a renderer paced
+by the wait would have spun.
 
 **A picture leaves the library one of two ways, and the library chooses which it can offer.**
 As **planes**: pointers, pitches and a format (`NV12`, `P010`, or the 4:4:4 layouts) into

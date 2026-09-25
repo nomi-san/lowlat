@@ -3,6 +3,20 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-25 - C5: a second session waits for its pictures; a departure ends with its loop
+
+### Fixed
+- **A second session on one handle waits for its pictures** ([10 §4](10-client.md)). A
+  departure closes the picture queue so no waiter is stranded, and nothing opened it again:
+  after a reconnect every `lowlat_client_acquire_frame` came back at once, 4 us where the first
+  session's waited its 100 ms, and a renderer paced by the wait would spin. The next attempt
+  reopens the queue from its offer on, and lets go of a picture the last session left
+  untaken so the new session's first acquire is never handed it.
+- **A departure ends when the session's loop does.** The leave waited while the loop looked
+  alive, and alive meant only that no stop had been asked for, so every departure ran to the
+  cap on its grace: `lowlat_client_end_connection` took 501 ms on an established session,
+  where the loop returns after 263.
+
 ## 2026-09-25 - C5: a departure holds nothing else up
 
 ### Fixed
