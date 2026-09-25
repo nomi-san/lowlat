@@ -36,7 +36,10 @@ pub const MAGIC: [u8; 3] = [0x17, 0xFE, 0xFD];
 const NONCE_OFFSET: usize = 3;
 const SIZE_OFFSET: usize = 11;
 const TAG_OFFSET: usize = 13;
-const TAG_LEN: usize = 16;
+/// Bytes of the authentication tag.
+pub const TAG_LEN: usize = 16;
+/// Bytes of a record's nonce: the credential's prefix, then the counter.
+pub const NONCE_LEN: usize = 12;
 /// Bytes of the nonce that come from the credential rather than the counter.
 const NONCE_PREFIX_LEN: usize = 4;
 
@@ -59,26 +62,47 @@ pub enum Cipher {
     Aes256,
 }
 
+/// AES-GCM under one session's key, with no associated data, implemented
+/// outside the core and lent to an envelope ([`Envelope::lent`]).
+///
+/// The core's own implementation is portable and is the reference. The
+/// libraries that do the same several times faster also carry a random
+/// source, which the core must not (docs/00-overview.md D4), so the faster
+/// one is kept by the caller and borrowed. The two must be indistinguishable
+/// on the wire: the same ciphertext and the same tag for the same key, nonce
+/// and message.
+pub trait Aead: Sync {
+    /// Encrypt `body` in place under `nonce`, returning the tag.
+    fn seal(&self, nonce: &[u8; NONCE_LEN], body: &mut [u8]) -> Result<[u8; TAG_LEN]>;
+    /// Decrypt `body` in place under `nonce` if `tag` authenticates it. On a
+    /// refusal nothing in `body` may be acted on.
+    fn open(&self, nonce: &[u8; NONCE_LEN], body: &mut [u8], tag: &[u8; TAG_LEN]) -> Result<()>;
+}
+
 /// The two cipher states differ in size by a quarter kilobyte of expanded
 /// key schedule. Boxing is unavailable in a crate with no allocator, and
 /// exactly one of these exists per session, built once at setup, so the
 /// difference is accepted deliberately.
 #[allow(clippy::large_enum_variant)]
-enum Keyed {
+enum Keyed<'a> {
     Aes128(Aes128Gcm),
     Aes256(Aes256Gcm),
+    /// Sealed and opened by an implementation the caller keeps. One indirect
+    /// call per record, against a cipher that takes a hundred nanoseconds
+    /// and more on a full one.
+    Lent(Cipher, &'a dyn Aead),
 }
 
 /// Seals and opens records for one session.
 ///
 /// Both directions use the same key: the host's. A key offered by the
 /// connecting side is a capability signal and is never used to encrypt.
-pub struct Envelope {
-    keyed: Keyed,
+pub struct Envelope<'a> {
+    keyed: Keyed<'a>,
     nonce_prefix: [u8; NONCE_PREFIX_LEN],
 }
 
-impl core::fmt::Debug for Envelope {
+impl core::fmt::Debug for Envelope<'_> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // Never render key material, not even indirectly.
         f.debug_struct("Envelope")
@@ -95,9 +119,24 @@ impl Cipher {
             Cipher::Aes256 => 32,
         }
     }
+
+    /// This cipher's key in decoded credential material: its leading bytes.
+    pub fn key(self, material: &[u8]) -> Result<&[u8]> {
+        material.get(..self.key_len()).ok_or(Error::BadKeyLength)
+    }
+
+    /// The nonce prefix, the four bytes right after the key, so its offset
+    /// moves with the cipher.
+    fn nonce_prefix(self, material: &[u8]) -> Result<[u8; NONCE_PREFIX_LEN]> {
+        let key_len = self.key_len();
+        material
+            .get(key_len..key_len + NONCE_PREFIX_LEN)
+            .and_then(|s| s.try_into().ok())
+            .ok_or(Error::BadKeyLength)
+    }
 }
 
-impl Envelope {
+impl<'a> Envelope<'a> {
     /// Build from decoded credential material: the key, then a 4-byte nonce
     /// prefix immediately after it.
     ///
@@ -107,13 +146,19 @@ impl Envelope {
     /// fail every packet. Presence of the 256-bit credential decides, and the
     /// caller already knows it.
     pub fn from_credential(material: &[u8], cipher: Cipher) -> Result<Self> {
-        let key_len = cipher.key_len();
-        let key = material.get(..key_len).ok_or(Error::BadKeyLength)?;
-        let prefix: [u8; NONCE_PREFIX_LEN] = material
-            .get(key_len..key_len + NONCE_PREFIX_LEN)
-            .and_then(|s| s.try_into().ok())
-            .ok_or(Error::BadKeyLength)?;
+        let key = cipher.key(material)?;
+        let prefix = cipher.nonce_prefix(material)?;
         Ok(Self::build(key, cipher, prefix))
+    }
+
+    /// As [`Self::from_credential`], sealing and opening with `aead`, which
+    /// the caller keyed from the same material's key ([`Cipher::key`]) and
+    /// keeps for as long as the envelope lives.
+    pub fn lent(aead: &'a dyn Aead, material: &[u8], cipher: Cipher) -> Result<Self> {
+        Ok(Self {
+            keyed: Keyed::Lent(cipher, aead),
+            nonce_prefix: cipher.nonce_prefix(material)?,
+        })
     }
 
     /// Build from a bare key with a zero nonce prefix.
@@ -144,6 +189,7 @@ impl Envelope {
         match self.keyed {
             Keyed::Aes128(_) => Cipher::Aes128,
             Keyed::Aes256(_) => Cipher::Aes256,
+            Keyed::Lent(cipher, _) => cipher,
         }
     }
 
@@ -151,8 +197,8 @@ impl Envelope {
     ///
     /// Derived, never generated. This is why the core needs no random number
     /// generator and stays deterministic under replay.
-    fn nonce_bytes(&self, counter: u64) -> [u8; 12] {
-        let mut nonce = [0u8; 12];
+    fn nonce_bytes(&self, counter: u64) -> [u8; NONCE_LEN] {
+        let mut nonce = [0u8; NONCE_LEN];
         nonce[..NONCE_PREFIX_LEN].copy_from_slice(&self.nonce_prefix);
         nonce[NONCE_PREFIX_LEN..].copy_from_slice(&counter.to_be_bytes());
         nonce
@@ -203,11 +249,17 @@ impl Envelope {
 
         let nonce_bytes = self.nonce_bytes(counter);
         let nonce = GenericArray::from_slice(&nonce_bytes);
-        let tag = match &self.keyed {
-            Keyed::Aes128(c) => c.encrypt_in_place_detached(nonce, &[], body),
-            Keyed::Aes256(c) => c.encrypt_in_place_detached(nonce, &[], body),
-        }
-        .map_err(|_| Error::Decrypt)?;
+        let tag: [u8; TAG_LEN] = match &self.keyed {
+            Keyed::Aes128(c) => c
+                .encrypt_in_place_detached(nonce, &[], body)
+                .map(Into::into)
+                .map_err(|_| Error::Decrypt)?,
+            Keyed::Aes256(c) => c
+                .encrypt_in_place_detached(nonce, &[], body)
+                .map(Into::into)
+                .map_err(|_| Error::Decrypt)?,
+            Keyed::Lent(_, aead) => aead.seal(&nonce_bytes, body)?,
+        };
 
         // Header is exactly CIPHERTEXT_OFFSET bytes, so every write below is
         // in range by construction.
@@ -237,7 +289,7 @@ impl Envelope {
         let Some(t) = dst.get_mut(TAG_OFFSET..TAG_OFFSET + TAG_LEN) else {
             return Err(Error::BufferTooSmall);
         };
-        t.copy_from_slice(tag.as_slice());
+        t.copy_from_slice(&tag);
 
         Ok(total)
     }
@@ -246,7 +298,7 @@ impl Envelope {
     ///
     /// The plaintext length is derived from the datagram length. The size field
     /// at offset 11 is deliberately ignored.
-    pub fn open<'a>(&self, datagram: &[u8], out: &'a mut [u8]) -> Result<Opened<'a>> {
+    pub fn open<'o>(&self, datagram: &[u8], out: &'o mut [u8]) -> Result<Opened<'o>> {
         if datagram.len() < ENVELOPE_LEN {
             return Err(Error::ShortDatagram);
         }
@@ -273,10 +325,14 @@ impl Envelope {
         let nonce = GenericArray::from_slice(&nonce_bytes);
         let tag = GenericArray::from_slice(&tag_bytes);
         match &self.keyed {
-            Keyed::Aes128(c) => c.decrypt_in_place_detached(nonce, &[], body, tag),
-            Keyed::Aes256(c) => c.decrypt_in_place_detached(nonce, &[], body, tag),
+            Keyed::Aes128(c) => c
+                .decrypt_in_place_detached(nonce, &[], body, tag)
+                .map_err(|_| Error::Decrypt)?,
+            Keyed::Aes256(c) => c
+                .decrypt_in_place_detached(nonce, &[], body, tag)
+                .map_err(|_| Error::Decrypt)?,
+            Keyed::Lent(_, aead) => aead.open(&nonce_bytes, body, &tag_bytes)?,
         }
-        .map_err(|_| Error::Decrypt)?;
 
         Ok(Opened {
             counter,
@@ -443,6 +499,60 @@ mod tests {
         assert_eq!(
             env.open(&[0u8; ENVELOPE_LEN - 1], &mut out),
             Err(Error::ShortDatagram)
+        );
+    }
+
+    /// A lender over the portable cipher itself, so a lent envelope's
+    /// plumbing -- the nonce, the tag's place, the body -- is checked with
+    /// nothing else different.
+    struct Portable(Aes256Gcm);
+
+    impl Aead for Portable {
+        fn seal(&self, nonce: &[u8; NONCE_LEN], body: &mut [u8]) -> Result<[u8; TAG_LEN]> {
+            self.0
+                .encrypt_in_place_detached(GenericArray::from_slice(nonce), &[], body)
+                .map(Into::into)
+                .map_err(|_| Error::Decrypt)
+        }
+
+        fn open(
+            &self,
+            nonce: &[u8; NONCE_LEN],
+            body: &mut [u8],
+            tag: &[u8; TAG_LEN],
+        ) -> Result<()> {
+            let tag = GenericArray::from_slice(tag);
+            self.0
+                .decrypt_in_place_detached(GenericArray::from_slice(nonce), &[], body, tag)
+                .map_err(|_| Error::Decrypt)
+        }
+    }
+
+    #[test]
+    fn a_lent_cipher_writes_the_records_the_portable_one_does() {
+        let mut material = [0u8; 36];
+        material[..32].copy_from_slice(&KEY256);
+        material[32..].copy_from_slice(&[1, 2, 3, 4]);
+        let lender = Portable(Aes256Gcm::new(GenericArray::from_slice(&KEY256)));
+        let lent = Envelope::lent(&lender, &material, Cipher::Aes256).unwrap();
+        let own = Envelope::from_credential(&material, Cipher::Aes256).unwrap();
+        assert_eq!(lent.cipher(), Cipher::Aes256);
+
+        let plaintext = b"the tag precedes the ciphertext";
+        let (mut a, mut b) = ([0u8; 128], [0u8; 128]);
+        let n = lent.seal(9, plaintext, &mut a).unwrap();
+        assert_eq!(own.seal(9, plaintext, &mut b).unwrap(), n);
+        assert_eq!(a[..n], b[..n], "the lent path wrote other bytes");
+        let mut out = [0u8; 128];
+        assert_eq!(own.open(&a[..n], &mut out).unwrap().cleartext, plaintext);
+        assert_eq!(lent.open(&b[..n], &mut out).unwrap().cleartext, plaintext);
+
+        a[TAG_OFFSET] ^= 1;
+        assert_eq!(lent.open(&a[..n], &mut out), Err(Error::Decrypt));
+        // The prefix is read from the material, as the portable path reads it.
+        assert_eq!(
+            Envelope::lent(&lender, &material[..35], Cipher::Aes256).unwrap_err(),
+            Error::BadKeyLength
         );
     }
 

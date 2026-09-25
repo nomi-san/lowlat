@@ -128,7 +128,7 @@ pub struct Pressure {
 /// One peer-to-peer session.
 #[derive(Debug)]
 pub struct Session<'a> {
-    envelope: Envelope,
+    envelope: Envelope<'a>,
     recv: [Option<RecvRing<'a>>; CHANNEL_COUNT],
     send: [Option<SendRing<'a>>; CHANNEL_COUNT],
     level: usize,
@@ -178,7 +178,7 @@ pub struct Session<'a> {
 
 impl<'a> Session<'a> {
     /// Build a session. Rings are attached separately, per channel.
-    pub fn new(envelope: Envelope, level: usize, now_ms: f64) -> Self {
+    pub fn new(envelope: Envelope<'a>, level: usize, now_ms: f64) -> Self {
         Self {
             envelope,
             recv: core::array::from_fn(|_| None),

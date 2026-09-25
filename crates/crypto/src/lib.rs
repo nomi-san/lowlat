@@ -9,11 +9,16 @@
 //! the one thing worth keeping in a single audited place.
 //!
 //! Nothing here invents a primitive. Randomness comes from the platform, and
-//! the encodings below are encodings, not cryptography.
+//! the encodings below are encodings, not cryptography. The record cipher
+//! ([`record`]) lives here for the core's sake too: the library it comes from
+//! carries a random source, so the core borrows it rather than holding it.
 
 #![forbid(unsafe_code)]
 
 pub mod cert;
+pub mod record;
+
+pub use record::Record;
 
 use core::fmt;
 

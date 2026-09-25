@@ -24,6 +24,15 @@ ecdsa = { version = "0.16", default-features = false, features = ["der", "pkcs8"
 x509-cert = { version = "0.2", default-features = false, features = ["builder", "hazmat", "std"] }
 sha2 = { version = "0.10", default-features = false, features = ["oid"] }
 zeroize = { version = "1", default-features = false, features = ["alloc"] }
+# The record cipher, lent to the core's envelope: AES-GCM from a vetted
+# library that picks the processor's widest AES and carry-less multiply
+# instructions at run time and constant-time software where there are none.
+# About four times the core's portable implementation on a full datagram. The
+# core cannot hold it: it always brings a random source, which the core must
+# be unable to reach. Already in the graph as the signaling TLS provider.
+ring = { version = "0.17", default-features = false }
+# The envelope's construction, which the record cipher implements.
+lowlat-core.workspace = true
 
 [lints]
 workspace = true

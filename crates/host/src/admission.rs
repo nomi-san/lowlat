@@ -2227,7 +2227,12 @@ fn run_guest(args: Attached, wake: Wake, running: &lowlat_net::Running) {
             let mut audio_send_bodies = vec![0u8; SLOT * AUDIO_SEND_SLOTS];
             let mut audio_send_meta = vec![SendSlot::default(); AUDIO_SEND_SLOTS];
 
-            let Ok(envelope) = Envelope::from_credential(&material, cipher) else {
+            // The cipher, kept here for the thread's life and lent to the
+            // envelope.
+            let Ok(record) = lowlat_crypto::Record::new(&material, cipher) else {
+                return;
+            };
+            let Ok(envelope) = Envelope::lent(&record, &material, cipher) else {
                 return;
             };
             let mut session = Session::new(envelope, 1, 0.0);

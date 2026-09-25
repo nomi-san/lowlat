@@ -816,7 +816,9 @@ version = "0.0.0"
 dependencies = [
  "ecdsa",
  "getrandom 0.2.17",
+ "lowlat-core",
  "p256",
+ "ring",
  "sha2",
  "x509-cert",
  "zeroize",

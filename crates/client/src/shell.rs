@@ -138,7 +138,14 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
     let mut audio_recv_bodies = vec![0u8; BODY * AUDIO_RECV_SLOTS];
     let mut audio_recv_meta = vec![SlotMeta::default(); AUDIO_RECV_SLOTS];
 
-    let Ok(envelope) = Envelope::from_credential(&material, cipher) else {
+    // The cipher, kept here for the thread's life and lent to the envelope.
+    let Ok(record) = lowlat_crypto::Record::new(&material, cipher) else {
+        emit.send(Event::Ended {
+            outcome: Outcome::TransportFailed,
+        });
+        return;
+    };
+    let Ok(envelope) = Envelope::lent(&record, &material, cipher) else {
         emit.send(Event::Ended {
             outcome: Outcome::TransportFailed,
         });
