@@ -57,7 +57,10 @@ Three rules. Each is a production scar.
    It is per-process, so another application making the same request does not help us, and
    high-resolution waitable timers do not remove the need: completion-port timeouts, socket
    polls, and object waits all still quantize to the system tick. Missing this made a host
-   tick at roughly 15.6 ms. Each library handle holds one request for its life; the system
+   tick at roughly 15.6 ms. Measured on the completion port: a wait asked for 1 ms lasts 16.0
+   ms at the default resolution and 2.0 ms with it raised, and one asked for 10 ms lasts 10.5
+   -- a timeout ends at the tick after it expires -- while a posted entry reaches its waiter in
+   11 us at the median either way. Each library handle holds one request for its life; the system
    counts them, so the last handle released lowers it.
 
 **Clock semantics.** The shell's clock exposes **fractional milliseconds as a float**. The
@@ -160,14 +163,31 @@ setup path that shrank a 64 MB receive buffer to 5 MB left it that way for the e
 
 | Option | Value | Why |
 |---|---|---|
-| `SO_RCVBUF` | request 64 MB, log what was granted | keyframe bursts of roughly 2550 packets per 100 ms overflow 16 MB |
+| `SO_RCVBUF` | request 64 MB, log what was granted | keyframe bursts of roughly 2550 packets per 100 ms overflow 16 MB. Windows grants the whole request; a buffer at its default there held 55 of 100 datagrams of a small burst |
 | `SO_SNDBUF` | 4 to 5 MB | the default drops connectivity-check and video bursts |
-| `IPV6_V6ONLY` | 0, dual stack on one socket | one socket serves both families |
+| `IPV6_V6ONLY` | 0, dual stack on one socket | one socket serves both families. **Set first on Windows**, where a fresh socket serves one family and refuses every v4-level option until this is cleared |
 | `IP_PKTINFO`, `IPV6_PKTINFO` | on, and consumed | the arrival address of every datagram is read back and claimed on sends; see below |
-| `IP_TOS`, `IPV6_TCLASS` | EF (`0xB8`) | |
-| `IP_MTU_DISCOVER`, `IPV6_MTU_DISCOVER` | `IP_PMTUDISC_DO`, `IPV6_PMTUDISC_DO` | refuse to fragment, so an oversized probe fails fast instead of being split and arriving anyway ([01 §8](01-protocol.md)). **Both families: neither setting carries to the other**, and a socket left at the v6 default fragments locally, which a probe reads as the size having worked -- on a path whose minimum is 1280 and a ladder that climbs past it |
+| `IP_TOS`, `IPV6_TCLASS` | EF (`0xB8`) on Linux; not set on Windows | Windows accepts the first and sends zero, and refuses the second; the established path is marked there instead, see below |
+| `IP_MTU_DISCOVER`, `IPV6_MTU_DISCOVER` | `IP_PMTUDISC_DO`, `IPV6_PMTUDISC_DO` | refuse to fragment, so an oversized probe fails fast instead of being split and arriving anyway ([01 §8](01-protocol.md)). **Both families: neither setting carries to the other**, and a socket left at the v6 default fragments locally, which a probe reads as the size having worked -- on a path whose minimum is 1280 and a ladder that climbs past it. The same pair on Windows, whose don't-fragment options are refused on a dual-stack socket |
 | non-blocking | on | all paths |
-| `SIO_UDP_CONNRESET` | off, Windows only | otherwise an ICMP unreachable wedges every subsequent receive |
+| `SIO_UDP_CONNRESET`, `SIO_UDP_NETRESET` | off, Windows only | otherwise an ICMP unreachable, or a hop limit expiring on a mapping probe, fails the next receive; the probe provokes the second by design |
+
+**On Windows the established path is marked per destination, not per socket.** The system
+accepts a per-socket type of service and sends zero, and refuses the v6 traffic class, so once
+a path is established the shell asks the platform to mark it -- the relay's server on a relay
+attempt, the path itself otherwise -- and Windows adds an audio-video flow through the
+system's QoS service: class selector 5 on the wire and, on a wireless link, the video access
+category. Measured on a wireless client beside a 250 Mbit/s upload from the same machine,
+marked datagrams crossed the air in 1.0 ms at the median and 20 ms at the 99th percentile,
+against 25 and 181 unmarked; on an idle link the two were the same. The service marks an
+unconnected socket only when it is bound to a specific address, and this one is bound to the
+wildcard so it hears every address the host holds, so the flow is asked for with the socket
+connected for that one call and disconnected again: the flow keeps marking every send to the
+destination, whatever source a send claims, and the wildcard comes back with the disconnect
+(both measured). For the moment between the two calls the system discards what arrives from
+anywhere else, which the protocol recovers from as it does any loss -- once per path, never
+per datagram. The service is loaded at run time; without it, sends go unmarked and the session
+says so once. Linux marks the socket at open and has nothing to do here.
 
 **Receive buffer sizing is derived from the protocol's absolute ceiling, never from the
 current path MTU:**
@@ -205,7 +225,7 @@ rule that mattered: options are set once at open and nothing lowers one afterwar
 | Platform | Receive |
 |---|---|
 | Linux | `poll` plus `recvmmsg` in batches of 64 directly into slots, looping until drained |
-| Windows | overlapped receives pre-posted into a pinned slot pool, draining up to 256 completions per call, with completion-on-success skipped |
+| Windows | overlapped message receives pre-posted into 256 slots pinned for the socket's life, taking up to 256 completions per call, with completion-on-success skipped; the wake is an entry posted to the same port |
 | macOS | `kevent` with a user-event teardown filter, plus batched receive |
 
 A single outstanding receive plus a poll loses keyframe bursts outright. On one platform this
@@ -220,9 +240,24 @@ platform to wait, to take the wake, to drain what arrived and to say whether mor
 queued; whether that is a poll and a batched receive or a completion drain is the platform's
 own business.
 
-**Send uses segmentation offload where available**: `UDP_SEGMENT` on Linux, the equivalent on
-Windows, falling back to per-datagram send. One syscall per batch. This matters more as the
-datagram size rises, since the packet rate falls but the burst size does not.
+**On Windows the port carries the wake beside the receives**, so a wake can be taken off it
+outside a wait -- by a drain collecting what completed since. It is kept and reported by the
+next wait, which then does not block; dropped, the work it announced would sit out the
+timeout. A post is not a counter, so the collapse an eventfd gives is an armed flag there: the
+first notify after a take posts, the rest find it set. Teardown cancels every posted receive
+and takes each back before the storage may go. **Registered I/O is not used**: a socket made
+for it refuses the ordinary calls, so it would be a second module, sends included, beside the
+plain one a system that refuses registered I/O needs anyway, and it is taken only if it
+measures better than this: the plain port hands over a keyframe-sized burst of 2550 datagrams
+already queued on the socket in 1.8 ms at the median (2.6 at the 99th percentile), 695 ns a
+datagram, on the development machine.
+
+**Send uses segmentation offload where available**: `UDP_SEGMENT` on Linux, the segment size
+as a control message on the message send on Windows, falling back to per-datagram send. One
+syscall per batch. This matters more as the datagram size rises, since the packet rate falls
+but the burst size does not. **On Windows a claimed source must be an address the host holds,
+and keeps the datagram on that address's interface**: one it does not hold is refused, and the
+loopback holds 127.0.0.1 and not the rest of 127/8.
 
 **Only a capability refusal disables offload for the run** (corrected 2026-08-29; previously
 any refusal was permanent). A kernel or interface that cannot segment at all says so once and

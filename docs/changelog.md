@@ -3,6 +3,70 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-26 - W1.1: the network shell on Windows, on the completion port
+
+### Decided
+- **The network crate's Windows module alone**; the seam and the library's client half move
+  to W1.2, since the seam chooses and opens the decoders that step writes for the platform
+  ([impl-plan-windows.md](impl-plan-windows.md)).
+- **The system's own declarations** for the socket, the completion port and the interface
+  walk, declarations only and linked by name with no import libraries: the system writes
+  several of those structures after a call has returned, where a layout of ours that was
+  wrong would be silent corruption rather than a build error.
+- **The plain completion port, and registered I/O only if it measures better.** A socket
+  made for registered I/O refuses the ordinary calls, so it would be a second module, sends
+  included, beside the plain one that a system refusing registered I/O needs anyway. The
+  figure it has to beat is below.
+- **The established path is marked per destination on Windows** ([02 §5](02-io-shell.md)):
+  an audio-video flow through the system's QoS service, loaded at run time, which carries
+  class selector 5 on the wire and the video access category on a wireless link. A
+  per-socket type of service is not set there: the system accepts it and sends zero.
+
+### Changed
+- **The shell, the guest loop, the socket and the sends build and run on Windows**, over a
+  platform module of the same names as Linux's: message receives posted into 256 slots
+  pinned for the socket's life and taken up to 256 a call, skipping the port on synchronous
+  success; the wake as an entry on the same port behind an armed flag, and a wake taken
+  outside a wait kept for the next; teardown cancelling every posted receive and taking each
+  back before the storage goes; the option set as the system takes it -- dual stack first,
+  the discovery pair against fragmenting, both unreachable reports off -- and the claimed
+  source and the segment size as control messages on the message send.
+- **The shell asks the platform to mark the established path** once per destination, the
+  relay's server on a relay attempt. The service marks the wildcard-bound socket only
+  connected, so Windows asks with the socket connected for that one call and disconnects it
+  again; Linux, which marks the socket at open, does nothing.
+- **Test fixtures that were Linux's facts are per platform**: the refused destination (the
+  limited broadcast on Linux; Windows sends that and port zero without a word, and refuses
+  the unspecified address) and the pinned source (Linux holds all of 127/8; Windows holds
+  127.0.0.1 alone and keeps a claimed source on its own interface, so there the pin is shown
+  by the refusal of a source the host does not hold). The soak runs on Windows, counting
+  handles where Linux counts descriptors, with the per-message sequence as its loss check
+  where the system keeps no per-socket drop count; the browser-shell pair runs there too.
+
+### Measured
+- On Windows, natively: the network crate's 65 tests, the soak and the browser-shell pair
+  pass; 200 connect and teardown cycles leave handles, threads and the working set flat; a
+  five-second stream of 49,486 messages at 9,897 a second arrives with no gap, allocates
+  nothing in steady state, and wakes on a timeout 7 times a second against a ceiling of 100.
+  The workspace: 762 tests pass, 16 ignored. Each new check was broken once and seen to fail.
+- The completion port's wait asked for 1 ms lasts 16.0 ms at the default timer resolution
+  and 2.0 ms with it raised, and asked for 10 ms, 10.5; a posted entry reaches its waiter in
+  11 us at the median.
+- The receive path hands over a keyframe-sized burst of 2550 datagrams of 1200 bytes, queued
+  on the socket, in 1.77 ms at the median, 2.41 at the 95th percentile and 2.64 at the 99th:
+  695 ns a datagram. Linux's batched receive hands over the same burst in 1.36 ms at the
+  median, 534 ns a datagram, in a virtual machine on the same machine.
+- The mark, over the development machine's own wireless link captured at both ends: a
+  per-socket type of service reaches the wire as zero; the flow's datagrams leave with
+  class selector 5 and the video access category and arrive past the access point unchanged,
+  from any source the send claims; beside a 250 Mbit/s upload from the same machine they
+  cross the air in 1.0 ms at the median and 20 ms at the 99th percentile against 25 and 181
+  unmarked, and on an idle link the two are the same.
+- Nothing on Linux behaves differently: 1106 of the same 1108 tests pass (83 ignored), every
+  lint, the format and the ASCII check, on a clean Linux checkout in a virtual machine, where
+  the two tests that need a localhost answering on both address families fail as they would
+  on any machine whose localhost answers on one.
+
 ## 2026-09-26 - W1.0: the client's driver and its hermetic session build and pass on Windows
 
 ### Changed

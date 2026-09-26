@@ -140,18 +140,30 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   23 and the injection crate's 63 pass, and a test binary imports no C runtime library. The
   environment's compiler flags replace the configuration's rather than adding to them, so
   CI's Windows job names the static runtime again.
-- [ ] **W1.1 net**: the completion-port platform module ([02 §5, §6](02-io-shell.md)): the
+- [x] **W1.1 net**: the completion-port platform module ([02 §5, §6](02-io-shell.md)): the
   socket and its options, never address reuse, since a second bind succeeds there; the
   source address taken through the message receive; a wake posted once until it is taken;
   receive slots pinned for the socket's life and drained up to 256 a call; cancel and drain
-  before a slot is freed. The seam and the library's client half, which sit on the shell,
-  build for Windows with it. Checked by the shell's receive tests, which are the platform
-  module's contract. A timeout on Windows ends at the tick after it expires: the address
-  wait's 1 ms lasts 2.0 ms with the resolution raised, measured; the port's own wait is
-  measured when it is built.
-- [ ] **W1.2 software, and the demo on Windows**: the libavcodec pair loaded there, and the
-  demo built with the platform's compiler, drawing planes through the toolkit's D3D11
-  renderer. Checked by the first picture: ten minutes from an established host.
+  before a slot is freed; the established path marked per destination. Checked by the
+  shell's tests, which are the platform module's contract, and by the soak. *Built
+  2026-09-26.* Decided at its interview: the system's own declarations for the socket, the
+  port and the interface walk, since the system writes several of those structures after a
+  call has returned; the plain completion port, with registered I/O taken only if it
+  measures better, since its socket refuses the ordinary calls and would be a second module;
+  and the mark, through the system's QoS service loaded at run time, since a per-socket type
+  of service reaches the wire as zero there. *Corrected at the build*: the seam and the
+  library's client half move to W1.2 -- the seam chooses and opens the decoders, which that
+  step writes for this platform -- and the QoS service marks the wildcard-bound socket only
+  connected, so the flow is asked for connected and the socket disconnected again
+  ([02 §5](02-io-shell.md)). On Windows natively the net crate's 65 tests, the soak and the
+  browser-shell pair pass; the churn soak holds handles, threads and the working set flat;
+  the port's wait asked for 1 ms lasts 2.0 ms with the resolution raised and 16.0 without;
+  the plain port hands over a queued keyframe-sized burst in 1.8 ms, 695 ns a datagram.
+- [ ] **W1.2 the seam, software, and the demo on Windows**: the seam and the library's
+  client half on the shell, with the platform's decoder choice (*moved here from W1.1 at its
+  build*); the libavcodec pair loaded there, and the demo built with the platform's compiler,
+  drawing planes through the toolkit's D3D11 renderer. Checked by the first picture: ten
+  minutes from an established host.
 - [ ] **W1.3 D3D11 planes**: the backend fed from the readers' jobs, read back to planes.
   Checked by every clip decoding bit for bit on each of the three GPUs.
 - [ ] **W1.4 the handle**: the plane split, reading the decoder's output directly where a
@@ -195,5 +207,6 @@ whether an application may supply the frames, for a virtual display that already
 
 ## Change log
 
+- 2026-09-26: W1.1 built; the seam and the library's client half moved to W1.2.
 - 2026-09-26: W1 planned at its interview.
 - 2026-09-26: planned; W0 built, W0.1 to W0.6.
