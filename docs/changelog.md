@@ -3,6 +3,29 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-26 - W0.1: the shared primitives on Windows
+
+### Changed
+- **The address wait uses the system's own primitive on Windows** ([02 §3](02-io-shell.md)).
+  It was a table of mutex-and-condvar buckets, which the picture queue, sound and the unit
+  pool all wait on. Other platforms keep the table.
+- **Each library handle raises the timer resolution for its life** ([02 §2](02-io-shell.md)),
+  host and client alike, released after the handle's threads are joined. Nothing requested
+  it before, and every wait's timeout would have landed on the system tick.
+- `arrived_us` reads the performance counter on Windows rather than zero; the ABI text says
+  which clock ([06 §3b](06-api.md)). No layout changes.
+- Libraries load from the application's and the system's directories, and a library named
+  by full path resolves its own imports beside it; never from the current directory or the
+  search path.
+
+### Measured
+- The common tests pass on Windows, run here under a compatibility layer, loader and clock
+  included. With the wake removed, the wake test's waiter runs to its 10 s timeout.
+
+### Added
+- [impl-plan-windows.md](impl-plan-windows.md): the platform seams (W0), then the client and
+  the host.
+
 ## 2026-09-25 - Records sealed by a vetted library, lent to the core
 
 ### Changed

@@ -627,7 +627,8 @@ video range, which a renderer that never reads `full_range` draws right (*correc
 2026-09-24*: this said hosts send either unasked; the declaration had asked for the full
 range on every attempt). **`arrived_us`** (minor 16) is when the message
 the picture was decoded from was taken off the network, in microseconds of
-`CLOCK_MONOTONIC`, the clock an application reads by that name, or zero where it is not
+`CLOCK_MONOTONIC`, the clock an application reads by that name, or of
+`QueryPerformanceCounter` on Windows, or zero where it is not
 known: read against that clock at the acquire, it is the picture's time in the library, and
 after the present its time to the screen, which is what a latency figure needs and nothing in
 the stream can say.

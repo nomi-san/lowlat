@@ -57,7 +57,8 @@ Three rules. Each is a production scar.
    It is per-process, so another application making the same request does not help us, and
    high-resolution waitable timers do not remove the need: completion-port timeouts, socket
    polls, and object waits all still quantize to the system tick. Missing this made a host
-   tick at roughly 15.6 ms.
+   tick at roughly 15.6 ms. Each library handle holds one request for its life; the system
+   counts them, so the last handle released lowers it.
 
 **Clock semantics.** The shell's clock exposes **fractional milliseconds as a float**. The
 congestion controller ([01 §10](01-protocol.md)) measures throughput over the interval between
