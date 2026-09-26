@@ -67,6 +67,19 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   the two tests that need a localhost answering on both address families fail as they would
   on any machine whose localhost answers on one.
 
+### Corrected after CI
+- **The teardown test shows the wake by why the loop left, not by the clock.** CI's Windows
+  runner measured a teardown at 343 and then 28 ms against a 25 ms bound. The same test
+  under load here put the time in the thread waiting a whole scheduling quantum -- two clock
+  ticks, 31 ms -- for a processor, with the wake landing in microseconds and the socket and
+  its storage released in 0.6 ms; one woken loop saw the stop only after the wait cap, so a
+  clock cannot tell woken from timed out there. The test now asserts that the stop reached
+  the loop as a wake, and bounds the whole teardown at a second against a hang.
+- **The burst tests gather what Windows completes over a short time**: a wait returns with
+  the receives completed so far, measured at 17 to 25 of a 32-datagram burst and 3 of an
+  8-datagram segmented one under load. Linux's batched receive is still held to taking a
+  queued burst in one call.
+
 ## 2026-09-26 - W1.0: the client's driver and its hermetic session build and pass on Windows
 
 ### Changed
