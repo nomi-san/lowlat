@@ -290,6 +290,9 @@ a Windows side; the crates without one yet build empty there, so the whole works
 ([impl-plan-windows.md](impl-plan-windows.md)). Per-platform code is a module of the same
 name on each platform, never a trait, so this build is the only thing holding the two sides
 to one shape. The examples are left out of it: the ones there probe Linux hardware.
+*Planned for W1*: it also runs the client's tests and its hermetic session, decodes the
+reference clips through an LGPL codec library it downloads, since the runner has no GPU,
+and builds the demo with the platform's own compiler.
 
 Nightly: unbounded fuzzing, the soak matrix, and the hardware suite on a machine with a GPU.
 

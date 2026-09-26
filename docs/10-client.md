@@ -29,7 +29,8 @@ browser can be a guest; a native client has no reason to be one, and the page in
 
 **Windows follows Linux**, as it does for the host: the decoders and the picture handles are
 the platform-specific stages, and the shell's receive path ([02 §6](02-io-shell.md)) is the one
-piece of shared code that changes.
+piece of shared code that changes. *Planned 2026-09-26 as W1*
+([impl-plan-windows.md](impl-plan-windows.md)): the handle there is §4.2, the decoders §5.2.
 
 ## §2 Where a client is different from a host, in one table
 
@@ -168,7 +169,7 @@ memory the library owns for the lease, which every renderer can take and which i
 software or read-back decoder produces anyway. Or as a **handle**: a device-level reference
 that the application imports into its own device, with an offset and a pitch per plane. The
 application asks for a kind at creation and is told which it got; a decoder that cannot
-export hands out planes.
+export hands out planes. *Planned for W1*: the kind may also be switched mid-session (§4.2).
 
 **The handle has a kind, and the first kind is an opaque descriptor** (*built 2026-09-19*).
 The vendor interface's decoded picture is not exportable: its pool is the interface's own
@@ -298,6 +299,45 @@ vendor backend by the handle route ran 120 pictures a second at 0.6-0.75 ms of d
 ten, where the decoder is seventy percent busy and latest-wins does what it should. The
 warning never fired. A switch costs the switching second about forty repeats: the keyframe
 the host is asked for.
+
+### §4.2 On Windows (*planned 2026-09-26*, W1)
+
+**A picture of the handle kind is one shared texture per plane**, in the legacy form, which a
+renderer on the same GPU in the same process opens by its handle: a luma and a two-channel
+chroma texture at eight and ten bits, three single-channel textures for full chroma. The
+frame carries a handle per plane and the identity of the GPU they are on. The library makes
+them on a device of its own on that GPU, never the renderer's: two users of one device are
+serialised on its lock, and the decode would wait behind the renderer's present.
+
+**The picture is finished before it can be acquired, and nothing waits for it on the decode
+thread.** The decode thread queues the decode, the split of the decoded picture into the plane
+textures and a signal of the library's fence, all on its own device, and takes the next unit
+at once. The split reads the decoder's output directly where a driver lets a shader read it,
+and copies it into a plain texture first where one does not; each device is probed. A
+picture becomes acquirable when the fence has passed it, which is a read of a value and not
+a call into the driver; the queue's newest picture is its newest finished one; and an acquire
+with a timeout sleeps on the fence on the application's thread. So the application's device
+never waits on the library's, the release fence keeps its one kind, and a renderer imports
+the textures as it would any shared texture. An earlier implementation tried both of the
+other ways, and this is written against what it found: waiting on its decode thread for its
+own device work, it fell behind the stream past 60 ms under contention on an integrated GPU;
+handing a picture out before its device work was known to be done, trusting the driver to
+order two devices, it showed pictures out of order on one vendor's driver.
+
+**The GPU is the application's to name, and it names the one it renders on.** A renderer on
+another GPU than the display pays a copy of every presented picture across the bus and loses
+the direct flip, so the display's GPU is where a renderer belongs, and the library follows the
+renderer: a decoder that cannot run on the named GPU hands out planes, never a handle the
+renderer cannot open.
+
+**Each slot carries its own backing**, made again when the slot comes back free after the
+session's backing has moved on. One mechanism serves three changes. The session moves to
+another GPU by `lowlat_client_set_decoder`, which a session of the handle kind now accepts: a
+picture still held stays valid on the old GPU until it is released, and the picture resumes
+at the new decoder's keyframe. Planes and handles switch by `lowlat_client_set_frame_kind` at
+the next picture and with no keyframe, since the decoder keeps running and keeps its
+references. And the device lost to a driver update or a reset is made again, and since the
+GPU may come back under a new identity, the application names it again the same way.
 
 ## §5 The decoder, and when a client asks for a keyframe
 
@@ -488,7 +528,8 @@ opening and a runtime that fails to open costs the host nothing; the units that 
 meanwhile are dropped by the rule that ignores everything but a parameter-set-led unit
 while no decoder exists. The frame kind is the queue's shape and stays the creation's: a
 session of the handle kind refuses the call, because its device slots are bound to the
-device. A decoder that cannot serve the frame kind is refused where it is asked for, never
+device (*planned for W1*: each slot carries its own backing, and the call is accepted,
+§4.2). A decoder that cannot serve the frame kind is refused where it is asked for, never
 answered with a frame of another kind. Measured against this host at 2560x1440, the three
 backends walked every hundred seconds, five moves: each answered by exactly one keyframe
 (the host's log shows one reinitialisation per move and nothing else), the picture back
@@ -545,6 +586,28 @@ picture's shape. On the open stack the profile is asked for and refused where th
 lacks it, which is every device this was built on; no read-back is written for a surface
 layout nothing here can verify, and the capability stays false until a device says
 otherwise.
+
+### §5.2 Backends, Windows, in order (*planned 2026-09-26*, W1)
+
+| backend | reached through | hands out |
+|---|---|---|
+| D3D11 video | the system's video decoding interface on any vendor's device, driven by the library's own readers | planes by read-back; one shared texture per plane (§4.2) |
+| NVDEC | the vendor's decode interface, loaded at runtime, as on Linux | planes by a device-to-host copy; shared textures filled by a device copy |
+| AMF, VPL | the two vendors' own decoders, later | -- |
+| software | an LGPL libavcodec pair, loaded at runtime | planes |
+| the system's decoder | the platform's own media framework, in software only | planes, eight-bit 4:2:0 |
+
+Unset, the order is the table's, on the GPU the application names. The system's interface
+comes first because it is one backend on every vendor's device and is fed the same jobs the
+other hardware backend is, as the open stack is on Linux; then the vendor's; then software.
+The two vendors' own decoders go after NVDEC once they are built. Each puts a second reader
+and its own buffering in front of the same hardware, so they are built where the system's
+interface proves short on a device -- a missing profile, a driver fault, speed -- and not
+before, with Intel's older runtime for the parts its newer one cannot reach. The pair keeps
+D14's rule and is found in the directory the application names or beside the application,
+by the platform's versioned names. The system's decoder needs nothing installed for H.264
+and the system's HEVC extension for HEVC, and comes last, because eight-bit 4:2:0 is all it
+decodes.
 
 ## §6 Sound
 

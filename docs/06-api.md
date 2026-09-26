@@ -419,10 +419,10 @@ application holds stays valid, the queue never closes. Costs the host one keyfra
 established host an encoder rebuild, so it is for a person changing a setting. **The frame
 kind stays the creation's**: a session of `LOWLAT_FRAME_HANDLE` refuses the call with
 `LOWLAT_ERR_DECODER_UNSUPPORTED`, because its device slots are bound to the device; changing
-that is a recreate. `LOWLAT_DECODER_NONE` is refused the same way. Measured against this
-host at 2560x1440: the open stack to the vendor's, to software, and round again every
-hundred seconds, each answered by exactly one keyframe and the picture back within the
-second.
+that is a recreate, until W1 (below). `LOWLAT_DECODER_NONE` is refused the same way.
+Measured against this host at 2560x1440: the open stack to the vendor's, to software, and
+round again every hundred seconds, each answered by exactly one keyframe and the picture
+back within the second.
 
 `LOWLAT_DECODER_SOFTWARE` names the
 machine's own codec library -- loaded at runtime, never linked, and **only when the library
@@ -610,7 +610,7 @@ kind is refused. The rule 5 of §1 holds: no callback fires from inside the libr
 **`lowlat_frame` carries either planes or a handle**, and says which. Planes are pointers,
 pitches and a format (`LOWLAT_FORMAT_NV12`, `LOWLAT_FORMAT_P010`) into memory valid for the
 lease; a handle is a device-level reference -- a buffer descriptor and layout modifier, or a
-shared texture and fence -- the application imports into its own device. The application
+texture per plane (W1, below) -- the application imports into its own device. The application
 names the kind it wants in `lowlat_client_create_info` and is told the kind it got; a decoder
 that cannot export lends planes, and in this minor every decoder does. Every picture also
 carries size, rotation, generation and a sequence number -- a gap between two consecutive
@@ -632,6 +632,16 @@ the picture was decoded from was taken off the network, in microseconds of
 known: read against that clock at the acquire, it is the picture's time in the library, and
 after the present its time to the screen, which is what a latency figure needs and nothing in
 the stream can say.
+
+**Planned for Windows** (W1, [impl-plan-windows.md](impl-plan-windows.md),
+[10 §4.2](10-client.md)): a handle kind for shared textures in the legacy form, one per plane,
+with a handle per plane in the frame and the identity of the GPU they are on; the device
+string naming a GPU by that identity, where a render node names one on Linux;
+`lowlat_client_set_frame_kind(cl, kind)`, which switches planes and handles at the next
+picture with no keyframe and is refused with `LOWLAT_ERR_DECODER_UNSUPPORTED` by a decoder
+that cannot hand out the kind; and `lowlat_client_set_decoder` accepted by a session of the
+handle kind, each slot then carrying its own backing. A picture of the new kind is finished
+on the device before it can be acquired, so the release fence keeps its one kind.
 
 **Sound is decoded, not played** (minor 7). `acquire_audio` hands out one packet a call,
 signed sixteen-bit stereo at 48 kHz, in the order the host sent them, as many frames as the

@@ -874,6 +874,14 @@ decoders a client opens and their table. The code above each module -- the loops
 the policy -- is written once, and a platform is ported by writing its modules
 ([impl-plan-windows.md](impl-plan-windows.md)).
 
+**The client's half** (*planned 2026-09-26*, W1; [10 §4.2, §5.2](10-client.md)). The client
+decodes through the system's own video decoding interface, driven by the library's readers,
+on the GPU the application renders on, and hands a picture out as one shared texture per
+plane in the legacy form, which a renderer in the same process opens. A renderer belongs on
+the GPU that drives its display: one on another GPU pays a copy of every presented picture
+across the bus and loses the direct flip. The library and the demo link the C runtime
+statically, so neither asks the machine for a redistributable.
+
 ## §11 Open items
 
 | Item | Status |

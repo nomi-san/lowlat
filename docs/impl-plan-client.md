@@ -1285,11 +1285,17 @@ for any address, and destroys an allocation that sends toward loopback.
 - **A Windows client**: the completion-port receive path in the shell ([02 §6](02-io-shell.md)),
   Media Foundation or NVDEC, shared textures with fences as the handle kind, the toolkit's
   D3D11 renderer. Its own phase when Linux is done; the design already names its handle.
+  *Planned 2026-09-26 as W1 ([impl-plan-windows.md](impl-plan-windows.md)): D3D11 video
+  decoding first, then NVDEC, the pair, and the system's decoder in software only; the handle
+  is one shared texture per plane, finished on the device before it can be acquired, so it
+  needs no fence.*
 - **A second stream, the browser pipe, pen and touch, the microphone uplink.** Each is known
   and none is needed for a client that streams.
 - **A session that changes its frame kind**: `lowlat_frame.kind` is already per frame, so a
   mixed-kind session is expressible without a change to the surface; what it needs is a
   queue that holds both kinds of slot at once. Not needed by anything that streams today.
+  *Planned in W1*: each slot carries its own backing, and `lowlat_client_set_frame_kind`
+  switches at the next picture.
 - **The vendor backend's planes read back into page-locked memory** (*measured
   2026-09-25*): the read-back into ordinary memory is staged by the driver through its own
   buffer, the thread copying out of it and waiting on each chunk -- spinning, since a

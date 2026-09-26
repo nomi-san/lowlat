@@ -3,6 +3,29 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-26 - W1 planned: the Windows client
+
+### Decided
+- The client decodes on the GPU the application names, which is the one it renders on, named
+  on Windows by its adapter identity ([impl-plan-windows.md](impl-plan-windows.md) W1,
+  [10 §4.2](10-client.md)). A renderer on another GPU than the display pays a copy of every
+  presented picture across the bus, so the application keeps its renderer on the display's
+  GPU and the library follows it.
+- A picture of the handle kind is one shared texture per plane, in the legacy form a renderer
+  in the same process opens, and says which GPU it is on. It is finished on the device before
+  it can be acquired: the decode thread queues its work and a signal of the library's fence
+  and moves on, and only an acquire sleeps on the fence. The release fence keeps its one kind.
+- Each slot carries its own backing, so a session can move to another GPU, switch planes and
+  handles at the next picture with `lowlat_client_set_frame_kind` and no keyframe, and
+  survive the loss of its device. Minor 18 when it is built.
+- The automatic order is D3D11 video decoding from the library's own readers, NVDEC, AMD's
+  AMF and Intel's VPL (later), an LGPL libavcodec pair on D14's terms, and the system's own
+  decoder in software only ([10 §5.2](10-client.md), [00 D14](00-overview.md) amended). W1
+  builds four of them.
+- The hermetic session runs on Windows, in CI too; the library and the demo link the C
+  runtime statically; the client ships as a zip; the demo's toolkit gains a GPU choice and a
+  pad's feature reports.
+
 ## 2026-09-26 - Drivers: the display bindings regenerate to what is committed
 
 ### Fixed
