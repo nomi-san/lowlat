@@ -3,6 +3,25 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-26 - W0.2: the IO shell's system calls apart from the loop
+
+### Changed
+- **One module per platform under the shell** ([02 §6](02-io-shell.md)): the socket and its
+  options, the wait and batched receive, offload and source-pinned sends, the wake and the
+  interface walk, chosen when the crate is built and holding every `unsafe` block the crate
+  has. The loop, the send batching, the attempt thread, the port walk, the address choice and
+  the browser transport are written once above it. The crate no longer compiles to nothing
+  off Linux: the browser transport and the address filters build for Windows today.
+- The receive storage belongs to the platform with the socket and the wake, because on a
+  completion port the wait is the receive and pre-posted storage lives exactly as long as its
+  socket. The public surface is unchanged except for three items nothing used: the readiness
+  wait on a bare socket, the socket's raw descriptor and the public receive batch.
+
+### Measured
+- Every test the shell had still runs, now in the module that owns what it checks; the
+  receive tests go through the loop's own receive path, which makes them the contract the
+  next platform's module meets. Nothing on Linux behaves differently.
+
 ## 2026-09-26 - W0.1: the shared primitives on Windows
 
 ### Changed

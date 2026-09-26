@@ -211,6 +211,15 @@ rule that mattered: options are set once at open and nothing lowers one afterwar
 A single outstanding receive plus a poll loses keyframe bursts outright. On one platform this
 was the difference between zero and complete delivery of a keyframe burst on loopback.
 
+**The platform owns the socket, the wake and the receive storage together**, as one module
+chosen when the shell is built, under the same names on every platform; the loop above it,
+the send batching and the attempt thread are written once. Together because the completion
+port joins what the readiness wait keeps apart: there the wait *is* the receive, and pre-posted
+storage has to live exactly as long as the socket it was posted on. The shell asks the
+platform to wait, to take the wake, to drain what arrived and to say whether more may be
+queued; whether that is a poll and a batched receive or a completion drain is the platform's
+own business.
+
 **Send uses segmentation offload where available**: `UDP_SEGMENT` on Linux, the equivalent on
 Windows, falling back to per-datagram send. One syscall per batch. This matters more as the
 datagram size rises, since the packet rate falls but the burst size does not.

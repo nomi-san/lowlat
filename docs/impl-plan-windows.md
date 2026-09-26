@@ -28,9 +28,13 @@ platform as the only contract keeping the two in step: CI builds both.
   directories, never the current one or the search path. *Built 2026-09-26; the common tests
   pass on Windows, run here under a compatibility layer, and the wake test fails with the
   wake removed.*
-- [ ] **W0.2 net**: the system calls apart from the loop, so the loop, the attempt thread,
+- [x] **W0.2 net**: the system calls apart from the loop, so the loop, the attempt thread,
   the browser transport and the address filters compile everywhere and the completion-port
-  receive has one module to fill ([02 §6](02-io-shell.md)).
+  receive has one module to fill ([02 §6](02-io-shell.md)). *Built 2026-09-26: the platform
+  module owns the socket, the wake and the receive storage together; the receive tests now
+  run through the loop's own receive path, so they are the contract the next platform's
+  module meets. The browser transport and the address filters build for Windows; the loop
+  waits for that platform's module.*
 - [ ] **W0.3 drivers and decode**: bindings generated per target; the open-stack interface
   on Linux only; the vendor runtimes by their Windows names; descriptors confined to Linux.
 - [ ] **W0.4 client**: decoder selection and the device-backed picture slots as a module per
@@ -59,4 +63,4 @@ whether an application may supply the frames, for a virtual display that already
 
 ## Change log
 
-- 2026-09-26: planned; W0.1 built.
+- 2026-09-26: planned; W0.1 and W0.2 built.
