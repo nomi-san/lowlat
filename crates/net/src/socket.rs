@@ -294,10 +294,39 @@ mod tests {
             let payload = [index as u8; 200];
             sender.send_to(&payload, to).expect("send");
         }
-        let got = arrived(&mut receiver);
-        assert_eq!(got, burst, "the burst did not arrive in one call");
 
-        for (index, (_, _, bytes)) in receiver.iter().enumerate() {
+        // Linux's batched receive takes everything queued in one call, which
+        // is the batch's whole property. Windows completes each receive on
+        // its own and a wait returns with what has completed so far -- under
+        // load, measured, 17 to 25 of these 32 -- so there the burst is
+        // gathered, and the pool's own tests hold the batching.
+        #[cfg(target_os = "linux")]
+        let seen: Vec<Vec<u8>> = {
+            assert_eq!(
+                arrived(&mut receiver),
+                burst,
+                "the burst did not arrive in one call"
+            );
+            receiver
+                .iter()
+                .map(|(_, _, bytes)| bytes.to_vec())
+                .collect()
+        };
+        #[cfg(windows)]
+        let seen: Vec<Vec<u8>> = {
+            let mut seen = Vec::new();
+            let started = std::time::Instant::now();
+            while seen.len() < burst && started.elapsed() < Duration::from_secs(1) {
+                if receiver.wait(100.0).expect("wait").socket {
+                    receiver.drain().expect("drain");
+                    seen.extend(receiver.iter().map(|(_, _, bytes)| bytes.to_vec()));
+                }
+            }
+            seen
+        };
+
+        assert_eq!(seen.len(), burst, "the burst did not arrive whole");
+        for (index, bytes) in seen.iter().enumerate() {
             assert_eq!(bytes.len(), 200);
             assert_eq!(bytes[0], index as u8, "datagrams arrived out of order");
         }

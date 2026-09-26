@@ -137,13 +137,23 @@ mod tests {
     const SLOTS: usize = 32;
     const CHANNEL: u8 = 1;
 
+    /// How a loop ended: its passes, whether the stop reached it as a wake,
+    /// when it saw the stop, and when its socket and storage were gone -- so a
+    /// slow teardown says which part was slow.
+    struct Exit {
+        passes: u64,
+        woken: bool,
+        stopped: Instant,
+        released: Instant,
+    }
+
     /// Build a shell with storage owned by the calling thread and run it until
-    /// teardown, reporting the address it bound and how many passes it made.
+    /// teardown, reporting the address it bound and how it ended.
     fn run(
         wake: Wake,
         running: &Running,
         bound: &mpsc::Sender<SocketAddr>,
-        passes: &mpsc::Sender<u64>,
+        passes: &mpsc::Sender<Exit>,
     ) {
         let mut recv_bodies = vec![0u8; SLOT * SLOTS];
         let mut recv_meta = vec![SlotMeta::default(); SLOTS];
@@ -178,15 +188,33 @@ mod tests {
         let mut shell = Shell::new(socket, wake, Endpoint::new(conn, session));
         let _ = bound.send(shell.socket().local_addr().unwrap());
 
+        let woke_on_send = |turn: std::io::Result<crate::shell::Turn>| {
+            turn.is_ok_and(|turn| turn.woke == crate::shell::Woke::Send)
+        };
         let mut count = 0u64;
+        let mut woken = false;
         while !running.stopping() {
-            let _ = shell.turn(|_| {});
+            woken = woke_on_send(shell.turn(|_| {}));
             count += 1;
         }
-        let _ = passes.send(count);
+        // The stop can land between two passes, where the loop sees the flag
+        // before its wait could take the wake the stop posted. One more pass
+        // takes that wake at once if it was posted, and waits out the
+        // deadline if it never was.
+        if !woken {
+            woken = woke_on_send(shell.turn(|_| {}));
+        }
+        let stopped = Instant::now();
+        drop(shell);
+        let _ = passes.send(Exit {
+            passes: count,
+            woken,
+            stopped,
+            released: Instant::now(),
+        });
     }
 
-    fn spawn() -> (Guest, mpsc::Receiver<SocketAddr>, mpsc::Receiver<u64>) {
+    fn spawn() -> (Guest, mpsc::Receiver<SocketAddr>, mpsc::Receiver<Exit>) {
         let (bound_tx, bound_rx) = mpsc::channel();
         let (passes_tx, passes_rx) = mpsc::channel();
         let wake = Wake::new().expect("wake");
@@ -229,21 +257,41 @@ mod tests {
         let started = Instant::now();
         guest.stop();
         let took = started.elapsed();
+        let exit = passes
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the loop did not report its end");
 
-        // The threshold has to sit well below the loop's wait cap. At or above
-        // it, a teardown that only set the flag would pass too: the thread
-        // would time out into the same check and join looking prompt. Below it,
-        // only the wake can explain the result.
-        let cap = Duration::from_millis(crate::shell::MAX_WAIT_MS as u64);
+        // **The wake is shown by why the loop left, not by how long it
+        // took.** A clock cannot tell a thread that was woken and then waited
+        // for a processor from one that sat out its wait: on a busy Windows
+        // machine a thread waits a whole scheduling quantum, two clock ticks,
+        // for a processor, and a woken loop has been measured seeing the stop
+        // later than the wait cap. The pass that saw the stop was either
+        // woken by the stop's wake or it timed out, and only the first is a
+        // teardown that wakes.
         assert!(
-            took < cap / 2,
-            "teardown took {took:?} against a {cap:?} wait, so the thread timed out rather than being woken"
+            exit.woken,
+            "the loop left on its deadline: the stop never reached it as a wake"
+        );
+
+        // And no hang: a teardown that strands its thread -- a release that
+        // waits out its bound, a wake that never lands -- is the multi-second
+        // disconnect this exists to prevent. Where the time went is in the
+        // message, because a slow teardown reads the same from outside
+        // whichever part was slow.
+        let hang = Duration::from_secs(1);
+        assert!(
+            took < hang,
+            "teardown took {took:?}: the loop saw the stop after {:?}, released its socket \
+             and storage in {:?}, and the thread's exit and join took the rest",
+            exit.stopped.saturating_duration_since(started),
+            exit.released.saturating_duration_since(exit.stopped),
         );
 
         // Here the count *is* guaranteed, because the sleep above is longer
         // than a full wait, so the loop completed passes before being stopped.
         assert!(
-            passes.recv_timeout(Duration::from_secs(5)).expect("passes") > 0,
+            exit.passes > 0,
             "the loop never ran a pass despite settling into its wait"
         );
     }

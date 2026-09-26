@@ -323,6 +323,28 @@ mod tests {
         }
     }
 
+    /// Up to `want` datagrams arriving within `timeout_ms`: where each came
+    /// from, and its bytes.
+    ///
+    /// **A segmented send's datagrams need not reach the receive at once.**
+    /// Windows completes them over a short time where Linux's loopback has
+    /// them all queued before the send returns, so a burst is gathered across
+    /// drains rather than asked of one; what arrives, and in what order, is
+    /// still the whole of the check.
+    fn gather(io: &mut Io, want: usize, timeout_ms: f64) -> Vec<(SocketAddr, Vec<u8>)> {
+        let started = std::time::Instant::now();
+        let mut got = Vec::new();
+        while got.len() < want {
+            let left = timeout_ms - started.elapsed().as_secs_f64() * 1000.0;
+            if left <= 0.0 || !io.wait(left).expect("wait").socket {
+                break;
+            }
+            io.drain().expect("drain");
+            got.extend(io.iter().map(|(from, _, bytes)| (from, bytes.to_vec())));
+        }
+        got
+    }
+
     /// A destination the system refuses at the call: a real send failure that
     /// needs no network state to produce, and one about the moment rather
     /// than the capability, so it says nothing about whether the system can
@@ -597,9 +619,9 @@ mod tests {
             "the kernel refused to segment, so this exercised the fallback"
         );
 
-        let got = arrived(&mut receiver, 1000.0);
-        assert_eq!(got, 8, "the burst did not arrive as eight datagrams");
-        for (from, _, bytes) in receiver.iter() {
+        let got = gather(&mut receiver, 8, 1000.0);
+        assert_eq!(got.len(), 8, "the burst did not arrive as eight datagrams");
+        for (from, bytes) in &got {
             assert_eq!(bytes.len(), 512);
             assert_eq!(from.ip(), source, "a segment lost the pinned source");
         }
@@ -626,9 +648,9 @@ mod tests {
             "the kernel refused to segment, so this exercised the fallback"
         );
 
-        let got = arrived(&mut receiver, 1000.0);
-        assert_eq!(got, 8, "the burst did not arrive as eight datagrams");
-        for (index, (_, _, bytes)) in receiver.iter().enumerate() {
+        let got = gather(&mut receiver, 8, 1000.0);
+        assert_eq!(got.len(), 8, "the burst did not arrive as eight datagrams");
+        for (index, (_, bytes)) in got.iter().enumerate() {
             assert_eq!(bytes.len(), 512);
             assert_eq!(bytes[0], index as u8);
         }
@@ -717,14 +739,15 @@ mod tests {
         push(&mut batch, &sender, to, Ttl::Default, &[3u8; 900]);
         batch.flush(&sender).expect("flush");
 
-        let mut seen = std::vec::Vec::new();
-        let mut got = arrived(&mut receiver, 1000.0);
-        while got > 0 {
-            for (_, _, bytes) in receiver.iter() {
-                seen.push((bytes[0], bytes.len()));
-            }
-            got = receiver.drain().expect("drain");
-        }
+        let seen: Vec<_> = gather(&mut receiver, 3, 1000.0)
+            .iter()
+            .map(|(_, bytes)| (bytes[0], bytes.len()))
+            .collect();
         assert_eq!(seen, std::vec![(1u8, 400), (2u8, 400), (3u8, 900)]);
+        // And nothing after them: a datagram sent twice arrives as a fourth.
+        assert!(
+            gather(&mut receiver, 1, 50.0).is_empty(),
+            "a datagram arrived twice"
+        );
     }
 }
