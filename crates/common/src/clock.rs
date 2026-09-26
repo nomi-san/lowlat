@@ -55,10 +55,78 @@ pub fn monotonic_us() -> u64 {
         + u64::try_from(now.tv_nsec).unwrap_or(0) / 1000
 }
 
+/// Now, in microseconds of the performance counter: the clock an application
+/// reads here for the same purpose.
+#[cfg(windows)]
+pub fn monotonic_us() -> u64 {
+    let (mut counter, mut frequency) = (0i64, 0i64);
+    // SAFETY: both are valid, properly aligned integers we own.
+    unsafe {
+        imp::QueryPerformanceCounter(&raw mut counter);
+        imp::QueryPerformanceFrequency(&raw mut frequency);
+    }
+    let (Ok(counter), Ok(frequency)) = (u128::try_from(counter), u128::try_from(frequency)) else {
+        return 0;
+    };
+    if frequency == 0 {
+        return 0;
+    }
+    u64::try_from(counter * 1_000_000 / frequency).unwrap_or(u64::MAX)
+}
+
 /// No clock by that name here: zero, which a reader takes as not known.
-#[cfg(not(unix))]
+#[cfg(not(any(unix, windows)))]
 pub fn monotonic_us() -> u64 {
     0
+}
+
+/// The system timer raised to one millisecond for as long as this lives.
+///
+/// **Only Windows needs it, and there it is not optional.** Every timeout a
+/// loop waits with -- a completion port, an address wait, an object wait --
+/// is quantised to the system tick, about 15.6 ms unless raised, and the
+/// request is per process, so another application having made it does not
+/// help. The system counts the requests, so each owner holds one of its own
+/// and the last one released lowers it.
+#[derive(Debug)]
+pub struct TimerResolution(());
+
+impl TimerResolution {
+    /// Raise it, until the value returned is dropped.
+    #[must_use]
+    pub fn raise() -> Self {
+        #[cfg(windows)]
+        // SAFETY: one millisecond is within every system's supported range;
+        // a refusal leaves the resolution where it was, which is harmless.
+        unsafe {
+            imp::timeBeginPeriod(1);
+        }
+        Self(())
+    }
+}
+
+impl Drop for TimerResolution {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        // SAFETY: pairs the request made in `raise`.
+        unsafe {
+            imp::timeEndPeriod(1);
+        }
+    }
+}
+
+#[cfg(windows)]
+mod imp {
+    unsafe extern "system" {
+        pub(super) fn QueryPerformanceCounter(counter: *mut i64) -> i32;
+        pub(super) fn QueryPerformanceFrequency(frequency: *mut i64) -> i32;
+    }
+
+    #[link(name = "winmm")]
+    unsafe extern "system" {
+        pub(super) fn timeBeginPeriod(period: u32) -> u32;
+        pub(super) fn timeEndPeriod(period: u32) -> u32;
+    }
 }
 
 /// The tail of a sleep that is spun rather than slept. Requesting a sleep this
@@ -144,6 +212,8 @@ fn sleep_until(target: Instant) {
     }
 }
 
+/// The standard library's sleep, which is a high-resolution waitable timer on
+/// Windows: already the deadline-bounded sleep this needs.
 #[cfg(not(unix))]
 fn sleep_until(target: Instant) {
     let remaining = target.saturating_duration_since(Instant::now());
@@ -214,7 +284,7 @@ mod tests {
 
     /// The named clock in microseconds, not another unit: an interval read
     /// on it agrees with the same interval read on ours.
-    #[cfg(unix)]
+    #[cfg(any(unix, windows))]
     #[test]
     fn the_named_clock_counts_microseconds() {
         let begin = Time::now();

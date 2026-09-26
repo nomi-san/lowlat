@@ -92,13 +92,68 @@ mod imp {
     }
 }
 
+/// The system's address wait, which is the futex under another name.
+///
+/// **Its timeout is quantised to the system tick** unless the process has
+/// raised the timer resolution, which is what
+/// [`crate::clock::TimerResolution`] is for.
+#[cfg(windows)]
+mod imp {
+    use super::{AtomicU32, Duration};
+    use core::ffi::c_void;
+
+    #[link(name = "synchronization")]
+    unsafe extern "system" {
+        fn WaitOnAddress(
+            address: *const c_void,
+            compare: *const c_void,
+            size: usize,
+            milliseconds: u32,
+        ) -> i32;
+        fn WakeByAddressSingle(address: *const c_void);
+        fn WakeByAddressAll(address: *const c_void);
+    }
+
+    /// The largest finite timeout. One more is `INFINITE`.
+    const LONGEST_MS: u32 = u32::MAX - 1;
+
+    pub(super) fn wait(atom: &AtomicU32, expected: u32, timeout: Duration) {
+        // Rounded up, so a wait never ends before the deadline it was armed
+        // for and the caller pays a second wake to act on it.
+        let milliseconds = u32::try_from(timeout.as_micros().div_ceil(1000))
+            .map_or(LONGEST_MS, |ms| ms.min(LONGEST_MS));
+        // SAFETY: the atomic outlives the call and `expected` is a live
+        // local; both are four bytes, which is the size passed.
+        unsafe {
+            WaitOnAddress(
+                core::ptr::from_ref(atom).cast(),
+                core::ptr::from_ref(&expected).cast(),
+                size_of::<u32>(),
+                milliseconds,
+            );
+        }
+    }
+
+    pub(super) fn wake(atom: &AtomicU32, count: i32) {
+        let address = core::ptr::from_ref(atom).cast();
+        // SAFETY: waking an address nobody waits on is permitted.
+        unsafe {
+            if count == 1 {
+                WakeByAddressSingle(address);
+            } else {
+                WakeByAddressAll(address);
+            }
+        }
+    }
+}
+
 /// Portable fallback: a fixed table of buckets keyed by address.
 ///
 /// Correct but coarser than a futex, since unrelated addresses can share a
 /// bucket and produce extra wakes. Callers recheck their predicate, so extra
-/// wakes are harmless. Linux gets the real thing above; this exists so the
-/// workspace builds and tests anywhere.
-#[cfg(not(target_os = "linux"))]
+/// wakes are harmless. Linux and Windows get the real thing above; this
+/// exists so the workspace builds and tests anywhere else.
+#[cfg(not(any(target_os = "linux", windows)))]
 mod imp {
     use super::{AtomicU32, Duration};
     use core::sync::atomic::Ordering;

@@ -1761,9 +1761,10 @@ typedef struct lowlat_frame {
     bool full_range;
     /// When the message the picture was decoded from was taken off the
     /// network, in microseconds of `CLOCK_MONOTONIC`, the clock an
-    /// application reads by that name; zero where it is not known (minor
-    /// 16). Against a reading of that clock at acquire it is the picture's
-    /// time in the library, and after a present its time to the screen.
+    /// application reads by that name, or of `QueryPerformanceCounter` on
+    /// Windows; zero where it is not known (minor 16). Against a reading of
+    /// that clock at acquire it is the picture's time in the library, and
+    /// after a present its time to the screen.
     /// Filled only when `size` reaches it.
     uint64_t arrived_us;
 } lowlat_frame;

@@ -658,9 +658,10 @@ pub struct lowlat_frame {
     pub full_range: bool,
     /// When the message the picture was decoded from was taken off the
     /// network, in microseconds of `CLOCK_MONOTONIC`, the clock an
-    /// application reads by that name; zero where it is not known (minor
-    /// 16). Against a reading of that clock at acquire it is the picture's
-    /// time in the library, and after a present its time to the screen.
+    /// application reads by that name, or of `QueryPerformanceCounter` on
+    /// Windows; zero where it is not known (minor 16). Against a reading of
+    /// that clock at acquire it is the picture's time in the library, and
+    /// after a present its time to the screen.
     /// Filled only when `size` reaches it.
     pub arrived_us: u64,
 }
@@ -720,6 +721,9 @@ pub struct lowlat_client {
     cursor: std::sync::Mutex<Vec<u8>>,
     /// The last pad report delivered, lent the same way.
     pad_report: std::sync::Mutex<[u8; ::lowlat_core::pad::REPORT_MAX]>,
+    /// Held for the handle's life and declared last, so it is released only
+    /// after every thread the handle ran has been joined.
+    _timer: lowlat_common::clock::TimerResolution,
 }
 
 #[derive(Debug)]
@@ -812,6 +816,7 @@ pub unsafe extern "C" fn lowlat_client_create(
             events,
             cursor: std::sync::Mutex::new(Vec::new()),
             pad_report: std::sync::Mutex::new([0; ::lowlat_core::pad::REPORT_MAX]),
+            _timer: lowlat_common::clock::TimerResolution::raise(),
         });
         unsafe { out.write(Box::into_raw(handle)) };
         LOWLAT_OK

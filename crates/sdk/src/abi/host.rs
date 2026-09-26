@@ -474,6 +474,9 @@ pub struct lowlat_host {
     /// The other end, handed to a host that starts with the application as
     /// the sink.
     report: ::lowlat_host::padsink::Sender,
+    /// Held for the handle's life and declared last, so it is released only
+    /// after every thread the handle ran has been joined.
+    _timer: lowlat_common::clock::TimerResolution,
 }
 
 impl lowlat_host {
@@ -525,6 +528,7 @@ pub unsafe extern "C" fn lowlat_host_create(
             hear,
             reports,
             report,
+            _timer: lowlat_common::clock::TimerResolution::raise(),
         });
         unsafe { out.write(Box::into_raw(handle)) };
         LOWLAT_OK

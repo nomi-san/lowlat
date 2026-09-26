@@ -164,14 +164,35 @@ mod imp {
     // The system loader is present in every process, so these need no crate
     // dependency and no link attribute.
     unsafe extern "system" {
-        fn LoadLibraryA(name: *const u8) -> *mut c_void;
+        fn LoadLibraryExW(name: *const u16, file: *mut c_void, flags: u32) -> *mut c_void;
         fn GetProcAddress(module: *mut c_void, name: *const u8) -> *mut c_void;
         fn FreeLibrary(module: *mut c_void) -> i32;
     }
 
+    /// The directory the named library is in, so its own imports resolve
+    /// beside it. Valid only with a full path.
+    const SEARCH_DLL_LOAD_DIR: u32 = 0x0000_0100;
+    /// The application's directory, the system directory and any directory
+    /// the application added. **Not the current directory and not the
+    /// search path**: this loads into other people's processes, and either
+    /// of those lets whoever writes there choose what runs.
+    const SEARCH_DEFAULT_DIRS: u32 = 0x0000_1000;
+
     pub(super) fn open(name: &CStr) -> *mut c_void {
-        // SAFETY: `name` is a valid NUL-terminated string for the call.
-        unsafe { LoadLibraryA(name.as_ptr().cast()) }
+        // A name that is not text names nothing the loader could find.
+        let Ok(text) = name.to_str() else {
+            return core::ptr::null_mut();
+        };
+        let flags = if std::path::Path::new(text).is_absolute() {
+            SEARCH_DLL_LOAD_DIR | SEARCH_DEFAULT_DIRS
+        } else {
+            SEARCH_DEFAULT_DIRS
+        };
+        // Built once per open, which is setup and never a data path.
+        let wide: Vec<u16> = text.encode_utf16().chain(core::iter::once(0)).collect();
+        // SAFETY: `wide` is NUL-terminated and outlives the call; the file
+        // argument is reserved and must be null.
+        unsafe { LoadLibraryExW(wide.as_ptr(), core::ptr::null_mut(), flags) }
     }
 
     pub(super) unsafe fn symbol(handle: *mut c_void, name: &CStr) -> *mut c_void {
@@ -189,10 +210,13 @@ mod imp {
 mod tests {
     use super::*;
 
-    /// Present on any glibc system, which is every platform this workspace is
-    /// built and tested on. Versioned, because the unversioned alias is a
-    /// linker script rather than an object and will not load.
+    /// Present on any glibc system. Versioned, because the unversioned alias
+    /// is a linker script rather than an object and will not load.
+    #[cfg(unix)]
     const LIBC: &CStr = c"libc.so.6";
+    /// The C runtime every supported Windows carries.
+    #[cfg(windows)]
+    const LIBC: &CStr = c"ucrtbase.dll";
 
     #[test]
     fn opens_a_library_and_resolves_a_symbol() {
@@ -202,6 +226,17 @@ mod tests {
         let symbol: Option<unsafe extern "C" fn(usize) -> *mut c_void> =
             unsafe { library.symbol(c"malloc") };
         assert!(symbol.is_some(), "a symbol libc certainly exports");
+    }
+
+    /// A full path loads too, and takes the directory search that lets the
+    /// library's own imports resolve beside it.
+    #[cfg(windows)]
+    #[test]
+    fn opens_a_library_by_full_path() {
+        let system = std::env::var("SystemRoot").expect("the system root");
+        let path = std::ffi::CString::new(format!("{system}\\System32\\ucrtbase.dll"))
+            .expect("a path without a NUL");
+        assert!(Library::open(&path).is_some());
     }
 
     /// The counterpart that proves the test above is not vacuous: the same
