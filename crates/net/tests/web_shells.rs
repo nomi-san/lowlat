@@ -5,6 +5,8 @@
 //! carries a browser session from punch to picture the way it carries a
 //! native one. Same loop, second instantiation.
 
+// The loop is built where a platform's system calls are written.
+#![cfg(target_os = "linux")]
 // Fixtures build bytes from loop counters and percentiles from lengths; the
 // truncating casts are the obvious ones.
 #![allow(

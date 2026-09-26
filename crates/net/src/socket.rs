@@ -5,19 +5,15 @@
 //! in the same call that lowered it. A setup path that shrank a receive buffer
 //! and left it shrunk has already cost a production stream.
 //!
-//! This is the first module in the workspace outside the concurrency primitives
-//! to contain `unsafe`, because batched receive is a syscall. Every block is a
-//! thin wrapper whose safety argument is local and stated. `miri` cannot reach
-//! any of it -- it cannot execute a syscall -- so the sanitizer build carries
-//! that weight instead.
+//! The socket itself and its option calls are the platform's
+//! (`crate::sys`); the sizes, the values asked for and the port walk are here.
 
-use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use core::time::Duration;
 use std::io;
-use std::mem;
-use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd, RawFd};
 
 use lowlat_core::MAX_DATAGRAM;
+
+pub use crate::sys::Socket;
 
 /// Receive slot size, derived from the protocol ceiling and never from the
 /// probed datagram size.
@@ -44,13 +40,13 @@ pub const RECV_BATCH: usize = 64;
 /// Requested receive buffer. Keyframe bursts of roughly 2550 packets per 100 ms
 /// overflow 16 MB, so this asks far above what most kernels will grant and logs
 /// what actually arrived.
-const WANT_RCVBUF: libc::c_int = 64 * 1024 * 1024;
+pub(crate) const WANT_RCVBUF: i32 = 64 * 1024 * 1024;
 
 /// Requested send buffer. The default drops check and video bursts.
-const WANT_SNDBUF: libc::c_int = 4 * 1024 * 1024;
+pub(crate) const WANT_SNDBUF: i32 = 4 * 1024 * 1024;
 
 /// Expedited forwarding, on both families.
-const DSCP_EF: libc::c_int = 0xB8;
+pub(crate) const DSCP_EF: i32 = 0xB8;
 
 /// The TTL everything but a mapping probe leaves at.
 pub const DEFAULT_TTL: u8 = 64;
@@ -80,28 +76,6 @@ const PORT_WALK: u16 = 50;
 /// descriptor exhaustion rather than an occupied port, and the whole walk is
 /// still under the time a single connection setup takes.
 const WALK_RETRY: Duration = Duration::from_millis(1);
-
-/// Sizes into the kernel's length type.
-///
-/// Every value passed is a compile-time struct size, orders of magnitude below
-/// the type's range. The saturating fallback keeps the conversion total rather
-/// than panicking on a case that cannot arise.
-pub(crate) fn socklen(bytes: usize) -> libc::socklen_t {
-    libc::socklen_t::try_from(bytes).unwrap_or(libc::socklen_t::MAX)
-}
-
-/// The address family, in the type the kernel's address structs use.
-fn family_v6() -> libc::sa_family_t {
-    libc::sa_family_t::try_from(libc::AF_INET6).unwrap_or(0)
-}
-
-/// A bound UDP socket with the full option set applied.
-#[derive(Debug)]
-pub struct Socket {
-    fd: OwnedFd,
-    granted_rcvbuf: i32,
-    granted_sndbuf: i32,
-}
 
 impl Socket {
     /// Open a dual-stack UDP socket bound at or just above `port`, with every
@@ -175,328 +149,33 @@ impl Socket {
 
         Err(last.unwrap_or_else(|| io::Error::from(io::ErrorKind::AddrInUse)))
     }
-
-    /// One attempt: a fresh descriptor, the full option set, and a bind.
-    fn bound(port: u16) -> io::Result<Self> {
-        // SAFETY: a plain socket(2) with constant arguments; the returned
-        // descriptor is handed straight to OwnedFd, which closes it on drop.
-        let raw = unsafe { libc::socket(libc::AF_INET6, libc::SOCK_DGRAM, 0) };
-        if raw < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: `raw` is a fresh descriptor we own and have not registered
-        // anywhere else.
-        let fd = unsafe { OwnedFd::from_raw_fd(raw) };
-        let socket = Self {
-            fd,
-            granted_rcvbuf: 0,
-            granted_sndbuf: 0,
-        };
-        socket.configure()?;
-        socket.bind(port)?;
-
-        let granted_rcvbuf = socket.get_int(libc::SOL_SOCKET, libc::SO_RCVBUF)?;
-        let granted_sndbuf = socket.get_int(libc::SOL_SOCKET, libc::SO_SNDBUF)?;
-        Ok(Self {
-            granted_rcvbuf,
-            granted_sndbuf,
-            ..socket
-        })
-    }
-
-    fn configure(&self) -> io::Result<()> {
-        // Dual stack. One socket serves both families.
-        self.set_int(libc::IPPROTO_IPV6, libc::IPV6_V6ONLY, 0)?;
-
-        // Ask high and accept what the kernel grants; the granted value is
-        // reported by `granted_recv_buffer` and must be logged at open, because
-        // a silently clamped request is invisible until a burst is lost.
-        self.set_int(libc::SOL_SOCKET, libc::SO_RCVBUF, WANT_RCVBUF)?;
-        self.set_int(libc::SOL_SOCKET, libc::SO_SNDBUF, WANT_SNDBUF)?;
-
-        // Source address selection parity across families.
-        self.set_int(libc::IPPROTO_IPV6, libc::IPV6_RECVPKTINFO, 1)?;
-        self.set_int(libc::IPPROTO_IP, libc::IP_PKTINFO, 1)?;
-
-        self.set_int(libc::IPPROTO_IP, libc::IP_TOS, DSCP_EF)?;
-        self.set_int(libc::IPPROTO_IPV6, libc::IPV6_TCLASS, DSCP_EF)?;
-
-        // Do not fragment, so an oversized probe fails fast rather than being
-        // split and arriving anyway, which would make the probe meaningless.
-        //
-        // **Both families, because neither setting carries to the other.** A
-        // v6 socket left at its default fragments locally rather than refusing,
-        // and the path probe reads that as the size having worked. IPv6's
-        // minimum is 1280 and the ladder climbs past it, so the rungs above
-        // that would each be reported reachable on a path that can only carry
-        // them in pieces.
-        self.set_int(
-            libc::IPPROTO_IP,
-            libc::IP_MTU_DISCOVER,
-            libc::IP_PMTUDISC_DO,
-        )?;
-        self.set_int(
-            libc::IPPROTO_IPV6,
-            libc::IPV6_MTU_DISCOVER,
-            libc::IPV6_PMTUDISC_DO,
-        )?;
-
-        self.set_ttl(DEFAULT_TTL)?;
-        self.set_nonblocking()?;
-        Ok(())
-    }
-
-    fn bind(&self, port: u16) -> io::Result<()> {
-        let addr = libc::sockaddr_in6 {
-            sin6_family: family_v6(),
-            sin6_port: port.to_be(),
-            sin6_flowinfo: 0,
-            sin6_addr: libc::in6_addr { s6_addr: [0u8; 16] },
-            sin6_scope_id: 0,
-        };
-        // SAFETY: `addr` is a fully initialised sockaddr_in6 and the length
-        // passed is its exact size.
-        let rc = unsafe {
-            libc::bind(
-                self.fd.as_raw_fd(),
-                core::ptr::addr_of!(addr).cast(),
-                socklen(mem::size_of::<libc::sockaddr_in6>()),
-            )
-        };
-        if rc < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
-
-    /// The receive buffer the kernel actually granted.
-    ///
-    /// **Log this at open, every time.** A clamped request is otherwise
-    /// invisible until a keyframe burst is already lost.
-    pub fn granted_recv_buffer(&self) -> i32 {
-        self.granted_rcvbuf
-    }
-
-    /// The send buffer the kernel actually granted.
-    pub fn granted_send_buffer(&self) -> i32 {
-        self.granted_sndbuf
-    }
-
-    /// The address the socket is bound to, after the kernel has chosen a port.
-    pub fn local_addr(&self) -> io::Result<SocketAddr> {
-        let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
-        let mut len = socklen(mem::size_of::<libc::sockaddr_storage>());
-        // SAFETY: `storage` is large enough for any address family and `len`
-        // describes it exactly; the kernel writes at most that many bytes.
-        let rc = unsafe {
-            libc::getsockname(
-                self.fd.as_raw_fd(),
-                core::ptr::addr_of_mut!(storage).cast(),
-                &mut len,
-            )
-        };
-        if rc < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        from_storage(&storage).ok_or_else(|| io::Error::other("unrecognised local address"))
-    }
-
-    /// Set the hop limit on both families.
-    ///
-    /// Lowering this for a mapping probe is the one option change permitted
-    /// after open, and it must be raised again in the same breath. A socket
-    /// left at a probe TTL carries media a few hops and no further, which
-    /// presents as a path that establishes and then delivers nothing.
-    pub fn set_ttl(&self, ttl: u8) -> io::Result<()> {
-        self.set_int(libc::IPPROTO_IP, libc::IP_TTL, i32::from(ttl))?;
-        self.set_int(libc::IPPROTO_IPV6, libc::IPV6_UNICAST_HOPS, i32::from(ttl))
-    }
-
-    /// The current hop limit, read back from the kernel.
-    pub fn ttl(&self) -> io::Result<u8> {
-        let value = self.get_int(libc::IPPROTO_IP, libc::IP_TTL)?;
-        u8::try_from(value).map_err(|_| io::Error::other("ttl outside the byte range"))
-    }
-
-    fn set_nonblocking(&self) -> io::Result<()> {
-        // SAFETY: F_GETFL takes no argument and returns the flags or -1.
-        let flags = unsafe { libc::fcntl(self.fd.as_raw_fd(), libc::F_GETFL) };
-        if flags < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        // SAFETY: F_SETFL takes the flag word by value.
-        let rc =
-            unsafe { libc::fcntl(self.fd.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) };
-        if rc < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
-
-    fn set_int(&self, level: libc::c_int, name: libc::c_int, value: libc::c_int) -> io::Result<()> {
-        // SAFETY: the option value is a c_int and the length passed is its
-        // exact size, which is what every option used here expects.
-        let rc = unsafe {
-            libc::setsockopt(
-                self.fd.as_raw_fd(),
-                level,
-                name,
-                core::ptr::addr_of!(value).cast(),
-                socklen(mem::size_of::<libc::c_int>()),
-            )
-        };
-        if rc < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(())
-    }
-
-    fn get_int(&self, level: libc::c_int, name: libc::c_int) -> io::Result<i32> {
-        let mut value: libc::c_int = 0;
-        let mut len = socklen(mem::size_of::<libc::c_int>());
-        // SAFETY: `value` is a c_int and `len` describes it exactly; the kernel
-        // writes at most that many bytes and updates `len`.
-        let rc = unsafe {
-            libc::getsockopt(
-                self.fd.as_raw_fd(),
-                level,
-                name,
-                core::ptr::addr_of_mut!(value).cast(),
-                &mut len,
-            )
-        };
-        if rc < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(value)
-    }
-
-    /// Send one datagram.
-    pub fn send_to(&self, datagram: &[u8], to: SocketAddr) -> io::Result<usize> {
-        let (addr, len) = to_storage(to);
-        // SAFETY: `datagram` is a valid slice and `addr` a fully initialised
-        // address of exactly `len` bytes.
-        let sent = unsafe {
-            libc::sendto(
-                self.fd.as_raw_fd(),
-                datagram.as_ptr().cast(),
-                datagram.len(),
-                0,
-                core::ptr::addr_of!(addr).cast(),
-                len,
-            )
-        };
-        if sent < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(usize::try_from(sent).unwrap_or(0))
-    }
-
-    /// Wait until the socket is readable, or `timeout_ms` elapses.
-    ///
-    /// Returns true if there is something to read. A sub-millisecond timeout
-    /// rounds up to one, because a wait that can return instantly is a hot poll
-    /// wearing a timeout's clothes.
-    pub fn wait_readable(&self, timeout_ms: f64) -> io::Result<bool> {
-        let timeout = if timeout_ms <= 1.0 {
-            1
-        } else if timeout_ms >= f64::from(i32::MAX) {
-            i32::MAX
-        } else {
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "bounded by the two arms above"
-            )]
-            {
-                timeout_ms as i32
-            }
-        };
-        let mut fds = libc::pollfd {
-            fd: self.fd.as_raw_fd(),
-            events: libc::POLLIN,
-            revents: 0,
-        };
-        // SAFETY: one fully initialised pollfd is passed with a count of one.
-        let rc = unsafe { libc::poll(core::ptr::addr_of_mut!(fds), 1, timeout) };
-        if rc < 0 {
-            let error = io::Error::last_os_error();
-            if error.kind() == io::ErrorKind::Interrupted {
-                return Ok(false);
-            }
-            return Err(error);
-        }
-        Ok(rc > 0)
-    }
-
-    /// Give up ownership of the descriptor.
-    pub fn into_raw_fd(self) -> RawFd {
-        self.fd.into_raw_fd()
-    }
-}
-
-impl AsRawFd for Socket {
-    fn as_raw_fd(&self) -> RawFd {
-        self.fd.as_raw_fd()
-    }
-}
-
-/// Convert a socket address into the kernel's form.
-pub(crate) fn to_storage(addr: SocketAddr) -> (libc::sockaddr_in6, libc::socklen_t) {
-    // The socket is dual stack, so a v4 destination goes out as v4-mapped.
-    let (ip, port) = match addr {
-        SocketAddr::V4(v4) => (v4.ip().to_ipv6_mapped(), v4.port()),
-        SocketAddr::V6(v6) => (*v6.ip(), v6.port()),
-    };
-    let storage = libc::sockaddr_in6 {
-        sin6_family: family_v6(),
-        sin6_port: port.to_be(),
-        sin6_flowinfo: 0,
-        sin6_addr: libc::in6_addr {
-            s6_addr: ip.octets(),
-        },
-        sin6_scope_id: 0,
-    };
-    (storage, socklen(mem::size_of::<libc::sockaddr_in6>()))
-}
-
-/// Convert the kernel's form back, collapsing a v4-mapped address to IPv4.
-///
-/// **Structural, never textual.** A v4-mapped address contains colons in its
-/// text form and is IPv4; deciding by searching for one removes every v4
-/// candidate and kills connectivity on v4-only paths.
-pub(crate) fn from_storage(storage: &libc::sockaddr_storage) -> Option<SocketAddr> {
-    match libc::c_int::from(storage.ss_family) {
-        libc::AF_INET6 => {
-            // SAFETY: the family field says this is a sockaddr_in6, and
-            // sockaddr_storage is defined to be large enough and aligned for it.
-            let v6 = unsafe { &*core::ptr::from_ref(storage).cast::<libc::sockaddr_in6>() };
-            let ip = Ipv6Addr::from(v6.sin6_addr.s6_addr);
-            let port = u16::from_be(v6.sin6_port);
-            Some(match ip.to_ipv4_mapped() {
-                Some(v4) => SocketAddr::V4(SocketAddrV4::new(v4, port)),
-                None => SocketAddr::V6(SocketAddrV6::new(
-                    ip,
-                    port,
-                    v6.sin6_flowinfo,
-                    v6.sin6_scope_id,
-                )),
-            })
-        }
-        libc::AF_INET => {
-            // SAFETY: as above, for the v4 layout.
-            let v4 = unsafe { &*core::ptr::from_ref(storage).cast::<libc::sockaddr_in>() };
-            Some(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::from(u32::from_be(v4.sin_addr.s_addr))),
-                u16::from_be(v4.sin_port),
-            ))
-        }
-        _ => None,
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sys::Io;
+    use crate::wake::Wake;
+    use core::net::{IpAddr, Ipv6Addr, SocketAddr};
+
+    fn loopback_of(socket: &Socket) -> SocketAddr {
+        let mut addr = socket.local_addr().expect("addr");
+        addr.set_ip(IpAddr::V6(Ipv6Addr::LOCALHOST));
+        addr
+    }
+
+    /// A socket to receive on, with the loop's own receive path around it.
+    fn receiver() -> (Io, SocketAddr) {
+        let socket = Socket::open(0).expect("open receiver");
+        let to = loopback_of(&socket);
+        (Io::new(socket, Wake::new().expect("wake")), to)
+    }
+
+    /// Wait for the socket to speak, then take one batch.
+    fn arrived(io: &mut Io) -> usize {
+        assert!(io.wait(1000.0).expect("wait").socket, "nothing arrived");
+        io.drain().expect("drain")
+    }
 
     #[test]
     fn a_socket_opens_with_its_options_applied() {
@@ -511,33 +190,6 @@ mod tests {
 
         let local = socket.local_addr().expect("local addr");
         assert_ne!(local.port(), 0, "the kernel must have chosen a port");
-    }
-
-    /// **Neither family fragments, and neither setting carries to the other.**
-    ///
-    /// A socket left at the v6 default fragments an oversized datagram locally
-    /// instead of refusing it, and the path probe reads an arrival as the size
-    /// having worked. Both halves are asserted here so that setting one and
-    /// calling the option done fails on this test rather than on a path whose
-    /// minimum is 1280 and whose ladder climbs past it.
-    #[test]
-    fn neither_family_fragments_an_oversized_datagram() {
-        let socket = Socket::open(0).expect("open");
-
-        assert_eq!(
-            socket
-                .get_int(libc::IPPROTO_IP, libc::IP_MTU_DISCOVER)
-                .expect("v4 discovery"),
-            libc::IP_PMTUDISC_DO,
-            "the v4 path would fragment rather than refuse"
-        );
-        assert_eq!(
-            socket
-                .get_int(libc::IPPROTO_IPV6, libc::IPV6_MTU_DISCOVER)
-                .expect("v6 discovery"),
-            libc::IPV6_PMTUDISC_DO,
-            "the v6 path would fragment rather than refuse"
-        );
     }
 
     /// A host whose configured port is occupied has to start anyway, so the
@@ -615,40 +267,119 @@ mod tests {
     #[test]
     fn a_datagram_crosses_between_two_sockets() {
         let left = Socket::open(0).expect("open left");
-        let right = Socket::open(0).expect("open right");
-
-        let mut to = right.local_addr().expect("addr");
-        to.set_ip(IpAddr::V6(Ipv6Addr::LOCALHOST));
+        let (mut right, to) = receiver();
         left.send_to(b"hello", to).expect("send");
-
-        assert!(right.wait_readable(500.0).expect("poll"), "nothing arrived");
+        assert_eq!(arrived(&mut right), 1);
     }
 
-    /// A v4-mapped address is IPv4 and must come back as such, whatever the
-    /// dual-stack socket hands us.
     #[test]
-    fn a_v4_mapped_source_is_reported_as_v4() {
-        let mapped = Ipv4Addr::new(198, 51, 100, 7).to_ipv6_mapped();
-        let (storage, _) = to_storage(SocketAddr::new(IpAddr::V6(mapped), 9000));
+    fn an_empty_socket_drains_to_nothing() {
+        let (mut io, _) = receiver();
+        assert_eq!(io.drain().expect("drain"), 0);
+        assert_eq!(io.iter().count(), 0);
+        assert!(!io.saturated());
+    }
 
-        // SAFETY: reinterpreting a sockaddr_in6 as the storage union is exactly
-        // what the kernel interface does, and the storage is the larger type.
-        let generic: libc::sockaddr_storage = unsafe {
-            let mut out: libc::sockaddr_storage = mem::zeroed();
-            core::ptr::copy_nonoverlapping(
-                core::ptr::addr_of!(storage).cast::<u8>(),
-                core::ptr::addr_of_mut!(out).cast::<u8>(),
-                mem::size_of::<libc::sockaddr_in6>(),
-            );
-            out
-        };
+    /// The property the batch exists for: a burst arrives whole, in one call,
+    /// rather than one datagram per syscall with the rest dropped.
+    #[test]
+    fn a_burst_arrives_in_one_call() {
+        let sender = Socket::open(0).expect("open sender");
+        let (mut receiver, to) = receiver();
 
+        let burst = 32;
+        for index in 0..burst {
+            let payload = [index as u8; 200];
+            sender.send_to(&payload, to).expect("send");
+        }
+        let got = arrived(&mut receiver);
+        assert_eq!(got, burst, "the burst did not arrive in one call");
+
+        for (index, (_, _, bytes)) in receiver.iter().enumerate() {
+            assert_eq!(bytes.len(), 200);
+            assert_eq!(bytes[0], index as u8, "datagrams arrived out of order");
+        }
+    }
+
+    /// Reusing the batch must not carry the previous pass's address length
+    /// forward, which is what an unreset descriptor does.
+    #[test]
+    fn a_reused_batch_reports_the_right_source_each_time() {
+        let first = Socket::open(0).expect("open first");
+        let second = Socket::open(0).expect("open second");
+        let (mut receiver, to) = receiver();
+
+        first.send_to(b"one", to).expect("send");
+        assert_eq!(arrived(&mut receiver), 1);
+        let (from_first, _, bytes) = receiver.iter().next().expect("one datagram");
+        assert_eq!(bytes, b"one");
+        assert_eq!(from_first.port(), loopback_of(&first).port());
+
+        second.send_to(b"two", to).expect("send");
+        assert_eq!(arrived(&mut receiver), 1);
+        let (from_second, _, bytes) = receiver.iter().next().expect("one datagram");
+        assert_eq!(bytes, b"two");
         assert_eq!(
-            from_storage(&generic),
-            Some(SocketAddr::new(
-                IpAddr::V4(Ipv4Addr::new(198, 51, 100, 7)),
-                9000
-            ))
+            from_second.port(),
+            loopback_of(&second).port(),
+            "the second pass reported the first sender"
+        );
+    }
+
+    /// The address a datagram arrived at is reported beside the address it
+    /// came from. Any 127/8 destination reaches the same wildcard-bound
+    /// socket, so two arrivals only differ by what the control message says
+    /// -- which is exactly what a check answer needs to leave from the right
+    /// address on a host that has more than one.
+    #[test]
+    fn the_address_a_datagram_arrived_at_is_reported() {
+        let sender = Socket::open(0).expect("sender");
+        let (mut receiver, to) = receiver();
+        let port = to.port();
+
+        let v4_dest = IpAddr::V4(core::net::Ipv4Addr::new(127, 0, 0, 11));
+        sender
+            .send_to(b"v4", SocketAddr::new(v4_dest, port))
+            .expect("send");
+        assert_eq!(arrived(&mut receiver), 1);
+        let (_, local, bytes) = receiver.iter().next().expect("datagram");
+        assert_eq!(bytes, b"v4");
+        assert_eq!(
+            local,
+            Some(v4_dest),
+            "the v4 arrival address was not reported"
+        );
+
+        let v6_dest = IpAddr::V6(Ipv6Addr::LOCALHOST);
+        sender
+            .send_to(b"v6", SocketAddr::new(v6_dest, port))
+            .expect("send");
+        assert_eq!(arrived(&mut receiver), 1);
+        let (_, local, bytes) = receiver.iter().next().expect("datagram");
+        assert_eq!(bytes, b"v6");
+        assert_eq!(
+            local,
+            Some(v6_dest),
+            "the v6 arrival address was not reported"
+        );
+    }
+
+    /// A full-size datagram must survive, which it only does because the slot
+    /// is sized from the protocol ceiling plus relay framing.
+    #[test]
+    fn a_full_size_datagram_survives() {
+        let sender = Socket::open(0).expect("open sender");
+        let (mut receiver, to) = receiver();
+
+        let payload = vec![0xA5u8; lowlat_core::MAX_DATAGRAM];
+        sender.send_to(&payload, to).expect("send");
+
+        assert_eq!(arrived(&mut receiver), 1);
+        let (_, _, bytes) = receiver.iter().next().expect("one datagram");
+        assert_eq!(
+            bytes.len(),
+            lowlat_core::MAX_DATAGRAM,
+            "a full-size datagram was truncated"
         );
     }
 }

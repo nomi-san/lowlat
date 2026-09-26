@@ -20,14 +20,13 @@
 //! against it reads short by up to a full wait.
 
 use std::io;
-use std::os::fd::AsRawFd;
 
 use lowlat_core::endpoint::{Endpoint, Media};
 use lowlat_core::session::Session;
 
-use crate::recv;
 use crate::send;
 use crate::socket::Socket;
+use crate::sys::Io;
 use crate::wake::Wake;
 
 /// Shortest wait. A sub-millisecond timeout is a hot poll wearing a timeout's
@@ -59,9 +58,9 @@ pub enum Woke {
 /// meant to be. Anything poll says about a descriptor sends the pass to it;
 /// only silence is skipped.
 #[derive(Debug, Default, Clone, Copy)]
-struct Ready {
-    socket: bool,
-    wake: bool,
+pub(crate) struct Ready {
+    pub(crate) socket: bool,
+    pub(crate) wake: bool,
 }
 
 /// What one pass did.
@@ -113,10 +112,10 @@ impl Stats {
 /// instantiated per transport; nothing here knows which one it is driving.
 #[derive(Debug)]
 pub struct Shell<'a, M: Media = Session<'a>> {
-    socket: Socket,
-    wake: Wake,
+    /// The socket, the wake and the receive storage, which the platform owns
+    /// together.
+    io: Io,
     endpoint: Endpoint<'a, M>,
-    inbound: recv::Batch,
     outbound: send::Batch,
     scratch: Box<[u8]>,
     stats: Stats,
@@ -137,10 +136,8 @@ impl<'a, M: Media> Shell<'a, M> {
             socket.granted_send_buffer()
         );
         Self {
-            socket,
-            wake,
+            io: Io::new(socket, wake),
             endpoint,
-            inbound: recv::Batch::new(),
             outbound: send::Batch::new(),
             scratch: vec![0u8; crate::socket::RECV_SLOT].into_boxed_slice(),
             stats: Stats::default(),
@@ -161,12 +158,12 @@ impl<'a, M: Media> Shell<'a, M> {
 
     /// The socket, for its address and granted buffers.
     pub fn socket(&self) -> &Socket {
-        &self.socket
+        self.io.socket()
     }
 
     /// A producer's end of the wake, for a thread that will enqueue work.
     pub fn wake_handle(&self) -> io::Result<crate::wake::WakeHandle> {
-        self.wake.handle()
+        self.io.wake().handle()
     }
 
     /// Wake accounting so far.
@@ -193,7 +190,7 @@ impl<'a, M: Media> Shell<'a, M> {
             .endpoint
             .next_timer_ms(armed_ms)
             .clamp(MIN_WAIT_MS, MAX_WAIT_MS);
-        let ready = self.wait(timeout)?;
+        let ready = self.io.wait(timeout)?;
         let now_ms = lowlat_common::clock::elapsed_ms(self.base);
 
         // Taken before the application is pulled, never after. Anything
@@ -207,7 +204,11 @@ impl<'a, M: Media> Shell<'a, M> {
         // either way**: a ring can be filled by a producer whose notify has
         // not landed yet, and gating that on the wake would hold the work
         // until the next one.
-        let woken_by_send = if ready.wake { self.wake.take()? } else { false };
+        let woken_by_send = if ready.wake {
+            self.io.take_wake()?
+        } else {
+            false
+        };
         app(&mut self.endpoint);
 
         let received = if ready.socket {
@@ -239,65 +240,17 @@ impl<'a, M: Media> Shell<'a, M> {
         })
     }
 
-    /// Wait for either descriptor, or the deadline.
-    ///
-    /// Reports which descriptors poll spoke about rather than a bare "something
-    /// happened", so the pass can leave the quiet ones alone.
-    fn wait(&self, timeout_ms: f64) -> io::Result<Ready> {
-        // Rounded up, never truncated: poll takes whole milliseconds, and a
-        // fractional wait rounded down wakes just before the armed deadline --
-        // the pass then finds nothing due and pays a second wake to act on it.
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "clamped to the wait bounds by the caller"
-        )]
-        let timeout = timeout_ms.max(MIN_WAIT_MS).ceil() as libc::c_int;
-        let mut fds = [
-            libc::pollfd {
-                fd: self.socket.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-            libc::pollfd {
-                fd: self.wake.as_raw_fd(),
-                events: libc::POLLIN,
-                revents: 0,
-            },
-        ];
-        // SAFETY: two fully initialised descriptors are passed with a matching
-        // count.
-        let rc = unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout) };
-        if rc <= 0 {
-            if rc < 0 {
-                let error = io::Error::last_os_error();
-                if error.kind() != io::ErrorKind::Interrupted {
-                    return Err(error);
-                }
-            }
-            // Quiet, and on the interrupted path the reported events are not
-            // meaningful either. An interrupt is not a failure and nothing is
-            // lost by treating it as quiet: whatever was pending is still
-            // pending, and the descriptor is still armed for the next pass.
-            return Ok(Ready::default());
-        }
-        let [socket, wake] = fds;
-        Ok(Ready {
-            socket: socket.revents != 0,
-            wake: wake.revents != 0,
-        })
-    }
-
     /// Pull every queued datagram and hand each to the endpoint.
     fn receive(&mut self, now_ms: f64) -> io::Result<usize> {
         let mut total = 0;
         loop {
-            let got = self.inbound.drain(&self.socket)?;
+            let got = self.io.drain()?;
             if got == 0 {
                 return Ok(total);
             }
             total += got;
             let mut refused = 0u64;
-            for (from, local, datagram) in self.inbound.iter() {
+            for (from, local, datagram) in self.io.iter() {
                 // A datagram that fails to parse or authenticate is dropped and
                 // the loop continues. Hostile and corrupt input is the normal
                 // case on a network, not an error path -- but it is counted,
@@ -312,7 +265,7 @@ impl<'a, M: Media> Shell<'a, M> {
                 }
             }
             self.stats.rejected += refused;
-            if !self.inbound.saturated() {
+            if !self.io.saturated() {
                 return Ok(total);
             }
         }
@@ -341,16 +294,16 @@ impl<'a, M: Media> Shell<'a, M> {
                     // once more. A failure with all of it free is our defect,
                     // and the emission is dropped rather than retried.
                     if self.outbound.staged() > 0 {
-                        self.outbound.flush(&self.socket)?;
+                        self.outbound.flush(self.io.socket())?;
                         continue;
                     }
                     break;
                 }
             };
-            self.outbound.commit(&self.socket, egress)?;
+            self.outbound.commit(self.io.socket(), egress)?;
             sent += 1;
         }
-        self.outbound.flush(&self.socket)?;
+        self.outbound.flush(self.io.socket())?;
         Ok(sent)
     }
 }

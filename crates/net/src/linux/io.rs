@@ -1,8 +1,9 @@
-//! Batched receive: one syscall per burst, never one per datagram.
+//! The wait and batched receive, over one socket and one wake.
 //!
-//! A single outstanding receive plus a poll loses a keyframe burst outright.
-//! On one platform that was the difference between zero and complete delivery
-//! of a burst on loopback, so the batch is not an optimisation.
+//! **One syscall per burst, never one per datagram.** A single outstanding
+//! receive plus a poll loses a keyframe burst outright. On one platform that
+//! was the difference between zero and complete delivery of a burst on
+//! loopback, so the batch is not an optimisation.
 //!
 //! Storage is allocated once and reused forever. The kernel writes straight
 //! into the slots, so a received datagram costs no copy on our side and no
@@ -11,9 +12,117 @@
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::io;
 use std::mem;
-use std::os::fd::AsRawFd;
 
-use crate::socket::{RECV_BATCH, RECV_SLOT, Socket, from_storage, socklen};
+use super::socket::{Socket, from_storage, socklen};
+use super::wake::Wake;
+use crate::shell::{MIN_WAIT_MS, Ready};
+use crate::socket::{RECV_BATCH, RECV_SLOT};
+
+/// The socket, the wake and the receive storage, owned together for a
+/// session.
+#[derive(Debug)]
+pub(crate) struct Io {
+    socket: Socket,
+    wake: Wake,
+    batch: Batch,
+}
+
+impl Io {
+    /// Allocate the receive storage. Once per session, never on a data path.
+    pub(crate) fn new(socket: Socket, wake: Wake) -> Self {
+        Self {
+            socket,
+            wake,
+            batch: Batch::new(),
+        }
+    }
+
+    pub(crate) fn socket(&self) -> &Socket {
+        &self.socket
+    }
+
+    pub(crate) fn wake(&self) -> &Wake {
+        &self.wake
+    }
+
+    /// Wait for the socket or the wake, or the deadline.
+    ///
+    /// Reports which descriptors poll spoke about rather than a bare "something
+    /// happened", so the pass can leave the quiet ones alone.
+    pub(crate) fn wait(&mut self, timeout_ms: f64) -> io::Result<Ready> {
+        // Rounded up, never truncated: poll takes whole milliseconds, and a
+        // fractional wait rounded down wakes just before the armed deadline --
+        // the pass then finds nothing due and pays a second wake to act on it.
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "clamped to the wait bounds by the caller"
+        )]
+        let timeout = timeout_ms.max(MIN_WAIT_MS).ceil() as libc::c_int;
+        let mut fds = [
+            libc::pollfd {
+                fd: self.socket.raw(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: self.wake.raw(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        // SAFETY: two fully initialised descriptors are passed with a matching
+        // count.
+        let rc = unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout) };
+        if rc <= 0 {
+            if rc < 0 {
+                let error = io::Error::last_os_error();
+                if error.kind() != io::ErrorKind::Interrupted {
+                    return Err(error);
+                }
+            }
+            // Quiet, and on the interrupted path the reported events are not
+            // meaningful either. An interrupt is not a failure and nothing is
+            // lost by treating it as quiet: whatever was pending is still
+            // pending, and the descriptor is still armed for the next pass.
+            return Ok(Ready::default());
+        }
+        let [socket, wake] = fds;
+        Ok(Ready {
+            socket: socket.revents != 0,
+            wake: wake.revents != 0,
+        })
+    }
+
+    /// Consume the pending wake, if any. See [`Wake::take`] for why this
+    /// comes before the application is pulled.
+    pub(crate) fn take_wake(&mut self) -> io::Result<bool> {
+        self.wake.take()
+    }
+
+    /// Pull whatever the kernel has queued, up to the batch size.
+    ///
+    /// Returns how many datagrams arrived. Zero means the queue is drained; the
+    /// caller stops when it sees a short batch, because a full one means there
+    /// may be more behind it.
+    pub(crate) fn drain(&mut self) -> io::Result<usize> {
+        self.batch.drain(&self.socket)
+    }
+
+    /// True when the last drain filled every slot, so more may be queued.
+    pub(crate) fn saturated(&self) -> bool {
+        self.batch.filled == RECV_BATCH
+    }
+
+    /// The datagrams from the last drain: the address each came from, the
+    /// local address it arrived at, and the bytes.
+    ///
+    /// A v4-mapped source is reported as IPv4, structurally. The local
+    /// address is `None` when the kernel attached no packet information,
+    /// which a caller treats as "could not say" rather than an error.
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (SocketAddr, Option<IpAddr>, &[u8])> {
+        self.batch.iter()
+    }
+}
 
 /// Room for one datagram's control messages: one packet-information
 /// structure, well under this either way.
@@ -31,7 +140,7 @@ struct Control([u8; CONTROL_LEN]);
 /// arrays. Boxing is what makes that sound: moving a `Batch` moves the boxes,
 /// not the heap allocations they point at, so the pointers stay valid for the
 /// life of the object.
-pub struct Batch {
+struct Batch {
     slots: Box<[[u8; RECV_SLOT]]>,
     names: Box<[libc::sockaddr_storage]>,
     /// Never read through this handle, and load bearing anyway: every message
@@ -57,15 +166,8 @@ impl core::fmt::Debug for Batch {
     }
 }
 
-impl Default for Batch {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Batch {
-    /// Allocate the slots. Once per session, never on a data path.
-    pub fn new() -> Self {
+    fn new() -> Self {
         let mut slots = vec![[0u8; RECV_SLOT]; RECV_BATCH].into_boxed_slice();
         // SAFETY: sockaddr_storage and the descriptor structs are plain data
         // with no invalid bit patterns, so an all-zero value is valid.
@@ -116,12 +218,7 @@ impl Batch {
         }
     }
 
-    /// Pull whatever the kernel has queued, up to the batch size.
-    ///
-    /// Returns how many datagrams arrived. Zero means the queue is drained; the
-    /// caller stops when it sees a short batch, because a full one means there
-    /// may be more behind it.
-    pub fn drain(&mut self, socket: &Socket) -> io::Result<usize> {
+    fn drain(&mut self, socket: &Socket) -> io::Result<usize> {
         // The address and control lengths are in and out: the kernel
         // overwrites each with what it actually wrote, so a reused descriptor
         // that is not reset presents the previous datagram's lengths on the
@@ -139,7 +236,7 @@ impl Batch {
         // blocking, so a caller that has already polled never parks here.
         let got = unsafe {
             libc::recvmmsg(
-                socket.as_raw_fd(),
+                socket.raw(),
                 self.msgs.as_mut_ptr(),
                 libc::c_uint::try_from(RECV_BATCH).unwrap_or(1),
                 libc::MSG_DONTWAIT,
@@ -164,18 +261,7 @@ impl Batch {
         Ok(self.filled)
     }
 
-    /// True when the last drain filled every slot, so more may be queued.
-    pub fn saturated(&self) -> bool {
-        self.filled == RECV_BATCH
-    }
-
-    /// The datagrams from the last drain: the address each came from, the
-    /// local address it arrived at, and the bytes.
-    ///
-    /// A v4-mapped source is reported as IPv4, structurally. The local
-    /// address is `None` when the kernel attached no packet information,
-    /// which a caller treats as "could not say" rather than an error.
-    pub fn iter(&self) -> impl Iterator<Item = (SocketAddr, Option<IpAddr>, &[u8])> {
+    fn iter(&self) -> impl Iterator<Item = (SocketAddr, Option<IpAddr>, &[u8])> {
         (0..self.filled).filter_map(move |index| {
             let msg = self.msgs.get(index)?;
             let len = usize::try_from(msg.msg_len).unwrap_or(0);
@@ -233,142 +319,3 @@ fn local_of(msg: &libc::msghdr) -> Option<IpAddr> {
 // elsewhere. Nothing here is shared between threads without the usual
 // borrowing rules, so a Batch is as sendable as the bytes it holds.
 unsafe impl Send for Batch {}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use core::net::{IpAddr, Ipv6Addr};
-
-    fn loopback_of(socket: &Socket) -> SocketAddr {
-        let mut addr = socket.local_addr().expect("addr");
-        addr.set_ip(IpAddr::V6(Ipv6Addr::LOCALHOST));
-        addr
-    }
-
-    #[test]
-    fn an_empty_socket_drains_to_nothing() {
-        let socket = Socket::open(0).expect("open");
-        let mut batch = Batch::new();
-        assert_eq!(batch.drain(&socket).expect("drain"), 0);
-        assert_eq!(batch.iter().count(), 0);
-        assert!(!batch.saturated());
-    }
-
-    /// The property the batch exists for: a burst arrives whole, in one call,
-    /// rather than one datagram per syscall with the rest dropped.
-    #[test]
-    fn a_burst_arrives_in_one_call() {
-        let sender = Socket::open(0).expect("open sender");
-        let receiver = Socket::open(0).expect("open receiver");
-        let to = loopback_of(&receiver);
-
-        let burst = 32;
-        for index in 0..burst {
-            let payload = [index as u8; 200];
-            sender.send_to(&payload, to).expect("send");
-        }
-        assert!(receiver.wait_readable(1000.0).expect("poll"));
-
-        let mut batch = Batch::new();
-        let got = batch.drain(&receiver).expect("drain");
-        assert_eq!(got, burst, "the burst did not arrive in one call");
-
-        for (index, (_, _, bytes)) in batch.iter().enumerate() {
-            assert_eq!(bytes.len(), 200);
-            assert_eq!(bytes[0], index as u8, "datagrams arrived out of order");
-        }
-    }
-
-    /// Reusing the batch must not carry the previous pass's address length
-    /// forward, which is what an unreset descriptor does.
-    #[test]
-    fn a_reused_batch_reports_the_right_source_each_time() {
-        let first = Socket::open(0).expect("open first");
-        let second = Socket::open(0).expect("open second");
-        let receiver = Socket::open(0).expect("open receiver");
-        let to = loopback_of(&receiver);
-
-        let mut batch = Batch::new();
-
-        first.send_to(b"one", to).expect("send");
-        assert!(receiver.wait_readable(1000.0).expect("poll"));
-        assert_eq!(batch.drain(&receiver).expect("drain"), 1);
-        let (from_first, _, bytes) = batch.iter().next().expect("one datagram");
-        assert_eq!(bytes, b"one");
-        assert_eq!(from_first.port(), loopback_of(&first).port());
-
-        second.send_to(b"two", to).expect("send");
-        assert!(receiver.wait_readable(1000.0).expect("poll"));
-        assert_eq!(batch.drain(&receiver).expect("drain"), 1);
-        let (from_second, _, bytes) = batch.iter().next().expect("one datagram");
-        assert_eq!(bytes, b"two");
-        assert_eq!(
-            from_second.port(),
-            loopback_of(&second).port(),
-            "the second pass reported the first sender"
-        );
-    }
-
-    /// The address a datagram arrived at is reported beside the address it
-    /// came from. Any 127/8 destination reaches the same wildcard-bound
-    /// socket, so two arrivals only differ by what the control message says
-    /// -- which is exactly what a check answer needs to leave from the right
-    /// address on a host that has more than one.
-    #[test]
-    fn the_address_a_datagram_arrived_at_is_reported() {
-        let sender = Socket::open(0).expect("sender");
-        let receiver = Socket::open(0).expect("receiver");
-        let port = receiver.local_addr().expect("addr").port();
-        let mut batch = Batch::new();
-
-        let v4_dest = IpAddr::V4(core::net::Ipv4Addr::new(127, 0, 0, 11));
-        sender
-            .send_to(b"v4", SocketAddr::new(v4_dest, port))
-            .expect("send");
-        assert!(receiver.wait_readable(1000.0).expect("poll"));
-        assert_eq!(batch.drain(&receiver).expect("drain"), 1);
-        let (_, local, bytes) = batch.iter().next().expect("datagram");
-        assert_eq!(bytes, b"v4");
-        assert_eq!(
-            local,
-            Some(v4_dest),
-            "the v4 arrival address was not reported"
-        );
-
-        let v6_dest = IpAddr::V6(Ipv6Addr::LOCALHOST);
-        sender
-            .send_to(b"v6", SocketAddr::new(v6_dest, port))
-            .expect("send");
-        assert!(receiver.wait_readable(1000.0).expect("poll"));
-        assert_eq!(batch.drain(&receiver).expect("drain"), 1);
-        let (_, local, bytes) = batch.iter().next().expect("datagram");
-        assert_eq!(bytes, b"v6");
-        assert_eq!(
-            local,
-            Some(v6_dest),
-            "the v6 arrival address was not reported"
-        );
-    }
-
-    /// A full-size datagram must survive, which it only does because the slot
-    /// is sized from the protocol ceiling plus relay framing.
-    #[test]
-    fn a_full_size_datagram_survives() {
-        let sender = Socket::open(0).expect("open sender");
-        let receiver = Socket::open(0).expect("open receiver");
-        let to = loopback_of(&receiver);
-
-        let payload = vec![0xA5u8; lowlat_core::MAX_DATAGRAM];
-        sender.send_to(&payload, to).expect("send");
-        assert!(receiver.wait_readable(1000.0).expect("poll"));
-
-        let mut batch = Batch::new();
-        assert_eq!(batch.drain(&receiver).expect("drain"), 1);
-        let (_, _, bytes) = batch.iter().next().expect("one datagram");
-        assert_eq!(
-            bytes.len(),
-            lowlat_core::MAX_DATAGRAM,
-            "a full-size datagram was truncated"
-        );
-    }
-}

@@ -19,6 +19,9 @@
 //! Duration comes from `LOWLAT_SOAK_MS` so the same harness serves the quick
 //! per-run check and the ten- and sixty-minute soaks.
 
+// The loop is built where a platform's system calls are written.
+#![cfg(target_os = "linux")]
+
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 
