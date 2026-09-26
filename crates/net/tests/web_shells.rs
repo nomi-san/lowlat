@@ -1,12 +1,12 @@
 //! Phase 13: two shells, one in each role, over real sockets.
 //!
 //! The simulator pair proves the state machines; this proves the loop
-//! around them -- the shell's own timers, the eventfd wake, a real socket --
+//! around them -- the shell's own timers, the platform's wake, a real socket --
 //! carries a browser session from punch to picture the way it carries a
 //! native one. Same loop, second instantiation.
 
 // The loop is built where a platform's system calls are written.
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", windows))]
 // Fixtures build bytes from loop counters and percentiles from lengths; the
 // truncating casts are the obvious ones.
 #![allow(

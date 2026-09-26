@@ -45,7 +45,9 @@ pub(crate) const WANT_RCVBUF: i32 = 64 * 1024 * 1024;
 /// Requested send buffer. The default drops check and video bursts.
 pub(crate) const WANT_SNDBUF: i32 = 4 * 1024 * 1024;
 
-/// Expedited forwarding, on both families.
+/// Expedited forwarding, on both families. A socket option where the system
+/// honours one; Windows ignores it and marks per destination instead.
+#[cfg(target_os = "linux")]
 pub(crate) const DSCP_EF: i32 = 0xB8;
 
 /// The TTL everything but a mapping probe leaves at.
@@ -361,6 +363,65 @@ mod tests {
             local,
             Some(v6_dest),
             "the v6 arrival address was not reported"
+        );
+    }
+
+    /// **A measurement, not a gate**: how long the receive path takes to hand
+    /// over a keyframe-sized burst already queued on the socket, per burst and
+    /// per datagram. The burst is sent whole before the clock starts, so what
+    /// is timed is the platform's receive alone, and the thread is busy for
+    /// all of it, so the time is its cost. The baseline any other receive
+    /// mechanism has to beat. Run with
+    /// `cargo test -p lowlat-net --release --lib receive_cost -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "a measurement, run by hand in release"]
+    fn receive_cost() {
+        const BURST: usize = 2550;
+        const SIZE: usize = 1200;
+        const ROUNDS: usize = 50;
+        let sender = Socket::open(0).expect("open sender");
+        let (mut io, to) = receiver();
+        let payload = [0x5Au8; SIZE];
+
+        let mut per_burst = Vec::with_capacity(ROUNDS);
+        for _ in 0..ROUNDS {
+            for _ in 0..BURST {
+                while let Err(error) = sender.send_to(&payload, to) {
+                    assert_eq!(error.kind(), io::ErrorKind::WouldBlock, "send: {error}");
+                    std::thread::yield_now();
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+
+            let started = std::time::Instant::now();
+            let mut got = 0;
+            while got < BURST && io.wait(100.0).expect("wait").socket {
+                loop {
+                    let drained = io.drain().expect("drain");
+                    got += io
+                        .iter()
+                        .filter(|(_, _, bytes)| bytes.len() == SIZE)
+                        .count();
+                    if drained == 0 || !io.saturated() {
+                        break;
+                    }
+                }
+            }
+            per_burst.push(started.elapsed().as_secs_f64() * 1e3);
+            assert_eq!(got, BURST, "the burst did not arrive whole");
+        }
+
+        per_burst.sort_by(f64::total_cmp);
+        let at = |p: f64| per_burst[((per_burst.len() - 1) as f64 * p).round() as usize];
+        println!(
+            "receive: {BURST} x {SIZE} B queued, {ROUNDS} rounds: \
+             p50 {:.3} p95 {:.3} p99 {:.3} max {:.3} ms a burst; \
+             p50 {:.0} ns a datagram",
+            at(0.50),
+            at(0.95),
+            at(0.99),
+            per_burst[ROUNDS - 1],
+            at(0.50) * 1e6 / BURST as f64
         );
     }
 

@@ -70,7 +70,7 @@ fn wanted(addr: Ipv4Addr, shared: bool) -> bool {
 }
 
 /// Every private IPv4 address on an interface that is up.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 fn enumerated_v4(shared: bool) -> Vec<IpAddr> {
     let mut found: Vec<IpAddr> = Vec::new();
     for addr in crate::sys::interface_v4() {
@@ -122,7 +122,7 @@ fn probed_v6() -> Option<IpAddr> {
 /// ordinary outcome for IPv6 and is not an error. The IPv4 list is capped at
 /// [`MAX_HOST_ADDRESSES`]; a caller that wants to report a cap that bound can
 /// compare the length against it.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub fn host_addresses(shared: bool) -> Vec<IpAddr> {
     let mut found = enumerated_v4(shared);
     found.truncate(MAX_HOST_ADDRESSES);
@@ -254,7 +254,7 @@ mod tests {
     }
 
     /// Nothing unreachable is offered, and the cap is honoured.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     #[test]
     fn what_is_offered_is_reachable_and_bounded() {
         for shared in [false, true] {

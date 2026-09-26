@@ -902,6 +902,7 @@ dependencies = [
  "lowlat-common",
  "lowlat-core",
  "lowlat-crypto",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

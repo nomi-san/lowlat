@@ -24,8 +24,34 @@ dcsctp = "0.1"
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
 
+# The system's own declarations for the socket, the completion port and the
+# interface walk: layouts from the platform's metadata rather than structs we
+# maintain, which matters most for the ones the system writes after a call has
+# returned. Declarations only, linked by name at build time with no import
+# libraries; the QoS service is not among them, since it is loaded at run time.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Networking_WinSock",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_WindowsProgramming",
+] }
+
 [dev-dependencies]
 lowlat-common = { workspace = true, features = ["alloc-counter"] }
+
+# The churn test's counts on Windows: open handles, the process's threads and
+# its working set, where Linux reads the same from /proc.
+[target.'cfg(windows)'.dev-dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Threading",
+] }
 
 [lints]
 workspace = true

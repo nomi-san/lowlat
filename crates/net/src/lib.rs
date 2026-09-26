@@ -5,8 +5,8 @@
 //! **The system calls are one module per platform, chosen when the crate is
 //! built**, under the same names on every platform: the loop, the attempt
 //! thread, the send batching, the browser transport and the address choice
-//! above them are written once. Linux's is the one written so far, so what
-//! drives a socket is built where it exists. That module is also the only one
+//! above them are written once. Linux's and Windows' are written, so what
+//! drives a socket is built on those two. That module is also the only one
 //! here containing `unsafe`.
 
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::indexing_slicing)]
@@ -27,33 +27,36 @@
 )]
 
 // The host candidates wait on the platform's interface walk.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
 pub mod addrs;
 pub mod web;
 
 #[cfg(target_os = "linux")]
 #[path = "linux/mod.rs"]
 mod sys;
+#[cfg(windows)]
+#[path = "windows/mod.rs"]
+mod sys;
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub mod guest;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 mod send;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub mod shell;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub mod socket;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub mod wake;
 
 pub use addrs::MAX_HOST_ADDRESSES;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub use addrs::host_addresses;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub use guest::{Guest, Running};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub use shell::{Shell, Stats, Turn, Woke};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub use socket::{DEFAULT_TTL, RECV_BATCH, RECV_SLOT, Socket};
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", windows))]
 pub use wake::{Wake, WakeHandle};

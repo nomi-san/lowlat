@@ -19,6 +19,7 @@
 //! deadline costs two wakes and fires a pass late, and a round trip measured
 //! against it reads short by up to a full wait.
 
+use core::net::SocketAddr;
 use std::io;
 
 use lowlat_core::endpoint::{Endpoint, Media};
@@ -122,6 +123,8 @@ pub struct Shell<'a, M: Media = Session<'a>> {
     /// The loop's epoch. Every pass is stamped in milliseconds since this,
     /// so the endpoint's engines are built against time zero.
     base: lowlat_common::clock::Time,
+    /// The destination the platform was last asked to mark.
+    marked: Option<SocketAddr>,
 }
 
 impl<'a, M: Media> Shell<'a, M> {
@@ -142,6 +145,7 @@ impl<'a, M: Media> Shell<'a, M> {
             scratch: vec![0u8; crate::socket::RECV_SLOT].into_boxed_slice(),
             stats: Stats::default(),
             base: lowlat_common::clock::Time::now(),
+            marked: None,
         }
     }
 
@@ -218,6 +222,7 @@ impl<'a, M: Media> Shell<'a, M> {
         };
         self.endpoint.poll(now_ms);
         let sent = self.drain(now_ms)?;
+        self.mark();
 
         let woke = if received > 0 {
             self.stats.datagram_wakes += 1;
@@ -238,6 +243,23 @@ impl<'a, M: Media> Shell<'a, M> {
             sent,
             now: now_ms,
         })
+    }
+
+    /// Mark the established path, where the platform asks per destination
+    /// rather than per socket.
+    ///
+    /// A relay attempt sends everything to the relay, so that is what is
+    /// marked; a direct one sends to its path. Checked once a pass, and the
+    /// platform is asked only when the destination moves.
+    fn mark(&mut self) {
+        let Some(path) = self.endpoint.path() else {
+            return;
+        };
+        let to = self.endpoint.relay().map_or(path, |relay| relay.server());
+        if self.marked != Some(to) {
+            self.marked = Some(to);
+            self.io.mark(to);
+        }
     }
 
     /// Pull every queued datagram and hand each to the endpoint.
@@ -451,6 +473,10 @@ mod tests {
             "right found no path"
         );
         assert_eq!(arrived.as_deref(), Some(&b"hdrbody"[..]));
+        // The established path is what the platform is asked to mark, from
+        // the pass that established it.
+        assert_eq!(left.marked, Some(right_addr), "left marked no path");
+        assert_eq!(right.marked, Some(left_addr), "right marked no path");
     }
 
     /// The wake gets the loop moving without waiting out the deadline, which is

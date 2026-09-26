@@ -113,6 +113,10 @@ impl Io {
         self.batch.filled == RECV_BATCH
     }
 
+    /// Mark the established path. Nothing to do here: the traffic class is
+    /// the socket's own, set once at open for every destination.
+    pub(crate) fn mark(&mut self, _to: SocketAddr) {}
+
     /// The datagrams from the last drain: the address each came from, the
     /// local address it arrived at, and the bytes.
     ///

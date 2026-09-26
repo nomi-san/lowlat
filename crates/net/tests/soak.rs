@@ -20,7 +20,7 @@
 //! per-run check and the ten- and sixty-minute soaks.
 
 // The loop is built where a platform's system calls are written.
-#![cfg(target_os = "linux")]
+#![cfg(any(target_os = "linux", windows))]
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
@@ -129,10 +129,9 @@ fn loopback_of(shell: &Shell<'_>) -> core::net::SocketAddr {
 /// This is the only direct measure of the receive buffer being overrun. Counting
 /// what arrived cannot distinguish a datagram the kernel discarded from one that
 /// was never sent.
-fn kernel_drops(port: u16) -> u64 {
-    let Ok(table) = std::fs::read_to_string("/proc/net/udp6") else {
-        return 0;
-    };
+#[cfg(target_os = "linux")]
+fn kernel_drops(port: u16) -> Option<u64> {
+    let table = std::fs::read_to_string("/proc/net/udp6").ok()?;
     for line in table.lines().skip(1) {
         let mut fields = line.split_whitespace();
         let Some(local) = fields.nth(1) else { continue };
@@ -142,13 +141,16 @@ fn kernel_drops(port: u16) -> u64 {
         if u16::from_str_radix(hex_port, 16) != Ok(port) {
             continue;
         }
-        if let Some(drops) = line.split_whitespace().next_back()
-            && let Ok(value) = drops.parse()
-        {
-            return value;
-        }
+        return line.split_whitespace().next_back()?.parse().ok();
     }
-    0
+    Some(0)
+}
+
+/// Windows keeps no drop count per socket, so there is none to read; the
+/// per-message sequence below is the loss check there.
+#[cfg(windows)]
+fn kernel_drops(_port: u16) -> Option<u64> {
+    None
 }
 
 /// A pass that produces more datagrams than the staging batch holds must still
@@ -235,6 +237,9 @@ fn a_sustained_stream_loses_nothing_allocates_nothing_and_does_not_tick() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(5_000.0);
+    // Held for the run, as a library handle holds it for its life: without it
+    // a Windows wait lasts the system tick, not the deadline it was armed for.
+    let _resolution = lowlat_common::clock::TimerResolution::raise();
 
     let mut left_arena = Arena::new();
     let mut right_arena = Arena::new();
@@ -378,7 +383,9 @@ fn a_sustained_stream_loses_nothing_allocates_nothing_and_does_not_tick() {
         stop_receiver.store(true, Ordering::Relaxed);
     });
 
-    let drops = kernel_drops(right_port).saturating_sub(drops_before);
+    let drops = kernel_drops(right_port)
+        .zip(drops_before)
+        .map(|(after, before)| after.saturating_sub(before));
     let sent = sent.load(Ordering::Relaxed);
     let received = received.load(Ordering::Relaxed);
     let gaps = gaps.load(Ordering::Relaxed);
@@ -389,8 +396,9 @@ fn a_sustained_stream_loses_nothing_allocates_nothing_and_does_not_tick() {
     let seconds = duration_ms / 1000.0;
 
     println!("soak:   {seconds:.1} s at a {TARGET_PPS} datagram/s target");
+    let drops_read = drops.map_or_else(|| "no".to_string(), |d| d.to_string());
     println!(
-        "stream: {sent} messages sent, {received} received, {gaps} gaps, {drops} kernel drops"
+        "stream: {sent} messages sent, {received} received, {gaps} gaps, {drops_read} kernel drops"
     );
     println!(
         "rate:   {:.0} messages/s, {} datagrams out, {} datagrams in",
@@ -411,10 +419,12 @@ fn a_sustained_stream_loses_nothing_allocates_nothing_and_does_not_tick() {
 
     assert_eq!(gaps, 0, "the stream lost or reordered messages");
     assert_eq!(received, sent, "{} messages never arrived", sent - received);
-    assert_eq!(
-        drops, 0,
-        "the kernel dropped {drops} datagrams on the receiver"
-    );
+    if let Some(drops) = drops {
+        assert_eq!(
+            drops, 0,
+            "the kernel dropped {drops} datagrams on the receiver"
+        );
+    }
     assert_eq!(sender_allocs, 0, "the sender allocated in steady state");
     assert_eq!(receiver_allocs, 0, "the receiver allocated in steady state");
 
@@ -465,11 +475,15 @@ fn many_connect_and_teardown_cycles_leak_nothing() {
     /// so the baseline is steady state rather than start-up.
     const WARM_CYCLES: u64 = 50;
 
+    // Descriptors on Linux and handles on Windows: what a cycle opens and must
+    // close, counted exactly on both.
+    #[cfg(target_os = "linux")]
     fn descriptors() -> usize {
         std::fs::read_dir("/proc/self/fd")
             .map(|d| d.count())
             .unwrap_or(0)
     }
+    #[cfg(target_os = "linux")]
     fn field(name: &str) -> u64 {
         std::fs::read_to_string("/proc/self/status")
             .ok()
@@ -480,6 +494,67 @@ fn many_connect_and_teardown_cycles_leak_nothing() {
             })
             .unwrap_or(0)
     }
+    #[cfg(target_os = "linux")]
+    fn threads() -> u64 {
+        field("Threads:")
+    }
+    #[cfg(target_os = "linux")]
+    fn resident_kb() -> u64 {
+        field("VmRSS:")
+    }
+    #[cfg(windows)]
+    fn descriptors() -> usize {
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, GetProcessHandleCount};
+        let mut count: u32 = 0;
+        // SAFETY: this process's pseudo handle and a writable count.
+        unsafe { GetProcessHandleCount(GetCurrentProcess(), &raw mut count) };
+        count as usize
+    }
+    #[cfg(windows)]
+    fn threads() -> u64 {
+        use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+        use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+            CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentProcessId;
+        // SAFETY: a snapshot of the system's threads, walked with an entry of
+        // the size it declares and closed here.
+        unsafe {
+            let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+            if snapshot == INVALID_HANDLE_VALUE {
+                return 0;
+            }
+            let me = GetCurrentProcessId();
+            let mut entry = THREADENTRY32 {
+                dwSize: u32::try_from(size_of::<THREADENTRY32>()).expect("a small struct"),
+                ..Default::default()
+            };
+            let mut count = 0;
+            let mut more = Thread32First(snapshot, &raw mut entry) != 0;
+            while more {
+                if entry.th32OwnerProcessID == me {
+                    count += 1;
+                }
+                more = Thread32Next(snapshot, &raw mut entry) != 0;
+            }
+            CloseHandle(snapshot);
+            count
+        }
+    }
+    #[cfg(windows)]
+    fn resident_kb() -> u64 {
+        use windows_sys::Win32::System::ProcessStatus::{
+            K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS,
+        };
+        use windows_sys::Win32::System::Threading::GetCurrentProcess;
+        let mut counters = PROCESS_MEMORY_COUNTERS {
+            cb: u32::try_from(size_of::<PROCESS_MEMORY_COUNTERS>()).expect("a small struct"),
+            ..Default::default()
+        };
+        // SAFETY: this process's pseudo handle and counters of the size given.
+        unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &raw mut counters, counters.cb) };
+        (counters.WorkingSetSize / 1024) as u64
+    }
 
     // **Read once it has stopped moving.** A joined thread is gone from the
     // process before join returns, but the kernel's count of the thread group
@@ -488,10 +563,10 @@ fn many_connect_and_teardown_cycles_leak_nothing() {
     // is one too high, so a thread that left reads as a thread that leaked.
     fn threads_settled() -> u64 {
         let began = std::time::Instant::now();
-        let mut last = field("Threads:");
+        let mut last = threads();
         loop {
             std::thread::sleep(std::time::Duration::from_millis(10));
-            let now = field("Threads:");
+            let now = threads();
             if now == last || began.elapsed() > std::time::Duration::from_secs(1) {
                 return now;
             }
@@ -524,7 +599,7 @@ fn many_connect_and_teardown_cycles_leak_nothing() {
     }
     let fds_before = descriptors();
     let threads_before = threads_settled();
-    let rss_before = field("VmRSS:");
+    let rss_before = resident_kb();
 
     for _ in 0..cycles {
         one_cycle();
@@ -532,7 +607,7 @@ fn many_connect_and_teardown_cycles_leak_nothing() {
 
     let fds_after = descriptors();
     let threads_after = threads_settled();
-    let rss_after = field("VmRSS:");
+    let rss_after = resident_kb();
     let rss_growth = rss_after.saturating_sub(rss_before);
 
     println!("churn:  {cycles} cycles after {WARM_CYCLES} warm-up");

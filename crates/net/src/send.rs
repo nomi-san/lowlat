@@ -323,6 +323,21 @@ mod tests {
         }
     }
 
+    /// A destination the system refuses at the call: a real send failure that
+    /// needs no network state to produce, and one about the moment rather
+    /// than the capability, so it says nothing about whether the system can
+    /// segment. Which one differs by platform: Linux refuses the limited
+    /// broadcast without the broadcast option; Windows sends it without a
+    /// word, and refuses the unspecified address instead, which Linux takes
+    /// as this host.
+    fn refused() -> SocketAddr {
+        #[cfg(target_os = "linux")]
+        let ip = core::net::Ipv4Addr::BROADCAST;
+        #[cfg(windows)]
+        let ip = core::net::Ipv4Addr::UNSPECIFIED;
+        SocketAddr::new(IpAddr::V4(ip), 9)
+    }
+
     fn push(batch: &mut Batch, socket: &Socket, to: SocketAddr, ttl: Ttl, bytes: &[u8]) {
         push_pinned(batch, socket, to, ttl, None, bytes);
     }
@@ -361,11 +376,7 @@ mod tests {
         let sender = Socket::open(0).expect("sender");
         let mut batch = Batch::default();
 
-        // Port zero is refused outright, which is a real send failure that
-        // needs no network state to produce.
-        let mut nowhere = loopback_of(&sender);
-        nowhere.set_port(0);
-        push(&mut batch, &sender, nowhere, Ttl::Default, b"lost");
+        push(&mut batch, &sender, refused(), Ttl::Default, b"lost");
         batch.flush(&sender).expect("a refusal is not an error");
         assert_eq!(batch.refused(), 1);
 
@@ -383,19 +394,38 @@ mod tests {
         assert_eq!(batch.refused(), 0);
     }
 
-    /// A pinned source is the address the peer sees. Any 127/8 address is a
-    /// valid local source, so the pin is provable on one machine: unpinned,
-    /// the kernel's own selection produces its default; pinned, the peer
-    /// sees the address the datagram claimed.
+    /// A destination on this machine and a source to pin toward it.
+    ///
+    /// Linux holds all of 127/8, so the pin can name an address the kernel
+    /// would never pick itself and the peer's view proves it. Windows holds
+    /// 127.0.0.1 alone and keeps a claimed source on its own interface, so
+    /// there the pin can only name what the system would have picked anyway,
+    /// and what proves it is read is the refusal of a source the host does
+    /// not hold.
+    fn pin() -> (IpAddr, IpAddr) {
+        #[cfg(target_os = "linux")]
+        {
+            (
+                IpAddr::V4(core::net::Ipv4Addr::new(127, 0, 0, 20)),
+                IpAddr::V4(core::net::Ipv4Addr::new(127, 0, 0, 7)),
+            )
+        }
+        #[cfg(windows)]
+        {
+            (
+                IpAddr::V4(core::net::Ipv4Addr::LOCALHOST),
+                IpAddr::V4(core::net::Ipv4Addr::LOCALHOST),
+            )
+        }
+    }
+
+    /// A pinned source is the address the peer sees.
     #[test]
     fn a_pinned_source_is_the_address_the_peer_sees() {
         let sender = Socket::open(0).expect("sender");
         let (mut receiver, local) = receiver();
-        let to = SocketAddr::new(
-            IpAddr::V4(core::net::Ipv4Addr::new(127, 0, 0, 20)),
-            local.port(),
-        );
-        let source = IpAddr::V4(core::net::Ipv4Addr::new(127, 0, 0, 7));
+        let (to, source) = pin();
+        let to = SocketAddr::new(to, local.port());
 
         let mut batch = Batch::new();
         push_pinned(&mut batch, &sender, to, Ttl::Default, Some(source), b"pin");
@@ -410,19 +440,44 @@ mod tests {
             "the peer saw the kernel's source, not the pinned one"
         );
 
-        // And the control: unpinned leaves from the kernel's own selection,
-        // which is not the address above -- otherwise the assertion proves
-        // nothing about the pin.
-        push(&mut batch, &sender, to, Ttl::Default, b"free");
-        batch.flush(&sender).expect("flush");
-        assert_eq!(arrived(&mut receiver, 1000.0), 1);
-        let (from, _, bytes) = receiver.iter().next().expect("datagram");
-        assert_eq!(bytes, b"free");
-        assert_ne!(
-            from.ip(),
-            source,
-            "the kernel default equals the pinned address, so the test is vacuous"
-        );
+        // And the control, without which the assertion above proves nothing
+        // about the pin. Here: unpinned leaves from the kernel's own
+        // selection, which is not the address above.
+        #[cfg(target_os = "linux")]
+        {
+            push(&mut batch, &sender, to, Ttl::Default, b"free");
+            batch.flush(&sender).expect("flush");
+            assert_eq!(arrived(&mut receiver, 1000.0), 1);
+            let (from, _, bytes) = receiver.iter().next().expect("datagram");
+            assert_eq!(bytes, b"free");
+            assert_ne!(
+                from.ip(),
+                source,
+                "the kernel default equals the pinned address, so the test is vacuous"
+            );
+        }
+        // Here: a source the host does not hold is refused, so the claim was
+        // read and checked -- an ignored one would have left from the
+        // default and arrived.
+        #[cfg(windows)]
+        {
+            let unheld = IpAddr::V4(core::net::Ipv4Addr::new(127, 0, 0, 7));
+            push_pinned(
+                &mut batch,
+                &sender,
+                to,
+                Ttl::Default,
+                Some(unheld),
+                b"unheld",
+            );
+            batch.flush(&sender).expect("a refusal is not an error");
+            assert_eq!(
+                batch.refused(),
+                1,
+                "a source the host does not hold was sent from"
+            );
+            assert_eq!(arrived(&mut receiver, 200.0), 0, "the unheld claim arrived");
+        }
     }
 
     /// A refusal about one batch must not cost offload for the session. Only
@@ -434,10 +489,8 @@ mod tests {
         let sender = Socket::open(0).expect("sender");
         let mut batch = Batch::new();
 
-        // Broadcast without SO_BROADCAST is refused at the syscall: a real
-        // send failure that needs no network state and says nothing about
-        // whether the kernel can segment.
-        let to = SocketAddr::new(IpAddr::V4(core::net::Ipv4Addr::new(255, 255, 255, 255)), 9);
+        // A refusal that says nothing about whether the kernel can segment.
+        let to = refused();
         push(&mut batch, &sender, to, Ttl::Default, &[1u8; 256]);
         push(&mut batch, &sender, to, Ttl::Default, &[2u8; 256]);
         batch.flush(&sender).expect("a refusal is not an error");
@@ -516,16 +569,15 @@ mod tests {
 
     /// The pin survives segmentation offload: an offloaded burst carries the
     /// source beside the segment size, or a multi-homed host would keep the
-    /// right source exactly until traffic got heavy enough to batch.
+    /// right source exactly until traffic got heavy enough to batch. Where
+    /// the pin can only name the system's own choice (see [`pin`]), what this
+    /// shows is the two claims accepted together.
     #[test]
     fn an_offloaded_burst_keeps_its_pinned_source() {
         let sender = Socket::open(0).expect("sender");
         let (mut receiver, local) = receiver();
-        let to = SocketAddr::new(
-            IpAddr::V4(core::net::Ipv4Addr::new(127, 0, 0, 20)),
-            local.port(),
-        );
-        let source = IpAddr::V4(core::net::Ipv4Addr::new(127, 0, 0, 7));
+        let (to, source) = pin();
+        let to = SocketAddr::new(to, local.port());
 
         let mut batch = Batch::new();
         for index in 0..8u8 {
