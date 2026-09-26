@@ -6,6 +6,9 @@
 //! family rule applied, the report handed to the sink, queued for the
 //! application and taken by it.
 
+// The crate under test is built on Linux so far (docs/impl-plan-windows.md).
+#![cfg(target_os = "linux")]
+
 use std::time::Duration;
 
 use lowlat_common::alloc_counter::{self, Counting};

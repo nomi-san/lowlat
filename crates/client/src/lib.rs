@@ -9,6 +9,9 @@
 //!
 //! The public surface is the C ABI in `lowlat-sdk`; the seam is [`Client`].
 
+// Built where its platform's half is written, which is Linux so far
+// (docs/impl-plan-windows.md); elsewhere the crate is empty.
+#![cfg(target_os = "linux")]
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,

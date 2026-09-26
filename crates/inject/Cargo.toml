@@ -11,6 +11,8 @@ authors.workspace = true
 [dependencies]
 lowlat-common.workspace = true
 lowlat-core.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
 
 [lints]

@@ -117,6 +117,36 @@ jobs:
       - name: The toolkit's websocket reader
         run: make -C examples/client check
 
+  # The crates with a Windows side, on Windows (docs/impl-plan-windows.md).
+  # Per-platform code is a module of the same name on each platform rather
+  # than a trait, so this build is the only thing holding the two sides to
+  # one shape. The crates with no Windows side yet build empty there, which
+  # keeps the whole workspace building; examples are left out, because the
+  # ones there are probes of Linux hardware.
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain
+        run: rustup component add clippy
+
+      - name: Cache
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Clippy
+        run: cargo clippy --workspace --lib --bins --tests -- -D warnings
+
+      - name: Tests
+        run: cargo test --workspace --lib --bins --tests
+
   loom:
     name: model checking
     runs-on: ubuntu-latest

@@ -5,4 +5,8 @@
 //! the client half are features, so a build can carry one without the other
 //! and the header says which through the same names.
 
+// Built where its platform's half is written, which is Linux so far
+// (docs/impl-plan-windows.md); elsewhere the crate is empty.
+#![cfg(target_os = "linux")]
+
 pub mod abi;

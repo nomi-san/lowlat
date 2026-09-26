@@ -3,6 +3,10 @@
 //! The public surface is the C ABI in `lowlat-sdk`, which is the only crate
 //! that depends on this one for its boundary; the daemon uses it directly.
 
+// Built where its platform's half is written, which is Linux so far
+// (docs/impl-plan-windows.md); elsewhere the crate is empty.
+#![cfg(target_os = "linux")]
+
 pub mod admission;
 pub(crate) mod audio;
 pub mod cursor;

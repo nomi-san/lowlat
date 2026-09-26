@@ -16,6 +16,10 @@
 //! output where every consumer can read it, and it disappears when real
 //! capture arrives with a handle of its own.
 
+// Built where its platform's half is written, which is Linux so far
+// (docs/impl-plan-windows.md); elsewhere the crate is empty.
+#![cfg(target_os = "linux")]
+
 pub mod convert;
 pub mod cursor;
 pub mod desktop;

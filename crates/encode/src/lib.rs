@@ -3,6 +3,10 @@
 //!
 //! See docs/05-host.md section 4.
 
+// Built where its platform's half is written, which is Linux so far
+// (docs/impl-plan-windows.md); elsewhere the crate is empty.
+#![cfg(target_os = "linux")]
+
 // Phase 5 lands the hardware backend; Phase 11 the software one.
 
 pub mod bitstream;

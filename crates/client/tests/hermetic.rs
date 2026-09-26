@@ -16,6 +16,8 @@
 //!
 //! Thirty simulated seconds by default; `LOWLAT_HERMETIC_MS` runs longer.
 
+// The crate under test is built on Linux so far (docs/impl-plan-windows.md).
+#![cfg(target_os = "linux")]
 #![allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,

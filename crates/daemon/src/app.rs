@@ -427,7 +427,7 @@ pub(crate) struct Shown {
 pub(crate) fn state(
     seam: &Admission,
     shown: &mut Shown,
-    peers: &std::collections::HashMap<String, crate::Introduced>,
+    peers: &std::collections::HashMap<String, crate::service::Introduced>,
     established: &std::collections::HashSet<String>,
 ) -> serde_json::Value {
     let captured = seam.captured();

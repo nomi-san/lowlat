@@ -10,6 +10,9 @@
 //! is the whole point of them: the library form linked into this test answers
 //! for this test's build settings, and what ships is the other one.
 
+// The crate under test is built on Linux so far (docs/impl-plan-windows.md).
+#![cfg(target_os = "linux")]
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
