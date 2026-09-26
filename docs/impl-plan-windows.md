@@ -35,8 +35,12 @@ platform as the only contract keeping the two in step: CI builds both.
   run through the loop's own receive path, so they are the contract the next platform's
   module meets. The browser transport and the address filters build for Windows; the loop
   waits for that platform's module.*
-- [ ] **W0.3 drivers and decode**: bindings generated per target; the open-stack interface
+- [x] **W0.3 drivers and decode**: bindings generated per target; the open-stack interface
   on Linux only; the vendor runtimes by their Windows names; descriptors confined to Linux.
+  *Built 2026-09-26: the vendor interfaces generated for Windows beside Linux, their layout
+  assertions compiling for both; the compute runtime's descriptor interop in a module of its
+  own, which is where a Windows half goes. Both crates build and lint for Windows, and their
+  tests and the core's pass there, run under a compatibility layer.*
 - [ ] **W0.4 client**: decoder selection and the device-backed picture slots as a module per
   platform.
 - [ ] **W0.5 host**: the frame loop waits for a present through the display rather than on a
@@ -63,4 +67,4 @@ whether an application may supply the frames, for a virtual display that already
 
 ## Change log
 
-- 2026-09-26: planned; W0.1 and W0.2 built.
+- 2026-09-26: planned; W0.1 to W0.3 built.

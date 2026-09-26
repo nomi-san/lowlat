@@ -3,6 +3,28 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-26 - W0.3: the device interfaces and the decoders build for Windows
+
+### Changed
+- **The vendor interfaces' bindings are generated per platform**, Linux and Windows side by
+  side and chosen when the crate is built. Windows gives `long` four bytes where Linux gives
+  it eight, which moves every structure holding one, so one set's layout assertions cannot
+  compile on the other. The Linux set is byte for byte what it was. The generator reads the
+  MinGW system headers for the Windows set and defines the 32-bit calling-convention keyword
+  away, which on the 64-bit platform changes nothing and without which every entry-point
+  type of the compute runtime is dropped without a word.
+- The compute runtime's descriptor interop -- an allocation exported for the handle path, a
+  capture buffer imported for the encoder -- is a module of its own, which exists on Linux;
+  a Windows half takes the same place with that platform's handles.
+- The open stack's interface and its decoder exist on Linux alone. The vendor runtimes and
+  the codec libraries are opened by their Windows names there, and the vendor decoder's
+  creation fields take the platform's own `unsigned long` rather than eight bytes.
+
+### Measured
+- Both crates build and pass the lint for Windows. Their tests, and the core's and the
+  crypto crate's, pass there, run here under a compatibility layer: both readers read every
+  committed fixture and hand out every picture in order, as on Linux.
+
 ## 2026-09-26 - W0.2: the IO shell's system calls apart from the loop
 
 ### Changed
