@@ -909,7 +909,7 @@ fn refused(error: ::lowlat_client::Error) -> lowlat_status {
         Error::Crypto => LOWLAT_ERR_CRYPTO,
         Error::Io => LOWLAT_ERR_IO,
         Error::Decoder(stage) => {
-            use ::lowlat_client::seam::DecoderStage;
+            use ::lowlat_client::event::DecoderStage;
             match stage {
                 DecoderStage::Runtime => LOWLAT_ERR_NO_DECODER_RUNTIME,
                 DecoderStage::Device => LOWLAT_ERR_NO_DECODER_DEVICE,

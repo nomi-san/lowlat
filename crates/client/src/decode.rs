@@ -18,10 +18,11 @@ use lowlat_net::WakeHandle;
 
 use crate::config::FrameKind;
 use crate::driver::{Telemetry, Units};
+use crate::event::{Event, Outcome};
 use crate::feed::{Decision, Feed};
 use crate::frames::{Frame, Frames};
 use crate::report::Smoothed;
-use crate::seam::{Event, Opened, Outcome};
+use crate::seam::Opened;
 
 /// The decoders a stream is opened on, which are the platform's; the thread
 /// around them is written once.

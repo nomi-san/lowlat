@@ -126,6 +126,10 @@ jobs:
   windows:
     name: Windows
     runs-on: windows-latest
+    # The environment's flags replace .cargo/config.toml's rather than adding
+    # to them, so the static C runtime is asked for again: CI builds what ships.
+    env:
+      RUSTFLAGS: -D warnings -C target-feature=+crt-static
     steps:
       - uses: actions/checkout@v7
 

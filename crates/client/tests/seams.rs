@@ -9,7 +9,8 @@
 //! 128-bit one, and in both the initialization crosses and a message from
 //! the host's application comes back down the same session.
 
-// The crate under test is built on Linux so far (docs/impl-plan-windows.md).
+// The seam under test and the host's admission are built on Linux so far
+// (docs/impl-plan-windows.md).
 #![cfg(target_os = "linux")]
 
 use std::time::{Duration, Instant};

@@ -97,6 +97,8 @@ pub enum Input {
 }
 
 /// What travels from the application's thread to the session's.
+// The seam that sends these is built on Linux so far.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Request {
     Input(Input),
@@ -110,6 +112,7 @@ pub(crate) enum Request {
 }
 
 /// Entries the ring between the two threads holds.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) const RING_DEPTH: usize = 1024;
 
 /// The pad states remembered for deduplication, by identifier.

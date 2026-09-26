@@ -25,8 +25,8 @@ use std::sync::atomic::Ordering;
 
 use crate::config;
 use crate::driver::{Driver, Telemetry, Units, pack_relayed};
+use crate::event::{Arrival, Ask, Event, Outcome};
 use crate::input::{RING_DEPTH, Request};
-use crate::seam::{Arrival, Ask, Event, Outcome};
 use crate::sound::Packets;
 use crate::{
     AUDIO_CHANNEL, AUDIO_RECV_SLOTS, BODY, CONTROL_RECV_SLOTS, CONTROL_SEND_SLOTS, VIDEO_CHANNEL,

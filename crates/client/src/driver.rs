@@ -31,8 +31,8 @@ use lowlat_core::video::{self, METADATA_LEN, VIDEO_HEADER_LEN};
 use lowlat_core::{Error, conn};
 
 use crate::cursor::{Cache, Shape};
+use crate::event::{Event, Outcome};
 use crate::input::{Input, Mapper, Viewport};
-use crate::seam::{Event, Outcome};
 use crate::sound::{self, Packets};
 use crate::{AUDIO_CHANNEL, UNIT_BYTES, UNIT_SLOTS, VIDEO_CHANNEL};
 use lowlat_core::pad;
@@ -670,7 +670,7 @@ impl Driver {
     /// True once a departure has had its grace.
     pub fn left(&self, now_ms: f64) -> bool {
         self.leaving
-            .is_some_and(|at| now_ms - at >= crate::seam::LEAVE_GRACE_MS)
+            .is_some_and(|at| now_ms - at >= crate::event::LEAVE_GRACE_MS)
     }
 
     /// An application message for the host.

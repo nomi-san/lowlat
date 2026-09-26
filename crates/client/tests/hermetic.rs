@@ -16,8 +16,6 @@
 //!
 //! Thirty simulated seconds by default; `LOWLAT_HERMETIC_MS` runs longer.
 
-// The crate under test is built on Linux so far (docs/impl-plan-windows.md).
-#![cfg(target_os = "linux")]
 #![allow(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
@@ -1972,6 +1970,7 @@ fn sums(name: &str) -> Vec<(u32, u32)> {
 /// reference decoder produced, frame for frame, at zero loss. Needs the
 /// open-stack driver on a render node, so it is off by default:
 /// `cargo test -p lowlat-client --test hermetic -- --ignored`.
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires the open-stack driver"]
 fn the_session_decodes_the_clip_frame_for_frame() {
@@ -2087,6 +2086,7 @@ fn the_session_decodes_the_clip_through_the_software_backend() {
 /// from a host that ignores the declaration and announces nothing, so each
 /// parameter-set-led unit tears the decoder down and builds afresh, and every
 /// picture across those rebuilds still matches the reference decoder's.
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires the open-stack driver"]
 fn the_session_decodes_the_clip_under_the_older_framing() {

@@ -1,0 +1,6 @@
+# The C runtime is linked statically on Windows, into the library and every
+# binary, so none of them asks the machine for a redistributable. RUSTFLAGS in
+# the environment replaces this table rather than adding to it, which is why
+# CI's Windows job names the flag again.
+[target.'cfg(windows)']
+rustflags = ["-C", "target-feature=+crt-static"]

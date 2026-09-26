@@ -9,9 +9,6 @@
 //!
 //! The public surface is the C ABI in `lowlat-sdk`; the seam is [`Client`].
 
-// Built where its platform's half is written, which is Linux so far
-// (docs/impl-plan-windows.md); elsewhere the crate is empty.
-#![cfg(target_os = "linux")]
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -32,22 +29,33 @@
     )
 )]
 
+// What opens a socket, a device or a descriptor is built where its platform's
+// half is written, which is Linux so far (docs/impl-plan-windows.md); the
+// driver, what it feeds and what it says build everywhere.
 pub mod config;
 pub mod cursor;
+#[cfg(target_os = "linux")]
 pub mod decode;
 pub mod driver;
+#[cfg(target_os = "linux")]
 pub mod enumerate;
+pub mod event;
 pub mod feed;
+#[cfg(target_os = "linux")]
 pub mod frames;
 pub mod input;
 pub mod report;
+#[cfg(target_os = "linux")]
 pub mod seam;
+#[cfg(target_os = "linux")]
 mod shell;
 pub mod sound;
 
 pub use config::Config;
 pub use driver::{Driver, Lag, Telemetry};
-pub use seam::{Client, Error, Event, Outcome, Peer, Transport};
+pub use event::{Error, Event, Outcome, Peer, Transport};
+#[cfg(target_os = "linux")]
+pub use seam::Client;
 pub use sound::Sound;
 
 /// Video, stream 0; sound (docs/01-protocol.md section 6).
