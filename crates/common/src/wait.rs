@@ -259,14 +259,26 @@ mod tests {
         );
     }
 
+    /// **The middle of ten waits, not one.** A wait may return early -- a
+    /// spurious wake is part of the contract above, and a CI runner's single
+    /// wait once ended under half a millisecond -- while a hot poll returns
+    /// within microseconds every time, so the median tells the two apart
+    /// where one sample cannot. The bound sits ten times above a poll and
+    /// well below any wait of a millisecond, whatever the system's tick.
     #[test]
     fn sub_millisecond_timeout_is_rounded_up() {
         let flag = AtomicU32::new(0);
-        let begin = Instant::now();
-        wait(&flag, 0, Duration::from_micros(50));
+        let mut waited: Vec<Duration> = (0..10)
+            .map(|_| {
+                let begin = Instant::now();
+                wait(&flag, 0, Duration::from_micros(50));
+                begin.elapsed()
+            })
+            .collect();
+        waited.sort();
         assert!(
-            begin.elapsed() >= Duration::from_micros(500),
-            "a sub-millisecond wait returned instantly, which is a hot poll"
+            waited[5] >= Duration::from_micros(250),
+            "sub-millisecond waits returned at once, which is a hot poll: {waited:?}"
         );
     }
 }
