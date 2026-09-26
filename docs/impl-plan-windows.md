@@ -129,15 +129,26 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
 
 ### Steps
 
-- [ ] **W1.0 build**: the client, the library's client half and the modules the hermetic
-  session uses build for Windows, and the C runtime is linked statically. Checked by the
-  hermetic session passing on Windows, here and in CI.
+- [x] **W1.0 build**: the client and the modules the hermetic session uses build for
+  Windows, and the C runtime is linked statically. Checked by the hermetic session passing
+  on Windows, here and in CI. *Built 2026-09-26.* What the seam says -- its events, outcomes
+  and errors, and what reaches the session loop -- moved into a module of its own, so the
+  driver, the feed, the sound and the input build everywhere, and the seam, which opens the
+  socket and runs the shell, is built with the shell in W1.1. The library's client half sits
+  on the seam and moved there with it (*corrected at the build*: this step had it). On
+  Windows the client's 40 tests, the hermetic session's 16, the negotiation and packetiser's
+  23 and the injection crate's 63 pass, and a test binary imports no C runtime library. The
+  environment's compiler flags replace the configuration's rather than adding to them, so
+  CI's Windows job names the static runtime again.
 - [ ] **W1.1 net**: the completion-port platform module ([02 §5, §6](02-io-shell.md)): the
   socket and its options, never address reuse, since a second bind succeeds there; the
   source address taken through the message receive; a wake posted once until it is taken;
   receive slots pinned for the socket's life and drained up to 256 a call; cancel and drain
-  before a slot is freed. Checked by the shell's receive tests, which are the platform
-  module's contract.
+  before a slot is freed. The seam and the library's client half, which sit on the shell,
+  build for Windows with it. Checked by the shell's receive tests, which are the platform
+  module's contract. A timeout on Windows ends at the tick after it expires: the address
+  wait's 1 ms lasts 2.0 ms with the resolution raised, measured; the port's own wait is
+  measured when it is built.
 - [ ] **W1.2 software, and the demo on Windows**: the libavcodec pair loaded there, and the
   demo built with the platform's compiler, drawing planes through the toolkit's D3D11
   renderer. Checked by the first picture: ten minutes from an established host.

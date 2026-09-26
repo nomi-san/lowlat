@@ -3,6 +3,38 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-26 - W1.0: the client's driver and its hermetic session build and pass on Windows
+
+### Changed
+- **What the seam says has a module of its own**: its events, outcomes and errors, the pipe
+  it asks for, what the answer said, and what reaches the session loop from outside it. The
+  driver, the feed, the sound and the input build for Windows on it; the seam itself, which
+  opens the socket and runs the shell, is built with the shell
+  ([impl-plan-windows.md](impl-plan-windows.md) W1.1), and the library's client half with
+  the seam.
+- **The host's negotiation and packetiser, and the injection crate's events, pads and usage
+  table, build for Windows**; every platform module stays Linux's.
+- **The C runtime is linked statically on Windows** ([07 §10](07-platforms.md)), by the
+  workspace's configuration. The environment's compiler flags replace the configuration's
+  rather than adding to them, so CI's Windows job names the static runtime again.
+
+### Measured
+- On Windows, natively: the client's 40 tests, the hermetic session's 16 (the open-stack clip
+  tests are Linux's), the negotiation and packetiser's 23 and the injection crate's 63 pass,
+  705 tests in all, and a test binary imports no C runtime library. The hermetic session
+  through the software backend decodes its clip frame for frame, 477 pictures, against an
+  LGPL build of the pair.
+- The primitives beneath it, on the same machine: an address wait asked for 1 ms lasts 16.0
+  ms at the median with the default timer resolution and 2.0 ms with it raised; a wake
+  reaches its waiter in 6 us at the median and 24 at worst; the precise sleep lands within a
+  microsecond at the median, and raising the resolution takes its 99th percentile at 5 ms
+  from 502 us late to 11; the loader refuses a library in the current directory or on the
+  search path by name.
+- Nothing on Linux behaves differently: the same 1107 tests (82 ignored), every lint, the
+  format and the ASCII check, on a clean Linux checkout in a virtual machine, where the two
+  tests that need a localhost answering on both address families fail as they would on any
+  machine whose localhost answers on one.
+
 ## 2026-09-26 - W1 planned: the Windows client
 
 ### Decided
