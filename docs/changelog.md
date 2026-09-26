@@ -3,6 +3,26 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-26 - Drivers: the display bindings regenerate to what is committed
+
+### Fixed
+- **Regenerating the device bindings reproduces what is committed.** The structure a surface
+  is imported through on the display interface, and the memory type that names it, were
+  written by hand at the end of the generated file, and the generator deleted them: the next
+  regeneration would have failed the build. They are generated now, from the header beside
+  the display one, with the layout assertions every other structure carries. What no vendored
+  header declares -- the kernel's format codes, and names for the descriptor's inner
+  structures and array lengths -- moved to a hand-written module beside the bindings.
+- **Two memory types had the wrong values.** The kernel buffer and the older PRIME memory
+  types were written into the generated file as 8 and 16; the header defines them as
+  0x10000000 and 0x20000000. Only the listing of a surface's import paths read them, and it
+  never named either path. On the open-stack driver here it now names the older PRIME path
+  on the two surfaces that offer it.
+
+### Changed
+- The generated bindings are marked as generated for the repository host, so review diffs
+  collapse them and the language count leaves them out.
+
 ## 2026-09-26 - W0.4: the client's decoders chosen and opened by the platform
 
 ### Changed

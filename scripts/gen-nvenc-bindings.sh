@@ -176,6 +176,9 @@ echo "generating display bindings"
 # The header declares every codec the interface has ever supported, which is
 # an order of magnitude more than we call. The families below are blocked by
 # name rather than trimmed by hand, so a regeneration cannot quietly grow.
+#
+# The descriptor a surface is imported through, and the memory types that name
+# it, are in the header beside this one, which it does not include.
 bindgen "$root/third_party/libva/include/va/va_drm.h" \
     "${common[@]}" \
     --allowlist-type 'VA.*' \
@@ -189,7 +192,7 @@ bindgen "$root/third_party/libva/include/va/va_drm.h" \
     --blocklist-item '.*FEI.*' \
     --blocklist-item '.*Prot(ected)?.*' \
     -o "$out/linux/va.rs" \
-    -- -I "$root/third_party/libva/include"
+    -- -I "$root/third_party/libva/include" -include va/va_drmcommon.h
 
 # Struct version stamps. These are defined through a function-like macro, which
 # a binding generator cannot evaluate, so none of them survive generation. Every

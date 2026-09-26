@@ -1785,10 +1785,10 @@ impl Display<'_> {
                 let (fourcc, drm_format) = if frame.depth.ten_bit() {
                     (
                         crate::ffi::va::VA_FOURCC_P010,
-                        crate::ffi::va::DRM_FORMAT_P010,
+                        crate::ffi::drm::DRM_FORMAT_P010,
                     )
                 } else {
-                    (VA_FOURCC_NV12, crate::ffi::va::DRM_FORMAT_NV12)
+                    (VA_FOURCC_NV12, crate::ffi::drm::DRM_FORMAT_NV12)
                 };
                 (bytes, fourcc, drm_format, 2)
             }
@@ -1800,12 +1800,12 @@ impl Display<'_> {
                 let (fourcc, drm_format) = if frame.depth.ten_bit() {
                     (
                         crate::ffi::va::VA_FOURCC_Y410,
-                        crate::ffi::va::DRM_FORMAT_XVYU2101010,
+                        crate::ffi::drm::DRM_FORMAT_XVYU2101010,
                     )
                 } else {
                     (
                         crate::ffi::va::VA_FOURCC_AYUV,
-                        crate::ffi::va::DRM_FORMAT_AYUV,
+                        crate::ffi::drm::DRM_FORMAT_AYUV,
                     )
                 };
                 (bytes, fourcc, drm_format, 1)
@@ -1813,34 +1813,34 @@ impl Display<'_> {
             Layout::Planar444 => return Err(Error::UnsupportedLayout),
         };
 
-        let blank = crate::ffi::va::VADRMPRIMESurfaceDescriptorLayer {
+        let blank = crate::ffi::drm::VADRMPRIMESurfaceDescriptorLayer {
             drm_format: 0,
             num_planes: 0,
-            object_index: [0; crate::ffi::va::VA_DRM_PRIME_PLANES],
-            offset: [0; crate::ffi::va::VA_DRM_PRIME_PLANES],
-            pitch: [0; crate::ffi::va::VA_DRM_PRIME_PLANES],
+            object_index: [0; crate::ffi::drm::VA_DRM_PRIME_PLANES],
+            offset: [0; crate::ffi::drm::VA_DRM_PRIME_PLANES],
+            pitch: [0; crate::ffi::drm::VA_DRM_PRIME_PLANES],
         };
         let mut descriptor = crate::ffi::va::VADRMPRIMESurfaceDescriptor {
             fourcc,
             width: frame.width,
             height: frame.height,
             num_objects: 1,
-            objects: [crate::ffi::va::VADRMPRIMESurfaceDescriptorObject {
+            objects: [crate::ffi::drm::VADRMPRIMESurfaceDescriptorObject {
                 fd: fd.as_raw_fd(),
                 size: bytes,
                 drm_format_modifier: frame.modifier,
-            }; crate::ffi::va::VA_DRM_PRIME_OBJECTS],
+            }; crate::ffi::drm::VA_DRM_PRIME_OBJECTS],
             num_layers: 1,
-            layers: [blank; crate::ffi::va::VA_DRM_PRIME_LAYERS],
+            layers: [blank; crate::ffi::drm::VA_DRM_PRIME_LAYERS],
         };
         // **One layer of the frame's own plane count, not one layer per
         // plane.** The planes live in one allocation at offsets of our
         // choosing, and describing them as separate layers is how a driver is
         // told they are separate allocations, which they are not.
-        descriptor.layers[0] = crate::ffi::va::VADRMPRIMESurfaceDescriptorLayer {
+        descriptor.layers[0] = crate::ffi::drm::VADRMPRIMESurfaceDescriptorLayer {
             drm_format,
             num_planes,
-            object_index: [0; crate::ffi::va::VA_DRM_PRIME_PLANES],
+            object_index: [0; crate::ffi::drm::VA_DRM_PRIME_PLANES],
             offset: [frame.planes[0].offset, frame.planes[1].offset, 0, 0],
             pitch: [frame.planes[0].pitch, frame.planes[1].pitch, 0, 0],
         };

@@ -103,3 +103,6 @@ pub mod versions;
 #[cfg(target_os = "linux")]
 #[path = "linux/va.rs"]
 pub mod va;
+
+#[cfg(target_os = "linux")]
+pub mod drm;

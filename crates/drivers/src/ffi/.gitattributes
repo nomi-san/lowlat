@@ -1,0 +1,5 @@
+# Output of scripts/gen-nvenc-bindings.sh. mod.rs and drm.rs are written by hand.
+linux/*.rs linguist-generated
+windows/*.rs linguist-generated
+guids.rs linguist-generated
+versions.rs linguist-generated

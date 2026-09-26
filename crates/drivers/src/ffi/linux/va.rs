@@ -166,6 +166,9 @@ impl<T> ::std::fmt::Debug for __IncompleteArrayField<T> {
         fmt.write_str("__IncompleteArrayField")
     }
 }
+pub const VA_SURFACE_ATTRIB_MEM_TYPE_KERNEL_DRM: u32 = 268435456;
+pub const VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME: u32 = 536870912;
+pub const VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2: u32 = 1073741824;
 pub const VA_MAJOR_VERSION: u32 = 1;
 pub const VA_MINOR_VERSION: u32 = 20;
 pub const VA_MICRO_VERSION: u32 = 0;
@@ -325,8 +328,6 @@ pub const VA_SURFACE_ATTRIB_SETTABLE: u32 = 2;
 pub const VA_SURFACE_ATTRIB_MEM_TYPE_VA: u32 = 1;
 pub const VA_SURFACE_ATTRIB_MEM_TYPE_V4L2: u32 = 2;
 pub const VA_SURFACE_ATTRIB_MEM_TYPE_USER_PTR: u32 = 4;
-pub const VA_SURFACE_ATTRIB_MEM_TYPE_KERNEL_DRM: u32 = 8;
-pub const VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME: u32 = 16;
 pub const VA_SURFACE_EXTBUF_DESC_ENABLE_TILING: u32 = 1;
 pub const VA_SURFACE_EXTBUF_DESC_CACHED: u32 = 2;
 pub const VA_SURFACE_EXTBUF_DESC_UNCACHED: u32 = 4;
@@ -502,6 +503,111 @@ pub const VA_3DLUT_CHANNEL_UNKNOWN: u32 = 0;
 pub const VA_3DLUT_CHANNEL_RGB_RGB: u32 = 1;
 pub const VA_3DLUT_CHANNEL_YUV_RGB: u32 = 2;
 pub const VA_3DLUT_CHANNEL_VUY_RGB: u32 = 4;
+pub const VA_DRM_AUTH_NONE: _bindgen_ty_1 = 0;
+pub const VA_DRM_AUTH_DRI1: _bindgen_ty_1 = 1;
+pub const VA_DRM_AUTH_DRI2: _bindgen_ty_1 = 2;
+pub const VA_DRM_AUTH_CUSTOM: _bindgen_ty_1 = 3;
+pub type _bindgen_ty_1 = ::std::os::raw::c_uint;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct _VADRMPRIMESurfaceDescriptor {
+    pub fourcc: u32,
+    pub width: u32,
+    pub height: u32,
+    pub num_objects: u32,
+    pub objects: [_VADRMPRIMESurfaceDescriptor__bindgen_ty_1; 4usize],
+    pub num_layers: u32,
+    pub layers: [_VADRMPRIMESurfaceDescriptor__bindgen_ty_2; 4usize],
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct _VADRMPRIMESurfaceDescriptor__bindgen_ty_1 {
+    pub fd: ::std::os::raw::c_int,
+    pub size: u32,
+    pub drm_format_modifier: u64,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of _VADRMPRIMESurfaceDescriptor__bindgen_ty_1"]
+        [::std::mem::size_of::<_VADRMPRIMESurfaceDescriptor__bindgen_ty_1>() - 16usize];
+    ["Alignment of _VADRMPRIMESurfaceDescriptor__bindgen_ty_1"]
+        [::std::mem::align_of::<_VADRMPRIMESurfaceDescriptor__bindgen_ty_1>() - 8usize];
+    ["Offset of field: _VADRMPRIMESurfaceDescriptor__bindgen_ty_1::fd"]
+        [::std::mem::offset_of!(_VADRMPRIMESurfaceDescriptor__bindgen_ty_1, fd) - 0usize];
+    ["Offset of field: _VADRMPRIMESurfaceDescriptor__bindgen_ty_1::size"]
+        [::std::mem::offset_of!(_VADRMPRIMESurfaceDescriptor__bindgen_ty_1, size) - 4usize];
+    ["Offset of field: _VADRMPRIMESurfaceDescriptor__bindgen_ty_1::drm_format_modifier"][::std::mem::offset_of!(
+        _VADRMPRIMESurfaceDescriptor__bindgen_ty_1,
+        drm_format_modifier
+    )
+        - 8usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct _VADRMPRIMESurfaceDescriptor__bindgen_ty_2 {
+    pub drm_format: u32,
+    pub num_planes: u32,
+    pub object_index: [u32; 4usize],
+    pub offset: [u32; 4usize],
+    pub pitch: [u32; 4usize],
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of _VADRMPRIMESurfaceDescriptor__bindgen_ty_2"]
+        [::std::mem::size_of::<_VADRMPRIMESurfaceDescriptor__bindgen_ty_2>() - 56usize];
+    ["Alignment of _VADRMPRIMESurfaceDescriptor__bindgen_ty_2"]
+        [::std::mem::align_of::<_VADRMPRIMESurfaceDescriptor__bindgen_ty_2>() - 4usize];
+    ["Offset of field: _VADRMPRIMESurfaceDescriptor__bindgen_ty_2::drm_format"]
+        [::std::mem::offset_of!(_VADRMPRIMESurfaceDescriptor__bindgen_ty_2, drm_format) - 0usize];
+    ["Offset of field: _VADRMPRIMESurfaceDescriptor__bindgen_ty_2::num_planes"]
+        [::std::mem::offset_of!(_VADRMPRIMESurfaceDescriptor__bindgen_ty_2, num_planes) - 4usize];
+    ["Offset of field: _VADRMPRIMESurfaceDescriptor__bindgen_ty_2::object_index"]
+        [::std::mem::offset_of!(_VADRMPRIMESurfaceDescriptor__bindgen_ty_2, object_index) - 8usize];
+    ["Offset of field: _VADRMPRIMESurfaceDescriptor__bindgen_ty_2::offset"]
+        [::std::mem::offset_of!(_VADRMPRIMESurfaceDescriptor__bindgen_ty_2, offset) - 24usize];
+    ["Offset of field: _VADRMPRIMESurfaceDescriptor__bindgen_ty_2::pitch"]
+        [::std::mem::offset_of!(_VADRMPRIMESurfaceDescriptor__bindgen_ty_2, pitch) - 40usize];
+};
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of _VADRMPRIMESurfaceDescriptor"]
+        [::std::mem::size_of::<_VADRMPRIMESurfaceDescriptor>() - 312usize];
+    ["Alignment of _VADRMPRIMESurfaceDescriptor"]
+        [::std::mem::align_of::<_VADRMPRIMESurfaceDescriptor>() - 8usize];
+    ["Offset of field: _VADRMPRIMESurfaceDescriptor::fourcc"]
+        [::std::mem::offset_of!(_VADRMPRIMESurfaceDescriptor, fourcc) - 0usize];
+    ["Offset of field: _VADRMPRIMESurfaceDescriptor::width"]
+        [::std::mem::offset_of!(_VADRMPRIMESurfaceDescriptor, width) - 4usize];
+    ["Offset of field: _VADRMPRIMESurfaceDescriptor::height"]
+        [::std::mem::offset_of!(_VADRMPRIMESurfaceDescriptor, height) - 8usize];
+    ["Offset of field: _VADRMPRIMESurfaceDescriptor::num_objects"]
+        [::std::mem::offset_of!(_VADRMPRIMESurfaceDescriptor, num_objects) - 12usize];
+    ["Offset of field: _VADRMPRIMESurfaceDescriptor::objects"]
+        [::std::mem::offset_of!(_VADRMPRIMESurfaceDescriptor, objects) - 16usize];
+    ["Offset of field: _VADRMPRIMESurfaceDescriptor::num_layers"]
+        [::std::mem::offset_of!(_VADRMPRIMESurfaceDescriptor, num_layers) - 80usize];
+    ["Offset of field: _VADRMPRIMESurfaceDescriptor::layers"]
+        [::std::mem::offset_of!(_VADRMPRIMESurfaceDescriptor, layers) - 84usize];
+};
+pub type VADRMPRIMESurfaceDescriptor = _VADRMPRIMESurfaceDescriptor;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct _VADRMFormatModifierList {
+    pub num_modifiers: u32,
+    pub modifiers: *mut u64,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of _VADRMFormatModifierList"]
+        [::std::mem::size_of::<_VADRMFormatModifierList>() - 16usize];
+    ["Alignment of _VADRMFormatModifierList"]
+        [::std::mem::align_of::<_VADRMFormatModifierList>() - 8usize];
+    ["Offset of field: _VADRMFormatModifierList::num_modifiers"]
+        [::std::mem::offset_of!(_VADRMFormatModifierList, num_modifiers) - 0usize];
+    ["Offset of field: _VADRMFormatModifierList::modifiers"]
+        [::std::mem::offset_of!(_VADRMFormatModifierList, modifiers) - 8usize];
+};
+pub type VADRMFormatModifierList = _VADRMFormatModifierList;
 pub type VADisplay = *mut ::std::os::raw::c_void;
 pub type VAStatus = ::std::os::raw::c_int;
 #[repr(C)]
@@ -21871,64 +21977,3 @@ pub const VA_TEE_EXECUTE_FUNCTION_ID_PASS_THROUGH: _VA_TEE_EXEC_FUNCTION_ID = 1;
 pub const VA_TEE_EXECUTE_FUNCTION_ID_GET_FIRMWARE_VERSION: _VA_TEE_EXEC_FUNCTION_ID = 2;
 pub type _VA_TEE_EXEC_FUNCTION_ID = ::std::os::raw::c_uint;
 pub use self::_VA_TEE_EXEC_FUNCTION_ID as VA_TEE_EXECUTE_FUNCTION_ID;
-
-// The descriptor a surface is imported through, from the runtime's
-// display-interface header rather than its core one. Hand-written because the
-// generated bindings above cover the core header only.
-
-/// Memory a surface is imported from, as a descriptor naming file descriptors
-/// and the layout inside them.
-pub const VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2: u32 = 0x4000_0000;
-
-/// Objects and layers a descriptor can name.
-///
-/// The header fixes both at four. A frame handed over here is one object with
-/// one layer of two planes.
-pub const VA_DRM_PRIME_OBJECTS: usize = 4;
-pub const VA_DRM_PRIME_LAYERS: usize = 4;
-pub const VA_DRM_PRIME_PLANES: usize = 4;
-
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct VADRMPRIMESurfaceDescriptorObject {
-    /// **Borrowed for the call and closed by the caller.** The runtime
-    /// duplicates what it needs.
-    pub fd: ::std::os::raw::c_int,
-    pub size: u32,
-    pub drm_format_modifier: u64,
-}
-
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct VADRMPRIMESurfaceDescriptorLayer {
-    pub drm_format: u32,
-    pub num_planes: u32,
-    pub object_index: [u32; VA_DRM_PRIME_PLANES],
-    pub offset: [u32; VA_DRM_PRIME_PLANES],
-    pub pitch: [u32; VA_DRM_PRIME_PLANES],
-}
-
-#[repr(C)]
-#[derive(Copy, Clone)]
-pub struct VADRMPRIMESurfaceDescriptor {
-    pub fourcc: u32,
-    pub width: u32,
-    pub height: u32,
-    pub num_objects: u32,
-    pub objects: [VADRMPRIMESurfaceDescriptorObject; VA_DRM_PRIME_OBJECTS],
-    pub num_layers: u32,
-    pub layers: [VADRMPRIMESurfaceDescriptorLayer; VA_DRM_PRIME_LAYERS],
-}
-
-/// The four character code a two-plane eight-bit frame is named by, on the
-/// display interface rather than the runtime's own.
-pub const DRM_FORMAT_NV12: u32 = 0x3231_564E;
-/// Two planes, ten bits a sample in the high bits of sixteen. The same
-/// four-character code the colour interface uses for it.
-pub const DRM_FORMAT_P010: u32 = 0x3031_3050;
-/// One packed word per pixel, alpha in the high byte: the open stack's
-/// eight-bit full-chroma surface.
-pub const DRM_FORMAT_AYUV: u32 = 0x5655_5941;
-/// The packed ten-bit full-chroma layout the driver reads Y410 as:
-/// X, red difference, luma, blue difference at 2:10:10:10.
-pub const DRM_FORMAT_XVYU2101010: u32 = 0x3033_5658;
