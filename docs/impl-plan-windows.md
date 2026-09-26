@@ -1,7 +1,7 @@
 # Implementation plan: Windows
 
-**Status:** planned 2026-09-26. Phase W0, the platform seams, is being built; the client's
-phase (W1) and the host's (W2) are planned at their own interviews.
+**Status:** planned 2026-09-26. Phase W0, the platform seams, is closed; the client's phase
+(W1) and the host's (W2) are planned at their own interviews.
 
 Conventions as [impl-plan.md](impl-plan.md): a gate is a command that passes or a peer that
 streams, one phase per commit, changelog entry before the checkbox.
@@ -41,12 +41,20 @@ platform as the only contract keeping the two in step: CI builds both.
   assertions compiling for both; the compute runtime's descriptor interop in a module of its
   own, which is where a Windows half goes. Both crates build and lint for Windows, and their
   tests and the core's pass there, run under a compatibility layer.*
-- [ ] **W0.4 client**: decoder selection and the device-backed picture slots as a module per
-  platform.
-- [ ] **W0.5 host**: the frame loop waits for a present through the display rather than on a
+- [x] **W0.4 client**: decoder selection and the device-backed picture slots as a module per
+  platform. *Built 2026-09-26: the automatic order and the devices it walks, the decoders the
+  decode thread opens, and the decoder table are each a platform module; what a client
+  opened says which backend it is through an accessor, which the library's status reads. The
+  device-backed picture slots stay where they are: their Windows form -- shared textures and
+  a fence, the handle kind the boundary appends -- is designed with the client's phase.*
+- [x] **W0.5 host**: the frame loop waits for a present through the display rather than on a
   descriptor; the encoder builders move out of the frame loop's module, one module per
   platform; types every platform shares move out of the Linux modules; the guest loop takes
-  its input devices from a module per platform.
+  its input devices from a module per platform. *Built 2026-09-26: the loop and the guest
+  loop make no system call of their own; the encoder built on the display's device, the
+  choice of it and the full-chroma census are the platform's; the display's shared types
+  -- the outputs listed, a pre-flight's answer, what a capture produced -- sit apart from the
+  Linux display, as does where an output sits in the desktop.*
 - [x] **W0.6 build**: Linux-only dependencies scoped to Linux, and a Windows job in CI.
   *Built 2026-09-26, ahead of W0.4 and W0.5 because both halves' work starts from a
   workspace that builds: the crates with no Windows side yet -- capture, encode, inject,
@@ -73,4 +81,4 @@ whether an application may supply the frames, for a virtual display that already
 
 ## Change log
 
-- 2026-09-26: planned; W0.1 to W0.3 and W0.6 built.
+- 2026-09-26: planned; W0 built, W0.1 to W0.6.

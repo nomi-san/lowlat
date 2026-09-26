@@ -3,6 +3,43 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-26 - W0.4: the client's decoders chosen and opened by the platform
+
+### Changed
+- **The decoder the client settles on is chosen by a platform module**
+  ([07 §10](07-platforms.md)): the automatic order and the devices it walks -- render nodes,
+  the card behind one, the machine's own codec library -- the decoders the decode thread opens
+  on them, and the decoder table an application lists. The seam, the decode thread and the
+  queue around them are written once. What a client opened says which backend it is through
+  an accessor, which the library's status reads rather than naming the platform's variants.
+- The device-backed picture slots are left as they are: on Windows they become shared
+  textures and a fence, the handle kind the boundary appends, which is the client's phase.
+
+### Measured
+- Nothing on Linux behaves differently: every test the client and the library had passes
+  unchanged.
+
+## 2026-09-26 - W0.5: the host's frame loop and guest loop make no system call of their own
+
+### Changed
+- **The frame loop waits for a present through the display** rather than polling the
+  display's descriptor itself; what a wait means -- a present, something else, nothing in the
+  time -- is the display's to say, and the loop's pacing is unchanged.
+- **What a stream is built on is a platform module** ([07 §10](07-platforms.md)): the encoder
+  that shares the capture's device, the one the display's device is served by, the choice
+  between them and the full-chroma census. The rebuild, the degrade and the frame loop are
+  written once and call it.
+- The display's shared types -- the outputs it lists, a pre-flight's answer, what a capture
+  produced -- sit apart from the Linux display, which the rest of the host names only through
+  them and the display itself; where an output sits in the desktop moves to the capture
+  crate's root.
+- The guest loop names the devices a guest's input lands on through the injection crate's
+  root, where the platform decides what they are.
+
+### Measured
+- Nothing on Linux behaves differently: every test the host and the library had passes
+  unchanged, and the loop's vblank wait keeps its three outcomes exactly.
+
 ## 2026-09-26 - W0.6: the whole workspace builds for Windows, and CI holds it there
 
 ### Added
