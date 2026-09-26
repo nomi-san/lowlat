@@ -1731,17 +1731,17 @@ pub unsafe extern "C" fn lowlat_client_get_status(
                 video_bytes: t.video_bytes.load(Ordering::Relaxed),
                 encode_us: t.encode_us.load(Ordering::Relaxed),
                 codec: t.codec.load(Ordering::Relaxed),
-                backend: match held.seam.opened() {
-                    Some(::lowlat_client::seam::Opened::Vaapi(_)) => {
-                        lowlat_decoder::LOWLAT_DECODER_OPEN as u32
+                backend: match held
+                    .seam
+                    .opened()
+                    .map(::lowlat_client::seam::Opened::backend)
+                {
+                    Some(Backend::Vaapi) => lowlat_decoder::LOWLAT_DECODER_OPEN as u32,
+                    Some(Backend::Nvdec) => lowlat_decoder::LOWLAT_DECODER_VENDOR as u32,
+                    Some(Backend::Software) => lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32,
+                    Some(Backend::Auto | Backend::None) | None => {
+                        lowlat_decoder::LOWLAT_DECODER_NONE as u32
                     }
-                    Some(::lowlat_client::seam::Opened::Nvdec(_)) => {
-                        lowlat_decoder::LOWLAT_DECODER_VENDOR as u32
-                    }
-                    Some(::lowlat_client::seam::Opened::Software(_)) => {
-                        lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32
-                    }
-                    None => lowlat_decoder::LOWLAT_DECODER_NONE as u32,
                 },
                 input_dropped: t.input_dropped.load(Ordering::Relaxed),
                 audio_decoded: t.audio_decoded.load(Ordering::Relaxed),

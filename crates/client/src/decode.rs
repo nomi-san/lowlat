@@ -13,20 +13,21 @@ use std::time::Duration;
 use lowlat_common::events;
 use lowlat_core::video;
 use lowlat_decode::nvdec::DevicePlanes;
-use lowlat_decode::vaapi::Vaapi;
-use lowlat_decode::{Decoder, Fault, Fed, Format, Picture, nvdec, software, vaapi};
-use lowlat_drivers::cuda::Cuda;
-use lowlat_drivers::cuvid::Cuvid;
-use lowlat_drivers::lavc::Lavc;
+use lowlat_decode::{Decoder, Fault, Fed, Format, Picture, nvdec, software};
 use lowlat_net::WakeHandle;
 
-use crate::UNIT_BYTES;
 use crate::config::FrameKind;
 use crate::driver::{Telemetry, Units};
 use crate::feed::{Decision, Feed};
 use crate::frames::{Frame, Frames};
 use crate::report::Smoothed;
 use crate::seam::{Event, Opened, Outcome};
+
+/// The decoders a stream is opened on, which are the platform's; the thread
+/// around them is written once.
+#[cfg(target_os = "linux")]
+#[path = "decode/linux.rs"]
+mod sys;
 
 /// How long the thread waits for a unit before looking at the stop flag.
 const IDLE_WAIT: Duration = Duration::from_millis(50);
@@ -44,15 +45,6 @@ trait Backend: Decoder {
     fn take_to_device(&mut self, out: &DevicePlanes) -> Result<Option<Picture>, Fault> {
         let _ = out;
         Err(Fault::Fatal)
-    }
-}
-
-impl Backend for vaapi::Backend<'_> {
-    fn output(&self) -> Option<(u32, u32, Format)> {
-        vaapi::Backend::output(self)
-    }
-    fn timings(&self) -> (u32, u32) {
-        (self.decode_us, self.readback_us)
     }
 }
 
@@ -164,54 +156,7 @@ pub(crate) fn run(args: Attached) {
     loop {
         let next = match opened {
             None => idle(&shared),
-            Some(Opened::Vaapi(node)) => {
-                let Ok(va) = Vaapi::load() else {
-                    break Next::Failed;
-                };
-                let Ok(display) = va.open(&node) else {
-                    break Next::Failed;
-                };
-                let backend = vaapi::Backend::new(&display, frames.ceiling());
-                drive(backend, &shared, replacing)
-            }
-            Some(Opened::Nvdec(address)) => {
-                let Ok(cuda) = Cuda::load() else {
-                    break Next::Failed;
-                };
-                let device = match address {
-                    Some(address) => cuda.device_at(address),
-                    None => cuda.any_device(),
-                };
-                let Ok(device) = device else {
-                    break Next::Failed;
-                };
-                let Ok(context) = cuda.retain_primary(&device) else {
-                    break Next::Failed;
-                };
-                if context.make_current().is_err() {
-                    break Next::Failed;
-                }
-                let Ok(cuvid) = Cuvid::load() else {
-                    break Next::Failed;
-                };
-                // The queue's device slots are made through this runtime, and
-                // may outlive this thread while the application holds one, so
-                // the queue keeps its own reference to it.
-                let cuda = Arc::new(cuda);
-                if frames.kind() == FrameKind::Handle {
-                    frames.open_device(Arc::clone(&cuda), device);
-                }
-                let backend = nvdec::Backend::new(&cuda, &cuvid, frames.ceiling(), UNIT_BYTES);
-                drive(backend, &shared, replacing)
-            }
-            Some(Opened::Software(dir)) => {
-                // The same search creation ran, landing on the same pair.
-                let Ok(lavc) = Lavc::load(dir.as_deref()) else {
-                    break Next::Failed;
-                };
-                let backend = software::Backend::new(&lavc);
-                drive(backend, &shared, replacing)
-            }
+            Some(opened) => sys::open(opened, &shared, replacing),
         };
         match next {
             Next::Switch(choice) => {
