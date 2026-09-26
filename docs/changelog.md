@@ -79,6 +79,10 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   the receives completed so far, measured at 17 to 25 of a 32-datagram burst and 3 of an
   8-datagram segmented one under load. Linux's batched receive is still held to taking a
   queued burst in one call.
+- **The rounded-up wait is judged by the middle of ten waits**: a single wait on the CI
+  runner ended under half a millisecond, which a spurious wake -- permitted by the wait's own
+  contract -- explains, while a hot poll returns within microseconds every time. The bound is
+  250 us, ten times a poll and well under any wait of a millisecond.
 
 ## 2026-09-26 - W1.0: the client's driver and its hermetic session build and pass on Windows
 
