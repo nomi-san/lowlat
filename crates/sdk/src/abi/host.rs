@@ -3762,7 +3762,7 @@ mod pad_sink_tests {
     use super::*;
     use ::lowlat_host::padsink::Report;
     use lowlat_core::pad::Product;
-    use lowlat_inject::uinput::Forwarded;
+    use lowlat_inject::Forwarded;
 
     struct Polled {
         status: lowlat_status,

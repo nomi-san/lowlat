@@ -32,27 +32,7 @@ use lowlat_core::video::Rotation;
 
 use crate::wayland::{DISPLAY, put_str, put_u32, read_i32, read_str, read_u32, trailing_u32};
 
-/// Where one output sits, in the desktop's own units.
-///
-/// The origin is measured from the desktop's own corner rather than from
-/// wherever the compositor put zero, because that corner is what the absolute
-/// axis maps its own zero to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Placement {
-    pub x: u32,
-    pub y: u32,
-    pub width: u32,
-    pub height: u32,
-    /// The whole desktop the input layer spreads an absolute device over.
-    pub desktop_width: u32,
-    pub desktop_height: u32,
-    /// Which way the session has turned this output.
-    ///
-    /// **Followed, never set here.** A turned output is drawn turned into a
-    /// framebuffer that keeps its landscape shape, so the picture captured
-    /// from it is on its side and only the session can say by how much.
-    pub rotation: Rotation,
-}
+pub use crate::Placement;
 
 /// The layout a session-side program has reported, which is asked before
 /// any socket is.

@@ -15,8 +15,8 @@ use lowlat_common::alloc_counter::{self, Counting};
 use lowlat_core::control::{Control, op};
 use lowlat_core::pad::{self, Inbound, Product};
 use lowlat_host::padsink::{self, Report, Taken};
+use lowlat_inject::Forwarded;
 use lowlat_inject::event::{Device, Event, Extents, Injector, Sink};
-use lowlat_inject::uinput::Forwarded;
 
 #[global_allocator]
 static ALLOC: Counting = Counting;

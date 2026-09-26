@@ -45,8 +45,8 @@ use lowlat_net::{Guest, Shell, Socket, Wake};
 use crate::session::{Negotiation, State};
 use crate::stream::{SeatHold, Seats, Stream};
 use crate::video::Packetiser;
+use lowlat_inject::Devices;
 use lowlat_inject::event::{Extents, Injector, Place};
-use lowlat_inject::uinput::Devices;
 
 /// Video, stream 0. See docs/01-protocol.md section 6.
 const VIDEO_CHANNEL: u8 = 1;
@@ -1237,7 +1237,7 @@ impl Admission {
         kind: lowlat_core::pad::OutputKind,
         report: &[u8],
     ) -> bool {
-        if report.is_empty() || report.len() > lowlat_inject::uhid::WRITTEN_MAX {
+        if report.is_empty() || report.len() > lowlat_inject::WRITTEN_MAX {
             lowlat_common::log_warn!(
                 "guest: refusing a pad report of {} bytes for guest {guest}",
                 report.len()
@@ -1432,7 +1432,7 @@ impl Admission {
     /// and knows nothing of the desktop that framebuffer belongs to, so this
     /// arrives from whatever is inside the session laying it out, and it is
     /// what a guest's absolute input is mapped against.
-    pub fn set_place(&self, place: Option<lowlat_capture::desktop::Placement>) {
+    pub fn set_place(&self, place: Option<lowlat_capture::Placement>) {
         if let Some(stream) = self.stream.as_ref() {
             stream.set_place(place);
         }
@@ -1816,7 +1816,7 @@ fn forward_declaration(negotiation: &mut Negotiation, seat: Option<&SeatHold>, d
 }
 
 /// What the host's HID pad was written, to the peer holding the real one.
-fn send_pad_written<M: Media>(session: &mut M, written: &lowlat_inject::uinput::PadWritten) {
+fn send_pad_written<M: Media>(session: &mut M, written: &lowlat_inject::PadWritten) {
     let report = written
         .written
         .report
@@ -2130,7 +2130,7 @@ impl Input<Devices> {
     fn open(
         label: &str,
         video: Option<(u32, u32)>,
-        forward: Option<lowlat_inject::uinput::Forward>,
+        forward: Option<lowlat_inject::Forward>,
     ) -> Option<Self> {
         let (width, height) = video?;
         // **Not placed yet, and it does not have to be.** A guest is seated
@@ -2325,7 +2325,7 @@ fn drive<M: Media>(
     // number.
     let forward = args.pad_sink.clone().map(|sink| {
         let guest = args.guest;
-        lowlat_inject::uinput::Forward(Box::new(move |forwarded| {
+        lowlat_inject::Forward(Box::new(move |forwarded| {
             sink.send(crate::padsink::Report::of(guest, forwarded));
         }))
     });

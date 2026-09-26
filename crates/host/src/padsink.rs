@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use lowlat_common::clock;
 use lowlat_core::pad::{self, Product};
-use lowlat_inject::uinput::Forwarded;
+use lowlat_inject::Forwarded;
 
 /// Reports held for an application that is not draining: a quarter of a
 /// second of one wired DualSense.

@@ -27,3 +27,9 @@ pub mod gamepad;
 pub mod uhid;
 pub mod uinput;
 pub mod usage;
+
+// The devices a guest's input lands on and what they hand back, by the names
+// the guest loop uses whatever the platform; the kernel's input layer
+// provides them here.
+pub use uhid::WRITTEN_MAX;
+pub use uinput::{Devices, Forward, Forwarded, PadWritten};
