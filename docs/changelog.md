@@ -3,6 +3,26 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-26 - W0.6: the whole workspace builds for Windows, and CI holds it there
+
+### Added
+- **A Windows job in continuous integration** ([08 §12](08-testing.md)): lints as errors
+  and the tests, over the whole workspace. Per-platform code is a module of the same name on
+  each platform rather than a trait, so this build is what holds the two sides to one shape.
+
+### Changed
+- The crates with no Windows side yet -- capture, encode, inject, the host, the client and
+  the library itself -- build empty on Windows rather than failing, and their Linux-only
+  dependencies (the display interfaces, the graphics loaders, `libc`) are Linux's alone.
+  The service and the shell's fixture endpoint are a small program in front of their Linux
+  body, which elsewhere says it is not built for the platform and exits. Nothing on Linux
+  changes: the header the library generates is byte for byte what it was.
+
+### Measured
+- The whole workspace builds, lints clean and passes its tests for Windows, run here under a
+  compatibility layer (libraries, programs and tests; the examples, which probe Linux
+  hardware, are left out).
+
 ## 2026-09-26 - W0.3: the device interfaces and the decoders build for Windows
 
 ### Changed

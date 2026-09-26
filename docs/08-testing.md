@@ -285,6 +285,12 @@ forms as tarballs, the client one with the demo inside, and a `FEATURES` line in
 read from the tarball's own copy of the library rather than from the build directory,
 where the two builds land on the same file.
 
+**Windows builds and tests on every commit too**, the lints as errors, for every crate with
+a Windows side; the crates without one yet build empty there, so the whole workspace builds
+([impl-plan-windows.md](impl-plan-windows.md)). Per-platform code is a module of the same
+name on each platform, never a trait, so this build is the only thing holding the two sides
+to one shape. The examples are left out of it: the ones there probe Linux hardware.
+
 Nightly: unbounded fuzzing, the soak matrix, and the hardware suite on a machine with a GPU.
 
 **A red build is not merged.** There is no category of test in this repository that is

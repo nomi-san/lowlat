@@ -47,7 +47,13 @@ platform as the only contract keeping the two in step: CI builds both.
   descriptor; the encoder builders move out of the frame loop's module, one module per
   platform; types every platform shares move out of the Linux modules; the guest loop takes
   its input devices from a module per platform.
-- [ ] **W0.6 build**: Linux-only dependencies scoped to Linux, and a Windows job in CI.
+- [x] **W0.6 build**: Linux-only dependencies scoped to Linux, and a Windows job in CI.
+  *Built 2026-09-26, ahead of W0.4 and W0.5 because both halves' work starts from a
+  workspace that builds: the crates with no Windows side yet -- capture, encode, inject,
+  host, client and the library itself -- build empty there, and the service and the shell's
+  fixture endpoint say they are not built for the platform and exit. `cargo build`,
+  `cargo clippy` and `cargo test` over the whole workspace (`--lib --bins --tests`) pass for
+  Windows, the tests run here under a compatibility layer.*
 
 **Gate:** the Linux tests and every lint as before, nothing on Linux behaving differently,
 and the Windows target building every crate that has a Windows side.
@@ -67,4 +73,4 @@ whether an application may supply the frames, for a virtual display that already
 
 ## Change log
 
-- 2026-09-26: planned; W0.1 to W0.3 built.
+- 2026-09-26: planned; W0.1 to W0.3 and W0.6 built.
