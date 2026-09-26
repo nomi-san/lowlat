@@ -2,6 +2,8 @@
 //! parameter sets and the slice headers of both codecs, checked field by
 //! field rather than by decoding.
 
+// The writers live with the encoders, which are built on Linux so far.
+#![cfg(target_os = "linux")]
 #![allow(clippy::cast_possible_truncation)]
 
 use lowlat_decode::h264;

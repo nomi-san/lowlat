@@ -40,6 +40,8 @@ pub mod hevc;
 pub mod nal;
 pub mod nvdec;
 pub mod software;
+/// The open stack's decode, which exists on Linux alone.
+#[cfg(target_os = "linux")]
 pub mod vaapi;
 
 use lowlat_core::video::VideoHeader;

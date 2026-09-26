@@ -24,7 +24,7 @@ use lowlat_drivers::ffi::cuvid::{
     cudaVideoChromaFormat_420, cudaVideoChromaFormat_444, cudaVideoCodec_H264, cudaVideoCodec_HEVC,
     cudaVideoCreate_PreferCUVID, cudaVideoDeinterlaceMode_Weave, cudaVideoSurfaceFormat_NV12,
     cudaVideoSurfaceFormat_P016, cudaVideoSurfaceFormat_YUV444,
-    cudaVideoSurfaceFormat_YUV444_16Bit,
+    cudaVideoSurfaceFormat_YUV444_16Bit, tcu_ulong,
 };
 
 use crate::h264::dpb::{Parity, Structure};
@@ -133,21 +133,21 @@ impl Shape {
             (true, true) => cudaVideoSurfaceFormat_YUV444_16Bit,
         };
         info.bitDepthMinus8 = if self.ten_bit { 2 } else { 0 };
-        info.ulWidth = u64::from(self.width);
-        info.ulHeight = u64::from(self.height);
-        info.ulMaxWidth = u64::from(self.width);
-        info.ulMaxHeight = u64::from(self.height);
-        info.ulTargetWidth = u64::from(self.width);
-        info.ulTargetHeight = u64::from(self.height);
+        info.ulWidth = tcu_ulong::from(self.width);
+        info.ulHeight = tcu_ulong::from(self.height);
+        info.ulMaxWidth = tcu_ulong::from(self.width);
+        info.ulMaxHeight = tcu_ulong::from(self.height);
+        info.ulTargetWidth = tcu_ulong::from(self.width);
+        info.ulTargetHeight = tcu_ulong::from(self.height);
         info.display_area.right = i16::try_from(self.width).unwrap_or(i16::MAX);
         info.display_area.bottom = i16::try_from(self.height).unwrap_or(i16::MAX);
         info.target_rect.right = info.display_area.right;
         info.target_rect.bottom = info.display_area.bottom;
-        info.ulNumDecodeSurfaces = u64::try_from(SURFACES).unwrap_or(0);
+        info.ulNumDecodeSurfaces = tcu_ulong::try_from(SURFACES).unwrap_or(0);
         // One mapped at a time: a picture is copied out and unmapped before
         // the next is taken.
         info.ulNumOutputSurfaces = 1;
-        info.ulCreationFlags = u64::from(cudaVideoCreate_PreferCUVID);
+        info.ulCreationFlags = tcu_ulong::from(cudaVideoCreate_PreferCUVID);
         info.DeinterlaceMode = cudaVideoDeinterlaceMode_Weave;
     }
 }

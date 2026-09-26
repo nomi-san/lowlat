@@ -12,6 +12,14 @@
 #
 # Then build. Every struct carries a compile-time layout assertion derived from
 # the header, so a mismatch is a build failure rather than a runtime surprise.
+#
+# **Once per platform, because the layouts differ.** Windows gives `long` four
+# bytes where Linux gives it eight, which moves every structure holding one, so
+# the assertions generated for one platform fail to compile on the other. The
+# vendor interfaces are generated for both into ffi/linux and ffi/windows; the
+# display interface exists on Linux alone. The Windows pass reads the system
+# headers of the MinGW toolchain (x86_64-w64-mingw32, whose windows.h the codec
+# header includes there) and the compiler's own resource headers.
 
 set -euo pipefail
 
@@ -22,7 +30,19 @@ enc_h="$inc/ffnvcodec/nvEncodeAPI.h"
 cuda_h="$inc/ffnvcodec/dynlink_cuda.h"
 cuvid_h="$inc/ffnvcodec/dynlink_cuviddec.h"
 
-mkdir -p "$out"
+mkdir -p "$out/linux" "$out/windows"
+
+# The compiler's own headers, which the MinGW system headers include by name.
+resource_dir="$(clang -print-resource-dir 2>/dev/null || ls -d /usr/lib/llvm-*/lib/clang/* | sort -V | tail -1)"
+targets=(linux windows)
+# The 64-bit platform has one calling convention. The headers still spell the
+# 32-bit one they mean, and the generator drops every function type carrying
+# it as invalid -- the whole runtime's entry points, silently -- so the
+# spelling is defined away, which on this platform changes nothing it means.
+declare -A target_args=(
+    [linux]=""
+    [windows]="--target=x86_64-pc-windows-gnu -resource-dir $resource_dir -D__stdcall="
+)
 
 # No doc comments: the vendored header is where documentation lives, and
 # doxygen text carried into a .rs file breaks the ASCII gate, which covers
@@ -45,53 +65,61 @@ common=(
 # The GUID objects are excluded for a sharper reason. They are `static const`
 # in the header, so no exported symbol exists for them in any library; bindgen
 # renders each one as an extern static, which is a reference that can never
-# resolve. They are generated from the header text below instead.
-echo "generating nvenc bindings"
-bindgen "$enc_h" \
-    "${common[@]}" \
-    --allowlist-type '_?NV_?ENC.*' \
-    --allowlist-type 'GUID' \
-    --allowlist-var 'NV_?ENC.*' \
-    --blocklist-item '.*_GUID' \
-    -o "$out/nvenc.rs" \
-    -- -I "$inc"
+# resolve. They are generated from the header text below instead. Blocked by
+# the codec's own prefix, because on Windows the GUID type itself is the
+# system's `_GUID`, which a looser pattern would block with them.
+for target in "${targets[@]}"; do
+    # Word splitting is wanted: the arguments are a list, or nothing.
+    # shellcheck disable=SC2206
+    clang_args=(${target_args[$target]})
 
-# The CUDA header declares function pointer typedefs rather than functions, so
-# it is already shaped for runtime loading and needs no exclusions.
-echo "generating cuda bindings"
-bindgen "$cuda_h" \
-    "${common[@]}" \
-    --allowlist-type 'CU.*' \
-    --allowlist-type 'tcu.*' \
-    --allowlist-var 'CU.*' \
-    -o "$out/cuda.rs" \
-    -- -I "$inc"
+    echo "generating nvenc bindings for $target"
+    bindgen "$enc_h" \
+        "${common[@]}" \
+        --allowlist-type '_?NV_?ENC.*' \
+        --allowlist-type 'GUID' \
+        --allowlist-var 'NV_?ENC.*' \
+        --blocklist-item 'NV_ENC_.*_GUID' \
+        -o "$out/$target/nvenc.rs" \
+        -- -I "$inc" "${clang_args[@]}"
 
-# The decode interface beside the encoder's, declared the same way: function
-# pointer typedefs and structures, nothing to link. Only the decoder half is
-# taken; the interface's own parser and source objects are not used, since
-# the readers here produce the picture parameters themselves.
-# The header expects the compute runtime's types to be declared before it,
-# which its sibling does by inclusion; here the compute bindings next door
-# are used for them rather than generated twice.
-echo "generating cuvid bindings"
-bindgen "$cuvid_h" \
-    "${common[@]}" \
-    --raw-line 'use super::cuda::{CUcontext, CUdeviceptr, CUresult, CUstream};' \
-    --allowlist-type '_?CUVID.*' \
-    --allowlist-type 'CUvideodecoder' \
-    --allowlist-type 'CUvideoctxlock' \
-    --allowlist-type 'cudaVideo.*' \
-    --allowlist-type 'tcuvid.*' \
-    --allowlist-var 'CUVID.*' \
-    --allowlist-var 'MAX_CLOCK_TS' \
-    --blocklist-type 'CUresult' \
-    --blocklist-type 'CUdeviceptr(_v2)?' \
-    --blocklist-type 'CUstream(_st)?' \
-    --blocklist-type 'CUcontext' \
-    --blocklist-type 'CUctx_st' \
-    -o "$out/cuvid.rs" \
-    -- -I "$inc" -include ffnvcodec/dynlink_cuda.h
+    # The CUDA header declares function pointer typedefs rather than functions,
+    # so it is already shaped for runtime loading and needs no exclusions.
+    echo "generating cuda bindings for $target"
+    bindgen "$cuda_h" \
+        "${common[@]}" \
+        --allowlist-type 'CU.*' \
+        --allowlist-type 'tcu.*' \
+        --allowlist-var 'CU.*' \
+        -o "$out/$target/cuda.rs" \
+        -- -I "$inc" "${clang_args[@]}"
+
+    # The decode interface beside the encoder's, declared the same way:
+    # function pointer typedefs and structures, nothing to link. Only the
+    # decoder half is taken; the interface's own parser and source objects are
+    # not used, since the readers here produce the picture parameters
+    # themselves. The header expects the compute runtime's types to be
+    # declared before it, which its sibling does by inclusion; here the
+    # compute bindings next door are used for them rather than generated twice.
+    echo "generating cuvid bindings for $target"
+    bindgen "$cuvid_h" \
+        "${common[@]}" \
+        --raw-line 'use super::cuda::{CUcontext, CUdeviceptr, CUresult, CUstream};' \
+        --allowlist-type '_?CUVID.*' \
+        --allowlist-type 'CUvideodecoder' \
+        --allowlist-type 'CUvideoctxlock' \
+        --allowlist-type 'cudaVideo.*' \
+        --allowlist-type 'tcuvid.*' \
+        --allowlist-var 'CUVID.*' \
+        --allowlist-var 'MAX_CLOCK_TS' \
+        --blocklist-type 'CUresult' \
+        --blocklist-type 'CUdeviceptr(_v2)?' \
+        --blocklist-type 'CUstream(_st)?' \
+        --blocklist-type 'CUcontext' \
+        --blocklist-type 'CUctx_st' \
+        -o "$out/$target/cuvid.rs" \
+        -- -I "$inc" -include ffnvcodec/dynlink_cuda.h "${clang_args[@]}"
+done
 
 # Codec, preset, profile and tuning identifiers, transcribed mechanically from
 # the header so that no human copies sixteen bytes of hex.
@@ -160,7 +188,7 @@ bindgen "$root/third_party/libva/include/va/va_drm.h" \
     --blocklist-item '.*MPEG.*' \
     --blocklist-item '.*FEI.*' \
     --blocklist-item '.*Prot(ected)?.*' \
-    -o "$out/va.rs" \
+    -o "$out/linux/va.rs" \
     -- -I "$root/third_party/libva/include"
 
 # Struct version stamps. These are defined through a function-like macro, which

@@ -222,6 +222,24 @@ pub struct Lavc {
     _avutil: Library,
 }
 
+/// The files a pair of the given majors is, as this platform names them.
+#[cfg(unix)]
+fn file_names(avutil: u32, avcodec: u32) -> (String, String) {
+    (
+        format!("libavutil.so.{avutil}"),
+        format!("libavcodec.so.{avcodec}"),
+    )
+}
+
+/// The files a pair of the given majors is, as this platform names them.
+#[cfg(windows)]
+fn file_names(avutil: u32, avcodec: u32) -> (String, String) {
+    (
+        format!("avutil-{avutil}.dll"),
+        format!("avcodec-{avcodec}.dll"),
+    )
+}
+
 /// The one thing the walk needs of a place: how to name a library in it.
 #[derive(Debug, Clone)]
 enum Place {
@@ -341,12 +359,9 @@ impl Lavc {
 
     /// One pair in one place: opened, checked, and kept or closed.
     fn try_pair(place: &Place, avcodec: u32, avutil: u32, major: u32) -> Result<Self, Refusal> {
-        let avutil_name = place
-            .name(&format!("libavutil.so.{avutil}"))
-            .ok_or(Refusal::Absent)?;
-        let avcodec_name = place
-            .name(&format!("libavcodec.so.{avcodec}"))
-            .ok_or(Refusal::Absent)?;
+        let (avutil_file, avcodec_file) = file_names(avutil, avcodec);
+        let avutil_name = place.name(&avutil_file).ok_or(Refusal::Absent)?;
+        let avcodec_name = place.name(&avcodec_file).ok_or(Refusal::Absent)?;
         // `libavutil` first: `libavcodec` needs it, and a copy already in the
         // process is what the linker binds it to.
         let util = Library::open(&avutil_name).ok_or(Refusal::Absent)?;

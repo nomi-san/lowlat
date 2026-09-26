@@ -10,7 +10,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use lowlat_core::video::{Codec, Rotation, VideoHeader};
-use lowlat_decode::nvdec::{Backend, DevicePlanes, caps};
+use lowlat_decode::nvdec::{Backend, caps};
 use lowlat_decode::{Caps, Decoder};
 use lowlat_drivers::cuda::{Context, Cuda};
 use lowlat_drivers::cuvid::Cuvid;
@@ -205,6 +205,7 @@ fn the_synthetic_clips_decode_to_the_reference_pictures() {
 /// The device route: the picture copied into an exportable allocation
 /// instead of read back, then read back from there by the test. The same
 /// pictures, bit for bit, and the copy's cost beside the read-back's.
+#[cfg(target_os = "linux")]
 #[test]
 #[ignore = "requires the vendor's decode interface"]
 fn the_device_route_produces_the_same_pictures() {
@@ -261,7 +262,7 @@ fn the_device_route_produces_the_same_pictures() {
             |b, planes| {
                 let base = slot.ptr();
                 let plane = u64::try_from(pitch * 720).unwrap();
-                let target = DevicePlanes {
+                let target = lowlat_decode::nvdec::DevicePlanes {
                     y: base,
                     y_pitch: pitch,
                     uv: base + plane,

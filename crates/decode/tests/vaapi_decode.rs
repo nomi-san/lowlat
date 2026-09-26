@@ -3,6 +3,8 @@
 //! is off by default: `cargo test -p lowlat-decode --test vaapi_decode --
 //! --ignored`, with `LOWLAT_VAAPI_NODE` naming the node (`renderD128`).
 
+// The open stack exists on Linux alone.
+#![cfg(target_os = "linux")]
 #![allow(clippy::type_complexity)]
 
 mod common;

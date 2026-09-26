@@ -17,7 +17,11 @@ use crate::ffi::cuvid::{
 };
 
 /// Versioned first, as with the compute runtime.
-const SONAMES: [&CStr; 2] = [c"libnvcuvid.so.1", c"libnvcuvid.so"];
+#[cfg(unix)]
+const SONAMES: &[&CStr] = &[c"libnvcuvid.so.1", c"libnvcuvid.so"];
+/// Installed with the display driver, in the system directory.
+#[cfg(windows)]
+const SONAMES: &[&CStr] = &[c"nvcuvid.dll"];
 
 type GetDecoderCaps = unsafe extern "C" fn(*mut CUVIDDECODECAPS) -> CUresult;
 type CreateDecoder =
@@ -94,7 +98,7 @@ impl Cuvid {
     /// initialised; every call below is made against the context current on
     /// the calling thread.
     pub fn load() -> Result<Self> {
-        let library = Library::open_first(&SONAMES).ok_or(Error::Unavailable)?;
+        let library = Library::open_first(SONAMES).ok_or(Error::Unavailable)?;
         // SAFETY: every signature is transcribed from the vendored header.
         let loaded = unsafe {
             Self {

@@ -37,6 +37,8 @@
     clippy::float_cmp,
     clippy::useless_transmute
 )]
+#[cfg_attr(target_os = "linux", path = "linux/nvenc.rs")]
+#[cfg_attr(windows, path = "windows/nvenc.rs")]
 pub mod nvenc;
 
 #[allow(
@@ -54,6 +56,8 @@ pub mod nvenc;
     clippy::float_cmp,
     clippy::useless_transmute
 )]
+#[cfg_attr(target_os = "linux", path = "linux/cuda.rs")]
+#[cfg_attr(windows, path = "windows/cuda.rs")]
 pub mod cuda;
 
 #[allow(
@@ -71,6 +75,8 @@ pub mod cuda;
     clippy::float_cmp,
     clippy::useless_transmute
 )]
+#[cfg_attr(target_os = "linux", path = "linux/cuvid.rs")]
+#[cfg_attr(windows, path = "windows/cuvid.rs")]
 pub mod cuvid;
 
 #[allow(dead_code, non_upper_case_globals, unreachable_pub)]
@@ -94,4 +100,6 @@ pub mod versions;
     clippy::float_cmp,
     clippy::useless_transmute
 )]
+#[cfg(target_os = "linux")]
+#[path = "linux/va.rs"]
 pub mod va;

@@ -16,12 +16,14 @@ lowlat-core.workspace = true
 lowlat-drivers.workspace = true
 
 [dev-dependencies]
-# The parameter-set writers, so what the encoders write is checked to parse
-# back to what they were told.
-lowlat-encode.workspace = true
 # The counting allocator, for the assertion that the software backend's
 # per-unit path allocates nothing on this side.
 lowlat-common = { workspace = true, features = ["alloc-counter"] }
+
+# The parameter-set writers, so what the encoders write is checked to parse
+# back to what they were told. The encoders are built on Linux so far.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+lowlat-encode.workspace = true
 
 [lints]
 workspace = true

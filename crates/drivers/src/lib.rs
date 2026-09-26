@@ -18,4 +18,6 @@ pub mod cuda;
 pub mod cuvid;
 pub mod ffi;
 pub mod lavc;
+/// The open stack's video interface, which exists on Linux alone.
+#[cfg(target_os = "linux")]
 pub mod va;
