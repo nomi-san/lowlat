@@ -292,3 +292,72 @@ fn the_read_back_wait_sleeps() {
         );
     }
 }
+
+/// **The read-back's wait, measured on a clip at a pace.** `LOWLAT_PROBE_CLIP`
+/// names a clip by path (a 2560x1440 one, if there is one at hand; the
+/// codec is read from the name), `LOWLAT_PROBE_PACE_MS` a sleep between
+/// units that stands in for a live stream's gaps, `LOWLAT_D3D11_ADAPTER`
+/// the adapter. Prints the wait (the decode and the copy) and the copy out
+/// at the median and the 95th percentile, over 600 pictures.
+#[test]
+#[ignore = "requires a GPU"]
+fn wait_probe() {
+    let clip =
+        std::env::var("LOWLAT_PROBE_CLIP").unwrap_or_else(|_| "synthetic-720p-hevc.bin".into());
+    let codec = if clip.contains("hevc") {
+        Codec::H265
+    } else {
+        Codec::H264
+    };
+    let pace: u64 = std::env::var("LOWLAT_PROBE_PACE_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(0);
+    let d3d11 = D3d11::load().expect("the system's libraries");
+    let units = common::units(&clip);
+    let pitch = 4096;
+    let mut y = vec![0u8; pitch * 2160];
+    let mut uv = vec![0u8; pitch * 1080];
+    for luid in adapters(&d3d11) {
+        let device = d3d11.open(luid).expect("a device");
+        let mut backend = Backend::new(&device, (4096, 4096));
+        backend.build(&header(codec, false)).expect("build");
+        let (mut waits, mut copies) = (Vec::new(), Vec::new());
+        while waits.len() < 600 {
+            for unit in &units {
+                backend.feed(unit).expect("feed");
+                loop {
+                    let mut planes = lowlat_decode::Planes {
+                        y: &mut y,
+                        y_pitch: pitch,
+                        uv: &mut uv,
+                        uv_pitch: pitch,
+                        v: &mut [],
+                        v_pitch: 0,
+                    };
+                    if backend.take(&mut planes).expect("take").is_none() {
+                        break;
+                    }
+                    waits.push(backend.decode_us);
+                    copies.push(backend.readback_us);
+                }
+                if pace > 0 {
+                    std::thread::sleep(std::time::Duration::from_millis(pace));
+                }
+            }
+        }
+        backend.destroy();
+        let pct = |v: &mut Vec<u32>, p: usize| {
+            v.sort_unstable();
+            v[(v.len() - 1) * p / 100]
+        };
+        println!(
+            "{luid} {} {clip} pace {pace} ms: wait p50 {} us p95 {}; copy p50 {} us p95 {}",
+            device.adapter.description,
+            pct(&mut waits, 50),
+            pct(&mut waits, 95),
+            pct(&mut copies, 50),
+            pct(&mut copies, 95),
+        );
+    }
+}
