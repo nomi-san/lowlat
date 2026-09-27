@@ -110,7 +110,9 @@ focus; `W` toggles fullscreen; `D` asks the host to stream its next output,
 through the same application protocol a settings panel uses; `F` switches
 the picture between stretched to the window and shown at its own size; `R`
 lets go of a captured pointer (and takes it again); `C` cycles the video
-preferences. A bare Windows key is not sent while the keyboard is not
+preferences; `X` moves the session to the next decoder listed at start; `Q`
+leaves the session cleanly and quits, as closing the window does. A bare
+Windows key is not sent while the keyboard is not
 grabbed, because the desktop here takes it and the host would be left
 holding the modifier; it reaches the host on chords, and whole once grabbed.
 

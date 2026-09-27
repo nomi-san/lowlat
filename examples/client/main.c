@@ -15,7 +15,8 @@
 // stream its next output, F switches between the picture stretched to the
 // window and shown at its own size, R lets go of a pointer the host has
 // captured (and takes it again), C cycles the colour preferences, X moves
-// the session to the next decoder this machine listed at start.
+// the session to the next decoder this machine listed at start, Q leaves the
+// session cleanly and quits, as closing the window does.
 // A bare Windows key is not sent while the keyboard is not grabbed, because
 // the desktop here takes it and the host would be left with the modifier
 // held; it reaches the host on chords, and whole once grabbed.
@@ -748,6 +749,13 @@ static void on_key(struct demo *d, const MTY_KeyEvent *k)
 				return;
 			case MTY_KEY_X:
 				cycle_decoder(d);
+				return;
+			case MTY_KEY_Q:
+				// Leave and quit, as closing the window does: the loop stops
+				// here, and the departure goes out on the way down with its
+				// grace.
+				printf("demo: leaving and quitting\n");
+				atomic_store(&d->quit, true);
 				return;
 			default:
 				break;
