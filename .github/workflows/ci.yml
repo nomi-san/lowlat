@@ -148,8 +148,10 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --lib --bins --tests -- -D warnings
 
+      # Every crate runs past a failure in another: a timing test's flake on
+      # the shared runner once stopped the job before the library's own gates.
       - name: Tests
-        run: cargo test --workspace --lib --bins --tests
+        run: cargo test --workspace --lib --bins --tests --no-fail-fast
 
   loom:
     name: model checking
