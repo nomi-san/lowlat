@@ -79,6 +79,8 @@ before calling anything else. It is the one function whose signature can never c
 containment can be tested against the object that ships rather than against a copy of the same
 code linked into a test, which answers for the test's build settings instead. One symbol is a
 small price for the only check that can fail if [§9](#9-panics-and-unwinding) regresses.
+`lowlat_client_debug_panic` is its twin on a client handle (minor 18), so a library carrying
+the client half alone -- the one a Windows build is -- is tested the same way.
 
 The log callback is the single exception to rule 5. It is cold, it fires on whichever thread
 logged, and it must not call back into the API.
@@ -348,7 +350,8 @@ have moved by itself; an application that kept its own copy would mark the wrong
 Everything below is in the header (minor 4 the session, minor 5 the pictures, minor 6 the
 input, minor 7 the sound, minor 8 the preferences and the handle, minor 9 the cursor and the
 metrics, minor 10 the pad reports, minor 14 the relay, minor 15 the picture's range, minor 16
-its arrival time, minor 17 the range asked for); the header is the truth.
+its arrival time, minor 17 the range asked for, minor 18 the client's deliberate panic); the
+header is the truth.
 
 ```c
 lowlat_status lowlat_client_create(const lowlat_client_create_info *info, lowlat_client **out);
@@ -642,6 +645,17 @@ picture with no keyframe and is refused with `LOWLAT_ERR_DECODER_UNSUPPORTED` by
 that cannot hand out the kind; and `lowlat_client_set_decoder` accepted by a session of the
 handle kind, each slot then carrying its own backing. A picture of the new kind is finished
 on the device before it can be acquired, so the release fence keeps its one kind.
+
+**On Windows since W1.2** (*2026-09-27*): the library is `lowlat.dll` with its import library
+`lowlat.dll.lib`, the C runtime linked in statically, and it carries the client half alone --
+`lowlat_features` reports no host half there whatever the build asked for, and an application
+that defines `LOWLAT_NO_HOST` has a call into it fail to compile rather than to link. Its
+decoder is the software one, `LOWLAT_DECODER_AUTO`
+settling on it: the pair is found by the platform's names (`avutil-N.dll`,
+`avcodec-N.dll`) in the environment's directory, the one the application names, beside the
+application, then the system's own directory, never the current directory or the search path.
+The other kinds and the handle kind are refused with `LOWLAT_ERR_DECODER_UNSUPPORTED` until
+their steps, and `lowlat_enum_decoders` lists the software slot alone meanwhile.
 
 **Sound is decoded, not played** (minor 7). `acquire_audio` hands out one packet a call,
 signed sixteen-bit stereo at 48 kHz, in the order the host sent them, as many frames as the
@@ -995,7 +1009,9 @@ undefined behavior, and this library loads into processes we do not control.
 - **The shared library keeps unwinding enabled.** Building it to abort on panic silently
   disables all of the above, which is why the release profile is split
   ([AGENTS.md](../AGENTS.md) §17).
-- A deliberately panicking call is a named test at [Phase 8](impl-plan.md).
+- A deliberately panicking call is a named test at [Phase 8](impl-plan.md): for each half
+  the object carries, `lowlat_debug_panic` on a host handle and `lowlat_client_debug_panic`
+  on a client handle (minor 18), run against the shipped object on Linux and on Windows.
 
 ## §10 Memory and strings
 
@@ -1135,6 +1151,11 @@ takes the full range. The library had declared that on every attempt; now it dec
 only when asked. Nothing moves, and a caller built against an earlier minor, which passed
 zero there, asks for the video range.
 
+**Minor 18** (2026-09-27) is the client's deliberate panic ([§9](#9-panics-and-unwinding)):
+`lowlat_client_debug_panic`, the client half's twin of `lowlat_debug_panic`, so a library
+carrying the client half alone -- which a Windows build is -- proves containment on the
+object that ships. Not for applications. Nothing moves.
+
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected
 rather than kept: `LOWLAT_CG_LEVEL_LEGACY` became `LOWLAT_CG_LEVEL_AGGRESSIVE` because the
@@ -1152,7 +1173,8 @@ directives, which is what makes source-generated interop work without a runtime 
 
 **The header compiles standalone under both C and C++ with warnings as errors**, verified at
 [Phase 8](impl-plan.md), because a header that only compiles in the author's translation unit
-is a header nobody can use.
+is a header nobody can use -- by each platform's own compiler, Visual Studio's on Windows
+since W1.2.
 
 A C# integration is the reference case, since it exercises the signaling seam, event polling,
 and struct blittability at once. It is the Phase 8 gate.

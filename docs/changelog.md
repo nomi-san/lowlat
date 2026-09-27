@@ -3,6 +3,77 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-27 - W1.2: the seam, the software decoder and the demo on Windows
+
+### Decided
+- **On Windows the host slots reserve their range and commit as a picture reaches**
+  ([10 §4](10-client.md)). That system charges committed memory whether it is touched or
+  not, and a zeroed allocation of the slots' reserve -- free resident, as on Linux -- was
+  charged whole at the first picture: 384.8 MiB at the default ceiling, measured. Each slot
+  is committed as far as the picture laid out in it reaches, never less while the queue
+  lives, and a commit the system refuses refuses the picture whole.
+- **The library's gates run on Windows**, with the platform's own compiler and export dump
+  found in the Visual Studio installation, so they need no developer prompt; and **the client
+  half gets its own deliberate panic**, `lowlat_client_debug_panic` (minor 18), because a
+  library carrying the client half alone -- a Windows build, or the client-only build on
+  Linux -- had nothing on it to prove containment with. The handle kind of W1.4 becomes
+  minor 19.
+- **The demo keeps a makefile per platform's make**: an nmake `makefile` beside the GNU one,
+  which the toolkit itself does too.
+- **The toolkit's Windows build takes its Vulkan shader compiler from the path**, as its
+  Linux build does, so no executable is carried in the tree.
+
+### Changed
+- **The seam, the decode thread, the decoder table and the picture queue build and run on
+  Windows**, each over a module of the same names as Linux's. The decoder there is the LGPL
+  pair, found by the platform's names; the table is its one slot, and the other kinds and
+  the handle kind are refused as not in the build until their steps. The queue's device half
+  is Linux's module; Windows has no device slot yet.
+- **The library builds on Windows** as a DLL with its import library, carrying the client
+  half alone: `lowlat_features` reports what was built, not what was asked, and the host
+  half keeps the features' guards in the header.
+- **The gates' header comparison is by lines**, since a checkout may give the file the
+  platform's own line endings; the harness drives each half the object carries rather than
+  requiring the host's; the library the gates build keeps the configuration's flags unless
+  the environment names its own, since an empty environment variable replaced them and
+  dropped the static C runtime.
+- **The demo builds with Visual Studio**: its threads are the toolkit's, its clock the one
+  the library stamps arrivals on (the performance counter there), its memory line says the
+  commit beside the working set on Windows, and the pad facts and raw pads are Linux's. Its
+  title named the software decoder "no decoder"; it says software now.
+- **The demo leaves and quits on Ctrl+Shift+Q**, as closing its window does.
+- **The demo destroys its window before the library's handle.** On Windows a window's
+  destruction raises its own focus change, synchronously, and the demo's handler for it
+  releases what the host holds -- through a handle already destroyed. Closing the window
+  could hang the process in the handle's lock, or end it two minutes later for heap
+  corruption; whether it did depended on what the heap had done with the memory.
+
+### Measured
+- **From an established host over the internet**, at 2560x1440, eight-bit 4:2:0 in the
+  video range, on a direct path over IPv6, through the LGPL pair (FFmpeg 8) on the
+  development machine's processor and drawn through Direct3D 11:
+  - **H.264, ten minutes**: 40 pictures a second on average, the host's own rate, up to 120;
+    decode 4.4 ms at the median and 6.9 at the 95th percentile, the copy out 0.15; arrival
+    to present 6.6 ms at the median of the per-second means and 7.8 at the 95th; a round
+    trip of 14 ms; 22 percent of one core for the whole process. A second run of seven
+    minutes: decode 4.5 and 6.6 ms, 15 percent.
+  - **HEVC, ten minutes**: 33 pictures a second on average; decode 7.0 ms at the median
+    and 10.0 at the 95th percentile, the copy out 0.2; arrival to present 9.4 and 11.0; a
+    round trip of 11 ms; 27 percent of one core.
+  - **Memory committed**: 23 MB after creation; 135 MB at the first picture and 142 after
+    ten minutes in H.264, 148 and 150 in HEVC, of which the picture slots are 21 MiB.
+- **The path dropped one direction mid-session, three times, all in HEVC** (at 83, 87 and
+  470 s; a run of 150 s and the ten minutes above did not). From one moment nothing this
+  client sent reached the host while the host's datagrams still arrived here, so the
+  session ended as undeliverable 15 s later, as designed. The third was captured at both
+  ends: this machine's count of datagrams sent kept climbing, and not one arrived at the
+  host's network card. The loss is on the path between the two machines, in neither. H.264
+  ran seventeen minutes across two runs without one; whether the codec matters is not known.
+- On Windows the workspace's 792 tests pass, 17 ignored, the library's gates among them
+  against the shipped DLL; on Linux 1106 pass and the two dual-stack name tests fail under
+  WSL as before, its hosts file naming no IPv6 loopback. Each new check was broken once and
+  seen to fail.
+
 ## 2026-09-26 - W1.1: the network shell on Windows, on the completion port
 
 ### Decided

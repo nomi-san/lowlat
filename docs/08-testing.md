@@ -291,9 +291,13 @@ a Windows side; the crates without one yet build empty there, so the whole works
 name on each platform, never a trait, so this build is the only thing holding the two sides
 to one shape. The examples are left out of it: the ones there probe Linux hardware.
 *Since W1.0* it also runs the client's tests and its hermetic session, with the C runtime
-linked statically as it ships; *planned for W1*, it decodes the reference clips through an
-LGPL codec library it downloads, since the runner has no GPU, and builds the demo with the
-platform's own compiler.
+linked statically as it ships. *Since W1.2* the library's own gates run there as well: the
+header compared with its definitions and compiled alone by the platform's compiler, as C and
+as C++, with either half hidden; the shipped DLL's exports, every one prefixed; and each half
+it carries -- the client half alone -- panicking on purpose through the DLL and coming back
+with a status. *Planned for W1*, it decodes the reference clips through an LGPL codec library
+it downloads, since the runner has no GPU, and builds the demo with the platform's own
+compiler.
 
 Nightly: unbounded fuzzing, the soak matrix, and the hardware suite on a machine with a GPU.
 

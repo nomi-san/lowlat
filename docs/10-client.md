@@ -124,6 +124,16 @@ and never the reserve. An earlier implementation initialised its slots at creati
 a quarter of a gigabyte resident before a picture existed. Here a client at 1080p is about
 140 MB above its resident set at creation, most of it the driver's.
 
+**On Windows the reserve is not charged either** (*built 2026-09-27*, W1.2). That system
+charges memory it has handed out -- commits -- against the machine's memory and page file
+whether it is ever touched or not, so a zeroed allocation of the reserve, which costs nothing
+resident, is charged whole at once: 384.8 MiB at the default ceiling, measured. There the
+slots' address range is reserved and each slot is committed as far as the picture laid out in
+it reaches, growing and never shrinking while the queue lives, so a slot the application holds
+is never decommitted under it; a commit the system refuses refuses the picture whole, as a
+picture past its slot is refused. Four pictures at 1440p are 21 MiB of it. An earlier
+implementation's lazy slots moved its working set and left the whole reserve charged.
+
 **Acquire is the poll.** `lowlat_client_acquire_frame` waits up to its timeout for a picture
 newer than the last one handed out, discards any older ready pictures on the way, and lends
 the newest. A picture stays valid until it is released; the application presents it as often
@@ -608,6 +618,13 @@ D14's rule and is found in the directory the application names or beside the app
 by the platform's versioned names. The system's decoder needs nothing installed for H.264
 and the system's HEVC extension for HEVC, and comes last, because eight-bit 4:2:0 is all it
 decodes.
+
+**The pair first** (*built 2026-09-27*, W1.2). Until the hardware backends are built the
+table is the pair's one slot: the automatic choice settles on it, and the open and vendor
+kinds and the handle kind are refused as not in the build. On the development machine's
+processor, from an established host at 2560x1440, it decodes H.264 in 4.4 ms at the median
+and 6.9 at the 95th percentile and HEVC in 7.0 and 10.0, the whole process -- the renderer
+included -- using 15 to 27 percent of one core.
 
 ## §6 Sound
 

@@ -159,18 +159,32 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   browser-shell pair pass; the churn soak holds handles, threads and the working set flat;
   the port's wait asked for 1 ms lasts 2.0 ms with the resolution raised and 16.0 without;
   the plain port hands over a queued keyframe-sized burst in 1.8 ms, 695 ns a datagram.
-- [ ] **W1.2 the seam, software, and the demo on Windows**: the seam and the library's
+- [x] **W1.2 the seam, software, and the demo on Windows**: the seam and the library's
   client half on the shell, with the platform's decoder choice (*moved here from W1.1 at its
   build*); the libavcodec pair loaded there, and the demo built with the platform's compiler,
   drawing planes through the toolkit's D3D11 renderer. Checked by the first picture: ten
-  minutes from an established host.
+  minutes from an established host. *Built 2026-09-27.* Decided at its interview: the host
+  slots reserve their range and commit as a picture reaches, since that system charges a
+  zeroed reserve whole ([10 §4](10-client.md)); the library's gates run on Windows through
+  the platform's compiler, found in its installation, and the client half gets its own
+  deliberate panic, minor 18, which moves W1.4's to 19; the demo keeps a makefile per make;
+  the toolkit's shader compiler comes from the path. Until the hardware backends exist the
+  pair is the table's one slot ([10 §5.2](10-client.md)). On Windows the workspace's 792
+  tests pass; on Linux nothing moved. Ten minutes of each codec from an established host
+  over the internet at 2560x1440: H.264 decoded in 4.4 ms at the median and HEVC in 7.0,
+  arrival to present 6.6 and 9.4 ms. *Found at the gate*: the demo called the library
+  through a destroyed handle while its window was destroyed, which the window's own focus
+  change does synchronously there (fixed: the window goes first); and three HEVC runs lost
+  the path's upward direction mid-session, which a capture at the host placed between the
+  two machines.
 - [ ] **W1.3 D3D11 planes**: the backend fed from the readers' jobs, read back to planes.
   Checked by every clip decoding bit for bit on each of the three GPUs.
 - [ ] **W1.4 the handle**: the plane split, reading the decoder's output directly where a
   driver lets a shader read it and copying it first where one does not; the shared textures;
   the library's fence and the newest finished picture; the GPU on every frame; per-slot
-  backing; `lowlat_client_set_frame_kind`; a GPU named by its identity. Minor 18. Checked by
-  handles on all three GPUs and by each mid-session change.
+  backing; `lowlat_client_set_frame_kind`; a GPU named by its identity. Minor 19
+  (*corrected at W1.2*, which took 18). Checked by handles on all three GPUs and by each
+  mid-session change.
 - [ ] **W1.5 NVDEC**: planes, then handles through the vendor's interop with D3D11, the copy's
   completion signalled on the library's fence rather than waited for. Checked by the clips
   and ten minutes.
@@ -207,6 +221,7 @@ whether an application may supply the frames, for a virtual display that already
 
 ## Change log
 
+- 2026-09-27: W1.2 built; W1.4's minor corrected to 19.
 - 2026-09-26: W1.1 built; the seam and the library's client half moved to W1.2.
 - 2026-09-26: W1 planned at its interview.
 - 2026-09-26: planned; W0 built, W0.1 to W0.6.

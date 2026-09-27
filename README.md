@@ -170,8 +170,11 @@ The library builds in two forms: whole, and with the client half alone
 says which one was loaded, and the header is the same for both. The client demo is
 `make -C examples/client`, which builds the application toolkit from its vendored tree
 first; that needs a C compiler, the shader compiler (`glslang-tools`) and the ALSA, PNG
-and JPEG headers. The build workflow produces both libraries as tarballs, the client one
-with the demo inside, each with a `FEATURES` line read from its own copy.
+and JPEG headers. On Windows the library builds with the client half alone whatever the
+features say, and the demo is `nmake` in `examples/client` from Visual Studio's x64
+developer environment, with Khronos' `glslangValidator` on the path for the toolkit. The
+build workflow produces both libraries as tarballs, the client one with the demo inside,
+each with a `FEATURES` line read from its own copy.
 
 ## Installing
 
