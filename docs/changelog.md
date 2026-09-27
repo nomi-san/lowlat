@@ -44,7 +44,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - **The idle loop's wake test is judged by the middle of five windows**: on the CI runner
   one 300 ms window woke 13 times for 11 deadlines, which spurious wakes explain, while a
   polling loop or one acting on its pre-wait clock is over in every window. A loop capped at
-  a millisecond's wait still fails it.
+  a millisecond's wait still fails it. **CI's Windows tests now run every crate past a
+  failure in another**, since that flake had stopped the job before the library's own gates.
 - **The demo leaves and quits on Ctrl+Shift+Q**, as closing its window does.
 - **The demo destroys its window before the library's handle.** On Windows a window's
   destruction raises its own focus change, synchronously, and the demo's handler for it
