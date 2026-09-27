@@ -175,8 +175,8 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   arrival to present 6.6 and 9.4 ms. *Found at the gate*: the demo called the library
   through a destroyed handle while its window was destroyed, which the window's own focus
   change does synchronously there (fixed: the window goes first); and three HEVC runs lost
-  the path's upward direction mid-session, which a capture at the host placed between the
-  two machines.
+  the path's upward direction mid-session, past this machine's network card, as an
+  established client over the same path did too.
 - [ ] **W1.3 D3D11 planes**: the backend fed from the readers' jobs, read back to planes.
   Checked by every clip decoding bit for bit on each of the three GPUs.
 - [ ] **W1.4 the handle**: the plane split, reading the decoder's output directly where a

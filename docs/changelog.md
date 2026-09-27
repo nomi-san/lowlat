@@ -67,13 +67,17 @@ Newest first. One entry per phase; approach changes and gate revisions go in
     round trip of 11 ms; 27 percent of one core.
   - **Memory committed**: 23 MB after creation; 135 MB at the first picture and 142 after
     ten minutes in H.264, 148 and 150 in HEVC, of which the picture slots are 21 MiB.
-- **The path dropped one direction mid-session, three times, all in HEVC** (at 83, 87 and
-  470 s; a run of 150 s and the ten minutes above did not). From one moment nothing this
-  client sent reached the host while the host's datagrams still arrived here, so the
-  session ended as undeliverable 15 s later, as designed. The third was captured at both
-  ends: this machine's count of datagrams sent kept climbing, and not one arrived at the
-  host's network card. The loss is on the path between the two machines, in neither. H.264
-  ran seventeen minutes across two runs without one; whether the codec matters is not known.
+- **The path dropped one direction mid-session, three times** (at 83, 87 and 470 s of HEVC;
+  a run of 150 s and the ten minutes above did not). From one moment nothing this client
+  sent reached the host while the host's datagrams still arrived here, so the session ended
+  as undeliverable 15 s later, as designed. The third was captured at both ends: this
+  machine's count of datagrams sent kept climbing, and none arrived where the host's capture
+  sees its network card. **An established client does the same over the same path**: after
+  29 minutes its flow toward the host stopped arriving there too, and the host dropped it
+  alike, two minutes on where this client ends at fifteen seconds. So the loss is past this
+  machine's network card -- on the path, or in the host's own card before its capture -- and
+  not in this client. At about one event in thirteen minutes, H.264's seventeen clean
+  minutes say nothing about the codec.
 - On Windows the workspace's 792 tests pass, 17 ignored, the library's gates among them
   against the shipped DLL; on Linux 1106 pass and the two dual-stack name tests fail under
   WSL as before, its hosts file naming no IPv6 loopback. Each new check was broken once and
