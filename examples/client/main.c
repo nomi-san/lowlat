@@ -2039,9 +2039,12 @@ int main(void)
 	raw_pads_close(&d.raw, d.client);
 	lowlat_client_end_connection(d.client);
 	signaling_close(&d.sig, true);
+	// The window goes before the handle its events call into: destroying it
+	// raises events of its own (on Windows the focus it loses, whose release
+	// reaches the library), so the handle must still be there.
+	MTY_AppDestroy(&d.app);
 	lowlat_client_destroy(d.client);
 	MTY_JSONDestroy(&d.outputs);
 	MTY_JSONDestroy(&d.config);
-	MTY_AppDestroy(&d.app);
 	return 0;
 }
