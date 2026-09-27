@@ -35,10 +35,14 @@
 )]
 
 pub mod bits;
+/// The system's video decoding interface, which exists on Windows alone.
+#[cfg(windows)]
+pub mod d3d11;
 pub mod h264;
 pub mod hevc;
 pub mod nal;
 pub mod nvdec;
+mod packed;
 pub mod software;
 /// The open stack's decode, which exists on Linux alone.
 #[cfg(target_os = "linux")]

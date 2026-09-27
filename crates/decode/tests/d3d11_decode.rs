@@ -1,0 +1,294 @@
+//! The system's decoding interface decodes every committed clip to the
+//! pictures the reference decoder produced, on every adapter offered,
+//! full chroma where the device builds its profile and refused as fatal
+//! where it does not. Needs a GPU, so off by default: `cargo test -p
+//! lowlat-decode --test d3d11_decode -- --ignored --nocapture`, with
+//! `LOWLAT_D3D11_ADAPTER` naming one adapter (`luid:HIGH:LOW`, as the
+//! drivers' walk prints it) where not every adapter is wanted.
+
+// The interface exists on Windows alone.
+#![cfg(windows)]
+#![allow(
+    clippy::type_complexity,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+
+mod common;
+
+use std::collections::BTreeMap;
+
+use lowlat_core::video::{Codec, Rotation, VideoHeader};
+use lowlat_decode::d3d11::{Backend, caps, limits};
+use lowlat_decode::{Caps, Decoder, Fault};
+use lowlat_drivers::d3d11::{D3d11, Device, Luid};
+
+fn header(codec: Codec, ten_bit: bool) -> VideoHeader {
+    VideoHeader {
+        frame_id: 1,
+        width: 0,
+        height: 0,
+        codec,
+        rotation: Rotation::None,
+        ten_bit,
+        locked: false,
+        announced: false,
+        metadata: false,
+    }
+}
+
+/// Every adapter offered, or the one named.
+fn adapters(d3d11: &D3d11) -> Vec<Luid> {
+    let named = std::env::var("LOWLAT_D3D11_ADAPTER")
+        .ok()
+        .map(|s| Luid::parse(&s).expect("LOWLAT_D3D11_ADAPTER names no identity"));
+    let all: Vec<Luid> = d3d11
+        .adapters()
+        .expect("the walk")
+        .into_iter()
+        .filter(|a| a.decodes_here())
+        .map(|a| a.luid)
+        .filter(|l| named.is_none_or(|n| n == *l))
+        .collect();
+    assert!(!all.is_empty(), "no adapter to decode on");
+    all
+}
+
+/// Every clip: the synthetics, then every fixture of both codecs, with the
+/// codec and depth each is decoded as.
+fn clips() -> Vec<(String, String, Codec, bool)> {
+    let mut out: Vec<(String, String, Codec, bool)> = [
+        ("synthetic-720p-h264", Codec::H264, false),
+        ("synthetic-720p-hevc", Codec::H265, false),
+        ("synthetic-720p-hevc10", Codec::H265, true),
+    ]
+    .into_iter()
+    .map(|(n, c, t)| (format!("{n}.bin"), format!("{n}.sums"), c, t))
+    .collect();
+    for (clip, sums) in common::fixtures("h264") {
+        out.push((clip, sums, Codec::H264, false));
+    }
+    for (clip, sums) in common::fixtures("hevc") {
+        let ten_bit = clip.contains("main10") || clip.contains("444-10");
+        out.push((clip, sums, Codec::H265, ten_bit));
+    }
+    out
+}
+
+fn able(caps: &Caps, clip: &str, codec: Codec, ten_bit: bool) -> bool {
+    match (codec, ten_bit, clip.contains("444")) {
+        (Codec::H264, _, _) => caps.h264,
+        (Codec::H265, false, false) => caps.hevc,
+        (Codec::H265, true, false) => caps.hevc_10,
+        (Codec::H265, false, true) => caps.hevc_444,
+        (Codec::H265, true, true) => caps.hevc_444_10,
+    }
+}
+
+/// Decode one clip and compare it with the reference; `Err` says how it
+/// differs.
+fn check(
+    device: &Device<'_>,
+    clip: &str,
+    sums: &str,
+    codec: Codec,
+    ten_bit: bool,
+) -> Result<(), String> {
+    let mut backend = Backend::new(device, (4096, 4096));
+    backend
+        .build(&header(codec, ten_bit))
+        .map_err(|e| format!("build: {e:?}"))?;
+    let (ours, times) = common::decode_clip(
+        &mut backend,
+        clip,
+        |b| b.drain(),
+        |b| (b.decode_us, b.readback_us),
+    );
+    backend.destroy();
+    let theirs = common::sums(sums);
+    // Output order is a presentation matter; the pictures themselves must
+    // all be there and all be right.
+    let mut expected: BTreeMap<(u32, u32), usize> = BTreeMap::new();
+    for s in &theirs {
+        *expected.entry((s.y, s.uv)).or_default() += 1;
+    }
+    let mut got: BTreeMap<(u32, u32), usize> = BTreeMap::new();
+    for s in &ours {
+        *got.entry(*s).or_default() += 1;
+    }
+    let wrong = ours.iter().filter(|s| !expected.contains_key(s)).count();
+    let mean = |f: fn(&(u32, u32)) -> u32| {
+        times.iter().map(|t| u64::from(f(t))).sum::<u64>() / times.len().max(1) as u64
+    };
+    println!(
+        "  {clip}: {} of {} pictures, {wrong} wrong; wait mean {} us max {}; copy mean {} us max {}",
+        ours.len(),
+        theirs.len(),
+        mean(|t| t.0),
+        times.iter().map(|t| t.0).max().unwrap_or(0),
+        mean(|t| t.1),
+        times.iter().map(|t| t.1).max().unwrap_or(0),
+    );
+    if wrong > 0 {
+        // Which plane is off, for the first few: luma and chroma compared
+        // apart, which tells a read-back fault from a decode fault.
+        for (n, s) in ours.iter().take(4).enumerate() {
+            let y_ok = theirs.iter().any(|t| t.y == s.0);
+            let c_ok = theirs.iter().any(|t| t.uv == s.1);
+            println!(
+                "    picture {n}: luma {} chroma {}",
+                if y_ok { "matches" } else { "differs" },
+                if c_ok { "matches" } else { "differs" }
+            );
+        }
+    }
+    if ours.len() != theirs.len() {
+        return Err(format!("{} pictures of {}", ours.len(), theirs.len()));
+    }
+    if got != expected {
+        return Err(format!("{wrong} pictures differ from the reference"));
+    }
+    Ok(())
+}
+
+/// A clip whose profile the device does not build: its first unit must be
+/// refused as fatal, never decoded wrongly.
+fn refused(device: &Device<'_>, clip: &str, codec: Codec, ten_bit: bool) -> Result<(), String> {
+    let mut backend = Backend::new(device, (4096, 4096));
+    match backend.build(&header(codec, ten_bit)) {
+        Err(Fault::Fatal) => return Ok(()),
+        Err(e) => return Err(format!("build: {e:?}")),
+        Ok(()) => {}
+    }
+    let first = &common::units(clip)[0];
+    let fed = backend.feed(first);
+    backend.destroy();
+    match fed {
+        Err(Fault::Fatal) => Ok(()),
+        other => Err(format!(
+            "the first unit was not refused as fatal: {other:?}"
+        )),
+    }
+}
+
+#[test]
+#[ignore = "requires a GPU"]
+fn every_clip_decodes_to_the_reference_pictures_on_every_adapter() {
+    let d3d11 = D3d11::load().expect("the system's libraries");
+    let clips = clips();
+    let mut failures = Vec::new();
+    for luid in adapters(&d3d11) {
+        let device = d3d11.open(luid).expect("a device");
+        let caps = caps(&device);
+        println!(
+            "{luid} {} driver {:?}: {caps:?}; largest H.264 {:?}, HEVC {:?}",
+            device.adapter.description,
+            device.adapter.driver,
+            limits(&device, Codec::H264),
+            limits(&device, Codec::H265),
+        );
+        // Every device this runs on decodes both codecs at eight bits; a
+        // probe that stopped saying so would skip their clips, not fail them.
+        assert!(caps.h264 && caps.hevc, "{luid}: {caps:?}");
+        for (clip, sums, codec, ten_bit) in &clips {
+            let result = if able(&caps, clip, *codec, *ten_bit) {
+                check(&device, clip, sums, *codec, *ten_bit)
+            } else {
+                println!("  {clip}: the device builds no decoder for it, refused");
+                refused(&device, clip, *codec, *ten_bit)
+            };
+            if let Err(e) = result {
+                println!("  {clip}: FAILED: {e}");
+                failures.push(format!("{luid} {clip}: {e}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+unsafe extern "system" {
+    fn GetCurrentThread() -> *mut core::ffi::c_void;
+    fn QueryThreadCycleTime(thread: *mut core::ffi::c_void, cycles: *mut u64) -> i32;
+}
+
+/// The processor cycles this thread has run so far, counted exactly rather
+/// than sampled at the scheduler's tick.
+fn thread_cycles() -> u64 {
+    let mut cycles = 0u64;
+    // SAFETY: the pseudo-handle of this thread; the output is a live local.
+    let ok = unsafe { QueryThreadCycleTime(GetCurrentThread(), &raw mut cycles) };
+    assert_ne!(ok, 0);
+    cycles
+}
+
+/// Cycles per microsecond of this thread running flat out, measured by a
+/// spin of a known length.
+fn cycles_per_us() -> f64 {
+    let (cycles, started) = (thread_cycles(), std::time::Instant::now());
+    while started.elapsed() < std::time::Duration::from_millis(200) {
+        std::hint::spin_loop();
+    }
+    (thread_cycles() - cycles) as f64 / started.elapsed().as_micros() as f64
+}
+
+/// **The read-back's wait for the device sleeps rather than spins.** A
+/// clip decoded over and over on each adapter, the thread's processor time
+/// compared with the time the takes lasted: a spinning wait would spend
+/// processor time for all of it, a sleeping one only for the copy. The
+/// thread's time is its cycle count, converted at the rate a spin of known
+/// length runs, since the scheduler's own figure moves in whole ticks.
+#[test]
+#[ignore = "requires a GPU"]
+fn the_read_back_wait_sleeps() {
+    let d3d11 = D3d11::load().expect("the system's libraries");
+    let units = common::units("synthetic-720p-h264.bin");
+    let pitch = 1280;
+    let mut y = vec![0u8; pitch * 720];
+    let mut uv = vec![0u8; pitch * 360];
+    let rate = cycles_per_us();
+    for luid in adapters(&d3d11) {
+        let device = d3d11.open(luid).expect("a device");
+        let mut backend = Backend::new(&device, (4096, 4096));
+        backend.build(&header(Codec::H264, false)).expect("build");
+        let (mut wall_us, mut cycles, mut wait_us, mut copy_us, mut pictures) = (0u64, 0, 0, 0, 0);
+        for _ in 0..10 {
+            for unit in &units {
+                backend.feed(unit).expect("feed");
+                loop {
+                    let mut planes = lowlat_decode::Planes {
+                        y: &mut y,
+                        y_pitch: pitch,
+                        uv: &mut uv,
+                        uv_pitch: pitch,
+                        v: &mut [],
+                        v_pitch: 0,
+                    };
+                    let before = thread_cycles();
+                    let started = std::time::Instant::now();
+                    let taken = backend.take(&mut planes).expect("take");
+                    wall_us += started.elapsed().as_micros() as u64;
+                    cycles += thread_cycles() - before;
+                    if taken.is_none() {
+                        break;
+                    }
+                    wait_us += u64::from(backend.decode_us);
+                    copy_us += u64::from(backend.readback_us);
+                    pictures += 1;
+                }
+            }
+        }
+        backend.destroy();
+        let cpu_us = (cycles as f64 / rate) as u64;
+        println!(
+            "{luid} {}: {pictures} pictures; takes {wall_us} us, of it the wait {wait_us} and the copy {copy_us}; the thread ran {cpu_us} us ({cycles} cycles at {rate:.0} a us)",
+            device.adapter.description
+        );
+        assert!(pictures >= 1000, "{luid}: {pictures} pictures");
+        // A wait that spun would put all of the takes' time on the thread;
+        // half of it is a generous line between the two.
+        assert!(
+            cpu_us < wall_us / 2 + copy_us,
+            "{luid}: the wait spent processor time"
+        );
+    }
+}
