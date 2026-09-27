@@ -648,19 +648,39 @@ mod tests {
 
         // Only the left side keeps turning, so its wakes are its own cadence
         // and nothing else. Counted from here, not from the punch.
-        let before = left.stats().wakes();
-        let started = std::time::Instant::now();
-        let span = std::time::Duration::from_millis(300);
-        while started.elapsed() < span {
-            left.turn(|_| {}).expect("turn");
-        }
-
-        let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
-        let armed = (elapsed_ms / lowlat_core::session::ACK_CADENCE_MS).ceil() as u64;
-        let woke = left.stats().wakes() - before;
+        //
+        // **The middle of five windows, not one.** A wait may return early --
+        // a spurious wake is part of its contract, and a CI runner's single
+        // window once took two -- while both faults this catches are in every
+        // window: a polling loop an order of magnitude over, a loop on its
+        // pre-wait clock twice over.
+        let mut windows: Vec<(i64, Stats, u64)> = (0..5)
+            .map(|_| {
+                let before = left.stats();
+                let started = std::time::Instant::now();
+                let span = std::time::Duration::from_millis(300);
+                while started.elapsed() < span {
+                    left.turn(|_| {}).expect("turn");
+                }
+                let elapsed_ms = started.elapsed().as_secs_f64() * 1000.0;
+                let armed = (elapsed_ms / lowlat_core::session::ACK_CADENCE_MS).ceil() as u64;
+                let after = left.stats();
+                let woke = after.wakes() - before.wakes();
+                let kinds = Stats {
+                    timeout_wakes: after.timeout_wakes - before.timeout_wakes,
+                    datagram_wakes: after.datagram_wakes - before.datagram_wakes,
+                    send_wakes: after.send_wakes - before.send_wakes,
+                    ..Stats::default()
+                };
+                (woke as i64 - armed as i64, kinds, armed)
+            })
+            .collect();
+        windows.sort_by_key(|window| window.0);
+        let (excess, _, _) = windows[2];
         assert!(
-            woke <= armed + 1,
-            "woke {woke} times for {armed} deadlines, which is a tick rather than a wait"
+            excess <= 1,
+            "the middle window woke {excess} times over its deadlines, which is a tick rather \
+             than a wait: {windows:?}"
         );
     }
 }
