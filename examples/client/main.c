@@ -31,6 +31,8 @@
 // imports and draws with no copy through this process; only a decoder that
 // exports them (a row saying "handles") can be opened for that, and only
 // GL draws them. `LOWLAT_GFX=vk` draws planes through Vulkan instead of GL.
+// On Windows planes are drawn through Direct3D 11, or 12 or Vulkan by name
+// (`d3d12`, `vk`), and the library hands out no handles yet.
 // `LOWLAT_VSYNC=0` presents a picture the moment it is drawn rather than at
 // the display's next refresh: the lowest latency, torn where a picture
 // lands mid-scan.
@@ -83,16 +85,22 @@
 // withholds for touch is hidden here too. A rumble goes to the pad the host
 // named. The guest list is parsed here, with the toolkit's own reader.
 
-#include <dirent.h>
 #include <inttypes.h>
 #include <math.h>
-#include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <psapi.h>
+#else
+#include <dirent.h>
 #include <unistd.h>
+#endif
 
 #include "lowlat.h"
 #include "matoya.h"
@@ -130,12 +138,13 @@ struct demo {
 	atomic_bool picture_full_range;
 	// Whether pictures arrive as device handles, asked at creation.
 	bool handles;
-	// The graphics interface drawn through: GL, the one that imports device
-	// handles, or Vulkan, for planes.
+	// The graphics interface drawn through: on Linux GL, the one that imports
+	// device handles, or Vulkan, for planes; on Windows Direct3D 11, or 12 or
+	// Vulkan, for planes.
 	MTY_GFX gfx;
 	// Whether a present waits for the display's refresh.
 	bool vsync;
-	pthread_t presenter;
+	MTY_Thread *presenter;
 	// Presentation, the presenting thread's: the display's refresh period and
 	// when the picture on screen was first presented; for the second, the
 	// wait from a new picture in hand to its present returning -- the draw
@@ -167,7 +176,7 @@ struct demo {
 	// resync is the device flushing, seen here as its queue at zero after
 	// it had been fed, or past the ceiling before a queue.
 	MTY_Audio *audio;
-	pthread_t listener;
+	MTY_Thread *listener;
 	bool trace_audio;
 	bool audio_playing;
 	bool audio_just_started;
@@ -309,15 +318,33 @@ struct demo {
 	bool established;
 };
 
+// The clock the library stamps a picture's arrival on, so the two can be
+// subtracted: the monotonic clock on Linux, the performance counter on
+// Windows.
 static double now_ms(void)
 {
+#if defined(_WIN32)
+	LARGE_INTEGER count, frequency;
+	QueryPerformanceCounter(&count);
+	QueryPerformanceFrequency(&frequency);
+	return (double) count.QuadPart * 1000.0 / (double) frequency.QuadPart;
+#else
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (double) ts.tv_sec * 1000.0 + (double) ts.tv_nsec / 1.0e6;
+#endif
 }
 
 static uint64_t resident_mb(void)
 {
+#if defined(_WIN32)
+	PROCESS_MEMORY_COUNTERS c;
+	memset(&c, 0, sizeof c);
+	c.cb = (DWORD) sizeof c;
+	if (!GetProcessMemoryInfo(GetCurrentProcess(), &c, sizeof c))
+		return 0;
+	return (uint64_t) c.WorkingSetSize / (1024 * 1024);
+#else
 	FILE *f = fopen("/proc/self/statm", "r");
 	if (f == NULL)
 		return 0;
@@ -327,6 +354,41 @@ static uint64_t resident_mb(void)
 	if (n != 2)
 		return 0;
 	return (uint64_t) resident * (uint64_t) sysconf(_SC_PAGESIZE) / (1024 * 1024);
+#endif
+}
+
+// The process's memory as the platform charges it, for the lines: what is
+// resident, and on Windows what is committed as well, which the system
+// charges whether it is ever touched or not.
+static void memory_words(char *out, size_t size)
+{
+#if defined(_WIN32)
+	PROCESS_MEMORY_COUNTERS_EX c;
+	memset(&c, 0, sizeof c);
+	c.cb = (DWORD) sizeof c;
+	uint64_t committed = 0;
+	if (GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS *) &c, sizeof c))
+		committed = (uint64_t) c.PrivateUsage / (1024 * 1024);
+	snprintf(out, size, "rss_mb=%" PRIu64 " commit_mb=%" PRIu64, resident_mb(), committed);
+#else
+	snprintf(out, size, "rss_mb=%" PRIu64, resident_mb());
+#endif
+}
+
+// The graphics interfaces by the names the knob takes; none for a name this
+// toolkit has not.
+static MTY_GFX gfx_named(const char *name)
+{
+	return strcmp(name, "gl") == 0 ? MTY_GFX_GL
+		: strcmp(name, "vk") == 0 ? MTY_GFX_VK
+		: strcmp(name, "d3d11") == 0 ? MTY_GFX_D3D11
+		: strcmp(name, "d3d12") == 0 ? MTY_GFX_D3D12 : MTY_GFX_NONE;
+}
+
+static const char *gfx_name(MTY_GFX gfx)
+{
+	return gfx == MTY_GFX_GL ? "gl" : gfx == MTY_GFX_VK ? "vk"
+		: gfx == MTY_GFX_D3D11 ? "d3d11" : gfx == MTY_GFX_D3D12 ? "d3d12" : "-";
 }
 
 static void log_line(uint32_t level, const char *message, void *opaque)
@@ -748,10 +810,16 @@ static int32_t scaled(const MTY_Axis *a, int32_t lo, int32_t hi)
 // host's cap. Such a pad names its location as the host's. The toolkit
 // gives no node for a controller, only its identity, so a real pad of the
 // same identity on that machine is kept out with them.
+//
+// Both are Linux's: elsewhere a pad is taken as the toolkit reports it.
 static void pad_facts(uint16_t vid, uint16_t pid, bool *letter_named, bool *hosts_own)
 {
 	*letter_named = false;
 	*hosts_own = false;
+#if !defined(__linux__)
+	(void) vid;
+	(void) pid;
+#else
 	DIR *dir = opendir("/sys/class/input");
 	if (dir == NULL)
 		return;
@@ -795,6 +863,7 @@ static void pad_facts(uint16_t vid, uint16_t pid, bool *letter_named, bool *host
 			*letter_named = true;
 	}
 	closedir(dir);
+#endif
 }
 
 static void on_controller(struct demo *d, const MTY_ControllerEvent *c)
@@ -1196,6 +1265,8 @@ static void report(struct demo *d)
 	double mbit = (double) (st.video_bytes - d->last_video_bytes) * 8.0 / 1.0e6;
 	d->last_video_bytes = st.video_bytes;
 	uint64_t rss = resident_mb();
+	char memory[64];
+	memory_words(memory, sizeof memory);
 	const char *codec = st.codec == LOWLAT_CODEC_HEVC ? "HEVC"
 		: st.codec == LOWLAT_CODEC_H264 ? "H264" : "-";
 	uint32_t presents = atomic_exchange(&d->presents, 0);
@@ -1231,7 +1302,7 @@ static void report(struct demo *d)
 	printf("demo: t=%" PRIu64 " presents=%u polls=%u pictures=%u repeats=%u skips=%u "
 		"gfx=%s vsync=%d swap_ms=%.1f/%.1f held=%u/%u/%u/%u lat_ms=%.2f/%.2f lib_ms=%.2f/%.2f "
 		"codec=%s decode_us=%u readback_us=%u encode_us=%u queue=%u behind=%u behind_ms=%u "
-		"rtt_ms=%u mbit=%.1f decoded=%" PRIu64 " rss_mb=%" PRIu64 " keys=%u btn=%u wheel=%u "
+		"rtt_ms=%u mbit=%.1f decoded=%" PRIu64 " %s keys=%u btn=%u wheel=%u "
 		"motion=%u pad=%u pad_events=%u pad_raw=%u pad_out=%u pad_in=%u pad_in_dropped=%u "
 		"input_dropped=%u "
 		"snd=%u snd_frames=%u snd_q_ms=%u snd_q_min=%u snd_q_max=%u snd_age_ms=%u "
@@ -1242,7 +1313,7 @@ static void report(struct demo *d)
 		"guest=%u owner=%d rosters=%u h_rtt=%.1f h_mbps=%.2f h_enc=%.2f h_dec=%.2f "
 		"h_packets=%d h_fast=%d h_slow=%d h_cg=%d\n",
 		d->seconds, presents, polls, pictures, repeats, skips,
-		d->gfx == MTY_GFX_VK ? "vk" : "gl", (int) d->vsync,
+		gfx_name(d->gfx), (int) d->vsync,
 		swap_count > 0 ? (double) swap_sum_us / (double) swap_count / 1000.0 : 0.0,
 		(double) swap_max_us / 1000.0, held[0], held[1], held[2], held[3],
 		lat_count > 0 ? (double) lat_sum_us / (double) lat_count / 1000.0 : 0.0,
@@ -1250,7 +1321,7 @@ static void report(struct demo *d)
 		lat_count > 0 ? (double) lib_sum_us / (double) lat_count / 1000.0 : 0.0,
 		(double) lib_max_us / 1000.0, codec,
 		st.decode_us, st.readback_us, st.encode_us, st.queue_depth, st.behind, st.behind_ms,
-		st.rtt_ms, mbit, st.decoded, rss, d->keys_sent, d->buttons_sent, d->wheels_sent,
+		st.rtt_ms, mbit, st.decoded, memory, d->keys_sent, d->buttons_sent, d->wheels_sent,
 		d->motions_sent, d->pad_sent, d->pad_events, d->raw.reports, d->raw.outputs,
 		st.pad_reports_received, st.pad_reports_dropped, st.input_dropped,
 		snd, snd_frames, atomic_load(&d->snd_q_ms), snd_q_min, snd_q_max, snd_age_max,
@@ -1311,8 +1382,9 @@ static void report(struct demo *d)
 			video_words(&d->video),
 			st.backend == LOWLAT_DECODER_OPEN ? "open planes"
 				: st.backend == LOWLAT_DECODER_VENDOR ? (d->handles ? "vendor handles" : "vendor planes")
+				: st.backend == LOWLAT_DECODER_SOFTWARE ? "software planes"
 				: "no decoder",
-			d->gfx == MTY_GFX_VK ? "vk" : "gl", d->vsync ? "" : " no vsync",
+			gfx_name(d->gfx), d->vsync ? "" : " no vsync",
 			pictures, st.rtt_ms, d->host_rtt_ms, (double) st.encode_us / 1000.0,
 			(double) st.decode_us / 1000.0, (double) st.readback_us / 1000.0, st.queue_depth,
 			st.behind, skips, mbit, d->host_mbps, (double) m.video.loss_30s * 100.0,
@@ -1808,6 +1880,13 @@ int main(void)
 	// and this one is told.
 	d.raw_on = getenv("LOWLAT_PAD_RAW") != NULL;
 	d.raw_only = d.raw_on && strcmp(getenv("LOWLAT_PAD_RAW"), "only") == 0;
+#if !defined(__linux__)
+	if (d.raw_on) {
+		fprintf(stderr, "demo: LOWLAT_PAD_RAW reads a pad's own node, which is Linux's; "
+			"here the toolkit reads the pads\n");
+		return 2;
+	}
+#endif
 	raw_pads_init(&d.raw, d.trace_pads);
 	atomic_store(&d.snd_q_min, UINT32_MAX);
 
@@ -1821,11 +1900,22 @@ int main(void)
 	// Pictures as device handles the renderer imports, on a decoder that
 	// exports them; the decoder is then the vendor's whatever was asked.
 	d.handles = getenv("LOWLAT_HANDLE") != NULL;
-	d.gfx = strcmp(env_or("LOWLAT_GFX", "gl"), "vk") == 0 ? MTY_GFX_VK : MTY_GFX_GL;
+#if defined(_WIN32)
+	const char *gfx = env_or("LOWLAT_GFX", "d3d11");
+#else
+	const char *gfx = env_or("LOWLAT_GFX", "gl");
+#endif
+	d.gfx = gfx_named(gfx);
+	if (d.gfx == MTY_GFX_NONE) {
+		fprintf(stderr, "demo: LOWLAT_GFX names no graphics interface: %s\n", gfx);
+		return 2;
+	}
+#if defined(__linux__)
 	if (d.handles && d.gfx != MTY_GFX_GL) {
 		fprintf(stderr, "demo: device handles are drawn through GL only; LOWLAT_GFX=vk takes planes\n");
 		return 2;
 	}
+#endif
 	// Without the refresh the capped loop, which does not wait for a
 	// picture, would be paced by nothing at all.
 	d.vsync = strcmp(env_or("LOWLAT_VSYNC", "1"), "0") != 0;
@@ -1886,7 +1976,9 @@ int main(void)
 			}
 		}
 	}
-	printf("demo: rss_mb=%" PRIu64 " after creation\n", resident_mb());
+	char memory[64];
+	memory_words(memory, sizeof memory);
+	printf("demo: %s after creation\n", memory);
 
 	d.video.hevc = getenv("LOWLAT_HEVC") != NULL;
 	d.video.ten_bit = getenv("LOWLAT_10BIT") != NULL;
@@ -1913,10 +2005,8 @@ int main(void)
 	d.second_began = now_ms();
 	d.started_ms = d.second_began;
 	d.leave_at_ms = seconds > 0 ? d.second_began + (double) seconds * 1000.0 : 0.0;
-	if (pthread_create(&d.presenter, NULL, present_loop, &d) != 0) {
-		fprintf(stderr, "demo: no presenting thread\n");
-		return 1;
-	}
+	// The toolkit's threads, which never come back empty: it aborts instead.
+	d.presenter = MTY_ThreadCreate(present_loop, &d);
 	// The device: stereo sixteen-bit at 48 kHz, 75 ms queued before it
 	// plays and a flush past 150, which is the window a desktop client
 	// runs. Without one the demo runs silent and still counts.
@@ -1929,16 +2019,13 @@ int main(void)
 	d.audio = MTY_AudioCreate(format, 75, 150, NULL, true);
 	if (d.audio == NULL)
 		fprintf(stderr, "demo: no sound device, running silent\n");
-	if (pthread_create(&d.listener, NULL, sound_loop, &d) != 0) {
-		fprintf(stderr, "demo: no listening thread\n");
-		return 1;
-	}
+	d.listener = MTY_ThreadCreate(sound_loop, &d);
 
 	MTY_AppRun(d.app);
 
 	atomic_store(&d.quit, true);
-	pthread_join(d.presenter, NULL);
-	pthread_join(d.listener, NULL);
+	MTY_ThreadDestroy(&d.presenter);
+	MTY_ThreadDestroy(&d.listener);
 	if (d.audio != NULL)
 		MTY_AudioDestroy(&d.audio);
 	raw_pads_close(&d.raw, d.client);

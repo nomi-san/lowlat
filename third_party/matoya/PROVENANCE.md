@@ -10,8 +10,8 @@ its GL renderer can take a picture that lives in device memory, which upstream's
 | Commit | `87ad84d48baabff6b668368e49ed7d114e5308dc` (2026-08-05) |
 
 Everything is upstream's at that commit, byte for byte, except what is listed below and two
-omissions: `deps/bin/` (a Windows shader-compiler binary the Linux build does not use; the
-Linux makefile calls the one on the path) and `.github/` (upstream's own automation).
+omissions: `deps/bin/` (a Windows shader-compiler binary; both makefiles call the one on the
+path) and `.github/` (upstream's own automation).
 
 ## What is changed, and why
 
@@ -35,6 +35,13 @@ signaling message lost that way arrived at the demo as text that did not parse.
 | file | change |
 |---|---|
 | `src/unix/linux/ws.c` | `MTY_WebSocketRead` gathers a fragmented message into the caller's buffer frame by frame, each under the reader's own one-second frame deadline, until the frame with the final bit, and answers pings, notes pongs and takes a close that arrive between the fragments; `ws_read` reports the final bit and reads a control frame's payload (at most 125 bytes) into a buffer of its own, so one arriving mid-message leaves the fragments gathered so far alone. A continuation of nothing is dropped, as upstream drops it; a new message begun before the last one's final fragment is an error. `examples/client/ws-check.c` (`make -C examples/client check`) is the check: a loopback server sending a message whole, one in three fragments with a ping and a pong between them, one whose last fragment comes 200 ms late, a binary one, an empty one and a close |
+
+The Windows build takes its Vulkan shader compiler from the path, as the Linux build does,
+rather than from `deps/bin/`, which is not carried: no executable is kept in this tree.
+
+| file | change |
+|---|---|
+| `makefile` | the two shader rules call `glslangValidator` rather than `deps\bin\glslangValidator`; the compiler is Khronos' glslang, upstream's own copy of which is 11.10.0 |
 
 Nothing else is touched: no other renderer, no other platform code, no shader. A diff against
 the upstream commit lists exactly the files above.

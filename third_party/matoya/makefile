@@ -11,10 +11,10 @@ NAME = matoya
 	@fxc $(FXCFLAGS) /Fh $@ /T ps_4_0 /Vn $(*B) $<
 
 .vertvk.h:
-	@deps\bin\glslangValidator -S vert -V --vn VERT $< -o $@
+	@glslangValidator -S vert -V --vn VERT $< -o $@
 
 .fragvk.h:
-	@deps\bin\glslangValidator -S frag -V --vn FRAG $< -o $@
+	@glslangValidator -S frag -V --vn FRAG $< -o $@
 
 !IFDEF STEAM
 WEBVIEW_OBJ = src\swebview.obj

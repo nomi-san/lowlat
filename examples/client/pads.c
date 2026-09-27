@@ -2,6 +2,8 @@
 
 #include "pads.h"
 
+#if defined(__linux__)
+
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -323,3 +325,64 @@ void raw_pads_close(struct raw_pads *r, lowlat_client *client)
 		if (r->pads[i].fd >= 0)
 			drop(r, &r->pads[i], client);
 }
+
+#else
+
+// No pad node to read here: the toolkit reads the Sony pads on this platform
+// (docs/impl-plan-windows.md, W1.7), and the demo refuses LOWLAT_PAD_RAW, so
+// every call the loop makes finds no pad.
+
+#include <string.h>
+
+void raw_pads_init(struct raw_pads *r, bool trace)
+{
+	memset(r, 0, sizeof *r);
+	for (size_t i = 0; i < RAW_PADS; i++)
+		r->pads[i].fd = -1;
+	r->trace = trace;
+}
+
+void raw_pads_scan(struct raw_pads *r, lowlat_client *client, double now_ms, bool established)
+{
+	(void) r;
+	(void) client;
+	(void) now_ms;
+	(void) established;
+}
+
+void raw_pads_pump(struct raw_pads *r, lowlat_client *client)
+{
+	(void) r;
+	(void) client;
+}
+
+bool raw_pads_owns_vendor(const struct raw_pads *r, uint16_t vid)
+{
+	(void) r;
+	(void) vid;
+	return false;
+}
+
+bool raw_pads_write(struct raw_pads *r, const lowlat_pad_report_event *e)
+{
+	(void) r;
+	(void) e;
+	return false;
+}
+
+bool raw_pads_rumble(struct raw_pads *r, uint32_t pad, uint8_t large, uint8_t small)
+{
+	(void) r;
+	(void) pad;
+	(void) large;
+	(void) small;
+	return false;
+}
+
+void raw_pads_close(struct raw_pads *r, lowlat_client *client)
+{
+	(void) r;
+	(void) client;
+}
+
+#endif
