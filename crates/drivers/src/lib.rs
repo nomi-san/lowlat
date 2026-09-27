@@ -16,6 +16,9 @@
 
 pub mod cuda;
 pub mod cuvid;
+/// The system's video decoding interface, which exists on Windows alone.
+#[cfg(windows)]
+pub mod d3d11;
 pub mod ffi;
 pub mod lavc;
 /// The open stack's video interface, which exists on Linux alone.
