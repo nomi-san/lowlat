@@ -6750,6 +6750,362 @@ pub type PFN_D3D11_CREATE_DEVICE = ::std::option::Option<
         arg9: *mut *mut ID3D11DeviceContext,
     ) -> HRESULT,
 >;
+pub const DXGI_ALPHA_MODE_UNSPECIFIED: DXGI_ALPHA_MODE = 0;
+pub const DXGI_ALPHA_MODE_PREMULTIPLIED: DXGI_ALPHA_MODE = 1;
+pub const DXGI_ALPHA_MODE_STRAIGHT: DXGI_ALPHA_MODE = 2;
+pub const DXGI_ALPHA_MODE_IGNORE: DXGI_ALPHA_MODE = 3;
+pub const DXGI_ALPHA_MODE_FORCE_DWORD: DXGI_ALPHA_MODE = -1;
+pub type DXGI_ALPHA_MODE = ::std::os::raw::c_int;
+pub const DXGI_SCALING_STRETCH: DXGI_SCALING = 0;
+pub const DXGI_SCALING_NONE: DXGI_SCALING = 1;
+pub const DXGI_SCALING_ASPECT_RATIO_STRETCH: DXGI_SCALING = 2;
+pub type DXGI_SCALING = ::std::os::raw::c_int;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct DXGI_SWAP_CHAIN_DESC1 {
+    pub Width: UINT,
+    pub Height: UINT,
+    pub Format: DXGI_FORMAT,
+    pub Stereo: BOOL,
+    pub SampleDesc: DXGI_SAMPLE_DESC,
+    pub BufferUsage: DXGI_USAGE,
+    pub BufferCount: UINT,
+    pub Scaling: DXGI_SCALING,
+    pub SwapEffect: DXGI_SWAP_EFFECT,
+    pub AlphaMode: DXGI_ALPHA_MODE,
+    pub Flags: UINT,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of DXGI_SWAP_CHAIN_DESC1"][::std::mem::size_of::<DXGI_SWAP_CHAIN_DESC1>() - 48usize];
+    ["Alignment of DXGI_SWAP_CHAIN_DESC1"]
+        [::std::mem::align_of::<DXGI_SWAP_CHAIN_DESC1>() - 4usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::Width"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, Width) - 0usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::Height"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, Height) - 4usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::Format"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, Format) - 8usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::Stereo"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, Stereo) - 12usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::SampleDesc"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, SampleDesc) - 16usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::BufferUsage"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, BufferUsage) - 24usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::BufferCount"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, BufferCount) - 28usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::Scaling"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, Scaling) - 32usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::SwapEffect"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, SwapEffect) - 36usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::AlphaMode"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, AlphaMode) - 40usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::Flags"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, Flags) - 44usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct DXGI_SWAP_CHAIN_FULLSCREEN_DESC {
+    pub RefreshRate: DXGI_RATIONAL,
+    pub ScanlineOrdering: DXGI_MODE_SCANLINE_ORDER,
+    pub Scaling: DXGI_MODE_SCALING,
+    pub Windowed: BOOL,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of DXGI_SWAP_CHAIN_FULLSCREEN_DESC"]
+        [::std::mem::size_of::<DXGI_SWAP_CHAIN_FULLSCREEN_DESC>() - 20usize];
+    ["Alignment of DXGI_SWAP_CHAIN_FULLSCREEN_DESC"]
+        [::std::mem::align_of::<DXGI_SWAP_CHAIN_FULLSCREEN_DESC>() - 4usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_FULLSCREEN_DESC::RefreshRate"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_FULLSCREEN_DESC, RefreshRate) - 0usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_FULLSCREEN_DESC::ScanlineOrdering"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_FULLSCREEN_DESC, ScanlineOrdering) - 8usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_FULLSCREEN_DESC::Scaling"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_FULLSCREEN_DESC, Scaling) - 12usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_FULLSCREEN_DESC::Windowed"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_FULLSCREEN_DESC, Windowed) - 16usize];
+};
+#[repr(C)]
+#[repr(align(8))]
+#[derive(Debug, Copy, Clone)]
+pub struct IDXGISwapChain1 {
+    pub _bindgen_opaque_blob: u64,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IDXGISwapChain1"][::std::mem::size_of::<IDXGISwapChain1>() - 8usize];
+    ["Alignment of IDXGISwapChain1"][::std::mem::align_of::<IDXGISwapChain1>() - 8usize];
+};
+pub const DXGI_FEATURE_PRESENT_ALLOW_TEARING: DXGI_FEATURE = 0;
+pub type DXGI_FEATURE = ::std::os::raw::c_int;
+pub const DXGI_GPU_PREFERENCE_UNSPECIFIED: DXGI_GPU_PREFERENCE = 0;
+pub const DXGI_GPU_PREFERENCE_MINIMUM_POWER: DXGI_GPU_PREFERENCE = 1;
+pub const DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE: DXGI_GPU_PREFERENCE = 2;
+pub type DXGI_GPU_PREFERENCE = ::std::os::raw::c_int;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct IDXGIFactory6Vtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIFactory6,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef: ::std::option::Option<unsafe extern "C" fn(This: *mut IDXGIFactory6) -> ULONG>,
+    pub Release: ::std::option::Option<unsafe extern "C" fn(This: *mut IDXGIFactory6) -> ULONG>,
+    pub SetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIFactory6,
+            Name: *const GUID,
+            DataSize: UINT,
+            pData: *const ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateDataInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIFactory6,
+            Name: *const GUID,
+            pUnknown: *const IUnknown,
+        ) -> HRESULT,
+    >,
+    pub GetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIFactory6,
+            Name: *const GUID,
+            pDataSize: *mut UINT,
+            pData: *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub GetParent: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIFactory6,
+            riid: *const IID,
+            ppParent: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub EnumAdapters: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIFactory6,
+            Adapter: UINT,
+            ppAdapter: *mut *mut IDXGIAdapter,
+        ) -> HRESULT,
+    >,
+    pub MakeWindowAssociation: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IDXGIFactory6, WindowHandle: HWND, Flags: UINT) -> HRESULT,
+    >,
+    pub GetWindowAssociation: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IDXGIFactory6, pWindowHandle: *mut HWND) -> HRESULT,
+    >,
+    pub CreateSwapChain: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIFactory6,
+            pDevice: *mut IUnknown,
+            pDesc: *mut DXGI_SWAP_CHAIN_DESC,
+            ppSwapChain: *mut *mut IDXGISwapChain,
+        ) -> HRESULT,
+    >,
+    pub CreateSoftwareAdapter: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIFactory6,
+            Module: HMODULE,
+            ppAdapter: *mut *mut IDXGIAdapter,
+        ) -> HRESULT,
+    >,
+    pub EnumAdapters1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIFactory6,
+            Adapter: UINT,
+            ppAdapter: *mut *mut IDXGIAdapter1,
+        ) -> HRESULT,
+    >,
+    pub IsCurrent: ::std::option::Option<unsafe extern "C" fn(This: *mut IDXGIFactory6) -> BOOL>,
+    pub IsWindowedStereoEnabled:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut IDXGIFactory6) -> BOOL>,
+    pub CreateSwapChainForHwnd: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIFactory6,
+            pDevice: *mut IUnknown,
+            hWnd: HWND,
+            pDesc: *const DXGI_SWAP_CHAIN_DESC1,
+            pFullscreenDesc: *const DXGI_SWAP_CHAIN_FULLSCREEN_DESC,
+            pRestrictToOutput: *mut IDXGIOutput,
+            ppSwapChain: *mut *mut IDXGISwapChain1,
+        ) -> HRESULT,
+    >,
+    pub CreateSwapChainForCoreWindow: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIFactory6,
+            pDevice: *mut IUnknown,
+            pWindow: *mut IUnknown,
+            pDesc: *const DXGI_SWAP_CHAIN_DESC1,
+            pRestrictToOutput: *mut IDXGIOutput,
+            ppSwapChain: *mut *mut IDXGISwapChain1,
+        ) -> HRESULT,
+    >,
+    pub GetSharedResourceAdapterLuid: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIFactory6,
+            hResource: HANDLE,
+            pLuid: *mut LUID,
+        ) -> HRESULT,
+    >,
+    pub RegisterStereoStatusWindow: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIFactory6,
+            WindowHandle: HWND,
+            wMsg: UINT,
+            pdwCookie: *mut DWORD,
+        ) -> HRESULT,
+    >,
+    pub RegisterStereoStatusEvent: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIFactory6,
+            hEvent: HANDLE,
+            pdwCookie: *mut DWORD,
+        ) -> HRESULT,
+    >,
+    pub UnregisterStereoStatus:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut IDXGIFactory6, dwCookie: DWORD)>,
+    pub RegisterOcclusionStatusWindow: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIFactory6,
+            WindowHandle: HWND,
+            wMsg: UINT,
+            pdwCookie: *mut DWORD,
+        ) -> HRESULT,
+    >,
+    pub RegisterOcclusionStatusEvent: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIFactory6,
+            hEvent: HANDLE,
+            pdwCookie: *mut DWORD,
+        ) -> HRESULT,
+    >,
+    pub UnregisterOcclusionStatus:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut IDXGIFactory6, dwCookie: DWORD)>,
+    pub CreateSwapChainForComposition: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIFactory6,
+            pDevice: *mut IUnknown,
+            pDesc: *const DXGI_SWAP_CHAIN_DESC1,
+            pRestrictToOutput: *mut IDXGIOutput,
+            ppSwapChain: *mut *mut IDXGISwapChain1,
+        ) -> HRESULT,
+    >,
+    pub GetCreationFlags:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut IDXGIFactory6) -> UINT>,
+    pub EnumAdapterByLuid: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIFactory6,
+            AdapterLuid: LUID,
+            riid: *const IID,
+            ppvAdapter: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub EnumWarpAdapter: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIFactory6,
+            riid: *const IID,
+            ppvAdapter: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub CheckFeatureSupport: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIFactory6,
+            Feature: DXGI_FEATURE,
+            pFeatureSupportData: *mut ::std::os::raw::c_void,
+            FeatureSupportDataSize: UINT,
+        ) -> HRESULT,
+    >,
+    pub EnumAdapterByGpuPreference: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIFactory6,
+            Adapter: UINT,
+            GpuPreference: DXGI_GPU_PREFERENCE,
+            riid: *const IID,
+            ppvAdapter: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IDXGIFactory6Vtbl"][::std::mem::size_of::<IDXGIFactory6Vtbl>() - 240usize];
+    ["Alignment of IDXGIFactory6Vtbl"][::std::mem::align_of::<IDXGIFactory6Vtbl>() - 8usize];
+    ["Offset of field: IDXGIFactory6Vtbl::QueryInterface"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, QueryInterface) - 0usize];
+    ["Offset of field: IDXGIFactory6Vtbl::AddRef"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, AddRef) - 8usize];
+    ["Offset of field: IDXGIFactory6Vtbl::Release"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, Release) - 16usize];
+    ["Offset of field: IDXGIFactory6Vtbl::SetPrivateData"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, SetPrivateData) - 24usize];
+    ["Offset of field: IDXGIFactory6Vtbl::SetPrivateDataInterface"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, SetPrivateDataInterface) - 32usize];
+    ["Offset of field: IDXGIFactory6Vtbl::GetPrivateData"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, GetPrivateData) - 40usize];
+    ["Offset of field: IDXGIFactory6Vtbl::GetParent"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, GetParent) - 48usize];
+    ["Offset of field: IDXGIFactory6Vtbl::EnumAdapters"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, EnumAdapters) - 56usize];
+    ["Offset of field: IDXGIFactory6Vtbl::MakeWindowAssociation"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, MakeWindowAssociation) - 64usize];
+    ["Offset of field: IDXGIFactory6Vtbl::GetWindowAssociation"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, GetWindowAssociation) - 72usize];
+    ["Offset of field: IDXGIFactory6Vtbl::CreateSwapChain"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, CreateSwapChain) - 80usize];
+    ["Offset of field: IDXGIFactory6Vtbl::CreateSoftwareAdapter"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, CreateSoftwareAdapter) - 88usize];
+    ["Offset of field: IDXGIFactory6Vtbl::EnumAdapters1"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, EnumAdapters1) - 96usize];
+    ["Offset of field: IDXGIFactory6Vtbl::IsCurrent"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, IsCurrent) - 104usize];
+    ["Offset of field: IDXGIFactory6Vtbl::IsWindowedStereoEnabled"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, IsWindowedStereoEnabled) - 112usize];
+    ["Offset of field: IDXGIFactory6Vtbl::CreateSwapChainForHwnd"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, CreateSwapChainForHwnd) - 120usize];
+    ["Offset of field: IDXGIFactory6Vtbl::CreateSwapChainForCoreWindow"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, CreateSwapChainForCoreWindow) - 128usize];
+    ["Offset of field: IDXGIFactory6Vtbl::GetSharedResourceAdapterLuid"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, GetSharedResourceAdapterLuid) - 136usize];
+    ["Offset of field: IDXGIFactory6Vtbl::RegisterStereoStatusWindow"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, RegisterStereoStatusWindow) - 144usize];
+    ["Offset of field: IDXGIFactory6Vtbl::RegisterStereoStatusEvent"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, RegisterStereoStatusEvent) - 152usize];
+    ["Offset of field: IDXGIFactory6Vtbl::UnregisterStereoStatus"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, UnregisterStereoStatus) - 160usize];
+    ["Offset of field: IDXGIFactory6Vtbl::RegisterOcclusionStatusWindow"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, RegisterOcclusionStatusWindow) - 168usize];
+    ["Offset of field: IDXGIFactory6Vtbl::RegisterOcclusionStatusEvent"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, RegisterOcclusionStatusEvent) - 176usize];
+    ["Offset of field: IDXGIFactory6Vtbl::UnregisterOcclusionStatus"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, UnregisterOcclusionStatus) - 184usize];
+    ["Offset of field: IDXGIFactory6Vtbl::CreateSwapChainForComposition"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, CreateSwapChainForComposition) - 192usize];
+    ["Offset of field: IDXGIFactory6Vtbl::GetCreationFlags"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, GetCreationFlags) - 200usize];
+    ["Offset of field: IDXGIFactory6Vtbl::EnumAdapterByLuid"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, EnumAdapterByLuid) - 208usize];
+    ["Offset of field: IDXGIFactory6Vtbl::EnumWarpAdapter"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, EnumWarpAdapter) - 216usize];
+    ["Offset of field: IDXGIFactory6Vtbl::CheckFeatureSupport"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, CheckFeatureSupport) - 224usize];
+    ["Offset of field: IDXGIFactory6Vtbl::EnumAdapterByGpuPreference"]
+        [::std::mem::offset_of!(IDXGIFactory6Vtbl, EnumAdapterByGpuPreference) - 232usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct IDXGIFactory6 {
+    pub lpVtbl: *mut IDXGIFactory6Vtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IDXGIFactory6"][::std::mem::size_of::<IDXGIFactory6>() - 8usize];
+    ["Alignment of IDXGIFactory6"][::std::mem::align_of::<IDXGIFactory6>() - 8usize];
+    ["Offset of field: IDXGIFactory6::lpVtbl"]
+        [::std::mem::offset_of!(IDXGIFactory6, lpVtbl) - 0usize];
+};
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub struct _DXVA_PicEntry_H264 {

@@ -1,5 +1,5 @@
 //! The decoder table on Windows: slots 0 to 7 are the system's video
-//! decoding interface on the adapters offered, in the system's order, slot 8
+//! decoding interface on the adapters offered, high-performance first, slot 8
 //! the machine's own codec library. The vendor's slots come with its step
 //! of docs/impl-plan-windows.md, between the two.
 
@@ -10,8 +10,8 @@ use lowlat_drivers::d3d11::D3d11;
 use super::{Available, NO_CONTEXT, NO_DEVICE, PROFILE, RUNTIME, codec_library, label};
 use crate::config::Backend;
 
-/// The system interface's slots: one per adapter offered, in the order the
-/// system lists them.
+/// The system interface's slots: one per adapter offered, in the system's
+/// high-performance order.
 pub const OPEN_SLOTS: u32 = 8;
 /// The vendor's slots: none yet.
 pub const VENDOR_SLOTS: u32 = 0;

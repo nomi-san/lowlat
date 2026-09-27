@@ -10,7 +10,10 @@
 //! own; the kernel's adapter type says which is which, and only an adapter
 //! that renders itself and is neither a virtual display nor the software
 //! rasteriser is offered. The identity changes when the GPU is reset or its
-//! driver replaced, so it is never kept past the process.
+//! driver replaced, so it is never kept past the process. **The order is
+//! the system's high-performance one** where it has one (a discrete GPU
+//! before an integrated one), the plain enumeration where it does not, so
+//! the first adapter offered is the one an unnamed decoder settles on.
 //!
 //! **A device of the library's own, never the application's.** Two users of
 //! one device serialise on its lock, and a decode would wait behind the
@@ -29,12 +32,14 @@ use lowlat_common::dynlib::Library;
 use crate::ffi::d3d11::{
     _D3DKMT_ADAPTERTYPE__bindgen_ty_1__bindgen_ty_1 as AdapterFlags, D3D_DRIVER_TYPE_UNKNOWN,
     D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION, D3DKMT_ADAPTERTYPE, D3DKMT_CLOSEADAPTER,
-    D3DKMT_OPENADAPTERFROMLUID, D3DKMT_QUERYADAPTERINFO, DXGI_ADAPTER_DESC1, GUID, HRESULT,
-    ID3D11Device, ID3D11DeviceContext, ID3D11VideoContext, ID3D11VideoDevice, IDXGIAdapter,
-    IDXGIAdapter1, IDXGIFactory1, IUnknown, KMTQAITYPE_ADAPTERTYPE, LARGE_INTEGER, LUID, NTSTATUS,
+    D3DKMT_OPENADAPTERFROMLUID, D3DKMT_QUERYADAPTERINFO, DXGI_ADAPTER_DESC1,
+    DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, GUID, HRESULT, ID3D11Device, ID3D11DeviceContext,
+    ID3D11VideoContext, ID3D11VideoDevice, IDXGIAdapter, IDXGIAdapter1, IDXGIFactory1,
+    IDXGIFactory6, IUnknown, KMTQAITYPE_ADAPTERTYPE, LARGE_INTEGER, LUID, NTSTATUS,
 };
 use crate::ffi::d3d11_guids::{
-    IID_ID3D11VideoContext, IID_ID3D11VideoDevice, IID_IDXGIDevice, IID_IDXGIFactory1,
+    IID_ID3D11VideoContext, IID_ID3D11VideoDevice, IID_IDXGIAdapter1, IID_IDXGIDevice,
+    IID_IDXGIFactory1, IID_IDXGIFactory6,
 };
 
 /// Call a method through an interface's table: `vcall!(pointer, Method,
@@ -210,6 +215,8 @@ pub struct Adapter {
     pub software: bool,
     /// A virtual display's adapter, rendering on another GPU.
     pub indirect: bool,
+    /// The integrated GPU of a machine that has a discrete one beside it.
+    pub integrated: bool,
 }
 
 impl Adapter {
@@ -300,11 +307,27 @@ impl D3d11 {
         mut each: impl FnMut(&Com<IDXGIAdapter1>, &DXGI_ADAPTER_DESC1) -> Result<Option<R>>,
     ) -> Result<Option<R>> {
         let factory = self.factory()?;
+        // The high-performance order, from the factory that has it (Windows
+        // 10 1803 on); the plain enumeration on a system without it.
+        let preferred = query::<IDXGIFactory6>(factory.as_ptr().cast(), &IID_IDXGIFactory6).ok();
         for index in 0.. {
             let mut raw: *mut IDXGIAdapter1 = core::ptr::null_mut();
-            // SAFETY: a live factory; the output is a live local.
-            let hr = unsafe { vcall!(factory.as_ptr(), EnumAdapters1, index, &raw mut raw) }
-                .ok_or(Error::MissingSymbol)?;
+            // SAFETY: a live factory; the identifier and the output are live
+            // locals, the output of the asked-for interface.
+            let hr = unsafe {
+                match &preferred {
+                    Some(six) => vcall!(
+                        six.as_ptr(),
+                        EnumAdapterByGpuPreference,
+                        index,
+                        DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+                        &IID_IDXGIAdapter1,
+                        (&raw mut raw).cast()
+                    ),
+                    None => vcall!(factory.as_ptr(), EnumAdapters1, index, &raw mut raw),
+                }
+            }
+            .ok_or(Error::MissingSymbol)?;
             if hr == DXGI_ERROR_NOT_FOUND {
                 break;
             }
@@ -371,6 +394,7 @@ impl D3d11 {
             renders: kind.is_some_and(|t| t.RenderSupported() != 0),
             software: kind.is_some_and(|t| t.SoftwareDevice() != 0),
             indirect: kind.is_some_and(|t| t.IndirectDisplayDevice() != 0),
+            integrated: kind.is_some_and(|t| t.HybridIntegrated() != 0),
         }
     }
 
@@ -570,7 +594,7 @@ mod tests {
         let mut offered = 0;
         for a in &adapters {
             println!(
-                "{} {:04x}:{:04x} {:?} driver {:?} renders {} software {} indirect {} -> {}",
+                "{} {:04x}:{:04x} {:?} driver {:?} renders {} software {} indirect {} integrated {} -> {}",
                 a.luid,
                 a.vendor,
                 a.device,
@@ -579,6 +603,7 @@ mod tests {
                 a.renders,
                 a.software,
                 a.indirect,
+                a.integrated,
                 if a.decodes_here() {
                     "offered"
                 } else {
@@ -599,6 +624,12 @@ mod tests {
             }
         }
         assert!(offered > 0, "no adapter offered");
+        // The high-performance order: where a GPU that is not the integrated
+        // one is offered, the integrated one is not first.
+        let order: Vec<&Adapter> = adapters.iter().filter(|a| a.decodes_here()).collect();
+        if order.iter().any(|a| !a.integrated) {
+            assert!(!order[0].integrated, "the integrated GPU came first");
+        }
         // On a machine known to carry a virtual display, its adapter must be
         // found and must not be offered: the flag that says so is the whole
         // filter, and nothing above fails if it were misread.

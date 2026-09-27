@@ -607,7 +607,7 @@ typedef enum lowlat_transport {
 /// software. On Windows it is a GPU's identity as the listing spells it
 /// (`luid:HIGH:LOW`), which lasts until the GPU is reset or its driver
 /// replaced: the system's video decoding interface on that GPU or the
-/// first that decodes, then software. A machine without any is refused at
+/// first that decodes, the high-performance GPU first, then software. A machine without any is refused at
 /// creation with the stage named, exactly as a host without an encoder is.
 typedef enum lowlat_decoder {
     LOWLAT_DECODER_AUTO = 0,
@@ -2488,8 +2488,8 @@ lowlat_status lowlat_debug_panic(lowlat_host *hl) LOWLAT_NOEXCEPT;
 /// decoder on render nodes `renderD128` to `renderD135`, 8 to 15 the
 /// vendor's on its devices by ordinal, 16 the software decoder from the
 /// codec library's own search; on Windows, slots 0 to 7 are the open
-/// decoder on the GPUs the system lists, in its order, and 8 the software
-/// decoder. The same slot means the same thing on every machine and every
+/// decoder on the GPUs the system lists, high-performance first, and 8 the
+/// software decoder. The same slot means the same thing on every machine and every
 /// call, and nothing is remembered between calls: each call opens its one
 /// slot the way creation opens it and closes it again,
 /// so a loop from zero until false costs every slot once -- a few

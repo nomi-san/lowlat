@@ -46,7 +46,8 @@ fn probe_d3d11(d3d11: &D3d11, luid: Luid) -> Result<Caps, DecoderStage> {
 }
 
 /// The system's interface on the adapter a device name spells, or on the
-/// first adapter offered that decodes; the stage the walk met otherwise.
+/// first adapter offered that decodes, high-performance first; the stage the
+/// walk met otherwise.
 fn open_d3d11(named: Option<&str>) -> Result<(Luid, Caps), DecoderStage> {
     let d3d11 = D3d11::load().map_err(|_| DecoderStage::Runtime)?;
     if let Some(named) = named {

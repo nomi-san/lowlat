@@ -50,6 +50,7 @@ cat > "$work/d3d11.h" <<'EOF'
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <d3d11.h>
+#include <dxgi1_6.h>
 #include <dxva.h>
 typedef LONG NTSTATUS;
 #include <d3dkmthk.h>
@@ -59,7 +60,7 @@ EOF
 # called themselves: opaque, so their own tables are not generated, and
 # allowlisted as well, since an opaque type nothing allowlists is not emitted.
 opaque=(
-    'IDXGI(Surface|Output|SwapChain|Adapter)'
+    'IDXGI(Surface|Output|SwapChain|SwapChain1|Adapter)'
     'ID3D11(DepthStencilState|BlendState|RasterizerState|Buffer|Texture1D|Texture3D)'
     'ID3D11(ShaderResourceView|RenderTargetView|DepthStencilView|UnorderedAccessView)'
     'ID3D11(Vertex|Hull|Domain|Geometry|Pixel|Compute)Shader'
@@ -84,7 +85,7 @@ bindgen "$work/d3d11.h" \
     `# device and context, the decoder and its output view, the textures, and` \
     `# the adapter walk.` \
     --allowlist-type 'ID3D11(Device|DeviceContext|Texture2D|VideoDevice|VideoContext|VideoDecoder|VideoDecoderOutputView)' \
-    --allowlist-type 'IDXGI(Factory1|Adapter1)' \
+    --allowlist-type 'IDXGI(Factory1|Factory6|Adapter1)'     --allowlist-type 'DXGI_GPU_PREFERENCE' \
     `# The two entry points resolved at run time, and the kernel's adapter type.` \
     --allowlist-type 'PFN_D3D11_CREATE_DEVICE' \
     --allowlist-type 'PFND3DKMT_(OPENADAPTERFROMLUID|QUERYADAPTERINFO|CLOSEADAPTER)' \
@@ -120,6 +121,7 @@ interfaces = {
     "um/d3d11.h": ["ID3D11Device", "ID3D11VideoDevice", "ID3D11VideoContext",
                    "ID3D11Texture2D"],
     "shared/dxgi.h": ["IDXGIFactory1", "IDXGIAdapter1", "IDXGIDevice"],
+    "shared/dxgi1_6.h": ["IDXGIFactory6"],
 }
 # The decoder profiles every codec here is opened with.
 profiles = re.compile(r"D3D11_DECODER_PROFILE_(H264_VLD_NOFGT|HEVC_VLD_\w+)$")
