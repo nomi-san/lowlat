@@ -7,6 +7,9 @@
  * It opens the shared object by path rather than linking it, because the
  * question is whether the *shipped* object still contains a panic. Linking the
  * same code into this program would answer for this program's build instead.
+ * Each half the object carries is driven, and each proves its own deliberate
+ * panic is contained: a library built with one half is tested as well as one
+ * built with both.
  */
 
 /* Strict ISO C hides the monotonic clock, and the gate is worth more strict
@@ -15,19 +18,71 @@
 
 #include "lowlat.h"
 
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#else
 #include <dlfcn.h>
+#endif
 #include <stdio.h>
 #include <stddef.h>
 #include <string.h>
 #include <time.h>
 
-/* dlsym returns an object pointer and we need a function pointer. Casting
- * between the two is a constraint violation in C and needs a reinterpret in
- * C++; copying the bytes is neither, and is the one spelling that compiles
- * clean in both languages. */
+/* The platform's own loader and clock: the object opened by path and its
+ * entry points looked up by name, and milliseconds on the clock a poll's
+ * timeout is kept on. */
+#if defined(_WIN32)
+typedef HMODULE library;
+
+static library open_library(const char *path)
+{
+    return LoadLibraryA(path);
+}
+
+static void *symbol(library lib, const char *name)
+{
+    FARPROC found = GetProcAddress(lib, name);
+    void *raw;
+    memcpy(&raw, &found, sizeof raw);
+    return raw;
+}
+
+static double now_ms(void)
+{
+    LARGE_INTEGER count, frequency;
+    QueryPerformanceCounter(&count);
+    QueryPerformanceFrequency(&frequency);
+    return (double) count.QuadPart * 1000.0 / (double) frequency.QuadPart;
+}
+#else
+typedef void *library;
+
+static library open_library(const char *path)
+{
+    return dlopen(path, RTLD_NOW);
+}
+
+static void *symbol(library lib, const char *name)
+{
+    return dlsym(lib, name);
+}
+
+static double now_ms(void)
+{
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (double) now.tv_sec * 1000.0 + (double) now.tv_nsec / 1000000.0;
+}
+#endif
+
+/* The loader returns an object pointer and we need a function pointer.
+ * Casting between the two is a constraint violation in C and needs a
+ * reinterpret in C++; copying the bytes is neither, and is the one spelling
+ * that compiles clean in both languages. */
 #define RESOLVE(fn, lib, name)                                                 \
     do {                                                                       \
-        void *raw = dlsym((lib), (name));                                      \
+        void *raw = symbol((lib), (name));                                     \
         if (raw == NULL) {                                                     \
             fprintf(stderr, "harness: %s is not exported\n", (name));          \
             return 2;                                                          \
@@ -47,23 +102,10 @@ static void logged(uint32_t level, const char *message, void *opaque)
     *(unsigned *) opaque += 1;
 }
 
-int main(int argc, char **argv)
+/* The host half: every entry point driven once, the way an application does,
+ * and its deliberate panic contained. */
+static int host_half(library lib, const char *(*status_string)(lowlat_status))
 {
-    unsigned log_lines = 0;
-    if (argc < 2) {
-        fprintf(stderr, "usage: harness <path to shared object>\n");
-        return 2;
-    }
-
-    void *lib = dlopen(argv[1], RTLD_NOW);
-    if (lib == NULL) {
-        fprintf(stderr, "harness: dlopen failed: %s\n", dlerror());
-        return 2;
-    }
-
-    uint32_t (*abi_version)(void);
-    uint32_t (*features)(void);
-    const char *(*status_string)(lowlat_status);
     lowlat_status (*debug_panic)(lowlat_host *);
     lowlat_status (*create)(const lowlat_host_create_info *, lowlat_host **);
     void (*destroy)(lowlat_host *);
@@ -88,20 +130,7 @@ int main(int argc, char **argv)
     lowlat_status (*can_host)(void);
     lowlat_status (*get_outputs)(lowlat_output *, uint32_t *);
     lowlat_status (*get_status)(lowlat_host *, lowlat_host_status *);
-    lowlat_status (*set_log_callback)(void (*)(uint32_t, const char *, void *), void *);
 
-    RESOLVE(abi_version, lib, "lowlat_abi_version");
-    RESOLVE(features, lib, "lowlat_features");
-    /* Said before anything of the host half is looked up. The object at this
-     * path is whatever the last build put there, and a build of the client
-     * half alone leaves one with the same name and none of these symbols; an
-     * unresolved name would then be the first the loop happened to reach. */
-    if ((features() & LOWLAT_FEATURE_HOST) == 0) {
-        fprintf(stderr, "harness: the object was built without the host half (features 0x%x)\n",
-                (unsigned) features());
-        return 1;
-    }
-    RESOLVE(status_string, lib, "lowlat_status_string");
     RESOLVE(debug_panic, lib, "lowlat_debug_panic");
     RESOLVE(create, lib, "lowlat_host_create");
     RESOLVE(destroy, lib, "lowlat_host_destroy");
@@ -126,22 +155,6 @@ int main(int argc, char **argv)
     RESOLVE(get_audio, lib, "lowlat_host_get_audio_config");
     RESOLVE(get_audio_outputs, lib, "lowlat_get_audio_outputs");
     RESOLVE(get_status, lib, "lowlat_host_get_status");
-    RESOLVE(set_log_callback, lib, "lowlat_set_log_callback");
-
-    uint32_t version = abi_version();
-    if ((version >> 16) != LOWLAT_ABI_MAJOR || (version & 0xffff) != LOWLAT_ABI_MINOR) {
-        fprintf(stderr, "harness: the object reports version %u.%u, the header says %u.%u\n",
-                version >> 16, version & 0xffff,
-                (unsigned) LOWLAT_ABI_MAJOR, (unsigned) LOWLAT_ABI_MINOR);
-        return 1;
-    }
-
-    /* Log lines reach the application, terminated, with its own pointer handed
-     * back. This is the single place the library calls out. */
-    if (set_log_callback(logged, &log_lines) != LOWLAT_OK) {
-        fprintf(stderr, "harness: a log callback could not be registered\n");
-        return 1;
-    }
 
     /* Both of these answer before anything is created, which is the point of
      * them: an application presents a choice, or explains why it cannot. */
@@ -179,17 +192,14 @@ int main(int argc, char **argv)
      * which is not an error. Timed here because a poll that returns at once is
      * a busy loop in every application that uses it. */
     lowlat_event event;
-    struct timespec before, after;
-    clock_gettime(CLOCK_MONOTONIC, &before);
+    double before = now_ms();
     lowlat_status polled = poll_events(hl, 60, &event, NULL, NULL);
-    clock_gettime(CLOCK_MONOTONIC, &after);
+    double waited_ms = now_ms() - before;
     if (polled != LOWLAT_TIMEOUT) {
         fprintf(stderr, "harness: an empty poll returned %d, not %d\n",
                 (int) polled, (int) LOWLAT_TIMEOUT);
         return 1;
     }
-    double waited_ms = (double) (after.tv_sec - before.tv_sec) * 1000.0
-                     + (double) (after.tv_nsec - before.tv_nsec) / 1000000.0;
     if (waited_ms < 50.0) {
         fprintf(stderr, "harness: a 60 ms poll returned after %.1f ms\n", waited_ms);
         return 1;
@@ -606,113 +616,205 @@ int main(int argc, char **argv)
 
     destroy(hl);
 
-    /* The client half, when the object carries it: a handle, an attempt
-     * minted through the boundary, and the whole of it torn down without a
-     * session. The credentials come out as usable C strings. */
-    if ((features() & LOWLAT_FEATURE_CLIENT) != 0) {
-        lowlat_status (*client_create)(const lowlat_client_create_info *, lowlat_client **);
-        void (*client_destroy)(lowlat_client *);
-        lowlat_status (*client_new_attempt)(lowlat_client *, const lowlat_client_config *,
-                                            const char *, uint32_t, lowlat_credentials *);
-        void (*client_end)(lowlat_client *);
-        lowlat_status (*client_status)(lowlat_client *, lowlat_client_status *);
-        RESOLVE(client_create, lib, "lowlat_client_create");
-        RESOLVE(client_destroy, lib, "lowlat_client_destroy");
-        RESOLVE(client_new_attempt, lib, "lowlat_client_new_attempt");
-        RESOLVE(client_end, lib, "lowlat_client_end_connection");
-        RESOLVE(client_status, lib, "lowlat_client_get_status");
+    printf("harness: host half, a panic returned %d (%s)\n", (int) contained, described);
+    return 0;
+}
 
-        /* Without a decoder, which is what a machine without a device can
-         * still do; a creation that asks for the first decoder either opens
-         * one or refuses with the stage named, and both are right here. */
-        lowlat_client_create_info info;
-        memset(&info, 0, sizeof info);
-        info.size = (uint32_t) sizeof info;
-        info.decoder = LOWLAT_DECODER_NONE;
-        lowlat_client *cl = NULL;
-        if (client_create(&info, &cl) != LOWLAT_OK || cl == NULL) {
-            fprintf(stderr, "harness: a client handle could not be created\n");
+/* The client half: a handle, an attempt minted through the boundary, and the
+ * whole of it torn down without a session. The credentials come out as usable
+ * C strings. Then its own deliberate panic, contained, and the handle refused
+ * after it and still destroyed. */
+static int client_half(library lib, const char *(*status_string)(lowlat_status))
+{
+    lowlat_status (*client_create)(const lowlat_client_create_info *, lowlat_client **);
+    void (*client_destroy)(lowlat_client *);
+    lowlat_status (*client_new_attempt)(lowlat_client *, const lowlat_client_config *,
+                                        const char *, uint32_t, lowlat_credentials *);
+    void (*client_end)(lowlat_client *);
+    lowlat_status (*client_status)(lowlat_client *, lowlat_client_status *);
+    RESOLVE(client_create, lib, "lowlat_client_create");
+    RESOLVE(client_destroy, lib, "lowlat_client_destroy");
+    RESOLVE(client_new_attempt, lib, "lowlat_client_new_attempt");
+    RESOLVE(client_end, lib, "lowlat_client_end_connection");
+    RESOLVE(client_status, lib, "lowlat_client_get_status");
+
+    /* Without a decoder, which is what a machine without a device can
+     * still do; a creation that asks for the first decoder either opens
+     * one or refuses with the stage named, and both are right here. */
+    lowlat_client_create_info info;
+    memset(&info, 0, sizeof info);
+    info.size = (uint32_t) sizeof info;
+    info.decoder = LOWLAT_DECODER_NONE;
+    lowlat_client *cl = NULL;
+    if (client_create(&info, &cl) != LOWLAT_OK || cl == NULL) {
+        fprintf(stderr, "harness: a client handle could not be created\n");
+        return 1;
+    }
+    {
+        lowlat_client_create_info any;
+        memset(&any, 0, sizeof any);
+        any.size = (uint32_t) sizeof any;
+        lowlat_client *probe = NULL;
+        lowlat_status opened = client_create(&any, &probe);
+        if (opened == LOWLAT_OK) {
+            printf("harness: a decoder opened\n");
+            client_destroy(probe);
+        } else if (opened == LOWLAT_ERR_NO_DECODER_RUNTIME
+                   || opened == LOWLAT_ERR_NO_DECODER_DEVICE
+                   || opened == LOWLAT_ERR_NO_DECODER_PROFILE
+                   || opened == LOWLAT_ERR_NO_DECODER_LICENCE) {
+            printf("harness: no decoder here: %s\n", status_string(opened));
+        } else {
+            fprintf(stderr, "harness: the decoder probe answered %d\n", (int) opened);
             return 1;
         }
-        {
-            lowlat_client_create_info any;
-            memset(&any, 0, sizeof any);
-            any.size = (uint32_t) sizeof any;
-            lowlat_client *probe = NULL;
-            lowlat_status opened = client_create(&any, &probe);
-            if (opened == LOWLAT_OK) {
-                printf("harness: a decoder opened\n");
-                client_destroy(probe);
-            } else if (opened == LOWLAT_ERR_NO_DECODER_RUNTIME
-                       || opened == LOWLAT_ERR_NO_DECODER_DEVICE
-                       || opened == LOWLAT_ERR_NO_DECODER_PROFILE
-                       || opened == LOWLAT_ERR_NO_DECODER_LICENCE) {
-                printf("harness: no decoder here: %s\n", status_string(opened));
-            } else {
-                fprintf(stderr, "harness: the decoder probe answered %d\n", (int) opened);
-                return 1;
-            }
+    }
+    lowlat_credentials ours;
+    memset(&ours, 0, sizeof ours);
+    ours.size = (uint32_t) sizeof ours;
+    if (client_new_attempt(cl, NULL, "attempt", LOWLAT_TRANSPORT_BUD, &ours) != LOWLAT_OK
+        || strlen(ours.ufrag) != 8 || strlen(ours.pwd) != 32
+        || strlen(ours.fingerprint) != 64 || strlen(ours.aes256) != 254) {
+        fprintf(stderr, "harness: a client attempt produced no credentials\n");
+        return 1;
+    }
+    lowlat_client_status standing;
+    memset(&standing, 0, sizeof standing);
+    standing.size = (uint32_t) sizeof standing;
+    if (client_status(cl, &standing) != LOWLAT_OK
+        || standing.state != LOWLAT_CLIENT_CONNECTING) {
+        fprintf(stderr, "harness: a client with an attempt is not connecting\n");
+        return 1;
+    }
+    // Input before a session is refused as not started, never taken; a
+    // pad state without its size is an argument error.
+    lowlat_status (*send_key)(lowlat_client *, uint32_t, uint32_t, bool);
+    lowlat_status (*send_pad_state)(lowlat_client *, uint32_t, const lowlat_pad_state *);
+    RESOLVE(send_key, lib, "lowlat_client_send_key");
+    RESOLVE(send_pad_state, lib, "lowlat_client_send_pad_state");
+    if (send_key(cl, 4, LOWLAT_MOD_LSHIFT | LOWLAT_MOD_CAPS, true) != LOWLAT_ERR_NOT_STARTED) {
+        fprintf(stderr, "harness: input before a session was not refused\n");
+        return 1;
+    }
+    lowlat_pad_state pad;
+    memset(&pad, 0, sizeof pad);
+    if (send_pad_state(cl, 1, &pad) != LOWLAT_ERR_INVALID_ARGUMENT) {
+        fprintf(stderr, "harness: a pad state without its size was not refused\n");
+        return 1;
+    }
+    // Sound before a session: refused as not started, the count untouched.
+    lowlat_status (*acquire_audio)(lowlat_client *, uint32_t, int16_t *, uint32_t *);
+    RESOLVE(acquire_audio, lib, "lowlat_client_acquire_audio");
+    int16_t samples[16];
+    uint32_t count = 8;
+    if (acquire_audio(cl, 0, samples, &count) != LOWLAT_ERR_NOT_STARTED || count != 8) {
+        fprintf(stderr, "harness: sound before a session was not refused\n");
+        return 1;
+    }
+    // The client's own figures: readable before a session, every one
+    // zero, and a structure without its size refused.
+    lowlat_status (*client_metrics)(lowlat_client *, lowlat_client_metrics *);
+    RESOLVE(client_metrics, lib, "lowlat_client_get_metrics");
+    lowlat_client_metrics measured;
+    memset(&measured, 0, sizeof measured);
+    if (client_metrics(cl, &measured) != LOWLAT_ERR_INVALID_ARGUMENT) {
+        fprintf(stderr, "harness: metrics without a size were not refused\n");
+        return 1;
+    }
+    measured.size = (uint32_t) sizeof measured;
+    if (client_metrics(cl, &measured) != LOWLAT_OK || measured.video.fragments != 0
+        || measured.video.loss_30s != 0.0f || measured.connected_ms != 0) {
+        fprintf(stderr, "harness: metrics before a session were not zero\n");
+        return 1;
+    }
+    client_end(cl);
+
+    /* The point of the whole program, for this half: a panic inside the
+     * library arrives here as a value. */
+    lowlat_status (*client_debug_panic)(lowlat_client *);
+    RESOLVE(client_debug_panic, lib, "lowlat_client_debug_panic");
+    lowlat_status contained = client_debug_panic(cl);
+    if (contained != LOWLAT_ERR_INTERNAL) {
+        fprintf(stderr, "harness: a deliberate client panic returned %d, not %d\n",
+                (int) contained, (int) LOWLAT_ERR_INTERNAL);
+        return 1;
+    }
+    /* And what follows one is refused, on a handle that can still be
+     * destroyed. */
+    if (client_status(cl, &standing) != LOWLAT_ERR_POISONED) {
+        fprintf(stderr, "harness: a client call after a contained panic was not refused\n");
+        return 1;
+    }
+    const char *described = status_string(contained);
+    if (described == NULL || described[0] == '\0') {
+        fprintf(stderr, "harness: the contained status describes itself as nothing\n");
+        return 1;
+    }
+    client_destroy(cl);
+
+    printf("harness: client half, a panic returned %d (%s)\n", (int) contained, described);
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    unsigned log_lines = 0;
+    if (argc < 2) {
+        fprintf(stderr, "usage: harness <path to shared object>\n");
+        return 2;
+    }
+
+    library lib = open_library(argv[1]);
+    if (lib == NULL) {
+        fprintf(stderr, "harness: %s could not be opened\n", argv[1]);
+        return 2;
+    }
+
+    uint32_t (*abi_version)(void);
+    uint32_t (*features)(void);
+    const char *(*status_string)(lowlat_status);
+    lowlat_status (*set_log_callback)(void (*)(uint32_t, const char *, void *), void *);
+    RESOLVE(abi_version, lib, "lowlat_abi_version");
+    RESOLVE(features, lib, "lowlat_features");
+    RESOLVE(status_string, lib, "lowlat_status_string");
+    RESOLVE(set_log_callback, lib, "lowlat_set_log_callback");
+
+    uint32_t version = abi_version();
+    if ((version >> 16) != LOWLAT_ABI_MAJOR || (version & 0xffff) != LOWLAT_ABI_MINOR) {
+        fprintf(stderr, "harness: the object reports version %u.%u, the header says %u.%u\n",
+                version >> 16, version & 0xffff,
+                (unsigned) LOWLAT_ABI_MAJOR, (unsigned) LOWLAT_ABI_MINOR);
+        return 1;
+    }
+
+    /* Log lines reach the application, terminated, with its own pointer handed
+     * back. This is the single place the library calls out. */
+    if (set_log_callback(logged, &log_lines) != LOWLAT_OK) {
+        fprintf(stderr, "harness: a log callback could not be registered\n");
+        return 1;
+    }
+
+    /* Each half the object says it carries, and only those. The object at
+     * this path is whatever the last build put there, and a build of one
+     * half leaves one with the same name and none of the other's symbols; an
+     * unresolved name would then be the first the program happened to reach. */
+    uint32_t halves = features() & (LOWLAT_FEATURE_HOST | LOWLAT_FEATURE_CLIENT);
+    if (halves == 0) {
+        fprintf(stderr, "harness: the object carries neither half (features 0x%x)\n",
+                (unsigned) features());
+        return 1;
+    }
+    if ((halves & LOWLAT_FEATURE_HOST) != 0) {
+        int failed = host_half(lib, status_string);
+        if (failed != 0) {
+            return failed;
         }
-        lowlat_credentials ours;
-        memset(&ours, 0, sizeof ours);
-        ours.size = (uint32_t) sizeof ours;
-        if (client_new_attempt(cl, NULL, "attempt", LOWLAT_TRANSPORT_BUD, &ours) != LOWLAT_OK
-            || strlen(ours.ufrag) != 8 || strlen(ours.pwd) != 32
-            || strlen(ours.fingerprint) != 64 || strlen(ours.aes256) != 254) {
-            fprintf(stderr, "harness: a client attempt produced no credentials\n");
-            return 1;
+    }
+    if ((halves & LOWLAT_FEATURE_CLIENT) != 0) {
+        int failed = client_half(lib, status_string);
+        if (failed != 0) {
+            return failed;
         }
-        lowlat_client_status standing;
-        memset(&standing, 0, sizeof standing);
-        standing.size = (uint32_t) sizeof standing;
-        if (client_status(cl, &standing) != LOWLAT_OK
-            || standing.state != LOWLAT_CLIENT_CONNECTING) {
-            fprintf(stderr, "harness: a client with an attempt is not connecting\n");
-            return 1;
-        }
-        // Input before a session is refused as not started, never taken; a
-        // pad state without its size is an argument error.
-        lowlat_status (*send_key)(lowlat_client *, uint32_t, uint32_t, bool);
-        lowlat_status (*send_pad_state)(lowlat_client *, uint32_t, const lowlat_pad_state *);
-        RESOLVE(send_key, lib, "lowlat_client_send_key");
-        RESOLVE(send_pad_state, lib, "lowlat_client_send_pad_state");
-        if (send_key(cl, 4, LOWLAT_MOD_LSHIFT | LOWLAT_MOD_CAPS, true) != LOWLAT_ERR_NOT_STARTED) {
-            fprintf(stderr, "harness: input before a session was not refused\n");
-            return 1;
-        }
-        lowlat_pad_state pad;
-        memset(&pad, 0, sizeof pad);
-        if (send_pad_state(cl, 1, &pad) != LOWLAT_ERR_INVALID_ARGUMENT) {
-            fprintf(stderr, "harness: a pad state without its size was not refused\n");
-            return 1;
-        }
-        // Sound before a session: refused as not started, the count untouched.
-        lowlat_status (*acquire_audio)(lowlat_client *, uint32_t, int16_t *, uint32_t *);
-        RESOLVE(acquire_audio, lib, "lowlat_client_acquire_audio");
-        int16_t samples[16];
-        uint32_t count = 8;
-        if (acquire_audio(cl, 0, samples, &count) != LOWLAT_ERR_NOT_STARTED || count != 8) {
-            fprintf(stderr, "harness: sound before a session was not refused\n");
-            return 1;
-        }
-        // The client's own figures: readable before a session, every one
-        // zero, and a structure without its size refused.
-        lowlat_status (*client_metrics)(lowlat_client *, lowlat_client_metrics *);
-        RESOLVE(client_metrics, lib, "lowlat_client_get_metrics");
-        lowlat_client_metrics measured;
-        memset(&measured, 0, sizeof measured);
-        if (client_metrics(cl, &measured) != LOWLAT_ERR_INVALID_ARGUMENT) {
-            fprintf(stderr, "harness: metrics without a size were not refused\n");
-            return 1;
-        }
-        measured.size = (uint32_t) sizeof measured;
-        if (client_metrics(cl, &measured) != LOWLAT_OK || measured.video.fragments != 0
-            || measured.video.loss_30s != 0.0f || measured.connected_ms != 0) {
-            fprintf(stderr, "harness: metrics before a session were not zero\n");
-            return 1;
-        }
-        client_end(cl);
-        client_destroy(cl);
     }
 
     if (log_lines == 0) {
@@ -720,7 +822,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    printf("harness: version %u.%u, a panic returned %d (%s)\n",
-           version >> 16, version & 0xffff, (int) contained, described);
+    printf("harness: version %u.%u, halves 0x%x\n", version >> 16, version & 0xffff,
+           (unsigned) halves);
     return 0;
 }

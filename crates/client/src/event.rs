@@ -199,15 +199,12 @@ pub enum DecoderStage {
 }
 
 /// What reaches the loop from outside it.
-// The seam and the loop that pass these are built on Linux so far.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) enum Arrival {
     Candidate(SocketAddr, Kind),
     PeerReady,
 }
 
 /// What the application asks the loop to say.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) enum Ask {
     UserData(u32, Vec<u8>),
     /// Say goodbye and stop.

@@ -18,7 +18,9 @@ pub use shared::*;
 
 #[cfg(feature = "host")]
 pub mod host;
-#[cfg(feature = "host")]
+// The module is Linux's alone (its own first line); the guard the header
+// takes is the feature's, on the declaration above.
+#[cfg(all(feature = "host", target_os = "linux"))]
 pub use host::*;
 
 #[cfg(feature = "client")]
@@ -132,7 +134,7 @@ pub enum lowlat_status {
 /// The major version, raised only when something already published changes.
 pub const LOWLAT_ABI_MAJOR: u32 = 0;
 /// The minor version, raised when surface is appended.
-pub const LOWLAT_ABI_MINOR: u32 = 17;
+pub const LOWLAT_ABI_MINOR: u32 = 18;
 
 /// Major and minor, packed.
 ///
@@ -146,6 +148,7 @@ pub extern "C" fn lowlat_abi_version() -> u32 {
 }
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
+/// A library built for Windows carries the client half alone.
 pub const LOWLAT_FEATURE_HOST: u32 = 1;
 /// The client half is in this build: every `lowlat_client_*` entry point exists.
 pub const LOWLAT_FEATURE_CLIENT: u32 = 2;
@@ -170,7 +173,8 @@ pub const LOWLAT_FEATURE_GPL_LIBAVCODEC: u32 = 4;
 #[unsafe(no_mangle)]
 pub extern "C" fn lowlat_features() -> u32 {
     let mut bits = 0;
-    if cfg!(feature = "host") {
+    // What was built, not what was asked for: the host half is Linux's.
+    if cfg!(all(feature = "host", target_os = "linux")) {
         bits |= LOWLAT_FEATURE_HOST;
     }
     if cfg!(feature = "client") {
@@ -441,7 +445,10 @@ mod tests {
     #[test]
     fn the_features_are_the_builds_own() {
         let bits = lowlat_features();
-        assert_eq!(bits & LOWLAT_FEATURE_HOST != 0, cfg!(feature = "host"));
+        assert_eq!(
+            bits & LOWLAT_FEATURE_HOST != 0,
+            cfg!(all(feature = "host", target_os = "linux"))
+        );
         assert_eq!(bits & LOWLAT_FEATURE_CLIENT != 0, cfg!(feature = "client"));
         assert_eq!(
             bits & LOWLAT_FEATURE_GPL_LIBAVCODEC != 0,

@@ -29,6 +29,9 @@ use crate::seam::Opened;
 #[cfg(target_os = "linux")]
 #[path = "decode/linux.rs"]
 mod sys;
+#[cfg(windows)]
+#[path = "decode/windows.rs"]
+mod sys;
 
 /// How long the thread waits for a unit before looking at the stop flag.
 const IDLE_WAIT: Duration = Duration::from_millis(50);
@@ -602,10 +605,8 @@ mod tests {
             super::idle(&shared)
         });
         std::thread::sleep(Duration::from_millis(20));
-        rig.switch_to(Opened::Vaapi(c"/dev/dri/renderD128".to_owned()));
-        assert_eq!(
-            idle.join().expect("the idle loop"),
-            Next::Switch(Opened::Vaapi(c"/dev/dri/renderD128".to_owned()))
-        );
+        let choice = Opened::Software(Some(std::path::PathBuf::from("pair")));
+        rig.switch_to(choice.clone());
+        assert_eq!(idle.join().expect("the idle loop"), Next::Switch(choice));
     }
 }

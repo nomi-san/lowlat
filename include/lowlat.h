@@ -42,9 +42,10 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 17
+#define LOWLAT_ABI_MINOR 18
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
+/// A library built for Windows carries the client half alone.
 #define LOWLAT_FEATURE_HOST 1
 
 /// The client half is in this build: every `lowlat_client_*` entry point exists.
@@ -3002,6 +3003,27 @@ lowlat_status lowlat_client_poll_events(lowlat_client *cl,
                                         lowlat_event *out,
                                         void *body,
                                         uint32_t *body_len) LOWLAT_NOEXCEPT;
+
+/// Panic on purpose, and prove the boundary contains it: the client half's
+/// twin of `lowlat_debug_panic` (minor 18), so a library carrying the client
+/// half alone can be tested the same way.
+///
+/// **Exported by the shipped library rather than hidden behind a build
+/// option**, because what has to be tested is that *this* object still
+/// unwinds. Building it to abort on panic silently disables containment
+/// everywhere, and the same code linked into a test binary answers for the
+/// test's build rather than for this one.
+/// **It takes the handle** so that what follows a contained panic is testable
+/// too: the handle is poisoned, every later call on it is refused, and
+/// destroying it still works.
+///
+/// @param[in] cl The handle from `lowlat_client_create`. It is poisoned afterwards: every
+/// later call on it is refused and destroying it still works.
+/// @returns `LOWLAT_ERR_INTERNAL`, the panic having been caught. Every later call on
+/// `cl` answers `LOWLAT_ERR_POISONED`.
+///
+/// @attention `cl` came from `lowlat_client_create`.
+lowlat_status lowlat_client_debug_panic(lowlat_client *cl) LOWLAT_NOEXCEPT;
 #endif
 
 #ifdef __cplusplus

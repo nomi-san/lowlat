@@ -3,6 +3,12 @@
 //! Every `lowlat_host_*` entry point and every type it takes or fills. Behind
 //! the `host` feature, which is what lets a build carry a client and no host.
 
+// Built where the host is, which is Linux so far (docs/impl-plan-windows.md):
+// a library for another platform carries the client half alone, whatever
+// its features asked for. Inside the module rather than on its declaration,
+// so the header's guards stay the features' alone.
+#![cfg(target_os = "linux")]
+
 use core::ffi::{c_char, c_void};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;

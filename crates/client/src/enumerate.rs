@@ -24,13 +24,21 @@ use crate::config::Backend;
 #[cfg(target_os = "linux")]
 #[path = "enumerate/linux.rs"]
 mod sys;
+#[cfg(windows)]
+#[path = "enumerate/windows.rs"]
+mod sys;
 
 pub use sys::{OPEN_SLOTS, SLOTS, VENDOR_SLOTS, probe};
 
-/// Why a slot is not available, in the words its row carries.
+/// Why a slot is not available, in the words its row carries. The device
+/// slots' words wait on Windows for the device slots.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const RUNTIME: &str = "the runtime library is not on the machine";
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const NO_NODE: &str = "no such render node, or it did not open";
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const NO_DEVICE: &str = "no such device";
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const NO_CONTEXT: &str = "the device did not open";
 const PROFILE: &str = "decodes none of the profiles a stream could use";
 const NO_PAIR: &str = "no codec library pair found";

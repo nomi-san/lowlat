@@ -60,3 +60,11 @@ workspace = true
 # fails when it is stale. Default features off drops the command-line parser,
 # which is ten crates we would carry to call a library function.
 cbindgen = { version = "0.29.4", default-features = false }
+
+# The ABI gates' compiler and export dump on Windows: Visual Studio's own, found
+# where cargo finds its linker, with the environment they need, so the gates
+# run from any shell and on a CI runner with no developer prompt. Already in
+# the graph beneath the C compiler crate that ring's build uses; no
+# dependencies of its own.
+[target.'cfg(windows)'.dev-dependencies]
+find-msvc-tools = "0.1.11"

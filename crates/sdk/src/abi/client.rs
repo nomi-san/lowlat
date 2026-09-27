@@ -1934,6 +1934,7 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
             };
             let pitch = u32::try_from(taken.pitch).unwrap_or(u32::MAX);
             let full_chroma = taken.frame.format.full_chroma();
+            let (handle_kind, fd, allocation, handle_size) = handle_fields(taken.handle);
             let planes = match taken.handle {
                 // A device slot: the planes are offsets into the handle.
                 Some(_) => [
@@ -1995,13 +1996,10 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
                 sequence: taken.seq,
                 planes,
                 slot: u32::try_from(taken.index).unwrap_or(u32::MAX),
-                handle_kind: match taken.handle {
-                    Some(_) => lowlat_handle_kind::LOWLAT_HANDLE_OPAQUE_FD,
-                    None => lowlat_handle_kind::LOWLAT_HANDLE_NONE,
-                } as u32,
-                fd: taken.handle.map_or(-1, |h| h.fd),
-                allocation: taken.handle.map_or(0, |h| h.allocation),
-                handle_size: taken.handle.map_or(0, |h| h.size as u64),
+                handle_kind,
+                fd,
+                allocation,
+                handle_size,
                 modifier: 0,
                 full_range: taken.frame.full_range,
                 arrived_us,
@@ -2018,6 +2016,27 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
             LOWLAT_OK
         })
     }
+}
+
+/// A device slot's handle as a frame carries it: the kind, the descriptor,
+/// the allocation's ordinal and the allocation's size.
+#[cfg(target_os = "linux")]
+fn handle_fields(handle: Option<::lowlat_client::frames::Handle>) -> (u32, i32, u32, u64) {
+    match handle {
+        Some(h) => (
+            lowlat_handle_kind::LOWLAT_HANDLE_OPAQUE_FD as u32,
+            h.fd,
+            h.allocation,
+            h.size as u64,
+        ),
+        None => (lowlat_handle_kind::LOWLAT_HANDLE_NONE as u32, -1, 0, 0),
+    }
+}
+
+/// No slot here carries a handle yet: the type has no value.
+#[cfg(windows)]
+fn handle_fields(_: Option<::lowlat_client::frames::Handle>) -> (u32, i32, u32, u64) {
+    (lowlat_handle_kind::LOWLAT_HANDLE_NONE as u32, -1, 0, 0)
 }
 
 /// Give a picture back.
@@ -2455,6 +2474,36 @@ fn described(
     }
 }
 
+/// Panic on purpose, and prove the boundary contains it: the client half's
+/// twin of `lowlat_debug_panic` (minor 18), so a library carrying the client
+/// half alone can be tested the same way.
+///
+/// **Exported by the shipped library rather than hidden behind a build
+/// option**, because what has to be tested is that *this* object still
+/// unwinds. Building it to abort on panic silently disables containment
+/// everywhere, and the same code linked into a test binary answers for the
+/// test's build rather than for this one.
+/// **It takes the handle** so that what follows a contained panic is testable
+/// too: the handle is poisoned, every later call on it is refused, and
+/// destroying it still works.
+///
+/// @param[in] cl The handle from [`lowlat_client_create`]. It is poisoned afterwards: every
+/// later call on it is refused and destroying it still works.
+/// @returns [`LOWLAT_ERR_INTERNAL`], the panic having been caught. Every later call on
+/// `cl` answers [`LOWLAT_ERR_POISONED`].
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_debug_panic(cl: *mut lowlat_client) -> lowlat_status {
+    unsafe {
+        entered(cl, |_| {
+            panic!("deliberate panic, to prove the boundary contains one")
+        })
+    }
+}
+
 /// Run an entry point that needs the handle.
 ///
 /// Null is refused, a poisoned handle is refused, and a panic poisons it.
@@ -2498,6 +2547,41 @@ mod tests {
             max_height: 0,
             device: [0; LOWLAT_OUTPUT_MAX],
         }
+    }
+
+    /// **A panic is contained, and what follows it is refused.** The test
+    /// that matters runs against the built shared object, in `tests/abi.rs`;
+    /// this one says the handle is poisoned by it, that destroying a
+    /// poisoned handle still works, and that a null one is refused.
+    #[test]
+    fn a_panic_poisons_the_handle_and_destroying_it_still_works() {
+        let mut handle: *mut lowlat_client = core::ptr::null_mut();
+        let info = no_decoder();
+        assert_eq!(
+            unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
+            LOWLAT_OK
+        );
+        assert_eq!(
+            unsafe { lowlat_client_debug_panic(handle) },
+            LOWLAT_ERR_INTERNAL
+        );
+        // Every later call, including another panic, stops at the poison.
+        assert_eq!(
+            unsafe { lowlat_client_debug_panic(handle) },
+            LOWLAT_ERR_POISONED
+        );
+        // SAFETY: plain data.
+        let mut status: lowlat_client_status = unsafe { core::mem::zeroed() };
+        status.size = core::mem::size_of::<lowlat_client_status>() as u32;
+        assert_eq!(
+            unsafe { lowlat_client_get_status(handle, &raw mut status) },
+            LOWLAT_ERR_POISONED
+        );
+        unsafe { lowlat_client_destroy(handle) };
+        assert_eq!(
+            unsafe { lowlat_client_debug_panic(core::ptr::null_mut()) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
     }
 
     /// The whole seam through the boundary against nothing: an attempt is
@@ -3145,6 +3229,10 @@ mod tests {
                 row.hevc_444_10,
                 row.handle
             );
+            #[allow(
+                clippy::absurd_extreme_comparisons,
+                reason = "a table with no open-stack slot compares against zero"
+            )]
             let expected = if count < ::lowlat_client::enumerate::OPEN_SLOTS {
                 lowlat_decoder::LOWLAT_DECODER_OPEN
             } else if count < slots - 1 {
@@ -3212,7 +3300,7 @@ mod tests {
 
     /// The host's own admission, one guest and no stream: the peer the
     /// session tests here connect to on loopback.
-    #[cfg(feature = "host")]
+    #[cfg(all(feature = "host", target_os = "linux"))]
     fn a_host() -> ::lowlat_host::admission::Admission {
         use ::lowlat_host::admission::{self, Admission};
         Admission::new(admission::Config {
@@ -3231,7 +3319,7 @@ mod tests {
     }
 
     /// Attempt `id` on the handle: the credentials for its offer.
-    #[cfg(feature = "host")]
+    #[cfg(all(feature = "host", target_os = "linux"))]
     fn an_offer(handle: *mut lowlat_client, id: &core::ffi::CStr) -> lowlat_credentials {
         let mut ours: lowlat_credentials = unsafe { core::mem::zeroed() };
         ours.size = core::mem::size_of::<lowlat_credentials>() as u32;
@@ -3253,7 +3341,7 @@ mod tests {
     /// A session through the boundary against the host's own admission on
     /// loopback, the exchange relayed by hand as a signaling service would:
     /// the handle with its session up, and the host holding the other end.
-    #[cfg(feature = "host")]
+    #[cfg(all(feature = "host", target_os = "linux"))]
     fn a_session() -> (*mut lowlat_client, ::lowlat_host::admission::Admission) {
         let mut host = a_host();
         let mut handle: *mut lowlat_client = core::ptr::null_mut();
@@ -3268,7 +3356,7 @@ mod tests {
     }
 
     /// Attempt `id`, offered with `ours`, through to a session with `host`.
-    #[cfg(feature = "host")]
+    #[cfg(all(feature = "host", target_os = "linux"))]
     fn connect(
         handle: *mut lowlat_client,
         host: &mut ::lowlat_host::admission::Admission,
@@ -3390,7 +3478,7 @@ mod tests {
     /// attempt, and a new attempt is refused as one already started until the
     /// departure is over, then taken. The departure is timed as well, because
     /// a call answered after it had ended would show nothing.
-    #[cfg(feature = "host")]
+    #[cfg(all(feature = "host", target_os = "linux"))]
     #[test]
     fn a_call_made_while_the_session_leaves_is_answered_at_once() {
         use ::lowlat_host::admission::{Event as HostEvent, Outcome as HostOutcome};
@@ -3475,7 +3563,7 @@ mod tests {
     /// acquire after a reconnect comes back at once and a render loop paced
     /// by the wait spins. There is no decoder, so no picture ever comes and
     /// every acquire here runs to its timeout.
-    #[cfg(feature = "host")]
+    #[cfg(all(feature = "host", target_os = "linux"))]
     #[test]
     fn a_second_session_on_the_handle_waits_for_its_pictures() {
         use std::time::Instant;
@@ -3522,7 +3610,7 @@ mod tests {
     /// attempt's name, and the status and the figures describe the new
     /// attempt -- connecting rather than over, nothing counted -- until its
     /// own session says otherwise.
-    #[cfg(feature = "host")]
+    #[cfg(all(feature = "host", target_os = "linux"))]
     #[test]
     fn a_new_attempt_starts_from_nothing_the_last_session_left() {
         use std::time::Instant;

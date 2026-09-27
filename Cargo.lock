@@ -910,6 +910,7 @@ name = "lowlat-sdk"
 version = "0.0.0"
 dependencies = [
  "cbindgen",
+ "find-msvc-tools",
  "lowlat-audio",
  "lowlat-client",
  "lowlat-common",

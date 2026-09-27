@@ -9,19 +9,32 @@
 //! **They run against the built shared object, not against this crate.** That
 //! is the whole point of them: the library form linked into this test answers
 //! for this test's build settings, and what ships is the other one.
-
-// The crate under test is built on Linux so far (docs/impl-plan-windows.md).
-#![cfg(target_os = "linux")]
+//!
+//! On Windows the same gates run with the platform's own tools -- its C
+//! compiler and its dump of an export table, found in the Visual Studio
+//! installation -- against the library that ships there, which carries the
+//! client half alone.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// The shared object's file name, as the platform's linker names it.
+#[cfg(target_os = "linux")]
+const OBJECT: &str = "liblowlat.so";
+#[cfg(windows)]
+const OBJECT: &str = "lowlat.dll";
+
 /// Where the repository is, from where this crate is.
+///
+/// **Not canonicalized**: a canonical path on Windows is in the verbatim
+/// form, which the platform's C compiler cannot open. The manifest's
+/// directory is absolute already.
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
+        .ancestors()
+        .nth(2)
         .expect("the workspace root is two levels above this crate")
+        .to_path_buf()
 }
 
 /// The profile directory this test was built into, which is also where cargo
@@ -110,10 +123,12 @@ fn shared_object() -> PathBuf {
     // fails to load on that runtime's own symbols. What these tests check of
     // it -- its exported names, a panic held at the boundary -- is the same
     // either way; the library's own tests are what a sanitizer sees.
-    build.env(
-        "RUSTFLAGS",
-        without_sanitizer(&std::env::var("RUSTFLAGS").unwrap_or_default()),
-    );
+    // **Passed on only when it was set**: the variable replaces the
+    // configuration's flags rather than adding to them, even empty, and on
+    // Windows those carry the static C runtime the library ships with.
+    if let Ok(flags) = std::env::var("RUSTFLAGS") {
+        build.env("RUSTFLAGS", without_sanitizer(&flags));
+    }
     let built = build.output().expect("cargo builds the shared object");
     assert!(
         built.status.success(),
@@ -121,7 +136,7 @@ fn shared_object() -> PathBuf {
         String::from_utf8_lossy(&built.stderr)
     );
 
-    let object = profile.join("liblowlat.so");
+    let object = profile.join(OBJECT);
     assert!(object.is_file(), "{} was not produced", object.display());
     object
 }
@@ -378,22 +393,164 @@ fn to_doxygen(header: &str) -> String {
     folded
 }
 
-/// Run a compiler and give back what it said, so a failure reports the
+/// Run a tool and give back what it said, so a failure reports the
 /// diagnostic rather than an exit code.
-fn compile(compiler: &str, args: &[&str]) -> Result<(), String> {
-    let output = Command::new(compiler)
-        .args(args)
+fn run(mut command: Command) -> Result<(), String> {
+    let shown = format!("{command:?}");
+    let output = command
         .output()
-        .map_err(|why| format!("{compiler} could not be run: {why}"))?;
+        .map_err(|why| format!("{shown} could not be run: {why}"))?;
     if output.status.success() {
         return Ok(());
     }
     Err(format!(
-        "{compiler} {}\n{}{}",
-        args.join(" "),
+        "{shown}\n{}{}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     ))
+}
+
+/// One of Visual Studio's tools, with the environment it needs: found where
+/// cargo finds its linker, so no developer prompt is needed.
+#[cfg(windows)]
+fn msvc(tool: &str) -> Command {
+    find_msvc_tools::find(std::env::consts::ARCH, tool)
+        .unwrap_or_else(|| panic!("{tool} is not in a Visual Studio installation here"))
+}
+
+/// Compile `source` on its own into `object`, warnings as errors: as C11 or
+/// as C++17, with `define` defined when there is one.
+#[cfg(target_os = "linux")]
+fn compile_object(
+    source: &Path,
+    object: &Path,
+    cplusplus: bool,
+    define: Option<&str>,
+) -> Result<(), String> {
+    let mut command = Command::new(if cplusplus { "c++" } else { "cc" });
+    if cplusplus {
+        command.args(["-std=c++17", "-x", "c++"]);
+    } else {
+        command.arg("-std=c11");
+    }
+    command.args(["-Wall", "-Wextra", "-Werror"]);
+    if let Some(define) = define {
+        command.arg(format!("-D{define}"));
+    }
+    command
+        .arg("-I")
+        .arg(root().join("include"))
+        .arg("-c")
+        .arg(source)
+        .arg("-o")
+        .arg(object);
+    run(command)
+}
+
+#[cfg(windows)]
+fn compile_object(
+    source: &Path,
+    object: &Path,
+    cplusplus: bool,
+    define: Option<&str>,
+) -> Result<(), String> {
+    let mut command = msvc("cl.exe");
+    command.arg("/nologo");
+    if cplusplus {
+        command.args(["/std:c++17", "/TP"]);
+    } else {
+        command.arg("/std:c11");
+    }
+    command.args(["/W4", "/WX"]);
+    if let Some(define) = define {
+        command.arg(format!("/D{define}"));
+    }
+    command
+        .arg("/I")
+        .arg(root().join("include"))
+        .arg("/c")
+        .arg(source)
+        .arg(format!("/Fo{}", object.display()));
+    run(command)
+}
+
+/// Compile and link `source` into `program`, as C11, warnings as errors.
+#[cfg(target_os = "linux")]
+fn compile_program(source: &Path, program: &Path) -> Result<(), String> {
+    let mut command = Command::new("cc");
+    command
+        .args(["-std=c11", "-Wall", "-Wextra", "-Werror", "-I"])
+        .arg(root().join("include"))
+        .arg(source)
+        .arg("-o")
+        .arg(program);
+    run(command)
+}
+
+#[cfg(windows)]
+fn compile_program(source: &Path, program: &Path) -> Result<(), String> {
+    let mut command = msvc("cl.exe");
+    // The objects beside the program, never in the directory the test runs in.
+    let dir = program.parent().expect("a program in a directory");
+    command
+        .args(["/nologo", "/std:c11", "/W4", "/WX", "/I"])
+        .arg(root().join("include"))
+        .arg(source)
+        .arg(format!("/Fo{}\\", dir.display()))
+        .arg(format!("/Fe{}", program.display()));
+    run(command)
+}
+
+/// Every name the shared object exports.
+#[cfg(target_os = "linux")]
+fn exports(object: &Path) -> Vec<String> {
+    let listed = Command::new("nm")
+        .args(["-D", "--defined-only", "--format=posix"])
+        .arg(object)
+        .output()
+        .expect("nm runs; it ships with the linker this toolchain already needs");
+    assert!(
+        listed.status.success(),
+        "nm could not read {}:\n{}",
+        object.display(),
+        String::from_utf8_lossy(&listed.stderr)
+    );
+    String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .map(str::to_owned)
+        .collect()
+}
+
+#[cfg(windows)]
+fn exports(object: &Path) -> Vec<String> {
+    let listed = msvc("link.exe")
+        .args(["/dump", "/exports", "/nologo"])
+        .arg(object)
+        .output()
+        .expect("the linker runs");
+    assert!(
+        listed.status.success(),
+        "the linker could not dump {}:\n{}",
+        object.display(),
+        String::from_utf8_lossy(&listed.stdout)
+    );
+    // A row of the table is three numbers -- the ordinal, the hint and the
+    // address -- and then the name; nothing else in the dump is.
+    String::from_utf8_lossy(&listed.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let ordinal = fields.next()?;
+            let hint = fields.next()?;
+            let address = fields.next()?;
+            let name = fields.next()?;
+            let numbers = ordinal.chars().all(|c| c.is_ascii_digit())
+                && hint.chars().all(|c| c.is_ascii_hexdigit())
+                && address.chars().all(|c| c.is_ascii_hexdigit());
+            numbers.then(|| name.to_owned())
+        })
+        .collect()
 }
 
 /// **The header is generated, so it cannot describe something the library does
@@ -412,13 +569,24 @@ fn the_header_matches_the_definitions() {
         return;
     }
 
+    // **Compared by lines**: a checkout may give the file the platform's own
+    // line endings, which are no part of what the header says.
     let found = std::fs::read_to_string(&committed).unwrap_or_default();
-    assert_eq!(
-        found,
-        generated,
-        "{} is stale. Regenerate it: LOWLAT_BLESS_HEADER=1 cargo test -p lowlat-sdk --test abi",
-        committed.display()
-    );
+    if !found.lines().eq(generated.lines()) {
+        let at = found
+            .lines()
+            .zip(generated.lines())
+            .position(|(committed, generated)| committed != generated)
+            .unwrap_or_else(|| found.lines().count().min(generated.lines().count()));
+        panic!(
+            "{} is stale from line {}. Regenerate it: LOWLAT_BLESS_HEADER=1 cargo test -p \
+             lowlat-sdk --test abi\n committed: {:?}\n generated: {:?}",
+            committed.display(),
+            at + 1,
+            found.lines().nth(at),
+            generated.lines().nth(at)
+        );
+    }
 }
 
 /// **One header, both languages, warnings as errors.**
@@ -427,47 +595,20 @@ fn the_header_matches_the_definitions() {
 /// can produce a diagnostic is the header.
 #[test]
 fn the_header_compiles_alone_as_c_and_as_c_plus_plus() {
-    let include = root().join("include");
     let source = root().join("crates/sdk/tests/c/alone.c");
     let dir = scratch("alone");
-    let warnings = ["-Wall", "-Wextra", "-Werror"];
-
-    let object = dir.join("alone-c.o");
-    let mut args: Vec<&str> = vec!["-std=c11"];
-    args.extend(warnings);
-    let (include, source, object) = (
-        include.to_string_lossy().to_string(),
-        source.to_string_lossy().to_string(),
-        object.to_string_lossy().to_string(),
-    );
-    args.extend(["-I", &include, "-c", &source, "-o", &object]);
-    if let Err(why) = compile("cc", &args) {
-        panic!("the header does not compile as C:\n{why}");
-    }
-
-    let object = dir.join("alone-cpp.o");
-    let object = object.to_string_lossy().to_string();
-    let mut args: Vec<&str> = vec!["-std=c++17", "-x", "c++"];
-    args.extend(warnings);
-    args.extend(["-I", &include, "-c", &source, "-o", &object]);
-    if let Err(why) = compile("c++", &args) {
-        panic!("the header does not compile as C++:\n{why}");
-    }
-
-    // **And with either half hidden**, which is what an application built
-    // against a library carrying one half does: the shared types must still
-    // be there, and nothing of the hidden half may be.
-    for (hidden, name) in [
-        ("-DLOWLAT_NO_HOST", "no-host"),
-        ("-DLOWLAT_NO_CLIENT", "no-client"),
+    for (cplusplus, define, name) in [
+        (false, None, "as C"),
+        (true, None, "as C++"),
+        // **And with either half hidden**, which is what an application built
+        // against a library carrying one half does: the shared types must
+        // still be there, and nothing of the hidden half may be.
+        (false, Some("LOWLAT_NO_HOST"), "with LOWLAT_NO_HOST"),
+        (false, Some("LOWLAT_NO_CLIENT"), "with LOWLAT_NO_CLIENT"),
     ] {
-        let object = dir.join(format!("alone-{name}.o"));
-        let object = object.to_string_lossy().to_string();
-        let mut args: Vec<&str> = vec!["-std=c11", hidden];
-        args.extend(warnings);
-        args.extend(["-I", &include, "-c", &source, "-o", &object]);
-        if let Err(why) = compile("cc", &args) {
-            panic!("the header does not compile with {hidden}:\n{why}");
+        let object = dir.join(format!("alone-{}.o", name.replace(' ', "-")));
+        if let Err(why) = compile_object(&source, &object, cplusplus, define) {
+            panic!("the header does not compile {name}:\n{why}");
         }
     }
 }
@@ -480,20 +621,14 @@ fn the_header_compiles_alone_as_c_and_as_c_plus_plus() {
 /// test would still pass if it linked the library form.
 #[test]
 fn a_deliberate_panic_returns_a_status_from_the_shared_object() {
-    let include = root().join("include");
     let source = root().join("crates/sdk/tests/c/harness.c");
     let dir = scratch("harness");
-    let program = dir.join("harness");
-
-    let (include, source, program) = (
-        include.to_string_lossy().to_string(),
-        source.to_string_lossy().to_string(),
-        program.to_string_lossy().to_string(),
-    );
-    let args = vec![
-        "-std=c11", "-Wall", "-Wextra", "-Werror", "-I", &include, &source, "-o", &program,
-    ];
-    if let Err(why) = compile("cc", &args) {
+    let program = dir.join(if cfg!(windows) {
+        "harness.exe"
+    } else {
+        "harness"
+    });
+    if let Err(why) = compile_program(&source, &program) {
         panic!("the harness does not compile:\n{why}");
     }
 
@@ -517,30 +652,13 @@ fn a_deliberate_panic_returns_a_status_from_the_shared_object() {
 #[test]
 fn every_exported_symbol_carries_the_prefix() {
     let object = shared_object();
-    let listed = Command::new("nm")
-        .args(["-D", "--defined-only", "--format=posix"])
-        .arg(&object)
-        .output()
-        .expect("nm runs; it ships with the linker this toolchain already needs");
-    assert!(
-        listed.status.success(),
-        "nm could not read {}:\n{}",
-        object.display(),
-        String::from_utf8_lossy(&listed.stderr)
-    );
-
-    let listed = String::from_utf8_lossy(&listed.stdout);
-    let exported: Vec<&str> = listed
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .collect();
-
+    let exported = exports(&object);
     assert!(
         !exported.is_empty(),
         "{} exports nothing, so this check cannot have proven anything",
         object.display()
     );
-    let stray: Vec<&&str> = exported
+    let stray: Vec<&String> = exported
         .iter()
         .filter(|name| !name.starts_with("lowlat_"))
         .collect();
@@ -625,7 +743,9 @@ fn the_header_declares_no_name_without_the_prefix() {
 /// anything smaller than its own, so a mirror that has drifted fails at every
 /// call with one invalid-argument status and names nothing. The number below
 /// is written out from the fields rather than taken from `size_of`, because
-/// taking it from `size_of` would agree with any layout at all.
+/// taking it from `size_of` would agree with any layout at all. The host
+/// half's, so Linux's.
+#[cfg(target_os = "linux")]
 #[test]
 fn the_status_struct_is_the_size_its_fields_come_to() {
     use lowlat::abi::{LOWLAT_OUTPUT_MAX, lowlat_host_status};

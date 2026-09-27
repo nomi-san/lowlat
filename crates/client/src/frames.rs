@@ -7,9 +7,12 @@
 //! produces (full chroma at sixteen bits: three planes of two-byte
 //! samples), and backed on the decode thread at the first decoder build,
 //! demand-zero: nothing is allocated at creation or at an attempt, and the
-//! working set is the pictures actually written, never the reserve. A
-//! rebuild never reallocates, so a slot the application holds is never
-//! pulled from under it.
+//! working set is the pictures actually written, never the reserve. Where
+//! the system charges memory it has handed out whether it is touched or not,
+//! a slot is committed as far as the picture laid out in it reaches, so the
+//! charge is the pictures too (the platform's backing, `sys`). A rebuild
+//! never reallocates, so a slot the application holds is never pulled from
+//! under it.
 //!
 //! **Device slots** are exportable allocations on the decoder's device,
 //! each with a descriptor the application imports, and they are sized at
@@ -27,18 +30,26 @@
 //! travels with the published picture, so a held slot keeps its own across
 //! anything decoded after it.
 
-use std::os::fd::{AsRawFd, RawFd};
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use lowlat_common::latest::{Latest, Taken};
 use lowlat_core::video::Rotation;
-use lowlat_decode::nvdec::DevicePlanes;
 use lowlat_decode::{Format, Planes};
-use lowlat_drivers::cuda::{Cuda, Device, Exportable};
 
 use crate::config::FrameKind;
+
+/// How the host slots are backed and what a device slot is, which are the
+/// platform's; the queue around them is written once.
+#[cfg(target_os = "linux")]
+#[path = "frames/linux.rs"]
+mod sys;
+#[cfg(windows)]
+#[path = "frames/windows.rs"]
+mod sys;
+
+pub use sys::Handle;
 
 /// Slots: two the application may hold, one being decoded into, one ready.
 pub const SLOTS: usize = 4;
@@ -46,24 +57,6 @@ pub const SLOTS: usize = 4;
 pub const MAX_HELD: usize = 2;
 /// Rows of a host slot are aligned to a cache line.
 const HOST_ALIGN: usize = 64;
-/// Rows of a device slot are aligned as the device's own surfaces are.
-const DEVICE_ALIGN: usize = 256;
-
-/// The descriptor behind a device slot, as the application is told.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Handle {
-    /// The library's for the lease: closed when the allocation is freed,
-    /// which is after the last hold on it is released. An import that
-    /// takes ownership of a descriptor is given a duplicate.
-    pub fd: RawFd,
-    /// The whole allocation, which is what an import is told.
-    pub size: usize,
-    /// The allocation's ordinal since creation, from one. Descriptor
-    /// numbers are reused once closed, so this is what tells one
-    /// allocation from the next: two frames with the same ordinal share an
-    /// import, and a new ordinal is a new import.
-    pub allocation: u32,
-}
 
 /// What a slot holds, as the application is told.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -146,72 +139,6 @@ impl Layout {
     }
 }
 
-/// The one host allocation, made on the decode thread.
-struct Backing {
-    ptr: *mut u8,
-    len: usize,
-}
-
-// SAFETY: the bytes are written only inside a slot the ring has lent the
-// producer and read only inside one it has lent the consumer, and the ring's
-// state transitions carry the ordering. The pointer itself is set once,
-// before the first publish, through the lock.
-unsafe impl Send for Backing {}
-unsafe impl Sync for Backing {}
-
-impl Drop for Backing {
-    fn drop(&mut self) {
-        // SAFETY: made by `Box::into_raw` on a boxed slice of `len` bytes,
-        // freed once.
-        unsafe {
-            drop(Box::from_raw(core::ptr::slice_from_raw_parts_mut(
-                self.ptr, self.len,
-            )));
-        }
-    }
-}
-
-/// One device slot: its allocation and what it was laid out for.
-struct DeviceSlot {
-    memory: Exportable,
-    layout: Layout,
-    allocation: u32,
-}
-
-/// The device slots and the runtime they are made through, attached on
-/// the decode thread before its first picture.
-struct DeviceBacking {
-    slots: [Option<DeviceSlot>; SLOTS],
-    /// Ordinals handed out so far.
-    allocations: u32,
-    device: Device,
-    /// Last, so the allocations' entry points outlive them.
-    cuda: Arc<Cuda>,
-}
-
-impl DeviceBacking {
-    /// The slot at `index`, allocated for `layout`: the existing allocation
-    /// if it was made for exactly this layout, else a fresh one in its
-    /// place. The previous one drops here, which is safe because the ring
-    /// lent this slot to the producer, so nothing holds it.
-    fn slot_for(&mut self, index: usize, layout: Layout) -> Option<&DeviceSlot> {
-        let slot = self.slots.get_mut(index)?;
-        if slot.as_ref().is_none_or(|s| s.layout != layout) {
-            let memory = self
-                .cuda
-                .alloc_exportable(&self.device, layout.bytes)
-                .ok()?;
-            self.allocations += 1;
-            *slot = Some(DeviceSlot {
-                memory,
-                layout,
-                allocation: self.allocations,
-            });
-        }
-        slot.as_ref()
-    }
-}
-
 /// The queue.
 pub struct Frames {
     ring: Latest<Frame, SLOTS>,
@@ -221,10 +148,9 @@ pub struct Frames {
     rows: u32,
     /// Which kind of slot this queue lends.
     kind: FrameKind,
-    backing: OnceLock<Backing>,
-    /// The device slots, for a queue of the handle kind; touched by the
-    /// producer alone, under a lock only so the drop may happen anywhere.
-    device: Mutex<Option<DeviceBacking>>,
+    backing: OnceLock<sys::Backing>,
+    /// The device slots, for a queue of the handle kind.
+    device: sys::DeviceSlots,
     /// Slots the consumer holds: the two-held rule is enforced here, before
     /// the ring is asked.
     held: AtomicUsize,
@@ -289,7 +215,7 @@ impl Frames {
             rows: ceiling.1.max(16),
             kind,
             backing: OnceLock::new(),
-            device: Mutex::new(None),
+            device: sys::DeviceSlots::new(),
             held: AtomicUsize::new(0),
         }
     }
@@ -297,20 +223,6 @@ impl Frames {
     /// Which kind of slot this queue lends.
     pub fn kind(&self) -> FrameKind {
         self.kind
-    }
-
-    /// Attach the runtime the device slots are made through. Called on
-    /// the decode thread before its first picture, for a queue of the
-    /// handle kind; the slots themselves are allocated as pictures come.
-    pub fn open_device(&self, cuda: Arc<Cuda>, device: Device) {
-        if let Ok(mut guard) = self.device.lock() {
-            *guard = Some(DeviceBacking {
-                slots: [const { None }; SLOTS],
-                allocations: 0,
-                device,
-                cuda,
-            });
-        }
     }
 
     fn slot_bytes(&self) -> usize {
@@ -321,11 +233,7 @@ impl Frames {
 
     /// Whether any slot is backed yet.
     pub fn backed(&self) -> bool {
-        self.backing.get().is_some()
-            || self
-                .device
-                .lock()
-                .is_ok_and(|d| d.as_ref().is_some_and(|d| d.allocations > 0))
+        self.backing.get().is_some() || self.device.backed()
     }
 
     /// Bytes the host slots reserve, backed or not; zero for device slots,
@@ -337,22 +245,16 @@ impl Frames {
         }
     }
 
-    fn backing(&self) -> &Backing {
-        self.backing.get_or_init(|| {
-            // Demand-zero: the pages are mapped when a picture is first
-            // written into them, never here.
-            let len = self.slot_bytes() * SLOTS;
-            let boxed = vec![0u8; len].into_boxed_slice();
-            let ptr = Box::into_raw(boxed).cast::<u8>();
-            Backing { ptr, len }
-        })
+    fn backing(&self) -> &sys::Backing {
+        self.backing
+            .get_or_init(|| sys::Backing::new(self.slot_bytes() * SLOTS))
     }
 
     fn slot_ptr(&self, index: usize) -> *mut u8 {
         let backing = self.backing();
         let offset = (index % SLOTS) * self.slot_bytes();
         // SAFETY: `offset` is inside the allocation for every slot index.
-        unsafe { backing.ptr.add(offset) }
+        unsafe { backing.ptr().add(offset) }
     }
 
     /// The producer takes a slot to decode into. `None` only if every slot
@@ -468,6 +370,16 @@ impl Filling<'_> {
         if layout.bytes > self.frames.slot_bytes() {
             return None;
         }
+        let base = self.frames.slot_ptr(self.index);
+        // Usable before anything is lent over it; a platform that cannot
+        // make the picture's bytes usable refuses the picture whole.
+        if !self
+            .frames
+            .backing()
+            .commit(self.index % SLOTS, base, layout.bytes)
+        {
+            return None;
+        }
         self.pitch = layout.pitch;
         self.uv_offset = layout.uv_offset;
         self.v_offset = layout.v_offset;
@@ -477,7 +389,6 @@ impl Filling<'_> {
         } else {
             layout.bytes - layout.uv_offset
         };
-        let base = self.frames.slot_ptr(self.index);
         // SAFETY: the slot is lent to this producer alone until it is
         // published or abandoned; the ranges are disjoint and inside the
         // slot, checked above.
@@ -497,46 +408,6 @@ impl Filling<'_> {
             uv,
             uv_pitch: layout.pitch,
             v,
-            v_pitch: layout.pitch,
-        })
-    }
-
-    /// The device planes to decode a `width` x `height` picture of
-    /// `format` into, on a queue of the handle kind with its runtime
-    /// attached: the slot's allocation, made or remade for this layout.
-    /// `None` when there is no runtime or the device refused.
-    pub fn device_planes_for(
-        &mut self,
-        width: u32,
-        height: u32,
-        format: Format,
-    ) -> Option<DevicePlanes> {
-        if self.frames.kind != FrameKind::Handle {
-            return None;
-        }
-        let layout = Layout::of(width, height, format, DEVICE_ALIGN)?;
-        let mut guard = self.frames.device.lock().ok()?;
-        let slot = guard.as_mut()?.slot_for(self.index, layout)?;
-        self.pitch = layout.pitch;
-        self.uv_offset = layout.uv_offset;
-        self.v_offset = layout.v_offset;
-        self.handle = Some(Handle {
-            fd: slot.memory.fd().as_raw_fd(),
-            size: slot.memory.size(),
-            allocation: slot.allocation,
-        });
-        let base = slot.memory.ptr();
-        let at = |offset: usize| base + u64::try_from(offset).unwrap_or(0);
-        Some(DevicePlanes {
-            y: base,
-            y_pitch: layout.pitch,
-            uv: at(layout.uv_offset),
-            uv_pitch: layout.pitch,
-            v: if format.full_chroma() {
-                at(layout.v_offset)
-            } else {
-                0
-            },
             v_pitch: layout.pitch,
         })
     }
@@ -738,140 +609,5 @@ mod tests {
         assert!(filling.planes_for(64, 64, Format::Nv12).is_none());
         assert!(filling.device_planes_for(64, 64, Format::Nv12).is_none());
         assert!(!frames.backed());
-    }
-
-    /// The runtime, on the first device: what the device tests run on.
-    /// `None` without the vendor driver, and the test says so and passes.
-    fn device_queue(ceiling: (u32, u32)) -> Option<Frames> {
-        let cuda = Cuda::load().ok()?;
-        let device = cuda.any_device().ok()?;
-        let frames = Frames::new(ceiling, FrameKind::Handle);
-        frames.open_device(Arc::new(cuda), device);
-        Some(frames)
-    }
-
-    /// Whether a descriptor number is open: a duplicate succeeds only
-    /// then, and is closed again at once.
-    fn descriptor_is_open(fd: RawFd) -> bool {
-        // SAFETY: the number is only borrowed for a duplicate, which fails
-        // harmlessly on a closed one.
-        unsafe { std::os::fd::BorrowedFd::borrow_raw(fd) }
-            .try_clone_to_owned()
-            .is_ok()
-    }
-
-    /// Device slots are made at the picture's layout, exported, and laid
-    /// out at the device alignment; a picture of the same layout reuses
-    /// the slot's allocation, so the descriptor an application imported
-    /// stays the one it sees.
-    #[test]
-    #[ignore = "requires the vendor driver"]
-    fn a_device_slot_is_allocated_once_per_layout() {
-        let Some(frames) = device_queue((4096, 4096)) else {
-            println!("no vendor runtime; not exercised");
-            return;
-        };
-        let mut filling = frames.fill().unwrap();
-        let planes = filling.device_planes_for(1366, 768, Format::Nv12).unwrap();
-        assert_eq!(planes.y_pitch, 1536, "rows at the device alignment");
-        assert_eq!(planes.uv, planes.y + 1536 * 768);
-        assert_eq!(planes.v, 0);
-        filling.publish(frame(1));
-        let first = frames.acquire(0, Duration::ZERO).unwrap().unwrap();
-        let handle = first.handle.expect("a device slot carries its handle");
-        assert!(first.y.is_null() && first.uv.is_null());
-        assert_eq!((first.pitch, first.frame.uv_offset), (1536, 1536 * 768));
-        assert!(handle.size >= 1536 * 768 * 3 / 2);
-        assert!(descriptor_is_open(handle.fd));
-        frames.release(first.index);
-
-        // Many more pictures at the same layout: every slot keeps the one
-        // allocation it was given, whichever order the ring lends them in.
-        let mut by_slot = [None; SLOTS];
-        by_slot[first.index] = Some(handle);
-        let mut last = first.seq;
-        for n in 2..20 {
-            let mut filling = frames.fill().unwrap();
-            let _ = filling.device_planes_for(1366, 768, Format::Nv12).unwrap();
-            filling.publish(frame(n));
-            let h = frames.acquire(last, Duration::ZERO).unwrap().unwrap();
-            last = h.seq;
-            let seen = by_slot[h.index].get_or_insert(h.handle.unwrap());
-            assert_eq!(*seen, h.handle.unwrap(), "slot {} reallocated", h.index);
-            frames.release(h.index);
-        }
-        let ordinals: Vec<u32> = by_slot.iter().flatten().map(|h| h.allocation).collect();
-        assert!(ordinals.iter().all(|o| *o <= 4), "{ordinals:?}");
-    }
-
-    /// A slot the application holds keeps its allocation while pictures
-    /// of a new layout are decoded into the other slots; once released
-    /// and refilled it gets a fresh allocation, with a new ordinal even
-    /// though the descriptor number may repeat.
-    #[test]
-    #[ignore = "requires the vendor driver"]
-    fn a_held_device_slot_outlives_a_resize() {
-        let Some(frames) = device_queue((4096, 4096)) else {
-            println!("no vendor runtime; not exercised");
-            return;
-        };
-        let mut filling = frames.fill().unwrap();
-        let _ = filling.device_planes_for(1920, 1080, Format::P010).unwrap();
-        filling.publish(frame(1));
-        let held = frames.acquire(0, Duration::ZERO).unwrap().unwrap();
-        let old = held.handle.unwrap();
-
-        // The stream changes size: the next three slots are remade.
-        let mut last = held.seq;
-        let mut ordinals = Vec::new();
-        for n in 2..5 {
-            let mut filling = frames.fill().unwrap();
-            assert_ne!(filling.index, held.index, "the held slot was lent");
-            let _ = filling.device_planes_for(1280, 720, Format::Nv12).unwrap();
-            filling.publish(frame(n));
-            let h = frames.acquire(last, Duration::ZERO).unwrap().unwrap();
-            last = h.seq;
-            ordinals.push(h.handle.unwrap().allocation);
-            frames.release(h.index);
-        }
-        assert!(ordinals.iter().all(|o| *o > old.allocation));
-        assert!(
-            descriptor_is_open(old.fd),
-            "the held slot's descriptor was closed under it"
-        );
-        frames.release(held.index);
-
-        // Refilled at the new layout, the slot gets a fresh allocation.
-        let mut filling = frames.fill().unwrap();
-        let _ = filling.device_planes_for(1280, 720, Format::Nv12).unwrap();
-        filling.publish(frame(5));
-        let fresh = frames.acquire(last, Duration::ZERO).unwrap().unwrap();
-        let new = fresh.handle.unwrap();
-        assert!(new.allocation > *ordinals.iter().max().unwrap());
-        assert_ne!(new, old);
-        frames.release(fresh.index);
-    }
-
-    /// The two-held rule is the ring's, whatever backs the slots.
-    #[test]
-    #[ignore = "requires the vendor driver"]
-    fn a_third_device_hold_is_refused() {
-        let Some(frames) = device_queue((256, 256)) else {
-            println!("no vendor runtime; not exercised");
-            return;
-        };
-        let mut last = 0;
-        for n in 0..3 {
-            let mut filling = frames.fill().unwrap();
-            let _ = filling.device_planes_for(64, 64, Format::Nv12).unwrap();
-            filling.publish(frame(n));
-            if n < 2 {
-                last = frames.acquire(last, Duration::ZERO).unwrap().unwrap().seq;
-            }
-        }
-        assert!(
-            frames.acquire(last, Duration::ZERO).is_err(),
-            "a third hold"
-        );
     }
 }
