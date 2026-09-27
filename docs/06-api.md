@@ -638,8 +638,8 @@ the stream can say.
 
 **Planned for Windows** (W1, [impl-plan-windows.md](impl-plan-windows.md),
 [10 §4.2](10-client.md)): a handle kind for shared textures in the legacy form, one per plane,
-with a handle per plane in the frame and the identity of the GPU they are on; the device
-string naming a GPU by that identity, where a render node names one on Linux;
+with a handle per plane in the frame and the identity of the GPU they are on (the device
+string naming a GPU by that identity is built, W1.3, below);
 `lowlat_client_set_frame_kind(cl, kind)`, which switches planes and handles at the next
 picture with no keyframe and is refused with `LOWLAT_ERR_DECODER_UNSUPPORTED` by a decoder
 that cannot hand out the kind; and `lowlat_client_set_decoder` accepted by a session of the
@@ -656,6 +656,20 @@ settling on it: the pair is found by the platform's names (`avutil-N.dll`,
 application, then the system's own directory, never the current directory or the search path.
 The other kinds and the handle kind are refused with `LOWLAT_ERR_DECODER_UNSUPPORTED` until
 their steps, and `lowlat_enum_decoders` lists the software slot alone meanwhile.
+
+**The open kind on Windows since W1.3** (*2026-09-27*) is the system's video decoding
+interface, planes only: `LOWLAT_DECODER_AUTO` tries it first, on the GPU named or the first
+that decodes, then the software pair. The device string names a GPU by its identity for the
+boot, `luid:HIGH:LOW` in hex as the listing spells it; the identity changes when the GPU is
+reset or its driver replaced, so an application takes it from the listing and never keeps
+it. A name no GPU has -- a stale identity, a Linux render node -- is refused with
+`LOWLAT_ERR_NO_DECODER_DEVICE` and, from `lowlat_client_set_decoder`, the running choice is
+kept. `lowlat_enum_decoders` has nine slots there: 0 to 7 the open decoder on the GPUs the
+system lists, high-performance first, each labelled `D3D11 [NVIDIA]`, `D3D11 [AMD]` or
+`D3D11 [Intel]` with the GPU's name and driver version as its words, and 8 the software
+pair. A virtual display's adapter, which the system enumerates under its GPU's name, has no
+slot. No entry point or field is added, so the minor stays 18. The vendor kind and the
+handle kind are still refused.
 
 **Sound is decoded, not played** (minor 7). `acquire_audio` hands out one packet a call,
 signed sixteen-bit stereo at 48 kHz, in the order the host sent them, as many frames as the

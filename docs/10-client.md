@@ -320,7 +320,9 @@ them on a device of its own on that GPU, never the renderer's: two users of one 
 serialised on its lock, and the decode would wait behind the renderer's present.
 
 **The picture is finished before it can be acquired, and nothing waits for it on the decode
-thread.** The decode thread queues the decode, the split of the decoded picture into the plane
+thread** -- a picture of the handle kind (*scoped 2026-09-27*, W1.3: a picture read back to
+planes is waited for in its read-back, as on Linux, the wait sleeping on the device's
+progress). The decode thread queues the decode, the split of the decoded picture into the plane
 textures and a signal of the library's fence, all on its own device, and takes the next unit
 at once. The split reads the decoder's output directly where a driver lets a shader read it,
 and copies it into a plain texture first where one does not; each device is probed. A
@@ -338,7 +340,13 @@ order two devices, it showed pictures out of order on one vendor's driver.
 another GPU than the display pays a copy of every presented picture across the bus and loses
 the direct flip, so the display's GPU is where a renderer belongs, and the library follows the
 renderer: a decoder that cannot run on the named GPU hands out planes, never a handle the
-renderer cannot open.
+renderer cannot open. **A GPU is named by its identity** (*built 2026-09-27*, W1.3), the one
+the system gives it for the boot, spelled `luid:HIGH:LOW` in the listing and taken back as the
+device; it changes when the GPU is reset or its driver replaced, so an application names it
+again from the listing then and never keeps it. The GPUs are listed in the system's
+high-performance order, and a decoder nobody placed settles on the first. A virtual display's
+adapter, which the system enumerates under the name of the GPU it renders on, is not listed:
+it would show that GPU twice.
 
 **Each slot carries its own backing**, made again when the slot comes back free after the
 session's backing has moved on. One mechanism serves three changes. The session moves to
@@ -625,6 +633,45 @@ kinds and the handle kind are refused as not in the build. On the development ma
 processor, from an established host at 2560x1440, it decodes H.264 in 4.4 ms at the median
 and 6.9 at the 95th percentile and HEVC in 7.0 and 10.0, the whole process -- the renderer
 included -- using 15 to 27 percent of one core.
+
+**The system's interface** (*built 2026-09-27*, W1.3). The decoder is fed the jobs the
+readers stage for the open stack and the vendor's decoder, so the parsers and picture buffers
+every clip is checked against carry over and only the device half is new: a decoder per
+stream shape and size, a surface array the picture buffer's slots index, the slices in the
+short form -- each slice's place in the bitstream, the device reading its header itself --
+and the scaling lists in the coded order where the readers keep them raster, a list left
+raster decoding without an error to the wrong picture. A picture is read back by a copy into
+a staging texture on the device and a map of it, whose wait sleeps on the device's progress;
+on one vendor's driver the map spins about 60 us of its wait before it sleeps. Full chroma is
+decoded where the device builds the profile into the packed layouts the open stack's
+read-back already unpacks. Every committed clip decodes bit for bit on an NVIDIA and an AMD
+integrated GPU, full chroma on the NVIDIA and refused as fatal on the AMD, which has no such
+profile; the declaration is masked by that, so a stream never arrives that the decoder would
+refuse. The device on each is the library's own. Nothing is allocated per unit.
+
+From an established host at 2560x1440, ten minutes each, the read-back's wait (the decode
+and the copy) and the copy out at the median, the whole process's share of one core:
+
+| GPU | H.264 wait / copy | HEVC wait / copy | arrival to present | core |
+|---|---|---|---|---|
+| NVIDIA RTX 5060 | 1.8 / 0.17 ms | 2.1 / 0.15 ms | 3.2-3.5 ms | 11 % |
+| AMD integrated | 8.9 / 0.15 ms | 11.8 / 0.20 ms | 10.9-14.9 ms | 4-6 % |
+
+The software pair on the same stream decoded in 4.4 and 7.0 ms at 22-27 % of a core. From a
+second host at 1920x1080 with the full range, on the NVIDIA: HEVC ten-bit 1.5 ms, full
+chroma 2.1 ms at both depths, the packed layouts' unpacking 0.7 and 1.1 ms of copy. A
+decoder moved mid-session between both GPUs and software, four moves, each back within the
+second. Beside another process saturating the AMD's video engine the wait held 4.8 ms at the
+median and 9.4 at the worst, the reader never more than one message behind.
+
+**The AMD's video engine runs at a low clock under one decode** (*found 2026-09-27*). Fed a
+1440p clip back to back it decodes HEVC in 5.9 ms and H.264 in 4.6; with any idle gap between
+pictures, 8 ms or 16, 12.6 and 8.6 -- the live figures, where a stream of 120 pictures a
+second left the reader up to 267 messages behind. The driver's power policy reads a decode
+that idles between pictures as a light load; any second stream on the engine keeps its clock
+up, through the vendor's own runtime or through this same interface alike, and halves the
+time. Recorded, not pursued: a decoder nobody placed goes to the high-performance GPU, and
+the vendor's own decoder is where a remedy would be looked for.
 
 ## §6 Sound
 

@@ -297,7 +297,11 @@ as C++, with either half hidden; the shipped DLL's exports, every one prefixed; 
 it carries -- the client half alone -- panicking on purpose through the DLL and coming back
 with a status. *Planned for W1*, it decodes the reference clips through an LGPL codec library
 it downloads, since the runner has no GPU, and builds the demo with the platform's own
-compiler.
+compiler. *Since W1.3* the system decoder's own tests -- every reference clip bit
+for bit on every GPU offered, full chroma refused as fatal where the device has no profile
+for it, the per-unit path allocating nothing, the read-back's wait sleeping rather than
+spinning, and a paced probe of that wait -- are hardware tests, run on a machine with GPUs
+and not on the runner.
 
 Nightly: unbounded fuzzing, the soak matrix, and the hardware suite on a machine with a GPU.
 

@@ -86,8 +86,10 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   renderer in the same process opens by its handle: a luma and a two-channel chroma texture
   at eight and ten bits, three single-channel textures for full chroma. Every frame says
   which GPU its textures are on. No other graphics interface is served.
-- **A picture is finished on the device before it can be acquired, and the decode thread
-  never waits for it.** The decode thread queues the decode, the split into the plane
+- **A picture of the handle kind is finished on the device before it can be acquired, and
+  the decode thread never waits for it** (*scoped to the handle kind at W1.3*: a picture read
+  back to planes is waited for in its read-back, as on Linux, the wait sleeping on the
+  device's progress). The decode thread queues the decode, the split into the plane
   textures and a signal of the library's own fence, and takes the next unit; a picture
   becomes acquirable when the fence has passed it, so the newest picture is the newest
   finished one, and only an acquire, on the application's thread and within its timeout,
@@ -178,13 +180,28 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   the path's upward direction mid-session, past this machine's network card, as an
   established client over the same path did too.
 - [ ] **W1.3 D3D11 planes**: the backend fed from the readers' jobs, read back to planes.
-  Checked by every clip decoding bit for bit on each of the three GPUs.
+  Checked by every clip decoding bit for bit on each of the three GPUs. *Built 2026-09-27;
+  the Intel card's pass is owed*: it was out of the machine, and the step is checked on the
+  NVIDIA and AMD GPUs first, the Intel card's after it is refitted. Decided at its interview:
+  the system's own declarations, generated from its headers and committed with their layout
+  checks, the libraries loaded at run time; the backend wired into the client for planes
+  (the open kind on Windows, first in the automatic order), which needs a GPU named by its
+  identity, so that moved here from W1.4; a picture read back to planes is waited for in its
+  read-back, the never-waits rule being the handle kind's; and, after the live runs, a
+  decoder nobody placed settles on the high-performance GPU. As built: the slices go in the
+  short form and the scaling lists in the coded order; a virtual display's adapter, which
+  enumerates under its GPU's name, is not offered. Every committed clip decodes bit for bit
+  on both GPUs, full chroma on the NVIDIA and refused as fatal on the AMD. Ten minutes of
+  each codec on each GPU from an established host at 2560x1440, and ten-bit and full chroma
+  with the full range from a second one ([10 §5.2](10-client.md)). *Found at the gate*: the
+  AMD's video engine runs at a low clock under one decode that leaves it idle between
+  pictures, twice as slow as when it is kept busy -- recorded, not pursued.
 - [ ] **W1.4 the handle**: the plane split, reading the decoder's output directly where a
   driver lets a shader read it and copying it first where one does not; the shared textures;
   the library's fence and the newest finished picture; the GPU on every frame; per-slot
-  backing; `lowlat_client_set_frame_kind`; a GPU named by its identity. Minor 19
-  (*corrected at W1.2*, which took 18). Checked by handles on all three GPUs and by each
-  mid-session change.
+  backing; `lowlat_client_set_frame_kind`. Minor 19 (*corrected at W1.2*, which took 18).
+  Checked by handles on all three GPUs and by each mid-session change. (*Corrected at
+  W1.3*: a GPU named by its identity moved to W1.3, which needed it for its table.)
 - [ ] **W1.5 NVDEC**: planes, then handles through the vendor's interop with D3D11, the copy's
   completion signalled on the library's fence rather than waited for. Checked by the clips
   and ten minutes.
@@ -221,6 +238,8 @@ whether an application may supply the frames, for a virtual display that already
 
 ## Change log
 
+- 2026-09-27: W1.3 built on two GPUs, the third's pass owed; a GPU named by its identity moved
+  from W1.4 to W1.3; the never-waits decision scoped to the handle kind.
 - 2026-09-27: W1.2 built; W1.4's minor corrected to 19.
 - 2026-09-26: W1.1 built; the seam and the library's client half moved to W1.2.
 - 2026-09-26: W1 planned at its interview.

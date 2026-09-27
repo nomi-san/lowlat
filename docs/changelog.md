@@ -3,6 +3,55 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-27 - W1.3: the system's decoder on Windows, read back to planes
+
+### Decided
+- **The system's own declarations are generated from its headers**, committed with the
+  generator's layout checks as the vendor interfaces' are, and the libraries loaded at run
+  time: the system crate this workspace uses carries none of the video interfaces.
+- **The decoder is wired into the client in this step**, for planes: the open kind on Windows,
+  first in the automatic order ([10 §5.2](10-client.md)). Its table needs a device name per
+  GPU, so **a GPU named by its identity** moved here from W1.4.
+- **A picture read back to planes is waited for in its read-back**, as on Linux, the wait
+  sleeping on the device; the rule that the decode thread never waits is the handle kind's.
+- **A decoder nobody placed settles on the high-performance GPU**, from the system's own
+  ordering where it has one and its plain enumeration where it does not.
+
+### Changed
+- **The system's video decoding interface decodes on Windows** from the jobs the readers
+  already stage, the slices in the short form, the scaling lists in the coded order, a
+  read-back through a staging texture; full chroma where the device builds it, into the
+  packed layouts the open stack's read-back unpacks, which now live where both backends
+  reach them.
+- **The Windows client opens it**: `LOWLAT_DECODER_OPEN` and `LOWLAT_DECODER_AUTO` settle on
+  it on the GPU named or the high-performance one, then software; `lowlat_enum_decoders` has
+  a slot per GPU, labelled with its maker and carrying its name and driver version. A GPU is
+  named `luid:HIGH:LOW`; a name no GPU has is refused as the device, the choice kept. No
+  minor: the header's words for the device gain their Windows meaning.
+- **A virtual display's adapter is not offered**: the system enumerates it under the name of
+  the GPU it renders on, with an identity of its own, and a device made on it works, so
+  nothing failed to reveal the duplicate; the kernel's adapter type tells the two apart.
+- **A paced probe of the read-back's wait** beside the clip test, for a named clip on a
+  named GPU with a gap between units.
+
+### Measured
+- **Every committed clip decodes bit for bit** on an NVIDIA RTX 5060 and an AMD integrated
+  GPU on the first run; full chroma on the NVIDIA, refused as fatal on the AMD. Each new check
+  failed when broken: the lists left raster, the chroma planes swapped, ten-bit pictures read
+  as eight.
+- **From an established host at 2560x1440, ten minutes of each codec on each GPU**: on the
+  NVIDIA the read-back's wait is 1.8 ms (H.264) and 2.1 (HEVC) at the median, arrival to
+  present 3.2-3.5 ms, 11 % of a core -- against the software pair's 4.4 and 7.0 ms at 22-27 %;
+  on the AMD 8.9 and 11.8 ms. Ten-bit and full chroma with the full range from a second host
+  at 1920x1080 on the NVIDIA; four decoder moves mid-session, each back within the second.
+- **The AMD's video engine runs at a low clock under a decode that idles between pictures**:
+  HEVC at 1440p takes 5.9 ms back to back and 12.6 with any gap; another stream keeping the
+  engine busy halves it, through the vendor's own runtime or this same interface alike.
+  Recorded, not pursued.
+- **The wait sleeps**: the decode thread ran for about 1 % of its wait on the AMD; one
+  NVIDIA driver's map spins about 60 us of each 0.3 ms wait before it sleeps.
+- **The Intel card's pass is owed**: it was out of the machine, and the step closes after it.
+
 ## 2026-09-27 - W1.2: the seam, the software decoder and the demo on Windows
 
 ### Decided
