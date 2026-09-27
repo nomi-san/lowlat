@@ -600,12 +600,15 @@ typedef enum lowlat_transport {
 #if defined(LOWLAT_CLIENT)
 /// Which decoder a client is built on.
 ///
-/// **The choice is by kind and render node, as the listing reports them;
-/// unset, the first that opens on the device named**: the open stack on
-/// that node or the first node that decodes, then the vendor's interface on
-/// the card behind it or any, then software. A machine without any is
-/// refused at creation with the stage named, exactly as a host without an
-/// encoder is.
+/// **The choice is by kind and device, as the listing reports them;
+/// unset, the first that opens on the device named**. On Linux the device
+/// is a render node: the open stack on that node or the first node that
+/// decodes, then the vendor's interface on the card behind it or any, then
+/// software. On Windows it is a GPU's identity as the listing spells it
+/// (`luid:HIGH:LOW`), which lasts until the GPU is reset or its driver
+/// replaced: the system's video decoding interface on that GPU or the
+/// first that decodes, then software. A machine without any is refused at
+/// creation with the stage named, exactly as a host without an encoder is.
 typedef enum lowlat_decoder {
     LOWLAT_DECODER_AUTO = 0,
     LOWLAT_DECODER_OPEN = 1,
@@ -1436,21 +1439,22 @@ typedef struct lowlat_decoder_info {
     /// one this build loads. A loop skips such rows.
     bool available;
     uint8_t reserved[1];
-    /// The render node, NUL-terminated, for `lowlat_client_create_info
-    /// .device`; empty for the vendor's device when no node names it, which
-    /// creation takes as the first device. For the software row, the
-    /// directory the library pair was found in, or empty for the linker's
-    /// own search.
+    /// The device, NUL-terminated, for `lowlat_client_create_info
+    /// .device`: a render node on Linux, empty for the vendor's device when
+    /// no node names it, which creation takes as the first device; a GPU's
+    /// identity on Windows. For the software row, the directory the library
+    /// pair was found in, or empty for the linker's own search.
     char device[LOWLAT_OUTPUT_MAX];
     /// A label for a menu, NUL-terminated: the interface, and the card's
     /// maker in brackets where it is known -- `VA-API [Intel]`, `VA-API
-    /// [AMD]`, `NVDEC [NVIDIA]`, `libavcodec [LGPL]`; the interface alone
-    /// for a slot with nothing behind it.
+    /// [AMD]`, `NVDEC [NVIDIA]`, `D3D11 [NVIDIA]`, `libavcodec [LGPL]`; the
+    /// interface alone for a slot with nothing behind it.
     char name[LOWLAT_DECODER_NAME_MAX];
     /// The driver's own words, NUL-terminated (minor 13): its banner and
-    /// version for the open decoder, the device's product name for the
-    /// vendor's, the library's version and licence for software; for a slot
-    /// that is not available, why not. Filled only when `size` reaches it.
+    /// version for the open decoder on Linux, the GPU's name and driver
+    /// version on Windows, the device's product name for the vendor's, the
+    /// library's version and licence for software; for a slot that is not
+    /// available, why not. Filled only when `size` reaches it.
     char driver[LOWLAT_DECODER_NAME_MAX];
 } lowlat_decoder_info;
 
@@ -1470,9 +1474,11 @@ typedef struct lowlat_client_create_info {
     /// Nothing is backed until the first picture is decoded.
     uint32_t max_width;
     uint32_t max_height;
-    /// The render node the decoder opens, NUL-terminated; empty for the
-    /// first that decodes. For the software decoder, the directory its
-    /// library pair is taken from, or empty for the search of its own.
+    /// The device the decoder opens, NUL-terminated; empty for the first
+    /// that decodes: a render node on Linux, a GPU's identity on Windows
+    /// (`luid:HIGH:LOW`, as the listing spells it). For the software
+    /// decoder, the directory its library pair is taken from, or empty for
+    /// the search of its own.
     char device[LOWLAT_OUTPUT_MAX];
 } lowlat_client_create_info;
 
@@ -2481,9 +2487,11 @@ lowlat_status lowlat_debug_panic(lowlat_host *hl) LOWLAT_NOEXCEPT;
 /// probes one slot** (minor 12): on Linux, slots 0 to 7 are the open
 /// decoder on render nodes `renderD128` to `renderD135`, 8 to 15 the
 /// vendor's on its devices by ordinal, 16 the software decoder from the
-/// codec library's own search. The same slot means the same thing on every
-/// machine and every call, and nothing is remembered between calls: each
-/// call opens its one slot the way creation opens it and closes it again,
+/// codec library's own search; on Windows, slots 0 to 7 are the open
+/// decoder on the GPUs the system lists, in its order, and 8 the software
+/// decoder. The same slot means the same thing on every machine and every
+/// call, and nothing is remembered between calls: each call opens its one
+/// slot the way creation opens it and closes it again,
 /// so a loop from zero until false costs every slot once -- a few
 /// milliseconds for most, some hundred and fifty for a vendor device whose
 /// five capabilities are each proved by a real decoder. A slot with nothing
@@ -2647,7 +2655,7 @@ lowlat_status lowlat_client_set_video_config(lowlat_client *cl,
 
 /// Choose another decoder, before a session or during one.
 ///
-/// The kind and render node are those of creation and of the listing's rows
+/// The kind and device are those of creation and of the listing's rows
 /// (`LOWLAT_DECODER_AUTO` walks the automatic order again). The decoder is
 /// probed here, on the caller's thread, exactly as creation probes it; a
 /// kind that does not open answers with its stage -- `LOWLAT_ERR_NO_DECODER_
@@ -2669,8 +2677,9 @@ lowlat_status lowlat_client_set_video_config(lowlat_client *cl,
 ///
 /// @param[in] cl The handle from `lowlat_client_create`.
 /// @param[in] decoder One of `lowlat_decoder`, not `LOWLAT_DECODER_NONE`.
-/// @param[in] device The render node, or the software decoder's directory,
-/// NUL-terminated; null or empty for the first that decodes.
+/// @param[in] device The render node or GPU identity, or the software
+/// decoder's directory, NUL-terminated; null or empty for the first that
+/// decodes.
 /// @returns `LOWLAT_OK`, `LOWLAT_ERR_INVALID_ARGUMENT` for a value that
 /// is not a decoder, `LOWLAT_ERR_DECODER_UNSUPPORTED` for a handle session
 /// or `LOWLAT_DECODER_NONE`, or the stage the probe stopped at.

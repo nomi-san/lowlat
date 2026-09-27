@@ -9,9 +9,10 @@
 //! it is still a row, with `available` clear and the reason in its name,
 //! so a loop runs to the end of the table and skips what it cannot use.
 //! An available row is a decoder creation would open, named by the same
-//! two values creation takes: the backend and the render node -- or, for
-//! software, the directory the pair was found in. Each row carries a
-//! label for a menu -- the interface and the card's maker, `VA-API [Intel]`
+//! two values creation takes: the backend and the device -- a render node
+//! on Linux, an adapter's identity on Windows -- or, for software, the
+//! directory the pair was found in. Each row carries a label for a menu --
+//! the interface and the card's maker, `VA-API [Intel]`, `D3D11 [NVIDIA]`
 //! -- and the driver's own words beside it.
 
 use lowlat_decode::{Caps, software};
@@ -30,15 +31,12 @@ mod sys;
 
 pub use sys::{OPEN_SLOTS, SLOTS, VENDOR_SLOTS, probe};
 
-/// Why a slot is not available, in the words its row carries. The device
-/// slots' words wait on Windows for the device slots.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+/// Why a slot is not available, in the words its row carries.
 const RUNTIME: &str = "the runtime library is not on the machine";
+/// Render nodes are Linux's.
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const NO_NODE: &str = "no such render node, or it did not open";
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const NO_DEVICE: &str = "no such device";
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 const NO_CONTEXT: &str = "the device did not open";
 const PROFILE: &str = "decodes none of the profiles a stream could use";
 const NO_PAIR: &str = "no codec library pair found";
@@ -52,13 +50,13 @@ pub struct Available {
     /// Whether a decoder opened here. Clear, the capabilities are all
     /// false and `driver` says why.
     pub available: bool,
-    /// The render node, as creation names the device; empty when the
-    /// vendor's device has no node this crate looks at, which creation
-    /// takes as the first device.
+    /// The device as creation names it: a render node on Linux, empty when
+    /// the vendor's device has no node this crate looks at, which creation
+    /// takes as the first device; an adapter's identity on Windows.
     pub device: String,
     /// A label for a menu: the interface, and the card's maker in brackets
     /// where it is known -- `VA-API [AMD]`, `NVDEC [NVIDIA]`,
-    /// `libavcodec [LGPL]`.
+    /// `D3D11 [Intel]`, `libavcodec [LGPL]`.
     pub name: String,
     /// The driver's own words: its banner, the device's product name, the
     /// library's version and licence; for a slot that is not available,

@@ -180,8 +180,6 @@ fn software_dir(device: &str) -> Option<PathBuf> {
 /// library found and refused for its licence over a node that decodes
 /// nothing, that over a runtime that is absent, that over a node that did
 /// not open.
-// Windows's automatic order walks one decoder so far.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn most_telling(a: DecoderStage, b: DecoderStage) -> DecoderStage {
     let rank = |stage: DecoderStage| match stage {
         DecoderStage::Device => 0,

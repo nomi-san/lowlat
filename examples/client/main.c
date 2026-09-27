@@ -22,8 +22,9 @@
 // held; it reaches the host on chords, and whole once grabbed.
 //
 // `LOWLAT_SERVER` names the signaling service (kessel-ws.parsec.app by
-// default), `LOWLAT_DEVICE` a render node for the decoder (the first that
-// decodes by default), `LOWLAT_DECODER` one of `auto`, `open`, `vendor`,
+// default), `LOWLAT_DEVICE` the decoder's device -- a render node, or on
+// Windows a GPU's identity as the table prints it (`luid:HIGH:LOW`); the
+// first that decodes by default -- `LOWLAT_DECODER` one of `auto`, `open`, `vendor`,
 // `software`, `none`. The decoder table is printed at start, one slot a
 // line with the unavailable ones saying why, and `LOWLAT_DECODER_INDEX`
 // picks a slot instead. The software row is the machine's own codec library, an LGPL

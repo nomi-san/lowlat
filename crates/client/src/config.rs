@@ -17,11 +17,12 @@ pub const MAX_DIMENSION: u32 = 4096;
 /// Which decoder to build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Backend {
-    /// The first that opens on the device named: the open stack, then the
-    /// vendor's interface, then software.
+    /// The first that opens on the device named: the system's own
+    /// interface, then the vendor's, then software.
     #[default]
     Auto,
-    /// The open-stack interface.
+    /// The system's own decoding interface: the open stack on Linux, the
+    /// system's video decoding interface on Windows.
     Vaapi,
     /// The vendor interface, on the card behind the render node named, or
     /// the first.
@@ -52,7 +53,8 @@ pub enum FrameKind {
 #[derive(Debug, Clone, Default)]
 pub struct Decoding {
     pub backend: Backend,
-    /// The render node, or empty for the first that opens.
+    /// The device: a render node on Linux, an adapter's identity
+    /// (`luid:HIGH:LOW`) on Windows; or empty for the first that opens.
     pub device: String,
     pub kind: FrameKind,
     /// The largest picture the slots take; zero for the generation's
