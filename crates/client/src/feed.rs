@@ -98,6 +98,13 @@ impl<D: Decoder> Feed<D> {
         self.teardown("another decoder chosen");
     }
 
+    /// The decoder's device was found gone taking a picture, which a device
+    /// can report before any decode does: torn down as a fault that says so
+    /// tears it down.
+    pub fn lost(&mut self) {
+        self.teardown("device lost");
+    }
+
     /// One message off the video channel, header and all.
     pub fn feed(&mut self, content: &[u8]) -> Decision {
         let Ok(header) = video::parse(content) else {

@@ -41,9 +41,14 @@ impl Backend for d3d11::Backend<'_> {
         (width, height, format): (u32, u32, Format),
     ) -> Result<Option<(Picture, u64)>, Fault> {
         // Textures a device refused are a picture lost, as a slot that does
-        // not fit is; the decoder is left to its next unit.
+        // not fit is, and the decoder is left to its next unit -- unless the
+        // device is gone, which no later unit's decode need report.
         let Some(planes) = filling.textures_for(width, height, format) else {
-            return Ok(None);
+            return if self.lost() {
+                Err(Fault::DeviceLost)
+            } else {
+                Ok(None)
+            };
         };
         self.take_to_textures(planes)
     }

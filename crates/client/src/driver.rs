@@ -150,6 +150,20 @@ impl Units {
     pub fn clear(&self) {
         while self.take().is_some() {}
     }
+
+    /// Hand `content` over as the session's thread does, for the decode
+    /// thread's tests.
+    #[cfg(test)]
+    pub(crate) fn hand_over(&self, content: &[u8]) {
+        let mut writer = self.pool.acquire().expect("a free slot");
+        assert!(writer.fill_with(|slot| {
+            slot[..content.len()].copy_from_slice(content);
+            Some(content.len())
+        }));
+        assert_eq!(writer.publish(0, &[&self.ring]), 1);
+        self.word.fetch_add(1, Ordering::Release);
+        lowlat_common::wait::notify_one(&self.word);
+    }
 }
 
 /// One access unit, header included, as it came off the wire.

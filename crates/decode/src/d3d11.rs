@@ -1638,6 +1638,12 @@ impl<'a> Backend<'a> {
         }
     }
 
+    /// Whether the device is gone: what a call refused by it, or never
+    /// made because something it owns was refused, then is.
+    pub fn lost(&self) -> bool {
+        self.device.lost()
+    }
+
     /// The fence the split signals, on a device that splits: a picture a
     /// take hands out is finished once this passes the take's value.
     pub fn fence(&self) -> Option<Arc<Fence>> {

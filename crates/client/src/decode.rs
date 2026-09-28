@@ -287,7 +287,7 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
             Decision::Lost => return Next::Lost,
             Decision::Fed(Fed::Picture) => {
                 telemetry.decoder.store(1, Ordering::Relaxed);
-                take_pictures(
+                let lost = take_pictures(
                     &mut feed,
                     frames,
                     telemetry,
@@ -296,6 +296,10 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
                     &mut reported,
                     &mut range,
                 );
+                if lost {
+                    feed.lost();
+                    return Next::Lost;
+                }
             }
             Decision::Built(fed) => {
                 telemetry.decoder.store(1, Ordering::Relaxed);
@@ -310,7 +314,7 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
                     Ordering::Relaxed,
                 );
                 if fed == Fed::Picture {
-                    take_pictures(
+                    let lost = take_pictures(
                         &mut feed,
                         frames,
                         telemetry,
@@ -319,6 +323,10 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
                         &mut reported,
                         &mut range,
                     );
+                    if lost {
+                        feed.lost();
+                        return Next::Lost;
+                    }
                 }
             }
             _ => {}
@@ -333,7 +341,9 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
 
 /// Every picture the decoder has ready goes into the queue, carrying the
 /// arrival stamp of the unit just fed. `range` is the last picture's, for
-/// the log.
+/// the log. **Whether the decoder's device was found lost**: a removed
+/// device can go on taking decodes and fail only here, so the loss is the
+/// loop's to act on, as one the feed reports is.
 fn take_pictures<D: Backend>(
     feed: &mut Feed<D>,
     frames: &Frames,
@@ -342,14 +352,14 @@ fn take_pictures<D: Backend>(
     stamp: u32,
     reported: &mut Smoothed,
     range: &mut Option<bool>,
-) {
+) -> bool {
     loop {
         // The layout before the take: the planes are the picture's own size.
         let Some((width, height, format)) = feed.decoder().output() else {
-            return;
+            return false;
         };
         let Some(mut filling) = frames.fill() else {
-            return;
+            return false;
         };
         // By handle when the session asks for one and the decoder can hand
         // one out; as planes otherwise, whatever was asked. Decided per
@@ -360,7 +370,7 @@ fn take_pictures<D: Backend>(
                 .take_to_slot(&mut filling, (width, height, format))
         } else {
             let Some(mut planes) = filling.planes_for(width, height, format) else {
-                return;
+                return false;
             };
             lowlat_decode::Decoder::take(feed.decoder_mut(), &mut planes).map(|p| p.map(|p| (p, 0)))
         };
@@ -417,12 +427,13 @@ fn take_pictures<D: Backend>(
                 filling.publish_gated(frame, gate);
                 telemetry.decoded.fetch_add(1, Ordering::Relaxed);
             }
-            Ok(None) => return,
+            Ok(None) => return false,
+            Err(Fault::DeviceLost) => return true,
             Err(_) => {
                 // The read-back failed: the picture is lost and the decoder
                 // is left to its next unit; a fault there is the feed's to
                 // judge.
-                return;
+                return false;
             }
         }
     }
@@ -451,7 +462,7 @@ pub fn format_code(format: Format) -> u32 {
 mod tests {
     use std::sync::atomic::{AtomicBool, AtomicU32};
 
-    use lowlat_core::video::VideoHeader;
+    use lowlat_core::video::{Codec, Rotation, VIDEO_HEADER_LEN, VideoHeader, encode};
     use lowlat_decode::Planes;
 
     use super::*;
@@ -485,6 +496,55 @@ mod tests {
         }
     }
 
+    /// A backend whose device is gone by its first take while its decodes
+    /// still succeed, as a removed device was seen to behave on one driver.
+    struct LostAtTake {
+        destroyed: Arc<AtomicU32>,
+    }
+
+    impl Decoder for LostAtTake {
+        fn build(&mut self, _: &VideoHeader) -> Result<(), Fault> {
+            Ok(())
+        }
+        fn feed(&mut self, _: &[u8]) -> Result<Fed, Fault> {
+            Ok(Fed::Picture)
+        }
+        fn take(&mut self, _: &mut Planes<'_>) -> Result<Option<Picture>, Fault> {
+            Err(Fault::DeviceLost)
+        }
+        fn destroy(&mut self) {
+            self.destroyed.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    impl Backend for LostAtTake {
+        fn output(&self) -> Option<(u32, u32, Format)> {
+            Some((64, 64, Format::Nv12))
+        }
+        fn timings(&self) -> (u32, u32) {
+            (0, 0)
+        }
+    }
+
+    /// A unit that builds a decoder: an H.264 sequence parameter set.
+    fn parameter_set() -> Vec<u8> {
+        let header = VideoHeader {
+            frame_id: 1,
+            width: 64,
+            height: 64,
+            codec: Codec::H264,
+            rotation: Rotation::None,
+            ten_bit: false,
+            locked: false,
+            announced: false,
+            metadata: false,
+        };
+        let mut out = vec![0u8; VIDEO_HEADER_LEN];
+        encode(&mut out, &header).expect("a header");
+        out.extend_from_slice(&[0, 0, 0, 1, 0x67, 0xAA]);
+        out
+    }
+
     struct Rig {
         units: Units,
         frames: Arc<Frames>,
@@ -507,7 +567,11 @@ mod tests {
         }
 
         /// Run one decoder's loop on its own thread until it returns.
-        fn drive(&self, fake: Fake, replacing: bool) -> std::thread::JoinHandle<Next> {
+        fn drive<D: Backend + Send + 'static>(
+            &self,
+            fake: D,
+            replacing: bool,
+        ) -> std::thread::JoinHandle<Next> {
             let units = self.units.clone();
             let frames = Arc::clone(&self.frames);
             let telemetry = Arc::clone(&self.telemetry);
@@ -643,5 +707,37 @@ mod tests {
         let choice = Opened::Software(Some(std::path::PathBuf::from("pair")));
         rig.switch_to(choice.clone());
         assert_eq!(idle.join().expect("the idle loop"), Next::Switch(choice));
+    }
+
+    /// **A device lost at the take ends the loop as lost**, though the decode
+    /// before it succeeded, and the decoder is torn down with it. A removed
+    /// device can go on taking decodes and fail only at the hand-over; left
+    /// to the next unit's decode, the loss was never seen and nothing was
+    /// handed out again.
+    #[test]
+    fn a_device_lost_at_the_take_ends_the_loop_as_lost() {
+        let rig = Rig::new();
+        let destroyed = Arc::new(AtomicU32::new(0));
+        let loop_ = rig.drive(
+            LostAtTake {
+                destroyed: Arc::clone(&destroyed),
+            },
+            false,
+        );
+        rig.units.hand_over(&parameter_set());
+        // Bounded so that a loop that never sees the loss fails the test
+        // rather than hanging it.
+        let began = std::time::Instant::now();
+        while !loop_.is_finished() && began.elapsed() < Duration::from_secs(5) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        rig.stopping.store(true, Ordering::Release);
+        rig.units.wake();
+        assert_eq!(loop_.join().expect("the loop"), Next::Lost);
+        assert_eq!(
+            destroyed.load(Ordering::Relaxed),
+            1,
+            "the decoder was not torn down"
+        );
     }
 }
