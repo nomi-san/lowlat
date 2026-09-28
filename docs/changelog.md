@@ -60,6 +60,11 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   now clears and flushes, remakes on a loss found either way, and tries a failed remake again.
 - **The example client's title named the system decoder's pictures planes** whatever they
   were; it says the kind the last picture came as now.
+- **The network soak test's sender turns until its receiver stops**: on the CI runner it lost
+  its last 25 of 21,513 messages with every datagram sent received, because the sender stopped
+  turning when it stopped queuing and what it had accepted but not yet paced out never left.
+  Every core loaded here reproduced it three runs in four; the sender turning through the
+  settle delivered every message in six of six.
 
 ### Measured
 - **Every committed clip decodes bit for bit through the textures** on the NVIDIA, the Intel
