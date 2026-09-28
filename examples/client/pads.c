@@ -329,7 +329,7 @@ void raw_pads_close(struct raw_pads *r, lowlat_client *client)
 #else
 
 // No pad node to read here: the toolkit reads the Sony pads on this platform
-// (docs/impl-plan-windows.md, W1.8), and the demo refuses LOWLAT_PAD_RAW, so
+// (docs/impl-plan-windows.md, W1.9), and the demo refuses LOWLAT_PAD_RAW, so
 // every call the loop makes finds no pad.
 
 #include <string.h>

@@ -10,8 +10,8 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   arrived; the library's own floor stays Windows 10. Whether a device has it is asked of the
   device, and below it the GPU's row stays for planes, the handle kind refused.
 - **The example client's toolkit makes its device on the GPU the pictures name** in this step
-  rather than W1.8, so handles are drawn live on every GPU and a move between them is proven
-  end to end; W1.8 keeps the menu.
+  rather than W1.9, so handles are drawn live on every GPU and a move between them is proven
+  end to end; W1.9 keeps the menu.
 - **A lost device is found again by the library**, by its hardware, its identity having changed;
   no event, no new call.
 - **The frame kind is a preference where the decoder changes**, and a request by name where it

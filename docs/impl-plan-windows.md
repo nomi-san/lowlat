@@ -113,7 +113,11 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   pair and the system's decoder. The two vendors' own decoders wait until D3D11 has run on
   each GPU, because what they would add -- a missing profile, a driver fault, speed -- is
   known only then. (*Amended 2026-09-28, after W1.3*: on the AMD GPU D3D11 proved short on
-  speed, so W1 builds AMF as well, as W1.5, and on an AMD GPU it comes first.)
+  speed, so W1 builds AMF as well, now W1.6, and on an AMD GPU it comes first. *Amended again
+  after W1.4*: W1 builds Intel's VPL too, as W1.7, though D3D11 did not prove short on the
+  Intel card, so that every Intel part has its vendor's runtime, the older ones through MFX;
+  on an Intel GPU it comes first only if it measures faster than D3D11. NVDEC moves ahead of
+  AMF, as W1.5.)
 - **The software decoders**: the pair keeps D14's rule, loaded at runtime only when it is an
   LGPL build and never shipped, and is found in the directory the application names or beside
   the application, by the platform's versioned names. The system's decoder is software only
@@ -197,7 +201,7 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   ten-bit and full chroma with the full range from a second one ([10 §5.2](10-client.md)).
   *Found at the gate*: the AMD's video engine runs at a low clock under one decode that
   leaves it idle between pictures, twice as slow as when it is kept busy -- recorded, not
-  pursued there (*taken up by W1.5*).
+  pursued there (*taken up by W1.6*).
 - [x] **W1.4 the handle**: the plane split, reading the decoder's output directly where a
   driver lets a shader read it and copying it first where one does not; the shared textures;
   the library's fence and the newest finished picture; the GPU on every frame; per-slot
@@ -206,7 +210,7 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   W1.3*: a GPU named by its identity moved to W1.3, which needed it for its table.) *Built
   and closed 2026-09-28.* Decided at its interview: the handle kind needs Windows 10 1703,
   asked of the device; the example client's device made on the pictures' GPU, and made again
-  when they move, moved here from W1.8; a lost device is found again by the library; the kind
+  when they move, moved here from W1.9; a lost device is found again by the library; the kind
   is a preference at `lowlat_client_set_decoder`; Linux's vendor decoder takes the same
   calls. As built: every GPU here lets a shader read the decoder's output, so the copy is the
   fallback, checked by forcing it; a move between GPUs waits for nothing, a picture of a
@@ -223,8 +227,11 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   display, handles are the faster route, 2.2 to 2.7 ms from arrival to the screen against
   3.5 to 3.6 by planes in one session; a renderer moved to another GPU to open its textures
   pays for every frame's crossing to the display, 9.7 ms against 5.4 for planes drawn on the
-  display's GPU on the Intel card -- the placement is W1.8's.
-- [ ] **W1.5 AMF on AMD** (*added 2026-09-28*): AMD's own decoder, loaded at run time, in
+  display's GPU on the Intel card -- the placement is W1.9's.
+- [ ] **W1.5 NVDEC** (*moved ahead of AMF 2026-09-28*): planes, then handles through the
+  vendor's interop with D3D11, the copy's completion signalled on the library's fence rather
+  than waited for. Checked by the clips and ten minutes.
+- [ ] **W1.6 AMF on AMD** (*added 2026-09-28*): AMD's own decoder, loaded at run time, in
   its low-latency mode; planes, then handles; first in the automatic order on an AMD GPU.
   Checked by the clips it decodes and ten minutes of each codec on the AMD GPU. On that GPU
   the system's interface proved short on speed: the device's power policy stretches a decode
@@ -234,27 +241,34 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   own -- a decoder beside it is not lifted -- so only this decoder can have it
   ([10 §5.2](10-client.md)). (*Noted at W1.4*: the system's interface by handle took 13 to 15 %
   of a core on the AMD GPU against 4 to 6 by planes, unexplained; looked at here.)
-- [ ] **W1.6 NVDEC**: planes, then handles through the vendor's interop with D3D11, the copy's
-  completion signalled on the library's fence rather than waited for. Checked by the clips
-  and ten minutes.
-- [ ] **W1.7 the system's decoder**, software only. Checked by the clips it decodes.
-- [ ] **W1.8 the demo**: the GPU choice's menu, the feature reports, the Sony pads, the check
+- [ ] **W1.7 Intel VPL** (*added 2026-09-28*): Intel's own decoder through its current
+  runtime, loaded at run time from where the display driver installs it, and through its
+  older runtime (MFX) for the Intel parts the current one does not reach; planes, then
+  handles by W1.4's split. Checked by the clips it decodes and ten minutes of each codec on
+  the Intel card; the older runtime's check is owed until an Intel part that needs it is at
+  hand. Unlike AMD's, it is built without the system's interface having proved short: every
+  clip decoded bit for bit on the Intel card (W1.3). It is built so that every Intel part has
+  its vendor's runtime, the older ones included, where the system's interface may lack a
+  profile; its place in the automatic order on an Intel GPU is decided by measuring it against
+  the system's interface there -- first only if it is faster, as AMD's is on the AMD GPU.
+- [ ] **W1.8 the system's decoder**, software only. Checked by the clips it decodes.
+- [ ] **W1.9 the demo**: the GPU choice's menu, the feature reports, the Sony pads, the check
   of the display's GPU, and from it the renderer's placement: handles when the decoding GPU
   drives the display, planes drawn on the display's GPU when it does not. Checked by both Sony
   pads against an established host. (*Corrected at W1.4*: the toolkit's device made on the
   pictures' GPU, and made again when they move, moved to W1.4, whose handles on every GPU
   needed it; the placement added, W1.4 having measured a frame's crossing to the display at
   4 ms on the Intel card.)
-- [ ] **W1.9 packaging**: the zip from the build workflow; CI decodes the clips through a
+- [ ] **W1.10 packaging**: the zip from the build workflow; CI decodes the clips through a
   downloaded LGPL pair, since its runner has no GPU, and builds the demo. Checked by the
   artifact, built and unpacked.
 
 **Gate:** Gate C ([impl-plan-client.md](impl-plan-client.md)) on this machine, against two
 established hosts:
 
-- ten minutes each through D3D11 on each of the three GPUs, NVDEC, AMF on the AMD GPU, the
-  pair and the system's decoder, each on its default kind and with both codecs, against a
-  host that sends neither ten-bit nor full chroma;
+- ten minutes each through D3D11 on each of the three GPUs, NVDEC, AMF on the AMD GPU, VPL
+  on the Intel card, the pair and the system's decoder, each on its default kind and with
+  both codecs, against a host that sends neither ten-bit nor full chroma;
 - ten-bit and full chroma, both kinds, on every decoder that decodes them, against a host
   that sends both, and the full range;
 - once each, mid-session: a GPU change from the demo's menu, planes to handles and back, a
@@ -275,6 +289,10 @@ whether an application may supply the frames, for a virtual display that already
 
 ## Change log
 
+- 2026-09-28: NVDEC moved ahead of AMF, as W1.5, AMF W1.6; W1.7 Intel VPL added, with the
+  older runtime for the parts the current one does not reach, built though the system's
+  interface did not prove short on the Intel card, its place on an Intel GPU by measurement;
+  the steps after it renumbered: the system's decoder W1.8, the demo W1.9, packaging W1.10.
 - 2026-09-28: W1.4 closed; the renderer's placement by the display's GPU added to W1.8, from
   W1.4's measurement; the handle route's processor time on the AMD GPU noted for W1.5.
 - 2026-09-28: W1.5 AMF added, in its low-latency mode and first on an AMD GPU; the steps after
