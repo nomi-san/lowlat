@@ -36,6 +36,16 @@ signaling message lost that way arrived at the demo as text that did not parse.
 |---|---|
 | `src/unix/linux/ws.c` | `MTY_WebSocketRead` gathers a fragmented message into the caller's buffer frame by frame, each under the reader's own one-second frame deadline, until the frame with the final bit, and answers pings, notes pongs and takes a close that arrive between the fragments; `ws_read` reports the final bit and reads a control frame's payload (at most 125 bytes) into a buffer of its own, so one arriving mid-message leaves the fragments gathered so far alone. A continuation of nothing is dropped, as upstream drops it; a new message begun before the last one's final fragment is an error. `examples/client/ws-check.c` (`make -C examples/client check`) is the check: a loopback server sending a message whole, one in three fragments with a ping and a pong between them, one whose last fragment comes 200 ms late, a binary one, an empty one and a close |
 
+The Direct3D 11 context is made on the GPU the application names. The library hands pictures
+out as textures shared in the legacy form, which open only on a device of the GPU they were
+made on, and upstream makes its device on the system's default adapter with no way to name
+another.
+
+| file | change |
+|---|---|
+| `src/matoya.h` | `MTY_SetGFXAdapter(uint64_t luid)`: the adapter the next Direct3D 11 context is made on, named by its locally unique identifier as one value, low part first; zero for the default |
+| `src/windows/gfx/d3d11-ctx.c` | the context's device is made on that adapter, found by its identity through the factory, with the unknown driver type an explicit adapter takes; an identity no adapter has any longer, or zero, makes it on the default adapter as before, the miss logged |
+
 The Windows build takes its Vulkan shader compiler from the path, as the Linux build does,
 rather than from `deps/bin/`, which is not carried: no executable is kept in this tree.
 
@@ -44,7 +54,9 @@ rather than from `deps/bin/`, which is not carried: no executable is kept in thi
 | `makefile` | the two shader rules call `glslangValidator` rather than `deps\bin\glslangValidator`; the compiler is Khronos' glslang, upstream's own copy of which is 11.10.0 |
 
 Nothing else is touched: no other renderer, no other platform code, no shader. A diff against
-the upstream commit lists exactly the files above.
+the upstream commit lists exactly the files above. The Direct3D 11 renderer's own import of a
+hardware frame -- the planes' shared handles, opened again with a new view at every draw --
+is upstream's, unchanged.
 
 ## Licensing
 

@@ -15,8 +15,9 @@
 // stream its next output, F switches between the picture stretched to the
 // window and shown at its own size, R lets go of a pointer the host has
 // captured (and takes it again), C cycles the colour preferences, X moves
-// the session to the next decoder this machine listed at start, Q leaves the
-// session cleanly and quits, as closing the window does.
+// the session to the next decoder this machine listed at start, H switches
+// the pictures between planes and device handles at the next one, Q leaves
+// the session cleanly and quits, as closing the window does.
 // A bare Windows key is not sent while the keyboard is not grabbed, because
 // the desktop here takes it and the host would be left with the modifier
 // held; it reaches the host on chords, and whole once grabbed.
@@ -31,18 +32,20 @@
 // build of it or none; `LOWLAT_FFMPEG_DIR` names where its pair is.
 // `LOWLAT_HANDLE` asks for pictures as device handles, which the renderer
 // imports and draws with no copy through this process; only a decoder that
-// exports them (a row saying "handles") can be opened for that, and only
-// GL draws them. `LOWLAT_GFX=vk` draws planes through Vulkan instead of GL.
-// On Windows planes are drawn through Direct3D 11, or 12 or Vulkan by name
-// (`d3d12`, `vk`), and the library hands out no handles yet.
+// exports them (a row saying "handles") can be opened for that. On Linux
+// only GL draws them; `LOWLAT_GFX=vk` draws planes through Vulkan instead of
+// GL. On Windows planes are drawn through Direct3D 11, or 12 or Vulkan by
+// name (`d3d12`, `vk`), and handles through Direct3D 11 alone, its device
+// made on the GPU the pictures say they are on.
 // `LOWLAT_VSYNC=0` presents a picture the moment it is drawn rather than at
 // the display's next refresh: the lowest latency, torn where a picture
 // lands mid-scan.
 // `LOWLAT_HEVC`, `LOWLAT_10BIT` and `LOWLAT_444` are the preferences the
 // attempt starts with: each is "prefer this if the host has it", masked by
 // what the decoder takes before anything is declared; `LOWLAT_SWITCH_EVERY`
-// walks them every that many seconds, as the chord does by hand, and
-// `LOWLAT_DECODER_EVERY` walks the decoders the same way. The full range is
+// walks them every that many seconds, as the chord does by hand,
+// `LOWLAT_DECODER_EVERY` walks the decoders the same way, and
+// `LOWLAT_KIND_EVERY` switches between planes and handles. The full range is
 // asked for too, because the renderer takes each picture's range;
 // `LOWLAT_FULL_RANGE=0` asks for the video range instead.
 // `LOWLAT_FPS` asks the host for that rate through the application
@@ -138,12 +141,18 @@ struct demo {
 	atomic_uint picture_rotation;
 	atomic_uint picture_format;
 	atomic_bool picture_full_range;
-	// Whether pictures arrive as device handles, asked at creation.
+	// Whether pictures are asked for as device handles: at creation, and
+	// switched by the chord since.
 	bool handles;
 	// The graphics interface drawn through: on Linux GL, the one that imports
-	// device handles, or Vulkan, for planes; on Windows Direct3D 11, or 12 or
-	// Vulkan, for planes.
+	// device handles, or Vulkan, for planes; on Windows Direct3D 11, which
+	// opens the library's shared textures, or 12 or Vulkan, for planes.
 	MTY_GFX gfx;
+	// The GPU the Direct3D 11 context is made on, as the pictures name it
+	// (the adapter's identity, low part first), zero for the system's
+	// default. A picture of textures from another GPU remakes the context
+	// there, since a shared texture opens only on its own GPU.
+	uint64_t gfx_adapter;
 	// Whether a present waits for the display's refresh.
 	bool vsync;
 	MTY_Thread *presenter;
@@ -200,6 +209,9 @@ struct demo {
 	uint64_t switch_every;
 	// Move to the next decoder every so many seconds; zero for never.
 	uint64_t decoder_every;
+	// Switch between planes and handles every so many seconds; zero for
+	// never.
+	uint64_t kind_every;
 
 	// Where the picture is drawn: stretched to the window, or at its own
 	// size when it fits. The rectangle last told to the library, and the
@@ -710,6 +722,19 @@ static void cycle_decoder(struct demo *d)
 		d->row = next;
 }
 
+// The chord switches the pictures between planes and device handles at the
+// next one, with no keyframe; a decoder that hands out no handles refuses,
+// and nothing changes.
+static void toggle_kind(struct demo *d)
+{
+	uint32_t kind = d->handles ? LOWLAT_FRAME_PLANES : LOWLAT_FRAME_HANDLE;
+	lowlat_status s = lowlat_client_set_frame_kind(d->client, kind);
+	printf("demo: pictures as %s: %s\n", kind == LOWLAT_FRAME_HANDLE ? "handles" : "planes",
+		lowlat_status_string(s));
+	if (s == LOWLAT_OK)
+		d->handles = !d->handles;
+}
+
 static void on_key(struct demo *d, const MTY_KeyEvent *k)
 {
 	// The demo's own chords, Ctrl+Shift and a letter, never sent. The
@@ -750,6 +775,9 @@ static void on_key(struct demo *d, const MTY_KeyEvent *k)
 				return;
 			case MTY_KEY_X:
 				cycle_decoder(d);
+				return;
+			case MTY_KEY_H:
+				toggle_kind(d);
 				return;
 			case MTY_KEY_Q:
 				// Leave and quit, as closing the window does: the loop stops
@@ -1444,6 +1472,9 @@ static void dump_once(struct demo *d, const lowlat_frame *f)
 static void *present_loop(void *opaque)
 {
 	struct demo *d = opaque;
+#if defined(_WIN32)
+	MTY_SetGFXAdapter(d->gfx_adapter);
+#endif
 	if (!MTY_WindowSetGFX(d->app, d->window, d->gfx, d->vsync)) {
 		fprintf(stderr, "demo: no graphics context\n");
 		atomic_store(&d->quit, true);
@@ -1451,13 +1482,16 @@ static void *present_loop(void *opaque)
 	}
 	uint32_t refresh = MTY_WindowGetRefreshRate(d->app, d->window);
 	d->refresh_ms = 1000.0 / (double) (refresh > 0 ? refresh : 60);
+#if defined(__linux__)
 	// A handle is only drawable on a context that imports one: asked once,
-	// before any picture, rather than found out per frame.
+	// before any picture, rather than found out per frame. Direct3D 11 opens
+	// every shared texture of its own GPU.
 	if (d->handles && !MTY_WindowIsValidHardwareFrame(d->app, d->window, NULL, NULL)) {
 		fprintf(stderr, "demo: this graphics context does not import device handles\n");
 		atomic_store(&d->quit, true);
 		return NULL;
 	}
+#endif
 	while (!atomic_load(&d->quit)) {
 		double t = now_ms();
 		double taken_ms = 0.0;
@@ -1492,6 +1526,21 @@ static void *present_loop(void *opaque)
 				d->last_sequence = fresh.sequence;
 				d->shown = fresh;
 				d->showing = true;
+#if defined(_WIN32)
+				// A shared texture opens only on its own GPU: pictures from
+				// another one -- a decoder moved, a device lost and found
+				// again under a new identity -- remake the context there.
+				if (fresh.kind == LOWLAT_FRAME_HANDLE && fresh.adapter != 0
+					&& fresh.adapter != d->gfx_adapter) {
+					d->gfx_adapter = fresh.adapter;
+					MTY_SetGFXAdapter(d->gfx_adapter);
+					MTY_WindowSetGFX(d->app, d->window, MTY_GFX_NONE, false);
+					bool made = MTY_WindowSetGFX(d->app, d->window, d->gfx, d->vsync);
+					printf("demo: pictures on adapter %08x:%08x, the renderer follows: %s\n",
+						(unsigned) (d->gfx_adapter >> 32), (unsigned) d->gfx_adapter,
+						made ? "ok" : "no context there");
+				}
+#endif
 				atomic_store(&d->picture_height, fresh.height);
 				atomic_store(&d->picture_rotation, fresh.rotation);
 				atomic_store(&d->picture_format, fresh.format);
@@ -1533,7 +1582,19 @@ static void *present_loop(void *opaque)
 			// which is how the slot is laid out.
 			MTY_HardwareFrame hw;
 			memset(&hw, 0, sizeof hw);
+#if defined(_WIN32)
+			// On Windows the toolkit's hardware image is the planes' shared
+			// handles, which it opens on its device at every draw.
+			HANDLE textures[3] = {0};
+			const void *hardware = textures;
+#else
+			const void *hardware = &hw;
+#endif
 			if (f->kind == LOWLAT_FRAME_HANDLE) {
+#if defined(_WIN32)
+				for (uint32_t p = 0; p < 3; p++)
+					textures[p] = (HANDLE) (uintptr_t) f->textures[p];
+#else
 				hw.fd = f->fd;
 				hw.id = f->allocation;
 				hw.size = f->handle_size;
@@ -1541,6 +1602,7 @@ static void *present_loop(void *opaque)
 					hw.offset[p] = f->planes[p].offset;
 					hw.pitch[p] = f->planes[p].pitch;
 				}
+#endif
 				desc.hardware = true;
 				desc.imageWidth = f->width;
 				desc.imageHeight = f->height;
@@ -1567,7 +1629,7 @@ static void *present_loop(void *opaque)
 			// crushed and its contrast raised.
 			desc.fullRangeYUV = f->full_range;
 			MTY_WindowDrawQuad(d->app, d->window,
-				f->kind == LOWLAT_FRAME_HANDLE ? (const void *) &hw : (const void *) f->planes[0].data,
+				f->kind == LOWLAT_FRAME_HANDLE ? hardware : (const void *) f->planes[0].data,
 				&desc);
 		} else {
 			MTY_WindowClear(d->app, d->window, 0.0f, 0.0f, 0.0f, 1.0f);
@@ -1816,6 +1878,9 @@ static bool app_func(void *opaque)
 		// And the same walk through the decoders this machine listed.
 		if (d->decoder_every > 0 && d->established && d->seconds % d->decoder_every == 0)
 			cycle_decoder(d);
+		// And between planes and handles.
+		if (d->kind_every > 0 && d->established && d->seconds % d->kind_every == 0)
+			toggle_kind(d);
 	}
 	return true;
 }
@@ -1853,6 +1918,7 @@ int main(void)
 	unsigned long seconds = strtoul(env_or("LOWLAT_SECONDS", "0"), NULL, 10);
 	unsigned long switch_every = strtoul(env_or("LOWLAT_SWITCH_EVERY", "0"), NULL, 10);
 	unsigned long decoder_every = strtoul(env_or("LOWLAT_DECODER_EVERY", "0"), NULL, 10);
+	unsigned long kind_every = strtoul(env_or("LOWLAT_KIND_EVERY", "0"), NULL, 10);
 
 	lowlat_set_log_callback(log_line, NULL);
 	MTY_SetLogFunc(toolkit_line, NULL);
@@ -1878,6 +1944,7 @@ int main(void)
 	d.ask_fps = (uint32_t) ask_fps;
 	d.switch_every = switch_every;
 	d.decoder_every = decoder_every;
+	d.kind_every = kind_every;
 	d.poll_period_ms = present_hz > 0 ? 1000.0 / (double) present_hz : 0.0;
 	atomic_store(&d.stretch, true);
 	d.trace_pads = getenv("LOWLAT_PAD_TRACE") != NULL;
@@ -1907,8 +1974,16 @@ int main(void)
 		: strcmp(decoder, "vendor") == 0 ? LOWLAT_DECODER_VENDOR
 		: strcmp(decoder, "software") == 0 ? LOWLAT_DECODER_SOFTWARE : LOWLAT_DECODER_AUTO;
 	// Pictures as device handles the renderer imports, on a decoder that
-	// exports them; the decoder is then the vendor's whatever was asked.
+	// exports them: on Linux the vendor's whatever was asked.
 	d.handles = getenv("LOWLAT_HANDLE") != NULL;
+#if defined(_WIN32)
+	// The renderer starts on the GPU the decoder is named on, where its
+	// shared textures open; unnamed, on the system's default, and it follows
+	// the first picture of textures if that is elsewhere.
+	unsigned luid_high = 0, luid_low = 0;
+	if (sscanf(device, "luid:%8x:%8x", &luid_high, &luid_low) == 2)
+		d.gfx_adapter = ((uint64_t) luid_high << 32) | luid_low;
+#endif
 #if defined(_WIN32)
 	const char *gfx = env_or("LOWLAT_GFX", "d3d11");
 #else

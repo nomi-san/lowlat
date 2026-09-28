@@ -1274,6 +1274,17 @@ MTY_WindowGetGFX(MTY_App *app, MTY_Window window);
 MTY_EXPORT bool
 MTY_WindowSetGFX(MTY_App *app, MTY_Window window, MTY_GFX api, bool vsync);
 
+/// @brief Set the GPU a Direct3D 11 context is made on, from the next MTY_WindowSetGFX on.
+/// @details The adapter is named by its locally unique identifier as one 64-bit value,
+///   the low part first, as `DXGI_ADAPTER_DESC.AdapterLuid` lays it out. Zero, or an
+///   identity no adapter has any longer, makes the context on the system's default adapter.
+///   A context already made keeps its adapter: set the new one and call MTY_WindowSetGFX
+///   again to move to it.
+/// @param luid The adapter's identity, or zero.
+//- #support Windows
+MTY_EXPORT void
+MTY_SetGFXAdapter(uint64_t luid);
+
 /// @brief Set the number of vertical blanks to wait until presentation occurs.
 /// @details This function only works with MTY_GFX_D3D11 and MTY_GFX_D3D12.
 /// @param app The MTY_App.

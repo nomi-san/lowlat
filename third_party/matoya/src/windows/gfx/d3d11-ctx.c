@@ -20,6 +20,39 @@ GFX_CTX_PROTOTYPES(_d3d11_)
 
 #define D3D11_CTX_WAIT 2000
 
+// The adapter MTY_SetGFXAdapter names, zero for the system's default.
+static MTY_Atomic64 D3D11_CTX_ADAPTER;
+
+void MTY_SetGFXAdapter(uint64_t luid)
+{
+	MTY_Atomic64Set(&D3D11_CTX_ADAPTER, (int64_t) luid);
+}
+
+// The adapter MTY_SetGFXAdapter named, or NULL for the system's default.
+static IDXGIAdapter *d3d11_ctx_adapter(void)
+{
+	uint64_t id = (uint64_t) MTY_Atomic64Get(&D3D11_CTX_ADAPTER);
+	if (id == 0)
+		return NULL;
+
+	IDXGIFactory4 *factory4 = NULL;
+	HRESULT e = CreateDXGIFactory1(&IID_IDXGIFactory4, &factory4);
+	if (e != S_OK) {
+		MTY_Log("'CreateDXGIFactory1' failed with HRESULT 0x%X", e);
+		return NULL;
+	}
+
+	LUID luid = {.LowPart = (DWORD) id, .HighPart = (LONG) (id >> 32)};
+	IDXGIAdapter *adapter = NULL;
+	e = IDXGIFactory4_EnumAdapterByLuid(factory4, luid, &IID_IDXGIAdapter, &adapter);
+	if (e != S_OK)
+		MTY_Log("'IDXGIFactory4_EnumAdapterByLuid' failed with HRESULT 0x%X", e);
+
+	IDXGIFactory4_Release(factory4);
+
+	return adapter;
+}
+
 struct d3d11_ctx {
 	HWND hwnd;
 	struct sync sync;
@@ -87,8 +120,14 @@ static bool d3d11_ctx_init(struct d3d11_ctx *ctx)
 	ctx->flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 	sd.Flags = ctx->flags;
 
-	HRESULT e = D3D11CreateDevice(NULL, D3D_DRIVER_TYPE_HARDWARE, NULL, 0, NULL,
-		0, D3D11_SDK_VERSION, &ctx->device, NULL, &ctx->context);
+	// A named adapter takes the unknown driver type; the default adapter the hardware one.
+	IDXGIAdapter *named = d3d11_ctx_adapter();
+	HRESULT e = D3D11CreateDevice(named, named ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE,
+		NULL, 0, NULL, 0, D3D11_SDK_VERSION, &ctx->device, NULL, &ctx->context);
+
+	if (named)
+		IDXGIAdapter_Release(named);
+
 	if (e != S_OK) {
 		MTY_Log("'D3D11CreateDevice' failed with HRESULT 0x%X", e);
 		goto except;
