@@ -611,21 +611,23 @@ otherwise.
 |---|---|---|
 | D3D11 video | the system's video decoding interface on any vendor's device, driven by the library's own readers | planes by read-back; one shared texture per plane (§4.2) |
 | NVDEC | the vendor's decode interface, loaded at runtime, as on Linux | planes by a device-to-host copy; shared textures filled by a device copy |
-| AMF, VPL | the two vendors' own decoders, later | -- |
+| AMF | AMD's own decoder, loaded at runtime, in its low-latency mode (W1.5); first on an AMD GPU | planes; shared textures (§4.2) |
+| VPL | Intel's own decoder, later | -- |
 | software | an LGPL libavcodec pair, loaded at runtime | planes |
 | the system's decoder | the platform's own media framework, in software only | planes, eight-bit 4:2:0 |
 
 Unset, the order is the table's, on the GPU the application names. The system's interface
 comes first because it is one backend on every vendor's device and is fed the same jobs the
 other hardware backend is, as the open stack is on Linux; then the vendor's; then software.
-The two vendors' own decoders go after NVDEC once they are built. Each puts a second reader
-and its own buffering in front of the same hardware, so they are built where the system's
-interface proves short on a device -- a missing profile, a driver fault, speed -- and not
-before, with Intel's older runtime for the parts its newer one cannot reach. The pair keeps
-D14's rule and is found in the directory the application names or beside the application,
-by the platform's versioned names. The system's decoder needs nothing installed for H.264
-and the system's HEVC extension for HEVC, and comes last, because eight-bit 4:2:0 is all it
-decodes.
+The two vendors' own decoders go after NVDEC once they are built, except on an AMD GPU, where
+AMD's comes first (*decided 2026-09-28*, W1.5): the system's interface proved short there on
+speed, below. Each puts a second reader and its own buffering in front of the same hardware,
+so they are built where the system's interface proves short on a device -- a missing
+profile, a driver fault, speed -- and not before, with Intel's older runtime for the parts
+its newer one cannot reach. The pair keeps D14's rule and is found in the directory the
+application names or beside the application, by the platform's versioned names. The
+system's decoder needs nothing installed for H.264 and the system's HEVC extension for HEVC,
+and comes last, because eight-bit 4:2:0 is all it decodes.
 
 **The pair first** (*built 2026-09-27*, W1.2). Until the hardware backends are built the
 table is the pair's one slot: the automatic choice settles on it, and the open and vendor
@@ -677,10 +679,16 @@ the NVIDIA.
 1440p clip back to back it decodes HEVC in 5.9 ms and H.264 in 4.6; with any idle gap between
 pictures, 8 ms or 16, 12.6 and 8.6 -- the live figures, where a stream of 120 pictures a
 second left the reader up to 267 messages behind. The driver's power policy reads a decode
-that idles between pictures as a light load; any second stream on the engine keeps its clock
-up, through the vendor's own runtime or through this same interface alike, and halves the
-time. Recorded, not pursued: a decoder nobody placed goes to the high-performance GPU, and
-the vendor's own decoder is where a remedy would be looked for.
+that idles between pictures as a light load; a second stream busy enough keeps its clock up,
+through the vendor's own runtime or through this same interface alike, and halves the time.
+Recorded, not pursued at first: a decoder nobody placed goes to the high-performance GPU.
+*Followed up 2026-09-28*: the vendor's own decoder has a low-latency mode its session asks
+for. Decoding a 1440p HEVC clip alone at 30 or 60 pictures a second it takes 3.2 ms of the
+engine a picture, where this interface takes 9.2 to 9.9 and the vendor's decoder in its default mode
+9.0 to 10.0. The mode lifts the asking session only -- this interface's decode beside such a
+session at a trickle is unchanged -- and the interface has no such mode on this device, whose
+further configurations differ only in encryption. So W1.5 builds the vendor's decoder, first
+on an AMD GPU.
 
 ## §6 Sound
 

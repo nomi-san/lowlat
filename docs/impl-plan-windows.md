@@ -112,7 +112,8 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   an LGPL libavcodec pair, and the system's own software decoder. W1 builds D3D11, NVDEC, the
   pair and the system's decoder. The two vendors' own decoders wait until D3D11 has run on
   each GPU, because what they would add -- a missing profile, a driver fault, speed -- is
-  known only then.
+  known only then. (*Amended 2026-09-28, after W1.3*: on the AMD GPU D3D11 proved short on
+  speed, so W1 builds AMF as well, as W1.5, and on an AMD GPU it comes first.)
 - **The software decoders**: the pair keeps D14's rule, loaded at runtime only when it is an
   LGPL build and never shipped, and is found in the directory the application names or beside
   the application, by the platform's versioned names. The system's decoder is software only
@@ -196,29 +197,38 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   ten-bit and full chroma with the full range from a second one ([10 §5.2](10-client.md)).
   *Found at the gate*: the AMD's video engine runs at a low clock under one decode that
   leaves it idle between pictures, twice as slow as when it is kept busy -- recorded, not
-  pursued.
+  pursued there (*taken up by W1.5*).
 - [ ] **W1.4 the handle**: the plane split, reading the decoder's output directly where a
   driver lets a shader read it and copying it first where one does not; the shared textures;
   the library's fence and the newest finished picture; the GPU on every frame; per-slot
   backing; `lowlat_client_set_frame_kind`. Minor 19 (*corrected at W1.2*, which took 18).
   Checked by handles on all three GPUs and by each mid-session change. (*Corrected at
   W1.3*: a GPU named by its identity moved to W1.3, which needed it for its table.)
-- [ ] **W1.5 NVDEC**: planes, then handles through the vendor's interop with D3D11, the copy's
+- [ ] **W1.5 AMF on AMD** (*added 2026-09-28*): AMD's own decoder, loaded at run time, in
+  its low-latency mode; planes, then handles; first in the automatic order on an AMD GPU.
+  Checked by the clips it decodes and ten minutes of each codec on the AMD GPU. On that GPU
+  the system's interface proved short on speed: the device's power policy stretches a decode
+  paced in real time to fill its interval, 9 to 10 ms of the video engine a picture for HEVC
+  at 1440p, and the vendor's decoder in its default mode fares the same; its low-latency mode
+  takes 3.2 ms, decoding alone at 30 and at 60 pictures a second. The mode is the asking session's
+  own -- a decoder beside it is not lifted -- so only this decoder can have it
+  ([10 §5.2](10-client.md)).
+- [ ] **W1.6 NVDEC**: planes, then handles through the vendor's interop with D3D11, the copy's
   completion signalled on the library's fence rather than waited for. Checked by the clips
   and ten minutes.
-- [ ] **W1.6 the system's decoder**, software only. Checked by the clips it decodes.
-- [ ] **W1.7 the demo**: the GPU choice and its menu, the feature reports, the Sony pads,
+- [ ] **W1.7 the system's decoder**, software only. Checked by the clips it decodes.
+- [ ] **W1.8 the demo**: the GPU choice and its menu, the feature reports, the Sony pads,
   the check of the display's GPU. Checked by both Sony pads against an established host.
-- [ ] **W1.8 packaging**: the zip from the build workflow; CI decodes the clips through a
+- [ ] **W1.9 packaging**: the zip from the build workflow; CI decodes the clips through a
   downloaded LGPL pair, since its runner has no GPU, and builds the demo. Checked by the
   artifact, built and unpacked.
 
 **Gate:** Gate C ([impl-plan-client.md](impl-plan-client.md)) on this machine, against two
 established hosts:
 
-- ten minutes each through D3D11 on each of the three GPUs, NVDEC, the pair and the system's
-  decoder, each on its default kind and with both codecs, against a host that sends neither
-  ten-bit nor full chroma;
+- ten minutes each through D3D11 on each of the three GPUs, NVDEC, AMF on the AMD GPU, the
+  pair and the system's decoder, each on its default kind and with both codecs, against a
+  host that sends neither ten-bit nor full chroma;
 - ten-bit and full chroma, both kinds, on every decoder that decodes them, against a host
   that sends both, and the full range;
 - once each, mid-session: a GPU change from the demo's menu, planes to handles and back, a
@@ -239,6 +249,8 @@ whether an application may supply the frames, for a virtual display that already
 
 ## Change log
 
+- 2026-09-28: W1.5 AMF added, in its low-latency mode and first on an AMD GPU; the steps after
+  it renumbered: NVDEC W1.6, the system's decoder W1.7, the demo W1.8, packaging W1.9.
 - 2026-09-28: W1.3 closed with the Intel card's pass.
 - 2026-09-27: W1.3 built on two GPUs, the third's pass owed; a GPU named by its identity moved
   from W1.4 to W1.3; the never-waits decision scoped to the handle kind.
