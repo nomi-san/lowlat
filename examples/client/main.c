@@ -141,6 +141,9 @@ struct demo {
 	atomic_uint picture_rotation;
 	atomic_uint picture_format;
 	atomic_bool picture_full_range;
+	// The kind the last picture came as, which a decoder that hands out no
+	// handles makes planes whatever was asked.
+	atomic_uint picture_kind;
 	// Whether pictures are asked for as device handles: at creation, and
 	// switched by the chord since.
 	bool handles;
@@ -1408,7 +1411,7 @@ static void report(struct demo *d)
 			: format == LOWLAT_FORMAT_YUV444 ? "444"
 			: format == LOWLAT_FORMAT_YUV444_16 ? "444 10bit" : "8bit";
 		snprintf(title, sizeof title,
-			"lowlat | %ux%u %s %s%s%s | asked %s | %s %s%s | %u fps | rtt %u/%.0f ms | enc %.1f ms | "
+			"lowlat | %ux%u %s %s%s%s | asked %s | %s %s %s%s | %u fps | rtt %u/%.0f ms | enc %.1f ms | "
 			"dec %.1f ms | rb %.1f ms | q %u behind %u | skips %u | %.1f/%.1f Mbit/s | "
 			"loss %.2f%% | snd %u ms | rss %" PRIu64 " MB | guest %u%s%s%s%s%s",
 			width, atomic_load(&d->picture_height), codec, colour,
@@ -1417,10 +1420,11 @@ static void report(struct demo *d)
 				: rotation == LOWLAT_ROTATION_180 ? " 180deg"
 				: rotation == LOWLAT_ROTATION_270 ? " 270deg" : "",
 			video_words(&d->video),
-			st.backend == LOWLAT_DECODER_OPEN ? "open planes"
-				: st.backend == LOWLAT_DECODER_VENDOR ? (d->handles ? "vendor handles" : "vendor planes")
-				: st.backend == LOWLAT_DECODER_SOFTWARE ? "software planes"
+			st.backend == LOWLAT_DECODER_OPEN ? "open"
+				: st.backend == LOWLAT_DECODER_VENDOR ? "vendor"
+				: st.backend == LOWLAT_DECODER_SOFTWARE ? "software"
 				: "no decoder",
+			atomic_load(&d->picture_kind) == LOWLAT_FRAME_HANDLE ? "handles" : "planes",
 			gfx_name(d->gfx), d->vsync ? "" : " no vsync",
 			pictures, st.rtt_ms, d->host_rtt_ms, (double) st.encode_us / 1000.0,
 			(double) st.decode_us / 1000.0, (double) st.readback_us / 1000.0, st.queue_depth,
@@ -1544,6 +1548,7 @@ static void *present_loop(void *opaque)
 				atomic_store(&d->picture_height, fresh.height);
 				atomic_store(&d->picture_rotation, fresh.rotation);
 				atomic_store(&d->picture_format, fresh.format);
+				atomic_store(&d->picture_kind, fresh.kind);
 				atomic_store(&d->picture_full_range, fresh.full_range);
 				atomic_store(&d->picture_width, fresh.width);
 				atomic_fetch_add(&d->pictures, 1);
