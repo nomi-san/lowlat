@@ -198,12 +198,32 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   *Found at the gate*: the AMD's video engine runs at a low clock under one decode that
   leaves it idle between pictures, twice as slow as when it is kept busy -- recorded, not
   pursued there (*taken up by W1.5*).
-- [ ] **W1.4 the handle**: the plane split, reading the decoder's output directly where a
+- [x] **W1.4 the handle**: the plane split, reading the decoder's output directly where a
   driver lets a shader read it and copying it first where one does not; the shared textures;
   the library's fence and the newest finished picture; the GPU on every frame; per-slot
   backing; `lowlat_client_set_frame_kind`. Minor 19 (*corrected at W1.2*, which took 18).
   Checked by handles on all three GPUs and by each mid-session change. (*Corrected at
-  W1.3*: a GPU named by its identity moved to W1.3, which needed it for its table.)
+  W1.3*: a GPU named by its identity moved to W1.3, which needed it for its table.) *Built
+  and closed 2026-09-28.* Decided at its interview: the handle kind needs Windows 10 1703,
+  asked of the device; the example client's device made on the pictures' GPU, and made again
+  when they move, moved here from W1.8; a lost device is found again by the library; the kind
+  is a preference at `lowlat_client_set_decoder`; Linux's vendor decoder takes the same
+  calls. As built: every GPU here lets a shader read the decoder's output, so the copy is the
+  fallback, checked by forcing it; a move between GPUs waits for nothing, a picture of a
+  backing the session has left never handed out; eight-bit full chroma read back is unpacked
+  on the device. Every committed clip decodes bit for bit through the textures on all three
+  GPUs by both routes, and no picture is handed out unfinished, on the integrated GPU beside a
+  full engine load too. Ten minutes of each codec by handle on each GPU from an established
+  host, and ten-bit and full chroma with the full range by handle on the NVIDIA and the Intel
+  card; mid-session, planes to handles and back with no keyframe, a GPU move, and the device
+  lost by restarting each GPU's driver, streaming again within one to three seconds. *Found
+  live*: a removed device can go on accepting decodes and refuse only the hand-over, and a
+  restart of one GPU can remove a renderer's device on another; both fixed
+  ([10 §4.2](10-client.md)). *Measured*: where the renderer is on the GPU that drives the
+  display, handles are the faster route, 2.2 to 2.7 ms from arrival to the screen against
+  3.5 to 3.6 by planes in one session; a renderer moved to another GPU to open its textures
+  pays for every frame's crossing to the display, 9.7 ms against 5.4 for planes drawn on the
+  display's GPU on the Intel card -- the placement is W1.8's.
 - [ ] **W1.5 AMF on AMD** (*added 2026-09-28*): AMD's own decoder, loaded at run time, in
   its low-latency mode; planes, then handles; first in the automatic order on an AMD GPU.
   Checked by the clips it decodes and ten minutes of each codec on the AMD GPU. On that GPU
@@ -212,13 +232,19 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   at 1440p, and the vendor's decoder in its default mode fares the same; its low-latency mode
   takes 3.2 ms, decoding alone at 30 and at 60 pictures a second. The mode is the asking session's
   own -- a decoder beside it is not lifted -- so only this decoder can have it
-  ([10 §5.2](10-client.md)).
+  ([10 §5.2](10-client.md)). (*Noted at W1.4*: the system's interface by handle took 13 to 15 %
+  of a core on the AMD GPU against 4 to 6 by planes, unexplained; looked at here.)
 - [ ] **W1.6 NVDEC**: planes, then handles through the vendor's interop with D3D11, the copy's
   completion signalled on the library's fence rather than waited for. Checked by the clips
   and ten minutes.
 - [ ] **W1.7 the system's decoder**, software only. Checked by the clips it decodes.
-- [ ] **W1.8 the demo**: the GPU choice and its menu, the feature reports, the Sony pads,
-  the check of the display's GPU. Checked by both Sony pads against an established host.
+- [ ] **W1.8 the demo**: the GPU choice's menu, the feature reports, the Sony pads, the check
+  of the display's GPU, and from it the renderer's placement: handles when the decoding GPU
+  drives the display, planes drawn on the display's GPU when it does not. Checked by both Sony
+  pads against an established host. (*Corrected at W1.4*: the toolkit's device made on the
+  pictures' GPU, and made again when they move, moved to W1.4, whose handles on every GPU
+  needed it; the placement added, W1.4 having measured a frame's crossing to the display at
+  4 ms on the Intel card.)
 - [ ] **W1.9 packaging**: the zip from the build workflow; CI decodes the clips through a
   downloaded LGPL pair, since its runner has no GPU, and builds the demo. Checked by the
   artifact, built and unpacked.
@@ -249,6 +275,8 @@ whether an application may supply the frames, for a virtual display that already
 
 ## Change log
 
+- 2026-09-28: W1.4 closed; the renderer's placement by the display's GPU added to W1.8, from
+  W1.4's measurement; the handle route's processor time on the AMD GPU noted for W1.5.
 - 2026-09-28: W1.5 AMF added, in its low-latency mode and first on an AMD GPU; the steps after
   it renumbered: NVDEC W1.6, the system's decoder W1.7, the demo W1.8, packaging W1.9.
 - 2026-09-28: W1.3 closed with the Intel card's pass.

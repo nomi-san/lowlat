@@ -3,6 +3,92 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-28 - W1.4: the handle on Windows
+
+### Decided
+- **The handle kind needs Windows 10 1703**, where the fence that says a picture is finished
+  arrived; the library's own floor stays Windows 10. Whether a device has it is asked of the
+  device, and below it the GPU's row stays for planes, the handle kind refused.
+- **The example client's toolkit makes its device on the GPU the pictures name** in this step
+  rather than W1.8, so handles are drawn live on every GPU and a move between them is proven
+  end to end; W1.8 keeps the menu.
+- **A lost device is found again by the library**, by its hardware, its identity having changed;
+  no event, no new call.
+- **The frame kind is a preference where the decoder changes**, and a request by name where it
+  is asked for.
+- **Linux's vendor decoder takes the same calls**, planes and its descriptor, and between its
+  devices.
+- **A move between GPUs waits for nothing** (amending the plan's drain at a change): each
+  backing is a generation, and a picture of one the session has left is never handed out.
+
+### Changed
+- **Pictures leave the Windows system decoder as one shared texture per plane** (minor 19),
+  split out of the decoded surface by one compute pass, read from the surface array itself
+  where the device lets a shader read it -- every GPU here -- and through a whole-slice copy
+  where not; shaders compiled ahead of time and carried as bytecode. `lowlat_frame` gains the
+  planes' handles and the GPU they are on.
+- **A picture is handed out once its device's fence has passed it**: published when queued,
+  gated in the queue, the acquire sleeping on the fence's event, the decode thread waiting for
+  nothing ([10 §4.2](10-client.md)).
+- **`lowlat_client_set_frame_kind`** switches planes and handles at the next picture with no
+  keyframe; **`lowlat_client_set_decoder` is accepted in a handle session**, a decoder that
+  hands out none then handing out planes; each slot carries its own backing.
+- **Eight-bit full chroma read back to planes is unpacked on the device** by the same pass: a
+  millisecond a picture less at 2560x1440 ([10 §5.2](10-client.md)).
+- **The example client draws handles on Windows**, its toolkit's device made on the pictures'
+  GPU and made again when they move; Ctrl+Shift+H and `LOWLAT_KIND_EVERY` switch the kind.
+
+### Fixed
+- **The picture queue could hand out an older picture after a newer one**: a slot stolen and
+  published again between the consumer's scan and its take was handed out under its older
+  number. The number is read once the slot is held; found by a new model check, which failed
+  first.
+- **The queue's producer could drop a picture with a slot free** on a processor that orders
+  memory weakly: its last-resort count of held slots used plain loads. Found by the same
+  model checking; not reachable on x86.
+- **Attaching Linux's vendor runtime again replaced every device slot**, a held one included;
+  each slot now keeps the runtime it was made through.
+- **A device lost where only the hand-over noticed was never found again.** A removed device
+  can go on accepting decodes; the loss then showed only when a picture was taken, the take
+  dropped that picture and left the decoder to its next unit, and the session handed out
+  nothing again. A take that finds the device gone now ends the decoder as a decode that does,
+  and the device is found again. Found by restarting a GPU mid-stream; the test for it failed
+  first.
+- **The example client's window stayed dark once its toolkit's device was lost**: the
+  toolkit's remake could never make its swap chain, the old one living on until the context
+  is cleared and flushed, and a loss found at the back buffer was not acted on. Its context
+  now clears and flushes, remakes on a loss found either way, and tries a failed remake again.
+- **The example client's title named the system decoder's pictures planes** whatever they
+  were; it says the kind the last picture came as now.
+
+### Measured
+- **Every committed clip decodes bit for bit through the textures** on the NVIDIA, the Intel
+  card and the AMD, read back through the handles on a second device, by both routes; three
+  breaks of the shader each fail their own plane. A picture is finished 0.35 ms after its
+  submit at 720p on the NVIDIA, 0.8 on the Intel card, 3 to 4 on the AMD; the submit costs the
+  decode thread 50 to 150 us.
+- **No picture is handed out unfinished**: a consumer reading every acquired picture back
+  through its handles found each one whole on all three GPUs, back to back and at 120 a
+  second, and beside another process holding the AMD's video engine at 100 %. With the gate
+  ignored, 97 of 120 were read unfinished.
+- **From an established host at 2560x1440, ten minutes of each codec by handle on each
+  GPU**, and ten-bit and full chroma at both depths by handle on the NVIDIA and the Intel
+  card from a second host, nothing refused and no picture skipped in the full-chroma legs.
+  **Where the renderer is on the GPU that drives the display, the handle is the faster
+  route**: in one session with the kind switched every twenty seconds, 2.2 to 2.7 ms from a
+  picture's arrival to the screen against 3.5 to 3.6 by planes, and a quarter of the
+  processor time planes take. **A renderer moved to another GPU to open the textures pays for
+  every frame's crossing to the display**: 9.7 ms on the Intel card against 5.4 for planes
+  drawn on the display's GPU. The presentation's own mode moves either kind by about a
+  millisecond, so runs are compared within a session. On the AMD the handle route took more
+  processor time than planes, 13 to 15 % of a core against 4 to 6, not yet explained.
+- **The device lost by restarting each GPU's driver mid-stream**: drawn again within one to
+  three seconds on each, and a restart of another GPU survived too.
+- **Measured and not kept**: a read-back wait sleeping on the fence rather than in the
+  mapping, whose calls cost more processor time than the one driver's mapping spins; the
+  device unpacking full chroma at ten bits, whose planes cost the Intel card's link more than
+  the unpacking saves.
+
 ## 2026-09-28 - SDK: the rumble event's motors are low and high
 
 ### Fixed

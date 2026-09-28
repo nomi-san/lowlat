@@ -179,7 +179,8 @@ memory the library owns for the lease, which every renderer can take and which i
 software or read-back decoder produces anyway. Or as a **handle**: a device-level reference
 that the application imports into its own device, with an offset and a pitch per plane. The
 application asks for a kind at creation and is told which it got; a decoder that cannot
-export hands out planes. *Planned for W1*: the kind may also be switched mid-session (§4.2).
+export hands out planes. The kind may also be switched mid-session (*built 2026-09-28*, W1.4,
+§4.2).
 
 **The handle has a kind, and the first kind is an opaque descriptor** (*built 2026-09-19*).
 The vendor interface's decoded picture is not exportable: its pool is the interface's own
@@ -310,14 +311,28 @@ ten, where the decoder is seventy percent busy and latest-wins does what it shou
 warning never fired. A switch costs the switching second about forty repeats: the keyframe
 the host is asked for.
 
-### §4.2 On Windows (*planned 2026-09-26*, W1)
+### §4.2 On Windows (*planned 2026-09-26*, W1; *built 2026-09-28*, W1.4)
 
 **A picture of the handle kind is one shared texture per plane**, in the legacy form, which a
 renderer on the same GPU in the same process opens by its handle: a luma and a two-channel
 chroma texture at eight and ten bits, three single-channel textures for full chroma. The
 frame carries a handle per plane and the identity of the GPU they are on. The library makes
 them on a device of its own on that GPU, never the renderer's: two users of one device are
-serialised on its lock, and the decode would wait behind the renderer's present.
+serialised on its lock, and the decode would wait behind the renderer's present. The handle
+kind needs the fence that says a picture is finished, which the system has from Windows 10
+1703; a device without one hands out planes, and the listing says which GPUs hand out
+handles by asking each device, not the system's version.
+
+**The split is one compute pass**, reading the decoded surface and writing the planes
+(*built 2026-09-28*): a thread a chroma sample of the two-plane layouts, which covers four
+luma samples, or one a sample at full chroma. Every sample is read as an integer and written
+as the exact normalised value of the same integer, ten bits into the high bits of sixteen, so
+the planes hold the decoded samples bit for bit -- every committed clip, read back through its
+handles on a second device, on each of the three GPUs. The pass reads the decoder's surface
+array itself where the device lets a shader read it, which every GPU here does, and a
+whole-slice copy of it first where one does not; both are checked on every device. The
+shaders are compiled ahead of time and carried as bytecode, so nothing is compiled at run
+time or at each device's open.
 
 **The picture is finished before it can be acquired, and nothing waits for it on the decode
 thread** -- a picture of the handle kind (*scoped 2026-09-27*, W1.3: a picture read back to
@@ -336,17 +351,41 @@ own device work, it fell behind the stream past 60 ms under contention on an int
 handing a picture out before its device work was known to be done, trusting the driver to
 order two devices, it showed pictures out of order on one vendor's driver.
 
+**As built** (*2026-09-28*), a published slot carries a gate: the value its device's fence
+reaches when the picture is finished. The acquire hands out the newest slot whose gate the
+fence has passed and leaves a newer one still unfinished for the next take; with none
+finished it sleeps on an event the fence sets at the lowest value still outstanding, and a
+close sets it by hand. A consumer on another thread taking pictures as an application would,
+each read back through its handles on a device of its own, found every one a reference
+picture, whole: on all three GPUs, back to back and at 120 pictures a second, and on the
+integrated GPU beside another process holding its video engine at 100 %, where a picture was
+seen finished 6 to 8 ms after it was queued and the decode thread never waited. With the gate
+ignored, 97 of 120 pictures were read before they were finished. The same check found that the
+queue itself could hand out an older picture after a newer one: a slot stolen and published
+again between the consumer's scan and its take was handed out under its older number. It is
+read once the slot is held now, and the model check that found it is kept.
+
+**A picture of textures is written again once released**, as soon as the next picture needs
+its slot. So a null release fence, the only kind, says the application's device has finished
+reading it -- which a renderer that waits on its swap chain's latency after each present has,
+as the example client's does: its last draw of a picture is done before its next acquire and
+release. A renderer that queues further ahead waits for its own device before it releases.
+
 **The GPU is the application's to name, and it names the one it renders on.** A renderer on
 another GPU than the display pays a copy of every presented picture across the bus and loses
 the direct flip, so the display's GPU is where a renderer belongs, and the library follows the
 renderer: a decoder that cannot run on the named GPU hands out planes, never a handle the
-renderer cannot open. **A GPU is named by its identity** (*built 2026-09-27*, W1.3), the one
-the system gives it for the boot, spelled `luid:HIGH:LOW` in the listing and taken back as the
-device; it changes when the GPU is reset or its driver replaced, so an application names it
-again from the listing then and never keeps it. The GPUs are listed in the system's
-high-performance order, and a decoder nobody placed settles on the first. A virtual display's
-adapter, which the system enumerates under the name of the GPU it renders on, is not listed:
-it would show that GPU twice.
+renderer cannot open. (*Measured 2026-09-28*, W1.4: a renderer moved to the Intel card to
+open its textures, the display being on the NVIDIA, took 5.5 ms from the acquire to the
+screen against 1.4 for planes drawn on the display's GPU, and 9.7 ms from the arrival
+against 5.4 end to end. So a decoder on a GPU that does not drive the display is better
+served by planes than by moving the renderer to it.) **A GPU is named by its identity**
+(*built 2026-09-27*, W1.3), the one the system gives it for the boot, spelled `luid:HIGH:LOW`
+in the listing and taken back as the device; it changes when the GPU is reset or its driver
+replaced, so an application names it again from the listing then and never keeps it. The
+GPUs are listed in the system's high-performance order, and a decoder nobody placed settles
+on the first. A virtual display's adapter, which the system enumerates under the name of the
+GPU it renders on, is not listed: it would show that GPU twice.
 
 **Each slot carries its own backing**, made again when the slot comes back free after the
 session's backing has moved on. One mechanism serves three changes. The session moves to
@@ -356,6 +395,38 @@ at the new decoder's keyframe. Planes and handles switch by `lowlat_client_set_f
 the next picture and with no keyframe, since the decoder keeps running and keeps its
 references. And the device lost to a driver update or a reset is made again, and since the
 GPU may come back under a new identity, the application names it again the same way.
+
+**As built** (*2026-09-28*), each backing is a generation, and a gate carries its generation
+beside the fence's value: a picture of a backing the session has moved on from is never
+handed out, so a move waits for nothing -- the picture or two in flight at the move are not
+shown, and a move needs a keyframe anyway. **The frame kind is a preference where the decoder
+changes**: in a session asking for handles, a decoder that hands out none is taken all the
+same and its pictures come as planes, and a move back to one that hands them out returns to
+handles; asked for by name, handles are refused by such a decoder. The vendor's decoder on
+Linux switches kind and device the same way. **A lost device is found again by the library**:
+the GPU comes back under a new identity, so the decode thread looks for the same hardware --
+the maker's and the board's numbers, a virtual display sharing them never taken -- for ten
+seconds, or for a session nobody placed takes the first GPU offered, opens there and asks for
+one keyframe; pictures then name the new GPU, and a renderer whose own device was lost at the
+same moment opens its textures there. Past the ten seconds the stream fails as before. **The
+loss is taken wherever the device first refuses**: a removed device can go on accepting
+decodes and refuse only the hand-over after them, so a take that finds the device gone ends
+the decoder as a decode that does. **A renderer can lose its device while the pictures' GPU
+stays as it was** -- a restart of another GPU was enough -- so it recovers by itself rather
+than waiting for the pictures to name another GPU. Restarting each GPU's driver mid-stream,
+the stream was drawn again within one to three seconds, the longest on the GPU that drives
+the display, whose restart alone took nearly four.
+
+**Measured** (*2026-09-28*, W1.4; 2560x1440 at 30 pictures a second from an established
+host). **Where the renderer is on the GPU that drives the display, the handle is the faster
+route**: in one session with the kind switched every twenty seconds, a picture took 2.2 to
+2.7 ms from its arrival to the screen by handle against 3.5 to 3.6 by planes, its draw and
+present 0.5 to 0.7 ms against 1.3, and ten-minute runs took a quarter of the processor time
+planes take. The presentation's own mode moves both kinds by about a millisecond: ten-minute
+runs that stayed in the slower one took 4.5 ms by handle, so a comparison across runs says
+less than one within a session. Ten-bit and full chroma at both depths arrive by handle on
+the two GPUs that decode them. On the integrated GPU the handle route took more processor
+time than planes, 13 to 15 % of a core against 4 to 6, not yet explained.
 
 ## §5 The decoder, and when a client asks for a keyframe
 
@@ -646,11 +717,19 @@ raster decoding without an error to the wrong picture. A picture is read back by
 a staging texture on the device and a map of it, whose wait sleeps on the device's progress;
 on one vendor's driver the map spins about 60 us of its wait before it sleeps. Full chroma is
 decoded where the device builds the profile into the packed layouts the open stack's
-read-back already unpacks. Every committed clip decodes bit for bit on an NVIDIA, an Intel
-and an AMD integrated GPU, full chroma on the NVIDIA and the Intel and refused as fatal on
-the AMD, which has no such profile; the declaration is masked by that, so a stream never
-arrives that the decoder would refuse. The device on each is the library's own. Nothing is
-allocated per unit.
+read-back already unpacks. **At eight bits it is unpacked on the device instead** (*2026-09-28*,
+W1.4), by the handle kind's split into three plain planes that are read back as they are: at
+2560x1440 the copy out fell from 1.3 to 0.5 ms on the NVIDIA and from 1.6 to 0.4 on the
+Intel card, a millisecond a picture with the wait included. At ten bits the three planes are
+half as many bytes again as the packed layout, and on the Intel card's narrower link the
+read-back's copy of them cost two milliseconds more than the unpacking saved, so ten bits
+are unpacked by the processor as before. A sleeping wait for the read-back's copy, on the
+fence rather than in the mapping, was measured and not kept: its calls cost more processor
+time than the one driver's mapping spins. Every committed clip decodes bit for bit on an
+NVIDIA, an Intel and an AMD integrated GPU, full chroma on the NVIDIA and the Intel and
+refused as fatal on the AMD, which has no such profile; the declaration is masked by that, so
+a stream never arrives that the decoder would refuse. The device on each is the library's
+own. Nothing is allocated per unit.
 
 From an established host at 2560x1440, ten minutes each, the read-back's wait (the decode
 and the copy) and the copy out at the median, the whole process's share of one core:

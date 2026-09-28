@@ -350,8 +350,8 @@ have moved by itself; an application that kept its own copy would mark the wrong
 Everything below is in the header (minor 4 the session, minor 5 the pictures, minor 6 the
 input, minor 7 the sound, minor 8 the preferences and the handle, minor 9 the cursor and the
 metrics, minor 10 the pad reports, minor 14 the relay, minor 15 the picture's range, minor 16
-its arrival time, minor 17 the range asked for, minor 18 the client's deliberate panic); the
-header is the truth.
+its arrival time, minor 17 the range asked for, minor 18 the client's deliberate panic, minor
+19 the handle on Windows and the kind switched live); the header is the truth.
 
 ```c
 lowlat_status lowlat_client_create(const lowlat_client_create_info *info, lowlat_client **out);
@@ -420,9 +420,10 @@ so a keyframe never arrives for a decoder that is still opening, and a runtime t
 open costs the host nothing; the picture resumes at the next keyframe, a picture the
 application holds stays valid, the queue never closes. Costs the host one keyframe and an
 established host an encoder rebuild, so it is for a person changing a setting. **The frame
-kind stays the creation's**: a session of `LOWLAT_FRAME_HANDLE` refuses the call with
-`LOWLAT_ERR_DECODER_UNSUPPORTED`, because its device slots are bound to the device; changing
-that is a recreate, until W1 (below). `LOWLAT_DECODER_NONE` is refused the same way.
+kind stayed the creation's** in this minor: a session of `LOWLAT_FRAME_HANDLE` refused the
+call with `LOWLAT_ERR_DECODER_UNSUPPORTED`, its device slots bound to the device; since minor
+19 each slot carries its own backing and the call is accepted (below).
+`LOWLAT_DECODER_NONE` is refused with that status.
 Measured against this host at 2560x1440: the open stack to the vendor's, to software, and
 round again every hundred seconds, each answered by exactly one keyframe and the picture
 back within the second.
@@ -605,17 +606,17 @@ and the one just acquired, so a swap has no gap -- and a third acquire is refuse
 `LOWLAT_ERR_TOO_MANY_HELD` rather than silently dropping one. `release_frame` may carry a
 fence the application's device signals when it has finished reading, which is what lets a
 decoder write into shared memory without waiting on the application's CPU; a null fence
-means reusable now, and **in this minor it is the only fence**: a picture of the planes kind
-was copied, and one of the handle kind was copied on the device before the acquire returned
+means reusable now, and **it is the only fence**: a picture of the planes kind was copied,
+and one of the handle kind was copied or finished on the device before the acquire returned
 (§4 of [10](10-client.md)), so `lowlat_fence` has one kind, none, and a fence of any other
 kind is refused. The rule 5 of §1 holds: no callback fires from inside the library.
 
 **`lowlat_frame` carries either planes or a handle**, and says which. Planes are pointers,
 pitches and a format (`LOWLAT_FORMAT_NV12`, `LOWLAT_FORMAT_P010`) into memory valid for the
 lease; a handle is a device-level reference -- a buffer descriptor and layout modifier, or a
-texture per plane (W1, below) -- the application imports into its own device. The application
-names the kind it wants in `lowlat_client_create_info` and is told the kind it got; a decoder
-that cannot export lends planes, and in this minor every decoder does. Every picture also
+texture per plane (minor 19, below) -- the application imports into its own device. The
+application names the kind it wants in `lowlat_client_create_info` and is told the kind it
+got, frame by frame. Every picture also
 carries size, rotation, generation and a sequence number -- a gap between two consecutive
 presents is a skip -- and **`full_range`**, whether its samples span the whole of their depth
 rather than the video range, as the stream's own parameter set says (minor 15), so a
@@ -636,15 +637,34 @@ known: read against that clock at the acquire, it is the picture's time in the l
 after the present its time to the screen, which is what a latency figure needs and nothing in
 the stream can say.
 
-**Planned for Windows** (W1, [impl-plan-windows.md](impl-plan-windows.md),
-[10 §4.2](10-client.md)): a handle kind for shared textures in the legacy form, one per plane,
-with a handle per plane in the frame and the identity of the GPU they are on (the device
-string naming a GPU by that identity is built, W1.3, below);
-`lowlat_client_set_frame_kind(cl, kind)`, which switches planes and handles at the next
-picture with no keyframe and is refused with `LOWLAT_ERR_DECODER_UNSUPPORTED` by a decoder
-that cannot hand out the kind; and `lowlat_client_set_decoder` accepted by a session of the
-handle kind, each slot then carrying its own backing. A picture of the new kind is finished
-on the device before it can be acquired, so the release fence keeps its one kind.
+**Minor 19 (2026-09-28, W1.4): the handle on Windows, and the kind switched live**
+([10 §4.2](10-client.md)). `lowlat_handle_kind` gains `LOWLAT_HANDLE_D3D11_SHARED`: one texture
+per plane in the legacy shared form, which a device on the same GPU opens by its handle -- a
+luma and a two-channel chroma texture at half size for the two-plane layouts (`R8` and `R8G8`,
+or `R16` and `R16G16` with ten bits in the high bits), three single-channel ones at full
+chroma. `lowlat_frame` gains `textures`, the planes' handles, and `adapter`, the GPU they are
+on as its identity in one 64-bit value, low part first; a picture from another GPU than the
+last says the decoder has moved, and a renderer opens the textures on a device of that GPU. A
+lost device is found again by the library under the identity its GPU came back with, which the
+pictures after it name; a renderer's own device can be lost while the pictures' GPU stays as it
+was, so a renderer remakes its device by itself too, not only when `adapter` changes. Handles
+pay where the renderer is on the GPU that drives the display; a renderer moved to another GPU
+to open them pays for every frame's crossing to the display, and planes drawn on the display's
+GPU are then the faster kind (measured, [10 §4.2](10-client.md)). The open decoder on Windows
+hands them out on a system with a fence (Windows 10 1703 on); the listing's `handle` says so
+per GPU, asked of the device rather than of the system's version. Each picture is finished on
+the device before the acquire hands it out, so the release fence keeps its one kind: for a
+picture of textures, null says the application's device has finished reading it, as a renderer
+that waits on its swap chain's latency after each present has.
+`lowlat_client_set_frame_kind(cl, kind)` switches planes and handles at the next picture with
+no keyframe, before a session or during one, and is refused with
+`LOWLAT_ERR_DECODER_UNSUPPORTED` by a decoder that hands out no handle, nothing changing then.
+**The frame kind is a preference at `lowlat_client_set_decoder`**: in a session asking for
+handles a decoder that hands out none is taken all the same and its pictures come as planes,
+every frame saying its kind; the call is no longer refused for a handle session. Each slot
+carries its own backing, so a picture still held stays valid on the device it was made on.
+Linux's vendor decoder takes both calls the same way, between planes and its descriptor and
+between its devices.
 
 **On Windows since W1.2** (*2026-09-27*): the library is `lowlat.dll` with its import library
 `lowlat.dll.lib`, the C runtime linked in statically, and it carries the client half alone --
@@ -669,7 +689,7 @@ system lists, high-performance first, each labelled `D3D11 [NVIDIA]`, `D3D11 [AM
 `D3D11 [Intel]` with the GPU's name and driver version as its words, and 8 the software
 pair. A virtual display's adapter, which the system enumerates under its GPU's name, has no
 slot. No entry point or field is added, so the minor stays 18. The vendor kind and the
-handle kind are still refused.
+handle kind are still refused (the handle kind until minor 19, above).
 
 **Sound is decoded, not played** (minor 7). `acquire_audio` hands out one packet a call,
 signed sixteen-bit stereo at 48 kHz, in the order the host sent them, as many frames as the
@@ -1169,6 +1189,13 @@ zero there, asks for the video range.
 `lowlat_client_debug_panic`, the client half's twin of `lowlat_debug_panic`, so a library
 carrying the client half alone -- which a Windows build is -- proves containment on the
 object that ships. Not for applications. Nothing moves.
+
+**Minor 19** (2026-09-28) is the handle on Windows and the kind switched live
+([§3b](#3b-client)): `LOWLAT_HANDLE_D3D11_SHARED` appended to `lowlat_handle_kind`,
+`textures` and `adapter` appended to `lowlat_frame`, and `lowlat_client_set_frame_kind`.
+`lowlat_client_set_decoder` in a session of the handle kind is accepted where it was refused,
+a decoder that hands out no handle then handing out planes. Nothing moves, and a caller built
+against an earlier minor gets the fields it knows.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected
