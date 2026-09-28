@@ -589,6 +589,13 @@ impl Device {
         self.fences.is_some()
     }
 
+    /// Whether the device is gone -- removed, hung, reset, its driver
+    /// restarted -- which every call on it answers with from then on.
+    pub fn lost(&self) -> bool {
+        // SAFETY: a live device; the call is free-threaded.
+        unsafe { vcall!(self.device.as_ptr(), GetDeviceRemovedReason) }.is_some_and(|hr| hr < 0)
+    }
+
     /// A fence of this device's, at `initial`.
     pub fn fence(&self, initial: u64) -> Result<Fence> {
         let (device5, _) = self.fences.as_ref().ok_or(Error::MissingSymbol)?;

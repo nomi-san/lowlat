@@ -19,9 +19,14 @@ mod common;
 use std::collections::BTreeMap;
 
 use lowlat_core::video::{Codec, Rotation, VideoHeader};
-use lowlat_decode::d3d11::{Backend, caps, limits};
-use lowlat_decode::{Caps, Decoder, Fault};
-use lowlat_drivers::d3d11::{D3d11, Device, Luid};
+use lowlat_decode::d3d11::{Backend, caps, limits, plane_textures};
+use lowlat_decode::{Caps, Decoder, Fault, Format};
+use lowlat_drivers::d3d11::{Com, D3d11, Device, Event, Luid, SharedTexture};
+use lowlat_drivers::ffi::d3d11::{
+    D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC,
+    D3D11_USAGE_STAGING, ID3D11Resource, ID3D11Texture2D,
+};
+use lowlat_drivers::vcall;
 
 fn header(codec: Codec, ten_bit: bool) -> VideoHeader {
     VideoHeader {
@@ -105,6 +110,190 @@ fn check(
         |b| (b.decode_us, b.readback_us),
     );
     backend.destroy();
+    compare(clip, sums, &ours, &times)
+}
+
+/// The application's side of a picture handed out as textures: a device of
+/// its own on the same adapter, opening each plane by its handle and reading
+/// it back through a staging texture.
+struct Reader {
+    device: Device,
+    /// Each plane opened, by handle, with its staging texture.
+    opened: Vec<(u64, Com<ID3D11Texture2D>, Com<ID3D11Texture2D>)>,
+}
+
+impl Reader {
+    /// `rows` rows of `row_bytes` of the plane behind `handle` into `out`
+    /// at `pitch`.
+    fn read(&mut self, handle: u64, rows: usize, row_bytes: usize, out: &mut [u8], pitch: usize) {
+        if !self.opened.iter().any(|(h, _, _)| *h == handle) {
+            let texture = self.device.open_shared(handle).expect("the plane opened");
+            // SAFETY: plain data the call fills whole.
+            let mut desc: D3D11_TEXTURE2D_DESC = unsafe { core::mem::zeroed() };
+            // SAFETY: a live texture; the output is a live local.
+            unsafe { vcall!(texture.as_ptr(), GetDesc, &raw mut desc) };
+            desc.Usage = D3D11_USAGE_STAGING;
+            desc.BindFlags = 0;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ as u32;
+            desc.MiscFlags = 0;
+            let mut raw: *mut ID3D11Texture2D = core::ptr::null_mut();
+            // SAFETY: a live device; the description and output are live.
+            let hr = unsafe {
+                vcall!(
+                    self.device.device(),
+                    CreateTexture2D,
+                    &raw const desc,
+                    core::ptr::null(),
+                    &raw mut raw
+                )
+            }
+            .expect("the entry");
+            assert!(hr >= 0, "staging: 0x{hr:08x}");
+            // SAFETY: a texture whose reference the call handed over.
+            let staging = unsafe { Com::from_raw(raw) }.expect("staging");
+            self.opened.push((handle, texture, staging));
+        }
+        let (_, texture, staging) = self
+            .opened
+            .iter()
+            .find(|(h, _, _)| *h == handle)
+            .expect("opened");
+        let context = self.device.context();
+        let staging = staging.as_ptr().cast::<ID3D11Resource>();
+        // SAFETY: a live context on this thread; both are this device's, of
+        // one format and size.
+        unsafe {
+            vcall!(
+                context,
+                CopyResource,
+                staging,
+                texture.as_ptr().cast::<ID3D11Resource>()
+            )
+        };
+        // SAFETY: plain data the call fills.
+        let mut mapped: D3D11_MAPPED_SUBRESOURCE = unsafe { core::mem::zeroed() };
+        // SAFETY: as above; the output is live.
+        let hr = unsafe { vcall!(context, Map, staging, 0, D3D11_MAP_READ, 0, &raw mut mapped) }
+            .expect("the entry");
+        assert!(hr >= 0, "map: 0x{hr:08x}");
+        for row in 0..rows {
+            // SAFETY: the mapping holds `RowPitch` bytes a row for every row
+            // of the plane, and `row_bytes` is inside one.
+            let from = unsafe {
+                core::slice::from_raw_parts(
+                    mapped
+                        .pData
+                        .cast::<u8>()
+                        .add(row * mapped.RowPitch as usize),
+                    row_bytes,
+                )
+            };
+            out[row * pitch..row * pitch + row_bytes].copy_from_slice(from);
+        }
+        // SAFETY: mapped above, unmapped once.
+        unsafe { vcall!(context, Unmap, staging, 0) };
+    }
+}
+
+/// Decode one clip through the plane textures and compare what a second
+/// device reads out of them with the reference; `copying` takes the copy
+/// route even where the device would let the split read the surfaces.
+fn check_textures(
+    device: &Device,
+    d3d11: &D3d11,
+    clip: &str,
+    sums: &str,
+    codec: Codec,
+    ten_bit: bool,
+    copying: bool,
+) -> Result<bool, String> {
+    let mut backend = Backend::new(device, (4096, 4096));
+    if copying {
+        backend.force_copy();
+    }
+    let fence = backend.fence().ok_or("the device has no split")?;
+    backend
+        .build(&header(codec, ten_bit))
+        .map_err(|e| format!("build: {e:?}"))?;
+    let event = Event::new().expect("an event");
+    let mut reader = Reader {
+        device: d3d11.open(device.adapter.luid).expect("a second device"),
+        opened: Vec::new(),
+    };
+    let mut textures: Option<((u32, u32, Format), [Option<SharedTexture>; 3])> = None;
+    let timing = core::cell::Cell::new((0u32, 0u32));
+    let direct = core::cell::Cell::new(None);
+    let (ours, times) = common::decode_clip_with(
+        &mut backend,
+        clip,
+        |b| b.drain(),
+        |_| timing.get(),
+        |b, planes| {
+            let Some(layout @ (width, height, format)) = b.output() else {
+                return Ok(None);
+            };
+            if textures.as_ref().is_none_or(|(l, _)| *l != layout) {
+                let made = plane_textures(format, width, height).map(|p| {
+                    p.map(|(f, w, h)| device.shared_texture(f, w, h).expect("a shared plane"))
+                });
+                textures = Some((layout, made));
+                reader.opened.clear();
+            }
+            let (_, made) = textures.as_ref().expect("made");
+            let Some((picture, value)) = b.take_to_textures(made.each_ref().map(Option::as_ref))?
+            else {
+                return Ok(None);
+            };
+            direct.set(b.reads_directly());
+            let submitted = std::time::Instant::now();
+            fence.notify_at(value, &event).expect("a notification");
+            assert!(
+                event.wait(std::time::Duration::from_secs(2)),
+                "the fence never reached {value}"
+            );
+            let finished = submitted.elapsed().as_micros() as u32;
+            timing.set((finished, b.readback_us));
+            let sample = picture.format.sample();
+            let w = picture.width as usize;
+            let h = picture.height as usize;
+            let handle = |p: usize| made[p].as_ref().expect("a plane").handle;
+            reader.read(handle(0), h, w * sample, planes.y, planes.y_pitch);
+            let rows = picture.format.chroma_rows(h);
+            reader.read(handle(1), rows, w * sample, planes.uv, planes.uv_pitch);
+            if picture.format.full_chroma() {
+                reader.read(handle(2), rows, w * sample, planes.v, planes.v_pitch);
+            }
+            Ok(Some(picture))
+        },
+    );
+    backend.destroy();
+    compare(clip, sums, &ours, &times)?;
+    // The submit is what this thread spends: it must never be a wait.
+    let mut submits: Vec<u32> = times.iter().map(|t| t.1).collect();
+    submits.sort_unstable();
+    let at = |q: f64| submits[((submits.len() - 1) as f64 * q) as usize];
+    let first = times.first().map_or(0, |t| t.1);
+    println!(
+        "    submit p50 {} us p95 {} p99 {} max {}; first {first}; over 1 ms {}",
+        at(0.5),
+        at(0.95),
+        at(0.99),
+        at(1.0),
+        submits.iter().filter(|&&s| s > 1000).count()
+    );
+    direct
+        .get()
+        .ok_or_else(|| "no picture came out".to_string())
+}
+
+/// Compare what a clip decoded to with its reference sums, printing the
+/// timings; `Err` says how it differs.
+fn compare(
+    clip: &str,
+    sums: &str,
+    ours: &[(u32, u32)],
+    times: &[(u32, u32)],
+) -> Result<(), String> {
     let theirs = common::sums(sums);
     // Output order is a presentation matter; the pictures themselves must
     // all be there and all be right.
@@ -113,7 +302,7 @@ fn check(
         *expected.entry((s.y, s.uv)).or_default() += 1;
     }
     let mut got: BTreeMap<(u32, u32), usize> = BTreeMap::new();
-    for s in &ours {
+    for s in ours {
         *got.entry(*s).or_default() += 1;
     }
     let wrong = ours.iter().filter(|s| !expected.contains_key(s)).count();
@@ -200,6 +389,58 @@ fn every_clip_decodes_to_the_reference_pictures_on_every_adapter() {
             if let Err(e) = result {
                 println!("  {clip}: FAILED: {e}");
                 failures.push(format!("{luid} {clip}: {e}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// **Every clip through the plane textures, on every adapter, both routes.**
+/// The split's planes, opened by handle on a second device once the fence
+/// has passed and read back, are the reference pictures bit for bit: read
+/// from the surfaces directly where the device allows it, and through a copy
+/// of each slice, which every device is made to take once. The printed wait
+/// is from the submit to the fence passing -- the decode and the split -- and
+/// the copy is what the submit cost this thread.
+#[test]
+#[ignore = "requires a GPU"]
+fn every_clip_decodes_through_the_plane_textures_on_every_adapter() {
+    let d3d11 = D3d11::load().expect("the system's libraries");
+    let clips = clips();
+    let mut failures = Vec::new();
+    for luid in adapters(&d3d11) {
+        let device = d3d11.open(luid).expect("a device");
+        let caps = caps(&device);
+        for copying in [false, true] {
+            println!(
+                "{luid} {}: {}",
+                device.adapter.description,
+                if copying {
+                    "through a copy"
+                } else {
+                    "direct where allowed"
+                }
+            );
+            for (clip, sums, codec, ten_bit) in &clips {
+                if !able(&caps, clip, *codec, *ten_bit) {
+                    continue;
+                }
+                match check_textures(&device, &d3d11, clip, sums, *codec, *ten_bit, copying) {
+                    Ok(direct) if copying && direct => {
+                        failures.push(format!("{luid} {clip}: the copy route read directly"));
+                    }
+                    Ok(direct) => {
+                        if !copying && !direct {
+                            println!(
+                                "    read through a copy: the device refused a shader the surfaces"
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        println!("  {clip}: FAILED: {e}");
+                        failures.push(format!("{luid} {clip} copying={copying}: {e}"));
+                    }
+                }
             }
         }
     }

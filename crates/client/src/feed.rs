@@ -33,6 +33,9 @@ pub enum Decision {
     Request,
     /// No decoder can serve this stream. The caller ends it.
     Failed,
+    /// The decoder's device is gone and was torn down with it. The caller
+    /// finds the GPU again and builds on it, or ends the stream.
+    Lost,
 }
 
 /// The feed for one stream.
@@ -152,11 +155,13 @@ impl<D: Decoder> Feed<D> {
     }
 
     fn build_and_feed(&mut self, header: &VideoHeader, unit: &[u8], leads: bool) -> Decision {
-        if self.decoder.build(header).is_err() {
+        match self.decoder.build(header) {
+            Ok(()) => {}
+            Err(Fault::DeviceLost) => return Decision::Lost,
             // Nothing to ask the host for: the next keyframe would fail the
             // same way, and asking for one per keyframe is a rebuild storm on
             // an established host.
-            return Decision::Failed;
+            Err(_) => return Decision::Failed,
         }
         self.built(header);
         match self.feed_present(header, unit, leads) {
@@ -190,8 +195,10 @@ impl<D: Decoder> Feed<D> {
                 // fresh decoder; a second report on the same unit is a fault
                 // in the backend rather than a change in the stream.
                 self.teardown("format change");
-                if self.decoder.build(header).is_err() {
-                    return Decision::Failed;
+                match self.decoder.build(header) {
+                    Ok(()) => {}
+                    Err(Fault::DeviceLost) => return Decision::Lost,
+                    Err(_) => return Decision::Failed,
                 }
                 self.built(header);
                 match self.decoder.feed(unit) {
@@ -214,6 +221,7 @@ impl<D: Decoder> Feed<D> {
         match fault {
             Fault::Unrecoverable => Decision::Request,
             Fault::Fatal => Decision::Failed,
+            Fault::DeviceLost => Decision::Lost,
         }
     }
 
@@ -241,12 +249,17 @@ mod tests {
         /// What the next feeds return, in order; `Picture` once exhausted.
         script: std::collections::VecDeque<Result<Fed, Fault>>,
         refuse_build: bool,
+        /// The device is gone by the time a build is asked for.
+        lose_build: bool,
     }
 
     impl Decoder for Fake {
         fn build(&mut self, _header: &VideoHeader) -> Result<(), Fault> {
             if self.refuse_build {
                 return Err(Fault::Fatal);
+            }
+            if self.lose_build {
+                return Err(Fault::DeviceLost);
             }
             self.built += 1;
             Ok(())
@@ -338,6 +351,30 @@ mod tests {
         assert_eq!(feed.feed(&delta(1, false)), Decision::Request);
         assert!(!feed.present(), "the decoder survived its own fault");
         assert_eq!(feed.decoder().destroyed, 1);
+    }
+
+    /// **A lost device is neither a request nor the end**: the decoder goes
+    /// with it and the caller is told, whether the loss shows while feeding
+    /// or while building; nothing is asked of the host, since no decoder
+    /// exists to take a keyframe until the GPU is found again.
+    #[test]
+    fn a_lost_device_tears_down_and_says_so() {
+        let mut fake = Fake::default();
+        fake.script.push_back(Ok(Fed::Picture));
+        fake.script.push_back(Err(Fault::DeviceLost));
+        let mut feed = Feed::new(fake);
+        assert!(matches!(feed.feed(&sps(1, false)), Decision::Built(_)));
+        assert_eq!(feed.feed(&delta(1, false)), Decision::Lost);
+        assert!(!feed.present(), "the decoder outlived its device");
+        assert_eq!(feed.decoder().destroyed, 1);
+
+        let fake = Fake {
+            lose_build: true,
+            ..Fake::default()
+        };
+        let mut feed = Feed::new(fake);
+        assert_eq!(feed.feed(&sps(1, false)), Decision::Lost);
+        assert!(!feed.present());
     }
 
     /// After the one request, every unit that cannot build a decoder is

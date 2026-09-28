@@ -92,6 +92,11 @@ pub enum Fault {
     /// No decoder can continue: the device is gone or was never usable. The
     /// stream ends, with this named.
     Fatal,
+    /// The device is gone -- removed, reset, or its driver restarted -- and
+    /// may come back: a decoder built again on the same GPU, under whatever
+    /// identity it returns with, can carry on. A platform that cannot find it
+    /// again ends the stream as for [`Fault::Fatal`].
+    DeviceLost,
 }
 
 /// The layout a picture is read back in.
