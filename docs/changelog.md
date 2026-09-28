@@ -3,6 +3,20 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-28 - SDK: the rumble event's motors are low and high
+
+### Fixed
+- **The header compiles after the platform's own headers on Windows.** `lowlat_rumble_event`
+  named its motors `large` and `small`, and one of Windows' headers defines `small` as a
+  macro, so a C or C++ program that included them whole -- as most do -- could not include
+  this one after them. The motors are `low` and `high` now, named by frequency as the
+  platform's gamepad interfaces name them: `low` is the large motor, the byte `large` was. No
+  byte moved, and no minor: nothing was added ([06 §11](06-api.md)).
+
+### Changed
+- **The library's gates compile the header after the platform's own headers on Windows**, as C
+  and as C++, warnings as errors; the check failed on the old name before the rename.
+
 ## 2026-09-27 - W1.3: the system's decoder on Windows, read back to planes
 
 ### Decided

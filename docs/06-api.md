@@ -1176,6 +1176,14 @@ rather than kept: `LOWLAT_CG_LEVEL_LEGACY` became `LOWLAT_CG_LEVEL_AGGRESSIVE` b
 value never selected an older scheme and the name said it did. The value did not move and the
 behaviour did not change; only the name stopped misdescribing it.
 
+**`lowlat_rumble_event`'s motors became `low` and `high`** (*2026-09-28*), from `large` and
+`small`: one of Windows' own headers defines `small` as a macro, so a program that included
+the platform's headers whole, as most do, could not include this one after them. No byte
+moved: `low` is the byte `large` was, the large motor, which the platform's gamepad
+interfaces call the low-frequency one, and `high` the small, high-frequency one. The names
+are frequencies, not strengths. The header is compiled after the platform's headers on
+Windows now, as C and as C++.
+
 ## §12 Bindings
 
 The header generates from the Rust definitions, so it cannot drift from the implementation.
