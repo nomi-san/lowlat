@@ -1914,8 +1914,8 @@ fn the_hosts_control_messages_become_events() {
         vec![
             &Event::Rumble {
                 pad: 7,
-                large: 0xFF,
-                small: 0x80
+                low: 0xFF,
+                high: 0x80
             },
             &Event::Blocked { blocked: true },
             &Event::Blocked { blocked: false },

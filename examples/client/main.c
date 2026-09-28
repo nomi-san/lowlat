@@ -1199,11 +1199,11 @@ static void pump_library(struct demo *d)
 				// pad read raw gets a motor-only report of its own instead.
 				const lowlat_rumble_event *r = &e.body.rumble;
 				d->rumbles++;
-				if (d->raw_on && raw_pads_rumble(&d->raw, r->pad, r->large, r->small))
+				if (d->raw_on && raw_pads_rumble(&d->raw, r->pad, r->low, r->high))
 					break;
 				MTY_AppRumbleController(d->app, r->pad,
-					(uint16_t) (r->large | (r->large << 8)),
-					(uint16_t) (r->small | (r->small << 8)));
+					(uint16_t) (r->low | (r->low << 8)),
+					(uint16_t) (r->high | (r->high << 8)));
 				break;
 			}
 			case LOWLAT_EVENT_PAD_REPORT:

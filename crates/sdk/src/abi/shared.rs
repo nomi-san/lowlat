@@ -276,9 +276,13 @@ pub struct lowlat_cursor_event {
 pub struct lowlat_rumble_event {
     /// The pad as this client named it in its own reports.
     pub pad: u32,
-    /// The two motors, as the wire carries them: eight bits each.
-    pub large: u8,
-    pub small: u8,
+    /// The low-frequency motor's strength: the large motor, on the left of a
+    /// pad that has two. Eight bits, as the wire carries it. The two motors
+    /// are named by their frequency, not by their strength.
+    pub low: u8,
+    /// The high-frequency motor's strength: the small motor, on the right.
+    /// Eight bits, as the wire carries it.
+    pub high: u8,
     pub reserved: [u8; 2],
 }
 

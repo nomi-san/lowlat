@@ -53,5 +53,5 @@ bool raw_pads_owns_vendor(const struct raw_pads *r, uint16_t vid);
 bool raw_pads_write(struct raw_pads *r, const lowlat_pad_report_event *e);
 // The host's rumble message for a pad read here: a motor-only report,
 // the lights untouched. False when the pad is not one read here.
-bool raw_pads_rumble(struct raw_pads *r, uint32_t pad, uint8_t large, uint8_t small);
+bool raw_pads_rumble(struct raw_pads *r, uint32_t pad, uint8_t low, uint8_t high);
 void raw_pads_close(struct raw_pads *r, lowlat_client *client);

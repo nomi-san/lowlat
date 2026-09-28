@@ -892,12 +892,12 @@ impl Driver {
             }
             // Per-frame timing is not asked for and not read.
             op::FRAME_TIMING => {}
-            // (pad, large, small): the motors travel as bytes in the low
-            // eight bits of their arguments.
+            // (pad, low, high): the motors travel as bytes in the low eight
+            // bits of their arguments, the low-frequency one first.
             op::RUMBLE => self.emit.send(Event::Rumble {
                 pad: message.a0,
-                large: (message.a1 & 0xFF) as u8,
-                small: (message.a2 & 0xFF) as u8,
+                low: (message.a1 & 0xFF) as u8,
+                high: (message.a2 & 0xFF) as u8,
             }),
             // What the host's device was written, framed for the pad it
             // names; a pad never sent as reports has no framing and is

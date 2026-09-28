@@ -613,6 +613,22 @@ fn the_header_compiles_alone_as_c_and_as_c_plus_plus() {
     }
 }
 
+/// **The header after the platform's own headers, included whole**, since
+/// those define plain words as macros that an application's build would
+/// rewrite in this one. Both languages, warnings as errors.
+#[cfg(windows)]
+#[test]
+fn the_header_compiles_after_the_platforms_own_headers() {
+    let source = root().join("crates/sdk/tests/c/after-windows.c");
+    let dir = scratch("after-windows");
+    for (cplusplus, name) in [(false, "as C"), (true, "as C++")] {
+        let object = dir.join(format!("after-windows-{}.o", name.replace(' ', "-")));
+        if let Err(why) = compile_object(&source, &object, cplusplus, None) {
+            panic!("the header does not compile after windows.h {name}:\n{why}");
+        }
+    }
+}
+
 /// **A deliberate panic comes back as a status**, from the object that ships.
 ///
 /// Undefined behaviour if it regresses, which is why the check loads the

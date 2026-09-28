@@ -276,7 +276,7 @@ static void seal(uint8_t *report, size_t len)
 	memcpy(report + len - 4, &crc, 4);
 }
 
-bool raw_pads_rumble(struct raw_pads *r, uint32_t pad, uint8_t large, uint8_t small)
+bool raw_pads_rumble(struct raw_pads *r, uint32_t pad, uint8_t low, uint8_t high)
 {
 	struct raw_pad *p = by_id(r, pad);
 	if (p == NULL)
@@ -292,8 +292,8 @@ bool raw_pads_rumble(struct raw_pads *r, uint32_t pad, uint8_t large, uint8_t sm
 		if (p->wireless)
 			report[1] = 0xC0;
 		report[at] = 0x01;         // motors valid
-		report[at + 3] = small;    // right, the small one
-		report[at + 4] = large;    // left, the large one
+		report[at + 3] = high;     // right, the small one
+		report[at + 4] = low;      // left, the large one
 		len = p->wireless ? 78 : 32;
 	} else {
 		size_t at = p->wireless ? 3 : 1;
@@ -306,8 +306,8 @@ bool raw_pads_rumble(struct raw_pads *r, uint32_t pad, uint8_t large, uint8_t sm
 			p->seq = (uint8_t) ((p->seq + 1) & 0x0F);
 		}
 		report[at] = 0x03;         // both motors, the compatible vibration
-		report[at + 2] = small;    // right
-		report[at + 3] = large;    // left
+		report[at + 2] = high;     // right
+		report[at + 3] = low;      // left
 		len = p->wireless ? 78 : 48;
 	}
 	if (p->wireless)
@@ -370,12 +370,12 @@ bool raw_pads_write(struct raw_pads *r, const lowlat_pad_report_event *e)
 	return false;
 }
 
-bool raw_pads_rumble(struct raw_pads *r, uint32_t pad, uint8_t large, uint8_t small)
+bool raw_pads_rumble(struct raw_pads *r, uint32_t pad, uint8_t low, uint8_t high)
 {
 	(void) r;
 	(void) pad;
-	(void) large;
-	(void) small;
+	(void) low;
+	(void) high;
 	return false;
 }
 

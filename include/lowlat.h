@@ -1330,9 +1330,13 @@ typedef struct lowlat_cursor_event {
 typedef struct lowlat_rumble_event {
     /// The pad as this client named it in its own reports.
     uint32_t pad;
-    /// The two motors, as the wire carries them: eight bits each.
-    uint8_t large;
-    uint8_t small;
+    /// The low-frequency motor's strength: the large motor, on the left of a
+    /// pad that has two. Eight bits, as the wire carries it. The two motors
+    /// are named by their frequency, not by their strength.
+    uint8_t low;
+    /// The high-frequency motor's strength: the small motor, on the right.
+    /// Eight bits, as the wire carries it.
+    uint8_t high;
     uint8_t reserved[2];
 } lowlat_rumble_event;
 

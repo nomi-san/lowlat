@@ -2425,14 +2425,14 @@ fn described(
                 },
             }
         }
-        Event::Rumble { pad, large, small } => lowlat_event {
+        Event::Rumble { pad, low, high } => lowlat_event {
             kind: LOWLAT_EVENT_RUMBLE,
             dropped,
             body: lowlat_event_body {
                 rumble: lowlat_rumble_event {
                     pad: *pad,
-                    large: *large,
-                    small: *small,
+                    low: *low,
+                    high: *high,
                     reserved: [0; 2],
                 },
             },

@@ -83,8 +83,8 @@ pub enum Event {
         png: Vec<u8>,
     },
     /// The host asked a pad to vibrate: the pad this client named, and the
-    /// two motors as the wire carries them.
-    Rumble { pad: u32, large: u8, small: u8 },
+    /// two motors as the wire carries them, low frequency and high.
+    Rumble { pad: u32, low: u8, high: u8 },
     /// What the host's device was written, for a pad this client sends as
     /// its own reports: an output report in the pad's own framing, or a
     /// feature write as the host sent it; `len` bytes of `report`.
