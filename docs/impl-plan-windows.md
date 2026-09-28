@@ -179,10 +179,10 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   change does synchronously there (fixed: the window goes first); and three HEVC runs lost
   the path's upward direction mid-session, past this machine's network card, as an
   established client over the same path did too.
-- [ ] **W1.3 D3D11 planes**: the backend fed from the readers' jobs, read back to planes.
-  Checked by every clip decoding bit for bit on each of the three GPUs. *Built 2026-09-27;
-  the Intel card's pass is owed*: it was out of the machine, and the step is checked on the
-  NVIDIA and AMD GPUs first, the Intel card's after it is refitted. Decided at its interview:
+- [x] **W1.3 D3D11 planes**: the backend fed from the readers' jobs, read back to planes.
+  Checked by every clip decoding bit for bit on each of the three GPUs. *Built 2026-09-27,
+  closed 2026-09-28*: the Intel card was out of the machine, so the step was checked on the
+  NVIDIA and AMD GPUs first and on the Intel card once refitted. Decided at its interview:
   the system's own declarations, generated from its headers and committed with their layout
   checks, the libraries loaded at run time; the backend wired into the client for planes
   (the open kind on Windows, first in the automatic order), which needs a GPU named by its
@@ -191,11 +191,12 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   decoder nobody placed settles on the high-performance GPU. As built: the slices go in the
   short form and the scaling lists in the coded order; a virtual display's adapter, which
   enumerates under its GPU's name, is not offered. Every committed clip decodes bit for bit
-  on both GPUs, full chroma on the NVIDIA and refused as fatal on the AMD. Ten minutes of
-  each codec on each GPU from an established host at 2560x1440, and ten-bit and full chroma
-  with the full range from a second one ([10 §5.2](10-client.md)). *Found at the gate*: the
-  AMD's video engine runs at a low clock under one decode that leaves it idle between
-  pictures, twice as slow as when it is kept busy -- recorded, not pursued.
+  on all three GPUs, full chroma on the NVIDIA and the Intel card and refused as fatal on
+  the AMD. Ten minutes of each codec on each GPU from an established host at 2560x1440, and
+  ten-bit and full chroma with the full range from a second one ([10 §5.2](10-client.md)).
+  *Found at the gate*: the AMD's video engine runs at a low clock under one decode that
+  leaves it idle between pictures, twice as slow as when it is kept busy -- recorded, not
+  pursued.
 - [ ] **W1.4 the handle**: the plane split, reading the decoder's output directly where a
   driver lets a shader read it and copying it first where one does not; the shared textures;
   the library's fence and the newest finished picture; the GPU on every frame; per-slot
@@ -238,6 +239,7 @@ whether an application may supply the frames, for a virtual display that already
 
 ## Change log
 
+- 2026-09-28: W1.3 closed with the Intel card's pass.
 - 2026-09-27: W1.3 built on two GPUs, the third's pass owed; a GPU named by its identity moved
   from W1.4 to W1.3; the never-waits decision scoped to the handle kind.
 - 2026-09-27: W1.2 built; W1.4's minor corrected to 19.

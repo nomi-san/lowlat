@@ -644,10 +644,11 @@ raster decoding without an error to the wrong picture. A picture is read back by
 a staging texture on the device and a map of it, whose wait sleeps on the device's progress;
 on one vendor's driver the map spins about 60 us of its wait before it sleeps. Full chroma is
 decoded where the device builds the profile into the packed layouts the open stack's
-read-back already unpacks. Every committed clip decodes bit for bit on an NVIDIA and an AMD
-integrated GPU, full chroma on the NVIDIA and refused as fatal on the AMD, which has no such
-profile; the declaration is masked by that, so a stream never arrives that the decoder would
-refuse. The device on each is the library's own. Nothing is allocated per unit.
+read-back already unpacks. Every committed clip decodes bit for bit on an NVIDIA, an Intel
+and an AMD integrated GPU, full chroma on the NVIDIA and the Intel and refused as fatal on
+the AMD, which has no such profile; the declaration is masked by that, so a stream never
+arrives that the decoder would refuse. The device on each is the library's own. Nothing is
+allocated per unit.
 
 From an established host at 2560x1440, ten minutes each, the read-back's wait (the decode
 and the copy) and the copy out at the median, the whole process's share of one core:
@@ -655,6 +656,7 @@ and the copy) and the copy out at the median, the whole process's share of one c
 | GPU | H.264 wait / copy | HEVC wait / copy | arrival to present | core |
 |---|---|---|---|---|
 | NVIDIA RTX 5060 | 1.8 / 0.17 ms | 2.1 / 0.15 ms | 3.2-3.5 ms | 11 % |
+| Intel Arc A380 | 3.4 / 0.14 ms | 3.0 / 0.14 ms | 5.2-5.4 ms | 5 % |
 | AMD integrated | 8.9 / 0.15 ms | 11.8 / 0.20 ms | 10.9-14.9 ms | 4-6 % |
 
 The software pair on the same stream decoded in 4.4 and 7.0 ms at 22-27 % of a core. From a
@@ -663,6 +665,13 @@ chroma 2.1 ms at both depths, the packed layouts' unpacking 0.7 and 1.1 ms of co
 decoder moved mid-session between both GPUs and software, four moves, each back within the
 second. Beside another process saturating the AMD's video engine the wait held 4.8 ms at the
 median and 9.4 at the worst, the reader never more than one message behind.
+
+The Intel card was fitted after the other two were measured. On a clip at 1440p it decodes
+H.264 in 2.7 ms and HEVC in 2.3 back to back, and in 3.4 and 2.9 with a gap between pictures:
+no low clock of the AMD's kind below. Its kernel type reads as the discrete GPU of a hybrid
+pair, beside the AMD's integrated one, and the system's high-performance order is then the
+NVIDIA, the Intel card and the integrated GPU, so a decoder nobody placed still settles on
+the NVIDIA.
 
 **The AMD's video engine runs at a low clock under one decode** (*found 2026-09-27*). Fed a
 1440p clip back to back it decodes HEVC in 5.9 ms and H.264 in 4.6; with any idle gap between

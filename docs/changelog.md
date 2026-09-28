@@ -35,22 +35,28 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   named GPU with a gap between units.
 
 ### Measured
-- **Every committed clip decodes bit for bit** on an NVIDIA RTX 5060 and an AMD integrated
-  GPU on the first run; full chroma on the NVIDIA, refused as fatal on the AMD. Each new check
-  failed when broken: the lists left raster, the chroma planes swapped, ten-bit pictures read
-  as eight.
+- **Every committed clip decodes bit for bit** on an NVIDIA RTX 5060, an Intel Arc A380 and an
+  AMD integrated GPU on the first run; full chroma on the NVIDIA and the Intel, refused as
+  fatal on the AMD. Each new check failed when broken: the lists left raster, the chroma
+  planes swapped, ten-bit pictures read as eight.
 - **From an established host at 2560x1440, ten minutes of each codec on each GPU**: on the
   NVIDIA the read-back's wait is 1.8 ms (H.264) and 2.1 (HEVC) at the median, arrival to
   present 3.2-3.5 ms, 11 % of a core -- against the software pair's 4.4 and 7.0 ms at 22-27 %;
-  on the AMD 8.9 and 11.8 ms. Ten-bit and full chroma with the full range from a second host
-  at 1920x1080 on the NVIDIA; four decoder moves mid-session, each back within the second.
+  on the Intel 3.4 and 3.0 ms, arrival to present 5.2-5.4, 5 %; on the AMD 8.9 and 11.8 ms.
+  Ten-bit and full chroma with the full range from a second host at 1920x1080 on the NVIDIA;
+  four decoder moves mid-session, each back within the second.
 - **The AMD's video engine runs at a low clock under a decode that idles between pictures**:
   HEVC at 1440p takes 5.9 ms back to back and 12.6 with any gap; another stream keeping the
   engine busy halves it, through the vendor's own runtime or this same interface alike.
   Recorded, not pursued.
 - **The wait sleeps**: the decode thread ran for about 1 % of its wait on the AMD; one
   NVIDIA driver's map spins about 60 us of each 0.3 ms wait before it sleeps.
-- **The Intel card's pass is owed**: it was out of the machine, and the step closes after it.
+- **The Intel card, refitted 2026-09-28**, closes the step: on a clip at 1440p it decodes in
+  2.7 ms (H.264) and 2.3 (HEVC) back to back and 3.4 and 2.9 with a gap between pictures -- no
+  low clock of the AMD's kind -- and its wait sleeps, the thread running about 3 % of it. Its
+  kernel type reads as the discrete GPU of a hybrid pair; the system's high-performance order
+  is then the NVIDIA, the Intel card, the integrated GPU. One of its sessions lost everything
+  from the host at once at 205 s, the path or the host rather than the decoder, and was rerun.
 
 ## 2026-09-27 - W1.2: the seam, the software decoder and the demo on Windows
 
