@@ -46,6 +46,18 @@ another.
 | `src/matoya.h` | `MTY_SetGFXAdapter(uint64_t luid)`: the adapter the next Direct3D 11 context is made on, named by its locally unique identifier as one value, low part first; zero for the default |
 | `src/windows/gfx/d3d11-ctx.c` | the context's device is made on that adapter, found by its identity through the factory, with the unknown driver type an explicit adapter takes; an identity no adapter has any longer, or zero, makes it on the default adapter as before, the miss logged |
 
+A context whose device is lost is made again, as upstream means it to be; upstream's remake
+could never succeed. A flip swap chain outlives its last reference until the immediate
+context is cleared and flushed (the `ID3D11DeviceContext::Flush` documentation, "Deferred
+Destruction Issues with Flip Presentation Swap Chains"), and the renderer's objects keep the
+old device alive, so the new swap chain was refused on the window (`E_ACCESSDENIED`) and the
+window drew nothing again. A loss found while taking the back buffer, rather than at the
+present, was not acted on at all.
+
+| file | change |
+|---|---|
+| `src/windows/gfx/d3d11-ctx.c` | the context's free clears and flushes the immediate context after releasing the swap chain; a removed, hung or reset device found by `GetBuffer` or `CreateRenderTargetView` remakes the context as one found at the present does, once the buffer is released; a remake that fails is tried again at a later surface, at most every 250 ms, and a failed remake inside the resize path no longer leaves a null swap chain to be read |
+
 The Windows build takes its Vulkan shader compiler from the path, as the Linux build does,
 rather than from `deps/bin/`, which is not carried: no executable is kept in this tree.
 

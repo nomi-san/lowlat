@@ -19,6 +19,7 @@ GFX_CTX_PROTOTYPES(_d3d11_)
 )
 
 #define D3D11_CTX_WAIT 2000
+#define D3D11_CTX_RETRY 250
 
 // The adapter MTY_SetGFXAdapter names, zero for the system's default.
 static MTY_Atomic64 D3D11_CTX_ADAPTER;
@@ -66,6 +67,7 @@ struct d3d11_ctx {
 	IDXGISwapChain2 *swap_chain2;
 	HANDLE waitable;
 	UINT flags;
+	MTY_Time remade;
 };
 
 static void d3d11_ctx_get_size(struct d3d11_ctx *ctx, uint32_t *width, uint32_t *height)
@@ -88,8 +90,14 @@ static void d3d11_ctx_free(struct d3d11_ctx *ctx)
 	if (ctx->swap_chain2)
 		IDXGISwapChain2_Release(ctx->swap_chain2);
 
-	if (ctx->context)
+	// Released, a flip swap chain still lives until the context is cleared and flushed, and
+	// while it lives no other can be made on the window (E_ACCESSDENIED): the renderer's
+	// objects keep the device, so a remake would find the old swap chain still there
+	if (ctx->context) {
+		ID3D11DeviceContext_ClearState(ctx->context);
+		ID3D11DeviceContext_Flush(ctx->context);
 		ID3D11DeviceContext_Release(ctx->context);
+	}
 
 	if (ctx->device)
 		ID3D11Device_Release(ctx->device);
@@ -313,28 +321,51 @@ MTY_Surface *mty_d3d11_ctx_get_surface(struct gfx_ctx *gfx_ctx)
 	struct d3d11_ctx *ctx = (struct d3d11_ctx *) gfx_ctx;
 
 	ID3D11Resource *resource = NULL;
+	bool lost = false;
 
-	if (!ctx->swap_chain2)
-		return NULL;
+	// A remake that failed (the adapter still restarting, say) is tried again, at most
+	// every D3D11_CTX_RETRY ms
+	if (!ctx->swap_chain2) {
+		if (MTY_TimeDiff(ctx->remade, MTY_GetTime()) < D3D11_CTX_RETRY)
+			return NULL;
+
+		ctx->remade = MTY_GetTime();
+
+		if (!d3d11_ctx_init(ctx))
+			return NULL;
+	}
 
 	if (!ctx->back_buffer) {
 		d3d11_ctx_refresh(ctx);
 
+		if (!ctx->swap_chain2)
+			return NULL;
+
 		HRESULT e = IDXGISwapChain2_GetBuffer(ctx->swap_chain2, 0, &IID_ID3D11Resource, &resource);
 		if (e != S_OK) {
 			MTY_Log("'IDXGISwapChain2_GetBuffer' failed with HRESULT 0x%X", e);
+			lost = DXGI_FATAL(e);
 			goto except;
 		}
 
 		e = ID3D11Device_CreateRenderTargetView(ctx->device, resource, NULL, &ctx->back_buffer);
-		if (e != S_OK)
+		if (e != S_OK) {
 			MTY_Log("'ID3D11Device_CreateRenderTargetView' failed with HRESULT 0x%X", e);
+			lost = DXGI_FATAL(e);
+		}
 	}
 
 	except:
 
 	if (resource)
 		ID3D11Resource_Release(resource);
+
+	// The device is gone: remade as a present that finds it gone remakes it, once the
+	// buffer is let go, which would otherwise keep the old swap chain alive
+	if (lost) {
+		d3d11_ctx_free(ctx);
+		d3d11_ctx_init(ctx);
+	}
 
 	return (MTY_Surface *) ctx->back_buffer;
 }
