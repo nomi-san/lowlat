@@ -550,19 +550,28 @@ fn wait_probe() {
     } else {
         Codec::H264
     };
+    // The depth is read from the name as the codec is: "10" in it is ten
+    // bits, so a clip at full chroma reads back through the unpacking too.
+    let ten_bit = codec == Codec::H265 && clip.contains("10");
     let pace: u64 = std::env::var("LOWLAT_PROBE_PACE_MS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(0);
     let d3d11 = D3d11::load().expect("the system's libraries");
     let units = common::units(&clip);
-    let pitch = 4096;
+    // Room for the largest picture at full chroma and sixteen bits.
+    let pitch = 8192;
     let mut y = vec![0u8; pitch * 2160];
-    let mut uv = vec![0u8; pitch * 1080];
+    let mut uv = vec![0u8; pitch * 2160];
+    let mut v = vec![0u8; pitch * 2160];
     for luid in adapters(&d3d11) {
         let device = d3d11.open(luid).expect("a device");
+        if clip.contains("444") && !caps(&device).hevc_444 {
+            println!("{luid} {}: no full chroma", device.adapter.description);
+            continue;
+        }
         let mut backend = Backend::new(&device, (4096, 4096));
-        backend.build(&header(codec, false)).expect("build");
+        backend.build(&header(codec, ten_bit)).expect("build");
         let (mut waits, mut copies) = (Vec::new(), Vec::new());
         while waits.len() < 600 {
             for unit in &units {
@@ -573,8 +582,8 @@ fn wait_probe() {
                         y_pitch: pitch,
                         uv: &mut uv,
                         uv_pitch: pitch,
-                        v: &mut [],
-                        v_pitch: 0,
+                        v: &mut v,
+                        v_pitch: pitch,
                     };
                     if backend.take(&mut planes).expect("take").is_none() {
                         break;

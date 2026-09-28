@@ -330,6 +330,14 @@ impl Shaders {
     }
 }
 
+/// The planes a full-chroma picture read back to planes is unpacked into on
+/// the device, and the staging textures each is read through, at one layout.
+struct Unpacked {
+    layout: (Format, u32, u32),
+    planes: [Option<SharedTexture>; 3],
+    staging: [Option<Com<ID3D11Texture2D>>; 3],
+}
+
 /// The textures a decoder makes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Texture {
@@ -513,6 +521,8 @@ pub struct Backend<'a> {
     /// The split reads a copy of each slice even where the device would
     /// let it read the surfaces: the copy route, checked on every device.
     copying: bool,
+    /// Where a full-chroma picture read back to planes is unpacked.
+    unpacked: Option<Unpacked>,
     codec: Codec,
     /// The declaration's depth, until the first parameter set says.
     ten_bit: bool,
@@ -553,6 +563,7 @@ impl<'a> Backend<'a> {
             shaders,
             signalled: 0,
             copying: false,
+            unpacked: None,
             codec: Codec::H264,
             ten_bit: false,
             built: None,
@@ -1708,12 +1719,18 @@ impl<'a> Backend<'a> {
     /// The split of `slot`'s picture into `planes`, and the fence value it
     /// is finished at.
     fn split(&mut self, slot: usize, planes: [Option<&SharedTexture>; 3]) -> Result<u64> {
+        let fence = self.fence.as_ref().ok_or(Error::NoProfile)?;
+        self.dispatch(slot, planes)?;
+        let value = self.signalled + 1;
+        self.device.signal(fence, value)?;
+        self.signalled = value;
+        Ok(value)
+    }
+
+    /// The split's pass for `slot`'s picture into `planes`, queued.
+    fn dispatch(&self, slot: usize, planes: [Option<&SharedTexture>; 3]) -> Result<()> {
         let built = self.built.as_ref().ok_or(Error::NoProfile)?;
-        let (shaders, fence) = self
-            .shaders
-            .as_ref()
-            .zip(self.fence.as_ref())
-            .ok_or(Error::NoProfile)?;
+        let shaders = self.shaders.as_ref().ok_or(Error::NoProfile)?;
         let context = self.device.context();
         let subresource = u32::try_from(slot).map_err(|_| Error::TooLarge)?;
         let sources = match &built.sources {
@@ -1791,10 +1808,137 @@ impl<'a> Backend<'a> {
                 core::ptr::null()
             );
         }
-        let value = self.signalled + 1;
-        self.device.signal(fence, value)?;
-        self.signalled = value;
-        Ok(value)
+        Ok(())
+    }
+
+    /// Read `slot`'s full-chroma picture into the planes through the split:
+    /// unpacked into three plain planes on the device, each copied into a
+    /// staging texture and mapped, the rows then copied as they are. The
+    /// packed layout unpacked by the processor costs about a millisecond more
+    /// a picture at 2560x1440.
+    fn unpack_back(&mut self, slot: usize, out: &mut Planes<'_>) -> Result<()> {
+        let (width, height) = self.visible_and_range().0;
+        let format = self.format();
+        if self
+            .unpacked
+            .as_ref()
+            .is_none_or(|u| u.layout != (format, width, height))
+        {
+            self.unpacked = None;
+            let mut planes = [None, None, None];
+            let mut staging = [None, None, None];
+            for ((plane, stage), texture) in planes
+                .iter_mut()
+                .zip(staging.iter_mut())
+                .zip(plane_textures(format, width, height))
+            {
+                let (f, w, h) = texture.ok_or(Error::TooLarge)?;
+                *plane = Some(self.device.shared_texture(f, w, h)?);
+                *stage = Some(self.staging_plane(f, w, h)?);
+            }
+            self.unpacked = Some(Unpacked {
+                layout: (format, width, height),
+                planes,
+                staging,
+            });
+        }
+        let unpacked = self.unpacked.as_ref().ok_or(Error::NoProfile)?;
+        let started = lowlat_common::clock::Time::now();
+        self.dispatch(slot, unpacked.planes.each_ref().map(Option::as_ref))?;
+        let context = self.device.context();
+        for (plane, stage) in unpacked.planes.iter().zip(unpacked.staging.iter()) {
+            let (Some(plane), Some(stage)) = (plane, stage) else {
+                return Err(Error::NoProfile);
+            };
+            // SAFETY: a live context on this thread; both are this device's,
+            // of one format and size.
+            unsafe {
+                vcall!(
+                    context,
+                    CopyResource,
+                    stage.as_ptr().cast::<ID3D11Resource>(),
+                    plane.texture().cast::<ID3D11Resource>()
+                )
+            };
+        }
+        let row_bytes = usize::try_from(width).map_err(|_| Error::TooLarge)? * format.sample();
+        let rows = usize::try_from(height).map_err(|_| Error::TooLarge)?;
+        let mut synced = None;
+        let targets = [
+            (&mut *out.y, out.y_pitch),
+            (&mut *out.uv, out.uv_pitch),
+            (&mut *out.v, out.v_pitch),
+        ];
+        let mut result = Ok(());
+        for ((to, to_pitch), stage) in targets.into_iter().zip(unpacked.staging.iter()) {
+            let staging = stage
+                .as_ref()
+                .ok_or(Error::NoProfile)?
+                .as_ptr()
+                .cast::<ID3D11Resource>();
+            let mut mapped: D3D11_MAPPED_SUBRESOURCE = zeroed();
+            // SAFETY: as above; the output is live. The first mapping waits
+            // for the split and the copies, the rest find theirs done.
+            let hr =
+                unsafe { vcall!(context, Map, staging, 0, D3D11_MAP_READ, 0, &raw mut mapped) }
+                    .ok_or(Error::NoProfile)?;
+            check(hr)?;
+            synced.get_or_insert_with(lowlat_common::clock::Time::now);
+            let pitch = usize::try_from(mapped.RowPitch).map_err(|_| Error::TooLarge)?;
+            // SAFETY: the device mapped the whole plane at `pData`, `RowPitch`
+            // bytes a row for each of its rows.
+            let source =
+                unsafe { core::slice::from_raw_parts(mapped.pData.cast::<u8>(), pitch * rows) };
+            if result.is_ok() {
+                result = copy_rows(source, 0, pitch, to, to_pitch, row_bytes, rows);
+            }
+            // SAFETY: mapped above, unmapped once.
+            unsafe { vcall!(context, Unmap, staging, 0) };
+        }
+        let synced = synced.unwrap_or(started);
+        let done = lowlat_common::clock::Time::now();
+        self.decode_us = micros(lowlat_common::clock::diff_ms(started, synced));
+        self.readback_us = micros(lowlat_common::clock::diff_ms(synced, done));
+        result
+    }
+
+    /// A staging texture one plane is read back through.
+    fn staging_plane(
+        &self,
+        format: DXGI_FORMAT,
+        width: u32,
+        height: u32,
+    ) -> Result<Com<ID3D11Texture2D>> {
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: width,
+            Height: height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: format,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_STAGING,
+            BindFlags: 0,
+            CPUAccessFlags: u32::try_from(D3D11_CPU_ACCESS_READ).unwrap_or(0),
+            MiscFlags: 0,
+        };
+        let mut texture: *mut ID3D11Texture2D = core::ptr::null_mut();
+        // SAFETY: a live device; the description and output are live.
+        let hr = unsafe {
+            vcall!(
+                self.device.device(),
+                CreateTexture2D,
+                &raw const desc,
+                core::ptr::null(),
+                &raw mut texture
+            )
+        }
+        .ok_or(Error::NoProfile)?;
+        check(hr)?;
+        // SAFETY: a texture whose reference the call handed over.
+        unsafe { Com::from_raw(texture) }.ok_or(Error::NoProfile)
     }
 
     /// The active parameter set's visible size and range.
@@ -1813,9 +1957,17 @@ impl<'a> Backend<'a> {
 
     /// Read `slot`'s picture into the planes: a copy of its surface into the
     /// staging texture, then the staging texture mapped, the mapping's wait
-    /// for the copy sleeping on the device's progress.
+    /// for the copy sleeping on the device's progress. An eight-bit
+    /// full-chroma picture is unpacked on the device first where the device
+    /// has the split: its three planes are fewer bytes than the packed
+    /// layout. At ten bits they are half as many again, and on a narrow link
+    /// the read-back's copy over it costs more than the unpacking saves.
     fn read_back(&mut self, slot: usize, out: &mut Planes<'_>) -> Result<()> {
         let built = self.built.as_ref().ok_or(Error::NoProfile)?;
+        let shape = built.shape;
+        if shape.full_chroma && !shape.ten_bit && !matches!(built.sources, Sources::None) {
+            return self.unpack_back(slot, out);
+        }
         let (width, height) = match self.codec {
             Codec::H264 => self.h264.active_sps().map(|s| s.visible()),
             Codec::H265 => self.hevc.active_sps().map(|s| s.visible()),
