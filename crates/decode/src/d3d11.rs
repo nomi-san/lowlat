@@ -225,7 +225,7 @@ impl Shape {
 }
 
 /// Whether the device offers the shape's profile with its surface format.
-fn offers(device: &Device<'_>, shape: Shape) -> bool {
+fn offers(device: &Device, shape: Shape) -> bool {
     let mut supported: BOOL = 0;
     // SAFETY: a live video device; the profile and the output are live.
     let hr = unsafe {
@@ -242,7 +242,7 @@ fn offers(device: &Device<'_>, shape: Shape) -> bool {
 
 /// A decoder for the shape at a size, in the short slice form.
 fn create_decoder(
-    device: &Device<'_>,
+    device: &Device,
     shape: Shape,
     width: u32,
     height: u32,
@@ -311,7 +311,7 @@ fn create_decoder(
 /// dropped**, never a capability list alone: a list can name a profile the
 /// device then fails to build, and a device that offers a profile only in
 /// the long slice form decodes nothing here.
-pub fn caps(device: &Device<'_>) -> Caps {
+pub fn caps(device: &Device) -> Caps {
     let builds = |codec, ten_bit, full_chroma| {
         let shape = Shape {
             codec,
@@ -331,7 +331,7 @@ pub fn caps(device: &Device<'_>) -> Caps {
 
 /// The largest picture a device builds a decoder for, per codec, from a
 /// fixed ladder of sizes; zero where none builds.
-pub fn limits(device: &Device<'_>, codec: Codec) -> (u32, u32) {
+pub fn limits(device: &Device, codec: Codec) -> (u32, u32) {
     LADDER
         .into_iter()
         .find(|&(w, h)| create_decoder(device, Shape::base(codec), w, h).is_ok())
@@ -367,7 +367,7 @@ struct Built {
 
 /// The decoder over one device.
 pub struct Backend<'a> {
-    device: &'a Device<'a>,
+    device: &'a Device,
     /// The largest coded picture the caller's planes take.
     ceiling: (u32, u32),
     codec: Codec,
@@ -398,7 +398,7 @@ impl fmt::Debug for Backend<'_> {
 }
 
 impl<'a> Backend<'a> {
-    pub fn new(device: &'a Device<'a>, ceiling: (u32, u32)) -> Self {
+    pub fn new(device: &'a Device, ceiling: (u32, u32)) -> Self {
         Self {
             device,
             ceiling,

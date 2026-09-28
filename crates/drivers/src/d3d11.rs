@@ -19,6 +19,13 @@
 //! one device serialise on its lock, and a decode would wait behind the
 //! application's present.
 //!
+//! **A picture handed out as textures is known finished by a fence**, where
+//! the system has one (Windows 10 1703 on): the device's work is queued, the
+//! fence signalled behind it, and whoever needs the picture reads the fence's
+//! value or sleeps on an event until it passes. The textures are shared in the
+//! legacy form -- a handle another device on the same adapter opens -- one per
+//! plane, with the view a shader writes them through.
+//!
 //! The interfaces are held by [`Com`], which releases on drop, and called
 //! through their tables with [`vcall!`](crate::vcall). What a backend does
 //! with the device is the backend's; nothing here makes a decoder.
@@ -31,15 +38,19 @@ use lowlat_common::dynlib::Library;
 
 use crate::ffi::d3d11::{
     _D3DKMT_ADAPTERTYPE__bindgen_ty_1__bindgen_ty_1 as AdapterFlags, D3D_DRIVER_TYPE_UNKNOWN,
-    D3D11_CREATE_DEVICE_VIDEO_SUPPORT, D3D11_SDK_VERSION, D3DKMT_ADAPTERTYPE, D3DKMT_CLOSEADAPTER,
-    D3DKMT_OPENADAPTERFROMLUID, D3DKMT_QUERYADAPTERINFO, DXGI_ADAPTER_DESC1,
-    DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, GUID, HRESULT, ID3D11Device, ID3D11DeviceContext,
+    D3D11_BIND_SHADER_RESOURCE, D3D11_BIND_UNORDERED_ACCESS, D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
+    D3D11_FENCE_FLAG_NONE, D3D11_RESOURCE_MISC_SHARED, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
+    D3D11_USAGE_DEFAULT, D3DKMT_ADAPTERTYPE, D3DKMT_CLOSEADAPTER, D3DKMT_OPENADAPTERFROMLUID,
+    D3DKMT_QUERYADAPTERINFO, DXGI_ADAPTER_DESC1, DXGI_FORMAT, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
+    DXGI_SAMPLE_DESC, GUID, HANDLE, HRESULT, ID3D11Device, ID3D11Device5, ID3D11DeviceContext,
+    ID3D11DeviceContext4, ID3D11Fence, ID3D11Resource, ID3D11Texture2D, ID3D11UnorderedAccessView,
     ID3D11VideoContext, ID3D11VideoDevice, IDXGIAdapter, IDXGIAdapter1, IDXGIFactory1,
-    IDXGIFactory6, IUnknown, KMTQAITYPE_ADAPTERTYPE, LARGE_INTEGER, LUID, NTSTATUS,
+    IDXGIFactory6, IDXGIResource, IUnknown, KMTQAITYPE_ADAPTERTYPE, LARGE_INTEGER, LUID, NTSTATUS,
 };
 use crate::ffi::d3d11_guids::{
+    IID_ID3D11Device5, IID_ID3D11DeviceContext4, IID_ID3D11Fence, IID_ID3D11Texture2D,
     IID_ID3D11VideoContext, IID_ID3D11VideoDevice, IID_IDXGIAdapter1, IID_IDXGIDevice,
-    IID_IDXGIFactory1, IID_IDXGIFactory6,
+    IID_IDXGIFactory1, IID_IDXGIFactory6, IID_IDXGIResource,
 };
 
 /// Call a method through an interface's table: `vcall!(pointer, Method,
@@ -205,6 +216,10 @@ pub struct Adapter {
     pub luid: Luid,
     pub vendor: u32,
     pub device: u32,
+    /// The board's and the silicon's revisions: with the two above, what
+    /// finds the same GPU again once its identity has changed.
+    pub subsystem: u32,
+    pub revision: u32,
     /// The adapter's own name.
     pub description: String,
     /// The user-mode driver's version, four parts, where the system says.
@@ -225,6 +240,14 @@ impl Adapter {
     /// rasteriser.
     pub fn decodes_here(&self) -> bool {
         self.renders && !self.software && !self.indirect
+    }
+
+    /// Whether `other` is the same GPU, whatever identity each carries: the
+    /// maker's and the board's numbers, which survive a reset and a driver
+    /// restart where the identity does not.
+    pub fn same_hardware(&self, other: &Adapter) -> bool {
+        (self.vendor, self.device, self.subsystem, self.revision)
+            == (other.vendor, other.device, other.subsystem, other.revision)
     }
 
     /// The maker's name, for a label.
@@ -389,6 +412,8 @@ impl D3d11 {
             luid: Luid::of(desc.AdapterLuid),
             vendor: desc.VendorId,
             device: desc.DeviceId,
+            subsystem: desc.SubSysId,
+            revision: desc.Revision,
             description: String::from_utf16_lossy(name),
             driver,
             renders: kind.is_some_and(|t| t.RenderSupported() != 0),
@@ -434,7 +459,7 @@ impl D3d11 {
     /// A device of the library's own on the adapter with this identity, with
     /// its video interfaces. Refused for an adapter not offered
     /// ([`Adapter::decodes_here`]).
-    pub fn open(&self, luid: Luid) -> Result<Device<'_>> {
+    pub fn open(&self, luid: Luid) -> Result<Device> {
         let found = self.walk(|adapter, desc| {
             if Luid::of(desc.AdapterLuid) != luid {
                 return Ok(None);
@@ -448,7 +473,7 @@ impl D3d11 {
         found.ok_or(Error::NoAdapter)
     }
 
-    fn device_on(&self, adapter: &Com<IDXGIAdapter1>, described: Adapter) -> Result<Device<'_>> {
+    fn device_on(&self, adapter: &Com<IDXGIAdapter1>, described: Adapter) -> Result<Device> {
         let mut device: *mut ID3D11Device = core::ptr::null_mut();
         let mut context: *mut ID3D11DeviceContext = core::ptr::null_mut();
         // SAFETY: a live adapter; the outputs are live locals. An explicit
@@ -476,13 +501,21 @@ impl D3d11 {
         let video = query::<ID3D11VideoDevice>(device.as_ptr().cast(), &IID_ID3D11VideoDevice)?;
         let video_context =
             query::<ID3D11VideoContext>(context.as_ptr().cast(), &IID_ID3D11VideoContext)?;
+        // The fence's two interfaces, asked of the device rather than read
+        // off the system's version: both or neither.
+        let fences = query::<ID3D11Device5>(device.as_ptr().cast(), &IID_ID3D11Device5)
+            .ok()
+            .zip(
+                query::<ID3D11DeviceContext4>(context.as_ptr().cast(), &IID_ID3D11DeviceContext4)
+                    .ok(),
+            );
         Ok(Device {
             adapter: described,
             device,
             context,
             video,
             video_context,
-            _d3d11: self,
+            fences,
         })
     }
 }
@@ -499,25 +532,41 @@ fn query<T>(object: *mut IUnknown, iid: &GUID) -> Result<Com<T>> {
 }
 
 /// A device on one adapter, with its immediate context and video
-/// interfaces. One thread uses it.
-pub struct Device<'a> {
+/// interfaces, and the fence's interfaces where the system has them.
+///
+/// **The immediate context is the opening thread's**: every call through
+/// [`context`](Self::context), [`video_context`](Self::video_context) and
+/// [`signal`](Self::signal) is made on it. The device itself, its fences and
+/// the textures made on it are free-threaded, which is what lets a picture's
+/// textures and fence outlive the thread and be read on the application's.
+pub struct Device {
     pub adapter: Adapter,
     device: Com<ID3D11Device>,
     context: Com<ID3D11DeviceContext>,
     video: Com<ID3D11VideoDevice>,
     video_context: Com<ID3D11VideoContext>,
-    _d3d11: &'a D3d11,
+    fences: Option<(Com<ID3D11Device5>, Com<ID3D11DeviceContext4>)>,
 }
 
-impl fmt::Debug for Device<'_> {
+// SAFETY: the device and its children are free-threaded; the immediate
+// context is used on the opening thread alone, which the type's contract
+// puts on the caller, and releasing any of these on another thread once
+// nothing uses them is what reference counting is for.
+unsafe impl Send for Device {}
+// SAFETY: as above; `&self` from another thread reaches only the device's
+// free-threaded calls.
+unsafe impl Sync for Device {}
+
+impl fmt::Debug for Device {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Device")
             .field("adapter", &self.adapter)
+            .field("fences", &self.fences.is_some())
             .finish()
     }
 }
 
-impl Device<'_> {
+impl Device {
     pub fn device(&self) -> *mut ID3D11Device {
         self.device.as_ptr()
     }
@@ -532,6 +581,271 @@ impl Device<'_> {
 
     pub fn video_context(&self) -> *mut ID3D11VideoContext {
         self.video_context.as_ptr()
+    }
+
+    /// Whether the device can tell when its work is done: the fence's
+    /// interfaces are there (Windows 10 1703 on).
+    pub fn has_fences(&self) -> bool {
+        self.fences.is_some()
+    }
+
+    /// A fence of this device's, at `initial`.
+    pub fn fence(&self, initial: u64) -> Result<Fence> {
+        let (device5, _) = self.fences.as_ref().ok_or(Error::MissingSymbol)?;
+        let mut out: *mut c_void = core::ptr::null_mut();
+        // SAFETY: a live device; the identifier and the output are live.
+        let hr = unsafe {
+            vcall!(
+                device5.as_ptr(),
+                CreateFence,
+                initial,
+                D3D11_FENCE_FLAG_NONE,
+                &IID_ID3D11Fence,
+                &raw mut out
+            )
+        }
+        .ok_or(Error::MissingSymbol)?;
+        check(hr)?;
+        // SAFETY: a fence of the asked-for interface, whose reference is ours.
+        let fence =
+            unsafe { Com::from_raw(out.cast::<ID3D11Fence>()) }.ok_or(Error::Unavailable)?;
+        Ok(Fence { fence })
+    }
+
+    /// Queue `fence` reaching `value` behind the work queued so far, and hand
+    /// the queue to the device. The opening thread's, as the context is.
+    pub fn signal(&self, fence: &Fence, value: u64) -> Result<()> {
+        let (_, context4) = self.fences.as_ref().ok_or(Error::MissingSymbol)?;
+        // SAFETY: a live context on its own thread and a fence of this device.
+        let hr = unsafe { vcall!(context4.as_ptr(), Signal, fence.fence.as_ptr(), value) }
+            .ok_or(Error::MissingSymbol)?;
+        check(hr)?;
+        // SAFETY: as above. Without it the work waits in the runtime's buffer
+        // for the next call that flushes, and the fence with it.
+        unsafe { vcall!(self.context.as_ptr(), Flush) };
+        Ok(())
+    }
+
+    /// A texture a shader writes and another device on the adapter opens by
+    /// its handle: one plane of a picture, `format` at `width` x `height`.
+    pub fn shared_texture(
+        &self,
+        format: DXGI_FORMAT,
+        width: u32,
+        height: u32,
+    ) -> Result<SharedTexture> {
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: width,
+            Height: height,
+            MipLevels: 1,
+            ArraySize: 1,
+            Format: format,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: u32::try_from(D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS)
+                .unwrap_or(0),
+            CPUAccessFlags: 0,
+            MiscFlags: u32::try_from(D3D11_RESOURCE_MISC_SHARED).unwrap_or(0),
+        };
+        let mut raw: *mut ID3D11Texture2D = core::ptr::null_mut();
+        // SAFETY: a live device; the description and output are live.
+        let hr = unsafe {
+            vcall!(
+                self.device.as_ptr(),
+                CreateTexture2D,
+                &raw const desc,
+                core::ptr::null(),
+                &raw mut raw
+            )
+        }
+        .ok_or(Error::MissingSymbol)?;
+        check(hr)?;
+        // SAFETY: a texture whose reference the call handed over.
+        let texture = unsafe { Com::from_raw(raw) }.ok_or(Error::Unavailable)?;
+        let mut view: *mut ID3D11UnorderedAccessView = core::ptr::null_mut();
+        // SAFETY: a live device and texture; no description is the whole
+        // texture at its own format.
+        let hr = unsafe {
+            vcall!(
+                self.device.as_ptr(),
+                CreateUnorderedAccessView,
+                texture.as_ptr().cast::<ID3D11Resource>(),
+                core::ptr::null(),
+                &raw mut view
+            )
+        }
+        .ok_or(Error::MissingSymbol)?;
+        check(hr)?;
+        // SAFETY: a view whose reference the call handed over.
+        let view = unsafe { Com::from_raw(view) }.ok_or(Error::Unavailable)?;
+        let resource = query::<IDXGIResource>(texture.as_ptr().cast(), &IID_IDXGIResource)?;
+        let mut handle: HANDLE = core::ptr::null_mut();
+        // SAFETY: a live resource; the output is a live local.
+        let hr = unsafe { vcall!(resource.as_ptr(), GetSharedHandle, &raw mut handle) }
+            .ok_or(Error::MissingSymbol)?;
+        check(hr)?;
+        if handle.is_null() {
+            return Err(Error::Unavailable);
+        }
+        Ok(SharedTexture {
+            texture,
+            view,
+            handle: handle as u64,
+        })
+    }
+
+    /// A texture another device shared by its handle, opened on this one.
+    pub fn open_shared(&self, handle: u64) -> Result<Com<ID3D11Texture2D>> {
+        let mut out: *mut c_void = core::ptr::null_mut();
+        // SAFETY: a live device; the handle is a value the system checks,
+        // and the identifier and output are live.
+        let hr = unsafe {
+            vcall!(
+                self.device.as_ptr(),
+                OpenSharedResource,
+                handle as HANDLE,
+                &IID_ID3D11Texture2D,
+                &raw mut out
+            )
+        }
+        .ok_or(Error::MissingSymbol)?;
+        check(hr)?;
+        // SAFETY: a texture of the asked-for interface, whose reference is
+        // ours.
+        unsafe { Com::from_raw(out.cast::<ID3D11Texture2D>()) }.ok_or(Error::Unavailable)
+    }
+}
+
+/// A fence: a value the device raises as the work queued before each signal
+/// finishes. Read and waited on from any thread.
+pub struct Fence {
+    fence: Com<ID3D11Fence>,
+}
+
+// SAFETY: a fence is free-threaded; reading its value and asking for an
+// event at a value are safe from any thread.
+unsafe impl Send for Fence {}
+// SAFETY: as above.
+unsafe impl Sync for Fence {}
+
+impl fmt::Debug for Fence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Fence")
+            .field("completed", &self.completed())
+            .finish()
+    }
+}
+
+impl Fence {
+    /// The value the device has reached. **Past every value once the device
+    /// is lost**, so a lost device's work reads as finished: a caller that
+    /// must not trust it asks the device first.
+    pub fn completed(&self) -> u64 {
+        // SAFETY: a live fence.
+        unsafe { vcall!(self.fence.as_ptr(), GetCompletedValue) }.unwrap_or(u64::MAX)
+    }
+
+    /// Have `event` set once the fence reaches `value`, at once if it has.
+    pub fn notify_at(&self, value: u64, event: &Event) -> Result<()> {
+        // SAFETY: a live fence and a live event.
+        let hr = unsafe { vcall!(self.fence.as_ptr(), SetEventOnCompletion, value, event.0) }
+            .ok_or(Error::MissingSymbol)?;
+        check(hr)
+    }
+}
+
+/// An event a thread sleeps on: set by a fence reaching a value, or by hand.
+/// Auto-resetting, so one wake is taken by one wait.
+pub struct Event(HANDLE);
+
+// SAFETY: an event is a kernel object reached by its handle from any thread.
+unsafe impl Send for Event {}
+// SAFETY: as above.
+unsafe impl Sync for Event {}
+
+impl fmt::Debug for Event {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Event")
+    }
+}
+
+// The system's own synchronisation calls, present in every process.
+unsafe extern "system" {
+    fn CreateEventW(attributes: *mut c_void, manual: i32, initial: i32, name: *const u16)
+    -> HANDLE;
+    fn SetEvent(event: HANDLE) -> i32;
+    fn WaitForSingleObject(object: HANDLE, milliseconds: u32) -> u32;
+    fn CloseHandle(object: HANDLE) -> i32;
+}
+
+impl Event {
+    pub fn new() -> Result<Self> {
+        // SAFETY: an unnamed auto-reset event, unset, with default security.
+        let handle = unsafe { CreateEventW(core::ptr::null_mut(), 0, 0, core::ptr::null()) };
+        if handle.is_null() {
+            return Err(Error::Unavailable);
+        }
+        Ok(Self(handle))
+    }
+
+    pub fn set(&self) {
+        // SAFETY: a live event.
+        unsafe { SetEvent(self.0) };
+    }
+
+    /// Sleep until the event is set or `timeout` passes, whichever is first;
+    /// true when it was set. A timeout below a millisecond waits one, so a
+    /// wait never turns into a poll.
+    pub fn wait(&self, timeout: core::time::Duration) -> bool {
+        let ms = u32::try_from(timeout.as_micros().div_ceil(1000))
+            .unwrap_or(u32::MAX - 1)
+            .max(1);
+        // SAFETY: a live event.
+        unsafe { WaitForSingleObject(self.0, ms) == 0 }
+    }
+}
+
+impl Drop for Event {
+    fn drop(&mut self) {
+        // SAFETY: the event `new` made, closed once.
+        unsafe { CloseHandle(self.0) };
+    }
+}
+
+/// One plane of a picture in a texture another device opens by `handle`,
+/// with the view a shader writes it through.
+pub struct SharedTexture {
+    texture: Com<ID3D11Texture2D>,
+    view: Com<ID3D11UnorderedAccessView>,
+    /// The legacy shared handle: valid while the texture lives, and reused by
+    /// the system once it is freed.
+    pub handle: u64,
+}
+
+// SAFETY: device children are free-threaded; the view is bound only on the
+// thread that owns the device's immediate context.
+unsafe impl Send for SharedTexture {}
+// SAFETY: as above.
+unsafe impl Sync for SharedTexture {}
+
+impl fmt::Debug for SharedTexture {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SharedTexture")
+            .field("handle", &self.handle)
+            .finish()
+    }
+}
+
+impl SharedTexture {
+    pub fn texture(&self) -> *mut ID3D11Texture2D {
+        self.texture.as_ptr()
+    }
+
+    pub fn view(&self) -> *mut ID3D11UnorderedAccessView {
+        self.view.as_ptr()
     }
 }
 
@@ -648,5 +962,65 @@ mod tests {
             d3d11.open(Luid { high: -1, low: 0 }).map(|_| ()),
             Err(Error::NoAdapter)
         );
+    }
+
+    /// **On every offered adapter: the fence says when the device's work is
+    /// done, and a shared plane opens on a second device.** A signalled value
+    /// is reached and wakes an event; a value never signalled does not (the
+    /// wait times out, so a wake that ignored the value would fail here); a
+    /// shared texture opens by its handle on another device on the same
+    /// adapter, at the size and format it was made with; and the adapter
+    /// found again by its hardware is itself. Needs a GPU, so off by default.
+    #[test]
+    #[ignore = "requires a GPU"]
+    fn a_fence_wakes_its_event_and_a_shared_plane_opens_elsewhere() {
+        use crate::ffi::d3d11::DXGI_FORMAT_R8G8_UNORM;
+        let d3d11 = D3d11::load().expect("the system's libraries");
+        let adapters = d3d11.adapters().expect("the walk");
+        for a in adapters.iter().filter(|a| a.decodes_here()) {
+            let device = d3d11.open(a.luid).expect("a device");
+            assert!(device.has_fences(), "{}: no fence interfaces", a.luid);
+            let fence = device.fence(40).expect("a fence");
+            assert_eq!(fence.completed(), 40, "the initial value");
+            let event = Event::new().expect("an event");
+            device.signal(&fence, 41).expect("a signal");
+            fence.notify_at(41, &event).expect("a notification");
+            assert!(
+                event.wait(core::time::Duration::from_secs(2)),
+                "{}: the signalled value never woke the event",
+                a.luid
+            );
+            assert!(fence.completed() >= 41);
+            fence.notify_at(42, &event).expect("a notification");
+            assert!(
+                !event.wait(core::time::Duration::from_millis(50)),
+                "{}: a value never signalled woke the event",
+                a.luid
+            );
+
+            let plane = device
+                .shared_texture(DXGI_FORMAT_R8G8_UNORM, 640, 360)
+                .expect("a shared plane");
+            let other = d3d11.open(a.luid).expect("a second device");
+            let opened = other.open_shared(plane.handle).expect("the plane opened");
+            // SAFETY: plain data the call fills whole.
+            let mut desc: D3D11_TEXTURE2D_DESC = unsafe { core::mem::zeroed() };
+            // SAFETY: a live texture; the output is a live local.
+            unsafe { vcall!(opened.as_ptr(), GetDesc, &raw mut desc) };
+            assert_eq!(
+                (desc.Width, desc.Height, desc.Format),
+                (640, 360, DXGI_FORMAT_R8G8_UNORM)
+            );
+            let again = adapters
+                .iter()
+                .filter(|b| b.decodes_here() && b.same_hardware(a))
+                .map(|b| b.luid)
+                .collect::<Vec<_>>();
+            assert!(again.contains(&a.luid), "{}: not its own hardware", a.luid);
+            println!(
+                "{} {:?}: fence, event and shared plane ok; same hardware {again:?}",
+                a.luid, a.description
+            );
+        }
     }
 }

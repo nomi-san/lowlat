@@ -88,7 +88,7 @@ fn able(caps: &Caps, clip: &str, codec: Codec, ten_bit: bool) -> bool {
 /// Decode one clip and compare it with the reference; `Err` says how it
 /// differs.
 fn check(
-    device: &Device<'_>,
+    device: &Device,
     clip: &str,
     sums: &str,
     codec: Codec,
@@ -153,7 +153,7 @@ fn check(
 
 /// A clip whose profile the device does not build: its first unit must be
 /// refused as fatal, never decoded wrongly.
-fn refused(device: &Device<'_>, clip: &str, codec: Codec, ten_bit: bool) -> Result<(), String> {
+fn refused(device: &Device, clip: &str, codec: Codec, ten_bit: bool) -> Result<(), String> {
     let mut backend = Backend::new(device, (4096, 4096));
     match backend.build(&header(codec, ten_bit)) {
         Err(Fault::Fatal) => return Ok(()),

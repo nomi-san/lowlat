@@ -147,15 +147,19 @@ pub type DWORD = ::std::os::raw::c_ulong;
 pub type BOOL = ::std::os::raw::c_int;
 pub type BYTE = ::std::os::raw::c_uchar;
 pub type FLOAT = f32;
+pub type LPVOID = *mut ::std::os::raw::c_void;
 pub type INT = ::std::os::raw::c_int;
 pub type UINT = ::std::os::raw::c_uint;
 pub type UINT8 = ::std::os::raw::c_uchar;
+pub type UINT16 = ::std::os::raw::c_ushort;
 pub type UINT32 = ::std::os::raw::c_uint;
+pub type UINT64 = ::std::os::raw::c_ulonglong;
 pub type ULONG_PTR = ::std::os::raw::c_ulonglong;
 pub type SIZE_T = ULONG_PTR;
 pub type CHAR = ::std::os::raw::c_char;
 pub type LONG = ::std::os::raw::c_long;
 pub type WCHAR = wchar_t;
+pub type LPCWSTR = *const WCHAR;
 pub type LPSTR = *mut CHAR;
 pub type LPCSTR = *const CHAR;
 pub type HANDLE = *mut ::std::os::raw::c_void;
@@ -302,6 +306,25 @@ const _: () = {
     ["Offset of field: tagSIZE::cy"][::std::mem::offset_of!(tagSIZE, cy) - 4usize];
 };
 pub type SIZE = tagSIZE;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct _SECURITY_ATTRIBUTES {
+    pub nLength: DWORD,
+    pub lpSecurityDescriptor: LPVOID,
+    pub bInheritHandle: BOOL,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of _SECURITY_ATTRIBUTES"][::std::mem::size_of::<_SECURITY_ATTRIBUTES>() - 24usize];
+    ["Alignment of _SECURITY_ATTRIBUTES"][::std::mem::align_of::<_SECURITY_ATTRIBUTES>() - 8usize];
+    ["Offset of field: _SECURITY_ATTRIBUTES::nLength"]
+        [::std::mem::offset_of!(_SECURITY_ATTRIBUTES, nLength) - 0usize];
+    ["Offset of field: _SECURITY_ATTRIBUTES::lpSecurityDescriptor"]
+        [::std::mem::offset_of!(_SECURITY_ATTRIBUTES, lpSecurityDescriptor) - 8usize];
+    ["Offset of field: _SECURITY_ATTRIBUTES::bInheritHandle"]
+        [::std::mem::offset_of!(_SECURITY_ATTRIBUTES, bInheritHandle) - 16usize];
+};
+pub type SECURITY_ATTRIBUTES = _SECURITY_ATTRIBUTES;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct IUnknownVtbl {
@@ -601,6 +624,109 @@ const _: () = {
         [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC, SwapEffect) - 60usize];
     ["Offset of field: DXGI_SWAP_CHAIN_DESC::Flags"]
         [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC, Flags) - 64usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct IDXGIResourceVtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIResource,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef: ::std::option::Option<unsafe extern "C" fn(This: *mut IDXGIResource) -> ULONG>,
+    pub Release: ::std::option::Option<unsafe extern "C" fn(This: *mut IDXGIResource) -> ULONG>,
+    pub SetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIResource,
+            Name: *const GUID,
+            DataSize: UINT,
+            pData: *const ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateDataInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIResource,
+            Name: *const GUID,
+            pUnknown: *const IUnknown,
+        ) -> HRESULT,
+    >,
+    pub GetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIResource,
+            Name: *const GUID,
+            pDataSize: *mut UINT,
+            pData: *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub GetParent: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIResource,
+            riid: *const IID,
+            ppParent: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub GetDevice: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut IDXGIResource,
+            riid: *const IID,
+            ppDevice: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub GetSharedHandle: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IDXGIResource, pSharedHandle: *mut HANDLE) -> HRESULT,
+    >,
+    pub GetUsage: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IDXGIResource, pUsage: *mut DXGI_USAGE) -> HRESULT,
+    >,
+    pub SetEvictionPriority: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IDXGIResource, EvictionPriority: UINT) -> HRESULT,
+    >,
+    pub GetEvictionPriority: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut IDXGIResource, pEvictionPriority: *mut UINT) -> HRESULT,
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IDXGIResourceVtbl"][::std::mem::size_of::<IDXGIResourceVtbl>() - 96usize];
+    ["Alignment of IDXGIResourceVtbl"][::std::mem::align_of::<IDXGIResourceVtbl>() - 8usize];
+    ["Offset of field: IDXGIResourceVtbl::QueryInterface"]
+        [::std::mem::offset_of!(IDXGIResourceVtbl, QueryInterface) - 0usize];
+    ["Offset of field: IDXGIResourceVtbl::AddRef"]
+        [::std::mem::offset_of!(IDXGIResourceVtbl, AddRef) - 8usize];
+    ["Offset of field: IDXGIResourceVtbl::Release"]
+        [::std::mem::offset_of!(IDXGIResourceVtbl, Release) - 16usize];
+    ["Offset of field: IDXGIResourceVtbl::SetPrivateData"]
+        [::std::mem::offset_of!(IDXGIResourceVtbl, SetPrivateData) - 24usize];
+    ["Offset of field: IDXGIResourceVtbl::SetPrivateDataInterface"]
+        [::std::mem::offset_of!(IDXGIResourceVtbl, SetPrivateDataInterface) - 32usize];
+    ["Offset of field: IDXGIResourceVtbl::GetPrivateData"]
+        [::std::mem::offset_of!(IDXGIResourceVtbl, GetPrivateData) - 40usize];
+    ["Offset of field: IDXGIResourceVtbl::GetParent"]
+        [::std::mem::offset_of!(IDXGIResourceVtbl, GetParent) - 48usize];
+    ["Offset of field: IDXGIResourceVtbl::GetDevice"]
+        [::std::mem::offset_of!(IDXGIResourceVtbl, GetDevice) - 56usize];
+    ["Offset of field: IDXGIResourceVtbl::GetSharedHandle"]
+        [::std::mem::offset_of!(IDXGIResourceVtbl, GetSharedHandle) - 64usize];
+    ["Offset of field: IDXGIResourceVtbl::GetUsage"]
+        [::std::mem::offset_of!(IDXGIResourceVtbl, GetUsage) - 72usize];
+    ["Offset of field: IDXGIResourceVtbl::SetEvictionPriority"]
+        [::std::mem::offset_of!(IDXGIResourceVtbl, SetEvictionPriority) - 80usize];
+    ["Offset of field: IDXGIResourceVtbl::GetEvictionPriority"]
+        [::std::mem::offset_of!(IDXGIResourceVtbl, GetEvictionPriority) - 88usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct IDXGIResource {
+    pub lpVtbl: *mut IDXGIResourceVtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IDXGIResource"][::std::mem::size_of::<IDXGIResource>() - 8usize];
+    ["Alignment of IDXGIResource"][::std::mem::align_of::<IDXGIResource>() - 8usize];
+    ["Offset of field: IDXGIResource::lpVtbl"]
+        [::std::mem::offset_of!(IDXGIResource, lpVtbl) - 0usize];
 };
 #[repr(C)]
 #[repr(align(8))]
@@ -911,6 +1037,95 @@ const _: () = {
     ["Offset of field: IDXGIAdapter1::lpVtbl"]
         [::std::mem::offset_of!(IDXGIAdapter1, lpVtbl) - 0usize];
 };
+pub const DXGI_ALPHA_MODE_UNSPECIFIED: DXGI_ALPHA_MODE = 0;
+pub const DXGI_ALPHA_MODE_PREMULTIPLIED: DXGI_ALPHA_MODE = 1;
+pub const DXGI_ALPHA_MODE_STRAIGHT: DXGI_ALPHA_MODE = 2;
+pub const DXGI_ALPHA_MODE_IGNORE: DXGI_ALPHA_MODE = 3;
+pub const DXGI_ALPHA_MODE_FORCE_DWORD: DXGI_ALPHA_MODE = -1;
+pub type DXGI_ALPHA_MODE = ::std::os::raw::c_int;
+pub const DXGI_SCALING_STRETCH: DXGI_SCALING = 0;
+pub const DXGI_SCALING_NONE: DXGI_SCALING = 1;
+pub const DXGI_SCALING_ASPECT_RATIO_STRETCH: DXGI_SCALING = 2;
+pub type DXGI_SCALING = ::std::os::raw::c_int;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct DXGI_SWAP_CHAIN_DESC1 {
+    pub Width: UINT,
+    pub Height: UINT,
+    pub Format: DXGI_FORMAT,
+    pub Stereo: BOOL,
+    pub SampleDesc: DXGI_SAMPLE_DESC,
+    pub BufferUsage: DXGI_USAGE,
+    pub BufferCount: UINT,
+    pub Scaling: DXGI_SCALING,
+    pub SwapEffect: DXGI_SWAP_EFFECT,
+    pub AlphaMode: DXGI_ALPHA_MODE,
+    pub Flags: UINT,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of DXGI_SWAP_CHAIN_DESC1"][::std::mem::size_of::<DXGI_SWAP_CHAIN_DESC1>() - 48usize];
+    ["Alignment of DXGI_SWAP_CHAIN_DESC1"]
+        [::std::mem::align_of::<DXGI_SWAP_CHAIN_DESC1>() - 4usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::Width"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, Width) - 0usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::Height"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, Height) - 4usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::Format"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, Format) - 8usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::Stereo"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, Stereo) - 12usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::SampleDesc"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, SampleDesc) - 16usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::BufferUsage"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, BufferUsage) - 24usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::BufferCount"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, BufferCount) - 28usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::Scaling"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, Scaling) - 32usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::SwapEffect"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, SwapEffect) - 36usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::AlphaMode"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, AlphaMode) - 40usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::Flags"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, Flags) - 44usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct DXGI_SWAP_CHAIN_FULLSCREEN_DESC {
+    pub RefreshRate: DXGI_RATIONAL,
+    pub ScanlineOrdering: DXGI_MODE_SCANLINE_ORDER,
+    pub Scaling: DXGI_MODE_SCALING,
+    pub Windowed: BOOL,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of DXGI_SWAP_CHAIN_FULLSCREEN_DESC"]
+        [::std::mem::size_of::<DXGI_SWAP_CHAIN_FULLSCREEN_DESC>() - 20usize];
+    ["Alignment of DXGI_SWAP_CHAIN_FULLSCREEN_DESC"]
+        [::std::mem::align_of::<DXGI_SWAP_CHAIN_FULLSCREEN_DESC>() - 4usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_FULLSCREEN_DESC::RefreshRate"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_FULLSCREEN_DESC, RefreshRate) - 0usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_FULLSCREEN_DESC::ScanlineOrdering"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_FULLSCREEN_DESC, ScanlineOrdering) - 8usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_FULLSCREEN_DESC::Scaling"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_FULLSCREEN_DESC, Scaling) - 12usize];
+    ["Offset of field: DXGI_SWAP_CHAIN_FULLSCREEN_DESC::Windowed"]
+        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_FULLSCREEN_DESC, Windowed) - 16usize];
+};
+#[repr(C)]
+#[repr(align(8))]
+#[derive(Debug, Copy, Clone)]
+pub struct IDXGISwapChain1 {
+    pub _bindgen_opaque_blob: u64,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of IDXGISwapChain1"][::std::mem::size_of::<IDXGISwapChain1>() - 8usize];
+    ["Alignment of IDXGISwapChain1"][::std::mem::align_of::<IDXGISwapChain1>() - 8usize];
+};
+pub const DXGI_FEATURE_PRESENT_ALLOW_TEARING: DXGI_FEATURE = 0;
+pub type DXGI_FEATURE = ::std::os::raw::c_int;
 pub const D3D_DRIVER_TYPE_UNKNOWN: D3D_DRIVER_TYPE = 0;
 pub const D3D_DRIVER_TYPE_HARDWARE: D3D_DRIVER_TYPE = 1;
 pub const D3D_DRIVER_TYPE_REFERENCE: D3D_DRIVER_TYPE = 2;
@@ -1224,12 +1439,35 @@ pub type D3D11_BIND_FLAG = ::std::os::raw::c_int;
 pub const D3D11_CPU_ACCESS_WRITE: D3D11_CPU_ACCESS_FLAG = 65536;
 pub const D3D11_CPU_ACCESS_READ: D3D11_CPU_ACCESS_FLAG = 131072;
 pub type D3D11_CPU_ACCESS_FLAG = ::std::os::raw::c_int;
+pub const D3D11_RESOURCE_MISC_GENERATE_MIPS: D3D11_RESOURCE_MISC_FLAG = 1;
+pub const D3D11_RESOURCE_MISC_SHARED: D3D11_RESOURCE_MISC_FLAG = 2;
+pub const D3D11_RESOURCE_MISC_TEXTURECUBE: D3D11_RESOURCE_MISC_FLAG = 4;
+pub const D3D11_RESOURCE_MISC_DRAWINDIRECT_ARGS: D3D11_RESOURCE_MISC_FLAG = 16;
+pub const D3D11_RESOURCE_MISC_BUFFER_ALLOW_RAW_VIEWS: D3D11_RESOURCE_MISC_FLAG = 32;
+pub const D3D11_RESOURCE_MISC_BUFFER_STRUCTURED: D3D11_RESOURCE_MISC_FLAG = 64;
+pub const D3D11_RESOURCE_MISC_RESOURCE_CLAMP: D3D11_RESOURCE_MISC_FLAG = 128;
+pub const D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX: D3D11_RESOURCE_MISC_FLAG = 256;
+pub const D3D11_RESOURCE_MISC_GDI_COMPATIBLE: D3D11_RESOURCE_MISC_FLAG = 512;
+pub const D3D11_RESOURCE_MISC_SHARED_NTHANDLE: D3D11_RESOURCE_MISC_FLAG = 2048;
+pub const D3D11_RESOURCE_MISC_RESTRICTED_CONTENT: D3D11_RESOURCE_MISC_FLAG = 4096;
+pub const D3D11_RESOURCE_MISC_RESTRICT_SHARED_RESOURCE: D3D11_RESOURCE_MISC_FLAG = 8192;
+pub const D3D11_RESOURCE_MISC_RESTRICT_SHARED_RESOURCE_DRIVER: D3D11_RESOURCE_MISC_FLAG = 16384;
+pub const D3D11_RESOURCE_MISC_GUARDED: D3D11_RESOURCE_MISC_FLAG = 32768;
+pub const D3D11_RESOURCE_MISC_TILE_POOL: D3D11_RESOURCE_MISC_FLAG = 131072;
+pub const D3D11_RESOURCE_MISC_TILED: D3D11_RESOURCE_MISC_FLAG = 262144;
+pub const D3D11_RESOURCE_MISC_HW_PROTECTED: D3D11_RESOURCE_MISC_FLAG = 524288;
+pub const D3D11_RESOURCE_MISC_SHARED_DISPLAYABLE: D3D11_RESOURCE_MISC_FLAG = 1048576;
+pub const D3D11_RESOURCE_MISC_SHARED_EXCLUSIVE_WRITER: D3D11_RESOURCE_MISC_FLAG = 2097152;
+pub const D3D11_RESOURCE_MISC_NO_SHADER_ACCESS: D3D11_RESOURCE_MISC_FLAG = 4194304;
+pub type D3D11_RESOURCE_MISC_FLAG = ::std::os::raw::c_int;
 pub const D3D11_MAP_READ: D3D11_MAP = 1;
 pub const D3D11_MAP_WRITE: D3D11_MAP = 2;
 pub const D3D11_MAP_READ_WRITE: D3D11_MAP = 3;
 pub const D3D11_MAP_WRITE_DISCARD: D3D11_MAP = 4;
 pub const D3D11_MAP_WRITE_NO_OVERWRITE: D3D11_MAP = 5;
 pub type D3D11_MAP = ::std::os::raw::c_int;
+pub const D3D11_MAP_FLAG_DO_NOT_WAIT: D3D11_MAP_FLAG = 1048576;
+pub type D3D11_MAP_FLAG = ::std::os::raw::c_int;
 pub type D3D11_RECT = RECT;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -1251,6 +1489,77 @@ const _: () = {
     ["Offset of field: D3D11_BOX::right"][::std::mem::offset_of!(D3D11_BOX, right) - 12usize];
     ["Offset of field: D3D11_BOX::bottom"][::std::mem::offset_of!(D3D11_BOX, bottom) - 16usize];
     ["Offset of field: D3D11_BOX::back"][::std::mem::offset_of!(D3D11_BOX, back) - 20usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11DeviceChildVtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceChild,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceChild) -> ULONG>,
+    pub Release: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceChild) -> ULONG>,
+    pub GetDevice: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceChild, ppDevice: *mut *mut ID3D11Device),
+    >,
+    pub GetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceChild,
+            guid: *const GUID,
+            pDataSize: *mut UINT,
+            pData: *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceChild,
+            guid: *const GUID,
+            DataSize: UINT,
+            pData: *const ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateDataInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceChild,
+            guid: *const GUID,
+            pData: *const IUnknown,
+        ) -> HRESULT,
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11DeviceChildVtbl"][::std::mem::size_of::<ID3D11DeviceChildVtbl>() - 56usize];
+    ["Alignment of ID3D11DeviceChildVtbl"]
+        [::std::mem::align_of::<ID3D11DeviceChildVtbl>() - 8usize];
+    ["Offset of field: ID3D11DeviceChildVtbl::QueryInterface"]
+        [::std::mem::offset_of!(ID3D11DeviceChildVtbl, QueryInterface) - 0usize];
+    ["Offset of field: ID3D11DeviceChildVtbl::AddRef"]
+        [::std::mem::offset_of!(ID3D11DeviceChildVtbl, AddRef) - 8usize];
+    ["Offset of field: ID3D11DeviceChildVtbl::Release"]
+        [::std::mem::offset_of!(ID3D11DeviceChildVtbl, Release) - 16usize];
+    ["Offset of field: ID3D11DeviceChildVtbl::GetDevice"]
+        [::std::mem::offset_of!(ID3D11DeviceChildVtbl, GetDevice) - 24usize];
+    ["Offset of field: ID3D11DeviceChildVtbl::GetPrivateData"]
+        [::std::mem::offset_of!(ID3D11DeviceChildVtbl, GetPrivateData) - 32usize];
+    ["Offset of field: ID3D11DeviceChildVtbl::SetPrivateData"]
+        [::std::mem::offset_of!(ID3D11DeviceChildVtbl, SetPrivateData) - 40usize];
+    ["Offset of field: ID3D11DeviceChildVtbl::SetPrivateDataInterface"]
+        [::std::mem::offset_of!(ID3D11DeviceChildVtbl, SetPrivateDataInterface) - 48usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11DeviceChild {
+    pub lpVtbl: *mut ID3D11DeviceChildVtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11DeviceChild"][::std::mem::size_of::<ID3D11DeviceChild>() - 8usize];
+    ["Alignment of ID3D11DeviceChild"][::std::mem::align_of::<ID3D11DeviceChild>() - 8usize];
+    ["Offset of field: ID3D11DeviceChild::lpVtbl"]
+        [::std::mem::offset_of!(ID3D11DeviceChild, lpVtbl) - 0usize];
 };
 pub const D3D11_COMPARISON_NEVER: D3D11_COMPARISON_FUNC = 1;
 pub const D3D11_COMPARISON_LESS: D3D11_COMPARISON_FUNC = 2;
@@ -1868,6 +2177,80 @@ pub struct ID3D11Texture3D {
 const _: () = {
     ["Size of ID3D11Texture3D"][::std::mem::size_of::<ID3D11Texture3D>() - 8usize];
     ["Alignment of ID3D11Texture3D"][::std::mem::align_of::<ID3D11Texture3D>() - 8usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11ViewVtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11View,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11View) -> ULONG>,
+    pub Release: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11View) -> ULONG>,
+    pub GetDevice: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11View, ppDevice: *mut *mut ID3D11Device),
+    >,
+    pub GetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11View,
+            guid: *const GUID,
+            pDataSize: *mut UINT,
+            pData: *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11View,
+            guid: *const GUID,
+            DataSize: UINT,
+            pData: *const ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateDataInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11View,
+            guid: *const GUID,
+            pData: *const IUnknown,
+        ) -> HRESULT,
+    >,
+    pub GetResource: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11View, ppResource: *mut *mut ID3D11Resource),
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11ViewVtbl"][::std::mem::size_of::<ID3D11ViewVtbl>() - 64usize];
+    ["Alignment of ID3D11ViewVtbl"][::std::mem::align_of::<ID3D11ViewVtbl>() - 8usize];
+    ["Offset of field: ID3D11ViewVtbl::QueryInterface"]
+        [::std::mem::offset_of!(ID3D11ViewVtbl, QueryInterface) - 0usize];
+    ["Offset of field: ID3D11ViewVtbl::AddRef"]
+        [::std::mem::offset_of!(ID3D11ViewVtbl, AddRef) - 8usize];
+    ["Offset of field: ID3D11ViewVtbl::Release"]
+        [::std::mem::offset_of!(ID3D11ViewVtbl, Release) - 16usize];
+    ["Offset of field: ID3D11ViewVtbl::GetDevice"]
+        [::std::mem::offset_of!(ID3D11ViewVtbl, GetDevice) - 24usize];
+    ["Offset of field: ID3D11ViewVtbl::GetPrivateData"]
+        [::std::mem::offset_of!(ID3D11ViewVtbl, GetPrivateData) - 32usize];
+    ["Offset of field: ID3D11ViewVtbl::SetPrivateData"]
+        [::std::mem::offset_of!(ID3D11ViewVtbl, SetPrivateData) - 40usize];
+    ["Offset of field: ID3D11ViewVtbl::SetPrivateDataInterface"]
+        [::std::mem::offset_of!(ID3D11ViewVtbl, SetPrivateDataInterface) - 48usize];
+    ["Offset of field: ID3D11ViewVtbl::GetResource"]
+        [::std::mem::offset_of!(ID3D11ViewVtbl, GetResource) - 56usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11View {
+    pub lpVtbl: *mut ID3D11ViewVtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11View"][::std::mem::size_of::<ID3D11View>() - 8usize];
+    ["Alignment of ID3D11View"][::std::mem::align_of::<ID3D11View>() - 8usize];
+    ["Offset of field: ID3D11View::lpVtbl"][::std::mem::offset_of!(ID3D11View, lpVtbl) - 0usize];
 };
 #[repr(C)]
 #[derive(Copy, Clone)]
@@ -6750,95 +7133,7997 @@ pub type PFN_D3D11_CREATE_DEVICE = ::std::option::Option<
         arg9: *mut *mut ID3D11DeviceContext,
     ) -> HRESULT,
 >;
-pub const DXGI_ALPHA_MODE_UNSPECIFIED: DXGI_ALPHA_MODE = 0;
-pub const DXGI_ALPHA_MODE_PREMULTIPLIED: DXGI_ALPHA_MODE = 1;
-pub const DXGI_ALPHA_MODE_STRAIGHT: DXGI_ALPHA_MODE = 2;
-pub const DXGI_ALPHA_MODE_IGNORE: DXGI_ALPHA_MODE = 3;
-pub const DXGI_ALPHA_MODE_FORCE_DWORD: DXGI_ALPHA_MODE = -1;
-pub type DXGI_ALPHA_MODE = ::std::os::raw::c_int;
-pub const DXGI_SCALING_STRETCH: DXGI_SCALING = 0;
-pub const DXGI_SCALING_NONE: DXGI_SCALING = 1;
-pub const DXGI_SCALING_ASPECT_RATIO_STRETCH: DXGI_SCALING = 2;
-pub type DXGI_SCALING = ::std::os::raw::c_int;
+pub const D3D11_LOGIC_OP_CLEAR: D3D11_LOGIC_OP = 0;
+pub const D3D11_LOGIC_OP_SET: D3D11_LOGIC_OP = 1;
+pub const D3D11_LOGIC_OP_COPY: D3D11_LOGIC_OP = 2;
+pub const D3D11_LOGIC_OP_COPY_INVERTED: D3D11_LOGIC_OP = 3;
+pub const D3D11_LOGIC_OP_NOOP: D3D11_LOGIC_OP = 4;
+pub const D3D11_LOGIC_OP_INVERT: D3D11_LOGIC_OP = 5;
+pub const D3D11_LOGIC_OP_AND: D3D11_LOGIC_OP = 6;
+pub const D3D11_LOGIC_OP_NAND: D3D11_LOGIC_OP = 7;
+pub const D3D11_LOGIC_OP_OR: D3D11_LOGIC_OP = 8;
+pub const D3D11_LOGIC_OP_NOR: D3D11_LOGIC_OP = 9;
+pub const D3D11_LOGIC_OP_XOR: D3D11_LOGIC_OP = 10;
+pub const D3D11_LOGIC_OP_EQUIV: D3D11_LOGIC_OP = 11;
+pub const D3D11_LOGIC_OP_AND_REVERSE: D3D11_LOGIC_OP = 12;
+pub const D3D11_LOGIC_OP_AND_INVERTED: D3D11_LOGIC_OP = 13;
+pub const D3D11_LOGIC_OP_OR_REVERSE: D3D11_LOGIC_OP = 14;
+pub const D3D11_LOGIC_OP_OR_INVERTED: D3D11_LOGIC_OP = 15;
+pub type D3D11_LOGIC_OP = ::std::os::raw::c_int;
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-pub struct DXGI_SWAP_CHAIN_DESC1 {
+pub struct D3D11_RENDER_TARGET_BLEND_DESC1 {
+    pub BlendEnable: BOOL,
+    pub LogicOpEnable: BOOL,
+    pub SrcBlend: D3D11_BLEND,
+    pub DestBlend: D3D11_BLEND,
+    pub BlendOp: D3D11_BLEND_OP,
+    pub SrcBlendAlpha: D3D11_BLEND,
+    pub DestBlendAlpha: D3D11_BLEND,
+    pub BlendOpAlpha: D3D11_BLEND_OP,
+    pub LogicOp: D3D11_LOGIC_OP,
+    pub RenderTargetWriteMask: UINT8,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_RENDER_TARGET_BLEND_DESC1"]
+        [::std::mem::size_of::<D3D11_RENDER_TARGET_BLEND_DESC1>() - 40usize];
+    ["Alignment of D3D11_RENDER_TARGET_BLEND_DESC1"]
+        [::std::mem::align_of::<D3D11_RENDER_TARGET_BLEND_DESC1>() - 4usize];
+    ["Offset of field: D3D11_RENDER_TARGET_BLEND_DESC1::BlendEnable"]
+        [::std::mem::offset_of!(D3D11_RENDER_TARGET_BLEND_DESC1, BlendEnable) - 0usize];
+    ["Offset of field: D3D11_RENDER_TARGET_BLEND_DESC1::LogicOpEnable"]
+        [::std::mem::offset_of!(D3D11_RENDER_TARGET_BLEND_DESC1, LogicOpEnable) - 4usize];
+    ["Offset of field: D3D11_RENDER_TARGET_BLEND_DESC1::SrcBlend"]
+        [::std::mem::offset_of!(D3D11_RENDER_TARGET_BLEND_DESC1, SrcBlend) - 8usize];
+    ["Offset of field: D3D11_RENDER_TARGET_BLEND_DESC1::DestBlend"]
+        [::std::mem::offset_of!(D3D11_RENDER_TARGET_BLEND_DESC1, DestBlend) - 12usize];
+    ["Offset of field: D3D11_RENDER_TARGET_BLEND_DESC1::BlendOp"]
+        [::std::mem::offset_of!(D3D11_RENDER_TARGET_BLEND_DESC1, BlendOp) - 16usize];
+    ["Offset of field: D3D11_RENDER_TARGET_BLEND_DESC1::SrcBlendAlpha"]
+        [::std::mem::offset_of!(D3D11_RENDER_TARGET_BLEND_DESC1, SrcBlendAlpha) - 20usize];
+    ["Offset of field: D3D11_RENDER_TARGET_BLEND_DESC1::DestBlendAlpha"]
+        [::std::mem::offset_of!(D3D11_RENDER_TARGET_BLEND_DESC1, DestBlendAlpha) - 24usize];
+    ["Offset of field: D3D11_RENDER_TARGET_BLEND_DESC1::BlendOpAlpha"]
+        [::std::mem::offset_of!(D3D11_RENDER_TARGET_BLEND_DESC1, BlendOpAlpha) - 28usize];
+    ["Offset of field: D3D11_RENDER_TARGET_BLEND_DESC1::LogicOp"]
+        [::std::mem::offset_of!(D3D11_RENDER_TARGET_BLEND_DESC1, LogicOp) - 32usize];
+    ["Offset of field: D3D11_RENDER_TARGET_BLEND_DESC1::RenderTargetWriteMask"]
+        [::std::mem::offset_of!(D3D11_RENDER_TARGET_BLEND_DESC1, RenderTargetWriteMask) - 36usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct D3D11_BLEND_DESC1 {
+    pub AlphaToCoverageEnable: BOOL,
+    pub IndependentBlendEnable: BOOL,
+    pub RenderTarget: [D3D11_RENDER_TARGET_BLEND_DESC1; 8usize],
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_BLEND_DESC1"][::std::mem::size_of::<D3D11_BLEND_DESC1>() - 328usize];
+    ["Alignment of D3D11_BLEND_DESC1"][::std::mem::align_of::<D3D11_BLEND_DESC1>() - 4usize];
+    ["Offset of field: D3D11_BLEND_DESC1::AlphaToCoverageEnable"]
+        [::std::mem::offset_of!(D3D11_BLEND_DESC1, AlphaToCoverageEnable) - 0usize];
+    ["Offset of field: D3D11_BLEND_DESC1::IndependentBlendEnable"]
+        [::std::mem::offset_of!(D3D11_BLEND_DESC1, IndependentBlendEnable) - 4usize];
+    ["Offset of field: D3D11_BLEND_DESC1::RenderTarget"]
+        [::std::mem::offset_of!(D3D11_BLEND_DESC1, RenderTarget) - 8usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11BlendState1Vtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11BlendState1,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11BlendState1) -> ULONG>,
+    pub Release: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11BlendState1) -> ULONG>,
+    pub GetDevice: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11BlendState1, ppDevice: *mut *mut ID3D11Device),
+    >,
+    pub GetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11BlendState1,
+            guid: *const GUID,
+            pDataSize: *mut UINT,
+            pData: *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11BlendState1,
+            guid: *const GUID,
+            DataSize: UINT,
+            pData: *const ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateDataInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11BlendState1,
+            guid: *const GUID,
+            pData: *const IUnknown,
+        ) -> HRESULT,
+    >,
+    pub GetDesc: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11BlendState1, pDesc: *mut D3D11_BLEND_DESC),
+    >,
+    pub GetDesc1: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11BlendState1, pDesc: *mut D3D11_BLEND_DESC1),
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11BlendState1Vtbl"][::std::mem::size_of::<ID3D11BlendState1Vtbl>() - 72usize];
+    ["Alignment of ID3D11BlendState1Vtbl"]
+        [::std::mem::align_of::<ID3D11BlendState1Vtbl>() - 8usize];
+    ["Offset of field: ID3D11BlendState1Vtbl::QueryInterface"]
+        [::std::mem::offset_of!(ID3D11BlendState1Vtbl, QueryInterface) - 0usize];
+    ["Offset of field: ID3D11BlendState1Vtbl::AddRef"]
+        [::std::mem::offset_of!(ID3D11BlendState1Vtbl, AddRef) - 8usize];
+    ["Offset of field: ID3D11BlendState1Vtbl::Release"]
+        [::std::mem::offset_of!(ID3D11BlendState1Vtbl, Release) - 16usize];
+    ["Offset of field: ID3D11BlendState1Vtbl::GetDevice"]
+        [::std::mem::offset_of!(ID3D11BlendState1Vtbl, GetDevice) - 24usize];
+    ["Offset of field: ID3D11BlendState1Vtbl::GetPrivateData"]
+        [::std::mem::offset_of!(ID3D11BlendState1Vtbl, GetPrivateData) - 32usize];
+    ["Offset of field: ID3D11BlendState1Vtbl::SetPrivateData"]
+        [::std::mem::offset_of!(ID3D11BlendState1Vtbl, SetPrivateData) - 40usize];
+    ["Offset of field: ID3D11BlendState1Vtbl::SetPrivateDataInterface"]
+        [::std::mem::offset_of!(ID3D11BlendState1Vtbl, SetPrivateDataInterface) - 48usize];
+    ["Offset of field: ID3D11BlendState1Vtbl::GetDesc"]
+        [::std::mem::offset_of!(ID3D11BlendState1Vtbl, GetDesc) - 56usize];
+    ["Offset of field: ID3D11BlendState1Vtbl::GetDesc1"]
+        [::std::mem::offset_of!(ID3D11BlendState1Vtbl, GetDesc1) - 64usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11BlendState1 {
+    pub lpVtbl: *mut ID3D11BlendState1Vtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11BlendState1"][::std::mem::size_of::<ID3D11BlendState1>() - 8usize];
+    ["Alignment of ID3D11BlendState1"][::std::mem::align_of::<ID3D11BlendState1>() - 8usize];
+    ["Offset of field: ID3D11BlendState1::lpVtbl"]
+        [::std::mem::offset_of!(ID3D11BlendState1, lpVtbl) - 0usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct D3D11_RASTERIZER_DESC1 {
+    pub FillMode: D3D11_FILL_MODE,
+    pub CullMode: D3D11_CULL_MODE,
+    pub FrontCounterClockwise: BOOL,
+    pub DepthBias: INT,
+    pub DepthBiasClamp: FLOAT,
+    pub SlopeScaledDepthBias: FLOAT,
+    pub DepthClipEnable: BOOL,
+    pub ScissorEnable: BOOL,
+    pub MultisampleEnable: BOOL,
+    pub AntialiasedLineEnable: BOOL,
+    pub ForcedSampleCount: UINT,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_RASTERIZER_DESC1"][::std::mem::size_of::<D3D11_RASTERIZER_DESC1>() - 44usize];
+    ["Alignment of D3D11_RASTERIZER_DESC1"]
+        [::std::mem::align_of::<D3D11_RASTERIZER_DESC1>() - 4usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC1::FillMode"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC1, FillMode) - 0usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC1::CullMode"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC1, CullMode) - 4usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC1::FrontCounterClockwise"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC1, FrontCounterClockwise) - 8usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC1::DepthBias"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC1, DepthBias) - 12usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC1::DepthBiasClamp"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC1, DepthBiasClamp) - 16usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC1::SlopeScaledDepthBias"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC1, SlopeScaledDepthBias) - 20usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC1::DepthClipEnable"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC1, DepthClipEnable) - 24usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC1::ScissorEnable"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC1, ScissorEnable) - 28usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC1::MultisampleEnable"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC1, MultisampleEnable) - 32usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC1::AntialiasedLineEnable"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC1, AntialiasedLineEnable) - 36usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC1::ForcedSampleCount"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC1, ForcedSampleCount) - 40usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11RasterizerState1Vtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11RasterizerState1,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11RasterizerState1) -> ULONG>,
+    pub Release:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11RasterizerState1) -> ULONG>,
+    pub GetDevice: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11RasterizerState1, ppDevice: *mut *mut ID3D11Device),
+    >,
+    pub GetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11RasterizerState1,
+            guid: *const GUID,
+            pDataSize: *mut UINT,
+            pData: *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11RasterizerState1,
+            guid: *const GUID,
+            DataSize: UINT,
+            pData: *const ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateDataInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11RasterizerState1,
+            guid: *const GUID,
+            pData: *const IUnknown,
+        ) -> HRESULT,
+    >,
+    pub GetDesc: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11RasterizerState1, pDesc: *mut D3D11_RASTERIZER_DESC),
+    >,
+    pub GetDesc1: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11RasterizerState1, pDesc: *mut D3D11_RASTERIZER_DESC1),
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11RasterizerState1Vtbl"]
+        [::std::mem::size_of::<ID3D11RasterizerState1Vtbl>() - 72usize];
+    ["Alignment of ID3D11RasterizerState1Vtbl"]
+        [::std::mem::align_of::<ID3D11RasterizerState1Vtbl>() - 8usize];
+    ["Offset of field: ID3D11RasterizerState1Vtbl::QueryInterface"]
+        [::std::mem::offset_of!(ID3D11RasterizerState1Vtbl, QueryInterface) - 0usize];
+    ["Offset of field: ID3D11RasterizerState1Vtbl::AddRef"]
+        [::std::mem::offset_of!(ID3D11RasterizerState1Vtbl, AddRef) - 8usize];
+    ["Offset of field: ID3D11RasterizerState1Vtbl::Release"]
+        [::std::mem::offset_of!(ID3D11RasterizerState1Vtbl, Release) - 16usize];
+    ["Offset of field: ID3D11RasterizerState1Vtbl::GetDevice"]
+        [::std::mem::offset_of!(ID3D11RasterizerState1Vtbl, GetDevice) - 24usize];
+    ["Offset of field: ID3D11RasterizerState1Vtbl::GetPrivateData"]
+        [::std::mem::offset_of!(ID3D11RasterizerState1Vtbl, GetPrivateData) - 32usize];
+    ["Offset of field: ID3D11RasterizerState1Vtbl::SetPrivateData"]
+        [::std::mem::offset_of!(ID3D11RasterizerState1Vtbl, SetPrivateData) - 40usize];
+    ["Offset of field: ID3D11RasterizerState1Vtbl::SetPrivateDataInterface"]
+        [::std::mem::offset_of!(ID3D11RasterizerState1Vtbl, SetPrivateDataInterface) - 48usize];
+    ["Offset of field: ID3D11RasterizerState1Vtbl::GetDesc"]
+        [::std::mem::offset_of!(ID3D11RasterizerState1Vtbl, GetDesc) - 56usize];
+    ["Offset of field: ID3D11RasterizerState1Vtbl::GetDesc1"]
+        [::std::mem::offset_of!(ID3D11RasterizerState1Vtbl, GetDesc1) - 64usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11RasterizerState1 {
+    pub lpVtbl: *mut ID3D11RasterizerState1Vtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11RasterizerState1"][::std::mem::size_of::<ID3D11RasterizerState1>() - 8usize];
+    ["Alignment of ID3D11RasterizerState1"]
+        [::std::mem::align_of::<ID3D11RasterizerState1>() - 8usize];
+    ["Offset of field: ID3D11RasterizerState1::lpVtbl"]
+        [::std::mem::offset_of!(ID3D11RasterizerState1, lpVtbl) - 0usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3DDeviceContextStateVtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3DDeviceContextState,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3DDeviceContextState) -> ULONG>,
+    pub Release:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3DDeviceContextState) -> ULONG>,
+    pub GetDevice: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3DDeviceContextState, ppDevice: *mut *mut ID3D11Device),
+    >,
+    pub GetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3DDeviceContextState,
+            guid: *const GUID,
+            pDataSize: *mut UINT,
+            pData: *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3DDeviceContextState,
+            guid: *const GUID,
+            DataSize: UINT,
+            pData: *const ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateDataInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3DDeviceContextState,
+            guid: *const GUID,
+            pData: *const IUnknown,
+        ) -> HRESULT,
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3DDeviceContextStateVtbl"]
+        [::std::mem::size_of::<ID3DDeviceContextStateVtbl>() - 56usize];
+    ["Alignment of ID3DDeviceContextStateVtbl"]
+        [::std::mem::align_of::<ID3DDeviceContextStateVtbl>() - 8usize];
+    ["Offset of field: ID3DDeviceContextStateVtbl::QueryInterface"]
+        [::std::mem::offset_of!(ID3DDeviceContextStateVtbl, QueryInterface) - 0usize];
+    ["Offset of field: ID3DDeviceContextStateVtbl::AddRef"]
+        [::std::mem::offset_of!(ID3DDeviceContextStateVtbl, AddRef) - 8usize];
+    ["Offset of field: ID3DDeviceContextStateVtbl::Release"]
+        [::std::mem::offset_of!(ID3DDeviceContextStateVtbl, Release) - 16usize];
+    ["Offset of field: ID3DDeviceContextStateVtbl::GetDevice"]
+        [::std::mem::offset_of!(ID3DDeviceContextStateVtbl, GetDevice) - 24usize];
+    ["Offset of field: ID3DDeviceContextStateVtbl::GetPrivateData"]
+        [::std::mem::offset_of!(ID3DDeviceContextStateVtbl, GetPrivateData) - 32usize];
+    ["Offset of field: ID3DDeviceContextStateVtbl::SetPrivateData"]
+        [::std::mem::offset_of!(ID3DDeviceContextStateVtbl, SetPrivateData) - 40usize];
+    ["Offset of field: ID3DDeviceContextStateVtbl::SetPrivateDataInterface"]
+        [::std::mem::offset_of!(ID3DDeviceContextStateVtbl, SetPrivateDataInterface) - 48usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3DDeviceContextState {
+    pub lpVtbl: *mut ID3DDeviceContextStateVtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3DDeviceContextState"][::std::mem::size_of::<ID3DDeviceContextState>() - 8usize];
+    ["Alignment of ID3DDeviceContextState"]
+        [::std::mem::align_of::<ID3DDeviceContextState>() - 8usize];
+    ["Offset of field: ID3DDeviceContextState::lpVtbl"]
+        [::std::mem::offset_of!(ID3DDeviceContextState, lpVtbl) - 0usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11DeviceContext1Vtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext1) -> ULONG>,
+    pub Release:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext1) -> ULONG>,
+    pub GetDevice: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext1, ppDevice: *mut *mut ID3D11Device),
+    >,
+    pub GetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            guid: *const GUID,
+            pDataSize: *mut UINT,
+            pData: *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            guid: *const GUID,
+            DataSize: UINT,
+            pData: *const ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateDataInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            guid: *const GUID,
+            pData: *const IUnknown,
+        ) -> HRESULT,
+    >,
+    pub VSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub PSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub PSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pPixelShader: *mut ID3D11PixelShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub PSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub VSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pVertexShader: *mut ID3D11VertexShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub DrawIndexed: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            IndexCount: UINT,
+            StartIndexLocation: UINT,
+            BaseVertexLocation: INT,
+        ),
+    >,
+    pub Draw: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            VertexCount: UINT,
+            StartVertexLocation: UINT,
+        ),
+    >,
+    pub Map: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pResource: *mut ID3D11Resource,
+            Subresource: UINT,
+            MapType: D3D11_MAP,
+            MapFlags: UINT,
+            pMappedResource: *mut D3D11_MAPPED_SUBRESOURCE,
+        ) -> HRESULT,
+    >,
+    pub Unmap: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pResource: *mut ID3D11Resource,
+            Subresource: UINT,
+        ),
+    >,
+    pub PSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub IASetInputLayout: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext1, pInputLayout: *mut ID3D11InputLayout),
+    >,
+    pub IASetVertexBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppVertexBuffers: *const *mut ID3D11Buffer,
+            pStrides: *const UINT,
+            pOffsets: *const UINT,
+        ),
+    >,
+    pub IASetIndexBuffer: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pIndexBuffer: *mut ID3D11Buffer,
+            Format: DXGI_FORMAT,
+            Offset: UINT,
+        ),
+    >,
+    pub DrawIndexedInstanced: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            IndexCountPerInstance: UINT,
+            InstanceCount: UINT,
+            StartIndexLocation: UINT,
+            BaseVertexLocation: INT,
+            StartInstanceLocation: UINT,
+        ),
+    >,
+    pub DrawInstanced: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            VertexCountPerInstance: UINT,
+            InstanceCount: UINT,
+            StartVertexLocation: UINT,
+            StartInstanceLocation: UINT,
+        ),
+    >,
+    pub GSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub GSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pShader: *mut ID3D11GeometryShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub IASetPrimitiveTopology: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext1, Topology: D3D11_PRIMITIVE_TOPOLOGY),
+    >,
+    pub VSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub VSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub Begin: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext1, pAsync: *mut ID3D11Asynchronous),
+    >,
+    pub End: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext1, pAsync: *mut ID3D11Asynchronous),
+    >,
+    pub GetData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pAsync: *mut ID3D11Asynchronous,
+            pData: *mut ::std::os::raw::c_void,
+            DataSize: UINT,
+            GetDataFlags: UINT,
+        ) -> HRESULT,
+    >,
+    pub SetPredication: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pPredicate: *mut ID3D11Predicate,
+            PredicateValue: BOOL,
+        ),
+    >,
+    pub GSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub GSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub OMSetRenderTargets: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            NumViews: UINT,
+            ppRenderTargetViews: *const *mut ID3D11RenderTargetView,
+            pDepthStencilView: *mut ID3D11DepthStencilView,
+        ),
+    >,
+    pub OMSetRenderTargetsAndUnorderedAccessViews: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            NumRTVs: UINT,
+            ppRenderTargetViews: *const *mut ID3D11RenderTargetView,
+            pDepthStencilView: *mut ID3D11DepthStencilView,
+            UAVStartSlot: UINT,
+            NumUAVs: UINT,
+            ppUnorderedAccessViews: *const *mut ID3D11UnorderedAccessView,
+            pUAVInitialCounts: *const UINT,
+        ),
+    >,
+    pub OMSetBlendState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pBlendState: *mut ID3D11BlendState,
+            BlendFactor: *const FLOAT,
+            SampleMask: UINT,
+        ),
+    >,
+    pub OMSetDepthStencilState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pDepthStencilState: *mut ID3D11DepthStencilState,
+            StencilRef: UINT,
+        ),
+    >,
+    pub SOSetTargets: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            NumBuffers: UINT,
+            ppSOTargets: *const *mut ID3D11Buffer,
+            pOffsets: *const UINT,
+        ),
+    >,
+    pub DrawAuto: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext1)>,
+    pub DrawIndexedInstancedIndirect: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pBufferForArgs: *mut ID3D11Buffer,
+            AlignedByteOffsetForArgs: UINT,
+        ),
+    >,
+    pub DrawInstancedIndirect: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pBufferForArgs: *mut ID3D11Buffer,
+            AlignedByteOffsetForArgs: UINT,
+        ),
+    >,
+    pub Dispatch: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            ThreadGroupCountX: UINT,
+            ThreadGroupCountY: UINT,
+            ThreadGroupCountZ: UINT,
+        ),
+    >,
+    pub DispatchIndirect: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pBufferForArgs: *mut ID3D11Buffer,
+            AlignedByteOffsetForArgs: UINT,
+        ),
+    >,
+    pub RSSetState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pRasterizerState: *mut ID3D11RasterizerState,
+        ),
+    >,
+    pub RSSetViewports: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            NumViewports: UINT,
+            pViewports: *const D3D11_VIEWPORT,
+        ),
+    >,
+    pub RSSetScissorRects: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            NumRects: UINT,
+            pRects: *const D3D11_RECT,
+        ),
+    >,
+    pub CopySubresourceRegion: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pDstResource: *mut ID3D11Resource,
+            DstSubresource: UINT,
+            DstX: UINT,
+            DstY: UINT,
+            DstZ: UINT,
+            pSrcResource: *mut ID3D11Resource,
+            SrcSubresource: UINT,
+            pSrcBox: *const D3D11_BOX,
+        ),
+    >,
+    pub CopyResource: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pDstResource: *mut ID3D11Resource,
+            pSrcResource: *mut ID3D11Resource,
+        ),
+    >,
+    pub UpdateSubresource: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pDstResource: *mut ID3D11Resource,
+            DstSubresource: UINT,
+            pDstBox: *const D3D11_BOX,
+            pSrcData: *const ::std::os::raw::c_void,
+            SrcRowPitch: UINT,
+            SrcDepthPitch: UINT,
+        ),
+    >,
+    pub CopyStructureCount: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pDstBuffer: *mut ID3D11Buffer,
+            DstAlignedByteOffset: UINT,
+            pSrcView: *mut ID3D11UnorderedAccessView,
+        ),
+    >,
+    pub ClearRenderTargetView: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pRenderTargetView: *mut ID3D11RenderTargetView,
+            ColorRGBA: *const FLOAT,
+        ),
+    >,
+    pub ClearUnorderedAccessViewUint: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pUnorderedAccessView: *mut ID3D11UnorderedAccessView,
+            Values: *const UINT,
+        ),
+    >,
+    pub ClearUnorderedAccessViewFloat: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pUnorderedAccessView: *mut ID3D11UnorderedAccessView,
+            Values: *const FLOAT,
+        ),
+    >,
+    pub ClearDepthStencilView: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pDepthStencilView: *mut ID3D11DepthStencilView,
+            ClearFlags: UINT,
+            Depth: FLOAT,
+            Stencil: UINT8,
+        ),
+    >,
+    pub GenerateMips: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pShaderResourceView: *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub SetResourceMinLOD: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pResource: *mut ID3D11Resource,
+            MinLOD: FLOAT,
+        ),
+    >,
+    pub GetResourceMinLOD: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pResource: *mut ID3D11Resource,
+        ) -> FLOAT,
+    >,
+    pub ResolveSubresource: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pDstResource: *mut ID3D11Resource,
+            DstSubresource: UINT,
+            pSrcResource: *mut ID3D11Resource,
+            SrcSubresource: UINT,
+            Format: DXGI_FORMAT,
+        ),
+    >,
+    pub ExecuteCommandList: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pCommandList: *mut ID3D11CommandList,
+            RestoreContextState: BOOL,
+        ),
+    >,
+    pub HSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub HSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pHullShader: *mut ID3D11HullShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub HSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub HSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub DSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub DSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pDomainShader: *mut ID3D11DomainShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub DSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub DSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub CSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub CSSetUnorderedAccessViews: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumUAVs: UINT,
+            ppUnorderedAccessViews: *const *mut ID3D11UnorderedAccessView,
+            pUAVInitialCounts: *const UINT,
+        ),
+    >,
+    pub CSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pComputeShader: *mut ID3D11ComputeShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub CSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub CSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub VSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub PSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub PSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            ppPixelShader: *mut *mut ID3D11PixelShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub PSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub VSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            ppVertexShader: *mut *mut ID3D11VertexShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub PSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub IAGetInputLayout: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            ppInputLayout: *mut *mut ID3D11InputLayout,
+        ),
+    >,
+    pub IAGetVertexBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppVertexBuffers: *mut *mut ID3D11Buffer,
+            pStrides: *mut UINT,
+            pOffsets: *mut UINT,
+        ),
+    >,
+    pub IAGetIndexBuffer: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pIndexBuffer: *mut *mut ID3D11Buffer,
+            Format: *mut DXGI_FORMAT,
+            Offset: *mut UINT,
+        ),
+    >,
+    pub GSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub GSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            ppGeometryShader: *mut *mut ID3D11GeometryShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub IAGetPrimitiveTopology: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pTopology: *mut D3D11_PRIMITIVE_TOPOLOGY,
+        ),
+    >,
+    pub VSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub VSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub GetPredication: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            ppPredicate: *mut *mut ID3D11Predicate,
+            pPredicateValue: *mut BOOL,
+        ),
+    >,
+    pub GSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub GSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub OMGetRenderTargets: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            NumViews: UINT,
+            ppRenderTargetViews: *mut *mut ID3D11RenderTargetView,
+            ppDepthStencilView: *mut *mut ID3D11DepthStencilView,
+        ),
+    >,
+    pub OMGetRenderTargetsAndUnorderedAccessViews: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            NumRTVs: UINT,
+            ppRenderTargetViews: *mut *mut ID3D11RenderTargetView,
+            ppDepthStencilView: *mut *mut ID3D11DepthStencilView,
+            UAVStartSlot: UINT,
+            NumUAVs: UINT,
+            ppUnorderedAccessViews: *mut *mut ID3D11UnorderedAccessView,
+        ),
+    >,
+    pub OMGetBlendState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            ppBlendState: *mut *mut ID3D11BlendState,
+            BlendFactor: *mut FLOAT,
+            pSampleMask: *mut UINT,
+        ),
+    >,
+    pub OMGetDepthStencilState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            ppDepthStencilState: *mut *mut ID3D11DepthStencilState,
+            pStencilRef: *mut UINT,
+        ),
+    >,
+    pub SOGetTargets: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            NumBuffers: UINT,
+            ppSOTargets: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub RSGetState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            ppRasterizerState: *mut *mut ID3D11RasterizerState,
+        ),
+    >,
+    pub RSGetViewports: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pNumViewports: *mut UINT,
+            pViewports: *mut D3D11_VIEWPORT,
+        ),
+    >,
+    pub RSGetScissorRects: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pNumRects: *mut UINT,
+            pRects: *mut D3D11_RECT,
+        ),
+    >,
+    pub HSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub HSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            ppHullShader: *mut *mut ID3D11HullShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub HSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub HSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub DSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub DSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            ppDomainShader: *mut *mut ID3D11DomainShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub DSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub DSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub CSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub CSGetUnorderedAccessViews: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumUAVs: UINT,
+            ppUnorderedAccessViews: *mut *mut ID3D11UnorderedAccessView,
+        ),
+    >,
+    pub CSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            ppComputeShader: *mut *mut ID3D11ComputeShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub CSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub CSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub ClearState: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext1)>,
+    pub Flush: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext1)>,
+    pub GetType: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext1) -> D3D11_DEVICE_CONTEXT_TYPE,
+    >,
+    pub GetContextFlags:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext1) -> UINT>,
+    pub FinishCommandList: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            RestoreDeferredContextState: BOOL,
+            ppCommandList: *mut *mut ID3D11CommandList,
+        ) -> HRESULT,
+    >,
+    pub CopySubresourceRegion1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pDstResource: *mut ID3D11Resource,
+            DstSubresource: UINT,
+            DstX: UINT,
+            DstY: UINT,
+            DstZ: UINT,
+            pSrcResource: *mut ID3D11Resource,
+            SrcSubresource: UINT,
+            pSrcBox: *const D3D11_BOX,
+            CopyFlags: UINT,
+        ),
+    >,
+    pub UpdateSubresource1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pDstResource: *mut ID3D11Resource,
+            DstSubresource: UINT,
+            pDstBox: *const D3D11_BOX,
+            pSrcData: *const ::std::os::raw::c_void,
+            SrcRowPitch: UINT,
+            SrcDepthPitch: UINT,
+            CopyFlags: UINT,
+        ),
+    >,
+    pub DiscardResource: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext1, pResource: *mut ID3D11Resource),
+    >,
+    pub DiscardView: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext1, pResourceView: *mut ID3D11View),
+    >,
+    pub VSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub HSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub DSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub GSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub PSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub CSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub VSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub HSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub DSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub GSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub PSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub CSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub SwapDeviceContextState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pState: *mut ID3DDeviceContextState,
+            ppPreviousState: *mut *mut ID3DDeviceContextState,
+        ),
+    >,
+    pub ClearView: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pView: *mut ID3D11View,
+            Color: *const FLOAT,
+            pRect: *const D3D11_RECT,
+            NumRects: UINT,
+        ),
+    >,
+    pub DiscardView1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext1,
+            pResourceView: *mut ID3D11View,
+            pRects: *const D3D11_RECT,
+            NumRects: UINT,
+        ),
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11DeviceContext1Vtbl"]
+        [::std::mem::size_of::<ID3D11DeviceContext1Vtbl>() - 1072usize];
+    ["Alignment of ID3D11DeviceContext1Vtbl"]
+        [::std::mem::align_of::<ID3D11DeviceContext1Vtbl>() - 8usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::QueryInterface"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, QueryInterface) - 0usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::AddRef"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, AddRef) - 8usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::Release"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, Release) - 16usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::GetDevice"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, GetDevice) - 24usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::GetPrivateData"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, GetPrivateData) - 32usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::SetPrivateData"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, SetPrivateData) - 40usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::SetPrivateDataInterface"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, SetPrivateDataInterface) - 48usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::VSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, VSSetConstantBuffers) - 56usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::PSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, PSSetShaderResources) - 64usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::PSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, PSSetShader) - 72usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::PSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, PSSetSamplers) - 80usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::VSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, VSSetShader) - 88usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::DrawIndexed"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, DrawIndexed) - 96usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::Draw"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, Draw) - 104usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::Map"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, Map) - 112usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::Unmap"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, Unmap) - 120usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::PSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, PSSetConstantBuffers) - 128usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::IASetInputLayout"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, IASetInputLayout) - 136usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::IASetVertexBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, IASetVertexBuffers) - 144usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::IASetIndexBuffer"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, IASetIndexBuffer) - 152usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::DrawIndexedInstanced"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, DrawIndexedInstanced) - 160usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::DrawInstanced"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, DrawInstanced) - 168usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::GSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, GSSetConstantBuffers) - 176usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::GSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, GSSetShader) - 184usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::IASetPrimitiveTopology"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, IASetPrimitiveTopology) - 192usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::VSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, VSSetShaderResources) - 200usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::VSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, VSSetSamplers) - 208usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::Begin"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, Begin) - 216usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::End"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, End) - 224usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::GetData"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, GetData) - 232usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::SetPredication"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, SetPredication) - 240usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::GSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, GSSetShaderResources) - 248usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::GSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, GSSetSamplers) - 256usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::OMSetRenderTargets"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, OMSetRenderTargets) - 264usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::OMSetRenderTargetsAndUnorderedAccessViews"][::std::mem::offset_of!(
+        ID3D11DeviceContext1Vtbl,
+        OMSetRenderTargetsAndUnorderedAccessViews
+    )
+        - 272usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::OMSetBlendState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, OMSetBlendState) - 280usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::OMSetDepthStencilState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, OMSetDepthStencilState) - 288usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::SOSetTargets"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, SOSetTargets) - 296usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::DrawAuto"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, DrawAuto) - 304usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::DrawIndexedInstancedIndirect"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, DrawIndexedInstancedIndirect) - 312usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::DrawInstancedIndirect"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, DrawInstancedIndirect) - 320usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::Dispatch"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, Dispatch) - 328usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::DispatchIndirect"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, DispatchIndirect) - 336usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::RSSetState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, RSSetState) - 344usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::RSSetViewports"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, RSSetViewports) - 352usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::RSSetScissorRects"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, RSSetScissorRects) - 360usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::CopySubresourceRegion"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, CopySubresourceRegion) - 368usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::CopyResource"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, CopyResource) - 376usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::UpdateSubresource"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, UpdateSubresource) - 384usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::CopyStructureCount"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, CopyStructureCount) - 392usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::ClearRenderTargetView"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, ClearRenderTargetView) - 400usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::ClearUnorderedAccessViewUint"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, ClearUnorderedAccessViewUint) - 408usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::ClearUnorderedAccessViewFloat"][::std::mem::offset_of!(
+        ID3D11DeviceContext1Vtbl,
+        ClearUnorderedAccessViewFloat
+    ) - 416usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::ClearDepthStencilView"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, ClearDepthStencilView) - 424usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::GenerateMips"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, GenerateMips) - 432usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::SetResourceMinLOD"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, SetResourceMinLOD) - 440usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::GetResourceMinLOD"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, GetResourceMinLOD) - 448usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::ResolveSubresource"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, ResolveSubresource) - 456usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::ExecuteCommandList"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, ExecuteCommandList) - 464usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::HSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, HSSetShaderResources) - 472usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::HSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, HSSetShader) - 480usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::HSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, HSSetSamplers) - 488usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::HSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, HSSetConstantBuffers) - 496usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::DSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, DSSetShaderResources) - 504usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::DSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, DSSetShader) - 512usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::DSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, DSSetSamplers) - 520usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::DSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, DSSetConstantBuffers) - 528usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::CSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, CSSetShaderResources) - 536usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::CSSetUnorderedAccessViews"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, CSSetUnorderedAccessViews) - 544usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::CSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, CSSetShader) - 552usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::CSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, CSSetSamplers) - 560usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::CSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, CSSetConstantBuffers) - 568usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::VSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, VSGetConstantBuffers) - 576usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::PSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, PSGetShaderResources) - 584usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::PSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, PSGetShader) - 592usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::PSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, PSGetSamplers) - 600usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::VSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, VSGetShader) - 608usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::PSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, PSGetConstantBuffers) - 616usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::IAGetInputLayout"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, IAGetInputLayout) - 624usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::IAGetVertexBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, IAGetVertexBuffers) - 632usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::IAGetIndexBuffer"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, IAGetIndexBuffer) - 640usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::GSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, GSGetConstantBuffers) - 648usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::GSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, GSGetShader) - 656usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::IAGetPrimitiveTopology"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, IAGetPrimitiveTopology) - 664usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::VSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, VSGetShaderResources) - 672usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::VSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, VSGetSamplers) - 680usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::GetPredication"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, GetPredication) - 688usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::GSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, GSGetShaderResources) - 696usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::GSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, GSGetSamplers) - 704usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::OMGetRenderTargets"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, OMGetRenderTargets) - 712usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::OMGetRenderTargetsAndUnorderedAccessViews"][::std::mem::offset_of!(
+        ID3D11DeviceContext1Vtbl,
+        OMGetRenderTargetsAndUnorderedAccessViews
+    )
+        - 720usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::OMGetBlendState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, OMGetBlendState) - 728usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::OMGetDepthStencilState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, OMGetDepthStencilState) - 736usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::SOGetTargets"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, SOGetTargets) - 744usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::RSGetState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, RSGetState) - 752usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::RSGetViewports"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, RSGetViewports) - 760usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::RSGetScissorRects"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, RSGetScissorRects) - 768usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::HSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, HSGetShaderResources) - 776usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::HSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, HSGetShader) - 784usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::HSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, HSGetSamplers) - 792usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::HSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, HSGetConstantBuffers) - 800usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::DSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, DSGetShaderResources) - 808usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::DSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, DSGetShader) - 816usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::DSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, DSGetSamplers) - 824usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::DSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, DSGetConstantBuffers) - 832usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::CSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, CSGetShaderResources) - 840usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::CSGetUnorderedAccessViews"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, CSGetUnorderedAccessViews) - 848usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::CSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, CSGetShader) - 856usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::CSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, CSGetSamplers) - 864usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::CSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, CSGetConstantBuffers) - 872usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::ClearState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, ClearState) - 880usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::Flush"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, Flush) - 888usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::GetType"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, GetType) - 896usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::GetContextFlags"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, GetContextFlags) - 904usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::FinishCommandList"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, FinishCommandList) - 912usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::CopySubresourceRegion1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, CopySubresourceRegion1) - 920usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::UpdateSubresource1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, UpdateSubresource1) - 928usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::DiscardResource"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, DiscardResource) - 936usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::DiscardView"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, DiscardView) - 944usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::VSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, VSSetConstantBuffers1) - 952usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::HSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, HSSetConstantBuffers1) - 960usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::DSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, DSSetConstantBuffers1) - 968usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::GSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, GSSetConstantBuffers1) - 976usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::PSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, PSSetConstantBuffers1) - 984usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::CSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, CSSetConstantBuffers1) - 992usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::VSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, VSGetConstantBuffers1) - 1000usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::HSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, HSGetConstantBuffers1) - 1008usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::DSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, DSGetConstantBuffers1) - 1016usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::GSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, GSGetConstantBuffers1) - 1024usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::PSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, PSGetConstantBuffers1) - 1032usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::CSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, CSGetConstantBuffers1) - 1040usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::SwapDeviceContextState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, SwapDeviceContextState) - 1048usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::ClearView"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, ClearView) - 1056usize];
+    ["Offset of field: ID3D11DeviceContext1Vtbl::DiscardView1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1Vtbl, DiscardView1) - 1064usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11DeviceContext1 {
+    pub lpVtbl: *mut ID3D11DeviceContext1Vtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11DeviceContext1"][::std::mem::size_of::<ID3D11DeviceContext1>() - 8usize];
+    ["Alignment of ID3D11DeviceContext1"][::std::mem::align_of::<ID3D11DeviceContext1>() - 8usize];
+    ["Offset of field: ID3D11DeviceContext1::lpVtbl"]
+        [::std::mem::offset_of!(ID3D11DeviceContext1, lpVtbl) - 0usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct D3D11_TILED_RESOURCE_COORDINATE {
+    pub X: UINT,
+    pub Y: UINT,
+    pub Z: UINT,
+    pub Subresource: UINT,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_TILED_RESOURCE_COORDINATE"]
+        [::std::mem::size_of::<D3D11_TILED_RESOURCE_COORDINATE>() - 16usize];
+    ["Alignment of D3D11_TILED_RESOURCE_COORDINATE"]
+        [::std::mem::align_of::<D3D11_TILED_RESOURCE_COORDINATE>() - 4usize];
+    ["Offset of field: D3D11_TILED_RESOURCE_COORDINATE::X"]
+        [::std::mem::offset_of!(D3D11_TILED_RESOURCE_COORDINATE, X) - 0usize];
+    ["Offset of field: D3D11_TILED_RESOURCE_COORDINATE::Y"]
+        [::std::mem::offset_of!(D3D11_TILED_RESOURCE_COORDINATE, Y) - 4usize];
+    ["Offset of field: D3D11_TILED_RESOURCE_COORDINATE::Z"]
+        [::std::mem::offset_of!(D3D11_TILED_RESOURCE_COORDINATE, Z) - 8usize];
+    ["Offset of field: D3D11_TILED_RESOURCE_COORDINATE::Subresource"]
+        [::std::mem::offset_of!(D3D11_TILED_RESOURCE_COORDINATE, Subresource) - 12usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct D3D11_TILE_REGION_SIZE {
+    pub NumTiles: UINT,
+    pub bUseBox: BOOL,
+    pub Width: UINT,
+    pub Height: UINT16,
+    pub Depth: UINT16,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_TILE_REGION_SIZE"][::std::mem::size_of::<D3D11_TILE_REGION_SIZE>() - 16usize];
+    ["Alignment of D3D11_TILE_REGION_SIZE"]
+        [::std::mem::align_of::<D3D11_TILE_REGION_SIZE>() - 4usize];
+    ["Offset of field: D3D11_TILE_REGION_SIZE::NumTiles"]
+        [::std::mem::offset_of!(D3D11_TILE_REGION_SIZE, NumTiles) - 0usize];
+    ["Offset of field: D3D11_TILE_REGION_SIZE::bUseBox"]
+        [::std::mem::offset_of!(D3D11_TILE_REGION_SIZE, bUseBox) - 4usize];
+    ["Offset of field: D3D11_TILE_REGION_SIZE::Width"]
+        [::std::mem::offset_of!(D3D11_TILE_REGION_SIZE, Width) - 8usize];
+    ["Offset of field: D3D11_TILE_REGION_SIZE::Height"]
+        [::std::mem::offset_of!(D3D11_TILE_REGION_SIZE, Height) - 12usize];
+    ["Offset of field: D3D11_TILE_REGION_SIZE::Depth"]
+        [::std::mem::offset_of!(D3D11_TILE_REGION_SIZE, Depth) - 14usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct D3D11_SUBRESOURCE_TILING {
+    pub WidthInTiles: UINT,
+    pub HeightInTiles: UINT16,
+    pub DepthInTiles: UINT16,
+    pub StartTileIndexInOverallResource: UINT,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_SUBRESOURCE_TILING"]
+        [::std::mem::size_of::<D3D11_SUBRESOURCE_TILING>() - 12usize];
+    ["Alignment of D3D11_SUBRESOURCE_TILING"]
+        [::std::mem::align_of::<D3D11_SUBRESOURCE_TILING>() - 4usize];
+    ["Offset of field: D3D11_SUBRESOURCE_TILING::WidthInTiles"]
+        [::std::mem::offset_of!(D3D11_SUBRESOURCE_TILING, WidthInTiles) - 0usize];
+    ["Offset of field: D3D11_SUBRESOURCE_TILING::HeightInTiles"]
+        [::std::mem::offset_of!(D3D11_SUBRESOURCE_TILING, HeightInTiles) - 4usize];
+    ["Offset of field: D3D11_SUBRESOURCE_TILING::DepthInTiles"]
+        [::std::mem::offset_of!(D3D11_SUBRESOURCE_TILING, DepthInTiles) - 6usize];
+    ["Offset of field: D3D11_SUBRESOURCE_TILING::StartTileIndexInOverallResource"][::std::mem::offset_of!(
+        D3D11_SUBRESOURCE_TILING,
+        StartTileIndexInOverallResource
+    ) - 8usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct D3D11_TILE_SHAPE {
+    pub WidthInTexels: UINT,
+    pub HeightInTexels: UINT,
+    pub DepthInTexels: UINT,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_TILE_SHAPE"][::std::mem::size_of::<D3D11_TILE_SHAPE>() - 12usize];
+    ["Alignment of D3D11_TILE_SHAPE"][::std::mem::align_of::<D3D11_TILE_SHAPE>() - 4usize];
+    ["Offset of field: D3D11_TILE_SHAPE::WidthInTexels"]
+        [::std::mem::offset_of!(D3D11_TILE_SHAPE, WidthInTexels) - 0usize];
+    ["Offset of field: D3D11_TILE_SHAPE::HeightInTexels"]
+        [::std::mem::offset_of!(D3D11_TILE_SHAPE, HeightInTexels) - 4usize];
+    ["Offset of field: D3D11_TILE_SHAPE::DepthInTexels"]
+        [::std::mem::offset_of!(D3D11_TILE_SHAPE, DepthInTexels) - 8usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct D3D11_PACKED_MIP_DESC {
+    pub NumStandardMips: UINT8,
+    pub NumPackedMips: UINT8,
+    pub NumTilesForPackedMips: UINT,
+    pub StartTileIndexInOverallResource: UINT,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_PACKED_MIP_DESC"][::std::mem::size_of::<D3D11_PACKED_MIP_DESC>() - 12usize];
+    ["Alignment of D3D11_PACKED_MIP_DESC"]
+        [::std::mem::align_of::<D3D11_PACKED_MIP_DESC>() - 4usize];
+    ["Offset of field: D3D11_PACKED_MIP_DESC::NumStandardMips"]
+        [::std::mem::offset_of!(D3D11_PACKED_MIP_DESC, NumStandardMips) - 0usize];
+    ["Offset of field: D3D11_PACKED_MIP_DESC::NumPackedMips"]
+        [::std::mem::offset_of!(D3D11_PACKED_MIP_DESC, NumPackedMips) - 1usize];
+    ["Offset of field: D3D11_PACKED_MIP_DESC::NumTilesForPackedMips"]
+        [::std::mem::offset_of!(D3D11_PACKED_MIP_DESC, NumTilesForPackedMips) - 4usize];
+    ["Offset of field: D3D11_PACKED_MIP_DESC::StartTileIndexInOverallResource"]
+        [::std::mem::offset_of!(D3D11_PACKED_MIP_DESC, StartTileIndexInOverallResource) - 8usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11DeviceContext2Vtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext2) -> ULONG>,
+    pub Release:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext2) -> ULONG>,
+    pub GetDevice: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext2, ppDevice: *mut *mut ID3D11Device),
+    >,
+    pub GetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            guid: *const GUID,
+            pDataSize: *mut UINT,
+            pData: *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            guid: *const GUID,
+            DataSize: UINT,
+            pData: *const ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateDataInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            guid: *const GUID,
+            pData: *const IUnknown,
+        ) -> HRESULT,
+    >,
+    pub VSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub PSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub PSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pPixelShader: *mut ID3D11PixelShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub PSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub VSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pVertexShader: *mut ID3D11VertexShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub DrawIndexed: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            IndexCount: UINT,
+            StartIndexLocation: UINT,
+            BaseVertexLocation: INT,
+        ),
+    >,
+    pub Draw: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            VertexCount: UINT,
+            StartVertexLocation: UINT,
+        ),
+    >,
+    pub Map: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pResource: *mut ID3D11Resource,
+            Subresource: UINT,
+            MapType: D3D11_MAP,
+            MapFlags: UINT,
+            pMappedResource: *mut D3D11_MAPPED_SUBRESOURCE,
+        ) -> HRESULT,
+    >,
+    pub Unmap: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pResource: *mut ID3D11Resource,
+            Subresource: UINT,
+        ),
+    >,
+    pub PSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub IASetInputLayout: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext2, pInputLayout: *mut ID3D11InputLayout),
+    >,
+    pub IASetVertexBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppVertexBuffers: *const *mut ID3D11Buffer,
+            pStrides: *const UINT,
+            pOffsets: *const UINT,
+        ),
+    >,
+    pub IASetIndexBuffer: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pIndexBuffer: *mut ID3D11Buffer,
+            Format: DXGI_FORMAT,
+            Offset: UINT,
+        ),
+    >,
+    pub DrawIndexedInstanced: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            IndexCountPerInstance: UINT,
+            InstanceCount: UINT,
+            StartIndexLocation: UINT,
+            BaseVertexLocation: INT,
+            StartInstanceLocation: UINT,
+        ),
+    >,
+    pub DrawInstanced: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            VertexCountPerInstance: UINT,
+            InstanceCount: UINT,
+            StartVertexLocation: UINT,
+            StartInstanceLocation: UINT,
+        ),
+    >,
+    pub GSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub GSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pShader: *mut ID3D11GeometryShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub IASetPrimitiveTopology: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext2, Topology: D3D11_PRIMITIVE_TOPOLOGY),
+    >,
+    pub VSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub VSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub Begin: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext2, pAsync: *mut ID3D11Asynchronous),
+    >,
+    pub End: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext2, pAsync: *mut ID3D11Asynchronous),
+    >,
+    pub GetData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pAsync: *mut ID3D11Asynchronous,
+            pData: *mut ::std::os::raw::c_void,
+            DataSize: UINT,
+            GetDataFlags: UINT,
+        ) -> HRESULT,
+    >,
+    pub SetPredication: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pPredicate: *mut ID3D11Predicate,
+            PredicateValue: BOOL,
+        ),
+    >,
+    pub GSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub GSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub OMSetRenderTargets: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            NumViews: UINT,
+            ppRenderTargetViews: *const *mut ID3D11RenderTargetView,
+            pDepthStencilView: *mut ID3D11DepthStencilView,
+        ),
+    >,
+    pub OMSetRenderTargetsAndUnorderedAccessViews: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            NumRTVs: UINT,
+            ppRenderTargetViews: *const *mut ID3D11RenderTargetView,
+            pDepthStencilView: *mut ID3D11DepthStencilView,
+            UAVStartSlot: UINT,
+            NumUAVs: UINT,
+            ppUnorderedAccessViews: *const *mut ID3D11UnorderedAccessView,
+            pUAVInitialCounts: *const UINT,
+        ),
+    >,
+    pub OMSetBlendState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pBlendState: *mut ID3D11BlendState,
+            BlendFactor: *const FLOAT,
+            SampleMask: UINT,
+        ),
+    >,
+    pub OMSetDepthStencilState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pDepthStencilState: *mut ID3D11DepthStencilState,
+            StencilRef: UINT,
+        ),
+    >,
+    pub SOSetTargets: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            NumBuffers: UINT,
+            ppSOTargets: *const *mut ID3D11Buffer,
+            pOffsets: *const UINT,
+        ),
+    >,
+    pub DrawAuto: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext2)>,
+    pub DrawIndexedInstancedIndirect: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pBufferForArgs: *mut ID3D11Buffer,
+            AlignedByteOffsetForArgs: UINT,
+        ),
+    >,
+    pub DrawInstancedIndirect: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pBufferForArgs: *mut ID3D11Buffer,
+            AlignedByteOffsetForArgs: UINT,
+        ),
+    >,
+    pub Dispatch: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            ThreadGroupCountX: UINT,
+            ThreadGroupCountY: UINT,
+            ThreadGroupCountZ: UINT,
+        ),
+    >,
+    pub DispatchIndirect: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pBufferForArgs: *mut ID3D11Buffer,
+            AlignedByteOffsetForArgs: UINT,
+        ),
+    >,
+    pub RSSetState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pRasterizerState: *mut ID3D11RasterizerState,
+        ),
+    >,
+    pub RSSetViewports: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            NumViewports: UINT,
+            pViewports: *const D3D11_VIEWPORT,
+        ),
+    >,
+    pub RSSetScissorRects: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            NumRects: UINT,
+            pRects: *const D3D11_RECT,
+        ),
+    >,
+    pub CopySubresourceRegion: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pDstResource: *mut ID3D11Resource,
+            DstSubresource: UINT,
+            DstX: UINT,
+            DstY: UINT,
+            DstZ: UINT,
+            pSrcResource: *mut ID3D11Resource,
+            SrcSubresource: UINT,
+            pSrcBox: *const D3D11_BOX,
+        ),
+    >,
+    pub CopyResource: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pDstResource: *mut ID3D11Resource,
+            pSrcResource: *mut ID3D11Resource,
+        ),
+    >,
+    pub UpdateSubresource: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pDstResource: *mut ID3D11Resource,
+            DstSubresource: UINT,
+            pDstBox: *const D3D11_BOX,
+            pSrcData: *const ::std::os::raw::c_void,
+            SrcRowPitch: UINT,
+            SrcDepthPitch: UINT,
+        ),
+    >,
+    pub CopyStructureCount: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pDstBuffer: *mut ID3D11Buffer,
+            DstAlignedByteOffset: UINT,
+            pSrcView: *mut ID3D11UnorderedAccessView,
+        ),
+    >,
+    pub ClearRenderTargetView: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pRenderTargetView: *mut ID3D11RenderTargetView,
+            ColorRGBA: *const FLOAT,
+        ),
+    >,
+    pub ClearUnorderedAccessViewUint: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pUnorderedAccessView: *mut ID3D11UnorderedAccessView,
+            Values: *const UINT,
+        ),
+    >,
+    pub ClearUnorderedAccessViewFloat: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pUnorderedAccessView: *mut ID3D11UnorderedAccessView,
+            Values: *const FLOAT,
+        ),
+    >,
+    pub ClearDepthStencilView: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pDepthStencilView: *mut ID3D11DepthStencilView,
+            ClearFlags: UINT,
+            Depth: FLOAT,
+            Stencil: UINT8,
+        ),
+    >,
+    pub GenerateMips: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pShaderResourceView: *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub SetResourceMinLOD: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pResource: *mut ID3D11Resource,
+            MinLOD: FLOAT,
+        ),
+    >,
+    pub GetResourceMinLOD: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pResource: *mut ID3D11Resource,
+        ) -> FLOAT,
+    >,
+    pub ResolveSubresource: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pDstResource: *mut ID3D11Resource,
+            DstSubresource: UINT,
+            pSrcResource: *mut ID3D11Resource,
+            SrcSubresource: UINT,
+            Format: DXGI_FORMAT,
+        ),
+    >,
+    pub ExecuteCommandList: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pCommandList: *mut ID3D11CommandList,
+            RestoreContextState: BOOL,
+        ),
+    >,
+    pub HSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub HSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pHullShader: *mut ID3D11HullShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub HSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub HSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub DSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub DSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pDomainShader: *mut ID3D11DomainShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub DSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub DSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub CSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub CSSetUnorderedAccessViews: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumUAVs: UINT,
+            ppUnorderedAccessViews: *const *mut ID3D11UnorderedAccessView,
+            pUAVInitialCounts: *const UINT,
+        ),
+    >,
+    pub CSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pComputeShader: *mut ID3D11ComputeShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub CSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub CSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub VSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub PSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub PSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            ppPixelShader: *mut *mut ID3D11PixelShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub PSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub VSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            ppVertexShader: *mut *mut ID3D11VertexShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub PSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub IAGetInputLayout: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            ppInputLayout: *mut *mut ID3D11InputLayout,
+        ),
+    >,
+    pub IAGetVertexBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppVertexBuffers: *mut *mut ID3D11Buffer,
+            pStrides: *mut UINT,
+            pOffsets: *mut UINT,
+        ),
+    >,
+    pub IAGetIndexBuffer: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pIndexBuffer: *mut *mut ID3D11Buffer,
+            Format: *mut DXGI_FORMAT,
+            Offset: *mut UINT,
+        ),
+    >,
+    pub GSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub GSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            ppGeometryShader: *mut *mut ID3D11GeometryShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub IAGetPrimitiveTopology: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pTopology: *mut D3D11_PRIMITIVE_TOPOLOGY,
+        ),
+    >,
+    pub VSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub VSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub GetPredication: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            ppPredicate: *mut *mut ID3D11Predicate,
+            pPredicateValue: *mut BOOL,
+        ),
+    >,
+    pub GSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub GSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub OMGetRenderTargets: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            NumViews: UINT,
+            ppRenderTargetViews: *mut *mut ID3D11RenderTargetView,
+            ppDepthStencilView: *mut *mut ID3D11DepthStencilView,
+        ),
+    >,
+    pub OMGetRenderTargetsAndUnorderedAccessViews: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            NumRTVs: UINT,
+            ppRenderTargetViews: *mut *mut ID3D11RenderTargetView,
+            ppDepthStencilView: *mut *mut ID3D11DepthStencilView,
+            UAVStartSlot: UINT,
+            NumUAVs: UINT,
+            ppUnorderedAccessViews: *mut *mut ID3D11UnorderedAccessView,
+        ),
+    >,
+    pub OMGetBlendState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            ppBlendState: *mut *mut ID3D11BlendState,
+            BlendFactor: *mut FLOAT,
+            pSampleMask: *mut UINT,
+        ),
+    >,
+    pub OMGetDepthStencilState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            ppDepthStencilState: *mut *mut ID3D11DepthStencilState,
+            pStencilRef: *mut UINT,
+        ),
+    >,
+    pub SOGetTargets: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            NumBuffers: UINT,
+            ppSOTargets: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub RSGetState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            ppRasterizerState: *mut *mut ID3D11RasterizerState,
+        ),
+    >,
+    pub RSGetViewports: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pNumViewports: *mut UINT,
+            pViewports: *mut D3D11_VIEWPORT,
+        ),
+    >,
+    pub RSGetScissorRects: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pNumRects: *mut UINT,
+            pRects: *mut D3D11_RECT,
+        ),
+    >,
+    pub HSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub HSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            ppHullShader: *mut *mut ID3D11HullShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub HSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub HSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub DSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub DSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            ppDomainShader: *mut *mut ID3D11DomainShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub DSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub DSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub CSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub CSGetUnorderedAccessViews: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumUAVs: UINT,
+            ppUnorderedAccessViews: *mut *mut ID3D11UnorderedAccessView,
+        ),
+    >,
+    pub CSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            ppComputeShader: *mut *mut ID3D11ComputeShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub CSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub CSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub ClearState: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext2)>,
+    pub Flush: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext2)>,
+    pub GetType: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext2) -> D3D11_DEVICE_CONTEXT_TYPE,
+    >,
+    pub GetContextFlags:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext2) -> UINT>,
+    pub FinishCommandList: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            RestoreDeferredContextState: BOOL,
+            ppCommandList: *mut *mut ID3D11CommandList,
+        ) -> HRESULT,
+    >,
+    pub CopySubresourceRegion1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pDstResource: *mut ID3D11Resource,
+            DstSubresource: UINT,
+            DstX: UINT,
+            DstY: UINT,
+            DstZ: UINT,
+            pSrcResource: *mut ID3D11Resource,
+            SrcSubresource: UINT,
+            pSrcBox: *const D3D11_BOX,
+            CopyFlags: UINT,
+        ),
+    >,
+    pub UpdateSubresource1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pDstResource: *mut ID3D11Resource,
+            DstSubresource: UINT,
+            pDstBox: *const D3D11_BOX,
+            pSrcData: *const ::std::os::raw::c_void,
+            SrcRowPitch: UINT,
+            SrcDepthPitch: UINT,
+            CopyFlags: UINT,
+        ),
+    >,
+    pub DiscardResource: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext2, pResource: *mut ID3D11Resource),
+    >,
+    pub DiscardView: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext2, pResourceView: *mut ID3D11View),
+    >,
+    pub VSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub HSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub DSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub GSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub PSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub CSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub VSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub HSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub DSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub GSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub PSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub CSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub SwapDeviceContextState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pState: *mut ID3DDeviceContextState,
+            ppPreviousState: *mut *mut ID3DDeviceContextState,
+        ),
+    >,
+    pub ClearView: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pView: *mut ID3D11View,
+            Color: *const FLOAT,
+            pRect: *const D3D11_RECT,
+            NumRects: UINT,
+        ),
+    >,
+    pub DiscardView1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pResourceView: *mut ID3D11View,
+            pRects: *const D3D11_RECT,
+            NumRects: UINT,
+        ),
+    >,
+    pub UpdateTileMappings: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pTiledResource: *mut ID3D11Resource,
+            NumTiledResourceRegions: UINT,
+            pTiledResourceRegionStartCoordinates: *const D3D11_TILED_RESOURCE_COORDINATE,
+            pTiledResourceRegionSizes: *const D3D11_TILE_REGION_SIZE,
+            pTilePool: *mut ID3D11Buffer,
+            NumRanges: UINT,
+            pRangeFlags: *const UINT,
+            pTilePoolStartOffsets: *const UINT,
+            pRangeTileCounts: *const UINT,
+            Flags: UINT,
+        ) -> HRESULT,
+    >,
+    pub CopyTileMappings: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pDestTiledResource: *mut ID3D11Resource,
+            pDestRegionStartCoordinate: *const D3D11_TILED_RESOURCE_COORDINATE,
+            pSourceTiledResource: *mut ID3D11Resource,
+            pSourceRegionStartCoordinate: *const D3D11_TILED_RESOURCE_COORDINATE,
+            pTileRegionSize: *const D3D11_TILE_REGION_SIZE,
+            Flags: UINT,
+        ) -> HRESULT,
+    >,
+    pub CopyTiles: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pTiledResource: *mut ID3D11Resource,
+            pTileRegionStartCoordinate: *const D3D11_TILED_RESOURCE_COORDINATE,
+            pTileRegionSize: *const D3D11_TILE_REGION_SIZE,
+            pBuffer: *mut ID3D11Buffer,
+            BufferStartOffsetInBytes: UINT64,
+            Flags: UINT,
+        ),
+    >,
+    pub UpdateTiles: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pDestTiledResource: *mut ID3D11Resource,
+            pDestTileRegionStartCoordinate: *const D3D11_TILED_RESOURCE_COORDINATE,
+            pDestTileRegionSize: *const D3D11_TILE_REGION_SIZE,
+            pSourceTileData: *const ::std::os::raw::c_void,
+            Flags: UINT,
+        ),
+    >,
+    pub ResizeTilePool: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pTilePool: *mut ID3D11Buffer,
+            NewSizeInBytes: UINT64,
+        ) -> HRESULT,
+    >,
+    pub TiledResourceBarrier: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext2,
+            pTiledResourceOrViewAccessBeforeBarrier: *mut ID3D11DeviceChild,
+            pTiledResourceOrViewAccessAfterBarrier: *mut ID3D11DeviceChild,
+        ),
+    >,
+    pub IsAnnotationEnabled:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext2) -> BOOL>,
+    pub SetMarkerInt: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext2, pLabel: LPCWSTR, Data: INT),
+    >,
+    pub BeginEventInt: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext2, pLabel: LPCWSTR, Data: INT),
+    >,
+    pub EndEvent: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext2)>,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11DeviceContext2Vtbl"]
+        [::std::mem::size_of::<ID3D11DeviceContext2Vtbl>() - 1152usize];
+    ["Alignment of ID3D11DeviceContext2Vtbl"]
+        [::std::mem::align_of::<ID3D11DeviceContext2Vtbl>() - 8usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::QueryInterface"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, QueryInterface) - 0usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::AddRef"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, AddRef) - 8usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::Release"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, Release) - 16usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::GetDevice"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, GetDevice) - 24usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::GetPrivateData"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, GetPrivateData) - 32usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::SetPrivateData"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, SetPrivateData) - 40usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::SetPrivateDataInterface"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, SetPrivateDataInterface) - 48usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::VSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, VSSetConstantBuffers) - 56usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::PSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, PSSetShaderResources) - 64usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::PSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, PSSetShader) - 72usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::PSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, PSSetSamplers) - 80usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::VSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, VSSetShader) - 88usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::DrawIndexed"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, DrawIndexed) - 96usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::Draw"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, Draw) - 104usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::Map"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, Map) - 112usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::Unmap"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, Unmap) - 120usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::PSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, PSSetConstantBuffers) - 128usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::IASetInputLayout"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, IASetInputLayout) - 136usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::IASetVertexBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, IASetVertexBuffers) - 144usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::IASetIndexBuffer"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, IASetIndexBuffer) - 152usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::DrawIndexedInstanced"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, DrawIndexedInstanced) - 160usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::DrawInstanced"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, DrawInstanced) - 168usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::GSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, GSSetConstantBuffers) - 176usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::GSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, GSSetShader) - 184usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::IASetPrimitiveTopology"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, IASetPrimitiveTopology) - 192usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::VSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, VSSetShaderResources) - 200usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::VSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, VSSetSamplers) - 208usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::Begin"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, Begin) - 216usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::End"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, End) - 224usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::GetData"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, GetData) - 232usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::SetPredication"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, SetPredication) - 240usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::GSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, GSSetShaderResources) - 248usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::GSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, GSSetSamplers) - 256usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::OMSetRenderTargets"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, OMSetRenderTargets) - 264usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::OMSetRenderTargetsAndUnorderedAccessViews"][::std::mem::offset_of!(
+        ID3D11DeviceContext2Vtbl,
+        OMSetRenderTargetsAndUnorderedAccessViews
+    )
+        - 272usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::OMSetBlendState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, OMSetBlendState) - 280usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::OMSetDepthStencilState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, OMSetDepthStencilState) - 288usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::SOSetTargets"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, SOSetTargets) - 296usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::DrawAuto"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, DrawAuto) - 304usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::DrawIndexedInstancedIndirect"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, DrawIndexedInstancedIndirect) - 312usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::DrawInstancedIndirect"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, DrawInstancedIndirect) - 320usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::Dispatch"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, Dispatch) - 328usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::DispatchIndirect"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, DispatchIndirect) - 336usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::RSSetState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, RSSetState) - 344usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::RSSetViewports"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, RSSetViewports) - 352usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::RSSetScissorRects"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, RSSetScissorRects) - 360usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::CopySubresourceRegion"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, CopySubresourceRegion) - 368usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::CopyResource"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, CopyResource) - 376usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::UpdateSubresource"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, UpdateSubresource) - 384usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::CopyStructureCount"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, CopyStructureCount) - 392usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::ClearRenderTargetView"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, ClearRenderTargetView) - 400usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::ClearUnorderedAccessViewUint"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, ClearUnorderedAccessViewUint) - 408usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::ClearUnorderedAccessViewFloat"][::std::mem::offset_of!(
+        ID3D11DeviceContext2Vtbl,
+        ClearUnorderedAccessViewFloat
+    ) - 416usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::ClearDepthStencilView"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, ClearDepthStencilView) - 424usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::GenerateMips"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, GenerateMips) - 432usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::SetResourceMinLOD"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, SetResourceMinLOD) - 440usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::GetResourceMinLOD"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, GetResourceMinLOD) - 448usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::ResolveSubresource"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, ResolveSubresource) - 456usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::ExecuteCommandList"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, ExecuteCommandList) - 464usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::HSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, HSSetShaderResources) - 472usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::HSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, HSSetShader) - 480usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::HSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, HSSetSamplers) - 488usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::HSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, HSSetConstantBuffers) - 496usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::DSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, DSSetShaderResources) - 504usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::DSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, DSSetShader) - 512usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::DSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, DSSetSamplers) - 520usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::DSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, DSSetConstantBuffers) - 528usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::CSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, CSSetShaderResources) - 536usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::CSSetUnorderedAccessViews"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, CSSetUnorderedAccessViews) - 544usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::CSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, CSSetShader) - 552usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::CSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, CSSetSamplers) - 560usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::CSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, CSSetConstantBuffers) - 568usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::VSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, VSGetConstantBuffers) - 576usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::PSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, PSGetShaderResources) - 584usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::PSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, PSGetShader) - 592usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::PSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, PSGetSamplers) - 600usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::VSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, VSGetShader) - 608usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::PSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, PSGetConstantBuffers) - 616usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::IAGetInputLayout"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, IAGetInputLayout) - 624usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::IAGetVertexBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, IAGetVertexBuffers) - 632usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::IAGetIndexBuffer"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, IAGetIndexBuffer) - 640usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::GSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, GSGetConstantBuffers) - 648usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::GSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, GSGetShader) - 656usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::IAGetPrimitiveTopology"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, IAGetPrimitiveTopology) - 664usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::VSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, VSGetShaderResources) - 672usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::VSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, VSGetSamplers) - 680usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::GetPredication"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, GetPredication) - 688usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::GSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, GSGetShaderResources) - 696usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::GSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, GSGetSamplers) - 704usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::OMGetRenderTargets"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, OMGetRenderTargets) - 712usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::OMGetRenderTargetsAndUnorderedAccessViews"][::std::mem::offset_of!(
+        ID3D11DeviceContext2Vtbl,
+        OMGetRenderTargetsAndUnorderedAccessViews
+    )
+        - 720usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::OMGetBlendState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, OMGetBlendState) - 728usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::OMGetDepthStencilState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, OMGetDepthStencilState) - 736usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::SOGetTargets"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, SOGetTargets) - 744usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::RSGetState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, RSGetState) - 752usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::RSGetViewports"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, RSGetViewports) - 760usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::RSGetScissorRects"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, RSGetScissorRects) - 768usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::HSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, HSGetShaderResources) - 776usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::HSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, HSGetShader) - 784usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::HSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, HSGetSamplers) - 792usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::HSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, HSGetConstantBuffers) - 800usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::DSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, DSGetShaderResources) - 808usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::DSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, DSGetShader) - 816usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::DSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, DSGetSamplers) - 824usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::DSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, DSGetConstantBuffers) - 832usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::CSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, CSGetShaderResources) - 840usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::CSGetUnorderedAccessViews"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, CSGetUnorderedAccessViews) - 848usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::CSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, CSGetShader) - 856usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::CSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, CSGetSamplers) - 864usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::CSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, CSGetConstantBuffers) - 872usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::ClearState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, ClearState) - 880usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::Flush"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, Flush) - 888usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::GetType"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, GetType) - 896usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::GetContextFlags"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, GetContextFlags) - 904usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::FinishCommandList"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, FinishCommandList) - 912usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::CopySubresourceRegion1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, CopySubresourceRegion1) - 920usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::UpdateSubresource1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, UpdateSubresource1) - 928usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::DiscardResource"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, DiscardResource) - 936usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::DiscardView"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, DiscardView) - 944usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::VSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, VSSetConstantBuffers1) - 952usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::HSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, HSSetConstantBuffers1) - 960usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::DSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, DSSetConstantBuffers1) - 968usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::GSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, GSSetConstantBuffers1) - 976usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::PSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, PSSetConstantBuffers1) - 984usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::CSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, CSSetConstantBuffers1) - 992usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::VSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, VSGetConstantBuffers1) - 1000usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::HSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, HSGetConstantBuffers1) - 1008usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::DSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, DSGetConstantBuffers1) - 1016usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::GSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, GSGetConstantBuffers1) - 1024usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::PSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, PSGetConstantBuffers1) - 1032usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::CSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, CSGetConstantBuffers1) - 1040usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::SwapDeviceContextState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, SwapDeviceContextState) - 1048usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::ClearView"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, ClearView) - 1056usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::DiscardView1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, DiscardView1) - 1064usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::UpdateTileMappings"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, UpdateTileMappings) - 1072usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::CopyTileMappings"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, CopyTileMappings) - 1080usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::CopyTiles"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, CopyTiles) - 1088usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::UpdateTiles"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, UpdateTiles) - 1096usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::ResizeTilePool"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, ResizeTilePool) - 1104usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::TiledResourceBarrier"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, TiledResourceBarrier) - 1112usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::IsAnnotationEnabled"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, IsAnnotationEnabled) - 1120usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::SetMarkerInt"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, SetMarkerInt) - 1128usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::BeginEventInt"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, BeginEventInt) - 1136usize];
+    ["Offset of field: ID3D11DeviceContext2Vtbl::EndEvent"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2Vtbl, EndEvent) - 1144usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11DeviceContext2 {
+    pub lpVtbl: *mut ID3D11DeviceContext2Vtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11DeviceContext2"][::std::mem::size_of::<ID3D11DeviceContext2>() - 8usize];
+    ["Alignment of ID3D11DeviceContext2"][::std::mem::align_of::<ID3D11DeviceContext2>() - 8usize];
+    ["Offset of field: ID3D11DeviceContext2::lpVtbl"]
+        [::std::mem::offset_of!(ID3D11DeviceContext2, lpVtbl) - 0usize];
+};
+pub const D3D11_CONTEXT_TYPE_ALL: D3D11_CONTEXT_TYPE = 0;
+pub const D3D11_CONTEXT_TYPE_3D: D3D11_CONTEXT_TYPE = 1;
+pub const D3D11_CONTEXT_TYPE_COMPUTE: D3D11_CONTEXT_TYPE = 2;
+pub const D3D11_CONTEXT_TYPE_COPY: D3D11_CONTEXT_TYPE = 3;
+pub const D3D11_CONTEXT_TYPE_VIDEO: D3D11_CONTEXT_TYPE = 4;
+pub type D3D11_CONTEXT_TYPE = ::std::os::raw::c_int;
+pub const D3D11_TEXTURE_LAYOUT_UNDEFINED: D3D11_TEXTURE_LAYOUT = 0;
+pub const D3D11_TEXTURE_LAYOUT_ROW_MAJOR: D3D11_TEXTURE_LAYOUT = 1;
+pub const D3D11_TEXTURE_LAYOUT_64K_STANDARD_SWIZZLE: D3D11_TEXTURE_LAYOUT = 2;
+pub type D3D11_TEXTURE_LAYOUT = ::std::os::raw::c_int;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct D3D11_TEXTURE2D_DESC1 {
     pub Width: UINT,
     pub Height: UINT,
+    pub MipLevels: UINT,
+    pub ArraySize: UINT,
     pub Format: DXGI_FORMAT,
-    pub Stereo: BOOL,
     pub SampleDesc: DXGI_SAMPLE_DESC,
-    pub BufferUsage: DXGI_USAGE,
-    pub BufferCount: UINT,
-    pub Scaling: DXGI_SCALING,
-    pub SwapEffect: DXGI_SWAP_EFFECT,
-    pub AlphaMode: DXGI_ALPHA_MODE,
-    pub Flags: UINT,
+    pub Usage: D3D11_USAGE,
+    pub BindFlags: UINT,
+    pub CPUAccessFlags: UINT,
+    pub MiscFlags: UINT,
+    pub TextureLayout: D3D11_TEXTURE_LAYOUT,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of DXGI_SWAP_CHAIN_DESC1"][::std::mem::size_of::<DXGI_SWAP_CHAIN_DESC1>() - 48usize];
-    ["Alignment of DXGI_SWAP_CHAIN_DESC1"]
-        [::std::mem::align_of::<DXGI_SWAP_CHAIN_DESC1>() - 4usize];
-    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::Width"]
-        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, Width) - 0usize];
-    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::Height"]
-        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, Height) - 4usize];
-    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::Format"]
-        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, Format) - 8usize];
-    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::Stereo"]
-        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, Stereo) - 12usize];
-    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::SampleDesc"]
-        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, SampleDesc) - 16usize];
-    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::BufferUsage"]
-        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, BufferUsage) - 24usize];
-    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::BufferCount"]
-        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, BufferCount) - 28usize];
-    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::Scaling"]
-        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, Scaling) - 32usize];
-    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::SwapEffect"]
-        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, SwapEffect) - 36usize];
-    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::AlphaMode"]
-        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, AlphaMode) - 40usize];
-    ["Offset of field: DXGI_SWAP_CHAIN_DESC1::Flags"]
-        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_DESC1, Flags) - 44usize];
+    ["Size of D3D11_TEXTURE2D_DESC1"][::std::mem::size_of::<D3D11_TEXTURE2D_DESC1>() - 48usize];
+    ["Alignment of D3D11_TEXTURE2D_DESC1"]
+        [::std::mem::align_of::<D3D11_TEXTURE2D_DESC1>() - 4usize];
+    ["Offset of field: D3D11_TEXTURE2D_DESC1::Width"]
+        [::std::mem::offset_of!(D3D11_TEXTURE2D_DESC1, Width) - 0usize];
+    ["Offset of field: D3D11_TEXTURE2D_DESC1::Height"]
+        [::std::mem::offset_of!(D3D11_TEXTURE2D_DESC1, Height) - 4usize];
+    ["Offset of field: D3D11_TEXTURE2D_DESC1::MipLevels"]
+        [::std::mem::offset_of!(D3D11_TEXTURE2D_DESC1, MipLevels) - 8usize];
+    ["Offset of field: D3D11_TEXTURE2D_DESC1::ArraySize"]
+        [::std::mem::offset_of!(D3D11_TEXTURE2D_DESC1, ArraySize) - 12usize];
+    ["Offset of field: D3D11_TEXTURE2D_DESC1::Format"]
+        [::std::mem::offset_of!(D3D11_TEXTURE2D_DESC1, Format) - 16usize];
+    ["Offset of field: D3D11_TEXTURE2D_DESC1::SampleDesc"]
+        [::std::mem::offset_of!(D3D11_TEXTURE2D_DESC1, SampleDesc) - 20usize];
+    ["Offset of field: D3D11_TEXTURE2D_DESC1::Usage"]
+        [::std::mem::offset_of!(D3D11_TEXTURE2D_DESC1, Usage) - 28usize];
+    ["Offset of field: D3D11_TEXTURE2D_DESC1::BindFlags"]
+        [::std::mem::offset_of!(D3D11_TEXTURE2D_DESC1, BindFlags) - 32usize];
+    ["Offset of field: D3D11_TEXTURE2D_DESC1::CPUAccessFlags"]
+        [::std::mem::offset_of!(D3D11_TEXTURE2D_DESC1, CPUAccessFlags) - 36usize];
+    ["Offset of field: D3D11_TEXTURE2D_DESC1::MiscFlags"]
+        [::std::mem::offset_of!(D3D11_TEXTURE2D_DESC1, MiscFlags) - 40usize];
+    ["Offset of field: D3D11_TEXTURE2D_DESC1::TextureLayout"]
+        [::std::mem::offset_of!(D3D11_TEXTURE2D_DESC1, TextureLayout) - 44usize];
 };
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
-pub struct DXGI_SWAP_CHAIN_FULLSCREEN_DESC {
-    pub RefreshRate: DXGI_RATIONAL,
-    pub ScanlineOrdering: DXGI_MODE_SCANLINE_ORDER,
-    pub Scaling: DXGI_MODE_SCALING,
-    pub Windowed: BOOL,
+pub struct ID3D11Texture2D1Vtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Texture2D1,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Texture2D1) -> ULONG>,
+    pub Release: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Texture2D1) -> ULONG>,
+    pub GetDevice: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11Texture2D1, ppDevice: *mut *mut ID3D11Device),
+    >,
+    pub GetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Texture2D1,
+            guid: *const GUID,
+            pDataSize: *mut UINT,
+            pData: *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Texture2D1,
+            guid: *const GUID,
+            DataSize: UINT,
+            pData: *const ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateDataInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Texture2D1,
+            guid: *const GUID,
+            pData: *const IUnknown,
+        ) -> HRESULT,
+    >,
+    pub GetType: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Texture2D1,
+            pResourceDimension: *mut D3D11_RESOURCE_DIMENSION,
+        ),
+    >,
+    pub SetEvictionPriority: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11Texture2D1, EvictionPriority: UINT),
+    >,
+    pub GetEvictionPriority:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Texture2D1) -> UINT>,
+    pub GetDesc: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11Texture2D1, pDesc: *mut D3D11_TEXTURE2D_DESC),
+    >,
+    pub GetDesc1: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11Texture2D1, pDesc: *mut D3D11_TEXTURE2D_DESC1),
+    >,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of DXGI_SWAP_CHAIN_FULLSCREEN_DESC"]
-        [::std::mem::size_of::<DXGI_SWAP_CHAIN_FULLSCREEN_DESC>() - 20usize];
-    ["Alignment of DXGI_SWAP_CHAIN_FULLSCREEN_DESC"]
-        [::std::mem::align_of::<DXGI_SWAP_CHAIN_FULLSCREEN_DESC>() - 4usize];
-    ["Offset of field: DXGI_SWAP_CHAIN_FULLSCREEN_DESC::RefreshRate"]
-        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_FULLSCREEN_DESC, RefreshRate) - 0usize];
-    ["Offset of field: DXGI_SWAP_CHAIN_FULLSCREEN_DESC::ScanlineOrdering"]
-        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_FULLSCREEN_DESC, ScanlineOrdering) - 8usize];
-    ["Offset of field: DXGI_SWAP_CHAIN_FULLSCREEN_DESC::Scaling"]
-        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_FULLSCREEN_DESC, Scaling) - 12usize];
-    ["Offset of field: DXGI_SWAP_CHAIN_FULLSCREEN_DESC::Windowed"]
-        [::std::mem::offset_of!(DXGI_SWAP_CHAIN_FULLSCREEN_DESC, Windowed) - 16usize];
+    ["Size of ID3D11Texture2D1Vtbl"][::std::mem::size_of::<ID3D11Texture2D1Vtbl>() - 96usize];
+    ["Alignment of ID3D11Texture2D1Vtbl"][::std::mem::align_of::<ID3D11Texture2D1Vtbl>() - 8usize];
+    ["Offset of field: ID3D11Texture2D1Vtbl::QueryInterface"]
+        [::std::mem::offset_of!(ID3D11Texture2D1Vtbl, QueryInterface) - 0usize];
+    ["Offset of field: ID3D11Texture2D1Vtbl::AddRef"]
+        [::std::mem::offset_of!(ID3D11Texture2D1Vtbl, AddRef) - 8usize];
+    ["Offset of field: ID3D11Texture2D1Vtbl::Release"]
+        [::std::mem::offset_of!(ID3D11Texture2D1Vtbl, Release) - 16usize];
+    ["Offset of field: ID3D11Texture2D1Vtbl::GetDevice"]
+        [::std::mem::offset_of!(ID3D11Texture2D1Vtbl, GetDevice) - 24usize];
+    ["Offset of field: ID3D11Texture2D1Vtbl::GetPrivateData"]
+        [::std::mem::offset_of!(ID3D11Texture2D1Vtbl, GetPrivateData) - 32usize];
+    ["Offset of field: ID3D11Texture2D1Vtbl::SetPrivateData"]
+        [::std::mem::offset_of!(ID3D11Texture2D1Vtbl, SetPrivateData) - 40usize];
+    ["Offset of field: ID3D11Texture2D1Vtbl::SetPrivateDataInterface"]
+        [::std::mem::offset_of!(ID3D11Texture2D1Vtbl, SetPrivateDataInterface) - 48usize];
+    ["Offset of field: ID3D11Texture2D1Vtbl::GetType"]
+        [::std::mem::offset_of!(ID3D11Texture2D1Vtbl, GetType) - 56usize];
+    ["Offset of field: ID3D11Texture2D1Vtbl::SetEvictionPriority"]
+        [::std::mem::offset_of!(ID3D11Texture2D1Vtbl, SetEvictionPriority) - 64usize];
+    ["Offset of field: ID3D11Texture2D1Vtbl::GetEvictionPriority"]
+        [::std::mem::offset_of!(ID3D11Texture2D1Vtbl, GetEvictionPriority) - 72usize];
+    ["Offset of field: ID3D11Texture2D1Vtbl::GetDesc"]
+        [::std::mem::offset_of!(ID3D11Texture2D1Vtbl, GetDesc) - 80usize];
+    ["Offset of field: ID3D11Texture2D1Vtbl::GetDesc1"]
+        [::std::mem::offset_of!(ID3D11Texture2D1Vtbl, GetDesc1) - 88usize];
 };
 #[repr(C)]
-#[repr(align(8))]
 #[derive(Debug, Copy, Clone)]
-pub struct IDXGISwapChain1 {
-    pub _bindgen_opaque_blob: u64,
+pub struct ID3D11Texture2D1 {
+    pub lpVtbl: *mut ID3D11Texture2D1Vtbl,
 }
 #[allow(clippy::unnecessary_operation, clippy::identity_op)]
 const _: () = {
-    ["Size of IDXGISwapChain1"][::std::mem::size_of::<IDXGISwapChain1>() - 8usize];
-    ["Alignment of IDXGISwapChain1"][::std::mem::align_of::<IDXGISwapChain1>() - 8usize];
+    ["Size of ID3D11Texture2D1"][::std::mem::size_of::<ID3D11Texture2D1>() - 8usize];
+    ["Alignment of ID3D11Texture2D1"][::std::mem::align_of::<ID3D11Texture2D1>() - 8usize];
+    ["Offset of field: ID3D11Texture2D1::lpVtbl"]
+        [::std::mem::offset_of!(ID3D11Texture2D1, lpVtbl) - 0usize];
 };
-pub const DXGI_FEATURE_PRESENT_ALLOW_TEARING: DXGI_FEATURE = 0;
-pub type DXGI_FEATURE = ::std::os::raw::c_int;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct D3D11_TEXTURE3D_DESC1 {
+    pub Width: UINT,
+    pub Height: UINT,
+    pub Depth: UINT,
+    pub MipLevels: UINT,
+    pub Format: DXGI_FORMAT,
+    pub Usage: D3D11_USAGE,
+    pub BindFlags: UINT,
+    pub CPUAccessFlags: UINT,
+    pub MiscFlags: UINT,
+    pub TextureLayout: D3D11_TEXTURE_LAYOUT,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_TEXTURE3D_DESC1"][::std::mem::size_of::<D3D11_TEXTURE3D_DESC1>() - 40usize];
+    ["Alignment of D3D11_TEXTURE3D_DESC1"]
+        [::std::mem::align_of::<D3D11_TEXTURE3D_DESC1>() - 4usize];
+    ["Offset of field: D3D11_TEXTURE3D_DESC1::Width"]
+        [::std::mem::offset_of!(D3D11_TEXTURE3D_DESC1, Width) - 0usize];
+    ["Offset of field: D3D11_TEXTURE3D_DESC1::Height"]
+        [::std::mem::offset_of!(D3D11_TEXTURE3D_DESC1, Height) - 4usize];
+    ["Offset of field: D3D11_TEXTURE3D_DESC1::Depth"]
+        [::std::mem::offset_of!(D3D11_TEXTURE3D_DESC1, Depth) - 8usize];
+    ["Offset of field: D3D11_TEXTURE3D_DESC1::MipLevels"]
+        [::std::mem::offset_of!(D3D11_TEXTURE3D_DESC1, MipLevels) - 12usize];
+    ["Offset of field: D3D11_TEXTURE3D_DESC1::Format"]
+        [::std::mem::offset_of!(D3D11_TEXTURE3D_DESC1, Format) - 16usize];
+    ["Offset of field: D3D11_TEXTURE3D_DESC1::Usage"]
+        [::std::mem::offset_of!(D3D11_TEXTURE3D_DESC1, Usage) - 20usize];
+    ["Offset of field: D3D11_TEXTURE3D_DESC1::BindFlags"]
+        [::std::mem::offset_of!(D3D11_TEXTURE3D_DESC1, BindFlags) - 24usize];
+    ["Offset of field: D3D11_TEXTURE3D_DESC1::CPUAccessFlags"]
+        [::std::mem::offset_of!(D3D11_TEXTURE3D_DESC1, CPUAccessFlags) - 28usize];
+    ["Offset of field: D3D11_TEXTURE3D_DESC1::MiscFlags"]
+        [::std::mem::offset_of!(D3D11_TEXTURE3D_DESC1, MiscFlags) - 32usize];
+    ["Offset of field: D3D11_TEXTURE3D_DESC1::TextureLayout"]
+        [::std::mem::offset_of!(D3D11_TEXTURE3D_DESC1, TextureLayout) - 36usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11Texture3D1Vtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Texture3D1,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Texture3D1) -> ULONG>,
+    pub Release: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Texture3D1) -> ULONG>,
+    pub GetDevice: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11Texture3D1, ppDevice: *mut *mut ID3D11Device),
+    >,
+    pub GetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Texture3D1,
+            guid: *const GUID,
+            pDataSize: *mut UINT,
+            pData: *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Texture3D1,
+            guid: *const GUID,
+            DataSize: UINT,
+            pData: *const ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateDataInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Texture3D1,
+            guid: *const GUID,
+            pData: *const IUnknown,
+        ) -> HRESULT,
+    >,
+    pub GetType: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Texture3D1,
+            pResourceDimension: *mut D3D11_RESOURCE_DIMENSION,
+        ),
+    >,
+    pub SetEvictionPriority: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11Texture3D1, EvictionPriority: UINT),
+    >,
+    pub GetEvictionPriority:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Texture3D1) -> UINT>,
+    pub GetDesc: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11Texture3D1, pDesc: *mut D3D11_TEXTURE3D_DESC),
+    >,
+    pub GetDesc1: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11Texture3D1, pDesc: *mut D3D11_TEXTURE3D_DESC1),
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11Texture3D1Vtbl"][::std::mem::size_of::<ID3D11Texture3D1Vtbl>() - 96usize];
+    ["Alignment of ID3D11Texture3D1Vtbl"][::std::mem::align_of::<ID3D11Texture3D1Vtbl>() - 8usize];
+    ["Offset of field: ID3D11Texture3D1Vtbl::QueryInterface"]
+        [::std::mem::offset_of!(ID3D11Texture3D1Vtbl, QueryInterface) - 0usize];
+    ["Offset of field: ID3D11Texture3D1Vtbl::AddRef"]
+        [::std::mem::offset_of!(ID3D11Texture3D1Vtbl, AddRef) - 8usize];
+    ["Offset of field: ID3D11Texture3D1Vtbl::Release"]
+        [::std::mem::offset_of!(ID3D11Texture3D1Vtbl, Release) - 16usize];
+    ["Offset of field: ID3D11Texture3D1Vtbl::GetDevice"]
+        [::std::mem::offset_of!(ID3D11Texture3D1Vtbl, GetDevice) - 24usize];
+    ["Offset of field: ID3D11Texture3D1Vtbl::GetPrivateData"]
+        [::std::mem::offset_of!(ID3D11Texture3D1Vtbl, GetPrivateData) - 32usize];
+    ["Offset of field: ID3D11Texture3D1Vtbl::SetPrivateData"]
+        [::std::mem::offset_of!(ID3D11Texture3D1Vtbl, SetPrivateData) - 40usize];
+    ["Offset of field: ID3D11Texture3D1Vtbl::SetPrivateDataInterface"]
+        [::std::mem::offset_of!(ID3D11Texture3D1Vtbl, SetPrivateDataInterface) - 48usize];
+    ["Offset of field: ID3D11Texture3D1Vtbl::GetType"]
+        [::std::mem::offset_of!(ID3D11Texture3D1Vtbl, GetType) - 56usize];
+    ["Offset of field: ID3D11Texture3D1Vtbl::SetEvictionPriority"]
+        [::std::mem::offset_of!(ID3D11Texture3D1Vtbl, SetEvictionPriority) - 64usize];
+    ["Offset of field: ID3D11Texture3D1Vtbl::GetEvictionPriority"]
+        [::std::mem::offset_of!(ID3D11Texture3D1Vtbl, GetEvictionPriority) - 72usize];
+    ["Offset of field: ID3D11Texture3D1Vtbl::GetDesc"]
+        [::std::mem::offset_of!(ID3D11Texture3D1Vtbl, GetDesc) - 80usize];
+    ["Offset of field: ID3D11Texture3D1Vtbl::GetDesc1"]
+        [::std::mem::offset_of!(ID3D11Texture3D1Vtbl, GetDesc1) - 88usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11Texture3D1 {
+    pub lpVtbl: *mut ID3D11Texture3D1Vtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11Texture3D1"][::std::mem::size_of::<ID3D11Texture3D1>() - 8usize];
+    ["Alignment of ID3D11Texture3D1"][::std::mem::align_of::<ID3D11Texture3D1>() - 8usize];
+    ["Offset of field: ID3D11Texture3D1::lpVtbl"]
+        [::std::mem::offset_of!(ID3D11Texture3D1, lpVtbl) - 0usize];
+};
+pub const D3D11_CONSERVATIVE_RASTERIZATION_MODE_OFF: D3D11_CONSERVATIVE_RASTERIZATION_MODE = 0;
+pub const D3D11_CONSERVATIVE_RASTERIZATION_MODE_ON: D3D11_CONSERVATIVE_RASTERIZATION_MODE = 1;
+pub type D3D11_CONSERVATIVE_RASTERIZATION_MODE = ::std::os::raw::c_int;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct D3D11_RASTERIZER_DESC2 {
+    pub FillMode: D3D11_FILL_MODE,
+    pub CullMode: D3D11_CULL_MODE,
+    pub FrontCounterClockwise: BOOL,
+    pub DepthBias: INT,
+    pub DepthBiasClamp: FLOAT,
+    pub SlopeScaledDepthBias: FLOAT,
+    pub DepthClipEnable: BOOL,
+    pub ScissorEnable: BOOL,
+    pub MultisampleEnable: BOOL,
+    pub AntialiasedLineEnable: BOOL,
+    pub ForcedSampleCount: UINT,
+    pub ConservativeRaster: D3D11_CONSERVATIVE_RASTERIZATION_MODE,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_RASTERIZER_DESC2"][::std::mem::size_of::<D3D11_RASTERIZER_DESC2>() - 48usize];
+    ["Alignment of D3D11_RASTERIZER_DESC2"]
+        [::std::mem::align_of::<D3D11_RASTERIZER_DESC2>() - 4usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC2::FillMode"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC2, FillMode) - 0usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC2::CullMode"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC2, CullMode) - 4usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC2::FrontCounterClockwise"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC2, FrontCounterClockwise) - 8usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC2::DepthBias"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC2, DepthBias) - 12usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC2::DepthBiasClamp"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC2, DepthBiasClamp) - 16usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC2::SlopeScaledDepthBias"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC2, SlopeScaledDepthBias) - 20usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC2::DepthClipEnable"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC2, DepthClipEnable) - 24usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC2::ScissorEnable"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC2, ScissorEnable) - 28usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC2::MultisampleEnable"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC2, MultisampleEnable) - 32usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC2::AntialiasedLineEnable"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC2, AntialiasedLineEnable) - 36usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC2::ForcedSampleCount"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC2, ForcedSampleCount) - 40usize];
+    ["Offset of field: D3D11_RASTERIZER_DESC2::ConservativeRaster"]
+        [::std::mem::offset_of!(D3D11_RASTERIZER_DESC2, ConservativeRaster) - 44usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11RasterizerState2Vtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11RasterizerState2,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11RasterizerState2) -> ULONG>,
+    pub Release:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11RasterizerState2) -> ULONG>,
+    pub GetDevice: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11RasterizerState2, ppDevice: *mut *mut ID3D11Device),
+    >,
+    pub GetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11RasterizerState2,
+            guid: *const GUID,
+            pDataSize: *mut UINT,
+            pData: *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11RasterizerState2,
+            guid: *const GUID,
+            DataSize: UINT,
+            pData: *const ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateDataInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11RasterizerState2,
+            guid: *const GUID,
+            pData: *const IUnknown,
+        ) -> HRESULT,
+    >,
+    pub GetDesc: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11RasterizerState2, pDesc: *mut D3D11_RASTERIZER_DESC),
+    >,
+    pub GetDesc1: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11RasterizerState2, pDesc: *mut D3D11_RASTERIZER_DESC1),
+    >,
+    pub GetDesc2: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11RasterizerState2, pDesc: *mut D3D11_RASTERIZER_DESC2),
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11RasterizerState2Vtbl"]
+        [::std::mem::size_of::<ID3D11RasterizerState2Vtbl>() - 80usize];
+    ["Alignment of ID3D11RasterizerState2Vtbl"]
+        [::std::mem::align_of::<ID3D11RasterizerState2Vtbl>() - 8usize];
+    ["Offset of field: ID3D11RasterizerState2Vtbl::QueryInterface"]
+        [::std::mem::offset_of!(ID3D11RasterizerState2Vtbl, QueryInterface) - 0usize];
+    ["Offset of field: ID3D11RasterizerState2Vtbl::AddRef"]
+        [::std::mem::offset_of!(ID3D11RasterizerState2Vtbl, AddRef) - 8usize];
+    ["Offset of field: ID3D11RasterizerState2Vtbl::Release"]
+        [::std::mem::offset_of!(ID3D11RasterizerState2Vtbl, Release) - 16usize];
+    ["Offset of field: ID3D11RasterizerState2Vtbl::GetDevice"]
+        [::std::mem::offset_of!(ID3D11RasterizerState2Vtbl, GetDevice) - 24usize];
+    ["Offset of field: ID3D11RasterizerState2Vtbl::GetPrivateData"]
+        [::std::mem::offset_of!(ID3D11RasterizerState2Vtbl, GetPrivateData) - 32usize];
+    ["Offset of field: ID3D11RasterizerState2Vtbl::SetPrivateData"]
+        [::std::mem::offset_of!(ID3D11RasterizerState2Vtbl, SetPrivateData) - 40usize];
+    ["Offset of field: ID3D11RasterizerState2Vtbl::SetPrivateDataInterface"]
+        [::std::mem::offset_of!(ID3D11RasterizerState2Vtbl, SetPrivateDataInterface) - 48usize];
+    ["Offset of field: ID3D11RasterizerState2Vtbl::GetDesc"]
+        [::std::mem::offset_of!(ID3D11RasterizerState2Vtbl, GetDesc) - 56usize];
+    ["Offset of field: ID3D11RasterizerState2Vtbl::GetDesc1"]
+        [::std::mem::offset_of!(ID3D11RasterizerState2Vtbl, GetDesc1) - 64usize];
+    ["Offset of field: ID3D11RasterizerState2Vtbl::GetDesc2"]
+        [::std::mem::offset_of!(ID3D11RasterizerState2Vtbl, GetDesc2) - 72usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11RasterizerState2 {
+    pub lpVtbl: *mut ID3D11RasterizerState2Vtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11RasterizerState2"][::std::mem::size_of::<ID3D11RasterizerState2>() - 8usize];
+    ["Alignment of ID3D11RasterizerState2"]
+        [::std::mem::align_of::<ID3D11RasterizerState2>() - 8usize];
+    ["Offset of field: ID3D11RasterizerState2::lpVtbl"]
+        [::std::mem::offset_of!(ID3D11RasterizerState2, lpVtbl) - 0usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct D3D11_TEX2D_SRV1 {
+    pub MostDetailedMip: UINT,
+    pub MipLevels: UINT,
+    pub PlaneSlice: UINT,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_TEX2D_SRV1"][::std::mem::size_of::<D3D11_TEX2D_SRV1>() - 12usize];
+    ["Alignment of D3D11_TEX2D_SRV1"][::std::mem::align_of::<D3D11_TEX2D_SRV1>() - 4usize];
+    ["Offset of field: D3D11_TEX2D_SRV1::MostDetailedMip"]
+        [::std::mem::offset_of!(D3D11_TEX2D_SRV1, MostDetailedMip) - 0usize];
+    ["Offset of field: D3D11_TEX2D_SRV1::MipLevels"]
+        [::std::mem::offset_of!(D3D11_TEX2D_SRV1, MipLevels) - 4usize];
+    ["Offset of field: D3D11_TEX2D_SRV1::PlaneSlice"]
+        [::std::mem::offset_of!(D3D11_TEX2D_SRV1, PlaneSlice) - 8usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct D3D11_TEX2D_ARRAY_SRV1 {
+    pub MostDetailedMip: UINT,
+    pub MipLevels: UINT,
+    pub FirstArraySlice: UINT,
+    pub ArraySize: UINT,
+    pub PlaneSlice: UINT,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_TEX2D_ARRAY_SRV1"][::std::mem::size_of::<D3D11_TEX2D_ARRAY_SRV1>() - 20usize];
+    ["Alignment of D3D11_TEX2D_ARRAY_SRV1"]
+        [::std::mem::align_of::<D3D11_TEX2D_ARRAY_SRV1>() - 4usize];
+    ["Offset of field: D3D11_TEX2D_ARRAY_SRV1::MostDetailedMip"]
+        [::std::mem::offset_of!(D3D11_TEX2D_ARRAY_SRV1, MostDetailedMip) - 0usize];
+    ["Offset of field: D3D11_TEX2D_ARRAY_SRV1::MipLevels"]
+        [::std::mem::offset_of!(D3D11_TEX2D_ARRAY_SRV1, MipLevels) - 4usize];
+    ["Offset of field: D3D11_TEX2D_ARRAY_SRV1::FirstArraySlice"]
+        [::std::mem::offset_of!(D3D11_TEX2D_ARRAY_SRV1, FirstArraySlice) - 8usize];
+    ["Offset of field: D3D11_TEX2D_ARRAY_SRV1::ArraySize"]
+        [::std::mem::offset_of!(D3D11_TEX2D_ARRAY_SRV1, ArraySize) - 12usize];
+    ["Offset of field: D3D11_TEX2D_ARRAY_SRV1::PlaneSlice"]
+        [::std::mem::offset_of!(D3D11_TEX2D_ARRAY_SRV1, PlaneSlice) - 16usize];
+};
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct D3D11_SHADER_RESOURCE_VIEW_DESC1 {
+    pub Format: DXGI_FORMAT,
+    pub ViewDimension: D3D11_SRV_DIMENSION,
+    pub __bindgen_anon_1: D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1,
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1 {
+    pub Buffer: D3D11_BUFFER_SRV,
+    pub Texture1D: D3D11_TEX1D_SRV,
+    pub Texture1DArray: D3D11_TEX1D_ARRAY_SRV,
+    pub Texture2D: D3D11_TEX2D_SRV1,
+    pub Texture2DArray: D3D11_TEX2D_ARRAY_SRV1,
+    pub Texture2DMS: D3D11_TEX2DMS_SRV,
+    pub Texture2DMSArray: D3D11_TEX2DMS_ARRAY_SRV,
+    pub Texture3D: D3D11_TEX3D_SRV,
+    pub TextureCube: D3D11_TEXCUBE_SRV,
+    pub TextureCubeArray: D3D11_TEXCUBE_ARRAY_SRV,
+    pub BufferEx: D3D11_BUFFEREX_SRV,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1"]
+        [::std::mem::size_of::<D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1>() - 20usize];
+    ["Alignment of D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1"]
+        [::std::mem::align_of::<D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1>() - 4usize];
+    ["Offset of field: D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1::Buffer"]
+        [::std::mem::offset_of!(D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1, Buffer) - 0usize];
+    ["Offset of field: D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1::Texture1D"][::std::mem::offset_of!(
+        D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1,
+        Texture1D
+    ) - 0usize];
+    ["Offset of field: D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1::Texture1DArray"][::std::mem::offset_of!(
+        D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1,
+        Texture1DArray
+    ) - 0usize];
+    ["Offset of field: D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1::Texture2D"][::std::mem::offset_of!(
+        D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1,
+        Texture2D
+    ) - 0usize];
+    ["Offset of field: D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1::Texture2DArray"][::std::mem::offset_of!(
+        D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1,
+        Texture2DArray
+    ) - 0usize];
+    ["Offset of field: D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1::Texture2DMS"][::std::mem::offset_of!(
+        D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1,
+        Texture2DMS
+    ) - 0usize];
+    ["Offset of field: D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1::Texture2DMSArray"][::std::mem::offset_of!(
+        D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1,
+        Texture2DMSArray
+    )
+        - 0usize];
+    ["Offset of field: D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1::Texture3D"][::std::mem::offset_of!(
+        D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1,
+        Texture3D
+    ) - 0usize];
+    ["Offset of field: D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1::TextureCube"][::std::mem::offset_of!(
+        D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1,
+        TextureCube
+    ) - 0usize];
+    ["Offset of field: D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1::TextureCubeArray"][::std::mem::offset_of!(
+        D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1,
+        TextureCubeArray
+    )
+        - 0usize];
+    ["Offset of field: D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1::BufferEx"]
+        [::std::mem::offset_of!(D3D11_SHADER_RESOURCE_VIEW_DESC1__bindgen_ty_1, BufferEx) - 0usize];
+};
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_SHADER_RESOURCE_VIEW_DESC1"]
+        [::std::mem::size_of::<D3D11_SHADER_RESOURCE_VIEW_DESC1>() - 28usize];
+    ["Alignment of D3D11_SHADER_RESOURCE_VIEW_DESC1"]
+        [::std::mem::align_of::<D3D11_SHADER_RESOURCE_VIEW_DESC1>() - 4usize];
+    ["Offset of field: D3D11_SHADER_RESOURCE_VIEW_DESC1::Format"]
+        [::std::mem::offset_of!(D3D11_SHADER_RESOURCE_VIEW_DESC1, Format) - 0usize];
+    ["Offset of field: D3D11_SHADER_RESOURCE_VIEW_DESC1::ViewDimension"]
+        [::std::mem::offset_of!(D3D11_SHADER_RESOURCE_VIEW_DESC1, ViewDimension) - 4usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11ShaderResourceView1Vtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11ShaderResourceView1,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11ShaderResourceView1) -> ULONG>,
+    pub Release:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11ShaderResourceView1) -> ULONG>,
+    pub GetDevice: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11ShaderResourceView1,
+            ppDevice: *mut *mut ID3D11Device,
+        ),
+    >,
+    pub GetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11ShaderResourceView1,
+            guid: *const GUID,
+            pDataSize: *mut UINT,
+            pData: *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11ShaderResourceView1,
+            guid: *const GUID,
+            DataSize: UINT,
+            pData: *const ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateDataInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11ShaderResourceView1,
+            guid: *const GUID,
+            pData: *const IUnknown,
+        ) -> HRESULT,
+    >,
+    pub GetResource: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11ShaderResourceView1,
+            ppResource: *mut *mut ID3D11Resource,
+        ),
+    >,
+    pub GetDesc: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11ShaderResourceView1,
+            pDesc: *mut D3D11_SHADER_RESOURCE_VIEW_DESC,
+        ),
+    >,
+    pub GetDesc1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11ShaderResourceView1,
+            pDesc1: *mut D3D11_SHADER_RESOURCE_VIEW_DESC1,
+        ),
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11ShaderResourceView1Vtbl"]
+        [::std::mem::size_of::<ID3D11ShaderResourceView1Vtbl>() - 80usize];
+    ["Alignment of ID3D11ShaderResourceView1Vtbl"]
+        [::std::mem::align_of::<ID3D11ShaderResourceView1Vtbl>() - 8usize];
+    ["Offset of field: ID3D11ShaderResourceView1Vtbl::QueryInterface"]
+        [::std::mem::offset_of!(ID3D11ShaderResourceView1Vtbl, QueryInterface) - 0usize];
+    ["Offset of field: ID3D11ShaderResourceView1Vtbl::AddRef"]
+        [::std::mem::offset_of!(ID3D11ShaderResourceView1Vtbl, AddRef) - 8usize];
+    ["Offset of field: ID3D11ShaderResourceView1Vtbl::Release"]
+        [::std::mem::offset_of!(ID3D11ShaderResourceView1Vtbl, Release) - 16usize];
+    ["Offset of field: ID3D11ShaderResourceView1Vtbl::GetDevice"]
+        [::std::mem::offset_of!(ID3D11ShaderResourceView1Vtbl, GetDevice) - 24usize];
+    ["Offset of field: ID3D11ShaderResourceView1Vtbl::GetPrivateData"]
+        [::std::mem::offset_of!(ID3D11ShaderResourceView1Vtbl, GetPrivateData) - 32usize];
+    ["Offset of field: ID3D11ShaderResourceView1Vtbl::SetPrivateData"]
+        [::std::mem::offset_of!(ID3D11ShaderResourceView1Vtbl, SetPrivateData) - 40usize];
+    ["Offset of field: ID3D11ShaderResourceView1Vtbl::SetPrivateDataInterface"]
+        [::std::mem::offset_of!(ID3D11ShaderResourceView1Vtbl, SetPrivateDataInterface) - 48usize];
+    ["Offset of field: ID3D11ShaderResourceView1Vtbl::GetResource"]
+        [::std::mem::offset_of!(ID3D11ShaderResourceView1Vtbl, GetResource) - 56usize];
+    ["Offset of field: ID3D11ShaderResourceView1Vtbl::GetDesc"]
+        [::std::mem::offset_of!(ID3D11ShaderResourceView1Vtbl, GetDesc) - 64usize];
+    ["Offset of field: ID3D11ShaderResourceView1Vtbl::GetDesc1"]
+        [::std::mem::offset_of!(ID3D11ShaderResourceView1Vtbl, GetDesc1) - 72usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11ShaderResourceView1 {
+    pub lpVtbl: *mut ID3D11ShaderResourceView1Vtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11ShaderResourceView1"]
+        [::std::mem::size_of::<ID3D11ShaderResourceView1>() - 8usize];
+    ["Alignment of ID3D11ShaderResourceView1"]
+        [::std::mem::align_of::<ID3D11ShaderResourceView1>() - 8usize];
+    ["Offset of field: ID3D11ShaderResourceView1::lpVtbl"]
+        [::std::mem::offset_of!(ID3D11ShaderResourceView1, lpVtbl) - 0usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct D3D11_TEX2D_RTV1 {
+    pub MipSlice: UINT,
+    pub PlaneSlice: UINT,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_TEX2D_RTV1"][::std::mem::size_of::<D3D11_TEX2D_RTV1>() - 8usize];
+    ["Alignment of D3D11_TEX2D_RTV1"][::std::mem::align_of::<D3D11_TEX2D_RTV1>() - 4usize];
+    ["Offset of field: D3D11_TEX2D_RTV1::MipSlice"]
+        [::std::mem::offset_of!(D3D11_TEX2D_RTV1, MipSlice) - 0usize];
+    ["Offset of field: D3D11_TEX2D_RTV1::PlaneSlice"]
+        [::std::mem::offset_of!(D3D11_TEX2D_RTV1, PlaneSlice) - 4usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct D3D11_TEX2D_ARRAY_RTV1 {
+    pub MipSlice: UINT,
+    pub FirstArraySlice: UINT,
+    pub ArraySize: UINT,
+    pub PlaneSlice: UINT,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_TEX2D_ARRAY_RTV1"][::std::mem::size_of::<D3D11_TEX2D_ARRAY_RTV1>() - 16usize];
+    ["Alignment of D3D11_TEX2D_ARRAY_RTV1"]
+        [::std::mem::align_of::<D3D11_TEX2D_ARRAY_RTV1>() - 4usize];
+    ["Offset of field: D3D11_TEX2D_ARRAY_RTV1::MipSlice"]
+        [::std::mem::offset_of!(D3D11_TEX2D_ARRAY_RTV1, MipSlice) - 0usize];
+    ["Offset of field: D3D11_TEX2D_ARRAY_RTV1::FirstArraySlice"]
+        [::std::mem::offset_of!(D3D11_TEX2D_ARRAY_RTV1, FirstArraySlice) - 4usize];
+    ["Offset of field: D3D11_TEX2D_ARRAY_RTV1::ArraySize"]
+        [::std::mem::offset_of!(D3D11_TEX2D_ARRAY_RTV1, ArraySize) - 8usize];
+    ["Offset of field: D3D11_TEX2D_ARRAY_RTV1::PlaneSlice"]
+        [::std::mem::offset_of!(D3D11_TEX2D_ARRAY_RTV1, PlaneSlice) - 12usize];
+};
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct D3D11_RENDER_TARGET_VIEW_DESC1 {
+    pub Format: DXGI_FORMAT,
+    pub ViewDimension: D3D11_RTV_DIMENSION,
+    pub __bindgen_anon_1: D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1,
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1 {
+    pub Buffer: D3D11_BUFFER_RTV,
+    pub Texture1D: D3D11_TEX1D_RTV,
+    pub Texture1DArray: D3D11_TEX1D_ARRAY_RTV,
+    pub Texture2D: D3D11_TEX2D_RTV1,
+    pub Texture2DArray: D3D11_TEX2D_ARRAY_RTV1,
+    pub Texture2DMS: D3D11_TEX2DMS_RTV,
+    pub Texture2DMSArray: D3D11_TEX2DMS_ARRAY_RTV,
+    pub Texture3D: D3D11_TEX3D_RTV,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1"]
+        [::std::mem::size_of::<D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1>() - 16usize];
+    ["Alignment of D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1"]
+        [::std::mem::align_of::<D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1>() - 4usize];
+    ["Offset of field: D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1::Buffer"]
+        [::std::mem::offset_of!(D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1, Buffer) - 0usize];
+    ["Offset of field: D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1::Texture1D"]
+        [::std::mem::offset_of!(D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1, Texture1D) - 0usize];
+    ["Offset of field: D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1::Texture1DArray"][::std::mem::offset_of!(
+        D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1,
+        Texture1DArray
+    ) - 0usize];
+    ["Offset of field: D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1::Texture2D"]
+        [::std::mem::offset_of!(D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1, Texture2D) - 0usize];
+    ["Offset of field: D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1::Texture2DArray"][::std::mem::offset_of!(
+        D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1,
+        Texture2DArray
+    ) - 0usize];
+    ["Offset of field: D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1::Texture2DMS"][::std::mem::offset_of!(
+        D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1,
+        Texture2DMS
+    ) - 0usize];
+    ["Offset of field: D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1::Texture2DMSArray"][::std::mem::offset_of!(
+        D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1,
+        Texture2DMSArray
+    ) - 0usize];
+    ["Offset of field: D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1::Texture3D"]
+        [::std::mem::offset_of!(D3D11_RENDER_TARGET_VIEW_DESC1__bindgen_ty_1, Texture3D) - 0usize];
+};
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_RENDER_TARGET_VIEW_DESC1"]
+        [::std::mem::size_of::<D3D11_RENDER_TARGET_VIEW_DESC1>() - 24usize];
+    ["Alignment of D3D11_RENDER_TARGET_VIEW_DESC1"]
+        [::std::mem::align_of::<D3D11_RENDER_TARGET_VIEW_DESC1>() - 4usize];
+    ["Offset of field: D3D11_RENDER_TARGET_VIEW_DESC1::Format"]
+        [::std::mem::offset_of!(D3D11_RENDER_TARGET_VIEW_DESC1, Format) - 0usize];
+    ["Offset of field: D3D11_RENDER_TARGET_VIEW_DESC1::ViewDimension"]
+        [::std::mem::offset_of!(D3D11_RENDER_TARGET_VIEW_DESC1, ViewDimension) - 4usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11RenderTargetView1Vtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11RenderTargetView1,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11RenderTargetView1) -> ULONG>,
+    pub Release:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11RenderTargetView1) -> ULONG>,
+    pub GetDevice: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11RenderTargetView1, ppDevice: *mut *mut ID3D11Device),
+    >,
+    pub GetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11RenderTargetView1,
+            guid: *const GUID,
+            pDataSize: *mut UINT,
+            pData: *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11RenderTargetView1,
+            guid: *const GUID,
+            DataSize: UINT,
+            pData: *const ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateDataInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11RenderTargetView1,
+            guid: *const GUID,
+            pData: *const IUnknown,
+        ) -> HRESULT,
+    >,
+    pub GetResource: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11RenderTargetView1,
+            ppResource: *mut *mut ID3D11Resource,
+        ),
+    >,
+    pub GetDesc: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11RenderTargetView1,
+            pDesc: *mut D3D11_RENDER_TARGET_VIEW_DESC,
+        ),
+    >,
+    pub GetDesc1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11RenderTargetView1,
+            pDesc1: *mut D3D11_RENDER_TARGET_VIEW_DESC1,
+        ),
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11RenderTargetView1Vtbl"]
+        [::std::mem::size_of::<ID3D11RenderTargetView1Vtbl>() - 80usize];
+    ["Alignment of ID3D11RenderTargetView1Vtbl"]
+        [::std::mem::align_of::<ID3D11RenderTargetView1Vtbl>() - 8usize];
+    ["Offset of field: ID3D11RenderTargetView1Vtbl::QueryInterface"]
+        [::std::mem::offset_of!(ID3D11RenderTargetView1Vtbl, QueryInterface) - 0usize];
+    ["Offset of field: ID3D11RenderTargetView1Vtbl::AddRef"]
+        [::std::mem::offset_of!(ID3D11RenderTargetView1Vtbl, AddRef) - 8usize];
+    ["Offset of field: ID3D11RenderTargetView1Vtbl::Release"]
+        [::std::mem::offset_of!(ID3D11RenderTargetView1Vtbl, Release) - 16usize];
+    ["Offset of field: ID3D11RenderTargetView1Vtbl::GetDevice"]
+        [::std::mem::offset_of!(ID3D11RenderTargetView1Vtbl, GetDevice) - 24usize];
+    ["Offset of field: ID3D11RenderTargetView1Vtbl::GetPrivateData"]
+        [::std::mem::offset_of!(ID3D11RenderTargetView1Vtbl, GetPrivateData) - 32usize];
+    ["Offset of field: ID3D11RenderTargetView1Vtbl::SetPrivateData"]
+        [::std::mem::offset_of!(ID3D11RenderTargetView1Vtbl, SetPrivateData) - 40usize];
+    ["Offset of field: ID3D11RenderTargetView1Vtbl::SetPrivateDataInterface"]
+        [::std::mem::offset_of!(ID3D11RenderTargetView1Vtbl, SetPrivateDataInterface) - 48usize];
+    ["Offset of field: ID3D11RenderTargetView1Vtbl::GetResource"]
+        [::std::mem::offset_of!(ID3D11RenderTargetView1Vtbl, GetResource) - 56usize];
+    ["Offset of field: ID3D11RenderTargetView1Vtbl::GetDesc"]
+        [::std::mem::offset_of!(ID3D11RenderTargetView1Vtbl, GetDesc) - 64usize];
+    ["Offset of field: ID3D11RenderTargetView1Vtbl::GetDesc1"]
+        [::std::mem::offset_of!(ID3D11RenderTargetView1Vtbl, GetDesc1) - 72usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11RenderTargetView1 {
+    pub lpVtbl: *mut ID3D11RenderTargetView1Vtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11RenderTargetView1"][::std::mem::size_of::<ID3D11RenderTargetView1>() - 8usize];
+    ["Alignment of ID3D11RenderTargetView1"]
+        [::std::mem::align_of::<ID3D11RenderTargetView1>() - 8usize];
+    ["Offset of field: ID3D11RenderTargetView1::lpVtbl"]
+        [::std::mem::offset_of!(ID3D11RenderTargetView1, lpVtbl) - 0usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct D3D11_TEX2D_UAV1 {
+    pub MipSlice: UINT,
+    pub PlaneSlice: UINT,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_TEX2D_UAV1"][::std::mem::size_of::<D3D11_TEX2D_UAV1>() - 8usize];
+    ["Alignment of D3D11_TEX2D_UAV1"][::std::mem::align_of::<D3D11_TEX2D_UAV1>() - 4usize];
+    ["Offset of field: D3D11_TEX2D_UAV1::MipSlice"]
+        [::std::mem::offset_of!(D3D11_TEX2D_UAV1, MipSlice) - 0usize];
+    ["Offset of field: D3D11_TEX2D_UAV1::PlaneSlice"]
+        [::std::mem::offset_of!(D3D11_TEX2D_UAV1, PlaneSlice) - 4usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct D3D11_TEX2D_ARRAY_UAV1 {
+    pub MipSlice: UINT,
+    pub FirstArraySlice: UINT,
+    pub ArraySize: UINT,
+    pub PlaneSlice: UINT,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_TEX2D_ARRAY_UAV1"][::std::mem::size_of::<D3D11_TEX2D_ARRAY_UAV1>() - 16usize];
+    ["Alignment of D3D11_TEX2D_ARRAY_UAV1"]
+        [::std::mem::align_of::<D3D11_TEX2D_ARRAY_UAV1>() - 4usize];
+    ["Offset of field: D3D11_TEX2D_ARRAY_UAV1::MipSlice"]
+        [::std::mem::offset_of!(D3D11_TEX2D_ARRAY_UAV1, MipSlice) - 0usize];
+    ["Offset of field: D3D11_TEX2D_ARRAY_UAV1::FirstArraySlice"]
+        [::std::mem::offset_of!(D3D11_TEX2D_ARRAY_UAV1, FirstArraySlice) - 4usize];
+    ["Offset of field: D3D11_TEX2D_ARRAY_UAV1::ArraySize"]
+        [::std::mem::offset_of!(D3D11_TEX2D_ARRAY_UAV1, ArraySize) - 8usize];
+    ["Offset of field: D3D11_TEX2D_ARRAY_UAV1::PlaneSlice"]
+        [::std::mem::offset_of!(D3D11_TEX2D_ARRAY_UAV1, PlaneSlice) - 12usize];
+};
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct D3D11_UNORDERED_ACCESS_VIEW_DESC1 {
+    pub Format: DXGI_FORMAT,
+    pub ViewDimension: D3D11_UAV_DIMENSION,
+    pub __bindgen_anon_1: D3D11_UNORDERED_ACCESS_VIEW_DESC1__bindgen_ty_1,
+}
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub union D3D11_UNORDERED_ACCESS_VIEW_DESC1__bindgen_ty_1 {
+    pub Buffer: D3D11_BUFFER_UAV,
+    pub Texture1D: D3D11_TEX1D_UAV,
+    pub Texture1DArray: D3D11_TEX1D_ARRAY_UAV,
+    pub Texture2D: D3D11_TEX2D_UAV1,
+    pub Texture2DArray: D3D11_TEX2D_ARRAY_UAV1,
+    pub Texture3D: D3D11_TEX3D_UAV,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_UNORDERED_ACCESS_VIEW_DESC1__bindgen_ty_1"]
+        [::std::mem::size_of::<D3D11_UNORDERED_ACCESS_VIEW_DESC1__bindgen_ty_1>() - 16usize];
+    ["Alignment of D3D11_UNORDERED_ACCESS_VIEW_DESC1__bindgen_ty_1"]
+        [::std::mem::align_of::<D3D11_UNORDERED_ACCESS_VIEW_DESC1__bindgen_ty_1>() - 4usize];
+    ["Offset of field: D3D11_UNORDERED_ACCESS_VIEW_DESC1__bindgen_ty_1::Buffer"]
+        [::std::mem::offset_of!(D3D11_UNORDERED_ACCESS_VIEW_DESC1__bindgen_ty_1, Buffer) - 0usize];
+    ["Offset of field: D3D11_UNORDERED_ACCESS_VIEW_DESC1__bindgen_ty_1::Texture1D"][::std::mem::offset_of!(
+        D3D11_UNORDERED_ACCESS_VIEW_DESC1__bindgen_ty_1,
+        Texture1D
+    ) - 0usize];
+    ["Offset of field: D3D11_UNORDERED_ACCESS_VIEW_DESC1__bindgen_ty_1::Texture1DArray"][::std::mem::offset_of!(
+        D3D11_UNORDERED_ACCESS_VIEW_DESC1__bindgen_ty_1,
+        Texture1DArray
+    )
+        - 0usize];
+    ["Offset of field: D3D11_UNORDERED_ACCESS_VIEW_DESC1__bindgen_ty_1::Texture2D"][::std::mem::offset_of!(
+        D3D11_UNORDERED_ACCESS_VIEW_DESC1__bindgen_ty_1,
+        Texture2D
+    ) - 0usize];
+    ["Offset of field: D3D11_UNORDERED_ACCESS_VIEW_DESC1__bindgen_ty_1::Texture2DArray"][::std::mem::offset_of!(
+        D3D11_UNORDERED_ACCESS_VIEW_DESC1__bindgen_ty_1,
+        Texture2DArray
+    )
+        - 0usize];
+    ["Offset of field: D3D11_UNORDERED_ACCESS_VIEW_DESC1__bindgen_ty_1::Texture3D"][::std::mem::offset_of!(
+        D3D11_UNORDERED_ACCESS_VIEW_DESC1__bindgen_ty_1,
+        Texture3D
+    ) - 0usize];
+};
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_UNORDERED_ACCESS_VIEW_DESC1"]
+        [::std::mem::size_of::<D3D11_UNORDERED_ACCESS_VIEW_DESC1>() - 24usize];
+    ["Alignment of D3D11_UNORDERED_ACCESS_VIEW_DESC1"]
+        [::std::mem::align_of::<D3D11_UNORDERED_ACCESS_VIEW_DESC1>() - 4usize];
+    ["Offset of field: D3D11_UNORDERED_ACCESS_VIEW_DESC1::Format"]
+        [::std::mem::offset_of!(D3D11_UNORDERED_ACCESS_VIEW_DESC1, Format) - 0usize];
+    ["Offset of field: D3D11_UNORDERED_ACCESS_VIEW_DESC1::ViewDimension"]
+        [::std::mem::offset_of!(D3D11_UNORDERED_ACCESS_VIEW_DESC1, ViewDimension) - 4usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11UnorderedAccessView1Vtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11UnorderedAccessView1,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11UnorderedAccessView1) -> ULONG>,
+    pub Release:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11UnorderedAccessView1) -> ULONG>,
+    pub GetDevice: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11UnorderedAccessView1,
+            ppDevice: *mut *mut ID3D11Device,
+        ),
+    >,
+    pub GetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11UnorderedAccessView1,
+            guid: *const GUID,
+            pDataSize: *mut UINT,
+            pData: *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11UnorderedAccessView1,
+            guid: *const GUID,
+            DataSize: UINT,
+            pData: *const ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateDataInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11UnorderedAccessView1,
+            guid: *const GUID,
+            pData: *const IUnknown,
+        ) -> HRESULT,
+    >,
+    pub GetResource: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11UnorderedAccessView1,
+            ppResource: *mut *mut ID3D11Resource,
+        ),
+    >,
+    pub GetDesc: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11UnorderedAccessView1,
+            pDesc: *mut D3D11_UNORDERED_ACCESS_VIEW_DESC,
+        ),
+    >,
+    pub GetDesc1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11UnorderedAccessView1,
+            pDesc1: *mut D3D11_UNORDERED_ACCESS_VIEW_DESC1,
+        ),
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11UnorderedAccessView1Vtbl"]
+        [::std::mem::size_of::<ID3D11UnorderedAccessView1Vtbl>() - 80usize];
+    ["Alignment of ID3D11UnorderedAccessView1Vtbl"]
+        [::std::mem::align_of::<ID3D11UnorderedAccessView1Vtbl>() - 8usize];
+    ["Offset of field: ID3D11UnorderedAccessView1Vtbl::QueryInterface"]
+        [::std::mem::offset_of!(ID3D11UnorderedAccessView1Vtbl, QueryInterface) - 0usize];
+    ["Offset of field: ID3D11UnorderedAccessView1Vtbl::AddRef"]
+        [::std::mem::offset_of!(ID3D11UnorderedAccessView1Vtbl, AddRef) - 8usize];
+    ["Offset of field: ID3D11UnorderedAccessView1Vtbl::Release"]
+        [::std::mem::offset_of!(ID3D11UnorderedAccessView1Vtbl, Release) - 16usize];
+    ["Offset of field: ID3D11UnorderedAccessView1Vtbl::GetDevice"]
+        [::std::mem::offset_of!(ID3D11UnorderedAccessView1Vtbl, GetDevice) - 24usize];
+    ["Offset of field: ID3D11UnorderedAccessView1Vtbl::GetPrivateData"]
+        [::std::mem::offset_of!(ID3D11UnorderedAccessView1Vtbl, GetPrivateData) - 32usize];
+    ["Offset of field: ID3D11UnorderedAccessView1Vtbl::SetPrivateData"]
+        [::std::mem::offset_of!(ID3D11UnorderedAccessView1Vtbl, SetPrivateData) - 40usize];
+    ["Offset of field: ID3D11UnorderedAccessView1Vtbl::SetPrivateDataInterface"]
+        [::std::mem::offset_of!(ID3D11UnorderedAccessView1Vtbl, SetPrivateDataInterface) - 48usize];
+    ["Offset of field: ID3D11UnorderedAccessView1Vtbl::GetResource"]
+        [::std::mem::offset_of!(ID3D11UnorderedAccessView1Vtbl, GetResource) - 56usize];
+    ["Offset of field: ID3D11UnorderedAccessView1Vtbl::GetDesc"]
+        [::std::mem::offset_of!(ID3D11UnorderedAccessView1Vtbl, GetDesc) - 64usize];
+    ["Offset of field: ID3D11UnorderedAccessView1Vtbl::GetDesc1"]
+        [::std::mem::offset_of!(ID3D11UnorderedAccessView1Vtbl, GetDesc1) - 72usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11UnorderedAccessView1 {
+    pub lpVtbl: *mut ID3D11UnorderedAccessView1Vtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11UnorderedAccessView1"]
+        [::std::mem::size_of::<ID3D11UnorderedAccessView1>() - 8usize];
+    ["Alignment of ID3D11UnorderedAccessView1"]
+        [::std::mem::align_of::<ID3D11UnorderedAccessView1>() - 8usize];
+    ["Offset of field: ID3D11UnorderedAccessView1::lpVtbl"]
+        [::std::mem::offset_of!(ID3D11UnorderedAccessView1, lpVtbl) - 0usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct D3D11_QUERY_DESC1 {
+    pub Query: D3D11_QUERY,
+    pub MiscFlags: UINT,
+    pub ContextType: D3D11_CONTEXT_TYPE,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of D3D11_QUERY_DESC1"][::std::mem::size_of::<D3D11_QUERY_DESC1>() - 12usize];
+    ["Alignment of D3D11_QUERY_DESC1"][::std::mem::align_of::<D3D11_QUERY_DESC1>() - 4usize];
+    ["Offset of field: D3D11_QUERY_DESC1::Query"]
+        [::std::mem::offset_of!(D3D11_QUERY_DESC1, Query) - 0usize];
+    ["Offset of field: D3D11_QUERY_DESC1::MiscFlags"]
+        [::std::mem::offset_of!(D3D11_QUERY_DESC1, MiscFlags) - 4usize];
+    ["Offset of field: D3D11_QUERY_DESC1::ContextType"]
+        [::std::mem::offset_of!(D3D11_QUERY_DESC1, ContextType) - 8usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11Query1Vtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Query1,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Query1) -> ULONG>,
+    pub Release: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Query1) -> ULONG>,
+    pub GetDevice: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11Query1, ppDevice: *mut *mut ID3D11Device),
+    >,
+    pub GetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Query1,
+            guid: *const GUID,
+            pDataSize: *mut UINT,
+            pData: *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Query1,
+            guid: *const GUID,
+            DataSize: UINT,
+            pData: *const ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateDataInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Query1,
+            guid: *const GUID,
+            pData: *const IUnknown,
+        ) -> HRESULT,
+    >,
+    pub GetDataSize: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Query1) -> UINT>,
+    pub GetDesc: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11Query1, pDesc: *mut D3D11_QUERY_DESC),
+    >,
+    pub GetDesc1: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11Query1, pDesc1: *mut D3D11_QUERY_DESC1),
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11Query1Vtbl"][::std::mem::size_of::<ID3D11Query1Vtbl>() - 80usize];
+    ["Alignment of ID3D11Query1Vtbl"][::std::mem::align_of::<ID3D11Query1Vtbl>() - 8usize];
+    ["Offset of field: ID3D11Query1Vtbl::QueryInterface"]
+        [::std::mem::offset_of!(ID3D11Query1Vtbl, QueryInterface) - 0usize];
+    ["Offset of field: ID3D11Query1Vtbl::AddRef"]
+        [::std::mem::offset_of!(ID3D11Query1Vtbl, AddRef) - 8usize];
+    ["Offset of field: ID3D11Query1Vtbl::Release"]
+        [::std::mem::offset_of!(ID3D11Query1Vtbl, Release) - 16usize];
+    ["Offset of field: ID3D11Query1Vtbl::GetDevice"]
+        [::std::mem::offset_of!(ID3D11Query1Vtbl, GetDevice) - 24usize];
+    ["Offset of field: ID3D11Query1Vtbl::GetPrivateData"]
+        [::std::mem::offset_of!(ID3D11Query1Vtbl, GetPrivateData) - 32usize];
+    ["Offset of field: ID3D11Query1Vtbl::SetPrivateData"]
+        [::std::mem::offset_of!(ID3D11Query1Vtbl, SetPrivateData) - 40usize];
+    ["Offset of field: ID3D11Query1Vtbl::SetPrivateDataInterface"]
+        [::std::mem::offset_of!(ID3D11Query1Vtbl, SetPrivateDataInterface) - 48usize];
+    ["Offset of field: ID3D11Query1Vtbl::GetDataSize"]
+        [::std::mem::offset_of!(ID3D11Query1Vtbl, GetDataSize) - 56usize];
+    ["Offset of field: ID3D11Query1Vtbl::GetDesc"]
+        [::std::mem::offset_of!(ID3D11Query1Vtbl, GetDesc) - 64usize];
+    ["Offset of field: ID3D11Query1Vtbl::GetDesc1"]
+        [::std::mem::offset_of!(ID3D11Query1Vtbl, GetDesc1) - 72usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11Query1 {
+    pub lpVtbl: *mut ID3D11Query1Vtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11Query1"][::std::mem::size_of::<ID3D11Query1>() - 8usize];
+    ["Alignment of ID3D11Query1"][::std::mem::align_of::<ID3D11Query1>() - 8usize];
+    ["Offset of field: ID3D11Query1::lpVtbl"]
+        [::std::mem::offset_of!(ID3D11Query1, lpVtbl) - 0usize];
+};
+pub const D3D11_FENCE_FLAG_NONE: D3D11_FENCE_FLAG = 0;
+pub const D3D11_FENCE_FLAG_SHARED: D3D11_FENCE_FLAG = 2;
+pub const D3D11_FENCE_FLAG_SHARED_CROSS_ADAPTER: D3D11_FENCE_FLAG = 4;
+pub const D3D11_FENCE_FLAG_NON_MONITORED: D3D11_FENCE_FLAG = 8;
+pub type D3D11_FENCE_FLAG = ::std::os::raw::c_int;
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11DeviceContext3Vtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext3) -> ULONG>,
+    pub Release:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext3) -> ULONG>,
+    pub GetDevice: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext3, ppDevice: *mut *mut ID3D11Device),
+    >,
+    pub GetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            guid: *const GUID,
+            pDataSize: *mut UINT,
+            pData: *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            guid: *const GUID,
+            DataSize: UINT,
+            pData: *const ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateDataInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            guid: *const GUID,
+            pData: *const IUnknown,
+        ) -> HRESULT,
+    >,
+    pub VSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub PSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub PSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pPixelShader: *mut ID3D11PixelShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub PSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub VSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pVertexShader: *mut ID3D11VertexShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub DrawIndexed: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            IndexCount: UINT,
+            StartIndexLocation: UINT,
+            BaseVertexLocation: INT,
+        ),
+    >,
+    pub Draw: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            VertexCount: UINT,
+            StartVertexLocation: UINT,
+        ),
+    >,
+    pub Map: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pResource: *mut ID3D11Resource,
+            Subresource: UINT,
+            MapType: D3D11_MAP,
+            MapFlags: UINT,
+            pMappedResource: *mut D3D11_MAPPED_SUBRESOURCE,
+        ) -> HRESULT,
+    >,
+    pub Unmap: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pResource: *mut ID3D11Resource,
+            Subresource: UINT,
+        ),
+    >,
+    pub PSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub IASetInputLayout: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext3, pInputLayout: *mut ID3D11InputLayout),
+    >,
+    pub IASetVertexBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppVertexBuffers: *const *mut ID3D11Buffer,
+            pStrides: *const UINT,
+            pOffsets: *const UINT,
+        ),
+    >,
+    pub IASetIndexBuffer: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pIndexBuffer: *mut ID3D11Buffer,
+            Format: DXGI_FORMAT,
+            Offset: UINT,
+        ),
+    >,
+    pub DrawIndexedInstanced: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            IndexCountPerInstance: UINT,
+            InstanceCount: UINT,
+            StartIndexLocation: UINT,
+            BaseVertexLocation: INT,
+            StartInstanceLocation: UINT,
+        ),
+    >,
+    pub DrawInstanced: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            VertexCountPerInstance: UINT,
+            InstanceCount: UINT,
+            StartVertexLocation: UINT,
+            StartInstanceLocation: UINT,
+        ),
+    >,
+    pub GSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub GSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pShader: *mut ID3D11GeometryShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub IASetPrimitiveTopology: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext3, Topology: D3D11_PRIMITIVE_TOPOLOGY),
+    >,
+    pub VSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub VSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub Begin: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext3, pAsync: *mut ID3D11Asynchronous),
+    >,
+    pub End: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext3, pAsync: *mut ID3D11Asynchronous),
+    >,
+    pub GetData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pAsync: *mut ID3D11Asynchronous,
+            pData: *mut ::std::os::raw::c_void,
+            DataSize: UINT,
+            GetDataFlags: UINT,
+        ) -> HRESULT,
+    >,
+    pub SetPredication: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pPredicate: *mut ID3D11Predicate,
+            PredicateValue: BOOL,
+        ),
+    >,
+    pub GSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub GSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub OMSetRenderTargets: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            NumViews: UINT,
+            ppRenderTargetViews: *const *mut ID3D11RenderTargetView,
+            pDepthStencilView: *mut ID3D11DepthStencilView,
+        ),
+    >,
+    pub OMSetRenderTargetsAndUnorderedAccessViews: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            NumRTVs: UINT,
+            ppRenderTargetViews: *const *mut ID3D11RenderTargetView,
+            pDepthStencilView: *mut ID3D11DepthStencilView,
+            UAVStartSlot: UINT,
+            NumUAVs: UINT,
+            ppUnorderedAccessViews: *const *mut ID3D11UnorderedAccessView,
+            pUAVInitialCounts: *const UINT,
+        ),
+    >,
+    pub OMSetBlendState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pBlendState: *mut ID3D11BlendState,
+            BlendFactor: *const FLOAT,
+            SampleMask: UINT,
+        ),
+    >,
+    pub OMSetDepthStencilState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pDepthStencilState: *mut ID3D11DepthStencilState,
+            StencilRef: UINT,
+        ),
+    >,
+    pub SOSetTargets: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            NumBuffers: UINT,
+            ppSOTargets: *const *mut ID3D11Buffer,
+            pOffsets: *const UINT,
+        ),
+    >,
+    pub DrawAuto: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext3)>,
+    pub DrawIndexedInstancedIndirect: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pBufferForArgs: *mut ID3D11Buffer,
+            AlignedByteOffsetForArgs: UINT,
+        ),
+    >,
+    pub DrawInstancedIndirect: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pBufferForArgs: *mut ID3D11Buffer,
+            AlignedByteOffsetForArgs: UINT,
+        ),
+    >,
+    pub Dispatch: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            ThreadGroupCountX: UINT,
+            ThreadGroupCountY: UINT,
+            ThreadGroupCountZ: UINT,
+        ),
+    >,
+    pub DispatchIndirect: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pBufferForArgs: *mut ID3D11Buffer,
+            AlignedByteOffsetForArgs: UINT,
+        ),
+    >,
+    pub RSSetState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pRasterizerState: *mut ID3D11RasterizerState,
+        ),
+    >,
+    pub RSSetViewports: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            NumViewports: UINT,
+            pViewports: *const D3D11_VIEWPORT,
+        ),
+    >,
+    pub RSSetScissorRects: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            NumRects: UINT,
+            pRects: *const D3D11_RECT,
+        ),
+    >,
+    pub CopySubresourceRegion: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pDstResource: *mut ID3D11Resource,
+            DstSubresource: UINT,
+            DstX: UINT,
+            DstY: UINT,
+            DstZ: UINT,
+            pSrcResource: *mut ID3D11Resource,
+            SrcSubresource: UINT,
+            pSrcBox: *const D3D11_BOX,
+        ),
+    >,
+    pub CopyResource: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pDstResource: *mut ID3D11Resource,
+            pSrcResource: *mut ID3D11Resource,
+        ),
+    >,
+    pub UpdateSubresource: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pDstResource: *mut ID3D11Resource,
+            DstSubresource: UINT,
+            pDstBox: *const D3D11_BOX,
+            pSrcData: *const ::std::os::raw::c_void,
+            SrcRowPitch: UINT,
+            SrcDepthPitch: UINT,
+        ),
+    >,
+    pub CopyStructureCount: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pDstBuffer: *mut ID3D11Buffer,
+            DstAlignedByteOffset: UINT,
+            pSrcView: *mut ID3D11UnorderedAccessView,
+        ),
+    >,
+    pub ClearRenderTargetView: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pRenderTargetView: *mut ID3D11RenderTargetView,
+            ColorRGBA: *const FLOAT,
+        ),
+    >,
+    pub ClearUnorderedAccessViewUint: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pUnorderedAccessView: *mut ID3D11UnorderedAccessView,
+            Values: *const UINT,
+        ),
+    >,
+    pub ClearUnorderedAccessViewFloat: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pUnorderedAccessView: *mut ID3D11UnorderedAccessView,
+            Values: *const FLOAT,
+        ),
+    >,
+    pub ClearDepthStencilView: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pDepthStencilView: *mut ID3D11DepthStencilView,
+            ClearFlags: UINT,
+            Depth: FLOAT,
+            Stencil: UINT8,
+        ),
+    >,
+    pub GenerateMips: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pShaderResourceView: *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub SetResourceMinLOD: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pResource: *mut ID3D11Resource,
+            MinLOD: FLOAT,
+        ),
+    >,
+    pub GetResourceMinLOD: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pResource: *mut ID3D11Resource,
+        ) -> FLOAT,
+    >,
+    pub ResolveSubresource: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pDstResource: *mut ID3D11Resource,
+            DstSubresource: UINT,
+            pSrcResource: *mut ID3D11Resource,
+            SrcSubresource: UINT,
+            Format: DXGI_FORMAT,
+        ),
+    >,
+    pub ExecuteCommandList: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pCommandList: *mut ID3D11CommandList,
+            RestoreContextState: BOOL,
+        ),
+    >,
+    pub HSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub HSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pHullShader: *mut ID3D11HullShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub HSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub HSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub DSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub DSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pDomainShader: *mut ID3D11DomainShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub DSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub DSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub CSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub CSSetUnorderedAccessViews: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumUAVs: UINT,
+            ppUnorderedAccessViews: *const *mut ID3D11UnorderedAccessView,
+            pUAVInitialCounts: *const UINT,
+        ),
+    >,
+    pub CSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pComputeShader: *mut ID3D11ComputeShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub CSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub CSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub VSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub PSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub PSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            ppPixelShader: *mut *mut ID3D11PixelShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub PSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub VSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            ppVertexShader: *mut *mut ID3D11VertexShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub PSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub IAGetInputLayout: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            ppInputLayout: *mut *mut ID3D11InputLayout,
+        ),
+    >,
+    pub IAGetVertexBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppVertexBuffers: *mut *mut ID3D11Buffer,
+            pStrides: *mut UINT,
+            pOffsets: *mut UINT,
+        ),
+    >,
+    pub IAGetIndexBuffer: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pIndexBuffer: *mut *mut ID3D11Buffer,
+            Format: *mut DXGI_FORMAT,
+            Offset: *mut UINT,
+        ),
+    >,
+    pub GSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub GSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            ppGeometryShader: *mut *mut ID3D11GeometryShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub IAGetPrimitiveTopology: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pTopology: *mut D3D11_PRIMITIVE_TOPOLOGY,
+        ),
+    >,
+    pub VSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub VSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub GetPredication: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            ppPredicate: *mut *mut ID3D11Predicate,
+            pPredicateValue: *mut BOOL,
+        ),
+    >,
+    pub GSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub GSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub OMGetRenderTargets: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            NumViews: UINT,
+            ppRenderTargetViews: *mut *mut ID3D11RenderTargetView,
+            ppDepthStencilView: *mut *mut ID3D11DepthStencilView,
+        ),
+    >,
+    pub OMGetRenderTargetsAndUnorderedAccessViews: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            NumRTVs: UINT,
+            ppRenderTargetViews: *mut *mut ID3D11RenderTargetView,
+            ppDepthStencilView: *mut *mut ID3D11DepthStencilView,
+            UAVStartSlot: UINT,
+            NumUAVs: UINT,
+            ppUnorderedAccessViews: *mut *mut ID3D11UnorderedAccessView,
+        ),
+    >,
+    pub OMGetBlendState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            ppBlendState: *mut *mut ID3D11BlendState,
+            BlendFactor: *mut FLOAT,
+            pSampleMask: *mut UINT,
+        ),
+    >,
+    pub OMGetDepthStencilState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            ppDepthStencilState: *mut *mut ID3D11DepthStencilState,
+            pStencilRef: *mut UINT,
+        ),
+    >,
+    pub SOGetTargets: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            NumBuffers: UINT,
+            ppSOTargets: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub RSGetState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            ppRasterizerState: *mut *mut ID3D11RasterizerState,
+        ),
+    >,
+    pub RSGetViewports: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pNumViewports: *mut UINT,
+            pViewports: *mut D3D11_VIEWPORT,
+        ),
+    >,
+    pub RSGetScissorRects: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pNumRects: *mut UINT,
+            pRects: *mut D3D11_RECT,
+        ),
+    >,
+    pub HSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub HSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            ppHullShader: *mut *mut ID3D11HullShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub HSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub HSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub DSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub DSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            ppDomainShader: *mut *mut ID3D11DomainShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub DSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub DSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub CSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub CSGetUnorderedAccessViews: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumUAVs: UINT,
+            ppUnorderedAccessViews: *mut *mut ID3D11UnorderedAccessView,
+        ),
+    >,
+    pub CSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            ppComputeShader: *mut *mut ID3D11ComputeShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub CSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub CSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub ClearState: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext3)>,
+    pub Flush: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext3)>,
+    pub GetType: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext3) -> D3D11_DEVICE_CONTEXT_TYPE,
+    >,
+    pub GetContextFlags:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext3) -> UINT>,
+    pub FinishCommandList: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            RestoreDeferredContextState: BOOL,
+            ppCommandList: *mut *mut ID3D11CommandList,
+        ) -> HRESULT,
+    >,
+    pub CopySubresourceRegion1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pDstResource: *mut ID3D11Resource,
+            DstSubresource: UINT,
+            DstX: UINT,
+            DstY: UINT,
+            DstZ: UINT,
+            pSrcResource: *mut ID3D11Resource,
+            SrcSubresource: UINT,
+            pSrcBox: *const D3D11_BOX,
+            CopyFlags: UINT,
+        ),
+    >,
+    pub UpdateSubresource1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pDstResource: *mut ID3D11Resource,
+            DstSubresource: UINT,
+            pDstBox: *const D3D11_BOX,
+            pSrcData: *const ::std::os::raw::c_void,
+            SrcRowPitch: UINT,
+            SrcDepthPitch: UINT,
+            CopyFlags: UINT,
+        ),
+    >,
+    pub DiscardResource: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext3, pResource: *mut ID3D11Resource),
+    >,
+    pub DiscardView: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext3, pResourceView: *mut ID3D11View),
+    >,
+    pub VSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub HSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub DSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub GSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub PSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub CSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub VSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub HSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub DSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub GSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub PSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub CSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub SwapDeviceContextState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pState: *mut ID3DDeviceContextState,
+            ppPreviousState: *mut *mut ID3DDeviceContextState,
+        ),
+    >,
+    pub ClearView: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pView: *mut ID3D11View,
+            Color: *const FLOAT,
+            pRect: *const D3D11_RECT,
+            NumRects: UINT,
+        ),
+    >,
+    pub DiscardView1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pResourceView: *mut ID3D11View,
+            pRects: *const D3D11_RECT,
+            NumRects: UINT,
+        ),
+    >,
+    pub UpdateTileMappings: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pTiledResource: *mut ID3D11Resource,
+            NumTiledResourceRegions: UINT,
+            pTiledResourceRegionStartCoordinates: *const D3D11_TILED_RESOURCE_COORDINATE,
+            pTiledResourceRegionSizes: *const D3D11_TILE_REGION_SIZE,
+            pTilePool: *mut ID3D11Buffer,
+            NumRanges: UINT,
+            pRangeFlags: *const UINT,
+            pTilePoolStartOffsets: *const UINT,
+            pRangeTileCounts: *const UINT,
+            Flags: UINT,
+        ) -> HRESULT,
+    >,
+    pub CopyTileMappings: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pDestTiledResource: *mut ID3D11Resource,
+            pDestRegionStartCoordinate: *const D3D11_TILED_RESOURCE_COORDINATE,
+            pSourceTiledResource: *mut ID3D11Resource,
+            pSourceRegionStartCoordinate: *const D3D11_TILED_RESOURCE_COORDINATE,
+            pTileRegionSize: *const D3D11_TILE_REGION_SIZE,
+            Flags: UINT,
+        ) -> HRESULT,
+    >,
+    pub CopyTiles: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pTiledResource: *mut ID3D11Resource,
+            pTileRegionStartCoordinate: *const D3D11_TILED_RESOURCE_COORDINATE,
+            pTileRegionSize: *const D3D11_TILE_REGION_SIZE,
+            pBuffer: *mut ID3D11Buffer,
+            BufferStartOffsetInBytes: UINT64,
+            Flags: UINT,
+        ),
+    >,
+    pub UpdateTiles: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pDestTiledResource: *mut ID3D11Resource,
+            pDestTileRegionStartCoordinate: *const D3D11_TILED_RESOURCE_COORDINATE,
+            pDestTileRegionSize: *const D3D11_TILE_REGION_SIZE,
+            pSourceTileData: *const ::std::os::raw::c_void,
+            Flags: UINT,
+        ),
+    >,
+    pub ResizeTilePool: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pTilePool: *mut ID3D11Buffer,
+            NewSizeInBytes: UINT64,
+        ) -> HRESULT,
+    >,
+    pub TiledResourceBarrier: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            pTiledResourceOrViewAccessBeforeBarrier: *mut ID3D11DeviceChild,
+            pTiledResourceOrViewAccessAfterBarrier: *mut ID3D11DeviceChild,
+        ),
+    >,
+    pub IsAnnotationEnabled:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext3) -> BOOL>,
+    pub SetMarkerInt: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext3, pLabel: LPCWSTR, Data: INT),
+    >,
+    pub BeginEventInt: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext3, pLabel: LPCWSTR, Data: INT),
+    >,
+    pub EndEvent: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext3)>,
+    pub Flush1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext3,
+            ContextType: D3D11_CONTEXT_TYPE,
+            hEvent: HANDLE,
+        ),
+    >,
+    pub SetHardwareProtectionState: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext3, HwProtectionEnable: BOOL),
+    >,
+    pub GetHardwareProtectionState: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext3, pHwProtectionEnable: *mut BOOL),
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11DeviceContext3Vtbl"]
+        [::std::mem::size_of::<ID3D11DeviceContext3Vtbl>() - 1176usize];
+    ["Alignment of ID3D11DeviceContext3Vtbl"]
+        [::std::mem::align_of::<ID3D11DeviceContext3Vtbl>() - 8usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::QueryInterface"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, QueryInterface) - 0usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::AddRef"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, AddRef) - 8usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::Release"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, Release) - 16usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::GetDevice"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, GetDevice) - 24usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::GetPrivateData"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, GetPrivateData) - 32usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::SetPrivateData"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, SetPrivateData) - 40usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::SetPrivateDataInterface"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, SetPrivateDataInterface) - 48usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::VSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, VSSetConstantBuffers) - 56usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::PSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, PSSetShaderResources) - 64usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::PSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, PSSetShader) - 72usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::PSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, PSSetSamplers) - 80usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::VSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, VSSetShader) - 88usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::DrawIndexed"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, DrawIndexed) - 96usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::Draw"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, Draw) - 104usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::Map"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, Map) - 112usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::Unmap"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, Unmap) - 120usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::PSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, PSSetConstantBuffers) - 128usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::IASetInputLayout"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, IASetInputLayout) - 136usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::IASetVertexBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, IASetVertexBuffers) - 144usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::IASetIndexBuffer"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, IASetIndexBuffer) - 152usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::DrawIndexedInstanced"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, DrawIndexedInstanced) - 160usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::DrawInstanced"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, DrawInstanced) - 168usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::GSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, GSSetConstantBuffers) - 176usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::GSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, GSSetShader) - 184usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::IASetPrimitiveTopology"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, IASetPrimitiveTopology) - 192usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::VSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, VSSetShaderResources) - 200usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::VSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, VSSetSamplers) - 208usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::Begin"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, Begin) - 216usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::End"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, End) - 224usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::GetData"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, GetData) - 232usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::SetPredication"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, SetPredication) - 240usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::GSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, GSSetShaderResources) - 248usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::GSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, GSSetSamplers) - 256usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::OMSetRenderTargets"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, OMSetRenderTargets) - 264usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::OMSetRenderTargetsAndUnorderedAccessViews"][::std::mem::offset_of!(
+        ID3D11DeviceContext3Vtbl,
+        OMSetRenderTargetsAndUnorderedAccessViews
+    )
+        - 272usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::OMSetBlendState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, OMSetBlendState) - 280usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::OMSetDepthStencilState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, OMSetDepthStencilState) - 288usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::SOSetTargets"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, SOSetTargets) - 296usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::DrawAuto"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, DrawAuto) - 304usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::DrawIndexedInstancedIndirect"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, DrawIndexedInstancedIndirect) - 312usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::DrawInstancedIndirect"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, DrawInstancedIndirect) - 320usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::Dispatch"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, Dispatch) - 328usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::DispatchIndirect"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, DispatchIndirect) - 336usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::RSSetState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, RSSetState) - 344usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::RSSetViewports"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, RSSetViewports) - 352usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::RSSetScissorRects"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, RSSetScissorRects) - 360usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::CopySubresourceRegion"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, CopySubresourceRegion) - 368usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::CopyResource"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, CopyResource) - 376usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::UpdateSubresource"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, UpdateSubresource) - 384usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::CopyStructureCount"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, CopyStructureCount) - 392usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::ClearRenderTargetView"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, ClearRenderTargetView) - 400usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::ClearUnorderedAccessViewUint"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, ClearUnorderedAccessViewUint) - 408usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::ClearUnorderedAccessViewFloat"][::std::mem::offset_of!(
+        ID3D11DeviceContext3Vtbl,
+        ClearUnorderedAccessViewFloat
+    ) - 416usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::ClearDepthStencilView"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, ClearDepthStencilView) - 424usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::GenerateMips"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, GenerateMips) - 432usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::SetResourceMinLOD"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, SetResourceMinLOD) - 440usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::GetResourceMinLOD"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, GetResourceMinLOD) - 448usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::ResolveSubresource"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, ResolveSubresource) - 456usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::ExecuteCommandList"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, ExecuteCommandList) - 464usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::HSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, HSSetShaderResources) - 472usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::HSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, HSSetShader) - 480usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::HSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, HSSetSamplers) - 488usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::HSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, HSSetConstantBuffers) - 496usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::DSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, DSSetShaderResources) - 504usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::DSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, DSSetShader) - 512usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::DSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, DSSetSamplers) - 520usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::DSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, DSSetConstantBuffers) - 528usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::CSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, CSSetShaderResources) - 536usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::CSSetUnorderedAccessViews"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, CSSetUnorderedAccessViews) - 544usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::CSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, CSSetShader) - 552usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::CSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, CSSetSamplers) - 560usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::CSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, CSSetConstantBuffers) - 568usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::VSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, VSGetConstantBuffers) - 576usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::PSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, PSGetShaderResources) - 584usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::PSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, PSGetShader) - 592usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::PSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, PSGetSamplers) - 600usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::VSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, VSGetShader) - 608usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::PSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, PSGetConstantBuffers) - 616usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::IAGetInputLayout"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, IAGetInputLayout) - 624usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::IAGetVertexBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, IAGetVertexBuffers) - 632usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::IAGetIndexBuffer"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, IAGetIndexBuffer) - 640usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::GSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, GSGetConstantBuffers) - 648usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::GSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, GSGetShader) - 656usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::IAGetPrimitiveTopology"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, IAGetPrimitiveTopology) - 664usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::VSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, VSGetShaderResources) - 672usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::VSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, VSGetSamplers) - 680usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::GetPredication"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, GetPredication) - 688usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::GSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, GSGetShaderResources) - 696usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::GSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, GSGetSamplers) - 704usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::OMGetRenderTargets"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, OMGetRenderTargets) - 712usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::OMGetRenderTargetsAndUnorderedAccessViews"][::std::mem::offset_of!(
+        ID3D11DeviceContext3Vtbl,
+        OMGetRenderTargetsAndUnorderedAccessViews
+    )
+        - 720usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::OMGetBlendState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, OMGetBlendState) - 728usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::OMGetDepthStencilState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, OMGetDepthStencilState) - 736usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::SOGetTargets"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, SOGetTargets) - 744usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::RSGetState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, RSGetState) - 752usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::RSGetViewports"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, RSGetViewports) - 760usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::RSGetScissorRects"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, RSGetScissorRects) - 768usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::HSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, HSGetShaderResources) - 776usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::HSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, HSGetShader) - 784usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::HSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, HSGetSamplers) - 792usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::HSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, HSGetConstantBuffers) - 800usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::DSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, DSGetShaderResources) - 808usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::DSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, DSGetShader) - 816usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::DSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, DSGetSamplers) - 824usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::DSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, DSGetConstantBuffers) - 832usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::CSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, CSGetShaderResources) - 840usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::CSGetUnorderedAccessViews"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, CSGetUnorderedAccessViews) - 848usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::CSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, CSGetShader) - 856usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::CSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, CSGetSamplers) - 864usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::CSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, CSGetConstantBuffers) - 872usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::ClearState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, ClearState) - 880usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::Flush"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, Flush) - 888usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::GetType"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, GetType) - 896usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::GetContextFlags"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, GetContextFlags) - 904usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::FinishCommandList"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, FinishCommandList) - 912usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::CopySubresourceRegion1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, CopySubresourceRegion1) - 920usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::UpdateSubresource1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, UpdateSubresource1) - 928usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::DiscardResource"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, DiscardResource) - 936usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::DiscardView"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, DiscardView) - 944usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::VSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, VSSetConstantBuffers1) - 952usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::HSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, HSSetConstantBuffers1) - 960usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::DSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, DSSetConstantBuffers1) - 968usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::GSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, GSSetConstantBuffers1) - 976usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::PSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, PSSetConstantBuffers1) - 984usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::CSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, CSSetConstantBuffers1) - 992usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::VSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, VSGetConstantBuffers1) - 1000usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::HSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, HSGetConstantBuffers1) - 1008usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::DSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, DSGetConstantBuffers1) - 1016usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::GSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, GSGetConstantBuffers1) - 1024usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::PSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, PSGetConstantBuffers1) - 1032usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::CSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, CSGetConstantBuffers1) - 1040usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::SwapDeviceContextState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, SwapDeviceContextState) - 1048usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::ClearView"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, ClearView) - 1056usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::DiscardView1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, DiscardView1) - 1064usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::UpdateTileMappings"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, UpdateTileMappings) - 1072usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::CopyTileMappings"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, CopyTileMappings) - 1080usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::CopyTiles"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, CopyTiles) - 1088usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::UpdateTiles"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, UpdateTiles) - 1096usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::ResizeTilePool"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, ResizeTilePool) - 1104usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::TiledResourceBarrier"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, TiledResourceBarrier) - 1112usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::IsAnnotationEnabled"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, IsAnnotationEnabled) - 1120usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::SetMarkerInt"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, SetMarkerInt) - 1128usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::BeginEventInt"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, BeginEventInt) - 1136usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::EndEvent"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, EndEvent) - 1144usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::Flush1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, Flush1) - 1152usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::SetHardwareProtectionState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, SetHardwareProtectionState) - 1160usize];
+    ["Offset of field: ID3D11DeviceContext3Vtbl::GetHardwareProtectionState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3Vtbl, GetHardwareProtectionState) - 1168usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11DeviceContext3 {
+    pub lpVtbl: *mut ID3D11DeviceContext3Vtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11DeviceContext3"][::std::mem::size_of::<ID3D11DeviceContext3>() - 8usize];
+    ["Alignment of ID3D11DeviceContext3"][::std::mem::align_of::<ID3D11DeviceContext3>() - 8usize];
+    ["Offset of field: ID3D11DeviceContext3::lpVtbl"]
+        [::std::mem::offset_of!(ID3D11DeviceContext3, lpVtbl) - 0usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11FenceVtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Fence,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Fence) -> ULONG>,
+    pub Release: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Fence) -> ULONG>,
+    pub GetDevice: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11Fence, ppDevice: *mut *mut ID3D11Device),
+    >,
+    pub GetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Fence,
+            guid: *const GUID,
+            pDataSize: *mut UINT,
+            pData: *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Fence,
+            guid: *const GUID,
+            DataSize: UINT,
+            pData: *const ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateDataInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Fence,
+            guid: *const GUID,
+            pData: *const IUnknown,
+        ) -> HRESULT,
+    >,
+    pub CreateSharedHandle: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Fence,
+            pAttributes: *const SECURITY_ATTRIBUTES,
+            dwAccess: DWORD,
+            lpName: LPCWSTR,
+            pHandle: *mut HANDLE,
+        ) -> HRESULT,
+    >,
+    pub GetCompletedValue:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Fence) -> UINT64>,
+    pub SetEventOnCompletion: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11Fence, Value: UINT64, hEvent: HANDLE) -> HRESULT,
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11FenceVtbl"][::std::mem::size_of::<ID3D11FenceVtbl>() - 80usize];
+    ["Alignment of ID3D11FenceVtbl"][::std::mem::align_of::<ID3D11FenceVtbl>() - 8usize];
+    ["Offset of field: ID3D11FenceVtbl::QueryInterface"]
+        [::std::mem::offset_of!(ID3D11FenceVtbl, QueryInterface) - 0usize];
+    ["Offset of field: ID3D11FenceVtbl::AddRef"]
+        [::std::mem::offset_of!(ID3D11FenceVtbl, AddRef) - 8usize];
+    ["Offset of field: ID3D11FenceVtbl::Release"]
+        [::std::mem::offset_of!(ID3D11FenceVtbl, Release) - 16usize];
+    ["Offset of field: ID3D11FenceVtbl::GetDevice"]
+        [::std::mem::offset_of!(ID3D11FenceVtbl, GetDevice) - 24usize];
+    ["Offset of field: ID3D11FenceVtbl::GetPrivateData"]
+        [::std::mem::offset_of!(ID3D11FenceVtbl, GetPrivateData) - 32usize];
+    ["Offset of field: ID3D11FenceVtbl::SetPrivateData"]
+        [::std::mem::offset_of!(ID3D11FenceVtbl, SetPrivateData) - 40usize];
+    ["Offset of field: ID3D11FenceVtbl::SetPrivateDataInterface"]
+        [::std::mem::offset_of!(ID3D11FenceVtbl, SetPrivateDataInterface) - 48usize];
+    ["Offset of field: ID3D11FenceVtbl::CreateSharedHandle"]
+        [::std::mem::offset_of!(ID3D11FenceVtbl, CreateSharedHandle) - 56usize];
+    ["Offset of field: ID3D11FenceVtbl::GetCompletedValue"]
+        [::std::mem::offset_of!(ID3D11FenceVtbl, GetCompletedValue) - 64usize];
+    ["Offset of field: ID3D11FenceVtbl::SetEventOnCompletion"]
+        [::std::mem::offset_of!(ID3D11FenceVtbl, SetEventOnCompletion) - 72usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11Fence {
+    pub lpVtbl: *mut ID3D11FenceVtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11Fence"][::std::mem::size_of::<ID3D11Fence>() - 8usize];
+    ["Alignment of ID3D11Fence"][::std::mem::align_of::<ID3D11Fence>() - 8usize];
+    ["Offset of field: ID3D11Fence::lpVtbl"][::std::mem::offset_of!(ID3D11Fence, lpVtbl) - 0usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11DeviceContext4Vtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext4) -> ULONG>,
+    pub Release:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext4) -> ULONG>,
+    pub GetDevice: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext4, ppDevice: *mut *mut ID3D11Device),
+    >,
+    pub GetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            guid: *const GUID,
+            pDataSize: *mut UINT,
+            pData: *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            guid: *const GUID,
+            DataSize: UINT,
+            pData: *const ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateDataInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            guid: *const GUID,
+            pData: *const IUnknown,
+        ) -> HRESULT,
+    >,
+    pub VSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub PSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub PSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pPixelShader: *mut ID3D11PixelShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub PSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub VSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pVertexShader: *mut ID3D11VertexShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub DrawIndexed: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            IndexCount: UINT,
+            StartIndexLocation: UINT,
+            BaseVertexLocation: INT,
+        ),
+    >,
+    pub Draw: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            VertexCount: UINT,
+            StartVertexLocation: UINT,
+        ),
+    >,
+    pub Map: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pResource: *mut ID3D11Resource,
+            Subresource: UINT,
+            MapType: D3D11_MAP,
+            MapFlags: UINT,
+            pMappedResource: *mut D3D11_MAPPED_SUBRESOURCE,
+        ) -> HRESULT,
+    >,
+    pub Unmap: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pResource: *mut ID3D11Resource,
+            Subresource: UINT,
+        ),
+    >,
+    pub PSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub IASetInputLayout: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext4, pInputLayout: *mut ID3D11InputLayout),
+    >,
+    pub IASetVertexBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppVertexBuffers: *const *mut ID3D11Buffer,
+            pStrides: *const UINT,
+            pOffsets: *const UINT,
+        ),
+    >,
+    pub IASetIndexBuffer: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pIndexBuffer: *mut ID3D11Buffer,
+            Format: DXGI_FORMAT,
+            Offset: UINT,
+        ),
+    >,
+    pub DrawIndexedInstanced: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            IndexCountPerInstance: UINT,
+            InstanceCount: UINT,
+            StartIndexLocation: UINT,
+            BaseVertexLocation: INT,
+            StartInstanceLocation: UINT,
+        ),
+    >,
+    pub DrawInstanced: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            VertexCountPerInstance: UINT,
+            InstanceCount: UINT,
+            StartVertexLocation: UINT,
+            StartInstanceLocation: UINT,
+        ),
+    >,
+    pub GSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub GSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pShader: *mut ID3D11GeometryShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub IASetPrimitiveTopology: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext4, Topology: D3D11_PRIMITIVE_TOPOLOGY),
+    >,
+    pub VSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub VSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub Begin: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext4, pAsync: *mut ID3D11Asynchronous),
+    >,
+    pub End: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext4, pAsync: *mut ID3D11Asynchronous),
+    >,
+    pub GetData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pAsync: *mut ID3D11Asynchronous,
+            pData: *mut ::std::os::raw::c_void,
+            DataSize: UINT,
+            GetDataFlags: UINT,
+        ) -> HRESULT,
+    >,
+    pub SetPredication: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pPredicate: *mut ID3D11Predicate,
+            PredicateValue: BOOL,
+        ),
+    >,
+    pub GSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub GSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub OMSetRenderTargets: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            NumViews: UINT,
+            ppRenderTargetViews: *const *mut ID3D11RenderTargetView,
+            pDepthStencilView: *mut ID3D11DepthStencilView,
+        ),
+    >,
+    pub OMSetRenderTargetsAndUnorderedAccessViews: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            NumRTVs: UINT,
+            ppRenderTargetViews: *const *mut ID3D11RenderTargetView,
+            pDepthStencilView: *mut ID3D11DepthStencilView,
+            UAVStartSlot: UINT,
+            NumUAVs: UINT,
+            ppUnorderedAccessViews: *const *mut ID3D11UnorderedAccessView,
+            pUAVInitialCounts: *const UINT,
+        ),
+    >,
+    pub OMSetBlendState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pBlendState: *mut ID3D11BlendState,
+            BlendFactor: *const FLOAT,
+            SampleMask: UINT,
+        ),
+    >,
+    pub OMSetDepthStencilState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pDepthStencilState: *mut ID3D11DepthStencilState,
+            StencilRef: UINT,
+        ),
+    >,
+    pub SOSetTargets: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            NumBuffers: UINT,
+            ppSOTargets: *const *mut ID3D11Buffer,
+            pOffsets: *const UINT,
+        ),
+    >,
+    pub DrawAuto: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext4)>,
+    pub DrawIndexedInstancedIndirect: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pBufferForArgs: *mut ID3D11Buffer,
+            AlignedByteOffsetForArgs: UINT,
+        ),
+    >,
+    pub DrawInstancedIndirect: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pBufferForArgs: *mut ID3D11Buffer,
+            AlignedByteOffsetForArgs: UINT,
+        ),
+    >,
+    pub Dispatch: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            ThreadGroupCountX: UINT,
+            ThreadGroupCountY: UINT,
+            ThreadGroupCountZ: UINT,
+        ),
+    >,
+    pub DispatchIndirect: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pBufferForArgs: *mut ID3D11Buffer,
+            AlignedByteOffsetForArgs: UINT,
+        ),
+    >,
+    pub RSSetState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pRasterizerState: *mut ID3D11RasterizerState,
+        ),
+    >,
+    pub RSSetViewports: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            NumViewports: UINT,
+            pViewports: *const D3D11_VIEWPORT,
+        ),
+    >,
+    pub RSSetScissorRects: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            NumRects: UINT,
+            pRects: *const D3D11_RECT,
+        ),
+    >,
+    pub CopySubresourceRegion: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pDstResource: *mut ID3D11Resource,
+            DstSubresource: UINT,
+            DstX: UINT,
+            DstY: UINT,
+            DstZ: UINT,
+            pSrcResource: *mut ID3D11Resource,
+            SrcSubresource: UINT,
+            pSrcBox: *const D3D11_BOX,
+        ),
+    >,
+    pub CopyResource: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pDstResource: *mut ID3D11Resource,
+            pSrcResource: *mut ID3D11Resource,
+        ),
+    >,
+    pub UpdateSubresource: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pDstResource: *mut ID3D11Resource,
+            DstSubresource: UINT,
+            pDstBox: *const D3D11_BOX,
+            pSrcData: *const ::std::os::raw::c_void,
+            SrcRowPitch: UINT,
+            SrcDepthPitch: UINT,
+        ),
+    >,
+    pub CopyStructureCount: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pDstBuffer: *mut ID3D11Buffer,
+            DstAlignedByteOffset: UINT,
+            pSrcView: *mut ID3D11UnorderedAccessView,
+        ),
+    >,
+    pub ClearRenderTargetView: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pRenderTargetView: *mut ID3D11RenderTargetView,
+            ColorRGBA: *const FLOAT,
+        ),
+    >,
+    pub ClearUnorderedAccessViewUint: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pUnorderedAccessView: *mut ID3D11UnorderedAccessView,
+            Values: *const UINT,
+        ),
+    >,
+    pub ClearUnorderedAccessViewFloat: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pUnorderedAccessView: *mut ID3D11UnorderedAccessView,
+            Values: *const FLOAT,
+        ),
+    >,
+    pub ClearDepthStencilView: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pDepthStencilView: *mut ID3D11DepthStencilView,
+            ClearFlags: UINT,
+            Depth: FLOAT,
+            Stencil: UINT8,
+        ),
+    >,
+    pub GenerateMips: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pShaderResourceView: *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub SetResourceMinLOD: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pResource: *mut ID3D11Resource,
+            MinLOD: FLOAT,
+        ),
+    >,
+    pub GetResourceMinLOD: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pResource: *mut ID3D11Resource,
+        ) -> FLOAT,
+    >,
+    pub ResolveSubresource: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pDstResource: *mut ID3D11Resource,
+            DstSubresource: UINT,
+            pSrcResource: *mut ID3D11Resource,
+            SrcSubresource: UINT,
+            Format: DXGI_FORMAT,
+        ),
+    >,
+    pub ExecuteCommandList: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pCommandList: *mut ID3D11CommandList,
+            RestoreContextState: BOOL,
+        ),
+    >,
+    pub HSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub HSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pHullShader: *mut ID3D11HullShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub HSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub HSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub DSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub DSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pDomainShader: *mut ID3D11DomainShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub DSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub DSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub CSSetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *const *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub CSSetUnorderedAccessViews: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumUAVs: UINT,
+            ppUnorderedAccessViews: *const *mut ID3D11UnorderedAccessView,
+            pUAVInitialCounts: *const UINT,
+        ),
+    >,
+    pub CSSetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pComputeShader: *mut ID3D11ComputeShader,
+            ppClassInstances: *const *mut ID3D11ClassInstance,
+            NumClassInstances: UINT,
+        ),
+    >,
+    pub CSSetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *const *mut ID3D11SamplerState,
+        ),
+    >,
+    pub CSSetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+        ),
+    >,
+    pub VSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub PSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub PSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            ppPixelShader: *mut *mut ID3D11PixelShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub PSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub VSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            ppVertexShader: *mut *mut ID3D11VertexShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub PSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub IAGetInputLayout: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            ppInputLayout: *mut *mut ID3D11InputLayout,
+        ),
+    >,
+    pub IAGetVertexBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppVertexBuffers: *mut *mut ID3D11Buffer,
+            pStrides: *mut UINT,
+            pOffsets: *mut UINT,
+        ),
+    >,
+    pub IAGetIndexBuffer: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pIndexBuffer: *mut *mut ID3D11Buffer,
+            Format: *mut DXGI_FORMAT,
+            Offset: *mut UINT,
+        ),
+    >,
+    pub GSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub GSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            ppGeometryShader: *mut *mut ID3D11GeometryShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub IAGetPrimitiveTopology: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pTopology: *mut D3D11_PRIMITIVE_TOPOLOGY,
+        ),
+    >,
+    pub VSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub VSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub GetPredication: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            ppPredicate: *mut *mut ID3D11Predicate,
+            pPredicateValue: *mut BOOL,
+        ),
+    >,
+    pub GSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub GSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub OMGetRenderTargets: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            NumViews: UINT,
+            ppRenderTargetViews: *mut *mut ID3D11RenderTargetView,
+            ppDepthStencilView: *mut *mut ID3D11DepthStencilView,
+        ),
+    >,
+    pub OMGetRenderTargetsAndUnorderedAccessViews: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            NumRTVs: UINT,
+            ppRenderTargetViews: *mut *mut ID3D11RenderTargetView,
+            ppDepthStencilView: *mut *mut ID3D11DepthStencilView,
+            UAVStartSlot: UINT,
+            NumUAVs: UINT,
+            ppUnorderedAccessViews: *mut *mut ID3D11UnorderedAccessView,
+        ),
+    >,
+    pub OMGetBlendState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            ppBlendState: *mut *mut ID3D11BlendState,
+            BlendFactor: *mut FLOAT,
+            pSampleMask: *mut UINT,
+        ),
+    >,
+    pub OMGetDepthStencilState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            ppDepthStencilState: *mut *mut ID3D11DepthStencilState,
+            pStencilRef: *mut UINT,
+        ),
+    >,
+    pub SOGetTargets: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            NumBuffers: UINT,
+            ppSOTargets: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub RSGetState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            ppRasterizerState: *mut *mut ID3D11RasterizerState,
+        ),
+    >,
+    pub RSGetViewports: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pNumViewports: *mut UINT,
+            pViewports: *mut D3D11_VIEWPORT,
+        ),
+    >,
+    pub RSGetScissorRects: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pNumRects: *mut UINT,
+            pRects: *mut D3D11_RECT,
+        ),
+    >,
+    pub HSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub HSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            ppHullShader: *mut *mut ID3D11HullShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub HSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub HSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub DSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub DSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            ppDomainShader: *mut *mut ID3D11DomainShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub DSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub DSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub CSGetShaderResources: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumViews: UINT,
+            ppShaderResourceViews: *mut *mut ID3D11ShaderResourceView,
+        ),
+    >,
+    pub CSGetUnorderedAccessViews: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumUAVs: UINT,
+            ppUnorderedAccessViews: *mut *mut ID3D11UnorderedAccessView,
+        ),
+    >,
+    pub CSGetShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            ppComputeShader: *mut *mut ID3D11ComputeShader,
+            ppClassInstances: *mut *mut ID3D11ClassInstance,
+            pNumClassInstances: *mut UINT,
+        ),
+    >,
+    pub CSGetSamplers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumSamplers: UINT,
+            ppSamplers: *mut *mut ID3D11SamplerState,
+        ),
+    >,
+    pub CSGetConstantBuffers: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+        ),
+    >,
+    pub ClearState: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext4)>,
+    pub Flush: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext4)>,
+    pub GetType: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext4) -> D3D11_DEVICE_CONTEXT_TYPE,
+    >,
+    pub GetContextFlags:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext4) -> UINT>,
+    pub FinishCommandList: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            RestoreDeferredContextState: BOOL,
+            ppCommandList: *mut *mut ID3D11CommandList,
+        ) -> HRESULT,
+    >,
+    pub CopySubresourceRegion1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pDstResource: *mut ID3D11Resource,
+            DstSubresource: UINT,
+            DstX: UINT,
+            DstY: UINT,
+            DstZ: UINT,
+            pSrcResource: *mut ID3D11Resource,
+            SrcSubresource: UINT,
+            pSrcBox: *const D3D11_BOX,
+            CopyFlags: UINT,
+        ),
+    >,
+    pub UpdateSubresource1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pDstResource: *mut ID3D11Resource,
+            DstSubresource: UINT,
+            pDstBox: *const D3D11_BOX,
+            pSrcData: *const ::std::os::raw::c_void,
+            SrcRowPitch: UINT,
+            SrcDepthPitch: UINT,
+            CopyFlags: UINT,
+        ),
+    >,
+    pub DiscardResource: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext4, pResource: *mut ID3D11Resource),
+    >,
+    pub DiscardView: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext4, pResourceView: *mut ID3D11View),
+    >,
+    pub VSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub HSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub DSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub GSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub PSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub CSSetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *const *mut ID3D11Buffer,
+            pFirstConstant: *const UINT,
+            pNumConstants: *const UINT,
+        ),
+    >,
+    pub VSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub HSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub DSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub GSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub PSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub CSGetConstantBuffers1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            StartSlot: UINT,
+            NumBuffers: UINT,
+            ppConstantBuffers: *mut *mut ID3D11Buffer,
+            pFirstConstant: *mut UINT,
+            pNumConstants: *mut UINT,
+        ),
+    >,
+    pub SwapDeviceContextState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pState: *mut ID3DDeviceContextState,
+            ppPreviousState: *mut *mut ID3DDeviceContextState,
+        ),
+    >,
+    pub ClearView: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pView: *mut ID3D11View,
+            Color: *const FLOAT,
+            pRect: *const D3D11_RECT,
+            NumRects: UINT,
+        ),
+    >,
+    pub DiscardView1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pResourceView: *mut ID3D11View,
+            pRects: *const D3D11_RECT,
+            NumRects: UINT,
+        ),
+    >,
+    pub UpdateTileMappings: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pTiledResource: *mut ID3D11Resource,
+            NumTiledResourceRegions: UINT,
+            pTiledResourceRegionStartCoordinates: *const D3D11_TILED_RESOURCE_COORDINATE,
+            pTiledResourceRegionSizes: *const D3D11_TILE_REGION_SIZE,
+            pTilePool: *mut ID3D11Buffer,
+            NumRanges: UINT,
+            pRangeFlags: *const UINT,
+            pTilePoolStartOffsets: *const UINT,
+            pRangeTileCounts: *const UINT,
+            Flags: UINT,
+        ) -> HRESULT,
+    >,
+    pub CopyTileMappings: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pDestTiledResource: *mut ID3D11Resource,
+            pDestRegionStartCoordinate: *const D3D11_TILED_RESOURCE_COORDINATE,
+            pSourceTiledResource: *mut ID3D11Resource,
+            pSourceRegionStartCoordinate: *const D3D11_TILED_RESOURCE_COORDINATE,
+            pTileRegionSize: *const D3D11_TILE_REGION_SIZE,
+            Flags: UINT,
+        ) -> HRESULT,
+    >,
+    pub CopyTiles: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pTiledResource: *mut ID3D11Resource,
+            pTileRegionStartCoordinate: *const D3D11_TILED_RESOURCE_COORDINATE,
+            pTileRegionSize: *const D3D11_TILE_REGION_SIZE,
+            pBuffer: *mut ID3D11Buffer,
+            BufferStartOffsetInBytes: UINT64,
+            Flags: UINT,
+        ),
+    >,
+    pub UpdateTiles: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pDestTiledResource: *mut ID3D11Resource,
+            pDestTileRegionStartCoordinate: *const D3D11_TILED_RESOURCE_COORDINATE,
+            pDestTileRegionSize: *const D3D11_TILE_REGION_SIZE,
+            pSourceTileData: *const ::std::os::raw::c_void,
+            Flags: UINT,
+        ),
+    >,
+    pub ResizeTilePool: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pTilePool: *mut ID3D11Buffer,
+            NewSizeInBytes: UINT64,
+        ) -> HRESULT,
+    >,
+    pub TiledResourceBarrier: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pTiledResourceOrViewAccessBeforeBarrier: *mut ID3D11DeviceChild,
+            pTiledResourceOrViewAccessAfterBarrier: *mut ID3D11DeviceChild,
+        ),
+    >,
+    pub IsAnnotationEnabled:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext4) -> BOOL>,
+    pub SetMarkerInt: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext4, pLabel: LPCWSTR, Data: INT),
+    >,
+    pub BeginEventInt: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext4, pLabel: LPCWSTR, Data: INT),
+    >,
+    pub EndEvent: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11DeviceContext4)>,
+    pub Flush1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            ContextType: D3D11_CONTEXT_TYPE,
+            hEvent: HANDLE,
+        ),
+    >,
+    pub SetHardwareProtectionState: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext4, HwProtectionEnable: BOOL),
+    >,
+    pub GetHardwareProtectionState: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11DeviceContext4, pHwProtectionEnable: *mut BOOL),
+    >,
+    pub Signal: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pFence: *mut ID3D11Fence,
+            Value: UINT64,
+        ) -> HRESULT,
+    >,
+    pub Wait: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11DeviceContext4,
+            pFence: *mut ID3D11Fence,
+            Value: UINT64,
+        ) -> HRESULT,
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11DeviceContext4Vtbl"]
+        [::std::mem::size_of::<ID3D11DeviceContext4Vtbl>() - 1192usize];
+    ["Alignment of ID3D11DeviceContext4Vtbl"]
+        [::std::mem::align_of::<ID3D11DeviceContext4Vtbl>() - 8usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::QueryInterface"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, QueryInterface) - 0usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::AddRef"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, AddRef) - 8usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::Release"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, Release) - 16usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::GetDevice"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, GetDevice) - 24usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::GetPrivateData"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, GetPrivateData) - 32usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::SetPrivateData"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, SetPrivateData) - 40usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::SetPrivateDataInterface"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, SetPrivateDataInterface) - 48usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::VSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, VSSetConstantBuffers) - 56usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::PSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, PSSetShaderResources) - 64usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::PSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, PSSetShader) - 72usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::PSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, PSSetSamplers) - 80usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::VSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, VSSetShader) - 88usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::DrawIndexed"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, DrawIndexed) - 96usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::Draw"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, Draw) - 104usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::Map"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, Map) - 112usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::Unmap"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, Unmap) - 120usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::PSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, PSSetConstantBuffers) - 128usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::IASetInputLayout"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, IASetInputLayout) - 136usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::IASetVertexBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, IASetVertexBuffers) - 144usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::IASetIndexBuffer"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, IASetIndexBuffer) - 152usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::DrawIndexedInstanced"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, DrawIndexedInstanced) - 160usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::DrawInstanced"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, DrawInstanced) - 168usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::GSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, GSSetConstantBuffers) - 176usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::GSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, GSSetShader) - 184usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::IASetPrimitiveTopology"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, IASetPrimitiveTopology) - 192usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::VSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, VSSetShaderResources) - 200usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::VSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, VSSetSamplers) - 208usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::Begin"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, Begin) - 216usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::End"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, End) - 224usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::GetData"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, GetData) - 232usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::SetPredication"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, SetPredication) - 240usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::GSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, GSSetShaderResources) - 248usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::GSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, GSSetSamplers) - 256usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::OMSetRenderTargets"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, OMSetRenderTargets) - 264usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::OMSetRenderTargetsAndUnorderedAccessViews"][::std::mem::offset_of!(
+        ID3D11DeviceContext4Vtbl,
+        OMSetRenderTargetsAndUnorderedAccessViews
+    )
+        - 272usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::OMSetBlendState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, OMSetBlendState) - 280usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::OMSetDepthStencilState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, OMSetDepthStencilState) - 288usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::SOSetTargets"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, SOSetTargets) - 296usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::DrawAuto"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, DrawAuto) - 304usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::DrawIndexedInstancedIndirect"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, DrawIndexedInstancedIndirect) - 312usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::DrawInstancedIndirect"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, DrawInstancedIndirect) - 320usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::Dispatch"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, Dispatch) - 328usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::DispatchIndirect"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, DispatchIndirect) - 336usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::RSSetState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, RSSetState) - 344usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::RSSetViewports"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, RSSetViewports) - 352usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::RSSetScissorRects"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, RSSetScissorRects) - 360usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::CopySubresourceRegion"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, CopySubresourceRegion) - 368usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::CopyResource"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, CopyResource) - 376usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::UpdateSubresource"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, UpdateSubresource) - 384usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::CopyStructureCount"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, CopyStructureCount) - 392usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::ClearRenderTargetView"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, ClearRenderTargetView) - 400usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::ClearUnorderedAccessViewUint"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, ClearUnorderedAccessViewUint) - 408usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::ClearUnorderedAccessViewFloat"][::std::mem::offset_of!(
+        ID3D11DeviceContext4Vtbl,
+        ClearUnorderedAccessViewFloat
+    ) - 416usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::ClearDepthStencilView"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, ClearDepthStencilView) - 424usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::GenerateMips"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, GenerateMips) - 432usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::SetResourceMinLOD"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, SetResourceMinLOD) - 440usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::GetResourceMinLOD"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, GetResourceMinLOD) - 448usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::ResolveSubresource"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, ResolveSubresource) - 456usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::ExecuteCommandList"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, ExecuteCommandList) - 464usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::HSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, HSSetShaderResources) - 472usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::HSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, HSSetShader) - 480usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::HSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, HSSetSamplers) - 488usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::HSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, HSSetConstantBuffers) - 496usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::DSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, DSSetShaderResources) - 504usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::DSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, DSSetShader) - 512usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::DSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, DSSetSamplers) - 520usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::DSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, DSSetConstantBuffers) - 528usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::CSSetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, CSSetShaderResources) - 536usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::CSSetUnorderedAccessViews"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, CSSetUnorderedAccessViews) - 544usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::CSSetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, CSSetShader) - 552usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::CSSetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, CSSetSamplers) - 560usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::CSSetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, CSSetConstantBuffers) - 568usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::VSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, VSGetConstantBuffers) - 576usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::PSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, PSGetShaderResources) - 584usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::PSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, PSGetShader) - 592usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::PSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, PSGetSamplers) - 600usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::VSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, VSGetShader) - 608usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::PSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, PSGetConstantBuffers) - 616usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::IAGetInputLayout"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, IAGetInputLayout) - 624usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::IAGetVertexBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, IAGetVertexBuffers) - 632usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::IAGetIndexBuffer"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, IAGetIndexBuffer) - 640usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::GSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, GSGetConstantBuffers) - 648usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::GSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, GSGetShader) - 656usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::IAGetPrimitiveTopology"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, IAGetPrimitiveTopology) - 664usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::VSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, VSGetShaderResources) - 672usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::VSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, VSGetSamplers) - 680usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::GetPredication"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, GetPredication) - 688usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::GSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, GSGetShaderResources) - 696usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::GSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, GSGetSamplers) - 704usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::OMGetRenderTargets"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, OMGetRenderTargets) - 712usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::OMGetRenderTargetsAndUnorderedAccessViews"][::std::mem::offset_of!(
+        ID3D11DeviceContext4Vtbl,
+        OMGetRenderTargetsAndUnorderedAccessViews
+    )
+        - 720usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::OMGetBlendState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, OMGetBlendState) - 728usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::OMGetDepthStencilState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, OMGetDepthStencilState) - 736usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::SOGetTargets"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, SOGetTargets) - 744usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::RSGetState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, RSGetState) - 752usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::RSGetViewports"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, RSGetViewports) - 760usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::RSGetScissorRects"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, RSGetScissorRects) - 768usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::HSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, HSGetShaderResources) - 776usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::HSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, HSGetShader) - 784usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::HSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, HSGetSamplers) - 792usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::HSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, HSGetConstantBuffers) - 800usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::DSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, DSGetShaderResources) - 808usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::DSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, DSGetShader) - 816usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::DSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, DSGetSamplers) - 824usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::DSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, DSGetConstantBuffers) - 832usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::CSGetShaderResources"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, CSGetShaderResources) - 840usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::CSGetUnorderedAccessViews"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, CSGetUnorderedAccessViews) - 848usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::CSGetShader"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, CSGetShader) - 856usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::CSGetSamplers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, CSGetSamplers) - 864usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::CSGetConstantBuffers"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, CSGetConstantBuffers) - 872usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::ClearState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, ClearState) - 880usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::Flush"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, Flush) - 888usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::GetType"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, GetType) - 896usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::GetContextFlags"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, GetContextFlags) - 904usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::FinishCommandList"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, FinishCommandList) - 912usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::CopySubresourceRegion1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, CopySubresourceRegion1) - 920usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::UpdateSubresource1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, UpdateSubresource1) - 928usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::DiscardResource"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, DiscardResource) - 936usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::DiscardView"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, DiscardView) - 944usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::VSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, VSSetConstantBuffers1) - 952usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::HSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, HSSetConstantBuffers1) - 960usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::DSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, DSSetConstantBuffers1) - 968usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::GSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, GSSetConstantBuffers1) - 976usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::PSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, PSSetConstantBuffers1) - 984usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::CSSetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, CSSetConstantBuffers1) - 992usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::VSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, VSGetConstantBuffers1) - 1000usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::HSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, HSGetConstantBuffers1) - 1008usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::DSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, DSGetConstantBuffers1) - 1016usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::GSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, GSGetConstantBuffers1) - 1024usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::PSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, PSGetConstantBuffers1) - 1032usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::CSGetConstantBuffers1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, CSGetConstantBuffers1) - 1040usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::SwapDeviceContextState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, SwapDeviceContextState) - 1048usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::ClearView"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, ClearView) - 1056usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::DiscardView1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, DiscardView1) - 1064usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::UpdateTileMappings"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, UpdateTileMappings) - 1072usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::CopyTileMappings"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, CopyTileMappings) - 1080usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::CopyTiles"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, CopyTiles) - 1088usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::UpdateTiles"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, UpdateTiles) - 1096usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::ResizeTilePool"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, ResizeTilePool) - 1104usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::TiledResourceBarrier"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, TiledResourceBarrier) - 1112usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::IsAnnotationEnabled"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, IsAnnotationEnabled) - 1120usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::SetMarkerInt"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, SetMarkerInt) - 1128usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::BeginEventInt"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, BeginEventInt) - 1136usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::EndEvent"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, EndEvent) - 1144usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::Flush1"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, Flush1) - 1152usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::SetHardwareProtectionState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, SetHardwareProtectionState) - 1160usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::GetHardwareProtectionState"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, GetHardwareProtectionState) - 1168usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::Signal"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, Signal) - 1176usize];
+    ["Offset of field: ID3D11DeviceContext4Vtbl::Wait"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4Vtbl, Wait) - 1184usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11DeviceContext4 {
+    pub lpVtbl: *mut ID3D11DeviceContext4Vtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11DeviceContext4"][::std::mem::size_of::<ID3D11DeviceContext4>() - 8usize];
+    ["Alignment of ID3D11DeviceContext4"][::std::mem::align_of::<ID3D11DeviceContext4>() - 8usize];
+    ["Offset of field: ID3D11DeviceContext4::lpVtbl"]
+        [::std::mem::offset_of!(ID3D11DeviceContext4, lpVtbl) - 0usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11Device5Vtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Device5) -> ULONG>,
+    pub Release: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Device5) -> ULONG>,
+    pub CreateBuffer: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pDesc: *const D3D11_BUFFER_DESC,
+            pInitialData: *const D3D11_SUBRESOURCE_DATA,
+            ppBuffer: *mut *mut ID3D11Buffer,
+        ) -> HRESULT,
+    >,
+    pub CreateTexture1D: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pDesc: *const D3D11_TEXTURE1D_DESC,
+            pInitialData: *const D3D11_SUBRESOURCE_DATA,
+            ppTexture1D: *mut *mut ID3D11Texture1D,
+        ) -> HRESULT,
+    >,
+    pub CreateTexture2D: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pDesc: *const D3D11_TEXTURE2D_DESC,
+            pInitialData: *const D3D11_SUBRESOURCE_DATA,
+            ppTexture2D: *mut *mut ID3D11Texture2D,
+        ) -> HRESULT,
+    >,
+    pub CreateTexture3D: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pDesc: *const D3D11_TEXTURE3D_DESC,
+            pInitialData: *const D3D11_SUBRESOURCE_DATA,
+            ppTexture3D: *mut *mut ID3D11Texture3D,
+        ) -> HRESULT,
+    >,
+    pub CreateShaderResourceView: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pResource: *mut ID3D11Resource,
+            pDesc: *const D3D11_SHADER_RESOURCE_VIEW_DESC,
+            ppSRView: *mut *mut ID3D11ShaderResourceView,
+        ) -> HRESULT,
+    >,
+    pub CreateUnorderedAccessView: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pResource: *mut ID3D11Resource,
+            pDesc: *const D3D11_UNORDERED_ACCESS_VIEW_DESC,
+            ppUAView: *mut *mut ID3D11UnorderedAccessView,
+        ) -> HRESULT,
+    >,
+    pub CreateRenderTargetView: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pResource: *mut ID3D11Resource,
+            pDesc: *const D3D11_RENDER_TARGET_VIEW_DESC,
+            ppRTView: *mut *mut ID3D11RenderTargetView,
+        ) -> HRESULT,
+    >,
+    pub CreateDepthStencilView: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pResource: *mut ID3D11Resource,
+            pDesc: *const D3D11_DEPTH_STENCIL_VIEW_DESC,
+            ppDepthStencilView: *mut *mut ID3D11DepthStencilView,
+        ) -> HRESULT,
+    >,
+    pub CreateInputLayout: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pInputElementDescs: *const D3D11_INPUT_ELEMENT_DESC,
+            NumElements: UINT,
+            pShaderBytecodeWithInputSignature: *const ::std::os::raw::c_void,
+            BytecodeLength: SIZE_T,
+            ppInputLayout: *mut *mut ID3D11InputLayout,
+        ) -> HRESULT,
+    >,
+    pub CreateVertexShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pShaderBytecode: *const ::std::os::raw::c_void,
+            BytecodeLength: SIZE_T,
+            pClassLinkage: *mut ID3D11ClassLinkage,
+            ppVertexShader: *mut *mut ID3D11VertexShader,
+        ) -> HRESULT,
+    >,
+    pub CreateGeometryShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pShaderBytecode: *const ::std::os::raw::c_void,
+            BytecodeLength: SIZE_T,
+            pClassLinkage: *mut ID3D11ClassLinkage,
+            ppGeometryShader: *mut *mut ID3D11GeometryShader,
+        ) -> HRESULT,
+    >,
+    pub CreateGeometryShaderWithStreamOutput: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pShaderBytecode: *const ::std::os::raw::c_void,
+            BytecodeLength: SIZE_T,
+            pSODeclaration: *const D3D11_SO_DECLARATION_ENTRY,
+            NumEntries: UINT,
+            pBufferStrides: *const UINT,
+            NumStrides: UINT,
+            RasterizedStream: UINT,
+            pClassLinkage: *mut ID3D11ClassLinkage,
+            ppGeometryShader: *mut *mut ID3D11GeometryShader,
+        ) -> HRESULT,
+    >,
+    pub CreatePixelShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pShaderBytecode: *const ::std::os::raw::c_void,
+            BytecodeLength: SIZE_T,
+            pClassLinkage: *mut ID3D11ClassLinkage,
+            ppPixelShader: *mut *mut ID3D11PixelShader,
+        ) -> HRESULT,
+    >,
+    pub CreateHullShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pShaderBytecode: *const ::std::os::raw::c_void,
+            BytecodeLength: SIZE_T,
+            pClassLinkage: *mut ID3D11ClassLinkage,
+            ppHullShader: *mut *mut ID3D11HullShader,
+        ) -> HRESULT,
+    >,
+    pub CreateDomainShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pShaderBytecode: *const ::std::os::raw::c_void,
+            BytecodeLength: SIZE_T,
+            pClassLinkage: *mut ID3D11ClassLinkage,
+            ppDomainShader: *mut *mut ID3D11DomainShader,
+        ) -> HRESULT,
+    >,
+    pub CreateComputeShader: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pShaderBytecode: *const ::std::os::raw::c_void,
+            BytecodeLength: SIZE_T,
+            pClassLinkage: *mut ID3D11ClassLinkage,
+            ppComputeShader: *mut *mut ID3D11ComputeShader,
+        ) -> HRESULT,
+    >,
+    pub CreateClassLinkage: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            ppLinkage: *mut *mut ID3D11ClassLinkage,
+        ) -> HRESULT,
+    >,
+    pub CreateBlendState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pBlendStateDesc: *const D3D11_BLEND_DESC,
+            ppBlendState: *mut *mut ID3D11BlendState,
+        ) -> HRESULT,
+    >,
+    pub CreateDepthStencilState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pDepthStencilDesc: *const D3D11_DEPTH_STENCIL_DESC,
+            ppDepthStencilState: *mut *mut ID3D11DepthStencilState,
+        ) -> HRESULT,
+    >,
+    pub CreateRasterizerState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pRasterizerDesc: *const D3D11_RASTERIZER_DESC,
+            ppRasterizerState: *mut *mut ID3D11RasterizerState,
+        ) -> HRESULT,
+    >,
+    pub CreateSamplerState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pSamplerDesc: *const D3D11_SAMPLER_DESC,
+            ppSamplerState: *mut *mut ID3D11SamplerState,
+        ) -> HRESULT,
+    >,
+    pub CreateQuery: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pQueryDesc: *const D3D11_QUERY_DESC,
+            ppQuery: *mut *mut ID3D11Query,
+        ) -> HRESULT,
+    >,
+    pub CreatePredicate: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pPredicateDesc: *const D3D11_QUERY_DESC,
+            ppPredicate: *mut *mut ID3D11Predicate,
+        ) -> HRESULT,
+    >,
+    pub CreateCounter: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pCounterDesc: *const D3D11_COUNTER_DESC,
+            ppCounter: *mut *mut ID3D11Counter,
+        ) -> HRESULT,
+    >,
+    pub CreateDeferredContext: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            ContextFlags: UINT,
+            ppDeferredContext: *mut *mut ID3D11DeviceContext,
+        ) -> HRESULT,
+    >,
+    pub OpenSharedResource: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            hResource: HANDLE,
+            ReturnedInterface: *const IID,
+            ppResource: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub CheckFormatSupport: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            Format: DXGI_FORMAT,
+            pFormatSupport: *mut UINT,
+        ) -> HRESULT,
+    >,
+    pub CheckMultisampleQualityLevels: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            Format: DXGI_FORMAT,
+            SampleCount: UINT,
+            pNumQualityLevels: *mut UINT,
+        ) -> HRESULT,
+    >,
+    pub CheckCounterInfo: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11Device5, pCounterInfo: *mut D3D11_COUNTER_INFO),
+    >,
+    pub CheckCounter: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pDesc: *const D3D11_COUNTER_DESC,
+            pType: *mut D3D11_COUNTER_TYPE,
+            pActiveCounters: *mut UINT,
+            szName: LPSTR,
+            pNameLength: *mut UINT,
+            szUnits: LPSTR,
+            pUnitsLength: *mut UINT,
+            szDescription: LPSTR,
+            pDescriptionLength: *mut UINT,
+        ) -> HRESULT,
+    >,
+    pub CheckFeatureSupport: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            Feature: D3D11_FEATURE,
+            pFeatureSupportData: *mut ::std::os::raw::c_void,
+            FeatureSupportDataSize: UINT,
+        ) -> HRESULT,
+    >,
+    pub GetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            guid: *const GUID,
+            pDataSize: *mut UINT,
+            pData: *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateData: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            guid: *const GUID,
+            DataSize: UINT,
+            pData: *const ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub SetPrivateDataInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            guid: *const GUID,
+            pData: *const IUnknown,
+        ) -> HRESULT,
+    >,
+    pub GetFeatureLevel:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Device5) -> D3D_FEATURE_LEVEL>,
+    pub GetCreationFlags:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Device5) -> UINT>,
+    pub GetDeviceRemovedReason:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Device5) -> HRESULT>,
+    pub GetImmediateContext: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            ppImmediateContext: *mut *mut ID3D11DeviceContext,
+        ),
+    >,
+    pub SetExceptionMode: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11Device5, RaiseFlags: UINT) -> HRESULT,
+    >,
+    pub GetExceptionMode:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Device5) -> UINT>,
+    pub GetImmediateContext1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            ppImmediateContext: *mut *mut ID3D11DeviceContext1,
+        ),
+    >,
+    pub CreateDeferredContext1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            ContextFlags: UINT,
+            ppDeferredContext: *mut *mut ID3D11DeviceContext1,
+        ) -> HRESULT,
+    >,
+    pub CreateBlendState1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pBlendStateDesc: *const D3D11_BLEND_DESC1,
+            ppBlendState: *mut *mut ID3D11BlendState1,
+        ) -> HRESULT,
+    >,
+    pub CreateRasterizerState1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pRasterizerDesc: *const D3D11_RASTERIZER_DESC1,
+            ppRasterizerState: *mut *mut ID3D11RasterizerState1,
+        ) -> HRESULT,
+    >,
+    pub CreateDeviceContextState: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            Flags: UINT,
+            pFeatureLevels: *const D3D_FEATURE_LEVEL,
+            FeatureLevels: UINT,
+            SDKVersion: UINT,
+            EmulatedInterface: *const IID,
+            pChosenFeatureLevel: *mut D3D_FEATURE_LEVEL,
+            ppContextState: *mut *mut ID3DDeviceContextState,
+        ) -> HRESULT,
+    >,
+    pub OpenSharedResource1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            hResource: HANDLE,
+            returnedInterface: *const IID,
+            ppResource: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub OpenSharedResourceByName: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            lpName: LPCWSTR,
+            dwDesiredAccess: DWORD,
+            returnedInterface: *const IID,
+            ppResource: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub GetImmediateContext2: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            ppImmediateContext: *mut *mut ID3D11DeviceContext2,
+        ),
+    >,
+    pub CreateDeferredContext2: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            ContextFlags: UINT,
+            ppDeferredContext: *mut *mut ID3D11DeviceContext2,
+        ) -> HRESULT,
+    >,
+    pub GetResourceTiling: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pTiledResource: *mut ID3D11Resource,
+            pNumTilesForEntireResource: *mut UINT,
+            pPackedMipDesc: *mut D3D11_PACKED_MIP_DESC,
+            pStandardTileShapeForNonPackedMips: *mut D3D11_TILE_SHAPE,
+            pNumSubresourceTilings: *mut UINT,
+            FirstSubresourceTilingToGet: UINT,
+            pSubresourceTilingsForNonPackedMips: *mut D3D11_SUBRESOURCE_TILING,
+        ),
+    >,
+    pub CheckMultisampleQualityLevels1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            Format: DXGI_FORMAT,
+            SampleCount: UINT,
+            Flags: UINT,
+            pNumQualityLevels: *mut UINT,
+        ) -> HRESULT,
+    >,
+    pub CreateTexture2D1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pDesc1: *const D3D11_TEXTURE2D_DESC1,
+            pInitialData: *const D3D11_SUBRESOURCE_DATA,
+            ppTexture2D: *mut *mut ID3D11Texture2D1,
+        ) -> HRESULT,
+    >,
+    pub CreateTexture3D1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pDesc1: *const D3D11_TEXTURE3D_DESC1,
+            pInitialData: *const D3D11_SUBRESOURCE_DATA,
+            ppTexture3D: *mut *mut ID3D11Texture3D1,
+        ) -> HRESULT,
+    >,
+    pub CreateRasterizerState2: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pRasterizerDesc: *const D3D11_RASTERIZER_DESC2,
+            ppRasterizerState: *mut *mut ID3D11RasterizerState2,
+        ) -> HRESULT,
+    >,
+    pub CreateShaderResourceView1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pResource: *mut ID3D11Resource,
+            pDesc1: *const D3D11_SHADER_RESOURCE_VIEW_DESC1,
+            ppSRView1: *mut *mut ID3D11ShaderResourceView1,
+        ) -> HRESULT,
+    >,
+    pub CreateUnorderedAccessView1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pResource: *mut ID3D11Resource,
+            pDesc1: *const D3D11_UNORDERED_ACCESS_VIEW_DESC1,
+            ppUAView1: *mut *mut ID3D11UnorderedAccessView1,
+        ) -> HRESULT,
+    >,
+    pub CreateRenderTargetView1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pResource: *mut ID3D11Resource,
+            pDesc1: *const D3D11_RENDER_TARGET_VIEW_DESC1,
+            ppRTView1: *mut *mut ID3D11RenderTargetView1,
+        ) -> HRESULT,
+    >,
+    pub CreateQuery1: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pQueryDesc1: *const D3D11_QUERY_DESC1,
+            ppQuery1: *mut *mut ID3D11Query1,
+        ) -> HRESULT,
+    >,
+    pub GetImmediateContext3: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            ppImmediateContext: *mut *mut ID3D11DeviceContext3,
+        ),
+    >,
+    pub CreateDeferredContext3: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            ContextFlags: UINT,
+            ppDeferredContext: *mut *mut ID3D11DeviceContext3,
+        ) -> HRESULT,
+    >,
+    pub WriteToSubresource: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pDstResource: *mut ID3D11Resource,
+            DstSubresource: UINT,
+            pDstBox: *const D3D11_BOX,
+            pSrcData: *const ::std::os::raw::c_void,
+            SrcRowPitch: UINT,
+            SrcDepthPitch: UINT,
+        ),
+    >,
+    pub ReadFromSubresource: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            pDstData: *mut ::std::os::raw::c_void,
+            DstRowPitch: UINT,
+            DstDepthPitch: UINT,
+            pSrcResource: *mut ID3D11Resource,
+            SrcSubresource: UINT,
+            pSrcBox: *const D3D11_BOX,
+        ),
+    >,
+    pub RegisterDeviceRemovedEvent: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            hEvent: HANDLE,
+            pdwCookie: *mut DWORD,
+        ) -> HRESULT,
+    >,
+    pub UnregisterDeviceRemoved:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Device5, dwCookie: DWORD)>,
+    pub OpenSharedFence: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            hFence: HANDLE,
+            ReturnedInterface: *const IID,
+            ppFence: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub CreateFence: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Device5,
+            InitialValue: UINT64,
+            Flags: D3D11_FENCE_FLAG,
+            ReturnedInterface: *const IID,
+            ppFence: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11Device5Vtbl"][::std::mem::size_of::<ID3D11Device5Vtbl>() - 552usize];
+    ["Alignment of ID3D11Device5Vtbl"][::std::mem::align_of::<ID3D11Device5Vtbl>() - 8usize];
+    ["Offset of field: ID3D11Device5Vtbl::QueryInterface"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, QueryInterface) - 0usize];
+    ["Offset of field: ID3D11Device5Vtbl::AddRef"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, AddRef) - 8usize];
+    ["Offset of field: ID3D11Device5Vtbl::Release"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, Release) - 16usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateBuffer"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateBuffer) - 24usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateTexture1D"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateTexture1D) - 32usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateTexture2D"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateTexture2D) - 40usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateTexture3D"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateTexture3D) - 48usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateShaderResourceView"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateShaderResourceView) - 56usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateUnorderedAccessView"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateUnorderedAccessView) - 64usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateRenderTargetView"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateRenderTargetView) - 72usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateDepthStencilView"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateDepthStencilView) - 80usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateInputLayout"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateInputLayout) - 88usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateVertexShader"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateVertexShader) - 96usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateGeometryShader"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateGeometryShader) - 104usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateGeometryShaderWithStreamOutput"][::std::mem::offset_of!(
+        ID3D11Device5Vtbl,
+        CreateGeometryShaderWithStreamOutput
+    ) - 112usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreatePixelShader"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreatePixelShader) - 120usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateHullShader"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateHullShader) - 128usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateDomainShader"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateDomainShader) - 136usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateComputeShader"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateComputeShader) - 144usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateClassLinkage"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateClassLinkage) - 152usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateBlendState"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateBlendState) - 160usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateDepthStencilState"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateDepthStencilState) - 168usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateRasterizerState"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateRasterizerState) - 176usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateSamplerState"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateSamplerState) - 184usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateQuery"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateQuery) - 192usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreatePredicate"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreatePredicate) - 200usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateCounter"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateCounter) - 208usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateDeferredContext"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateDeferredContext) - 216usize];
+    ["Offset of field: ID3D11Device5Vtbl::OpenSharedResource"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, OpenSharedResource) - 224usize];
+    ["Offset of field: ID3D11Device5Vtbl::CheckFormatSupport"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CheckFormatSupport) - 232usize];
+    ["Offset of field: ID3D11Device5Vtbl::CheckMultisampleQualityLevels"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CheckMultisampleQualityLevels) - 240usize];
+    ["Offset of field: ID3D11Device5Vtbl::CheckCounterInfo"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CheckCounterInfo) - 248usize];
+    ["Offset of field: ID3D11Device5Vtbl::CheckCounter"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CheckCounter) - 256usize];
+    ["Offset of field: ID3D11Device5Vtbl::CheckFeatureSupport"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CheckFeatureSupport) - 264usize];
+    ["Offset of field: ID3D11Device5Vtbl::GetPrivateData"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, GetPrivateData) - 272usize];
+    ["Offset of field: ID3D11Device5Vtbl::SetPrivateData"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, SetPrivateData) - 280usize];
+    ["Offset of field: ID3D11Device5Vtbl::SetPrivateDataInterface"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, SetPrivateDataInterface) - 288usize];
+    ["Offset of field: ID3D11Device5Vtbl::GetFeatureLevel"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, GetFeatureLevel) - 296usize];
+    ["Offset of field: ID3D11Device5Vtbl::GetCreationFlags"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, GetCreationFlags) - 304usize];
+    ["Offset of field: ID3D11Device5Vtbl::GetDeviceRemovedReason"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, GetDeviceRemovedReason) - 312usize];
+    ["Offset of field: ID3D11Device5Vtbl::GetImmediateContext"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, GetImmediateContext) - 320usize];
+    ["Offset of field: ID3D11Device5Vtbl::SetExceptionMode"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, SetExceptionMode) - 328usize];
+    ["Offset of field: ID3D11Device5Vtbl::GetExceptionMode"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, GetExceptionMode) - 336usize];
+    ["Offset of field: ID3D11Device5Vtbl::GetImmediateContext1"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, GetImmediateContext1) - 344usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateDeferredContext1"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateDeferredContext1) - 352usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateBlendState1"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateBlendState1) - 360usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateRasterizerState1"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateRasterizerState1) - 368usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateDeviceContextState"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateDeviceContextState) - 376usize];
+    ["Offset of field: ID3D11Device5Vtbl::OpenSharedResource1"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, OpenSharedResource1) - 384usize];
+    ["Offset of field: ID3D11Device5Vtbl::OpenSharedResourceByName"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, OpenSharedResourceByName) - 392usize];
+    ["Offset of field: ID3D11Device5Vtbl::GetImmediateContext2"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, GetImmediateContext2) - 400usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateDeferredContext2"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateDeferredContext2) - 408usize];
+    ["Offset of field: ID3D11Device5Vtbl::GetResourceTiling"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, GetResourceTiling) - 416usize];
+    ["Offset of field: ID3D11Device5Vtbl::CheckMultisampleQualityLevels1"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CheckMultisampleQualityLevels1) - 424usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateTexture2D1"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateTexture2D1) - 432usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateTexture3D1"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateTexture3D1) - 440usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateRasterizerState2"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateRasterizerState2) - 448usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateShaderResourceView1"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateShaderResourceView1) - 456usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateUnorderedAccessView1"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateUnorderedAccessView1) - 464usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateRenderTargetView1"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateRenderTargetView1) - 472usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateQuery1"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateQuery1) - 480usize];
+    ["Offset of field: ID3D11Device5Vtbl::GetImmediateContext3"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, GetImmediateContext3) - 488usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateDeferredContext3"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateDeferredContext3) - 496usize];
+    ["Offset of field: ID3D11Device5Vtbl::WriteToSubresource"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, WriteToSubresource) - 504usize];
+    ["Offset of field: ID3D11Device5Vtbl::ReadFromSubresource"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, ReadFromSubresource) - 512usize];
+    ["Offset of field: ID3D11Device5Vtbl::RegisterDeviceRemovedEvent"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, RegisterDeviceRemovedEvent) - 520usize];
+    ["Offset of field: ID3D11Device5Vtbl::UnregisterDeviceRemoved"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, UnregisterDeviceRemoved) - 528usize];
+    ["Offset of field: ID3D11Device5Vtbl::OpenSharedFence"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, OpenSharedFence) - 536usize];
+    ["Offset of field: ID3D11Device5Vtbl::CreateFence"]
+        [::std::mem::offset_of!(ID3D11Device5Vtbl, CreateFence) - 544usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11Device5 {
+    pub lpVtbl: *mut ID3D11Device5Vtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11Device5"][::std::mem::size_of::<ID3D11Device5>() - 8usize];
+    ["Alignment of ID3D11Device5"][::std::mem::align_of::<ID3D11Device5>() - 8usize];
+    ["Offset of field: ID3D11Device5::lpVtbl"]
+        [::std::mem::offset_of!(ID3D11Device5, lpVtbl) - 0usize];
+};
 pub const DXGI_GPU_PREFERENCE_UNSPECIFIED: DXGI_GPU_PREFERENCE = 0;
 pub const DXGI_GPU_PREFERENCE_MINIMUM_POWER: DXGI_GPU_PREFERENCE = 1;
 pub const DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE: DXGI_GPU_PREFERENCE = 2;

@@ -49,7 +49,7 @@ trap 'rm -rf "$work"' EXIT
 cat > "$work/d3d11.h" <<'EOF'
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include <d3d11.h>
+#include <d3d11_4.h>
 #include <dxgi1_6.h>
 #include <dxva.h>
 typedef LONG NTSTATUS;
@@ -86,6 +86,10 @@ bindgen "$work/d3d11.h" \
     `# the adapter walk.` \
     --allowlist-type 'ID3D11(Device|DeviceContext|Texture2D|VideoDevice|VideoContext|VideoDecoder|VideoDecoderOutputView)' \
     --allowlist-type 'IDXGI(Factory1|Factory6|Adapter1)'     --allowlist-type 'DXGI_GPU_PREFERENCE' \
+    `# The fence a picture's device work is known finished by, the device and` \
+    `# context that make and signal it, and a shared texture's handle.` \
+    --allowlist-type 'ID3D11(Device5|DeviceContext4|Fence)' \
+    --allowlist-type 'IDXGIResource' \
     `# The two entry points resolved at run time, and the kernel's adapter type.` \
     --allowlist-type 'PFN_D3D11_CREATE_DEVICE' \
     --allowlist-type 'PFND3DKMT_(OPENADAPTERFROMLUID|QUERYADAPTERINFO|CLOSEADAPTER)' \
@@ -96,6 +100,7 @@ bindgen "$work/d3d11.h" \
     --allowlist-type 'DXVA_(PicParams_HEVC_RangeExt|Qmatrix_HEVC|Slice_HEVC_Short)' \
     `# Flags passed as plain integers, which nothing above names as a type.` \
     --allowlist-type 'D3D11_(CREATE_DEVICE_FLAG|BIND_FLAG|CPU_ACCESS_FLAG|MAP|USAGE)' \
+    --allowlist-type 'D3D11_(RESOURCE_MISC_FLAG|FENCE_FLAG|MAP_FLAG|SRV_DIMENSION|UAV_DIMENSION)' \
     --allowlist-type 'D3D11_(VIDEO_DECODER_BUFFER_TYPE|VDOV_DIMENSION)' \
     --allowlist-var 'D3D11_SDK_VERSION' \
     "${opaque_args[@]}" \
@@ -120,7 +125,9 @@ def read(rel):
 interfaces = {
     "um/d3d11.h": ["ID3D11Device", "ID3D11VideoDevice", "ID3D11VideoContext",
                    "ID3D11Texture2D"],
-    "shared/dxgi.h": ["IDXGIFactory1", "IDXGIAdapter1", "IDXGIDevice"],
+    "um/d3d11_3.h": ["ID3D11Fence", "ID3D11DeviceContext4"],
+    "um/d3d11_4.h": ["ID3D11Device5"],
+    "shared/dxgi.h": ["IDXGIFactory1", "IDXGIAdapter1", "IDXGIDevice", "IDXGIResource"],
     "shared/dxgi1_6.h": ["IDXGIFactory6"],
 }
 # The decoder profiles every codec here is opened with.
