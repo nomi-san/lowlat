@@ -332,6 +332,14 @@ fn a_sustained_stream_loses_nothing_allocates_nothing_and_does_not_tick() {
             if let Some(before) = baseline {
                 sender_allocs.store(alloc_counter::count() - before, Ordering::Relaxed);
             }
+            // **Queuing stops here; turning does not.** What the session accepted
+            // but has not paced out yet, and anything to send again, leaves only
+            // on a turn, so the sender keeps turning until the receiver stops. A
+            // sender that stopped with the queue left the tail unsent, which a
+            // slow machine showed as messages that never arrived.
+            while !stop_receiver.load(Ordering::Relaxed) {
+                left.turn(|_| {}).expect("left turn");
+            }
         });
 
         scope.spawn(|| {
