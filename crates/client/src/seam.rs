@@ -230,20 +230,29 @@ impl Client {
     /// act: the declaration re-masked by the new decoder's capability and
     /// restated where it changed, the running decoder torn down, the new one
     /// opened on the decode thread, and exactly one keyframe request once
-    /// it can take one. The frame kind is the queue's shape and stays the
-    /// creation's: a session of the handle kind refuses this, because its
-    /// device slots are bound to the device.
+    /// it can take one. **The frame kind is a preference here**: in a session
+    /// asking for handles, a decoder that hands out none is taken all the
+    /// same and its pictures come as planes, and a move back to one that
+    /// hands them out returns to handles; each slot carries its own backing,
+    /// so a picture still held stays valid where it was made.
     pub fn set_decoder(&mut self, backend: Backend, device: &str) -> Result<(), Error> {
-        if backend == Backend::None || self.frames.kind() == FrameKind::Handle {
+        if backend == Backend::None {
             return Err(Error::Decoder(DecoderStage::Unsupported));
         }
-        let decoding = Decoding {
+        let asked = |kind| Decoding {
             backend,
             device: device.to_string(),
-            kind: self.frames.kind(),
+            kind,
             ceiling: self.frames.ceiling(),
         };
-        let (opened, caps) = sys::choose(&decoding)?;
+        let (opened, caps) = match sys::choose(&asked(self.frames.kind())) {
+            Err(Error::Decoder(DecoderStage::Unsupported))
+                if self.frames.kind() == FrameKind::Handle =>
+            {
+                sys::choose(&asked(FrameKind::Planes))?
+            }
+            other => other?,
+        };
         let Some(opened) = opened else {
             return Err(Error::Decoder(DecoderStage::Unsupported));
         };
@@ -263,6 +272,19 @@ impl Client {
         // The word travels behind the flags on the session thread, which
         // restates the declaration first and then tells the decode thread.
         self.request(Request::Decoder(flags));
+        Ok(())
+    }
+
+    /// Hand pictures out as `kind` from the next one on, with no keyframe:
+    /// the decoder keeps running and keeps its references, and only how its
+    /// pictures leave changes. Handles are refused by a decoder that hands
+    /// out none, and nothing changes then.
+    pub fn set_frame_kind(&mut self, kind: FrameKind) -> Result<(), Error> {
+        let exports = self.opened.as_ref().is_some_and(Opened::exports);
+        if kind == FrameKind::Handle && !exports {
+            return Err(Error::Decoder(DecoderStage::Unsupported));
+        }
+        self.frames.set_kind(kind);
         Ok(())
     }
 
@@ -290,11 +312,21 @@ impl Client {
         match self.frames.acquire(self.last_seq, timeout) {
             Ok(Some(held)) => {
                 self.last_seq = held.seq;
+                if let Some(us) = held.ready_us {
+                    self.note_decode_us(us);
+                }
                 Ok(Some(held))
             }
             Ok(None) => Ok(None),
             Err(crate::frames::TooManyHeld) => Err(Error::TooManyHeld),
         }
+    }
+
+    /// A picture handed out behind its device's progress, seen finished
+    /// `us` after its work was queued: that is its decode, as status and the
+    /// host are told it, since the decode thread waited for nothing.
+    pub fn note_decode_us(&self, us: u32) {
+        self.telemetry.decode_us.store(us, Ordering::Relaxed);
     }
 
     /// The sequence of the newest picture handed out, for a caller that

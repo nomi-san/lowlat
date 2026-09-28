@@ -12,7 +12,6 @@ use std::time::Duration;
 
 use lowlat_common::events;
 use lowlat_core::video;
-use lowlat_decode::nvdec::DevicePlanes;
 use lowlat_decode::{Decoder, Fault, Fed, Format, Picture, nvdec, software};
 use lowlat_net::WakeHandle;
 
@@ -20,7 +19,7 @@ use crate::config::FrameKind;
 use crate::driver::{Telemetry, Units};
 use crate::event::{Event, Outcome};
 use crate::feed::{Decision, Feed};
-use crate::frames::{Frame, Frames};
+use crate::frames::{Filling, Frame, Frames};
 use crate::report::Smoothed;
 use crate::seam::Opened;
 
@@ -43,11 +42,20 @@ trait Backend: Decoder {
     fn output(&self) -> Option<(u32, u32, Format)>;
     /// The last picture's decode wait and hand-over, in microseconds.
     fn timings(&self) -> (u32, u32);
-    /// The next picture into device memory. Only a backend that exports
-    /// is ever asked, because creation refuses the handle kind for the
-    /// rest; a fault here is the answer if one is asked anyway.
-    fn take_to_device(&mut self, out: &DevicePlanes) -> Result<Option<Picture>, Fault> {
-        let _ = out;
+    /// Whether it hands pictures out as a handle; the rest hand out planes
+    /// whatever the session asked for.
+    fn exports(&self) -> bool {
+        false
+    }
+    /// The next picture into the slot `filling` lends, as a handle, with the
+    /// value its gate opens at (zero for a picture finished when it is
+    /// taken). Only a backend that exports is asked.
+    fn take_to_slot(
+        &mut self,
+        filling: &mut Filling<'_>,
+        layout: (u32, u32, Format),
+    ) -> Result<Option<(Picture, u64)>, Fault> {
+        let _ = (filling, layout);
         Err(Fault::Fatal)
     }
 }
@@ -59,8 +67,21 @@ impl Backend for nvdec::Backend<'_> {
     fn timings(&self) -> (u32, u32) {
         (self.decode_us, self.readback_us)
     }
-    fn take_to_device(&mut self, out: &DevicePlanes) -> Result<Option<Picture>, Fault> {
-        nvdec::Backend::take_to_device(self, out)
+    fn exports(&self) -> bool {
+        true
+    }
+    fn take_to_slot(
+        &mut self,
+        filling: &mut Filling<'_>,
+        (width, height, format): (u32, u32, Format),
+    ) -> Result<Option<(Picture, u64)>, Fault> {
+        // A queue without the vendor's runtime attached lends no device
+        // memory; the picture is then lost, as a slot that does not fit is.
+        let Some(planes) = filling.device_planes_for(width, height, format) else {
+            return Ok(None);
+        };
+        // The device copy is waited for before the take returns.
+        Ok(nvdec::Backend::take_to_device(self, &planes)?.map(|p| (p, 0)))
     }
 }
 
@@ -100,6 +121,9 @@ enum Next {
     Stop,
     /// No decoder can serve the stream.
     Failed,
+    /// The decoder's device is gone; the platform finds the GPU again and
+    /// goes round, or fails the stream.
+    Lost,
     /// The application chose another decoder: the old one is gone, and the
     /// one named is to be opened on this thread.
     Switch(Opened),
@@ -178,7 +202,8 @@ impl Next {
     /// application told when no decoder can serve the stream.
     fn finish(self, telemetry: &Telemetry, emit: &events::Sender<Event>, frames: &Frames) {
         match self {
-            Next::Failed => fail(telemetry, emit, frames),
+            // A loss no platform recovered from ends the stream as a failure.
+            Next::Failed | Next::Lost => fail(telemetry, emit, frames),
             Next::Stop => frames.close(),
             Next::Switch(_) => unreachable!("a switch is taken by the loop"),
         }
@@ -259,6 +284,7 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
                 let _ = shell.notify();
             }
             Decision::Failed => return Next::Failed,
+            Decision::Lost => return Next::Lost,
             Decision::Fed(Fed::Picture) => {
                 telemetry.decoder.store(1, Ordering::Relaxed);
                 take_pictures(
@@ -325,24 +351,31 @@ fn take_pictures<D: Backend>(
         let Some(mut filling) = frames.fill() else {
             return;
         };
-        let taken = match frames.kind() {
-            FrameKind::Planes => {
-                let Some(mut planes) = filling.planes_for(width, height, format) else {
-                    return;
-                };
-                lowlat_decode::Decoder::take(feed.decoder_mut(), &mut planes)
-            }
-            FrameKind::Handle => {
-                let Some(planes) = filling.device_planes_for(width, height, format) else {
-                    return;
-                };
-                feed.decoder_mut().take_to_device(&planes)
-            }
+        // By handle when the session asks for one and the decoder can hand
+        // one out; as planes otherwise, whatever was asked. Decided per
+        // picture, so the kind switches at the next one with no keyframe.
+        let by_handle = frames.kind() == FrameKind::Handle && feed.decoder().exports();
+        let taken = if by_handle {
+            feed.decoder_mut()
+                .take_to_slot(&mut filling, (width, height, format))
+        } else {
+            let Some(mut planes) = filling.planes_for(width, height, format) else {
+                return;
+            };
+            lowlat_decode::Decoder::take(feed.decoder_mut(), &mut planes).map(|p| p.map(|p| (p, 0)))
         };
         match taken {
-            Ok(Some(picture)) => {
+            Ok(Some((picture, gate))) => {
                 let (decode_us, readback_us) = feed.decoder().timings();
-                telemetry.decode_us.store(decode_us, Ordering::Relaxed);
+                // A picture behind a gate was not waited for here: its decode
+                // is timed where it is seen finished, on the application's
+                // thread, and that figure is the one reported.
+                let decode_us = if gate == 0 {
+                    telemetry.decode_us.store(decode_us, Ordering::Relaxed);
+                    decode_us
+                } else {
+                    telemetry.decode_us.load(Ordering::Relaxed)
+                };
                 telemetry.readback_us.store(readback_us, Ordering::Relaxed);
                 // What the stream is, from the picture itself: a backend
                 // that reads no parameter set knows it no earlier.
@@ -365,7 +398,7 @@ fn take_pictures<D: Backend>(
                         picture.full_range
                     );
                 }
-                filling.publish(Frame {
+                let frame = Frame {
                     format: picture.format,
                     width: picture.width,
                     height: picture.height,
@@ -374,12 +407,14 @@ fn take_pictures<D: Backend>(
                     order: picture.order,
                     full_range: picture.full_range,
                     arrived: Some(stamp),
+                    submitted: (gate != 0).then(lowlat_common::clock::Time::now),
                     // The queue's, written at publish.
                     pitch: 0,
                     uv_offset: 0,
                     v_offset: 0,
                     handle: None,
-                });
+                };
+                filling.publish_gated(frame, gate);
                 telemetry.decoded.fetch_add(1, Ordering::Relaxed);
             }
             Ok(None) => return,

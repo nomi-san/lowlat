@@ -59,7 +59,8 @@ fn system(nth: usize) -> Available {
         name,
         driver,
         caps,
-        handle: false,
+        // Textures need the fence that says when a picture is finished.
+        handle: device.has_fences(),
         max_h264: d3d11::limits(&device, Codec::H264),
         max_hevc: d3d11::limits(&device, Codec::H265),
     }
@@ -99,8 +100,9 @@ mod tests {
                     "a label off the grammar: {}",
                     row.name
                 );
-                assert!(!row.handle, "the system interface hands out no handle yet");
                 if row.available {
+                    // Every GPU here has the fence the textures need.
+                    assert!(row.handle, "{}: no handle", row.device);
                     assert!(Luid::parse(&row.device).is_some(), "{}", row.device);
                     assert!(!seen.contains(&row.device), "{} twice", row.device);
                     seen.push(row.device.clone());

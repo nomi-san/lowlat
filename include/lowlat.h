@@ -42,7 +42,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 18
+#define LOWLAT_ABI_MINOR 19
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 /// A library built for Windows carries the client half alone.
@@ -632,11 +632,14 @@ typedef enum lowlat_frame_kind {
     /// Planes in memory the library owns for the lease.
     LOWLAT_FRAME_PLANES = 0,
     /// A device-level handle the application imports into its own device:
-    /// the picture's planes at offsets into it. Only the vendor decoder
-    /// exports one, so asking for it settles the decoder on the vendor's
-    /// (`LOWLAT_DECODER_AUTO` then means the vendor's on any device), and
-    /// the open decoder refuses it at creation with
-    /// `LOWLAT_ERR_DECODER_UNSUPPORTED`.
+    /// on Linux an opaque descriptor with the picture's planes at offsets
+    /// into it, which the vendor decoder alone exports, so asking for it
+    /// settles `LOWLAT_DECODER_AUTO` on the vendor's; on Windows one shared
+    /// texture per plane, which the open decoder exports on a system with a
+    /// fence (Windows 10 1703 on). A decoder that exports none refuses it at
+    /// creation and at `lowlat_client_set_frame_kind` with
+    /// `LOWLAT_ERR_DECODER_UNSUPPORTED`, and one chosen mid-session hands out
+    /// planes while it runs (every frame says its kind).
     LOWLAT_FRAME_HANDLE = 1,
 } lowlat_frame_kind;
 
@@ -655,6 +658,17 @@ typedef enum lowlat_handle_kind {
     LOWLAT_HANDLE_OPAQUE_FD = 1,
     /// Reserved: a buffer descriptor with a layout modifier.
     LOWLAT_HANDLE_DMABUF = 2,
+    /// One texture per plane, in the legacy shared form, which a device on
+    /// the GPU `lowlat_frame.adapter` names opens by its handle
+    /// (`OpenSharedResource`) in `lowlat_frame.textures` (minor 19): a luma
+    /// and a two-channel chroma texture at half size for the two-plane
+    /// layouts (`R8` and `R8G8`, or `R16` and `R16G16` with ten bits in the
+    /// high bits), three single-channel ones at full chroma. Each picture is
+    /// finished on the device before the acquire hands it out, so nothing is
+    /// waited on. The handles are **the library's for the lease**; a handle
+    /// is reused once its texture is freed, so an application that keeps its
+    /// opens keys them by `lowlat_frame.allocation`.
+    LOWLAT_HANDLE_D3D11_SHARED = 3,
 } lowlat_handle_kind;
 
 typedef enum lowlat_fence_kind {
@@ -1778,15 +1792,28 @@ typedef struct lowlat_frame {
     /// after a present its time to the screen.
     /// Filled only when `size` reaches it.
     uint64_t arrived_us;
+    /// Each plane's shared handle, for
+    /// `lowlat_handle_kind::LOWLAT_HANDLE_D3D11_SHARED`; zero for a plane
+    /// the layout does not have and for every other kind (minor 19). Filled
+    /// only when `size` reaches it.
+    uint64_t textures[3];
+    /// The GPU `textures` are on, memory-compatible with the system's `LUID`
+    /// (its low part first); zero for every other kind (minor 19). A renderer
+    /// opens the textures on a device of this GPU, and a picture from another
+    /// GPU than the last says the decoder has moved. Filled only when `size`
+    /// reaches it.
+    uint64_t adapter;
 } lowlat_frame;
 
 /// A synchronisation object the application's device signals when it has
 /// finished reading a picture.
 ///
 /// **None is the only kind in this version**: a picture of the planes kind
-/// was copied, and one of the handle kind was copied on the device before
-/// the acquire returned, so either is reusable once released. The shape is
-/// fixed so a kind that needs one adds a kind rather than a call.
+/// was copied, and one of the handle kind was finished on the device before
+/// the acquire returned, so either is reusable once released -- once the
+/// application's own device has finished reading it, for a picture of
+/// textures. The shape is fixed so a kind that needs one adds a kind rather
+/// than a call.
 typedef struct lowlat_fence {
     /// One of `lowlat_fence_kind`.
     uint32_t kind;
@@ -2674,10 +2701,13 @@ lowlat_status lowlat_client_set_video_config(lowlat_client *cl,
 /// closes. Costs the host one keyframe, and an established host an encoder
 /// rebuild, so it is for a person changing a setting rather than a loop.
 ///
-/// **The frame kind stays the creation's**: a session created with
-/// `LOWLAT_FRAME_HANDLE` refuses this with `LOWLAT_ERR_DECODER_UNSUPPORTED`,
-/// because its device slots are bound to the device; changing that is a
-/// recreate. `LOWLAT_DECODER_NONE` is refused the same way.
+/// **The frame kind is a preference here** (minor 19): in a session asking
+/// for `LOWLAT_FRAME_HANDLE`, a decoder that hands out no handle is taken all
+/// the same and its pictures come as planes, every frame saying its kind,
+/// and a move back to one that hands them out returns to handles. Each slot
+/// carries its own backing, so a picture still held stays valid on the
+/// device it was made on until it is released. `LOWLAT_DECODER_NONE` is
+/// refused with `LOWLAT_ERR_DECODER_UNSUPPORTED`.
 ///
 /// @param[in] cl The handle from `lowlat_client_create`.
 /// @param[in] decoder One of `lowlat_decoder`, not `LOWLAT_DECODER_NONE`.
@@ -2685,14 +2715,35 @@ lowlat_status lowlat_client_set_video_config(lowlat_client *cl,
 /// decoder's directory, NUL-terminated; null or empty for the first that
 /// decodes.
 /// @returns `LOWLAT_OK`, `LOWLAT_ERR_INVALID_ARGUMENT` for a value that
-/// is not a decoder, `LOWLAT_ERR_DECODER_UNSUPPORTED` for a handle session
-/// or `LOWLAT_DECODER_NONE`, or the stage the probe stopped at.
+/// is not a decoder, `LOWLAT_ERR_DECODER_UNSUPPORTED` for
+/// `LOWLAT_DECODER_NONE`, or the stage the probe stopped at.
 ///
 /// @attention `cl` came from `lowlat_client_create`; `device` is null or points at a
 /// NUL-terminated string.
 lowlat_status lowlat_client_set_decoder(lowlat_client *cl,
                                         uint32_t decoder,
                                         const char *device) LOWLAT_NOEXCEPT;
+
+/// Hand pictures out as `kind` from the next one on, before a session or
+/// during one (minor 19).
+///
+/// **No keyframe**: the decoder keeps running and keeps its references, and
+/// only how its pictures leave changes, so the picture after the call is the
+/// first of the new kind. A picture already acquired stays valid as it was
+/// handed out until it is released. Handles are refused by a decoder that
+/// hands out none -- the open stack and the software decoder on Linux, the
+/// software decoder, and the open decoder on a system without a fence, on
+/// Windows -- and nothing changes then.
+///
+/// @param[in] cl The handle from `lowlat_client_create`.
+/// @param[in] kind One of `lowlat_frame_kind`.
+/// @returns `LOWLAT_OK`, `LOWLAT_ERR_INVALID_ARGUMENT` for a value that
+/// is not a kind, or `LOWLAT_ERR_DECODER_UNSUPPORTED` for handles from a
+/// decoder that hands out none.
+///
+/// @attention `cl` came from `lowlat_client_create`.
+lowlat_status lowlat_client_set_frame_kind(lowlat_client *cl,
+                                           uint32_t kind) LOWLAT_NOEXCEPT;
 
 /// A key, by the usage code of the physical key. A code of zero is no key
 /// and is not sent.
@@ -2952,7 +3003,10 @@ lowlat_status lowlat_client_acquire_frame(lowlat_client *cl,
 /// @param[in] done A fence the application's device signals when it has
 /// finished reading, or null for reusable now. **Null is the only value this
 /// version takes**: every picture was copied before it was handed out, on
-/// the host or on the device, and is reusable once released.
+/// the host or on the device, and is reusable once released. For a picture
+/// of textures a released slot may be written by the next picture at once,
+/// so null says the application's device has finished reading it -- as a
+/// renderer that waits on its swap chain's latency after each present has.
 /// @returns `LOWLAT_OK` or `LOWLAT_ERR_INVALID_ARGUMENT`.
 ///
 /// @attention `cl` came from `lowlat_client_create`; `frame` points to a

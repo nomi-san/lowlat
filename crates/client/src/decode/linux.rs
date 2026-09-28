@@ -12,7 +12,6 @@ use lowlat_drivers::lavc::Lavc;
 
 use super::{Backend, Next, Shared, drive};
 use crate::UNIT_BYTES;
-use crate::config::FrameKind;
 use crate::seam::Opened;
 
 impl Backend for vaapi::Backend<'_> {
@@ -62,11 +61,10 @@ pub(super) fn open(opened: Opened, shared: &Shared<'_>, replacing: bool) -> Next
             };
             // The queue's device slots are made through this runtime, and
             // may outlive this thread while the application holds one, so
-            // the queue keeps its own reference to it.
+            // the queue keeps its own reference to it. Attached whatever
+            // kind the session asks for now, so a switch to handles has it.
             let cuda = Arc::new(cuda);
-            if shared.frames.kind() == FrameKind::Handle {
-                shared.frames.open_device(Arc::clone(&cuda), device);
-            }
+            shared.frames.open_device(Arc::clone(&cuda), device);
             let backend = nvdec::Backend::new(&cuda, &cuvid, shared.frames.ceiling(), UNIT_BYTES);
             drive(backend, shared, replacing)
         }

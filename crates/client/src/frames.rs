@@ -31,7 +31,7 @@
 //! anything decoded after it.
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use lowlat_common::latest::{Latest, Taken};
@@ -73,6 +73,10 @@ pub struct Frame {
     pub full_range: bool,
     /// The arrival stamp of the unit the picture was decoded from.
     pub arrived: Option<u32>,
+    /// When the picture's device work was queued, for a picture published
+    /// before it was known finished; what the acquire that sees it finished
+    /// times its decode from.
+    pub submitted: Option<lowlat_common::clock::Time>,
     /// Bytes a row, every plane. **The queue's, set at publish** from the
     /// planes it lent; whatever is given here is replaced.
     pub pitch: usize,
@@ -96,6 +100,7 @@ impl Frame {
         order: 0,
         full_range: false,
         arrived: None,
+        submitted: None,
         pitch: 0,
         uv_offset: 0,
         v_offset: 0,
@@ -146,8 +151,10 @@ pub struct Frames {
     pitch: usize,
     /// Luma rows at the ceiling.
     rows: u32,
-    /// Which kind of slot this queue lends.
-    kind: FrameKind,
+    /// The kind the session asks for: 0 planes, 1 handles. Read per picture
+    /// by the decode thread, which hands out planes whatever was asked when
+    /// its decoder exports nothing.
+    kind: AtomicU8,
     backing: OnceLock<sys::Backing>,
     /// The device slots, for a queue of the handle kind.
     device: sys::DeviceSlots,
@@ -161,7 +168,7 @@ impl core::fmt::Debug for Frames {
         f.debug_struct("Frames")
             .field("pitch", &self.pitch)
             .field("rows", &self.rows)
-            .field("kind", &self.kind)
+            .field("kind", &self.kind())
             .field("backed", &self.backed())
             .finish()
     }
@@ -200,6 +207,27 @@ pub struct Held {
     pub pitch: usize,
     /// The device slot's descriptor, or `None` for a host slot.
     pub handle: Option<Handle>,
+    /// For a picture published before its device work was known finished,
+    /// how long after it was queued it was seen finished, in microseconds:
+    /// exact when the acquire was waiting for it, an upper bound when the
+    /// acquire came late.
+    pub ready_us: Option<u32>,
+}
+
+/// The kind a queue's word says.
+fn kind_of(word: u8) -> FrameKind {
+    if word == 0 {
+        FrameKind::Planes
+    } else {
+        FrameKind::Handle
+    }
+}
+
+fn word_of(kind: FrameKind) -> u8 {
+    match kind {
+        FrameKind::Planes => 0,
+        FrameKind::Handle => 1,
+    }
 }
 
 impl Frames {
@@ -213,16 +241,24 @@ impl Frames {
             ring: Latest::new(Frame::BLANK),
             pitch,
             rows: ceiling.1.max(16),
-            kind,
+            kind: AtomicU8::new(word_of(kind)),
             backing: OnceLock::new(),
             device: sys::DeviceSlots::new(),
             held: AtomicUsize::new(0),
         }
     }
 
-    /// Which kind of slot this queue lends.
+    /// The kind the session asks for.
     pub fn kind(&self) -> FrameKind {
-        self.kind
+        // Relaxed: a word the decode thread reads per picture and acts on at
+        // the next one; nothing else is published through it.
+        kind_of(self.kind.load(Ordering::Relaxed))
+    }
+
+    /// Ask for `kind` from the next picture on. A slot already published or
+    /// held keeps the backing it was made with.
+    pub fn set_kind(&self, kind: FrameKind) {
+        self.kind.store(word_of(kind), Ordering::Relaxed);
     }
 
     fn slot_bytes(&self) -> usize {
@@ -236,10 +272,11 @@ impl Frames {
         self.backing.get().is_some() || self.device.backed()
     }
 
-    /// Bytes the host slots reserve, backed or not; zero for device slots,
+    /// Bytes the host slots reserve once the first picture is laid out in
+    /// them, backed or not; zero while the session asks for device slots,
     /// which are allocated at the stream's size as it comes.
     pub fn reserve_bytes(&self) -> usize {
-        match self.kind {
+        match self.kind() {
             FrameKind::Planes => self.slot_bytes() * SLOTS,
             FrameKind::Handle => 0,
         }
@@ -278,14 +315,27 @@ impl Frames {
         if self.held.load(Ordering::Acquire) >= MAX_HELD {
             return Err(TooManyHeld);
         }
+        // Through the platform's gate: a picture whose device work is not
+        // yet known finished is not handed out, and the wait for one sleeps
+        // on its device's progress.
         let Some(Taken {
             index,
             seq,
             payload,
-        }) = self.ring.acquire(after, timeout)
+        }) = self.device.acquire(&self.ring, after, timeout)
         else {
             return Ok(None);
         };
+        let ready_us = payload.submitted.map(|at| {
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a non-negative duration in whole microseconds, saturated"
+            )]
+            let us = (lowlat_common::clock::elapsed_ms(at) * 1000.0).clamp(0.0, f64::from(u32::MAX))
+                as u32;
+            us
+        });
         self.held.fetch_add(1, Ordering::AcqRel);
         let (y, uv, v) = if payload.handle.is_some() {
             // A device slot: the planes are offsets into the handle.
@@ -312,6 +362,7 @@ impl Frames {
             v,
             pitch: payload.pitch,
             handle: payload.handle,
+            ready_us,
         }))
     }
 
@@ -324,9 +375,11 @@ impl Frames {
         }
     }
 
-    /// No more pictures are coming: wake every waiter.
+    /// No more pictures are coming: wake every waiter, one sleeping on a
+    /// device's progress included.
     pub fn close(&self) {
         self.ring.close();
+        self.device.wake();
     }
 
     /// Whether `close` was called.
@@ -361,11 +414,9 @@ impl Filling<'_> {
     /// The planes to decode a `width` x `height` picture of `format` into:
     /// rows of the picture's own width, aligned to a cache line, the chroma
     /// planes straight after the luma rows. `None` if the picture does not
-    /// fit the slot -- refused whole, never truncated.
+    /// fit the slot -- refused whole, never truncated. Lent whatever kind the
+    /// session asks for: a decoder that exports nothing hands out planes.
     pub fn planes_for(&mut self, width: u32, height: u32, format: Format) -> Option<Planes<'_>> {
-        if self.frames.kind != FrameKind::Planes {
-            return None;
-        }
         let layout = Layout::of(width, height, format, HOST_ALIGN)?;
         if layout.bytes > self.frames.slot_bytes() {
             return None;
@@ -414,13 +465,22 @@ impl Filling<'_> {
 
     /// The picture is in the slot: publish it as the newest, with the layout
     /// it was decoded into.
-    pub fn publish(mut self, mut frame: Frame) {
+    pub fn publish(self, frame: Frame) {
+        self.publish_gated(frame, 0);
+    }
+
+    /// As [`publish`](Self::publish), for a picture whose device work is
+    /// finished once the slot's device reaches `value`; zero for a picture
+    /// finished now. It is not handed out before.
+    pub fn publish_gated(mut self, mut frame: Frame, value: u64) {
         frame.pitch = self.pitch;
         frame.uv_offset = self.uv_offset;
         frame.v_offset = self.v_offset;
         frame.handle = self.handle;
         self.frames.ring.set(self.index, frame);
-        self.frames.ring.publish(self.index);
+        self.frames
+            .ring
+            .publish_gated(self.index, self.frames.device.gate(value));
         self.published = true;
     }
 }
@@ -599,15 +659,39 @@ mod tests {
         assert_eq!(frames.held(), 0);
     }
 
-    /// A queue of the handle kind lends no host memory, and no device
-    /// memory until its runtime is attached.
+    /// A queue asking for handles backs nothing before a picture, and no
+    /// device memory until a backing is attached; a picture a decoder hands
+    /// out as planes all the same is laid out in host memory as ever.
     #[test]
-    fn a_handle_queue_backs_no_host_memory() {
+    fn a_handle_queue_backs_nothing_until_a_picture_needs_it() {
         let frames = Frames::new((4096, 4096), FrameKind::Handle);
         assert_eq!(frames.reserve_bytes(), 0);
         let mut filling = frames.fill().unwrap();
-        assert!(filling.planes_for(64, 64, Format::Nv12).is_none());
         assert!(filling.device_planes_for(64, 64, Format::Nv12).is_none());
         assert!(!frames.backed());
+        assert!(
+            filling.planes_for(64, 64, Format::Nv12).is_some(),
+            "planes refused to a decoder that exports nothing"
+        );
+        assert!(frames.backed());
+    }
+
+    /// The kind asked for switches at once, and a picture already held keeps
+    /// the layout it was published with.
+    #[test]
+    fn the_kind_switches_and_a_held_picture_keeps_its_own() {
+        let frames = Frames::new((64, 64), FrameKind::Planes);
+        let mut filling = frames.fill().unwrap();
+        let _ = filling.planes_for(64, 64, Format::Nv12).unwrap();
+        filling.publish(frame(1));
+        let held = frames.acquire(0, Duration::ZERO).unwrap().unwrap();
+        frames.set_kind(FrameKind::Handle);
+        assert_eq!(frames.kind(), FrameKind::Handle);
+        assert!(
+            held.handle.is_none() && !held.y.is_null(),
+            "the held picture changed"
+        );
+        frames.set_kind(FrameKind::Planes);
+        assert_eq!(frames.kind(), FrameKind::Planes);
     }
 }

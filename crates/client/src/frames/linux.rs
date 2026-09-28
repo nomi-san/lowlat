@@ -1,15 +1,24 @@
 //! The queue's platform half on Linux: host slots in one zeroed allocation,
 //! and device slots made through the vendor's compute runtime, each exported
 //! as a descriptor the application imports.
+//!
+//! **A device slot carries its own backing**: the allocation and the
+//! backing generation it was made in. The session's backing moves on when
+//! the vendor's decoder opens on another device, and a slot is made again
+//! the next time the ring lends it to the producer, never while the
+//! application holds it. Every picture is finished when it is published --
+//! the device copy is waited for -- so nothing here is gated.
 
+use core::time::Duration;
 use std::os::fd::{AsRawFd, RawFd};
 use std::sync::{Arc, Mutex};
 
+use lowlat_common::latest::{Latest, Taken};
 use lowlat_decode::Format;
 use lowlat_decode::nvdec::DevicePlanes;
 use lowlat_drivers::cuda::{self, Cuda, Exportable};
 
-use super::{Filling, FrameKind, Frames, Layout, SLOTS};
+use super::{Filling, Frame, Frames, Layout, SLOTS};
 
 /// Rows of a device slot are aligned as the device's own surfaces are.
 const DEVICE_ALIGN: usize = 256;
@@ -75,73 +84,117 @@ impl Drop for Backing {
     }
 }
 
-/// One device slot: its allocation and what it was laid out for.
+/// One device slot: its allocation and what it was made for. The runtime
+/// it came from stays with it, so an allocation of an older backing is
+/// freed through the runtime that made it.
 struct DeviceSlot {
     memory: Exportable,
     layout: Layout,
+    generation: u32,
     allocation: u32,
+    /// Last, so the allocation's entry points outlive it.
+    _cuda: Arc<Cuda>,
 }
 
-/// The device slots and the runtime they are made through, attached on
-/// the decode thread before its first picture.
+/// The session's backing now: the device and the runtime slots are made
+/// through.
+struct Current {
+    generation: u32,
+    device: cuda::Device,
+    cuda: Arc<Cuda>,
+}
+
+/// The device slots and the backing they are made on.
 struct DeviceBacking {
     slots: [Option<DeviceSlot>; SLOTS],
     /// Ordinals handed out so far.
     allocations: u32,
-    device: cuda::Device,
-    /// Last, so the allocations' entry points outlive them.
-    cuda: Arc<Cuda>,
+    /// Backings attached so far.
+    generations: u32,
+    current: Option<Current>,
 }
 
 impl DeviceBacking {
-    /// The slot at `index`, allocated for `layout`: the existing allocation
-    /// if it was made for exactly this layout, else a fresh one in its
-    /// place. The previous one drops here, which is safe because the ring
-    /// lent this slot to the producer, so nothing holds it.
+    /// The slot at `index`, allocated for `layout` on the current backing:
+    /// the existing allocation if it was made for exactly this layout on
+    /// this backing, else a fresh one in its place. The previous one drops
+    /// here, which is safe because the ring lent this slot to the producer,
+    /// so nothing holds it.
     fn slot_for(&mut self, index: usize, layout: Layout) -> Option<&DeviceSlot> {
+        let current = self.current.as_ref()?;
         let slot = self.slots.get_mut(index)?;
-        if slot.as_ref().is_none_or(|s| s.layout != layout) {
-            let memory = self
+        if slot
+            .as_ref()
+            .is_none_or(|s| s.layout != layout || s.generation != current.generation)
+        {
+            *slot = None;
+            let memory = current
                 .cuda
-                .alloc_exportable(&self.device, layout.bytes)
+                .alloc_exportable(&current.device, layout.bytes)
                 .ok()?;
             self.allocations += 1;
             *slot = Some(DeviceSlot {
                 memory,
                 layout,
+                generation: current.generation,
                 allocation: self.allocations,
+                _cuda: Arc::clone(&current.cuda),
             });
         }
         slot.as_ref()
     }
 }
 
-/// The device slots of a queue of the handle kind: touched by the producer
-/// alone, under a lock only so the drop may happen anywhere.
-pub(super) struct DeviceSlots(Mutex<Option<DeviceBacking>>);
+/// The device slots of a queue: touched by the producer alone, under a lock
+/// only so the drop may happen anywhere.
+pub(super) struct DeviceSlots(Mutex<DeviceBacking>);
 
 impl DeviceSlots {
     pub(super) fn new() -> Self {
-        Self(Mutex::new(None))
+        Self(Mutex::new(DeviceBacking {
+            slots: [const { None }; SLOTS],
+            allocations: 0,
+            generations: 0,
+            current: None,
+        }))
     }
 
     /// Whether any device slot is allocated yet.
     pub(super) fn backed(&self) -> bool {
-        self.0
-            .lock()
-            .is_ok_and(|d| d.as_ref().is_some_and(|d| d.allocations > 0))
+        self.0.lock().is_ok_and(|d| d.allocations > 0)
     }
+
+    /// The gate a picture is published behind: every picture here is
+    /// finished when it is published.
+    pub(super) fn gate(&self, value: u64) -> u64 {
+        let _ = value;
+        0
+    }
+
+    /// The newest picture, waiting up to `timeout` for one.
+    pub(super) fn acquire(
+        &self,
+        ring: &Latest<Frame, SLOTS>,
+        after: u64,
+        timeout: Duration,
+    ) -> Option<Taken<Frame>> {
+        ring.acquire(after, timeout)
+    }
+
+    /// Nothing sleeps here but on the ring, which the close wakes itself.
+    pub(super) fn wake(&self) {}
 }
 
 impl Frames {
-    /// Attach the runtime the device slots are made through. Called on
-    /// the decode thread before its first picture, for a queue of the
-    /// handle kind; the slots themselves are allocated as pictures come.
+    /// The session's backing moves to `device`, through `cuda`. Called on
+    /// the decode thread each time it opens the vendor's decoder; a slot of
+    /// an older backing is made again when it is next lent, and one the
+    /// application holds keeps its allocation until then.
     pub fn open_device(&self, cuda: Arc<Cuda>, device: cuda::Device) {
-        if let Ok(mut guard) = self.device.0.lock() {
-            *guard = Some(DeviceBacking {
-                slots: [const { None }; SLOTS],
-                allocations: 0,
+        if let Ok(mut backing) = self.device.0.lock() {
+            backing.generations += 1;
+            backing.current = Some(Current {
+                generation: backing.generations,
                 device,
                 cuda,
             });
@@ -160,12 +213,9 @@ impl Filling<'_> {
         height: u32,
         format: Format,
     ) -> Option<DevicePlanes> {
-        if self.frames.kind != FrameKind::Handle {
-            return None;
-        }
         let layout = Layout::of(width, height, format, DEVICE_ALIGN)?;
         let mut guard = self.frames.device.0.lock().ok()?;
-        let slot = guard.as_mut()?.slot_for(self.index, layout)?;
+        let slot = guard.slot_for(self.index, layout)?;
         self.pitch = layout.pitch;
         self.uv_offset = layout.uv_offset;
         self.v_offset = layout.v_offset;
@@ -195,7 +245,7 @@ impl Filling<'_> {
 mod tests {
     use std::time::Duration;
 
-    use super::super::{Frame, SLOTS};
+    use super::super::{Frame, FrameKind, SLOTS};
     use super::*;
 
     fn frame(order: i32) -> Frame {
@@ -317,6 +367,49 @@ mod tests {
         assert!(new.allocation > *ordinals.iter().max().unwrap());
         assert_ne!(new, old);
         frames.release(fresh.index);
+    }
+
+    /// **A held slot outlives a move to another backing.** The runtime is
+    /// attached again (a device chosen mid-session): the slot the
+    /// application holds keeps its allocation and its descriptor stays open;
+    /// every other slot is made again on the new backing, and the held one
+    /// is too once it is released and lent again.
+    #[test]
+    #[ignore = "requires the vendor driver"]
+    fn a_held_device_slot_outlives_a_move() {
+        let Some(frames) = device_queue((4096, 4096)) else {
+            println!("no vendor runtime; not exercised");
+            return;
+        };
+        let mut filling = frames.fill().unwrap();
+        let _ = filling.device_planes_for(1280, 720, Format::Nv12).unwrap();
+        filling.publish(frame(1));
+        let held = frames.acquire(0, Duration::ZERO).unwrap().unwrap();
+        let old = held.handle.unwrap();
+
+        let cuda = Cuda::load().unwrap();
+        let device = cuda.any_device().unwrap();
+        frames.open_device(Arc::new(cuda), device);
+
+        let mut last = held.seq;
+        for n in 2..6 {
+            let mut filling = frames.fill().unwrap();
+            assert_ne!(filling.index, held.index, "the held slot was lent");
+            let _ = filling.device_planes_for(1280, 720, Format::Nv12).unwrap();
+            filling.publish(frame(n));
+            let h = frames.acquire(last, Duration::ZERO).unwrap().unwrap();
+            last = h.seq;
+            assert!(
+                h.handle.unwrap().allocation > old.allocation,
+                "a slot kept its old backing"
+            );
+            frames.release(h.index);
+        }
+        assert!(
+            descriptor_is_open(old.fd),
+            "the held slot's descriptor was closed under it"
+        );
+        frames.release(held.index);
     }
 
     /// The two-held rule is the ring's, whatever backs the slots.

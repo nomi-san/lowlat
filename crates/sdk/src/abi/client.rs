@@ -59,11 +59,14 @@ pub enum lowlat_frame_kind {
     /// Planes in memory the library owns for the lease.
     LOWLAT_FRAME_PLANES = 0,
     /// A device-level handle the application imports into its own device:
-    /// the picture's planes at offsets into it. Only the vendor decoder
-    /// exports one, so asking for it settles the decoder on the vendor's
-    /// (`LOWLAT_DECODER_AUTO` then means the vendor's on any device), and
-    /// the open decoder refuses it at creation with
-    /// [`LOWLAT_ERR_DECODER_UNSUPPORTED`].
+    /// on Linux an opaque descriptor with the picture's planes at offsets
+    /// into it, which the vendor decoder alone exports, so asking for it
+    /// settles `LOWLAT_DECODER_AUTO` on the vendor's; on Windows one shared
+    /// texture per plane, which the open decoder exports on a system with a
+    /// fence (Windows 10 1703 on). A decoder that exports none refuses it at
+    /// creation and at `lowlat_client_set_frame_kind` with
+    /// [`LOWLAT_ERR_DECODER_UNSUPPORTED`], and one chosen mid-session hands out
+    /// planes while it runs (every frame says its kind).
     LOWLAT_FRAME_HANDLE = 1,
 }
 
@@ -84,6 +87,17 @@ pub enum lowlat_handle_kind {
     LOWLAT_HANDLE_OPAQUE_FD = 1,
     /// Reserved: a buffer descriptor with a layout modifier.
     LOWLAT_HANDLE_DMABUF = 2,
+    /// One texture per plane, in the legacy shared form, which a device on
+    /// the GPU `lowlat_frame.adapter` names opens by its handle
+    /// (`OpenSharedResource`) in `lowlat_frame.textures` (minor 19): a luma
+    /// and a two-channel chroma texture at half size for the two-plane
+    /// layouts (`R8` and `R8G8`, or `R16` and `R16G16` with ten bits in the
+    /// high bits), three single-channel ones at full chroma. Each picture is
+    /// finished on the device before the acquire hands it out, so nothing is
+    /// waited on. The handles are **the library's for the lease**; a handle
+    /// is reused once its texture is freed, so an application that keeps its
+    /// opens keys them by `lowlat_frame.allocation`.
+    LOWLAT_HANDLE_D3D11_SHARED = 3,
 }
 
 /// What a client is created with.
@@ -672,6 +686,17 @@ pub struct lowlat_frame {
     /// after a present its time to the screen.
     /// Filled only when `size` reaches it.
     pub arrived_us: u64,
+    /// Each plane's shared handle, for
+    /// [`lowlat_handle_kind::LOWLAT_HANDLE_D3D11_SHARED`]; zero for a plane
+    /// the layout does not have and for every other kind (minor 19). Filled
+    /// only when `size` reaches it.
+    pub textures: [u64; 3],
+    /// The GPU `textures` are on, memory-compatible with the system's `LUID`
+    /// (its low part first); zero for every other kind (minor 19). A renderer
+    /// opens the textures on a device of this GPU, and a picture from another
+    /// GPU than the last says the decoder has moved. Filled only when `size`
+    /// reaches it.
+    pub adapter: u64,
 }
 
 /// The frame's size before `full_range` was appended: the least a caller
@@ -682,9 +707,11 @@ const FRAME_MINOR_14: usize = core::mem::offset_of!(lowlat_frame, full_range);
 /// finished reading a picture.
 ///
 /// **None is the only kind in this version**: a picture of the planes kind
-/// was copied, and one of the handle kind was copied on the device before
-/// the acquire returned, so either is reusable once released. The shape is
-/// fixed so a kind that needs one adds a kind rather than a call.
+/// was copied, and one of the handle kind was finished on the device before
+/// the acquire returned, so either is reusable once released -- once the
+/// application's own device has finished reading it, for a picture of
+/// textures. The shape is fixed so a kind that needs one adds a kind rather
+/// than a call.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct lowlat_fence {
@@ -1256,10 +1283,13 @@ pub unsafe extern "C" fn lowlat_client_set_video_config(
 /// closes. Costs the host one keyframe, and an established host an encoder
 /// rebuild, so it is for a person changing a setting rather than a loop.
 ///
-/// **The frame kind stays the creation's**: a session created with
-/// `LOWLAT_FRAME_HANDLE` refuses this with [`LOWLAT_ERR_DECODER_UNSUPPORTED`],
-/// because its device slots are bound to the device; changing that is a
-/// recreate. `LOWLAT_DECODER_NONE` is refused the same way.
+/// **The frame kind is a preference here** (minor 19): in a session asking
+/// for `LOWLAT_FRAME_HANDLE`, a decoder that hands out no handle is taken all
+/// the same and its pictures come as planes, every frame saying its kind,
+/// and a move back to one that hands them out returns to handles. Each slot
+/// carries its own backing, so a picture still held stays valid on the
+/// device it was made on until it is released. `LOWLAT_DECODER_NONE` is
+/// refused with [`LOWLAT_ERR_DECODER_UNSUPPORTED`].
 ///
 /// @param[in] cl The handle from [`lowlat_client_create`].
 /// @param[in] decoder One of [`lowlat_decoder`], not `LOWLAT_DECODER_NONE`.
@@ -1267,8 +1297,8 @@ pub unsafe extern "C" fn lowlat_client_set_video_config(
 /// decoder's directory, NUL-terminated; null or empty for the first that
 /// decodes.
 /// @returns [`LOWLAT_OK`], [`LOWLAT_ERR_INVALID_ARGUMENT`] for a value that
-/// is not a decoder, [`LOWLAT_ERR_DECODER_UNSUPPORTED`] for a handle session
-/// or `LOWLAT_DECODER_NONE`, or the stage the probe stopped at.
+/// is not a decoder, [`LOWLAT_ERR_DECODER_UNSUPPORTED`] for
+/// `LOWLAT_DECODER_NONE`, or the stage the probe stopped at.
 ///
 /// # Safety
 ///
@@ -1299,6 +1329,46 @@ pub unsafe extern "C" fn lowlat_client_set_decoder(
                 }
             };
             match handle.held().seam.set_decoder(backend, device) {
+                Ok(()) => LOWLAT_OK,
+                Err(error) => refused(error),
+            }
+        })
+    }
+}
+
+/// Hand pictures out as `kind` from the next one on, before a session or
+/// during one (minor 19).
+///
+/// **No keyframe**: the decoder keeps running and keeps its references, and
+/// only how its pictures leave changes, so the picture after the call is the
+/// first of the new kind. A picture already acquired stays valid as it was
+/// handed out until it is released. Handles are refused by a decoder that
+/// hands out none -- the open stack and the software decoder on Linux, the
+/// software decoder, and the open decoder on a system without a fence, on
+/// Windows -- and nothing changes then.
+///
+/// @param[in] cl The handle from [`lowlat_client_create`].
+/// @param[in] kind One of [`lowlat_frame_kind`].
+/// @returns [`LOWLAT_OK`], [`LOWLAT_ERR_INVALID_ARGUMENT`] for a value that
+/// is not a kind, or [`LOWLAT_ERR_DECODER_UNSUPPORTED`] for handles from a
+/// decoder that hands out none.
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`].
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_set_frame_kind(
+    cl: *mut lowlat_client,
+    kind: u32,
+) -> lowlat_status {
+    unsafe {
+        entered(cl, |handle| {
+            let kind = match kind {
+                code if code == lowlat_frame_kind::LOWLAT_FRAME_PLANES as u32 => FrameKind::Planes,
+                code if code == lowlat_frame_kind::LOWLAT_FRAME_HANDLE as u32 => FrameKind::Handle,
+                _ => return LOWLAT_ERR_INVALID_ARGUMENT,
+            };
+            match handle.held().seam.set_frame_kind(kind) {
                 Ok(()) => LOWLAT_OK,
                 Err(error) => refused(error),
             }
@@ -1936,6 +2006,9 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
             let arrived_us = {
                 let mut held = handle.held();
                 held.seam.set_last_seq(taken.seq);
+                if let Some(us) = taken.ready_us {
+                    held.seam.note_decode_us(us);
+                }
                 taken
                     .frame
                     .arrived
@@ -1943,7 +2016,14 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
             };
             let pitch = u32::try_from(taken.pitch).unwrap_or(u32::MAX);
             let full_chroma = taken.frame.format.full_chroma();
-            let (handle_kind, fd, allocation, handle_size) = handle_fields(taken.handle);
+            let HandleFields {
+                kind: handle_kind,
+                fd,
+                allocation,
+                size: handle_size,
+                textures,
+                adapter,
+            } = handle_fields(taken.handle);
             let planes = match taken.handle {
                 // A device slot: the planes are offsets into the handle.
                 Some(_) => [
@@ -2012,6 +2092,8 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
                 modifier: 0,
                 full_range: taken.frame.full_range,
                 arrived_us,
+                textures,
+                adapter,
             };
             // As much as the caller's size reaches, and no more: a caller
             // built against an older header gets the fields it knows.
@@ -2027,25 +2109,58 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
     }
 }
 
-/// A device slot's handle as a frame carries it: the kind, the descriptor,
-/// the allocation's ordinal and the allocation's size.
+/// A device slot's handle as a frame carries it.
+struct HandleFields {
+    kind: u32,
+    fd: i32,
+    allocation: u32,
+    size: u64,
+    textures: [u64; 3],
+    adapter: u64,
+}
+
+impl HandleFields {
+    const NONE: Self = Self {
+        kind: lowlat_handle_kind::LOWLAT_HANDLE_NONE as u32,
+        fd: -1,
+        allocation: 0,
+        size: 0,
+        textures: [0; 3],
+        adapter: 0,
+    };
+}
+
+/// The descriptor, the allocation's ordinal and the allocation's size.
 #[cfg(target_os = "linux")]
-fn handle_fields(handle: Option<::lowlat_client::frames::Handle>) -> (u32, i32, u32, u64) {
+fn handle_fields(handle: Option<::lowlat_client::frames::Handle>) -> HandleFields {
     match handle {
-        Some(h) => (
-            lowlat_handle_kind::LOWLAT_HANDLE_OPAQUE_FD as u32,
-            h.fd,
-            h.allocation,
-            h.size as u64,
-        ),
-        None => (lowlat_handle_kind::LOWLAT_HANDLE_NONE as u32, -1, 0, 0),
+        Some(h) => HandleFields {
+            kind: lowlat_handle_kind::LOWLAT_HANDLE_OPAQUE_FD as u32,
+            fd: h.fd,
+            allocation: h.allocation,
+            size: h.size as u64,
+            ..HandleFields::NONE
+        },
+        None => HandleFields::NONE,
     }
 }
 
-/// No slot here carries a handle yet: the type has no value.
+/// A shared texture per plane, the GPU they are on and the backing's
+/// ordinal.
 #[cfg(windows)]
-fn handle_fields(_: Option<::lowlat_client::frames::Handle>) -> (u32, i32, u32, u64) {
-    (lowlat_handle_kind::LOWLAT_HANDLE_NONE as u32, -1, 0, 0)
+fn handle_fields(handle: Option<::lowlat_client::frames::Handle>) -> HandleFields {
+    match handle {
+        Some(h) => HandleFields {
+            kind: lowlat_handle_kind::LOWLAT_HANDLE_D3D11_SHARED as u32,
+            allocation: h.allocation,
+            textures: h.textures,
+            // The low part first, as the system lays the identity out.
+            adapter: u64::from(h.adapter.low)
+                | (u64::from(u32::from_ne_bytes(h.adapter.high.to_ne_bytes())) << 32),
+            ..HandleFields::NONE
+        },
+        None => HandleFields::NONE,
+    }
 }
 
 /// Give a picture back.
@@ -2055,7 +2170,10 @@ fn handle_fields(_: Option<::lowlat_client::frames::Handle>) -> (u32, i32, u32, 
 /// @param[in] done A fence the application's device signals when it has
 /// finished reading, or null for reusable now. **Null is the only value this
 /// version takes**: every picture was copied before it was handed out, on
-/// the host or on the device, and is reusable once released.
+/// the host or on the device, and is reusable once released. For a picture
+/// of textures a released slot may be written by the next picture at once,
+/// so null says the application's device has finished reading it -- as a
+/// renderer that waits on its swap chain's latency after each present has.
 /// @returns [`LOWLAT_OK`] or [`LOWLAT_ERR_INVALID_ARGUMENT`].
 ///
 /// # Safety
@@ -2627,6 +2745,8 @@ mod tests {
             modifier: 0,
             full_range: false,
             arrived_us: 0,
+            textures: [0; 3],
+            adapter: 0,
         };
         assert_eq!(
             unsafe { lowlat_client_acquire_frame(handle, 0, 0, &raw mut frame) },
@@ -2998,18 +3118,53 @@ mod tests {
         unsafe { lowlat_client_destroy(handle) };
     }
 
-    /// A frame kind the open decoder does not export is refused at
-    /// creation, with the stage, before any device is opened.
+    /// **The kind switches through the boundary, and handles only where the
+    /// decoder hands them out**: planes are always taken, handles are refused
+    /// with no decoder that exports and nothing changes, and a value that is
+    /// no kind is refused as such.
+    #[test]
+    fn the_frame_kind_switches_where_the_decoder_allows() {
+        let mut handle: *mut lowlat_client = core::ptr::null_mut();
+        let info = no_decoder();
+        assert_eq!(
+            unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
+            LOWLAT_OK
+        );
+        let kind = |k: u32| unsafe { lowlat_client_set_frame_kind(handle, k) };
+        assert_eq!(
+            kind(lowlat_frame_kind::LOWLAT_FRAME_PLANES as u32),
+            LOWLAT_OK
+        );
+        assert_eq!(
+            kind(lowlat_frame_kind::LOWLAT_FRAME_HANDLE as u32),
+            LOWLAT_ERR_DECODER_UNSUPPORTED,
+            "handles from a client with no decoder"
+        );
+        assert_eq!(kind(7), LOWLAT_ERR_INVALID_ARGUMENT);
+        unsafe { lowlat_client_destroy(handle) };
+    }
+
+    /// A frame kind the decoder named does not export is refused at
+    /// creation, with the stage, before any device is opened: the software
+    /// decoder everywhere, and the open decoder on Linux, whose pictures
+    /// leave as planes alone.
     #[test]
     fn what_is_not_built_is_refused_at_creation() {
         let mut handle: *mut lowlat_client = core::ptr::null_mut();
         let mut info = no_decoder();
-        info.decoder = lowlat_decoder::LOWLAT_DECODER_OPEN as u32;
+        info.decoder = lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32;
         info.frame_kind = lowlat_frame_kind::LOWLAT_FRAME_HANDLE as u32;
         assert_eq!(
             unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
             LOWLAT_ERR_DECODER_UNSUPPORTED
         );
+        if cfg!(target_os = "linux") {
+            info.decoder = lowlat_decoder::LOWLAT_DECODER_OPEN as u32;
+            assert_eq!(
+                unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
+                LOWLAT_ERR_DECODER_UNSUPPORTED
+            );
+        }
         let mut info = no_decoder();
         info.decoder = 42;
         assert_eq!(
@@ -3074,7 +3229,8 @@ mod tests {
     /// decoder is refused as such, no decoder at all is refused as
     /// unsupported, a kind that does not open answers with its stage and
     /// leaves the choice as it was, and one that opens becomes the choice
-    /// status reports. A session of the handle kind refuses the call.
+    /// status reports. A session of the handle kind takes a decoder that hands
+    /// out none, its pictures then planes: never refused as unsupported.
     #[test]
     fn the_decoder_is_chosen_again_or_refused_with_the_choice_kept() {
         let mut handle: *mut lowlat_client = core::ptr::null_mut();
@@ -3153,28 +3309,32 @@ mod tests {
         unsafe { lowlat_client_destroy(handle) };
 
         // A session of the handle kind, where this machine has the vendor's
-        // decoder, refuses a move: its device slots are bound to the device.
+        // decoder, moves to the open stack as planes where it opens, and
+        // answers with the stage and keeps the vendor's where it does not;
+        // the kind is never the reason.
         let mut info = no_decoder();
         info.decoder = lowlat_decoder::LOWLAT_DECODER_VENDOR as u32;
         info.frame_kind = lowlat_frame_kind::LOWLAT_FRAME_HANDLE as u32;
         if unsafe { lowlat_client_create(&raw const info, &raw mut handle) } == LOWLAT_OK {
-            assert_eq!(
-                unsafe {
-                    lowlat_client_set_decoder(
-                        handle,
-                        lowlat_decoder::LOWLAT_DECODER_OPEN as u32,
-                        core::ptr::null(),
-                    )
-                },
-                LOWLAT_ERR_DECODER_UNSUPPORTED
-            );
-            assert_eq!(
-                backend(handle),
-                lowlat_decoder::LOWLAT_DECODER_VENDOR as u32
-            );
+            let moved = unsafe {
+                lowlat_client_set_decoder(
+                    handle,
+                    lowlat_decoder::LOWLAT_DECODER_OPEN as u32,
+                    core::ptr::null(),
+                )
+            };
+            println!("a handle session moved to the open decoder: {moved:?}");
+            let now = match moved {
+                LOWLAT_OK => lowlat_decoder::LOWLAT_DECODER_OPEN,
+                LOWLAT_ERR_NO_DECODER_RUNTIME
+                | LOWLAT_ERR_NO_DECODER_DEVICE
+                | LOWLAT_ERR_NO_DECODER_PROFILE => lowlat_decoder::LOWLAT_DECODER_VENDOR,
+                other => panic!("a handle session's move answered {other:?}"),
+            };
+            assert_eq!(backend(handle), now as u32);
             unsafe { lowlat_client_destroy(handle) };
         } else {
-            println!("no vendor decoder here: the handle session's refusal not exercised");
+            println!("no vendor decoder here: the handle session's move not exercised");
         }
     }
 
@@ -3345,12 +3505,19 @@ mod tests {
                 row.h264 || row.hevc,
                 "an available row that decodes nothing"
             );
-            assert_eq!(
-                row.handle,
-                row.decoder == lowlat_decoder::LOWLAT_DECODER_VENDOR as u32
-            );
-            // Every available row opens by its own values, planes; the
-            // software one refuses the handle kind.
+            // The vendor's decoder hands out a handle, the software one
+            // none, and the open decoder one on Windows alone, where a device
+            // with a fence splits its pictures into textures.
+            match row.decoder {
+                x if x == lowlat_decoder::LOWLAT_DECODER_VENDOR as u32 => assert!(row.handle),
+                x if x == lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32 => {
+                    assert!(!row.handle)
+                }
+                _ => assert!(cfg!(windows) || !row.handle, "slot {count}"),
+            }
+            // Every available row opens by its own values, planes; one that
+            // says it hands out a handle opens as one too, and one that says
+            // not refuses the kind.
             let mut info = no_decoder();
             info.decoder = row.decoder;
             info.device = row.device;
@@ -3361,12 +3528,13 @@ mod tests {
                 "slot {count} did not open by its own values"
             );
             unsafe { lowlat_client_destroy(handle) };
-            if row.decoder == lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32 {
-                info.frame_kind = lowlat_frame_kind::LOWLAT_FRAME_HANDLE as u32;
-                assert_eq!(
-                    unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
-                    LOWLAT_ERR_DECODER_UNSUPPORTED
-                );
+            info.frame_kind = lowlat_frame_kind::LOWLAT_FRAME_HANDLE as u32;
+            let made = unsafe { lowlat_client_create(&raw const info, &raw mut handle) };
+            if row.handle {
+                assert_eq!(made, LOWLAT_OK, "slot {count} did not open for handles");
+                unsafe { lowlat_client_destroy(handle) };
+            } else if row.decoder == lowlat_decoder::LOWLAT_DECODER_SOFTWARE as u32 {
+                assert_eq!(made, LOWLAT_ERR_DECODER_UNSUPPORTED);
             }
             count += 1;
         }

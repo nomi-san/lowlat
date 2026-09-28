@@ -1,19 +1,52 @@
 //! The queue's platform half on Windows: host slots committed as far as the
-//! pictures laid out in them reach, and no device slots yet -- the handle
-//! kind comes with its step of docs/impl-plan-windows.md, and until then
-//! creation refuses a queue of that kind.
+//! pictures laid out in them reach, and device slots of shared textures, one
+//! per plane, on the decoder's own device.
+//!
+//! **A device slot carries its own backing**: the textures, the GPU they are
+//! on and the backing generation they were made in. The session's backing
+//! moves on when the decoder opens on another device -- a GPU chosen, the
+//! device lost and found again -- and a slot is made again the next time the
+//! ring lends it to the producer, never while the application holds it, so a
+//! held picture stays valid on its old GPU until it is released.
+//!
+//! **A picture of textures is published before it is finished** and handed
+//! out only once the fence of the device it was made on has passed it: its
+//! gate carries the backing generation in its high bits and the fence's
+//! value below them. A gate of an older generation never opens -- its device
+//! is not the one whose fence is read, and a picture queued there when the
+//! session moved on is not waited for -- nor does one of a device that is
+//! gone, whose fence reads past every value.
 
+use core::cell::{RefCell, UnsafeCell};
 use core::ffi::c_void;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
+use lowlat_common::latest::{Gate, Latest, Taken};
 use lowlat_decode::Format;
+use lowlat_decode::d3d11::plane_textures;
 use lowlat_decode::nvdec::DevicePlanes;
+use lowlat_drivers::d3d11::{Device, Event, Fence, Luid, SharedTexture};
 
-use super::{Filling, SLOTS};
+use super::{Filling, Frame, Frames, SLOTS};
 
-/// A device slot's handle: there is none here yet, so there is no value.
+/// The textures behind a device slot, as the application is told.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Handle {}
+pub struct Handle {
+    /// Each plane's shared handle, zero for a plane the layout does not
+    /// have. **The library's for the lease**: valid until the slot is made
+    /// again, which is after the last hold on it is released, and reused by
+    /// the system once its texture is freed.
+    pub textures: [u64; 3],
+    /// The GPU the textures are on.
+    pub adapter: Luid,
+    /// The slot's backing's ordinal since creation, from one. A handle is
+    /// reused once its texture is freed, so this is what tells one backing
+    /// from the next: two frames with the same ordinal share an open, and a
+    /// new ordinal is a new open.
+    pub allocation: u32,
+}
 
 // The system's memory manager is present in every process, so these need no
 // crate dependency and no link attribute.
@@ -115,22 +148,224 @@ impl Drop for Backing {
     }
 }
 
-/// A queue's device slots: none here yet.
-pub(super) struct DeviceSlots;
+/// Bits of a gate below the backing generation: the fence's value.
+const VALUE_BITS: u32 = 48;
+const VALUE_MASK: u64 = (1 << VALUE_BITS) - 1;
+
+/// One device slot: its textures and what they were made for.
+struct DeviceSlot {
+    planes: [Option<SharedTexture>; 3],
+    layout: (Format, u32, u32),
+    generation: u32,
+    adapter: Luid,
+    allocation: u32,
+}
+
+/// The session's backing now: the device slots are made on it, and its fence
+/// says when a picture made on it is finished.
+#[derive(Clone)]
+struct Current {
+    generation: u32,
+    device: Arc<Device>,
+    fence: Arc<Fence>,
+}
+
+/// A queue's device slots.
+pub(super) struct DeviceSlots {
+    /// Each slot's backing. **Touched only by the producer the ring has lent
+    /// the slot to**, and by the drop.
+    slots: [UnsafeCell<Option<DeviceSlot>>; SLOTS],
+    /// Taken by the producer to make a slot's textures or to move the
+    /// backing on, and by an acquire to read the fence -- never held across
+    /// a wait.
+    current: Mutex<Option<Current>>,
+    /// The current backing's generation, for the producer's gate and slot
+    /// checks without the lock; zero before the first backing.
+    generation: AtomicU32,
+    /// Ordinals handed out so far.
+    allocations: AtomicU32,
+    /// What an acquire waiting on a fence sleeps on; a close sets it.
+    event: Option<Event>,
+}
+
+// SAFETY: a slot's cell is touched only by the producer holding that slot
+// FILLING, which the ring grants one thread at a time with the transitions
+// ordering the accesses, and by the drop, which has the queue alone; the
+// textures and devices inside are free-threaded. The rest is atomics, a
+// lock and an event.
+unsafe impl Send for DeviceSlots {}
+unsafe impl Sync for DeviceSlots {}
 
 impl DeviceSlots {
     pub(super) fn new() -> Self {
-        Self
+        Self {
+            slots: [const { UnsafeCell::new(None) }; SLOTS],
+            current: Mutex::new(None),
+            generation: AtomicU32::new(0),
+            allocations: AtomicU32::new(0),
+            event: Event::new().ok(),
+        }
     }
 
+    /// Whether any device slot has been made yet.
     pub(super) fn backed(&self) -> bool {
-        false
+        self.allocations.load(Ordering::Relaxed) > 0
+    }
+
+    fn current(&self) -> Option<Current> {
+        self.current.lock().ok().and_then(|c| c.clone())
+    }
+
+    /// The gate a picture finished at the current backing's `value` is
+    /// published behind; zero for one finished now.
+    pub(super) fn gate(&self, value: u64) -> u64 {
+        if value == 0 {
+            return 0;
+        }
+        (u64::from(self.generation.load(Ordering::Relaxed)) << VALUE_BITS) | (value & VALUE_MASK)
+    }
+
+    /// The newest picture whose gate is open, waiting up to `timeout`: for
+    /// a publish, or for the fence of the picture next to finish.
+    pub(super) fn acquire(
+        &self,
+        ring: &Latest<Frame, SLOTS>,
+        after: u64,
+        timeout: Duration,
+    ) -> Option<Taken<Frame>> {
+        // The backing is read once here and again only when a gate names a
+        // newer one, which is when the session has moved on meanwhile.
+        let current = RefCell::new(None::<Current>);
+        let refresh = |generation: u32| {
+            let mut held = current.borrow_mut();
+            if held.as_ref().is_none_or(|c| c.generation < generation) {
+                *held = self.current();
+            }
+        };
+        let check = |gate: u64| {
+            if gate == 0 {
+                return Gate::Open;
+            }
+            let generation = u32::try_from(gate >> VALUE_BITS).unwrap_or(u32::MAX);
+            refresh(generation);
+            let held = current.borrow();
+            match held.as_ref() {
+                Some(c) if c.generation == generation => match c.fence.completed() {
+                    // A fence past every value is a device that is gone.
+                    u64::MAX => Gate::Never,
+                    done if done >= gate & VALUE_MASK => Gate::Open,
+                    _ => Gate::Shut,
+                },
+                _ => Gate::Never,
+            }
+        };
+        let wait = |gate: u64, left: Duration| {
+            let Some(event) = self.event.as_ref() else {
+                return;
+            };
+            let generation = u32::try_from(gate >> VALUE_BITS).unwrap_or(u32::MAX);
+            let held = current.borrow();
+            let asked = held
+                .as_ref()
+                .filter(|c| c.generation == generation)
+                .is_some_and(|c| c.fence.notify_at(gate & VALUE_MASK, event).is_ok());
+            // A fence that cannot be asked is read again after a moment, so
+            // the wait never turns into a poll.
+            event.wait(if asked {
+                left
+            } else {
+                left.min(Duration::from_millis(1))
+            });
+        };
+        ring.acquire_gated(after, timeout, check, wait)
+    }
+
+    /// Wake an acquire sleeping on a fence: the queue is closing.
+    pub(super) fn wake(&self) {
+        if let Some(event) = self.event.as_ref() {
+            event.set();
+        }
+    }
+}
+
+impl Frames {
+    /// The session's backing moves to `device`, whose `fence` says when a
+    /// picture made on it is finished. Called on the decode thread each time
+    /// it opens a device that can hand pictures out as textures; a slot of
+    /// an older backing is made again when it is next lent, and a picture of
+    /// one not yet taken is never handed out.
+    pub fn open_device(&self, device: Arc<Device>, fence: Arc<Fence>) {
+        let generation = self.device.generation.load(Ordering::Relaxed) + 1;
+        if let Ok(mut current) = self.device.current.lock() {
+            *current = Some(Current {
+                generation,
+                device,
+                fence,
+            });
+        }
+        self.device.generation.store(generation, Ordering::Relaxed);
     }
 }
 
 impl Filling<'_> {
-    /// Device planes: none here yet, so none are lent. Creation refuses a
-    /// queue of the handle kind on this platform, so nothing asks.
+    /// The textures to split a `width` x `height` picture of `format` into,
+    /// one per plane, on the current backing: the slot's own if they were
+    /// made for this layout on this backing, else fresh ones in their place.
+    /// `None` without a backing, or when the device refuses.
+    pub fn textures_for(
+        &mut self,
+        width: u32,
+        height: u32,
+        format: Format,
+    ) -> Option<[Option<&SharedTexture>; 3]> {
+        let slots = &self.frames.device;
+        let generation = slots.generation.load(Ordering::Relaxed);
+        let cell = slots.slots.get(self.index)?;
+        // SAFETY: the ring has lent this slot to this producer, and it stays
+        // lent while `self` lives; no other thread touches the cell meanwhile.
+        let slot = unsafe { &mut *cell.get() };
+        let layout = (format, width, height);
+        if slot
+            .as_ref()
+            .is_none_or(|s| s.layout != layout || s.generation != generation)
+        {
+            // The textures before these drop here, which is safe because the
+            // ring lent this slot to the producer, so nothing holds it.
+            *slot = None;
+            let current = slots.current()?;
+            let mut planes = [None, None, None];
+            for (plane, texture) in planes.iter_mut().zip(plane_textures(format, width, height)) {
+                if let Some((format, w, h)) = texture {
+                    *plane = Some(current.device.shared_texture(format, w, h).ok()?);
+                }
+            }
+            let allocation = slots.allocations.fetch_add(1, Ordering::Relaxed) + 1;
+            *slot = Some(DeviceSlot {
+                planes,
+                layout,
+                generation: current.generation,
+                adapter: current.device.adapter.luid,
+                allocation,
+            });
+        }
+        let s = slot.as_ref()?;
+        self.pitch = 0;
+        self.uv_offset = 0;
+        self.v_offset = 0;
+        self.handle = Some(Handle {
+            textures: s
+                .planes
+                .each_ref()
+                .map(|p| p.as_ref().map_or(0, |t| t.handle)),
+            adapter: s.adapter,
+            allocation: s.allocation,
+        });
+        Some(s.planes.each_ref().map(Option::as_ref))
+    }
+
+    /// Device planes of the vendor's runtime: none here yet, so none are
+    /// lent. The vendor's decoder on this platform comes with its step of
+    /// docs/impl-plan-windows.md.
     pub fn device_planes_for(
         &mut self,
         width: u32,
@@ -231,5 +466,211 @@ mod tests {
             assert!(committed(slot.add(reach - 1)), "the 1080p picture's end");
             assert!(!committed(slot.add(8 << 20)), "past the 1080p picture");
         }
+    }
+
+    /// A gate carries the backing generation above the fence's value, and a
+    /// picture finished now is published open.
+    #[test]
+    fn a_gate_is_the_generation_above_the_value() {
+        let frames = Frames::new((64, 64), FrameKind::Handle);
+        assert_eq!(frames.device.gate(0), 0);
+        frames.device.generation.store(3, Ordering::Relaxed);
+        assert_eq!(frames.device.gate(7), (3 << VALUE_BITS) | 7);
+    }
+
+    fn frame(order: i32) -> Frame {
+        Frame {
+            order,
+            width: 64,
+            height: 64,
+            ..Frame::BLANK
+        }
+    }
+
+    /// A queue asking for handles with a backing on the first GPU offered,
+    /// and that backing's device and fence; `None` without a GPU.
+    fn texture_queue() -> Option<(Frames, Arc<Device>, Arc<Fence>)> {
+        let d3d11 = lowlat_drivers::d3d11::D3d11::load().ok()?;
+        let luid = d3d11
+            .adapters()
+            .ok()?
+            .into_iter()
+            .find(|a| a.decodes_here())?
+            .luid;
+        let device = Arc::new(d3d11.open(luid).ok()?);
+        let fence = Arc::new(device.fence(0).ok()?);
+        let frames = Frames::new((4096, 4096), FrameKind::Handle);
+        frames.open_device(Arc::clone(&device), Arc::clone(&fence));
+        Some((frames, device, fence))
+    }
+
+    /// A picture of textures published behind `value`.
+    fn publish(frames: &Frames, order: i32, value: u64) -> Handle {
+        let mut filling = frames.fill().expect("a slot");
+        let planes = filling
+            .textures_for(1280, 720, Format::Nv12)
+            .expect("textures");
+        assert!(planes[0].is_some() && planes[1].is_some() && planes[2].is_none());
+        let handle = filling.handle.expect("the slot's handle");
+        filling.publish_gated(frame(order), value);
+        handle
+    }
+
+    /// **A slot's textures are made once per layout, and the picture says
+    /// where they are**: a handle per plane the layout has, the GPU they are
+    /// on, and the same backing each time the slot is lent for the same
+    /// layout.
+    #[test]
+    #[ignore = "requires a GPU"]
+    fn a_texture_slot_is_made_once_per_layout() {
+        let Some((frames, device, fence)) = texture_queue() else {
+            println!("no GPU; not exercised");
+            return;
+        };
+        let mut by_slot = [None; SLOTS];
+        let mut last = 0;
+        for n in 1..20u64 {
+            let handle = publish(&frames, n as i32, n);
+            device.signal(&fence, n).expect("a signal");
+            let held = frames
+                .acquire(last, Duration::from_secs(2))
+                .unwrap()
+                .expect("the picture, once finished");
+            last = held.seq;
+            assert_eq!(held.handle, Some(handle));
+            assert_eq!(handle.adapter, device.adapter.luid);
+            assert!(handle.textures[0] != 0 && handle.textures[1] != 0);
+            assert_eq!(handle.textures[2], 0, "a plane the layout does not have");
+            let seen = by_slot[held.index].get_or_insert(handle);
+            assert_eq!(*seen, handle, "slot {} made again", held.index);
+            frames.release(held.index);
+        }
+        assert!(
+            by_slot
+                .iter()
+                .flatten()
+                .all(|h| h.allocation <= SLOTS as u32)
+        );
+    }
+
+    /// **A picture is handed out only once its device work is finished**,
+    /// and one of a backing the session has moved on from never is.
+    #[test]
+    #[ignore = "requires a GPU"]
+    fn an_unfinished_picture_waits_and_an_old_backings_never_comes() {
+        let Some((frames, device, fence)) = texture_queue() else {
+            println!("no GPU; not exercised");
+            return;
+        };
+        publish(&frames, 1, 5);
+        assert!(
+            frames
+                .acquire(0, Duration::from_millis(30))
+                .unwrap()
+                .is_none(),
+            "a picture was handed out before its fence passed"
+        );
+        device.signal(&fence, 5).expect("a signal");
+        let held = frames
+            .acquire(0, Duration::from_secs(2))
+            .unwrap()
+            .expect("the picture, once finished");
+        frames.release(held.index);
+
+        // Published on the old backing, then the session moves on: even
+        // with both fences past its value, it never comes out -- the new
+        // one's reaching it says nothing of the old device's work.
+        publish(&frames, 2, 6);
+        let moved = Arc::new(device.fence(0).expect("a fence"));
+        frames.open_device(Arc::clone(&device), Arc::clone(&moved));
+        device.signal(&fence, 6).expect("a signal");
+        device.signal(&moved, 10).expect("a signal");
+        assert!(
+            frames
+                .acquire(held.seq, Duration::from_millis(30))
+                .unwrap()
+                .is_none(),
+            "a picture of an older backing was handed out"
+        );
+        // The new backing's pictures come out as ever.
+        publish(&frames, 3, 11);
+        device.signal(&moved, 11).expect("a signal");
+        let fresh = frames
+            .acquire(held.seq, Duration::from_secs(2))
+            .unwrap()
+            .expect("the new backing's picture");
+        assert_eq!(fresh.frame.order, 3);
+    }
+
+    /// **A held picture outlives a move to another backing**: every other
+    /// slot is made again on the new one, and the held slot's textures still
+    /// open until it is released and lent again.
+    #[test]
+    #[ignore = "requires a GPU"]
+    fn a_held_texture_slot_outlives_a_move() {
+        let Some((frames, device, fence)) = texture_queue() else {
+            println!("no GPU; not exercised");
+            return;
+        };
+        let old = publish(&frames, 1, 1);
+        device.signal(&fence, 1).expect("a signal");
+        let held = frames.acquire(0, Duration::from_secs(2)).unwrap().unwrap();
+
+        let moved = Arc::new(device.fence(0).expect("a fence"));
+        frames.open_device(Arc::clone(&device), Arc::clone(&moved));
+        let mut last = held.seq;
+        for n in 1..5u64 {
+            let handle = publish(&frames, n as i32 + 1, n);
+            assert!(
+                handle.allocation > old.allocation,
+                "a slot kept its old backing"
+            );
+            device.signal(&moved, n).expect("a signal");
+            let h = frames
+                .acquire(last, Duration::from_secs(2))
+                .unwrap()
+                .unwrap();
+            assert_ne!(h.index, held.index, "the held slot was lent");
+            last = h.seq;
+            frames.release(h.index);
+        }
+        let other = lowlat_drivers::d3d11::D3d11::load()
+            .unwrap()
+            .open(device.adapter.luid)
+            .unwrap();
+        assert!(
+            other.open_shared(old.textures[0]).is_ok(),
+            "the held picture's texture was freed under it"
+        );
+        frames.release(held.index);
+    }
+
+    /// **A close wakes an acquire sleeping on a fence**, which would
+    /// otherwise wait its whole timeout for work that never finishes.
+    #[test]
+    #[ignore = "requires a GPU"]
+    fn a_close_wakes_a_wait_on_a_fence() {
+        let Some((frames, _device, _fence)) = texture_queue() else {
+            println!("no GPU; not exercised");
+            return;
+        };
+        let frames = Arc::new(frames);
+        publish(&frames, 1, 9);
+        let waiter = {
+            let frames = Arc::clone(&frames);
+            std::thread::spawn(move || {
+                let began = std::time::Instant::now();
+                let got = frames.acquire(0, Duration::from_secs(10)).unwrap();
+                (got.is_none(), began.elapsed())
+            })
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        frames.close();
+        let (empty, waited) = waiter.join().unwrap();
+        assert!(empty, "a close handed out an unfinished picture");
+        assert!(
+            waited < Duration::from_secs(2),
+            "the close did not wake it: {waited:?}"
+        );
     }
 }

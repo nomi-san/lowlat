@@ -34,6 +34,11 @@ impl Opened {
             Self::Software(_) => Backend::Software,
         }
     }
+
+    /// Whether it hands pictures out as a handle: the vendor's decoder alone.
+    pub fn exports(&self) -> bool {
+        matches!(self, Self::Nvdec(_))
+    }
 }
 
 /// Which stage a probe's refusal names.
