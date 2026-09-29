@@ -21,9 +21,16 @@ use core::ffi::{CStr, c_char, c_int, c_uint, c_ulonglong, c_void};
 use lowlat_common::dynlib::Library;
 
 use crate::ffi::cuda::{
-    CU_EVENT_BLOCKING_SYNC, CU_EVENT_DISABLE_TIMING, CUDA_ERROR_NOT_READY, CUDA_SUCCESS, CUcontext,
-    CUdevice, CUdeviceptr, CUevent, CUresult, CUstream,
+    CU_AD_FORMAT_FLOAT, CU_AD_FORMAT_HALF, CU_AD_FORMAT_SIGNED_INT8, CU_AD_FORMAT_SIGNED_INT16,
+    CU_AD_FORMAT_UNSIGNED_INT8, CU_AD_FORMAT_UNSIGNED_INT16, CU_EVENT_BLOCKING_SYNC,
+    CU_EVENT_DISABLE_TIMING, CUDA_ARRAY3D_DESCRIPTOR, CUDA_ERROR_NOT_READY, CUDA_MEMCPY2D,
+    CUDA_SUCCESS, CUarray, CUcontext, CUdevice, CUdeviceptr, CUevent, CUresult, CUstream,
 };
+
+/// What a call answers for an argument out of its range: past an array's
+/// last plane, for one. The vendored header's list of statuses stops short
+/// of it.
+const CUDA_ERROR_INVALID_VALUE: CUresult = 1;
 
 /// Memory that crosses to another device or process as a descriptor, which
 /// is the platform's own kind of handle.
@@ -31,6 +38,11 @@ use crate::ffi::cuda::{
 mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::{Exportable, External, Plane};
+
+/// The graphics interface's side of the runtime: a device found by the
+/// graphics adapter it is.
+#[cfg(windows)]
+mod windows;
 
 /// Versioned first, as with the encoder runtime.
 #[cfg(unix)]
@@ -96,6 +108,33 @@ type MemSetAccess =
     unsafe extern "C" fn(CUdeviceptr, usize, *const MemAccessDesc, usize) -> CUresult;
 type MemExportToShareableHandle =
     unsafe extern "C" fn(*mut c_void, MemGenericAllocationHandle, c_uint, c_ulonglong) -> CUresult;
+type Array3DCreate = unsafe extern "C" fn(*mut CUarray, *const CUDA_ARRAY3D_DESCRIPTOR) -> CUresult;
+type ArrayDestroy = unsafe extern "C" fn(CUarray) -> CUresult;
+type Array3DGetDescriptor = unsafe extern "C" fn(*mut CUDA_ARRAY3D_DESCRIPTOR, CUarray) -> CUresult;
+type ArrayGetPlane = unsafe extern "C" fn(*mut CUarray, CUarray, c_uint) -> CUresult;
+
+/// The array layouts a decoder's own surfaces take, and the flags such an
+/// array is made with: declared here because the vendored header predates
+/// them (the decode interface's 13.1 and the compute runtime's matching
+/// formats), with the values of the headers that carry them.
+pub mod surface {
+    use core::ffi::c_uint;
+
+    /// Two planes: luma, and chroma interleaved at half size, eight bits.
+    pub const NV12: c_uint = 0xb0;
+    /// As `NV12`, sixteen bits a sample, ten in the high bits.
+    pub const P016: c_uint = 0xa1;
+    /// Luma and interleaved chroma both at full size.
+    pub const YUV444_8BIT_SEMIPLANAR: c_uint = 0xb4;
+    pub const YUV444_16BIT_SEMIPLANAR: c_uint = 0xb5;
+    /// Three planes at full size.
+    pub const UINT8_PLANAR_444: c_uint = 0x5d;
+    pub const UINT16_PLANAR_444: c_uint = 0x5e;
+    /// Read and written by surface loads and stores.
+    pub const SURFACE_LDST: c_uint = 0x02;
+    /// Decoded into and read by the video engines.
+    pub const VIDEO_ENCODE_DECODE: c_uint = 0x100;
+}
 
 /// The virtual-memory interface's descriptors, declared here because the
 /// vendored header predates that interface. The layouts are the ones its
@@ -162,6 +201,9 @@ pub enum Error {
     NoSuchDevice(PciAddress),
     /// The runtime is present but reports no devices at all.
     NoDevices,
+    /// No device is the graphics adapter with this identity. **Never
+    /// substituted**, as an address is not.
+    NoSuchAdapter(u64),
     /// A copy was asked for more rows than the source holds. Ours to get
     /// right, so it is refused rather than clamped: a clamp would upload a
     /// partial picture and the fault would show as torn output rather than
@@ -179,6 +221,7 @@ impl core::fmt::Display for Error {
                 write!(f, "no compute device at {address}")
             }
             Self::NoDevices => f.write_str("compute runtime reports no devices"),
+            Self::NoSuchAdapter(luid) => write!(f, "no compute device is adapter {luid:#018x}"),
             Self::SourceTooSmall => f.write_str("source holds fewer rows than the copy needs"),
         }
     }
@@ -358,6 +401,16 @@ pub struct Cuda {
     mem_unmap: MemUnmap,
     mem_set_access: MemSetAccess,
     mem_export_to_shareable_handle: MemExportToShareableHandle,
+    array_3d_create: Array3DCreate,
+    array_destroy: ArrayDestroy,
+    array_3d_get_descriptor: Array3DGetDescriptor,
+    /// A multi-plane array's planes: from the 11.2 runtime on, so a driver
+    /// without it has no decoder-owned surfaces.
+    array_get_plane: Option<ArrayGetPlane>,
+    /// The graphics interfaces' side of the runtime, where the platform has
+    /// one.
+    #[cfg(windows)]
+    pub(crate) interop: windows::Interop,
     /// Last, so it outlives the addresses taken from it.
     _library: Library,
 }
@@ -462,6 +515,19 @@ impl Cuda {
                 mem_export_to_shareable_handle: library
                     .symbol(c"cuMemExportToShareableHandle")
                     .ok_or(Error::MissingSymbol)?,
+                array_3d_create: library
+                    .symbol(c"cuArray3DCreate_v2")
+                    .ok_or(Error::MissingSymbol)?,
+                array_destroy: library
+                    .symbol(c"cuArrayDestroy")
+                    .ok_or(Error::MissingSymbol)?,
+                array_3d_get_descriptor: library
+                    .symbol(c"cuArray3DGetDescriptor_v2")
+                    .ok_or(Error::MissingSymbol)?,
+                array_get_plane: library.symbol(c"cuArrayGetPlane"),
+                // SAFETY: the compute runtime's own library.
+                #[cfg(windows)]
+                interop: windows::Interop::load(&library),
                 _library: library,
             }
             .initialised(init)?
@@ -797,6 +863,111 @@ impl Cuda {
         // SAFETY: the descriptor is live for the call, which reads it whole
         // before returning; the addresses are the caller's contract.
         check(unsafe { (self.memcpy_2d_async)(&raw const copy, stream.raw) })
+    }
+}
+
+/// A two-dimensional array the runtime allocated: a surface a decoder given
+/// surfaces of its own decodes into. Destroyed with it.
+#[derive(Debug)]
+pub struct Array {
+    raw: CUarray,
+    destroy: ArrayDestroy,
+}
+
+// SAFETY: an array belongs to its context, not to a thread.
+unsafe impl Send for Array {}
+
+impl Array {
+    pub fn raw(&self) -> CUarray {
+        self.raw
+    }
+}
+
+impl Drop for Array {
+    fn drop(&mut self) {
+        // SAFETY: created once, destroyed once; the type is neither `Copy`
+        // nor `Clone`.
+        unsafe { (self.destroy)(self.raw) };
+    }
+}
+
+/// One plane of an array: an array handle of its own, which lives as long
+/// as the array it belongs to, with its size in elements and the bytes one
+/// element takes.
+#[derive(Debug, Clone, Copy)]
+pub struct ArrayPlane {
+    pub raw: CUarray,
+    pub width: usize,
+    pub height: usize,
+    pub element: usize,
+}
+
+impl Cuda {
+    /// A decoder's surface, `width` x `height` in `layout` -- one of
+    /// [`surface`]'s -- made to be decoded into and read by copies.
+    pub fn surface_array(&self, width: usize, height: usize, layout: c_uint) -> Result<Array> {
+        let desc = CUDA_ARRAY3D_DESCRIPTOR {
+            Width: width,
+            Height: height,
+            Depth: 0,
+            Format: layout,
+            NumChannels: 3,
+            Flags: surface::SURFACE_LDST | surface::VIDEO_ENCODE_DECODE,
+        };
+        let mut raw: CUarray = core::ptr::null_mut();
+        // SAFETY: both pointers are to live locals for the call.
+        check(unsafe { (self.array_3d_create)(&raw mut raw, &raw const desc) })?;
+        Ok(Array {
+            raw,
+            destroy: self.array_destroy,
+        })
+    }
+
+    /// Whether this runtime reaches an array's planes, which a decoder's own
+    /// surfaces are read through.
+    pub fn has_planes(&self) -> bool {
+        self.array_get_plane.is_some()
+    }
+
+    /// Plane `index` of `array`, or `None` past its last.
+    pub fn plane(&self, array: &Array, index: u32) -> Result<Option<ArrayPlane>> {
+        let get_plane = self.array_get_plane.ok_or(Error::MissingSymbol)?;
+        let mut raw: CUarray = core::ptr::null_mut();
+        // SAFETY: a live array; the out pointer is a live local.
+        let status = unsafe { get_plane(&raw mut raw, array.raw, index) };
+        if status == CUDA_ERROR_INVALID_VALUE {
+            return Ok(None);
+        }
+        check(status)?;
+        // SAFETY: plain data the call fills whole.
+        let mut desc = unsafe { core::mem::zeroed::<CUDA_ARRAY3D_DESCRIPTOR>() };
+        // SAFETY: a plane array the runtime handed out; the output is live.
+        check(unsafe { (self.array_3d_get_descriptor)(&raw mut desc, raw) })?;
+        let bytes = match desc.Format {
+            CU_AD_FORMAT_UNSIGNED_INT8 | CU_AD_FORMAT_SIGNED_INT8 => 1,
+            CU_AD_FORMAT_UNSIGNED_INT16 | CU_AD_FORMAT_SIGNED_INT16 | CU_AD_FORMAT_HALF => 2,
+            CU_AD_FORMAT_FLOAT => 4,
+            _ => return Err(Error::Status(CUDA_ERROR_INVALID_VALUE)),
+        };
+        Ok(Some(ArrayPlane {
+            raw,
+            width: desc.Width,
+            height: desc.Height,
+            element: bytes * usize::try_from(desc.NumChannels).unwrap_or(0),
+        }))
+    }
+
+    /// Queue the copy `copy` describes on `stream`. **Returns before it is
+    /// done**: the caller orders what reads either side behind the stream.
+    ///
+    /// # Safety
+    ///
+    /// Every pointer and array `copy` names covers the rows and bytes it
+    /// says, in the current context, until the stream has passed the copy.
+    pub unsafe fn copy_2d_async(&self, copy: &CUDA_MEMCPY2D, stream: &Stream) -> Result<()> {
+        // SAFETY: the descriptor is live for the call; what it names is the
+        // caller's contract.
+        check(unsafe { (self.memcpy_2d_async)(copy, stream.raw) })
     }
 }
 
