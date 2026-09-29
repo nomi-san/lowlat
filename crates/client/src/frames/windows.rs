@@ -151,6 +151,25 @@ impl Drop for Backing {
 /// Bits of a gate below the backing generation: the fence's value.
 const VALUE_BITS: u32 = 48;
 const VALUE_MASK: u64 = (1 << VALUE_BITS) - 1;
+/// The bits of a generation a gate keeps, above the value: the generation
+/// wraps there, and is compared in that wrapping order.
+const TAG_MASK: u64 = u64::MAX >> VALUE_BITS;
+
+fn tag(generation: u32) -> u64 {
+    u64::from(generation) & TAG_MASK
+}
+
+/// Whether `gate` was published on the backing of `generation`.
+fn names(gate: u64, generation: u32) -> bool {
+    gate >> VALUE_BITS == tag(generation)
+}
+
+/// Whether `gate` was published on a backing newer than `generation`'s, in
+/// the wrapping order of the bits a gate keeps.
+fn newer(gate: u64, generation: u32) -> bool {
+    let ahead = (gate >> VALUE_BITS).wrapping_sub(tag(generation)) & TAG_MASK;
+    ahead != 0 && ahead <= TAG_MASK / 2
+}
 
 /// One device slot: its textures and what they were made for.
 struct DeviceSlot {
@@ -222,7 +241,7 @@ impl DeviceSlots {
         if value == 0 {
             return 0;
         }
-        (u64::from(self.generation.load(Ordering::Relaxed)) << VALUE_BITS) | (value & VALUE_MASK)
+        (tag(self.generation.load(Ordering::Relaxed)) << VALUE_BITS) | (value & VALUE_MASK)
     }
 
     /// The newest picture whose gate is open, waiting up to `timeout`: for
@@ -236,9 +255,9 @@ impl DeviceSlots {
         // The backing is read once here and again only when a gate names a
         // newer one, which is when the session has moved on meanwhile.
         let current = RefCell::new(None::<Current>);
-        let refresh = |generation: u32| {
+        let refresh = |gate: u64| {
             let mut held = current.borrow_mut();
-            if held.as_ref().is_none_or(|c| c.generation < generation) {
+            if held.as_ref().is_none_or(|c| newer(gate, c.generation)) {
                 *held = self.current();
             }
         };
@@ -246,11 +265,10 @@ impl DeviceSlots {
             if gate == 0 {
                 return Gate::Open;
             }
-            let generation = u32::try_from(gate >> VALUE_BITS).unwrap_or(u32::MAX);
-            refresh(generation);
+            refresh(gate);
             let held = current.borrow();
             match held.as_ref() {
-                Some(c) if c.generation == generation => match c.fence.completed() {
+                Some(c) if names(gate, c.generation) => match c.fence.completed() {
                     // A fence past every value is a device that is gone.
                     u64::MAX => Gate::Never,
                     done if done >= gate & VALUE_MASK => Gate::Open,
@@ -263,11 +281,10 @@ impl DeviceSlots {
             let Some(event) = self.event.as_ref() else {
                 return;
             };
-            let generation = u32::try_from(gate >> VALUE_BITS).unwrap_or(u32::MAX);
             let held = current.borrow();
             let asked = held
                 .as_ref()
-                .filter(|c| c.generation == generation)
+                .filter(|c| names(gate, c.generation))
                 .is_some_and(|c| c.fence.notify_at(gate & VALUE_MASK, event).is_ok());
             // A fence that cannot be asked is read again after a moment, so
             // the wait never turns into a poll.
@@ -476,6 +493,30 @@ mod tests {
         assert_eq!(frames.device.gate(0), 0);
         frames.device.generation.store(3, Ordering::Relaxed);
         assert_eq!(frames.device.gate(7), (3 << VALUE_BITS) | 7);
+        assert!(names(frames.device.gate(7), 3));
+        assert!(!names(frames.device.gate(7), 2), "another backing's gate");
+    }
+
+    /// **A gate names its backing past the bits it keeps of it**: a session
+    /// that has opened more devices than the gate has room to count still
+    /// hands its pictures out, and an older backing's gate is still refused.
+    #[test]
+    fn a_gate_names_its_backing_past_the_bits_it_keeps() {
+        let frames = Frames::new((64, 64), FrameKind::Handle);
+        let many = (1u32 << (64 - VALUE_BITS)) + 3;
+        frames.device.generation.store(many, Ordering::Relaxed);
+        let gate = frames.device.gate(7);
+        assert!(names(gate, many), "the backing's own picture refused");
+        assert!(!names(gate, many - 1), "an older backing's picture taken");
+        // Newer across the wrap, so an acquire holding the backing before it
+        // reads the session's again.
+        assert!(newer(gate, many - 4), "a newer backing read as older");
+        assert!(!newer(gate, many), "a backing newer than itself");
+        frames.device.generation.store(many - 4, Ordering::Relaxed);
+        assert!(
+            !newer(frames.device.gate(7), many),
+            "an older backing read as newer"
+        );
     }
 
     fn frame(order: i32) -> Frame {
