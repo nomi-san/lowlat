@@ -1375,6 +1375,30 @@ fn a_departure_reaches_the_host_as_a_zero_disconnect() {
     let _ = pair.guest.events.try_recv();
 }
 
+/// **A decoder that fails for good leaves the session**: the departure
+/// reaches the host as a zero disconnect, and the session ends as the
+/// decoder's failure once the departure has had its grace -- rather than
+/// the host streaming on to a client that shows nothing.
+#[test]
+fn a_decoder_that_fails_leaves_the_session() {
+    let mut pair = Pair::new(9, clean());
+    pair.run_for(2000.0);
+    assert!(pair.established());
+    pair.guest
+        .telemetry
+        .decoder
+        .store(lowlat_client::driver::DECODER_FAILED, Ordering::Release);
+    let mut ended = None;
+    for _ in 0..2000 {
+        if let Some(outcome) = pair.tick() {
+            ended = Some(outcome);
+            break;
+        }
+    }
+    assert_eq!(ended, Some(Outcome::DecoderFailed));
+    assert_eq!(pair.host.received[usize::from(op::DISCONNECT)], 1);
+}
+
 /// **A preference changed mid-session is one restatement per secondary
 /// stream, one request on the first, one teardown and one build**, and the
 /// picture goes on: the host reads the new flags and answers with a keyframe.

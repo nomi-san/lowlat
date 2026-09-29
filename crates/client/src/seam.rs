@@ -613,7 +613,6 @@ impl Client {
             units: self.units.clone(),
             frames: Arc::clone(&self.frames),
             telemetry: Arc::clone(&self.telemetry),
-            emit: self.emit.clone(),
             shell: shell_wake,
             stopping: Arc::clone(&stopping),
         };

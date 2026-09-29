@@ -251,6 +251,16 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
         if let Some(outcome) = driver.turn(shell.endpoint(), now) {
             ended = Some(outcome);
         }
+        // An ending the loop decided is said, a departure of its own
+        // included -- a decoder that failed for good ends the session that
+        // way -- before a departure the application asked for is let go
+        // without a word.
+        if let Some(outcome) = ended {
+            release(&mut shell);
+            telemetry.state.store(2, Ordering::Relaxed);
+            emit.send(Event::Ended { outcome });
+            return;
+        }
         if leaving && driver.established() {
             driver.leave(shell.endpoint().session(), now);
         }
@@ -258,12 +268,6 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
             release(&mut shell);
             // The application caused this; it needs no event back.
             telemetry.state.store(2, Ordering::Relaxed);
-            return;
-        }
-        if let Some(outcome) = ended {
-            release(&mut shell);
-            telemetry.state.store(2, Ordering::Relaxed);
-            emit.send(Event::Ended { outcome });
             return;
         }
 

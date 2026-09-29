@@ -200,6 +200,9 @@ pub struct Lag {
     pub behind_ms: u32,
 }
 
+/// [`Telemetry::decoder`] once no decoder can serve the stream.
+pub const DECODER_FAILED: u32 = 2;
+
 /// What the loop publishes about itself, for the seam to read from any thread.
 #[derive(Debug, Default)]
 pub struct Telemetry {
@@ -221,7 +224,8 @@ pub struct Telemetry {
     /// Set by the decoder's consumer when its feed asked for a keyframe; the
     /// loop sends the request on its next pass and clears it.
     pub request: AtomicBool,
-    /// The decoder: 0 none yet, 1 built, 2 failed for good.
+    /// The decoder: 0 none yet, 1 built, [`DECODER_FAILED`] failed for good,
+    /// which the loop acts on by leaving the session.
     pub decoder: AtomicU32,
     /// The last picture's decode and read-back, in microseconds.
     pub decode_us: AtomicU32,
@@ -604,6 +608,16 @@ impl Driver {
         }
         if !self.established {
             return None;
+        }
+
+        // A decoder that failed for good ends the session from this side:
+        // the departure goes out once, and when it has had its grace the
+        // stream ends as the decoder's failure.
+        if self.telemetry.decoder.load(Ordering::Acquire) == DECODER_FAILED {
+            self.leave(endpoint.session(), now_ms);
+            if self.left(now_ms) {
+                return Some(Outcome::DecoderFailed);
+            }
         }
 
         if let Some(outcome) = self.check_health(endpoint, now_ms) {

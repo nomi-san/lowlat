@@ -10,14 +10,12 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lowlat_common::events;
 use lowlat_core::video;
 use lowlat_decode::{Decoder, Fault, Fed, Format, Picture, nvdec, software};
 use lowlat_net::WakeHandle;
 
 use crate::config::FrameKind;
-use crate::driver::{Telemetry, Units};
-use crate::event::{Event, Outcome};
+use crate::driver::{DECODER_FAILED, Telemetry, Units};
 use crate::feed::{Decision, Feed};
 use crate::frames::{Filling, Frame, Frames};
 use crate::report::Smoothed;
@@ -108,8 +106,8 @@ pub(crate) struct Attached {
     pub units: Units,
     pub frames: Arc<Frames>,
     pub telemetry: Arc<Telemetry>,
-    pub emit: events::Sender<Event>,
-    /// The session thread's wake, for the keyframe request.
+    /// The session thread's wake, for the keyframe request and for a
+    /// decoder that failed for good, which the session thread acts on.
     pub shell: WakeHandle,
     pub stopping: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -159,7 +157,6 @@ pub(crate) fn run(args: Attached) {
         units,
         frames,
         telemetry,
-        emit,
         shell,
         stopping,
     } = args;
@@ -194,16 +191,16 @@ pub(crate) fn run(args: Attached) {
             other => break other,
         }
     }
-    .finish(&telemetry, &emit, &frames);
+    .finish(&telemetry, &shell, &frames);
 }
 
 impl Next {
     /// What the thread does last: the queue closed either way, and the
-    /// application told when no decoder can serve the stream.
-    fn finish(self, telemetry: &Telemetry, emit: &events::Sender<Event>, frames: &Frames) {
+    /// session ended when no decoder can serve the stream.
+    fn finish(self, telemetry: &Telemetry, shell: &WakeHandle, frames: &Frames) {
         match self {
             // A loss no platform recovered from ends the stream as a failure.
-            Next::Failed | Next::Lost => fail(telemetry, emit, frames),
+            Next::Failed | Next::Lost => fail(telemetry, shell, frames),
             Next::Stop => frames.close(),
             Next::Switch(_) => unreachable!("a switch is taken by the loop"),
         }
@@ -439,12 +436,14 @@ fn take_pictures<D: Backend>(
     }
 }
 
-fn fail(telemetry: &Telemetry, emit: &events::Sender<Event>, frames: &Frames) {
-    telemetry.decoder.store(2, Ordering::Release);
+/// No decoder can serve the stream: the queue is closed and the session
+/// thread woken, which leaves the session -- a clean departure the host reads
+/// as the guest leaving -- and then ends it as the decoder's failure. The
+/// host would otherwise go on streaming to a client that shows nothing.
+fn fail(telemetry: &Telemetry, shell: &WakeHandle, frames: &Frames) {
+    telemetry.decoder.store(DECODER_FAILED, Ordering::Release);
     frames.close();
-    emit.send(Event::Ended {
-        outcome: Outcome::DecoderFailed,
-    });
+    let _ = shell.notify();
 }
 
 /// The layout a format is handed out as. Named here so the seam and the
