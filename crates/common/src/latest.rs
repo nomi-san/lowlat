@@ -23,22 +23,42 @@
 
 use core::time::Duration;
 
-use crate::sync::{AtomicU32, AtomicU64, Ordering, UnsafeCell};
+use crate::sync::{AtomicU64, Ordering, UnsafeCell};
 use crate::wait;
 
 /// The wait word is a real atomic whatever the build: the futex needs its
 /// address, and the model check explores the states, not the sleep.
 type WaitWord = core::sync::atomic::AtomicU32;
 
-const FREE: u32 = 0;
-const FILLING: u32 = 1;
-const READY: u32 = 2;
-const HELD: u32 = 3;
+const FREE: u64 = 0;
+const FILLING: u64 = 1;
+const READY: u64 = 2;
+const HELD: u64 = 3;
+/// The state's bits, below the publish sequence in a slot's word.
+const STATE_BITS: u32 = 2;
+const STATE_MASK: u64 = (1 << STATE_BITS) - 1;
+
+/// A slot's word: `state` below the sequence `seq` it was last published
+/// under.
+const fn pack(seq: u64, state: u64) -> u64 {
+    (seq << STATE_BITS) | state
+}
+
+const fn state_of(word: u64) -> u64 {
+    word & STATE_MASK
+}
+
+const fn seq_of(word: u64) -> u64 {
+    word >> STATE_BITS
+}
 
 struct Slot<T> {
-    state: AtomicU32,
-    /// The publish sequence: what "newer" means.
-    seq: AtomicU64,
+    /// The state and the publish sequence -- what "newer" means -- in one
+    /// word, so an exchange that depends on which publish it looked at
+    /// compares both. A slot stolen and published again between a look and
+    /// an exchange fails the exchange, rather than being taken or freed as
+    /// the publish it no longer is.
+    state: AtomicU64,
     /// What the caller's check is asked of before the slot is handed out;
     /// zero for a slot published open.
     gate: AtomicU64,
@@ -78,8 +98,9 @@ impl<T: Copy + core::fmt::Debug, const N: usize> core::fmt::Debug for Latest<T, 
 
 // SAFETY: the payload is written only while the slot is FILLING, which one
 // producer holds, and read only while it is HELD, which one consumer holds;
-// the transitions between them are Release/Acquire pairs on `state`, so the
-// two windows never overlap and the write is visible to the read.
+// the transitions between them are Release/Acquire pairs on the slot's
+// word, so the two windows never overlap and the write is visible to the
+// read.
 unsafe impl<T: Copy + Send, const N: usize> Sync for Latest<T, N> {}
 // SAFETY: as above; the payload owns nothing thread-affine.
 unsafe impl<T: Copy + Send, const N: usize> Send for Latest<T, N> {}
@@ -96,8 +117,7 @@ impl<T: Copy, const N: usize> Latest<T, N> {
     pub fn new(blank: T) -> Self {
         Self {
             slots: core::array::from_fn(|_| Slot {
-                state: AtomicU32::new(FREE),
-                seq: AtomicU64::new(0),
+                state: AtomicU64::new(pack(0, FREE)),
                 gate: AtomicU64::new(0),
                 payload: UnsafeCell::new(blank),
             }),
@@ -114,10 +134,17 @@ impl<T: Copy, const N: usize> Latest<T, N> {
     pub fn begin(&self) -> Option<usize> {
         loop {
             for (index, slot) in self.slots.iter().enumerate() {
-                if slot
-                    .state
-                    .compare_exchange(FREE, FILLING, Ordering::Acquire, Ordering::Relaxed)
-                    .is_ok()
+                let now = slot.state.load(Ordering::Relaxed);
+                if state_of(now) == FREE
+                    && slot
+                        .state
+                        .compare_exchange(
+                            now,
+                            pack(seq_of(now), FILLING),
+                            Ordering::Acquire,
+                            Ordering::Relaxed,
+                        )
+                        .is_ok()
                 {
                     return Some(index);
                 }
@@ -127,14 +154,12 @@ impl<T: Copy, const N: usize> Latest<T, N> {
             // -- so a failed exchange starts the whole search again.
             let mut oldest: Option<(usize, u64)> = None;
             for (index, slot) in self.slots.iter().enumerate() {
-                if slot.state.load(Ordering::Acquire) == READY {
-                    let seq = slot.seq.load(Ordering::Relaxed);
-                    if oldest.is_none_or(|(_, s)| seq < s) {
-                        oldest = Some((index, seq));
-                    }
+                let now = slot.state.load(Ordering::Acquire);
+                if state_of(now) == READY && oldest.is_none_or(|(_, w)| seq_of(now) < seq_of(w)) {
+                    oldest = Some((index, now));
                 }
             }
-            let Some((index, _)) = oldest else {
+            let Some((index, seen)) = oldest else {
                 // Nothing free and nothing ready: either every slot is held
                 // or being filled, or the consumer freed one between the two
                 // scans. Only the first is an answer, so the count reads each
@@ -144,7 +169,12 @@ impl<T: Copy, const N: usize> Latest<T, N> {
                 let taken = self
                     .slots
                     .iter()
-                    .filter(|s| matches!(s.state.fetch_or(0, Ordering::AcqRel), HELD | FILLING))
+                    .filter(|s| {
+                        matches!(
+                            state_of(s.state.fetch_or(0, Ordering::AcqRel)),
+                            HELD | FILLING
+                        )
+                    })
                     .count();
                 if taken == N {
                     return None;
@@ -154,7 +184,12 @@ impl<T: Copy, const N: usize> Latest<T, N> {
             let slot = self.slots.get(index)?;
             if slot
                 .state
-                .compare_exchange(READY, FILLING, Ordering::Acquire, Ordering::Relaxed)
+                .compare_exchange(
+                    seen,
+                    pack(seq_of(seen), FILLING),
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                )
                 .is_ok()
             {
                 return Some(index);
@@ -166,7 +201,7 @@ impl<T: Copy, const N: usize> Latest<T, N> {
     /// between `begin` and `publish`.
     pub fn set(&self, index: usize, payload: T) {
         if let Some(slot) = self.slots.get(index) {
-            debug_assert_eq!(slot.state.load(Ordering::Relaxed), FILLING);
+            debug_assert_eq!(state_of(slot.state.load(Ordering::Relaxed)), FILLING);
             slot.payload.with_mut(|p| {
                 // SAFETY: the slot is FILLING, held by this producer alone.
                 unsafe { *p = payload };
@@ -186,11 +221,10 @@ impl<T: Copy, const N: usize> Latest<T, N> {
             return;
         };
         let seq = self.next.fetch_add(1, Ordering::Relaxed);
-        slot.seq.store(seq, Ordering::Relaxed);
         slot.gate.store(gate, Ordering::Relaxed);
         // Release: the payload, the gate and the bytes they describe are
         // visible to the consumer that acquires this.
-        slot.state.store(READY, Ordering::Release);
+        slot.state.store(pack(seq, READY), Ordering::Release);
         self.word
             .fetch_add(1, core::sync::atomic::Ordering::Release);
         wait::notify_one(&self.word);
@@ -199,7 +233,10 @@ impl<T: Copy, const N: usize> Latest<T, N> {
     /// Give a slot back without publishing it.
     pub fn abandon(&self, index: usize) {
         if let Some(slot) = self.slots.get(index) {
-            slot.state.store(FREE, Ordering::Release);
+            // The producer's alone while it is filled, so nothing moves under
+            // the read.
+            let now = slot.state.load(Ordering::Relaxed);
+            slot.state.store(pack(seq_of(now), FREE), Ordering::Release);
         }
     }
 
@@ -252,58 +289,62 @@ impl<T: Copy, const N: usize> Latest<T, N> {
     /// the lowest gate still shut above `after` (`None` when there is none).
     fn take_open(&self, after: u64, check: &impl Fn(u64) -> Gate) -> Result<Taken<T>, Option<u64>> {
         loop {
-            let mut newest: Option<usize> = None;
-            let mut newest_seq = 0;
+            let mut newest: Option<(usize, u64)> = None;
             let mut shut: Option<u64> = None;
             for (index, slot) in self.slots.iter().enumerate() {
-                if slot.state.load(Ordering::Acquire) != READY {
-                    continue;
-                }
-                let seq = slot.seq.load(Ordering::Relaxed);
-                if seq <= after {
+                let now = slot.state.load(Ordering::Acquire);
+                if state_of(now) != READY || seq_of(now) <= after {
                     continue;
                 }
                 let gate = slot.gate.load(Ordering::Relaxed);
                 match check(gate) {
-                    Gate::Open if newest.is_none() || seq > newest_seq => {
-                        newest = Some(index);
-                        newest_seq = seq;
+                    Gate::Open if newest.is_none_or(|(_, w)| seq_of(now) > seq_of(w)) => {
+                        newest = Some((index, now));
                     }
                     Gate::Shut => shut = Some(shut.map_or(gate, |g| g.min(gate))),
                     _ => {}
                 }
             }
-            let slot = newest.and_then(|index| self.slots.get(index));
-            let (Some(index), Some(slot)) = (newest, slot) else {
+            let Some((index, seen)) = newest else {
                 return Err(shut);
             };
-            // The producer may have stolen it since the scan; then look again.
+            let Some(slot) = self.slots.get(index) else {
+                return Err(shut);
+            };
+            // The exchange compares the publish looked at, sequence and all:
+            // a slot the producer stole and published again since the scan
+            // fails it, and the search starts over, so what is handed out is
+            // always the publish whose sequence it is handed out under.
             if slot
                 .state
-                .compare_exchange(READY, HELD, Ordering::Acquire, Ordering::Relaxed)
+                .compare_exchange(
+                    seen,
+                    pack(seq_of(seen), HELD),
+                    Ordering::Acquire,
+                    Ordering::Relaxed,
+                )
                 .is_err()
             {
                 continue;
             }
-            // Held, so the producer cannot touch it now; but it may have been
-            // stolen and published again between the scan and the exchange,
-            // so what it carries is read here and not taken from the scan: a
-            // sequence from the scan would let the next take find an older
-            // picture above it, and a gate from the scan would hand out one
-            // whose gate was never asked.
-            let seq = slot.seq.load(Ordering::Relaxed);
+            // Held, so nothing moves under it now; the gate is asked again,
+            // since the session may have moved to another backing since the
+            // scan, which a gate that was open then no longer is.
+            let seq = seq_of(seen);
             if check(slot.gate.load(Ordering::Relaxed)) != Gate::Open {
-                slot.state.store(READY, Ordering::Release);
+                slot.state.store(seen, Ordering::Release);
                 continue;
             }
             // Everything older that is still ready is discarded: latest wins.
+            // Each exchange compares the publish looked at too, so a slot
+            // stolen and published again since -- now the newest picture --
+            // is never freed as the older one it was.
             for other in &self.slots {
-                if other.state.load(Ordering::Acquire) == READY
-                    && other.seq.load(Ordering::Relaxed) < seq
-                {
+                let now = other.state.load(Ordering::Acquire);
+                if state_of(now) == READY && seq_of(now) < seq {
                     let _ = other.state.compare_exchange(
-                        READY,
-                        FREE,
+                        now,
+                        pack(seq_of(now), FREE),
                         Ordering::AcqRel,
                         Ordering::Relaxed,
                     );
@@ -323,9 +364,17 @@ impl<T: Copy, const N: usize> Latest<T, N> {
     /// The consumer is done with a held slot. False if it was not held.
     pub fn release(&self, index: usize) -> bool {
         self.slots.get(index).is_some_and(|slot| {
-            slot.state
-                .compare_exchange(HELD, FREE, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
+            let now = slot.state.load(Ordering::Relaxed);
+            state_of(now) == HELD
+                && slot
+                    .state
+                    .compare_exchange(
+                        now,
+                        pack(seq_of(now), FREE),
+                        Ordering::AcqRel,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
         })
     }
 
@@ -350,9 +399,15 @@ impl<T: Copy, const N: usize> Latest<T, N> {
         for slot in &self.slots {
             // The consumer may be taking the same slot: one of the two wins
             // it, and a slot taken is never let go here.
-            let _ = slot
-                .state
-                .compare_exchange(READY, FREE, Ordering::AcqRel, Ordering::Relaxed);
+            let now = slot.state.load(Ordering::Acquire);
+            if state_of(now) == READY {
+                let _ = slot.state.compare_exchange(
+                    now,
+                    pack(seq_of(now), FREE),
+                    Ordering::AcqRel,
+                    Ordering::Relaxed,
+                );
+            }
         }
         self.closed.store(0, core::sync::atomic::Ordering::Release);
     }
@@ -361,7 +416,7 @@ impl<T: Copy, const N: usize> Latest<T, N> {
     pub fn ready(&self) -> usize {
         self.slots
             .iter()
-            .filter(|s| s.state.load(Ordering::Relaxed) == READY)
+            .filter(|s| state_of(s.state.load(Ordering::Relaxed)) == READY)
             .count()
     }
 
@@ -369,7 +424,7 @@ impl<T: Copy, const N: usize> Latest<T, N> {
     pub fn held(&self) -> usize {
         self.slots
             .iter()
-            .filter(|s| s.state.load(Ordering::Relaxed) == HELD)
+            .filter(|s| state_of(s.state.load(Ordering::Relaxed)) == HELD)
             .count()
     }
 }
@@ -609,6 +664,7 @@ mod tests {
 #[cfg(loom)]
 mod loom_tests {
     use super::*;
+    use crate::sync::AtomicU32;
 
     /// The consumer holds a slot while the producer publishes past it and
     /// steals; the held slot must never be filled under the consumer, and
@@ -713,6 +769,45 @@ mod loom_tests {
                 );
             }
             producer.join().expect("producer");
+        });
+    }
+
+    /// **The newest picture is never freed unseen.** Two pictures are
+    /// published; the consumer takes the newer while the producer steals the
+    /// older slot for a third. Freeing what is older than the taken picture
+    /// must not free the third: a slot stolen and published again between the
+    /// consumer's look at it and its exchange holds a newer picture, and the
+    /// exchange must see that it does.
+    #[test]
+    fn the_newest_picture_is_never_freed_unseen() {
+        loom::model(|| {
+            let ring = loom::sync::Arc::new(Latest::<[u32; 2], 2>::new([0, 0]));
+            for n in 1..3u32 {
+                let index = ring.begin().expect("a slot");
+                ring.set(index, [n, n]);
+                ring.publish(index);
+            }
+
+            let producer = {
+                let ring = ring.clone();
+                loom::thread::spawn(move || {
+                    let index = ring.begin().expect("a slot");
+                    ring.set(index, [3, 3]);
+                    ring.publish(index);
+                })
+            };
+
+            let first = ring.acquire(0, Duration::ZERO).expect("a picture");
+            ring.release(first.index);
+            producer.join().expect("producer");
+            let second = ring.acquire(first.seq, Duration::ZERO);
+            let seen = first.payload[0] == 3 || second.is_some_and(|t| t.payload[0] == 3);
+            assert!(
+                seen,
+                "picture 3 was freed unseen: first {:?}, then {:?}",
+                first.payload,
+                second.map(|t| t.payload)
+            );
         });
     }
 
