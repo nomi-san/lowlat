@@ -3,7 +3,12 @@
 //! runtime and decode interface, so it is off by default:
 //! `cargo test -p lowlat-decode --test nvdec_decode -- --ignored`.
 
-#![allow(clippy::type_complexity, clippy::too_many_arguments)]
+#![allow(
+    clippy::type_complexity,
+    clippy::too_many_arguments,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
 
 mod common;
 
@@ -347,6 +352,238 @@ fn the_device_route_produces_the_same_pictures() {
         );
         assert_eq!(got, expected, "{clip}: the device route differs");
     }
+}
+
+/// One clip through textures of a device of the library's own on the
+/// adapter `luid`, read back on a second device once the fence has passed,
+/// compared with the reference; `mapped` makes the decoder map its own
+/// surfaces. Where it decoded from, or why it failed.
+#[cfg(windows)]
+fn check_textures(
+    cuda: &Cuda,
+    context: &Context,
+    cuvid: &Cuvid,
+    luid: lowlat_drivers::d3d11::Luid,
+    clip: &str,
+    sums: &str,
+    (codec, ten_bit): (Codec, bool),
+    mapped: bool,
+) -> Result<&'static str, String> {
+    use std::sync::Arc;
+
+    use lowlat_decode::Format;
+    use lowlat_decode::d3d11::plane_textures;
+    use lowlat_drivers::cuda::Registered;
+    use lowlat_drivers::d3d11::{D3d11, Event, SharedTexture};
+
+    let d3d11 = D3d11::load().expect("the system's libraries");
+    let device = Arc::new(d3d11.open(luid).expect("the textures' device"));
+    let fence = Arc::new(device.fence(0).expect("a fence"));
+    let mut reader = common::reader::Reader {
+        device: d3d11.open(luid).expect("a second device"),
+        opened: Vec::new(),
+    };
+    let event = Event::new().expect("an event");
+    let mut backend = Backend::new(cuda, cuvid, (4096, 4096), MAX_UNIT);
+    if mapped {
+        backend.force_mapped();
+    }
+    backend.attach_textures(Arc::clone(&device), Arc::clone(&fence));
+    if !backend.exports_textures() {
+        return Err("the runtime writes no textures".to_string());
+    }
+    backend
+        .build(&header(codec, ten_bit))
+        .map_err(|e| format!("build: {e:?}"))?;
+    // The registrations before the textures, so each goes first.
+    let mut textures: Option<(
+        (u32, u32, Format),
+        [Option<Registered>; 3],
+        [Option<SharedTexture>; 3],
+    )> = None;
+    let timing = core::cell::Cell::new((0u32, 0u32));
+    let (ours, times) = common::decode_clip_with(
+        &mut backend,
+        clip,
+        |b| b.drain(),
+        |_| timing.get(),
+        |b, planes| {
+            let Some(layout @ (width, height, format)) = b.output() else {
+                return Ok(None);
+            };
+            if textures.as_ref().is_none_or(|(l, _, _)| *l != layout) {
+                textures = None;
+                let made = plane_textures(format, width, height).map(|p| {
+                    p.map(|(f, w, h)| device.shared_texture(f, w, h).expect("a shared plane"))
+                });
+                let registered = made.each_ref().map(|t| {
+                    t.as_ref().map(|t| {
+                        // SAFETY: a live texture of a device on the context's
+                        // adapter, kept past the registration, which drops
+                        // first.
+                        unsafe { cuda.register_texture(context, t.texture().cast()) }
+                            .expect("registered")
+                    })
+                });
+                textures = Some((layout, registered, made));
+                reader.opened.clear();
+            }
+            let (_, registered, made) = textures.as_ref().expect("made");
+            let Some((picture, value)) =
+                b.take_to_textures(registered.each_ref().map(Option::as_ref))?
+            else {
+                return Ok(None);
+            };
+            let submitted = std::time::Instant::now();
+            fence.notify_at(value, &event).expect("a notification");
+            assert!(
+                event.wait(std::time::Duration::from_secs(2)),
+                "the fence never reached {value}"
+            );
+            let waited = submitted.elapsed().as_micros() as u32;
+            timing.set((waited, b.readback_us));
+            let sample = picture.format.sample();
+            let w = picture.width as usize;
+            let h = picture.height as usize;
+            let handle = |p: usize| made[p].as_ref().expect("a plane").handle;
+            let rows = picture.format.chroma_rows(h);
+            if picture.format.full_chroma() {
+                reader.read(handle(0), h, w * sample, planes.y, planes.y_pitch);
+                reader.read(handle(1), rows, w * sample, planes.uv, planes.uv_pitch);
+                reader.read(handle(2), rows, w * sample, planes.v, planes.v_pitch);
+            } else {
+                reader.read(handle(0), h, w * sample, planes.y, planes.y_pitch);
+                let bytes = w.div_ceil(2) * 2 * sample;
+                reader.read(handle(1), rows, bytes, planes.uv, planes.uv_pitch);
+            }
+            Ok(Some(picture))
+        },
+    );
+    let own = backend.decodes_into_own_surfaces();
+    backend.destroy();
+    drop(textures);
+    let theirs = common::sums(sums);
+    let mut expected: BTreeMap<(u32, u32), usize> = BTreeMap::new();
+    for s in &theirs {
+        *expected.entry((s.y, s.uv)).or_default() += 1;
+    }
+    let mut got: BTreeMap<(u32, u32), usize> = BTreeMap::new();
+    for s in &ours {
+        *got.entry(*s).or_default() += 1;
+    }
+    let mode = if own { "own surfaces" } else { "mapped" };
+    let wrong = ours.iter().filter(|s| !expected.contains_key(s)).count();
+    let mut waits: Vec<u32> = times.iter().map(|t| t.0).collect();
+    let mut submits: Vec<u32> = times.iter().map(|t| t.1).collect();
+    waits.sort_unstable();
+    submits.sort_unstable();
+    let at = |v: &[u32], q: f64| v.get(((v.len().max(1) - 1) as f64 * q) as usize).copied();
+    println!(
+        "  {clip} ({mode}): {} of {} pictures, {wrong} wrong; to the fence p50 {:?} us p95 {:?}; submit p50 {:?} us p95 {:?} max {:?}",
+        ours.len(),
+        theirs.len(),
+        at(&waits, 0.5),
+        at(&waits, 0.95),
+        at(&submits, 0.5),
+        at(&submits, 0.95),
+        at(&submits, 1.0),
+    );
+    if ours.len() != theirs.len() {
+        return Err(format!("{} pictures of {}", ours.len(), theirs.len()));
+    }
+    if got != expected {
+        return Err(format!("{wrong} pictures differ from the reference"));
+    }
+    Ok(mode)
+}
+
+/// **Every clip through the textures, both modes** (Windows): each picture
+/// copied into textures of a device of the library's own on the vendor's
+/// adapter, then opened by handle on a second device once the fence has
+/// passed and read back, is the reference picture bit for bit -- out of the
+/// backend's own surfaces where the driver decodes into them, and out of the
+/// decoder's mapped picture, which every clip is made to take once. The
+/// wait printed runs from the take to the fence passing; the submit is what
+/// the take cost this thread past any wait for the decode.
+#[cfg(windows)]
+#[test]
+#[ignore = "requires the vendor's decode interface"]
+fn every_clip_decodes_through_the_textures() {
+    let (cuda, context, cuvid) = open();
+    let able = caps(&cuvid);
+    let device = cuda.any_device().expect("a device");
+    let value = cuda.luid(&device).expect("the device's adapter");
+    let luid = lowlat_drivers::d3d11::D3d11::load()
+        .expect("the system's libraries")
+        .adapters()
+        .expect("the walk")
+        .into_iter()
+        .map(|a| a.luid)
+        .find(|l| l.value() == value)
+        .expect("an adapter that is the device");
+    let mut clips: Vec<(String, String, Codec, bool, bool)> = [
+        ("synthetic-720p-h264", Codec::H264, false),
+        ("synthetic-720p-hevc", Codec::H265, false),
+        ("synthetic-720p-hevc10", Codec::H265, true),
+    ]
+    .into_iter()
+    .map(|(n, c, t)| (format!("{n}.bin"), format!("{n}.sums"), c, t, false))
+    .collect();
+    for (clip, sums) in common::fixtures("h264") {
+        clips.push((clip, sums, Codec::H264, false, false));
+    }
+    for (clip, sums) in common::fixtures("hevc") {
+        let ten_bit = clip.contains("10");
+        let full_chroma = clip.contains("444");
+        clips.push((clip, sums, Codec::H265, ten_bit, full_chroma));
+    }
+    let mut failures = Vec::new();
+    for mapped in [false, true] {
+        println!(
+            "{}",
+            if mapped {
+                "mapped"
+            } else {
+                "as the driver can"
+            }
+        );
+        for (clip, sums, codec, ten_bit, full_chroma) in &clips {
+            let can = match (codec, ten_bit, full_chroma) {
+                (Codec::H264, _, _) => able.h264,
+                (Codec::H265, false, false) => able.hevc,
+                (Codec::H265, true, false) => able.hevc_10,
+                (Codec::H265, false, true) => able.hevc_444,
+                (Codec::H265, true, true) => able.hevc_444_10,
+            };
+            let (floor_w, floor_h) = floor(&cuvid, *codec);
+            let (w, h) = clip_size(clip, *codec);
+            if !can || w < floor_w || h < floor_h {
+                continue;
+            }
+            match check_textures(
+                &cuda,
+                &context,
+                &cuvid,
+                luid,
+                clip,
+                sums,
+                (*codec, *ten_bit),
+                mapped,
+            ) {
+                Ok(mode) => {
+                    let own_expected = !mapped && cuvid.asynchronous() && !full_chroma;
+                    if (mode == "own surfaces") != own_expected {
+                        failures.push(format!("{clip}: decoded {mode}"));
+                    }
+                }
+                Err(e) => {
+                    println!("  {clip}: FAILED: {e}");
+                    failures.push(format!("{clip} mapped={mapped}: {e}"));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
 }
 
 #[test]

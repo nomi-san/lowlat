@@ -11,6 +11,10 @@ use std::path::PathBuf;
 
 use lowlat_decode::{Decoder, Fault, Fed, Picture, Planes};
 
+/// Pictures handed out as textures, read back.
+#[cfg(windows)]
+pub mod reader;
+
 pub fn data(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/data")

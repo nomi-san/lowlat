@@ -22,6 +22,9 @@
 //! a layout's surfaces cannot be read out plane by plane, the decoder keeps
 //! its own surfaces and each picture is mapped to be read, the map waiting
 //! for the decode.
+//!
+//! On Windows a picture can also be copied into textures of the graphics
+//! interface, with a fence saying when it is there.
 
 use core::ffi::{c_int, c_uint};
 
@@ -42,6 +45,10 @@ use lowlat_drivers::ffi::cuvid::{
 use crate::h264::dpb::{Parity, Structure};
 use crate::hevc::sps::{DIAG_4X4, DIAG_8X8};
 use crate::{Caps, Decoder, Fault, Fed, Format, Picture, Planes, h264, hevc};
+
+/// Pictures copied into textures of the graphics interface.
+#[cfg(windows)]
+mod windows;
 
 /// Surfaces a decoder holds: what either picture buffer can index.
 const SURFACES: usize = h264::dpb::MAX_FRAMES;
@@ -276,6 +283,13 @@ pub struct Backend<'a> {
     /// The stream the device copies run on, and the event recorded behind
     /// them that the copy's end is waited on by, made at the first.
     stream: Option<(Stream, Event)>,
+    /// A mapped picture left mapped behind copies not waited for, the
+    /// stream's event recorded behind them: unmapped once they have passed,
+    /// before anything is mapped again or the decoder goes.
+    left_mapped: Option<u64>,
+    /// Where pictures are copied into textures, once attached.
+    #[cfg(windows)]
+    textures: Option<windows::Textures>,
     /// The last decode and read-back, in microseconds, for the log.
     pub decode_us: u32,
     pub readback_us: u32,
@@ -314,9 +328,31 @@ impl<'a> Backend<'a> {
             bitstream: vec![0u8; max_unit + MAX_SLICES * START_CODE.len()],
             offsets: Box::new([0; MAX_SLICES]),
             stream: None,
+            left_mapped: None,
+            #[cfg(windows)]
+            textures: None,
             decode_us: 0,
             readback_us: 0,
         }
+    }
+
+    /// Unmap the picture left mapped behind its copies, once they have
+    /// passed: a sleeping wait only where they have not, which is the device
+    /// falling behind.
+    fn settle(&mut self) -> Result<()> {
+        let Some(ptr) = self.left_mapped.take() else {
+            return Ok(());
+        };
+        let waited = match &self.stream {
+            Some((_, copied)) => copied.wait().map_err(Error::from),
+            None => Ok(()),
+        };
+        let unmapped = match &self.decoder {
+            Some(decoder) => decoder.unmap(ptr).map_err(Error::from),
+            None => Ok(()),
+        };
+        waited?;
+        unmapped
     }
 
     /// Let every waiting picture out, as at the end of a stream; a test's
@@ -995,6 +1031,7 @@ impl<'a> Backend<'a> {
         if self.registered.is_some() {
             return self.copy_registered(slot, Out::Host(out));
         }
+        self.settle()?;
         let shape = self.shape.ok_or(Error::NoProfile)?;
         let decoder = self.decoder.as_ref().ok_or(Error::NoProfile)?;
         let format = shape.format();
@@ -1023,6 +1060,7 @@ impl<'a> Backend<'a> {
         if self.registered.is_some() {
             return self.copy_registered(slot, Out::Device(out));
         }
+        self.settle()?;
         let shape = self.shape.ok_or(Error::NoProfile)?;
         let format = shape.format();
         self.ensure_stream()?;
@@ -1176,10 +1214,18 @@ impl Decoder for Backend<'_> {
     }
 
     fn destroy(&mut self) {
+        // A picture left mapped is unmapped by the decoder it came from.
+        let _ = self.settle();
         // The decoder before the surfaces it decodes into.
         self.decoder = None;
         self.registered = None;
         self.shape = None;
+    }
+}
+
+impl Drop for Backend<'_> {
+    fn drop(&mut self) {
+        let _ = self.settle();
     }
 }
 
