@@ -1,26 +1,34 @@
 //! The decoders a stream is opened on, on Windows: the system's video
-//! decoding interface on an adapter, or the machine's own codec library.
+//! decoding interface on an adapter, the vendor's interface on one of its
+//! GPUs, or the machine's own codec library.
 //!
-//! **A device lost is looked for again**, not the end of the stream: a
-//! driver update, a reset or a restart of the GPU's driver takes the device
-//! away and brings the GPU back under a new identity. The decode thread
-//! looks for the same GPU by its hardware -- and only for it while the
-//! search runs, since the GPU that drives the display comes back in seconds
-//! and a session moved off it would stay on the other for good -- opens
-//! there, and the replacement asks for its keyframe; pictures then say which
-//! GPU they are on. A session nobody placed takes the first GPU the system
-//! offers once the search has run its course.
+//! **A device lost is looked for again** under the system's interface, not
+//! the end of the stream: a driver update, a reset or a restart of the GPU's
+//! driver takes the device away and brings the GPU back under a new
+//! identity. The decode thread looks for the same GPU by its hardware -- and
+//! only for it while the search runs, since the GPU that drives the display
+//! comes back in seconds and a session moved off it would stay on the other
+//! for good -- opens there, and the replacement asks for its keyframe;
+//! pictures then say which GPU they are on. A session nobody placed takes
+//! the first GPU the system offers once the search has run its course.
+//!
+//! **The vendor's interface is not looked for again**: its runtime does not
+//! come back in the process that lost its device, so the stream fails and
+//! the session ends.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use lowlat_decode::{Fault, Format, Picture, d3d11, software};
+use lowlat_decode::{Fault, Format, Picture, d3d11, nvdec, software};
+use lowlat_drivers::cuda::Cuda;
+use lowlat_drivers::cuvid::Cuvid;
 use lowlat_drivers::d3d11::{Adapter, D3d11, Luid};
 use lowlat_drivers::lavc::Lavc;
 
 use super::{Backend, Next, Shared, drive};
-use crate::frames::Filling;
+use crate::UNIT_BYTES;
+use crate::frames::{Filling, Vendor};
 use crate::seam::Opened;
 
 /// How long a lost device is looked for before the stream fails, and how
@@ -58,12 +66,44 @@ impl Backend for d3d11::Backend<'_> {
     }
 }
 
+impl Backend for nvdec::Backend<'_> {
+    fn output(&self) -> Option<(u32, u32, Format)> {
+        nvdec::Backend::output(self)
+    }
+    fn timings(&self) -> (u32, u32) {
+        (self.decode_us, self.readback_us)
+    }
+    fn exports(&self) -> bool {
+        self.exports_textures()
+    }
+    fn take_to_slot(
+        &mut self,
+        filling: &mut Filling<'_>,
+        (width, height, format): (u32, u32, Format),
+    ) -> Result<Option<(Picture, u64)>, Fault> {
+        // As the system's interface: textures refused are a picture lost,
+        // unless their device is gone.
+        let Some(planes) = filling.registered_for(width, height, format) else {
+            return if self.textures_lost() {
+                Err(Fault::DeviceLost)
+            } else {
+                Ok(None)
+            };
+        };
+        match self.take_to_textures(planes) {
+            Err(_) if self.textures_lost() => Err(Fault::DeviceLost),
+            taken => taken,
+        }
+    }
+}
+
 /// Open the decoder `opened` names and drive it until it returns. The
 /// device, or the library pair, is opened here, on the decode thread, and
 /// lives as long as the decoder built on it does.
 pub(super) fn open(opened: Opened, shared: &Shared<'_>, replacing: bool) -> Next {
     match opened {
         Opened::D3d11 { luid, named, .. } => system_decoder(luid, named, shared, replacing),
+        Opened::Nvdec { luid, .. } => vendor_decoder(luid, shared, replacing),
         Opened::Software(dir) => {
             // The same search creation ran, landing on the same pair.
             let Ok(lavc) = Lavc::load(dir.as_deref()) else {
@@ -92,7 +132,7 @@ fn system_decoder(mut luid: Luid, named: bool, shared: &Shared<'_>, mut replacin
         // A device that splits takes the session's device slots, whatever
         // kind the session asks for now, so a switch to handles has them.
         if let Some(fence) = backend.fence() {
-            shared.frames.open_device(Arc::clone(&device), fence);
+            shared.frames.open_device(Arc::clone(&device), fence, None);
         }
         let lost = device.adapter.clone();
         match drive(backend, shared, replacing) {
@@ -113,6 +153,58 @@ fn system_decoder(mut luid: Luid, named: bool, shared: &Shared<'_>, mut replacin
             Err(next) => return next,
         }
     }
+}
+
+/// The vendor's interface on the adapter `luid`, driven until it returns.
+/// The runtime's context is made current here, where every call against it
+/// is made, and pictures are handed out as textures of a device of the
+/// library's own on the same adapter, opened here too, where its immediate
+/// context is used; without one, as planes only. A device lost fails the
+/// stream: nothing of the runtime comes back in this process.
+fn vendor_decoder(luid: Luid, shared: &Shared<'_>, replacing: bool) -> Next {
+    let Ok(cuda) = Cuda::load() else {
+        return Next::Failed;
+    };
+    let Ok(device) = cuda.device_for_luid(luid.value()) else {
+        return Next::Failed;
+    };
+    let Ok(context) = cuda.retain_primary(&device) else {
+        return Next::Failed;
+    };
+    if context.make_current().is_err() {
+        return Next::Failed;
+    }
+    let Ok(cuvid) = Cuvid::load() else {
+        return Next::Failed;
+    };
+    let Ok(d3d11) = D3d11::load() else {
+        return Next::Failed;
+    };
+    // The queue's slots are registered with this runtime and may outlive
+    // this thread while the application holds one, so the queue keeps its
+    // own references to it and to the context.
+    let cuda = Arc::new(cuda);
+    let context = Arc::new(context);
+    let mut backend = nvdec::Backend::new(&cuda, &cuvid, shared.frames.ceiling(), UNIT_BYTES);
+    // Attached whatever kind the session asks for now, so a switch to
+    // handles has the textures.
+    let textures = cuda
+        .has_graphics()
+        .then(|| d3d11.open(luid).ok())
+        .flatten()
+        .and_then(|device| Some((device.fence(0).ok()?, device)));
+    if let Some((fence, device)) = textures {
+        let (device, fence) = (Arc::new(device), Arc::new(fence));
+        let vendor = Vendor {
+            context: Arc::clone(&context),
+            cuda: Arc::clone(&cuda),
+        };
+        shared
+            .frames
+            .open_device(Arc::clone(&device), Arc::clone(&fence), Some(vendor));
+        backend.attach_textures(device, fence);
+    }
+    drive(backend, shared, replacing)
 }
 
 /// The GPU a lost device is opened on again: the same hardware under

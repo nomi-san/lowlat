@@ -16,6 +16,10 @@
 //! is not the one whose fence is read, and a picture queued there when the
 //! session moved on is not waited for -- nor does one of a device that is
 //! gone, whose fence reads past every value.
+//!
+//! **A backing the vendor's runtime writes registers each slot's textures
+//! with it** when the slot is made, and the slot keeps the registrations,
+//! and the runtime they need, until it is made again.
 
 use core::cell::{RefCell, UnsafeCell};
 use core::ffi::c_void;
@@ -26,7 +30,7 @@ use std::sync::{Arc, Mutex};
 use lowlat_common::latest::{Gate, Latest, Taken};
 use lowlat_decode::Format;
 use lowlat_decode::d3d11::plane_textures;
-use lowlat_decode::nvdec::DevicePlanes;
+use lowlat_drivers::cuda::{Context, Cuda, Registered};
 use lowlat_drivers::d3d11::{Device, Event, Fence, Luid, SharedTexture};
 
 use super::{Filling, Frame, Frames, SLOTS};
@@ -171,13 +175,27 @@ fn newer(gate: u64, generation: u32) -> bool {
     ahead != 0 && ahead <= TAG_MASK / 2
 }
 
+/// The vendor's runtime a backing's textures are written through, in the
+/// context they are registered in. The context first, so it is let go
+/// while the runtime it came from is still loaded.
+#[derive(Clone, Debug)]
+pub struct Vendor {
+    pub context: Arc<Context>,
+    pub cuda: Arc<Cuda>,
+}
+
 /// One device slot: its textures and what they were made for.
 struct DeviceSlot {
+    /// Each texture's registration with the vendor's runtime, on a backing
+    /// it writes: first, so each is let go before its texture is.
+    registered: [Option<Registered>; 3],
     planes: [Option<SharedTexture>; 3],
     layout: (Format, u32, u32),
     generation: u32,
     adapter: Luid,
     allocation: u32,
+    /// What the registrations need to the last: after them.
+    vendor: Option<Vendor>,
 }
 
 /// The session's backing now: the device slots are made on it, and its fence
@@ -187,6 +205,8 @@ struct Current {
     generation: u32,
     device: Arc<Device>,
     fence: Arc<Fence>,
+    /// The vendor's runtime, on a backing it writes.
+    vendor: Option<Vendor>,
 }
 
 /// A queue's device slots.
@@ -307,17 +327,19 @@ impl DeviceSlots {
 
 impl Frames {
     /// The session's backing moves to `device`, whose `fence` says when a
-    /// picture made on it is finished. Called on the decode thread each time
-    /// it opens a device that can hand pictures out as textures; a slot of
-    /// an older backing is made again when it is next lent, and a picture of
-    /// one not yet taken is never handed out.
-    pub fn open_device(&self, device: Arc<Device>, fence: Arc<Fence>) {
+    /// picture made on it is finished, and whose textures `vendor` writes
+    /// where it is given. Called on the decode thread each time it opens a
+    /// device that can hand pictures out as textures; a slot of an older
+    /// backing is made again when it is next lent, and a picture of one not
+    /// yet taken is never handed out.
+    pub fn open_device(&self, device: Arc<Device>, fence: Arc<Fence>, vendor: Option<Vendor>) {
         let generation = self.device.generation.load(Ordering::Relaxed) + 1;
         if let Ok(mut current) = self.device.current.lock() {
             *current = Some(Current {
                 generation,
                 device,
                 fence,
+                vendor,
             });
         }
         self.device.generation.store(generation, Ordering::Relaxed);
@@ -335,6 +357,28 @@ impl Filling<'_> {
         height: u32,
         format: Format,
     ) -> Option<[Option<&SharedTexture>; 3]> {
+        let s = self.device_slot(width, height, format)?;
+        Some(s.planes.each_ref().map(Option::as_ref))
+    }
+
+    /// As [`Self::textures_for`], each texture as the vendor's runtime
+    /// writes it: `None` also on a backing it does not write, or when it
+    /// refused a texture.
+    pub fn registered_for(
+        &mut self,
+        width: u32,
+        height: u32,
+        format: Format,
+    ) -> Option<[Option<&Registered>; 3]> {
+        let s = self.device_slot(width, height, format)?;
+        s.vendor.as_ref()?;
+        Some(s.registered.each_ref().map(Option::as_ref))
+    }
+
+    /// The slot lent, made for a `width` x `height` picture of `format` on
+    /// the current backing if it was not already, and the handle the
+    /// picture will carry.
+    fn device_slot(&mut self, width: u32, height: u32, format: Format) -> Option<&DeviceSlot> {
         let slots = &self.frames.device;
         let generation = slots.generation.load(Ordering::Relaxed);
         let cell = slots.slots.get(self.index)?;
@@ -356,13 +400,32 @@ impl Filling<'_> {
                     *plane = Some(current.device.shared_texture(format, w, h).ok()?);
                 }
             }
+            let mut registered = [None, None, None];
+            if let Some(vendor) = &current.vendor {
+                for (registration, plane) in registered.iter_mut().zip(&planes) {
+                    if let Some(texture) = plane {
+                        // SAFETY: a live texture of the backing's device, on
+                        // the adapter the context's device is; the slot keeps
+                        // the texture, the context and the runtime past the
+                        // registration, which drops first.
+                        let made = unsafe {
+                            vendor
+                                .cuda
+                                .register_texture(&vendor.context, texture.texture().cast())
+                        };
+                        *registration = Some(made.ok()?);
+                    }
+                }
+            }
             let allocation = slots.allocations.fetch_add(1, Ordering::Relaxed) + 1;
             *slot = Some(DeviceSlot {
+                registered,
                 planes,
                 layout,
                 generation: current.generation,
                 adapter: current.device.adapter.luid,
                 allocation,
+                vendor: current.vendor,
             });
         }
         let s = slot.as_ref()?;
@@ -377,20 +440,7 @@ impl Filling<'_> {
             adapter: s.adapter,
             allocation: s.allocation,
         });
-        Some(s.planes.each_ref().map(Option::as_ref))
-    }
-
-    /// Device planes of the vendor's runtime: none here yet, so none are
-    /// lent. The vendor's decoder on this platform comes with its step of
-    /// docs/impl-plan-windows.md.
-    pub fn device_planes_for(
-        &mut self,
-        width: u32,
-        height: u32,
-        format: Format,
-    ) -> Option<DevicePlanes> {
-        let _ = (width, height, format);
-        None
+        Some(s)
     }
 }
 
@@ -541,7 +591,7 @@ mod tests {
         let device = Arc::new(d3d11.open(luid).ok()?);
         let fence = Arc::new(device.fence(0).ok()?);
         let frames = Frames::new((4096, 4096), FrameKind::Handle);
-        frames.open_device(Arc::clone(&device), Arc::clone(&fence));
+        frames.open_device(Arc::clone(&device), Arc::clone(&fence), None);
         Some((frames, device, fence))
     }
 
@@ -623,7 +673,7 @@ mod tests {
         // one's reaching it says nothing of the old device's work.
         publish(&frames, 2, 6);
         let moved = Arc::new(device.fence(0).expect("a fence"));
-        frames.open_device(Arc::clone(&device), Arc::clone(&moved));
+        frames.open_device(Arc::clone(&device), Arc::clone(&moved), None);
         device.signal(&fence, 6).expect("a signal");
         device.signal(&moved, 10).expect("a signal");
         assert!(
@@ -658,7 +708,7 @@ mod tests {
         let held = frames.acquire(0, Duration::from_secs(2)).unwrap().unwrap();
 
         let moved = Arc::new(device.fence(0).expect("a fence"));
-        frames.open_device(Arc::clone(&device), Arc::clone(&moved));
+        frames.open_device(Arc::clone(&device), Arc::clone(&moved), None);
         let mut last = held.seq;
         for n in 1..5u64 {
             let handle = publish(&frames, n as i32 + 1, n);
@@ -675,6 +725,79 @@ mod tests {
             last = h.seq;
             frames.release(h.index);
         }
+        let other = lowlat_drivers::d3d11::D3d11::load()
+            .unwrap()
+            .open(device.adapter.luid)
+            .unwrap();
+        assert!(
+            other.open_shared(old.textures[0]).is_ok(),
+            "the held picture's texture was freed under it"
+        );
+        frames.release(held.index);
+    }
+
+    /// A queue asking for handles with a backing the vendor's runtime
+    /// writes, on its first GPU, with that backing's device, fence and
+    /// runtime; `None` without one.
+    fn vendor_queue() -> Option<(Frames, Arc<Device>, Arc<Fence>)> {
+        let cuda = Cuda::load().ok()?;
+        let compute = cuda.any_device().ok()?;
+        let value = cuda.luid(&compute).ok()?;
+        let context = cuda.retain_primary(&compute).ok()?;
+        let d3d11 = lowlat_drivers::d3d11::D3d11::load().ok()?;
+        let luid = d3d11
+            .adapters()
+            .ok()?
+            .into_iter()
+            .map(|a| a.luid)
+            .find(|l| l.value() == value)?;
+        let device = Arc::new(d3d11.open(luid).ok()?);
+        let fence = Arc::new(device.fence(0).ok()?);
+        let vendor = Vendor {
+            context: Arc::new(context),
+            cuda: Arc::new(cuda),
+        };
+        let frames = Frames::new((4096, 4096), FrameKind::Handle);
+        frames.open_device(Arc::clone(&device), Arc::clone(&fence), Some(vendor));
+        Some((frames, device, fence))
+    }
+
+    /// **A backing the vendor's runtime writes registers its slots' textures
+    /// with it, and one it does not write lends none**: after a move to the
+    /// system's decoder on the same GPU, a slot is made again unregistered,
+    /// and the held slot's textures still open until it is released.
+    #[test]
+    #[ignore = "requires the vendor's GPU"]
+    fn a_vendor_backing_registers_its_slots_and_a_held_one_outlives_a_move() {
+        let Some((frames, device, fence)) = vendor_queue() else {
+            println!("no vendor's GPU; not exercised");
+            return;
+        };
+        let mut filling = frames.fill().expect("a slot");
+        let registered = filling
+            .registered_for(1280, 720, Format::Nv12)
+            .expect("the slot's textures, registered");
+        assert!(registered[0].is_some() && registered[1].is_some() && registered[2].is_none());
+        let old = filling.handle.expect("the slot's handle");
+        filling.publish_gated(frame(1), 1);
+        device.signal(&fence, 1).expect("a signal");
+        let held = frames.acquire(0, Duration::from_secs(2)).unwrap().unwrap();
+        assert_eq!(held.handle, Some(old));
+
+        let moved = Arc::new(device.fence(0).expect("a fence"));
+        frames.open_device(Arc::clone(&device), Arc::clone(&moved), None);
+        let mut filling = frames.fill().expect("a slot");
+        assert_ne!(filling.index, held.index, "the held slot was lent");
+        assert!(
+            filling.registered_for(1280, 720, Format::Nv12).is_none(),
+            "a backing the runtime does not write lent registrations"
+        );
+        let handle = filling.handle.expect("the slot's handle");
+        assert!(
+            handle.allocation > old.allocation,
+            "a slot kept its old backing"
+        );
+        drop(filling);
         let other = lowlat_drivers::d3d11::D3d11::load()
             .unwrap()
             .open(device.adapter.luid)

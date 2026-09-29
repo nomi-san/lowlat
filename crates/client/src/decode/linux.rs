@@ -5,13 +5,14 @@
 use std::sync::Arc;
 
 use lowlat_decode::vaapi::{self, Vaapi};
-use lowlat_decode::{Format, nvdec, software};
+use lowlat_decode::{Fault, Format, Picture, nvdec, software};
 use lowlat_drivers::cuda::Cuda;
 use lowlat_drivers::cuvid::Cuvid;
 use lowlat_drivers::lavc::Lavc;
 
 use super::{Backend, Next, Shared, drive};
 use crate::UNIT_BYTES;
+use crate::frames::Filling;
 use crate::seam::Opened;
 
 impl Backend for vaapi::Backend<'_> {
@@ -20,6 +21,31 @@ impl Backend for vaapi::Backend<'_> {
     }
     fn timings(&self) -> (u32, u32) {
         (self.decode_us, self.readback_us)
+    }
+}
+
+impl Backend for nvdec::Backend<'_> {
+    fn output(&self) -> Option<(u32, u32, Format)> {
+        nvdec::Backend::output(self)
+    }
+    fn timings(&self) -> (u32, u32) {
+        (self.decode_us, self.readback_us)
+    }
+    fn exports(&self) -> bool {
+        true
+    }
+    fn take_to_slot(
+        &mut self,
+        filling: &mut Filling<'_>,
+        (width, height, format): (u32, u32, Format),
+    ) -> Result<Option<(Picture, u64)>, Fault> {
+        // A queue without the vendor's runtime attached lends no device
+        // memory; the picture is then lost, as a slot that does not fit is.
+        let Some(planes) = filling.device_planes_for(width, height, format) else {
+            return Ok(None);
+        };
+        // The device copy is waited for before the take returns.
+        Ok(nvdec::Backend::take_to_device(self, &planes)?.map(|p| (p, 0)))
     }
 }
 

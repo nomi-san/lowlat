@@ -1,12 +1,12 @@
 //! The picture queue on Windows, end to end: pictures split into their
-//! slots' textures, published before their device work is finished, and
-//! handed out only once it is. A consumer on another thread takes pictures
-//! as an application would and reads each back through its handles on a
-//! device of its own; every one must be a reference picture, whole. A
-//! picture handed out before its fence passed, or written again while held,
-//! reads as one that is not. Needs a GPU, so off by default: `cargo test -p
-//! lowlat-client --test d3d11_queue -- --ignored --nocapture`, with
-//! `LOWLAT_D3D11_ADAPTER` naming one adapter.
+//! slots' textures, or copied there by the vendor's runtime, published
+//! before their device work is finished, and handed out only once it is. A
+//! consumer on another thread takes pictures as an application would and
+//! reads each back through its handles on a device of its own; every one
+//! must be a reference picture, whole. A picture handed out before its fence
+//! passed, or written again while held, reads as one that is not. Needs a
+//! GPU, so off by default: `cargo test -p lowlat-client --test d3d11_queue
+//! -- --ignored --nocapture`, with `LOWLAT_D3D11_ADAPTER` naming one adapter.
 
 #![cfg(windows)]
 #![allow(
@@ -24,11 +24,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use lowlat_client::config::FrameKind;
-use lowlat_client::frames::{Frame, Frames};
+use lowlat_client::frames::{Frame, Frames, Vendor};
 use lowlat_common::clock::Time;
 use lowlat_core::video::{Codec, Rotation, VideoHeader};
 use lowlat_decode::d3d11::Backend;
-use lowlat_decode::{Decoder, Fed};
+use lowlat_decode::{Decoder, Fed, Picture, nvdec};
+use lowlat_drivers::cuda::Cuda;
+use lowlat_drivers::cuvid::Cuvid;
 use lowlat_drivers::d3d11::{Com, D3d11, Device, Luid};
 use lowlat_drivers::ffi::d3d11::{
     D3D11_CPU_ACCESS_READ, D3D11_MAP_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_TEXTURE2D_DESC,
@@ -161,6 +163,86 @@ struct Seen {
     ready: Vec<u32>,
 }
 
+fn header(codec: Codec, ten_bit: bool) -> VideoHeader {
+    VideoHeader {
+        frame_id: 1,
+        width: 0,
+        height: 0,
+        codec,
+        rotation: Rotation::None,
+        ten_bit,
+        locked: false,
+        announced: false,
+        metadata: false,
+    }
+}
+
+/// The application: takes pictures from `frames` as they come, on a thread
+/// of its own, and reads each back on `reader`'s device against `expected`,
+/// until `done` and nothing more comes.
+fn consume(
+    frames: &Arc<Frames>,
+    reader: Reader,
+    expected: BTreeSet<(u32, u32)>,
+    done: &Arc<AtomicBool>,
+) -> std::thread::JoinHandle<Seen> {
+    let frames = Arc::clone(frames);
+    let done = Arc::clone(done);
+    std::thread::spawn(move || {
+        let mut seen = Seen::default();
+        let mut after = 0;
+        loop {
+            // Once everything is queued, what is still on the device is
+            // waited for at length: a loaded device finishes a burst late.
+            let finished = done.load(Ordering::Acquire);
+            let wait = Duration::from_millis(if finished { 2000 } else { 50 });
+            let Some(held) = frames.acquire(after, wait).unwrap() else {
+                if finished {
+                    break;
+                }
+                continue;
+            };
+            after = held.seq;
+            let handle = held.handle.expect("a picture of textures");
+            let f = held.frame;
+            let sample = f.format.sample();
+            let (w, h) = (f.width as usize, f.height as usize);
+            let luma = reader.read(handle.textures[0], h, w * sample);
+            let rows = f.format.chroma_rows(h);
+            let mut chroma = reader.read(handle.textures[1], rows, w * sample);
+            if f.format.full_chroma() {
+                chroma.extend(reader.read(handle.textures[2], rows, w * sample));
+            }
+            seen.pictures += 1;
+            if !expected.contains(&(crc32(&luma), crc32(&chroma))) {
+                seen.wrong += 1;
+            }
+            seen.ready.extend(held.ready_us);
+            frames.release(held.index);
+        }
+        seen
+    })
+}
+
+/// A picture's frame as the decode thread publishes it.
+fn frame(picture: &Picture) -> Frame {
+    Frame {
+        format: picture.format,
+        width: picture.width,
+        height: picture.height,
+        rotation: Rotation::None,
+        generation: 1,
+        order: picture.order,
+        full_range: picture.full_range,
+        arrived: None,
+        submitted: Some(Time::now()),
+        pitch: 0,
+        uv_offset: 0,
+        v_offset: 0,
+        handle: None,
+    }
+}
+
 /// Decode `clip` into a queue of the handle kind on `luid`, a picture every
 /// `pace` (back to back without), while a consumer takes pictures and reads
 /// them back.
@@ -176,63 +258,14 @@ fn run(
     let device = Arc::new(d3d11.open(luid).expect("a device"));
     let frames = Arc::new(Frames::new((4096, 4096), FrameKind::Handle));
     let mut backend = Backend::new(&device, (4096, 4096));
-    frames.open_device(Arc::clone(&device), backend.fence().expect("a fence"));
-    backend
-        .build(&VideoHeader {
-            frame_id: 1,
-            width: 0,
-            height: 0,
-            codec,
-            rotation: Rotation::None,
-            ten_bit,
-            locked: false,
-            announced: false,
-            metadata: false,
-        })
-        .expect("build");
+    frames.open_device(Arc::clone(&device), backend.fence().expect("a fence"), None);
+    backend.build(&header(codec, ten_bit)).expect("build");
 
     let done = Arc::new(AtomicBool::new(false));
-    let consumer = {
-        let frames = Arc::clone(&frames);
-        let done = Arc::clone(&done);
-        let reader = Reader {
-            device: d3d11.open(luid).expect("the application's device"),
-        };
-        std::thread::spawn(move || {
-            let mut seen = Seen::default();
-            let mut after = 0;
-            loop {
-                // Once everything is queued, what is still on the device is
-                // waited for at length: a loaded device finishes a burst late.
-                let finished = done.load(Ordering::Acquire);
-                let wait = Duration::from_millis(if finished { 2000 } else { 50 });
-                let Some(held) = frames.acquire(after, wait).unwrap() else {
-                    if finished {
-                        break;
-                    }
-                    continue;
-                };
-                after = held.seq;
-                let handle = held.handle.expect("a picture of textures");
-                let f = held.frame;
-                let sample = f.format.sample();
-                let (w, h) = (f.width as usize, f.height as usize);
-                let luma = reader.read(handle.textures[0], h, w * sample);
-                let rows = f.format.chroma_rows(h);
-                let mut chroma = reader.read(handle.textures[1], rows, w * sample);
-                if f.format.full_chroma() {
-                    chroma.extend(reader.read(handle.textures[2], rows, w * sample));
-                }
-                seen.pictures += 1;
-                if !expected.contains(&(crc32(&luma), crc32(&chroma))) {
-                    seen.wrong += 1;
-                }
-                seen.ready.extend(held.ready_us);
-                frames.release(held.index);
-            }
-            seen
-        })
+    let reader = Reader {
+        device: d3d11.open(luid).expect("the application's device"),
     };
+    let consumer = consume(&frames, reader, expected, &done);
 
     for unit in units(clip) {
         let started = Instant::now();
@@ -247,24 +280,7 @@ fn run(
                 let Some((picture, value)) = backend.take_to_textures(planes).expect("take") else {
                     break;
                 };
-                filling.publish_gated(
-                    Frame {
-                        format: picture.format,
-                        width: picture.width,
-                        height: picture.height,
-                        rotation: Rotation::None,
-                        generation: 1,
-                        order: picture.order,
-                        full_range: picture.full_range,
-                        arrived: None,
-                        submitted: Some(Time::now()),
-                        pitch: 0,
-                        uv_offset: 0,
-                        v_offset: 0,
-                        handle: None,
-                    },
-                    value,
-                );
+                filling.publish_gated(frame(&picture), value);
             }
         }
         if let Some(pace) = pace {
@@ -275,6 +291,75 @@ fn run(
     let seen = consumer.join().expect("the consumer");
     backend.destroy();
     seen
+}
+
+/// As [`run`], through the vendor's decoder on `luid`, its textures on a
+/// device of the library's own there; `mapped` makes the decoder map its own
+/// surfaces. With whether it decoded into the backend's own.
+fn run_vendor(
+    d3d11: &D3d11,
+    luid: Luid,
+    clip: &str,
+    (codec, ten_bit): (Codec, bool),
+    pace: Option<Duration>,
+    mapped: bool,
+) -> (Seen, bool) {
+    let expected = sums(&clip.replace(".bin", ".sums"));
+    let cuda = Cuda::load().expect("the vendor's runtime");
+    let compute = cuda
+        .device_for_luid(luid.value())
+        .expect("the adapter's compute device");
+    let context = cuda.retain_primary(&compute).expect("its context");
+    context.make_current().expect("current here");
+    let cuvid = Cuvid::load().expect("the decode interface");
+    let cuda = Arc::new(cuda);
+    let context = Arc::new(context);
+    let device = Arc::new(d3d11.open(luid).expect("the textures' device"));
+    let fence = Arc::new(device.fence(0).expect("a fence"));
+    let frames = Arc::new(Frames::new((4096, 4096), FrameKind::Handle));
+    let vendor = Vendor {
+        context: Arc::clone(&context),
+        cuda: Arc::clone(&cuda),
+    };
+    frames.open_device(Arc::clone(&device), Arc::clone(&fence), Some(vendor));
+    let mut backend = nvdec::Backend::new(&cuda, &cuvid, (4096, 4096), 1 << 20);
+    if mapped {
+        backend.force_mapped();
+    }
+    backend.attach_textures(device, fence);
+    backend.build(&header(codec, ten_bit)).expect("build");
+
+    let done = Arc::new(AtomicBool::new(false));
+    let reader = Reader {
+        device: d3d11.open(luid).expect("the application's device"),
+    };
+    let consumer = consume(&frames, reader, expected, &done);
+
+    for unit in units(clip) {
+        let started = Instant::now();
+        if backend.feed(&unit).expect("feed") == Fed::Picture {
+            while let Some((width, height, format)) = backend.output() {
+                let Some(mut filling) = frames.fill() else {
+                    break;
+                };
+                let planes = filling
+                    .registered_for(width, height, format)
+                    .expect("the slot's textures, registered");
+                let Some((picture, value)) = backend.take_to_textures(planes).expect("take") else {
+                    break;
+                };
+                filling.publish_gated(frame(&picture), value);
+            }
+        }
+        if let Some(pace) = pace {
+            std::thread::sleep(pace.saturating_sub(started.elapsed()));
+        }
+    }
+    done.store(true, Ordering::Release);
+    let seen = consumer.join().expect("the consumer");
+    let own = backend.decodes_into_own_surfaces();
+    backend.destroy();
+    (seen, own)
 }
 
 fn percentile(values: &mut [u32], q: f64) -> u32 {
@@ -326,6 +411,61 @@ fn every_picture_handed_out_is_finished_and_whole() {
                 );
                 if seen.wrong > 0 || seen.pictures == 0 {
                     failures.push(format!("{luid} {clip} {pace:?}: {seen:?}"));
+                }
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// **As above, through the vendor's decoder**, on each of its GPUs, in both
+/// of its modes -- into surfaces of its own where the driver can, and mapping
+/// the decoder's, which every clip is made to take once -- back to back and at
+/// 120 pictures a second: every picture a consumer takes reads back as a
+/// reference picture.
+#[test]
+#[ignore = "requires the vendor's GPU"]
+fn every_picture_the_vendor_hands_out_is_finished_and_whole() {
+    let d3d11 = D3d11::load().expect("the system's libraries");
+    let named = std::env::var("LOWLAT_D3D11_ADAPTER")
+        .ok()
+        .map(|s| Luid::parse(&s).expect("LOWLAT_D3D11_ADAPTER names no identity"));
+    let adapters: Vec<Luid> = d3d11
+        .adapters()
+        .unwrap()
+        .into_iter()
+        .filter(|a| a.decodes_here() && a.maker() == Some("NVIDIA"))
+        .map(|a| a.luid)
+        .filter(|l| named.is_none_or(|n| n == *l))
+        .collect();
+    assert!(!adapters.is_empty(), "none of the vendor's GPUs here");
+    let mut failures = Vec::new();
+    for luid in adapters {
+        for (clip, codec, ten_bit) in [
+            ("synthetic-720p-h264.bin", Codec::H264, false),
+            ("synthetic-720p-hevc10.bin", Codec::H265, true),
+            ("fixtures/hevc-nvenc-444-10.bin", Codec::H265, true),
+        ] {
+            for mapped in [false, true] {
+                for pace in [None, Some(Duration::from_millis(8))] {
+                    let (mut seen, own) =
+                        run_vendor(&d3d11, luid, clip, (codec, ten_bit), pace, mapped);
+                    println!(
+                        "{luid} {clip} {} {}: {} pictures handed out, {} wrong; seen finished after p50 {} us p99 {}",
+                        if own { "own surfaces" } else { "mapped" },
+                        if pace.is_some() {
+                            "at 120/s"
+                        } else {
+                            "back to back"
+                        },
+                        seen.pictures,
+                        seen.wrong,
+                        percentile(&mut seen.ready, 0.5),
+                        percentile(&mut seen.ready, 0.99),
+                    );
+                    if seen.wrong > 0 || seen.pictures == 0 {
+                        failures.push(format!("{luid} {clip} {mapped} {pace:?}: {seen:?}"));
+                    }
                 }
             }
         }

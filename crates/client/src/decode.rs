@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use lowlat_core::video;
-use lowlat_decode::{Decoder, Fault, Fed, Format, Picture, nvdec, software};
+use lowlat_decode::{Decoder, Fault, Fed, Format, Picture, software};
 use lowlat_net::WakeHandle;
 
 use crate::config::FrameKind;
@@ -55,31 +55,6 @@ trait Backend: Decoder {
     ) -> Result<Option<(Picture, u64)>, Fault> {
         let _ = (filling, layout);
         Err(Fault::Fatal)
-    }
-}
-
-impl Backend for nvdec::Backend<'_> {
-    fn output(&self) -> Option<(u32, u32, Format)> {
-        nvdec::Backend::output(self)
-    }
-    fn timings(&self) -> (u32, u32) {
-        (self.decode_us, self.readback_us)
-    }
-    fn exports(&self) -> bool {
-        true
-    }
-    fn take_to_slot(
-        &mut self,
-        filling: &mut Filling<'_>,
-        (width, height, format): (u32, u32, Format),
-    ) -> Result<Option<(Picture, u64)>, Fault> {
-        // A queue without the vendor's runtime attached lends no device
-        // memory; the picture is then lost, as a slot that does not fit is.
-        let Some(planes) = filling.device_planes_for(width, height, format) else {
-            return Ok(None);
-        };
-        // The device copy is waited for before the take returns.
-        Ok(nvdec::Backend::take_to_device(self, &planes)?.map(|p| (p, 0)))
     }
 }
 
@@ -362,6 +337,9 @@ fn take_pictures<D: Backend>(
         // one out; as planes otherwise, whatever was asked. Decided per
         // picture, so the kind switches at the next one with no keyframe.
         let by_handle = frames.kind() == FrameKind::Handle && feed.decoder().exports();
+        // A picture behind a gate is timed from before its take, which may
+        // itself wait for the decode.
+        let began = by_handle.then(lowlat_common::clock::Time::now);
         let taken = if by_handle {
             feed.decoder_mut()
                 .take_to_slot(&mut filling, (width, height, format))
@@ -414,7 +392,7 @@ fn take_pictures<D: Backend>(
                     order: picture.order,
                     full_range: picture.full_range,
                     arrived: Some(stamp),
-                    submitted: (gate != 0).then(lowlat_common::clock::Time::now),
+                    submitted: began.filter(|_| gate != 0),
                     // The queue's, written at publish.
                     pitch: 0,
                     uv_offset: 0,

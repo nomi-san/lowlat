@@ -1,13 +1,14 @@
 //! Which decoders a configuration opens, on Windows, and on which GPU: the
 //! system's video decoding interface on an adapter named by its identity,
-//! then the machine's own codec library. The vendor's decoder comes with
-//! its step of docs/impl-plan-windows.md, at its place in the automatic
-//! order.
+//! then the vendor's on its own GPUs, then the machine's own codec library.
 
 use std::path::PathBuf;
 
-use lowlat_decode::d3d11;
+use lowlat_decode::{d3d11, nvdec};
+use lowlat_drivers::cuda::{Context, Cuda};
+use lowlat_drivers::cuvid::Cuvid;
 use lowlat_drivers::d3d11::{D3d11, Luid};
+use lowlat_drivers::ffi::d3d11::DXGI_FORMAT_R8_UNORM;
 
 use super::{DecoderStage, Error, most_telling, probe_software, software_dir};
 use crate::config::{Backend, Caps, Decoding, FrameKind};
@@ -25,6 +26,13 @@ pub enum Opened {
         /// (Windows 10 1703 on).
         handles: bool,
     },
+    /// The vendor's interface, on the adapter with this identity.
+    Nvdec {
+        luid: Luid,
+        /// Its pictures can be handed out as textures: the runtime writes a
+        /// texture of a device on the adapter, which has a fence.
+        handles: bool,
+    },
     /// The machine's own codec library, from the directory named or from
     /// the search of its own. Opened again on the decode thread, which
     /// finds the same pair the probe found.
@@ -36,6 +44,7 @@ impl Opened {
     pub fn backend(&self) -> Backend {
         match self {
             Self::D3d11 { .. } => Backend::Vaapi,
+            Self::Nvdec { .. } => Backend::Nvdec,
             Self::Software(_) => Backend::Software,
         }
     }
@@ -43,7 +52,7 @@ impl Opened {
     /// Whether it hands pictures out as a handle.
     pub fn exports(&self) -> bool {
         match self {
-            Self::D3d11 { handles, .. } => *handles,
+            Self::D3d11 { handles, .. } | Self::Nvdec { handles, .. } => *handles,
             Self::Software(_) => false,
         }
     }
@@ -94,28 +103,116 @@ fn open_d3d11(named: Option<&str>, handles: bool) -> Result<(Opened, Caps), Deco
     Err(last)
 }
 
+/// Whether the vendor's runtime writes a texture of a device of the
+/// library's own on the adapter `luid`, in `context`, and the device has
+/// the fence that says when: a texture made and registered, not a version
+/// asked.
+pub(crate) fn writes_textures(cuda: &Cuda, context: &Context, luid: Luid) -> bool {
+    if !cuda.has_graphics() {
+        return false;
+    }
+    let Ok(d3d11) = D3d11::load() else {
+        return false;
+    };
+    let Ok(device) = d3d11.open(luid) else {
+        return false;
+    };
+    device.has_fences()
+        && device
+            .shared_texture(DXGI_FORMAT_R8_UNORM, 64, 64)
+            .is_ok_and(|texture| {
+                // SAFETY: a live texture of a device on the adapter the
+                // context's device is; the registration drops at the end of
+                // this statement, before the texture and the context.
+                unsafe { cuda.register_texture(context, texture.texture().cast()) }.is_ok()
+            })
+}
+
+/// Probe the vendor's interface on one adapter: the runtimes loaded, the
+/// context made current here, a real decoder built per combination; with
+/// whether it can hand pictures out as textures.
+fn probe_nvdec(luid: Luid) -> Result<(Caps, bool), DecoderStage> {
+    let cuda = Cuda::load().map_err(|_| DecoderStage::Runtime)?;
+    let device = cuda
+        .device_for_luid(luid.value())
+        .map_err(|_| DecoderStage::Device)?;
+    let context = cuda
+        .retain_primary(&device)
+        .map_err(|_| DecoderStage::Device)?;
+    context.make_current().map_err(|_| DecoderStage::Device)?;
+    let caps = Cuvid::load().map(|cuvid| nvdec::caps(&cuvid));
+    // The application's thread, left as it was found.
+    let _ = context.release_current();
+    let caps = caps.map_err(|_| DecoderStage::Runtime)?;
+    if !caps.any() {
+        return Err(DecoderStage::Profile);
+    }
+    Ok((caps, writes_textures(&cuda, &context, luid)))
+}
+
+/// The vendor's interface on the adapter a device name spells, or on the
+/// first of its GPUs offered, high-performance first; the stage the walk
+/// met otherwise. With `handles`, one that cannot hand pictures out as
+/// textures is refused as the handle kind is.
+fn open_nvdec(named: Option<&str>, handles: bool) -> Result<(Opened, Caps), DecoderStage> {
+    let probe = |luid| {
+        let (caps, exports) = probe_nvdec(luid)?;
+        if handles && !exports {
+            return Err(DecoderStage::Unsupported);
+        }
+        let opened = Opened::Nvdec {
+            luid,
+            handles: exports,
+        };
+        Ok((opened, caps))
+    };
+    if let Some(named) = named {
+        return probe(Luid::parse(named).ok_or(DecoderStage::Device)?);
+    }
+    let d3d11 = D3d11::load().map_err(|_| DecoderStage::Runtime)?;
+    let adapters = d3d11.adapters().map_err(|_| DecoderStage::Runtime)?;
+    let mut last = DecoderStage::Device;
+    let theirs = adapters
+        .iter()
+        .filter(|a| a.decodes_here() && a.maker() == Some("NVIDIA"));
+    for adapter in theirs {
+        match probe(adapter.luid) {
+            Ok(found) => return Ok(found),
+            Err(stage) => last = most_telling(last, stage),
+        }
+    }
+    Err(last)
+}
+
 /// The decoder a configuration settles on, probed once here, with what it
 /// decodes. **Strict where a kind is named**: the kind opens on the GPU
 /// named or the stage is the answer. **In order where none is**: the
-/// system's interface on the GPU named or the first that decodes, then
-/// software. The handle kind needs a device that can hand pictures out as
-/// textures, which only the system's interface does here; the vendor's
-/// decoder is refused as not in the build.
+/// system's interface on the GPU named or the first that decodes, then the
+/// vendor's on that GPU or the first of its own, then software -- which
+/// the handle kind, needing textures, never reaches.
 pub(crate) fn choose(decoding: &Decoding) -> Result<(Option<Opened>, Caps), Error> {
     let named = (!decoding.device.is_empty()).then_some(decoding.device.as_str());
-    let system = |named| open_d3d11(named, decoding.kind == FrameKind::Handle);
+    let handles = decoding.kind == FrameKind::Handle;
+    let system = |named| open_d3d11(named, handles);
+    let vendor = |named| open_nvdec(named, handles);
+    // The two GPU decoders in order, the stage the walk met otherwise.
+    let either = || match system(named) {
+        Ok(found) => Ok(found),
+        Err(first) => vendor(named).map_err(|then| most_telling(first, then)),
+    };
     match (decoding.kind, decoding.backend) {
         (_, Backend::None) => Ok((None, Caps::default())),
-        (_, Backend::Nvdec) | (FrameKind::Handle, Backend::Software) => {
-            Err(Error::Decoder(DecoderStage::Unsupported))
-        }
+        (FrameKind::Handle, Backend::Software) => Err(Error::Decoder(DecoderStage::Unsupported)),
         (_, Backend::Vaapi) => {
             let (opened, caps) = system(named).map_err(Error::Decoder)?;
             Ok((Some(opened), caps))
         }
+        (_, Backend::Nvdec) => {
+            let (opened, caps) = vendor(named).map_err(Error::Decoder)?;
+            Ok((Some(opened), caps))
+        }
         (FrameKind::Handle, Backend::Auto) => {
-            // Only the system's interface hands out textures here.
-            let (opened, caps) = system(named).map_err(Error::Decoder)?;
+            let (opened, caps) = either().map_err(Error::Decoder)?;
             Ok((Some(opened), caps))
         }
         (FrameKind::Planes, Backend::Software) => {
@@ -124,7 +221,7 @@ pub(crate) fn choose(decoding: &Decoding) -> Result<(Option<Opened>, Caps), Erro
             Ok((Some(Opened::Software(dir)), caps))
         }
         (FrameKind::Planes, Backend::Auto) => {
-            let last = match system(named) {
+            let last = match either() {
                 Ok((opened, caps)) => return Ok((Some(opened), caps)),
                 Err(stage) => stage,
             };

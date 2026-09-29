@@ -50,6 +50,8 @@ mod sys;
 mod sys;
 
 pub use sys::Handle;
+#[cfg(windows)]
+pub use sys::Vendor;
 
 /// Slots: two the application may hold, one being decoded into, one ready.
 pub const SLOTS: usize = 4;
@@ -667,7 +669,10 @@ mod tests {
         let frames = Frames::new((4096, 4096), FrameKind::Handle);
         assert_eq!(frames.reserve_bytes(), 0);
         let mut filling = frames.fill().unwrap();
+        #[cfg(target_os = "linux")]
         assert!(filling.device_planes_for(64, 64, Format::Nv12).is_none());
+        #[cfg(windows)]
+        assert!(filling.textures_for(64, 64, Format::Nv12).is_none());
         assert!(!frames.backed());
         assert!(
             filling.planes_for(64, 64, Format::Nv12).is_some(),
