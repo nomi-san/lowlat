@@ -363,7 +363,11 @@ seen finished 6 to 8 ms after it was queued and the decode thread never waited. 
 ignored, 97 of 120 pictures were read before they were finished. The same check found that the
 queue itself could hand out an older picture after a newer one: a slot stolen and published
 again between the consumer's scan and its take was handed out under its older number. It is
-read once the slot is held now, and the model check that found it is kept.
+read once the slot is held now, and the model check that found it is kept. (*2026-09-29*: the
+take could also free the newest picture unseen, freeing a slot as older after the producer
+had stolen it and published it again as the newest. A slot's state and its publish sequence
+now share one word, so every exchange compares the publish it looked at; a model check found
+it, and failed first.)
 
 **A picture of textures is written again once released**, as soon as the next picture needs
 its slot. So a null release fence, the only kind, says the application's device has finished
@@ -405,10 +409,14 @@ same and its pictures come as planes, and a move back to one that hands them out
 handles; asked for by name, handles are refused by such a decoder. The vendor's decoder on
 Linux switches kind and device the same way. **A lost device is found again by the library**:
 the GPU comes back under a new identity, so the decode thread looks for the same hardware --
-the maker's and the board's numbers, a virtual display sharing them never taken -- for ten
-seconds, or for a session nobody placed takes the first GPU offered, opens there and asks for
-one keyframe; pictures then name the new GPU, and a renderer whose own device was lost at the
-same moment opens its textures there. Past the ten seconds the stream fails as before. **The
+the maker's and the board's numbers, a virtual display sharing them never taken -- and only
+for it, for five seconds, opens there and asks for one keyframe; pictures then name the new
+GPU, and a renderer whose own device was lost at the same moment opens its textures there. A
+session nobody placed takes the first GPU offered once the five seconds have run, and one
+placed fails the stream then, as before. (*Amended 2026-09-29*: the search took ten seconds
+and let a session nobody placed take another GPU at its first look, a quarter of a second
+in; the GPU that drives the display takes nearly four seconds to come back from a driver
+restart, so such a session stayed on the other GPU for good.) **The
 loss is taken wherever the device first refuses**: a removed device can go on accepting
 decodes and refuse only the hand-over after them, so a take that finds the device gone ends
 the decoder as a decode that does. **A renderer can lose its device while the pictures' GPU

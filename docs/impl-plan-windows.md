@@ -289,6 +289,9 @@ whether an application may supply the frames, for a virtual display that already
 
 ## Change log
 
+- 2026-09-29: W1.4's search for a lost GPU amended: the same hardware alone, for five seconds
+  rather than ten, a session nobody placed taking another GPU only when it has run its course
+  ([10 §4.2](10-client.md)).
 - 2026-09-28: NVDEC moved ahead of AMF, as W1.5, AMF W1.6; W1.7 Intel VPL added, with the
   older runtime for the parts the current one does not reach, built though the system's
   interface did not prove short on the Intel card, its place on an Intel GPU by measurement;

@@ -65,6 +65,21 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   turning when it stopped queuing and what it had accepted but not yet paced out never left.
   Every core loaded here reproduced it three runs in four; the sender turning through the
   settle delivered every message in six of six.
+- **The picture queue could free the newest picture unseen** (*2026-09-29*, found reviewing
+  this step): a take frees every older published slot, and freed one it had looked at as
+  older after the producer had stolen it and published it again as the newest; the next take
+  found nothing newer. A slot's state and its publish sequence now share one word, so every
+  exchange compares the publish it looked at. A new model check failed first; the ring's other
+  models pass unchanged.
+- **A session nobody placed left a lost GPU at the search's first look** (*2026-09-29*): it
+  took the first GPU offered a quarter of a second after a loss, before the GPU that drives the
+  display -- nearly four seconds to restart here -- could come back, and stayed on the other GPU
+  for good. The search now looks for the same hardware alone, for five seconds rather than
+  ten, and a session nobody placed takes another GPU only when it has run its course.
+- **A picture gate kept sixteen bits of its backing's generation and was compared against all
+  thirty-two** (*2026-09-29*): past 65,535 device opens in one session no picture of textures
+  would have been handed out again. Both sides take the low bits now, compared in their wrapping
+  order.
 
 ### Measured
 - **Every committed clip decodes bit for bit through the textures** on the NVIDIA, the Intel
