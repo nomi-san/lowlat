@@ -13,17 +13,29 @@
 //! and a second picture buffer beside the ones every clip is checked
 //! against, with a reordering rule of its own and no view into what it
 //! decided.
+//!
+//! **Where the driver can, the decoder decodes into surfaces of the
+//! backend's own**, in the order of the backend's stream: each picture's
+//! decode is queued there, its planes are copied out behind it on the same
+//! stream, and a surface the picture buffer gives back is decoded into again
+//! only behind those copies. Nothing is mapped. Where the driver cannot, or
+//! a layout's surfaces cannot be read out plane by plane, the decoder keeps
+//! its own surfaces and each picture is mapped to be read, the map waiting
+//! for the decode.
 
-use core::ffi::c_int;
+use core::ffi::{c_int, c_uint};
 
 use lowlat_core::video::{Codec, VideoHeader};
-use lowlat_drivers::cuda::{self, Cuda, Event, Stream};
-use lowlat_drivers::cuvid::{self, Cuvid};
+use lowlat_drivers::cuda::{self, Array, ArrayPlane, Cuda, Event, Stream, surface};
+use lowlat_drivers::cuvid::{self, Cuvid, opaque};
+use lowlat_drivers::ffi::cuda::{
+    CU_MEMORYTYPE_ARRAY, CU_MEMORYTYPE_DEVICE, CU_MEMORYTYPE_HOST, CUDA_MEMCPY2D,
+};
 use lowlat_drivers::ffi::cuvid::{
     CUVIDDECODECAPS, CUVIDDECODECREATEINFO, CUVIDH264DPBENTRY, CUVIDPICPARAMS, CUVIDPROCPARAMS,
     cudaVideoChromaFormat_420, cudaVideoChromaFormat_444, cudaVideoCodec_H264, cudaVideoCodec_HEVC,
-    cudaVideoCreate_PreferCUVID, cudaVideoDeinterlaceMode_Weave, cudaVideoSurfaceFormat_NV12,
-    cudaVideoSurfaceFormat_P016, cudaVideoSurfaceFormat_YUV444,
+    cudaVideoCreate_PreferCUVID, cudaVideoDeinterlaceMode_Weave, cudaVideoSurfaceFormat,
+    cudaVideoSurfaceFormat_NV12, cudaVideoSurfaceFormat_P016, cudaVideoSurfaceFormat_YUV444,
     cudaVideoSurfaceFormat_YUV444_16Bit, tcu_ulong,
 };
 
@@ -116,6 +128,19 @@ impl Shape {
         Format::of(self.ten_bit, self.full_chroma)
     }
 
+    /// The output a decoder decoding into the backend's own surfaces is
+    /// made for, and the layout those surfaces are made in: the two-plane
+    /// layouts alone. Full chroma decodes into surfaces of that kind only
+    /// with its chroma interleaved at full size, which fills no
+    /// single-channel plane by a copy, so it keeps the decoder's own.
+    fn registered(&self) -> Option<(cudaVideoSurfaceFormat, c_uint)> {
+        match (self.full_chroma, self.ten_bit) {
+            (false, false) => Some((opaque::NV12, surface::NV12)),
+            (false, true) => Some((opaque::P016, surface::P016)),
+            (true, _) => None,
+        }
+    }
+
     fn fill(&self, info: &mut CUVIDDECODECREATEINFO) {
         info.CodecType = match self.codec {
             Codec::H264 => cudaVideoCodec_H264,
@@ -206,6 +231,22 @@ pub fn limits(cuvid: &Cuvid, codec: Codec) -> (u32, u32) {
     (query.nMaxWidth, query.nMaxHeight)
 }
 
+/// Surfaces of the backend's own, which a decoder given them decodes into
+/// in the order of the backend's stream, each read out through its planes.
+struct Registered {
+    /// Each surface's two planes: the luma and the interleaved chroma.
+    planes: Vec<[ArrayPlane; 2]>,
+    /// The surfaces themselves, which the planes are views of: last, so
+    /// they outlive them.
+    _arrays: Vec<Array>,
+}
+
+/// Where a picture's planes are copied to.
+enum Out<'o, 'p> {
+    Host(&'o mut Planes<'p>),
+    Device(&'o DevicePlanes),
+}
+
 /// The decoder over one device.
 pub struct Backend<'a> {
     cuda: &'a Cuda,
@@ -214,7 +255,16 @@ pub struct Backend<'a> {
     ceiling: (u32, u32),
     codec: Codec,
     ten_bit: bool,
+    /// Before `registered`, so a decoder is destroyed before the surfaces
+    /// it decodes into.
     decoder: Option<cuvid::Decoder<'a>>,
+    /// The surfaces of the backend's own the decoder decodes into; `None`
+    /// for a decoder mapping its own.
+    registered: Option<Registered>,
+    /// Decoders keep and map their own surfaces even where the driver could
+    /// decode into the backend's: the other mode, checked on every driver
+    /// that has both.
+    mapped_only: bool,
     shape: Option<Shape>,
     h264: Box<h264::Stream>,
     hevc: Box<hevc::Stream>,
@@ -253,6 +303,8 @@ impl<'a> Backend<'a> {
             codec: Codec::H264,
             ten_bit: false,
             decoder: None,
+            registered: None,
+            mapped_only: false,
             shape: None,
             h264: Box::new(h264::Stream::new()),
             hevc: Box::new(hevc::Stream::new()),
@@ -291,13 +343,22 @@ impl<'a> Backend<'a> {
     }
 
     /// The decoder for `shape`, created if none exists; a shape that
-    /// differs from the one created is the caller's format change.
+    /// differs from the one created is the caller's format change. Into the
+    /// backend's own surfaces where the driver can and the layout reads out
+    /// by copies; mapping its own otherwise.
     fn ensure_decoder(&mut self, shape: Shape) -> Result<bool> {
         if let Some(existing) = self.shape {
             return Ok(existing == shape);
         }
         if shape.width > self.ceiling.0 || shape.height > self.ceiling.1 {
             return Err(Error::TooLarge);
+        }
+        let own = !self.mapped_only && self.cuvid.asynchronous() && self.cuda.has_planes();
+        if own && let Ok((decoder, registered)) = self.registered_decoder(shape) {
+            self.decoder = Some(decoder);
+            self.registered = Some(registered);
+            self.shape = Some(shape);
+            return Ok(true);
         }
         let mut info: CUVIDDECODECREATEINFO = zeroed();
         shape.fill(&mut info);
@@ -308,6 +369,80 @@ impl<'a> Backend<'a> {
         self.decoder = Some(decoder);
         self.shape = Some(shape);
         Ok(true)
+    }
+
+    /// A decoder for `shape` decoding into surfaces of the backend's own,
+    /// with those surfaces; refused where the driver will not take them or
+    /// their planes are not the picture's two.
+    ///
+    /// **A surface is made wider and taller than the picture where it is
+    /// small**: its width a multiple of 64 samples, at least 256 rows. Made
+    /// at the coded size, the driver refused a surface whose width is not
+    /// such a multiple, and decoded into one 128 rows tall with the chroma
+    /// misplaced, without an error; padded, every size from 128x128 up
+    /// decodes bit for bit against the decoder's own surfaces, both codecs.
+    fn registered_decoder(&mut self, shape: Shape) -> Result<(cuvid::Decoder<'a>, Registered)> {
+        let (output, layout) = shape.registered().ok_or(Error::NoProfile)?;
+        self.ensure_stream()?;
+        let mut info: CUVIDDECODECREATEINFO = zeroed();
+        shape.fill(&mut info);
+        info.OutputFormat = output;
+        info.ulNumOutputSurfaces = 0;
+        let cuvid = self.cuvid;
+        let cuda = self.cuda;
+        let decoder = cuvid.create(&mut info)?;
+        let width = usize::try_from(shape.width)
+            .map_err(|_| Error::TooLarge)?
+            .next_multiple_of(64);
+        let height = usize::try_from(shape.height)
+            .map_err(|_| Error::TooLarge)?
+            .max(256);
+        let mut arrays = Vec::with_capacity(SURFACES);
+        let mut per_surface = Vec::with_capacity(SURFACES);
+        for _ in 0..SURFACES {
+            let array = cuda.surface_array(width, height, layout)?;
+            let (Some(luma), Some(chroma), None) = (
+                cuda.plane(&array, 0)?,
+                cuda.plane(&array, 1)?,
+                cuda.plane(&array, 2)?,
+            ) else {
+                return Err(Error::NoProfile);
+            };
+            per_surface.push([luma, chroma]);
+            arrays.push(array);
+        }
+        decoder.register(&arrays)?;
+        Ok((
+            decoder,
+            Registered {
+                planes: per_surface,
+                _arrays: arrays,
+            },
+        ))
+    }
+
+    /// The stream the backend's device work runs on, and the event its end
+    /// is waited on by, made once.
+    fn ensure_stream(&mut self) -> Result<()> {
+        if self.stream.is_none() {
+            self.stream = Some((
+                self.cuda.create_stream()?,
+                self.cuda.create_waitable_event()?,
+            ));
+        }
+        Ok(())
+    }
+
+    /// Decoders built from now on keep and map their own surfaces even where
+    /// the driver could decode into the backend's: the other mode, which a
+    /// driver without the newer one takes, checked on one with both.
+    pub fn force_mapped(&mut self) {
+        self.mapped_only = true;
+    }
+
+    /// Whether the decoder built decodes into the backend's own surfaces.
+    pub fn decodes_into_own_surfaces(&self) -> bool {
+        self.registered.is_some()
     }
 
     /// Gather the slices of a unit into the bitstream buffer, a start code
@@ -335,7 +470,11 @@ impl<'a> Backend<'a> {
         params.nNumSlices = u32::try_from(slices).map_err(|_| Error::TooLarge)?;
         params.pSliceDataOffsets = self.offsets.as_ptr();
         let decoder = self.decoder.as_ref().ok_or(Error::NoProfile)?;
-        decoder.decode(params).map_err(|e| match e {
+        let decoded = match (&self.registered, &self.stream) {
+            (Some(_), Some((stream, _))) => decoder.decode_async(params, stream),
+            _ => decoder.decode(params),
+        };
+        decoded.map_err(|e| match e {
             cuvid::Error::Status(s) => Error::Status(s),
             other => Error::Runtime(other),
         })
@@ -775,8 +914,87 @@ impl<'a> Backend<'a> {
         Ok((len, slices))
     }
 
+    /// Copy `slot`'s picture out of the backend's own surface, plane by
+    /// plane, on the stream behind its decode, and wait -- asleep -- for the
+    /// copies, so the bytes are in `out` when this returns and whatever reads
+    /// them needs no fence of its own. Only the visible picture is copied.
+    fn copy_registered(&mut self, slot: usize, mut out: Out<'_, '_>) -> Result<()> {
+        let started = lowlat_common::clock::Time::now();
+        let format = self.format();
+        let (width, height, _) = self.output().ok_or(Error::NoProfile)?;
+        let width = usize::try_from(width).map_err(|_| Error::TooLarge)?;
+        let height = usize::try_from(height).map_err(|_| Error::TooLarge)?;
+        let (Some((stream, copied)), Some(registered)) =
+            (self.stream.as_ref(), self.registered.as_ref())
+        else {
+            return Err(Error::NoProfile);
+        };
+        let planes = registered.planes.get(slot).ok_or(Error::TooLarge)?;
+        // Bytes a row and rows, per plane: the luma, then the chroma
+        // interleaved at half size.
+        let sample = format.sample();
+        let luma = (width * sample, height);
+        let chroma = (width.div_ceil(2) * 2 * sample, format.chroma_rows(height));
+        for (index, (plane, (bytes, rows))) in planes.iter().zip([luma, chroma]).enumerate() {
+            if bytes > plane.width * plane.element || rows > plane.height || rows == 0 {
+                return Err(Error::TooLarge);
+            }
+            let mut copy: CUDA_MEMCPY2D = zeroed();
+            copy.srcMemoryType = CU_MEMORYTYPE_ARRAY;
+            copy.srcArray = plane.raw;
+            copy.WidthInBytes = bytes;
+            copy.Height = rows;
+            match &mut out {
+                Out::Host(to) => {
+                    let (dst, pitch) = if index == 0 {
+                        (&mut *to.y, to.y_pitch)
+                    } else {
+                        (&mut *to.uv, to.uv_pitch)
+                    };
+                    if pitch < bytes || dst.len() < (rows - 1) * pitch + bytes {
+                        return Err(Error::TooLarge);
+                    }
+                    copy.dstMemoryType = CU_MEMORYTYPE_HOST;
+                    copy.dstHost = dst.as_mut_ptr().cast();
+                    copy.dstPitch = pitch;
+                }
+                Out::Device(to) => {
+                    let (dst, pitch) = if index == 0 {
+                        (to.y, to.y_pitch)
+                    } else {
+                        (to.uv, to.uv_pitch)
+                    };
+                    if pitch < bytes {
+                        return Err(Error::TooLarge);
+                    }
+                    copy.dstMemoryType = CU_MEMORYTYPE_DEVICE;
+                    copy.dstDevice = dst;
+                    copy.dstPitch = pitch;
+                }
+            }
+            // SAFETY: the source is a plane of a surface this backend owns,
+            // covering the rows and bytes checked above; a host destination
+            // is checked above, a device one is the caller's allocation laid
+            // out for this picture, and the wait below keeps both alive past
+            // the copy.
+            unsafe { self.cuda.copy_2d_async(&copy, stream) }?;
+        }
+        let queued = lowlat_common::clock::Time::now();
+        copied.record(stream)?;
+        copied.wait()?;
+        let done = lowlat_common::clock::Time::now();
+        // The wait covers what was left of the decode and the copies, which
+        // cannot be told apart from here.
+        self.decode_us = micros(lowlat_common::clock::diff_ms(queued, done));
+        self.readback_us = micros(lowlat_common::clock::diff_ms(started, queued));
+        Ok(())
+    }
+
     /// Map `slot`'s picture, copy its planes out, and unmap it.
     fn read_back(&mut self, slot: usize, out: &mut Planes<'_>) -> Result<()> {
+        if self.registered.is_some() {
+            return self.copy_registered(slot, Out::Host(out));
+        }
         let shape = self.shape.ok_or(Error::NoProfile)?;
         let decoder = self.decoder.as_ref().ok_or(Error::NoProfile)?;
         let format = shape.format();
@@ -802,14 +1020,12 @@ impl<'a> Backend<'a> {
     /// in `out` when this returns and whatever imports that memory may read
     /// them with no fence of its own.
     fn copy_to_device(&mut self, slot: usize, out: &DevicePlanes) -> Result<()> {
+        if self.registered.is_some() {
+            return self.copy_registered(slot, Out::Device(out));
+        }
         let shape = self.shape.ok_or(Error::NoProfile)?;
         let format = shape.format();
-        if self.stream.is_none() {
-            self.stream = Some((
-                self.cuda.create_stream()?,
-                self.cuda.create_waitable_event()?,
-            ));
-        }
+        self.ensure_stream()?;
         let (stream, copied) = self.stream.as_ref().ok_or(Error::NoProfile)?;
         let decoder = self.decoder.as_ref().ok_or(Error::NoProfile)?;
         let started = lowlat_common::clock::Time::now();
@@ -825,15 +1041,23 @@ impl<'a> Backend<'a> {
         let coded_height = usize::try_from(shape.height).unwrap_or(0);
         let row_bytes = width * format.sample();
         let plane = u64::try_from(pitch * coded_height).unwrap_or(0);
+        // The mapped planes lie a coded height apart, but only the visible
+        // rows are copied: the destination is laid out for those, and the
+        // rows past them would land in the next plane or past the last.
+        let visible = self
+            .output()
+            .and_then(|(_, h, _)| usize::try_from(h).ok())
+            .unwrap_or(0)
+            .min(coded_height);
         let planes: [(u64, u64, usize, usize); 3] = [
-            (ptr, out.y, out.y_pitch, coded_height),
+            (ptr, out.y, out.y_pitch, visible),
             (
                 ptr + plane,
                 out.uv,
                 out.uv_pitch,
-                format.chroma_rows(coded_height),
+                format.chroma_rows(visible),
             ),
-            (ptr + 2 * plane, out.v, out.v_pitch, coded_height),
+            (ptr + 2 * plane, out.v, out.v_pitch, visible),
         ];
         let count = if format.full_chroma() { 3 } else { 2 };
         let mut result = Ok(());
@@ -952,7 +1176,9 @@ impl Decoder for Backend<'_> {
     }
 
     fn destroy(&mut self) {
+        // The decoder before the surfaces it decodes into.
         self.decoder = None;
+        self.registered = None;
         self.shape = None;
     }
 }

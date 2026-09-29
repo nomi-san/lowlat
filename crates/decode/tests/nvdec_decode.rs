@@ -45,21 +45,24 @@ fn open() -> (Cuda, Context, Cuvid) {
     (cuda, context, cuvid)
 }
 
+/// The clip's pictures' sums and timings, and whether the decoder decoded
+/// into the backend's own surfaces.
 fn decode(
     backend: &mut Backend<'_>,
     clip: &str,
     codec: Codec,
     ten_bit: bool,
-) -> (Vec<(u32, u32)>, Vec<(u32, u32)>) {
+) -> (Vec<(u32, u32)>, Vec<(u32, u32)>, bool) {
     backend.build(&header(codec, ten_bit)).expect("build");
-    let out = common::decode_clip(
+    let (sums, times) = common::decode_clip(
         backend,
         clip,
         |b| b.drain(),
         |b| (b.decode_us, b.readback_us),
     );
+    let own = backend.decodes_into_own_surfaces();
     backend.destroy();
-    out
+    (sums, times, own)
 }
 
 fn check(
@@ -92,47 +95,67 @@ fn check(
         println!("{clip}: {w}x{h} is under the device's floor of {floor_w}x{floor_h}, skipped");
         return;
     }
-    let mut backend = Backend::new(cuda, cuvid, (4096, 4096), MAX_UNIT);
-    let (ours, times) = decode(&mut backend, clip, codec, ten_bit);
     let theirs = common::sums(sums_name);
     let mut expected: BTreeMap<(u32, u32), usize> = BTreeMap::new();
     for s in &theirs {
         *expected.entry((s.y, s.uv)).or_default() += 1;
     }
-    let mut got: BTreeMap<(u32, u32), usize> = BTreeMap::new();
-    for s in &ours {
-        *got.entry(*s).or_default() += 1;
-    }
-    let wrong = ours.iter().filter(|s| !expected.contains_key(s)).count();
-    if wrong > 0 {
-        // Which plane is off, for the first few: the luma sums and the
-        // chroma sums are compared apart, which is what localises a
-        // read-back fault against a decode fault.
-        for (n, s) in ours.iter().take(4).enumerate() {
-            let y_ok = theirs.iter().any(|t| t.y == s.0);
-            let c_ok = theirs.iter().any(|t| t.uv == s.1);
-            println!(
-                "{clip}: picture {n}: luma {} chroma {}",
-                if y_ok { "matches" } else { "differs" },
-                if c_ok { "matches" } else { "differs" }
+    // Both modes: into the backend's own surfaces where the driver can,
+    // and mapping the decoder's, which is all an older driver does.
+    for mapped in [false, true] {
+        let mut backend = Backend::new(cuda, cuvid, (4096, 4096), MAX_UNIT);
+        if mapped {
+            backend.force_mapped();
+        }
+        let (ours, times, own) = decode(&mut backend, clip, codec, ten_bit);
+        if mapped {
+            assert!(
+                !own,
+                "{clip}: a decoder made to map decoded into own surfaces"
+            );
+        } else if cuvid.asynchronous() && !full_chroma {
+            assert!(
+                own,
+                "{clip}: the driver decodes into own surfaces and this decoder did not"
             );
         }
+        let mode = if own { "own surfaces" } else { "mapped" };
+        let mut got: BTreeMap<(u32, u32), usize> = BTreeMap::new();
+        for s in &ours {
+            *got.entry(*s).or_default() += 1;
+        }
+        let wrong = ours.iter().filter(|s| !expected.contains_key(s)).count();
+        if wrong > 0 {
+            // Which plane is off, for the first few: the luma sums and the
+            // chroma sums are compared apart, which is what localises a
+            // read-back fault against a decode fault.
+            for (n, s) in ours.iter().take(4).enumerate() {
+                let y_ok = theirs.iter().any(|t| t.y == s.0);
+                let c_ok = theirs.iter().any(|t| t.uv == s.1);
+                println!(
+                    "{clip} ({mode}): picture {n}: luma {} chroma {}",
+                    if y_ok { "matches" } else { "differs" },
+                    if c_ok { "matches" } else { "differs" }
+                );
+            }
+        }
+        let decode_max = times.iter().map(|t| t.0).max().unwrap_or(0);
+        let readback_max = times.iter().map(|t| t.1).max().unwrap_or(0);
+        let decode_mean =
+            times.iter().map(|t| u64::from(t.0)).sum::<u64>() / times.len().max(1) as u64;
+        let readback_mean =
+            times.iter().map(|t| u64::from(t.1)).sum::<u64>() / times.len().max(1) as u64;
+        println!(
+            "{clip} ({mode}): {} of {} pictures, {wrong} wrong; wait mean {decode_mean} us max {decode_max}; copy mean {readback_mean} us max {readback_max}",
+            ours.len(),
+            theirs.len()
+        );
+        assert_eq!(ours.len(), theirs.len(), "{clip} ({mode}): picture count");
+        assert_eq!(
+            got, expected,
+            "{clip} ({mode}): the pictures differ from the reference decoder's"
+        );
     }
-    let decode_max = times.iter().map(|t| t.0).max().unwrap_or(0);
-    let readback_max = times.iter().map(|t| t.1).max().unwrap_or(0);
-    let decode_mean = times.iter().map(|t| u64::from(t.0)).sum::<u64>() / times.len().max(1) as u64;
-    let readback_mean =
-        times.iter().map(|t| u64::from(t.1)).sum::<u64>() / times.len().max(1) as u64;
-    println!(
-        "{clip}: {} of {} pictures, {wrong} wrong; map mean {decode_mean} us max {decode_max}; copy mean {readback_mean} us max {readback_max}",
-        ours.len(),
-        theirs.len()
-    );
-    assert_eq!(ours.len(), theirs.len(), "{clip}: picture count");
-    assert_eq!(
-        got, expected,
-        "{clip}: the pictures differ from the reference decoder's"
-    );
 }
 
 /// The smallest coded picture the device decodes for a codec.
