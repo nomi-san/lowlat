@@ -40,9 +40,11 @@ mod linux;
 pub use linux::{Exportable, External, Plane};
 
 /// The graphics interface's side of the runtime: a device found by the
-/// graphics adapter it is.
+/// graphics adapter it is, its textures written from a stream.
 #[cfg(windows)]
 mod windows;
+#[cfg(windows)]
+pub use windows::{Mapped, Registered};
 
 /// Versioned first, as with the encoder runtime.
 #[cfg(unix)]
@@ -323,6 +325,9 @@ pub struct Context {
 // the raw handle. Sending one is what lets the encoder be built where the
 // pipeline is assembled and run on the encode thread.
 unsafe impl Send for Context {}
+// SAFETY: as above; `&self` reaches only the handle and the calls that make
+// it current on the calling thread, which the runtime allows on any.
+unsafe impl Sync for Context {}
 
 impl Context {
     /// The raw handle, for the encoder session.

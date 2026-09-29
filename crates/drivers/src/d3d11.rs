@@ -188,6 +188,12 @@ impl Luid {
         }
     }
 
+    /// The identity as one value, low part first: as the compute runtime
+    /// reports the adapter one of its devices is.
+    pub fn value(self) -> u64 {
+        u64::from(self.low) | (u64::from(u32::from_ne_bytes(self.high.to_ne_bytes())) << 32)
+    }
+
     /// The identity a device name spells, or `None` for one that spells
     /// none.
     pub fn parse(text: &str) -> Option<Self> {
