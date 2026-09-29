@@ -4,9 +4,12 @@
 //! **A device lost is looked for again**, not the end of the stream: a
 //! driver update, a reset or a restart of the GPU's driver takes the device
 //! away and brings the GPU back under a new identity. The decode thread
-//! finds the same GPU by its hardware -- or, for a session nobody placed,
-//! the first the system offers -- opens there, and the replacement asks for
-//! its keyframe; pictures then say which GPU they are on.
+//! looks for the same GPU by its hardware -- and only for it while the
+//! search runs, since the GPU that drives the display comes back in seconds
+//! and a session moved off it would stay on the other for good -- opens
+//! there, and the replacement asks for its keyframe; pictures then say which
+//! GPU they are on. A session nobody placed takes the first GPU the system
+//! offers once the search has run its course.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -21,8 +24,9 @@ use crate::frames::Filling;
 use crate::seam::Opened;
 
 /// How long a lost device is looked for before the stream fails, and how
-/// often the adapters are walked meanwhile.
-const FIND_AGAIN: Duration = Duration::from_secs(10);
+/// often the adapters are walked meanwhile. Every restart measured came back
+/// within four seconds, the display's GPU the slowest.
+const FIND_AGAIN: Duration = Duration::from_secs(5);
 const FIND_EVERY: Duration = Duration::from_millis(250);
 
 impl Backend for d3d11::Backend<'_> {
@@ -112,22 +116,24 @@ fn system_decoder(mut luid: Luid, named: bool, shared: &Shared<'_>, mut replacin
 }
 
 /// The GPU a lost device is opened on again: the same hardware under
-/// whatever identity it came back with, or -- for a session nobody placed --
-/// the first adapter offered. A virtual display's adapter, which shares its
-/// GPU's numbers, is never offered.
-fn pick(adapters: &[Adapter], lost: &Adapter, named: bool) -> Option<Luid> {
+/// whatever identity it came back with, or -- with `any`, which a session
+/// nobody placed asks once the search has run its course -- the first
+/// adapter offered. A virtual display's adapter, which shares its GPU's
+/// numbers, is never offered.
+fn pick(adapters: &[Adapter], lost: &Adapter, any: bool) -> Option<Luid> {
     let mut offered = adapters.iter().filter(|a| a.decodes_here());
     let same = adapters
         .iter()
         .filter(|a| a.decodes_here())
         .find(|a| a.same_hardware(lost));
-    same.or_else(|| if named { None } else { offered.next() })
+    same.or_else(|| if any { offered.next() } else { None })
         .map(|a| a.luid)
 }
 
 /// Look for the lost device's GPU until it opens, the session ends, another
-/// decoder is chosen, or the time runs out: the identity to open on, or
-/// what the thread does instead.
+/// decoder is chosen, or the time runs out -- and then, for a session nobody
+/// placed, for any GPU once: the identity to open on, or what the thread
+/// does instead.
 fn find_again(
     d3d11: &D3d11,
     lost: &Adapter,
@@ -147,21 +153,23 @@ fn find_again(
         // Nothing decodes meanwhile: what arrives is dropped, and the
         // keyframe is asked for once a decoder exists again.
         while shared.units.take().is_some() {}
-        let due = walked.is_none_or(|at| {
-            lowlat_common::clock::elapsed_ms(at) >= FIND_EVERY.as_secs_f64() * 1000.0
-        });
+        let done = lowlat_common::clock::elapsed_ms(began) >= FIND_AGAIN.as_secs_f64() * 1000.0;
+        let due = done
+            || walked.is_none_or(|at| {
+                lowlat_common::clock::elapsed_ms(at) >= FIND_EVERY.as_secs_f64() * 1000.0
+            });
         if due {
             walked = Some(lowlat_common::clock::Time::now());
             let found = d3d11
                 .adapters()
                 .ok()
-                .and_then(|adapters| pick(&adapters, lost, named));
+                .and_then(|adapters| pick(&adapters, lost, done && !named));
             // An adapter can be listed before its device opens.
             if let Some(luid) = found.filter(|l| d3d11.open(*l).is_ok_and(|d| !d.lost())) {
                 return Ok(luid);
             }
         }
-        if lowlat_common::clock::elapsed_ms(began) >= FIND_AGAIN.as_secs_f64() * 1000.0 {
+        if done {
             return Err(Next::Failed);
         }
         shared.units.wait(FIND_EVERY);
@@ -189,10 +197,11 @@ mod tests {
         }
     }
 
-    /// **The same GPU is found under its new identity**; a virtual display
-    /// sharing its numbers is passed over; a session nobody placed falls to
-    /// the first adapter offered when the GPU is not back, and one placed
-    /// does not.
+    /// **The same GPU is found under its new identity**, and nothing else
+    /// while the search runs: a virtual display sharing its numbers is passed
+    /// over, and another GPU is taken only when the search has run its course
+    /// for a session nobody placed -- a display's GPU comes back in seconds,
+    /// and a session moved off it at once would stay on the other for good.
     #[test]
     fn a_lost_gpu_is_found_by_its_hardware() {
         let lost = adapter(0x10, 0x2d05, (true, false));
@@ -202,18 +211,26 @@ mod tests {
 
         let listed = [virtual_display.clone(), other.clone(), back.clone()];
         assert_eq!(
-            pick(&listed, &lost, true),
+            pick(&listed, &lost, false),
             Some(back.luid),
             "the same hardware"
         );
-        assert_eq!(pick(&listed, &lost, false), Some(back.luid));
+        assert_eq!(
+            pick(&listed, &lost, true),
+            Some(back.luid),
+            "the same hardware first, at the end too"
+        );
 
         let not_back = [virtual_display, other.clone()];
-        assert_eq!(pick(&not_back, &lost, true), None, "a placed session moved");
         assert_eq!(
             pick(&not_back, &lost, false),
+            None,
+            "moved to another GPU while the search ran"
+        );
+        assert_eq!(
+            pick(&not_back, &lost, true),
             Some(other.luid),
-            "an unplaced session stayed without a decoder"
+            "an unplaced session left without a decoder at the end"
         );
     }
 }
