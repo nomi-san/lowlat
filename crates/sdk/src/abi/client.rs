@@ -3340,7 +3340,8 @@ mod tests {
 
     /// **On Windows a GPU is named by its identity, and a name no GPU has
     /// is refused as the device, the choice kept.** Unset, the automatic
-    /// order settles on the system's interface where a GPU decodes; an
+    /// order settles on a GPU decoder where one decodes -- the vendor's on its
+    /// own GPU, the system's interface elsewhere; an
     /// identity no adapter has, or a Linux render node, opens nothing.
     #[cfg(windows)]
     #[test]

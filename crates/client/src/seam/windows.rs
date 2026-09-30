@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use lowlat_decode::{d3d11, nvdec};
 use lowlat_drivers::cuda::{Context, Cuda};
 use lowlat_drivers::cuvid::Cuvid;
-use lowlat_drivers::d3d11::{D3d11, Luid};
+use lowlat_drivers::d3d11::{Adapter, D3d11, Luid};
 use lowlat_drivers::ffi::d3d11::DXGI_FORMAT_R8_UNORM;
 
 use super::{DecoderStage, Error, most_telling, probe_software, software_dir};
@@ -184,21 +184,40 @@ fn open_nvdec(named: Option<&str>, handles: bool) -> Result<(Opened, Caps), Deco
     Err(last)
 }
 
+/// Whether a session lands on one of the vendor's GPUs: the one named, or
+/// else the first of `adapters` offered.
+fn lands_on_the_vendors(adapters: &[Adapter], named: Option<&str>) -> bool {
+    let mut offered = adapters.iter().filter(|a| a.decodes_here());
+    let target = match named {
+        Some(named) => Luid::parse(named).and_then(|luid| offered.find(|a| a.luid == luid)),
+        None => offered.next(),
+    };
+    target.is_some_and(|a| a.maker() == Some("NVIDIA"))
+}
+
 /// The decoder a configuration settles on, probed once here, with what it
 /// decodes. **Strict where a kind is named**: the kind opens on the GPU
-/// named or the stage is the answer. **In order where none is**: the
-/// system's interface on the GPU named or the first that decodes, then the
-/// vendor's on that GPU or the first of its own, then software -- which
-/// the handle kind, needing textures, never reaches.
+/// named or the stage is the answer. **In order where none is**: the two
+/// hardware decoders on the GPU named or the first that decodes -- the
+/// vendor's first on one of its own GPUs, where it measured faster end to
+/// end than the system's interface, both codecs and both kinds, and the
+/// system's first everywhere else -- then software, which the handle kind,
+/// needing textures, never reaches.
 pub(crate) fn choose(decoding: &Decoding) -> Result<(Option<Opened>, Caps), Error> {
     let named = (!decoding.device.is_empty()).then_some(decoding.device.as_str());
     let handles = decoding.kind == FrameKind::Handle;
     let system = |named| open_d3d11(named, handles);
     let vendor = |named| open_nvdec(named, handles);
-    // The two GPU decoders in order, the stage the walk met otherwise.
-    let either = || match system(named) {
-        Ok(found) => Ok(found),
-        Err(first) => vendor(named).map_err(|then| most_telling(first, then)),
+    // The two hardware decoders in order, the stage the walk met otherwise.
+    let either = || {
+        let vendor_first = D3d11::load()
+            .and_then(|d3d11| d3d11.adapters())
+            .is_ok_and(|adapters| lands_on_the_vendors(&adapters, named));
+        if vendor_first {
+            vendor(named).or_else(|first| system(named).map_err(|then| most_telling(first, then)))
+        } else {
+            system(named).or_else(|first| vendor(named).map_err(|then| most_telling(first, then)))
+        }
     };
     match (decoding.kind, decoding.backend) {
         (_, Backend::None) => Ok((None, Caps::default())),
@@ -231,5 +250,56 @@ pub(crate) fn choose(decoding: &Decoding) -> Result<(Option<Opened>, Caps), Erro
                 Err(stage) => Err(Error::Decoder(most_telling(last, stage))),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn adapter(low: u32, vendor: u32, indirect: bool) -> Adapter {
+        Adapter {
+            luid: Luid { high: 0, low },
+            vendor,
+            device: 0x1234,
+            subsystem: 0x5678,
+            revision: 0xa1,
+            description: String::from("a GPU"),
+            driver: None,
+            renders: true,
+            software: false,
+            indirect,
+            integrated: false,
+        }
+    }
+
+    /// **The vendor's decoder goes first on the vendor's own GPU**: the one
+    /// named, or the first offered where none is. Anywhere else the system's
+    /// interface goes first, and so it does for a name no GPU has; a virtual
+    /// display's adapter under the vendor's numbers is never where a session
+    /// lands.
+    #[test]
+    fn the_vendors_decoder_goes_first_on_its_own_gpu() {
+        let nvidia = adapter(0x10, 0x10de, false);
+        let intel = adapter(0x20, 0x8086, false);
+        let virtual_display = adapter(0x30, 0x10de, true);
+        let name = |a: &Adapter| a.luid.to_string();
+
+        let nvidia_first = [nvidia.clone(), intel.clone()];
+        assert!(lands_on_the_vendors(&nvidia_first, None));
+        assert!(!lands_on_the_vendors(&nvidia_first, Some(&name(&intel))));
+        let intel_first = [intel.clone(), nvidia.clone()];
+        assert!(!lands_on_the_vendors(&intel_first, None));
+        assert!(lands_on_the_vendors(&intel_first, Some(&name(&nvidia))));
+        assert!(!lands_on_the_vendors(
+            &nvidia_first,
+            Some("luid:7fffffff:00000001")
+        ));
+        let behind_a_virtual_display = [virtual_display.clone(), intel];
+        assert!(!lands_on_the_vendors(&behind_a_virtual_display, None));
+        assert!(!lands_on_the_vendors(
+            &behind_a_virtual_display,
+            Some(&name(&virtual_display))
+        ));
     }
 }
