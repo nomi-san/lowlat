@@ -31,9 +31,7 @@ use core::fmt;
 use std::sync::Arc;
 
 use lowlat_core::video::{Codec, VideoHeader};
-use lowlat_drivers::d3d11::{
-    Com, Device, Error as RuntimeError, Fence, SharedTexture, Span, Timer,
-};
+use lowlat_drivers::d3d11::{Com, Device, Error as RuntimeError, Fence, SharedTexture};
 use lowlat_drivers::ffi::d3d11::{
     _DXVA_PicEntry_H264__bindgen_ty_1, _DXVA_PicEntry_H264__bindgen_ty_1__bindgen_ty_1,
     _DXVA_PicParams_H264__bindgen_ty_1, _DXVA_PicParams_H264__bindgen_ty_1__bindgen_ty_1,
@@ -56,12 +54,8 @@ use lowlat_drivers::ffi::d3d11::{
     ID3D11VideoDecoder, ID3D11VideoDecoderOutputView,
 };
 use lowlat_drivers::ffi::d3d11::{
-    D3D11_BIND_SHADER_RESOURCE, D3D11_SHADER_RESOURCE_VIEW_DESC,
-    D3D11_SHADER_RESOURCE_VIEW_DESC__bindgen_ty_1, D3D11_SRV_DIMENSION_TEXTURE2DARRAY,
-    D3D11_TEX2D_ARRAY_SRV, DXGI_FORMAT_R8_UINT, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8_UINT,
-    DXGI_FORMAT_R8G8_UNORM, DXGI_FORMAT_R8G8B8A8_UINT, DXGI_FORMAT_R10G10B10A2_UINT,
-    DXGI_FORMAT_R16_UINT, DXGI_FORMAT_R16_UNORM, DXGI_FORMAT_R16G16_UINT, DXGI_FORMAT_R16G16_UNORM,
-    DXGI_FORMAT_UNKNOWN, ID3D11ComputeShader, ID3D11ShaderResourceView, ID3D11UnorderedAccessView,
+    D3D11_BIND_SHADER_RESOURCE, DXGI_FORMAT_R8_UNORM, DXGI_FORMAT_R8G8_UNORM,
+    DXGI_FORMAT_R16_UNORM, DXGI_FORMAT_R16G16_UNORM, ID3D11ShaderResourceView,
 };
 use lowlat_drivers::ffi::d3d11_guids::{
     D3D11_DECODER_PROFILE_H264_VLD_NOFGT, D3D11_DECODER_PROFILE_HEVC_VLD_MAIN,
@@ -73,12 +67,8 @@ use lowlat_drivers::vcall;
 use crate::h264::dpb::{Parity, Structure};
 use crate::h264::sps::{ZIGZAG_4X4, ZIGZAG_8X8};
 use crate::hevc::sps::{DIAG_4X4, DIAG_8X8};
-use crate::packed::{unpack_vuyx_row, unpack_y410_row};
+use crate::split::{self, Split, copy_planes, copy_rows, micros};
 use crate::{Caps, Decoder, Fault, Fed, Format, Picture, Planes, h264, hevc};
-
-/// The split's compiled shaders, one per layout.
-#[path = "d3d11_split.rs"]
-mod split;
 
 /// Surfaces a decoder holds: what either picture buffer can index.
 const SURFACES: usize = h264::dpb::MAX_FRAMES;
@@ -164,11 +154,11 @@ impl From<RuntimeError> for Error {
     }
 }
 
-type Result<T> = core::result::Result<T, Error>;
+pub(crate) type Result<T> = core::result::Result<T, Error>;
 
 /// A failed result as an error: the device lost is the runtime's, which
 /// no fresh decoder on it survives.
-fn check(hr: HRESULT) -> Result<()> {
+pub(crate) fn check(hr: HRESULT) -> Result<()> {
     if hr >= 0 {
         Ok(())
     } else if DEVICE_LOST.contains(&hr) {
@@ -226,18 +216,6 @@ impl Shape {
         Format::of(self.ten_bit, self.full_chroma)
     }
 
-    /// The views the split reads a surface through, per plane, as integers:
-    /// the luma and interleaved chroma of the two-plane layouts, or the one
-    /// packed plane at full chroma.
-    const fn views(self) -> [DXGI_FORMAT; 2] {
-        match (self.ten_bit, self.full_chroma) {
-            (false, false) => [DXGI_FORMAT_R8_UINT, DXGI_FORMAT_R8G8_UINT],
-            (true, false) => [DXGI_FORMAT_R16_UINT, DXGI_FORMAT_R16G16_UINT],
-            (false, true) => [DXGI_FORMAT_R8G8B8A8_UINT, DXGI_FORMAT_UNKNOWN],
-            (true, true) => [DXGI_FORMAT_R10G10B10A2_UINT, DXGI_FORMAT_UNKNOWN],
-        }
-    }
-
     const fn short_slices(self) -> u32 {
         match self.codec {
             Codec::H264 => SHORT_H264,
@@ -287,53 +265,6 @@ pub fn plane_textures(
         ],
         Format::Yuv444 => [Some((DXGI_FORMAT_R8_UNORM, width, height)); 3],
         Format::Yuv444_16 => [Some((DXGI_FORMAT_R16_UNORM, width, height)); 3],
-    }
-}
-
-/// The split's shaders, one per layout, made once per device.
-struct Shaders {
-    planar8: Com<ID3D11ComputeShader>,
-    planar16: Com<ID3D11ComputeShader>,
-    vuya: Com<ID3D11ComputeShader>,
-    y410: Com<ID3D11ComputeShader>,
-}
-
-impl Shaders {
-    fn new(device: &Device) -> Result<Self> {
-        let make = |code: &[u8]| -> Result<Com<ID3D11ComputeShader>> {
-            let mut shader: *mut ID3D11ComputeShader = core::ptr::null_mut();
-            // SAFETY: a live device; the bytecode is the compiler's, live for
-            // the call, and the output is a live local.
-            let hr = unsafe {
-                vcall!(
-                    device.device(),
-                    CreateComputeShader,
-                    code.as_ptr().cast(),
-                    u64::try_from(code.len()).unwrap_or(0),
-                    core::ptr::null_mut(),
-                    &raw mut shader
-                )
-            }
-            .ok_or(Error::NoProfile)?;
-            check(hr)?;
-            // SAFETY: a shader whose reference the call handed over.
-            unsafe { Com::from_raw(shader) }.ok_or(Error::NoProfile)
-        };
-        Ok(Self {
-            planar8: make(split::PLANAR8)?,
-            planar16: make(split::PLANAR16)?,
-            vuya: make(split::VUYA)?,
-            y410: make(split::Y410)?,
-        })
-    }
-
-    fn for_shape(&self, shape: Shape) -> *mut ID3D11ComputeShader {
-        match (shape.ten_bit, shape.full_chroma) {
-            (false, false) => self.planar8.as_ptr(),
-            (true, false) => self.planar16.as_ptr(),
-            (false, true) => self.vuya.as_ptr(),
-            (true, true) => self.y410.as_ptr(),
-        }
     }
 }
 
@@ -521,10 +452,7 @@ pub struct Backend<'a> {
     /// The largest coded picture the caller's planes take.
     ceiling: (u32, u32),
     /// The split and the fence it signals, on a device that has fences.
-    shaders: Option<Shaders>,
-    fence: Option<Arc<Fence>>,
-    /// The last value the fence was asked to reach.
-    signalled: u64,
+    split: Option<Split>,
     /// The split reads a copy of each slice even where the device would
     /// let it read the surfaces: the copy route, checked on every device.
     copying: bool,
@@ -541,12 +469,6 @@ pub struct Backend<'a> {
     ranges: [(usize, usize); MAX_SLICES],
     /// Numbers each picture for the device's status reports; never zero.
     report: u32,
-    /// Times a picture split into textures on the device's own clock, from
-    /// its take to the fence passing; whether a span is closed and not yet
-    /// read; and pictures taken so, of which one in [`TIMED_EVERY`] is timed.
-    timer: Option<Timer>,
-    timing: bool,
-    taken: u32,
     /// The last read-back's wait for the device -- the decode and the copy
     /// -- and its copy out, in microseconds, for the log. For a picture
     /// split into textures, which nothing here waits for, the decode is the
@@ -567,17 +489,12 @@ impl fmt::Debug for Backend<'_> {
 
 impl<'a> Backend<'a> {
     pub fn new(device: &'a Device, ceiling: (u32, u32)) -> Self {
-        // The split needs the fence to say when its work is done; a device
-        // without one hands pictures out by read-back only.
-        let fence = device.has_fences().then(|| device.fence(0).ok()).flatten();
-        let shaders = fence.as_ref().and_then(|_| Shaders::new(device).ok());
-        let timer = shaders.as_ref().and_then(|_| device.timer().ok());
         Self {
             device,
             ceiling,
-            fence: shaders.as_ref().and(fence).map(Arc::new),
-            shaders,
-            signalled: 0,
+            // The split needs the fence to say when its work is done; a
+            // device without one hands pictures out by read-back only.
+            split: Split::new(device),
             copying: false,
             unpacked: None,
             codec: Codec::H264,
@@ -595,9 +512,6 @@ impl<'a> Backend<'a> {
             }),
             ranges: [(0, 0); MAX_SLICES],
             report: 0,
-            timer,
-            timing: false,
-            taken: 0,
             decode_us: 0,
             readback_us: 0,
         }
@@ -645,7 +559,7 @@ impl<'a> Backend<'a> {
         // read as well, where the device lets one; where it does not, or
         // the copy route is asked for, each picture's slice is copied into
         // a plain texture first. Either is decided here, once per decoder.
-        let readable = self.shaders.is_some() && !self.copying;
+        let readable = self.split.is_some() && !self.copying;
         let (surfaces, readable) = match readable
             .then(|| self.texture(shape, allocated, Texture::Readable))
             .and_then(Result::ok)
@@ -658,18 +572,23 @@ impl<'a> Backend<'a> {
             views.push(self.view(shape, &surfaces, slice)?);
         }
         let staging = self.texture(shape, allocated, Texture::Staging)?;
-        let sources = match (&self.shaders, readable) {
+        let sources = match (&self.split, readable) {
             (None, _) => Sources::None,
             (Some(_), true) => {
                 let mut per_slice = Vec::with_capacity(SURFACES);
                 for slice in 0..SURFACES {
-                    per_slice.push(self.source_views(shape, &surfaces, slice)?);
+                    per_slice.push(split::source_views(
+                        self.device,
+                        shape.format(),
+                        surfaces.as_ptr(),
+                        slice,
+                    )?);
                 }
                 Sources::Direct(per_slice)
             }
             (Some(_), false) => {
                 let texture = self.texture(shape, allocated, Texture::Copy)?;
-                let views = self.source_views(shape, &texture, 0)?;
+                let views = split::source_views(self.device, shape.format(), texture.as_ptr(), 0)?;
                 Sources::Copy { texture, views }
             }
         };
@@ -684,53 +603,6 @@ impl<'a> Backend<'a> {
             sources,
         });
         Ok(true)
-    }
-
-    /// The views the split reads one slice of `texture` through, per plane.
-    fn source_views(
-        &self,
-        shape: Shape,
-        texture: &Com<ID3D11Texture2D>,
-        slice: usize,
-    ) -> Result<[Option<Com<ID3D11ShaderResourceView>>; 2]> {
-        let mut out = [None, None];
-        for (view, format) in out.iter_mut().zip(shape.views()) {
-            if format == DXGI_FORMAT_UNKNOWN {
-                continue;
-            }
-            // The plane is the one the view's format names: a one-channel
-            // view of a two-plane surface is its luma, a two-channel one its
-            // chroma.
-            let desc = D3D11_SHADER_RESOURCE_VIEW_DESC {
-                Format: format,
-                ViewDimension: D3D11_SRV_DIMENSION_TEXTURE2DARRAY,
-                __bindgen_anon_1: D3D11_SHADER_RESOURCE_VIEW_DESC__bindgen_ty_1 {
-                    Texture2DArray: D3D11_TEX2D_ARRAY_SRV {
-                        MostDetailedMip: 0,
-                        MipLevels: 1,
-                        FirstArraySlice: u32::try_from(slice).map_err(|_| Error::TooLarge)?,
-                        ArraySize: 1,
-                    },
-                },
-            };
-            let mut raw: *mut ID3D11ShaderResourceView = core::ptr::null_mut();
-            // SAFETY: a live device and texture; the description and output
-            // are live.
-            let hr = unsafe {
-                vcall!(
-                    self.device.device(),
-                    CreateShaderResourceView,
-                    texture.as_ptr().cast::<ID3D11Resource>(),
-                    &raw const desc,
-                    &raw mut raw
-                )
-            }
-            .ok_or(Error::NoProfile)?;
-            check(hr)?;
-            // SAFETY: a view whose reference the call handed over.
-            *view = Some(unsafe { Com::from_raw(raw) }.ok_or(Error::NoProfile)?);
-        }
-        Ok(out)
     }
 
     /// One of the textures a decoder holds, at the surfaces' size and format.
@@ -1666,13 +1538,13 @@ impl<'a> Backend<'a> {
     /// The fence the split signals, on a device that splits: a picture a
     /// take hands out is finished once this passes the take's value.
     pub fn fence(&self) -> Option<Arc<Fence>> {
-        self.fence.clone()
+        self.split.as_ref().map(Split::fence)
     }
 
     /// Whether pictures can leave as textures: the device has the split and
     /// the fence it signals.
     pub fn splits(&self) -> bool {
-        self.shaders.is_some() && self.fence.is_some()
+        self.split.is_some()
     }
 
     /// Read each slice through a copy even where the device would let the
@@ -1717,12 +1589,11 @@ impl<'a> Backend<'a> {
         // the decode's time is the device's own, from the take to the fence
         // passing, read once the device has passed it -- the last timed
         // picture's, by now.
-        let timed = self.read_span() && self.taken % TIMED_EVERY == 0;
-        self.taken = self.taken.wrapping_add(1);
-        if timed && let Some(timer) = &self.timer {
-            self.device.begin_span(timer);
-        }
-        let split = self.split(slot, planes, timed);
+        let timed = match self.split.as_mut() {
+            Some(split) => split.take(self.device, &mut self.decode_us),
+            None => false,
+        };
+        let split = self.split_picture(slot, planes, timed);
         match self.codec {
             Codec::H264 => self.h264.dpb.taken(slot),
             Codec::H265 => self.hevc.dpb.taken(slot),
@@ -1747,52 +1618,24 @@ impl<'a> Backend<'a> {
         )))
     }
 
-    /// Read the span last closed, once the device has passed it, into the
-    /// decode's figure: whether a new one may be opened -- not while the
-    /// last is still unread, since the timer holds one span.
-    fn read_span(&mut self) -> bool {
-        let Some(timer) = &self.timer else {
-            return false;
-        };
-        if !self.timing {
-            return true;
-        }
-        match self.device.span(timer) {
-            Ok(Span::Pending) => return false,
-            Ok(Span::Micros(us)) => self.decode_us = us,
-            Ok(Span::Unsteady) | Err(_) => {}
-        }
-        self.timing = false;
-        true
-    }
-
     /// The split of `slot`'s picture into `planes`, and the fence value it
     /// is finished at; with `timed`, the timer's span, opened at the take,
     /// closed behind the fence's signal.
-    fn split(
+    fn split_picture(
         &mut self,
         slot: usize,
         planes: [Option<&SharedTexture>; 3],
         timed: bool,
     ) -> Result<u64> {
-        let fence = self.fence.as_ref().ok_or(Error::NoProfile)?;
         self.dispatch(slot, planes)?;
-        let value = self.signalled + 1;
-        match self.timer.as_ref().filter(|_| timed) {
-            Some(timer) => {
-                self.device.signal_timed(fence, value, timer)?;
-                self.timing = true;
-            }
-            None => self.device.signal(fence, value)?,
-        }
-        self.signalled = value;
-        Ok(value)
+        let split = self.split.as_mut().ok_or(Error::NoProfile)?;
+        split.signal(self.device, timed)
     }
 
     /// The split's pass for `slot`'s picture into `planes`, queued.
     fn dispatch(&self, slot: usize, planes: [Option<&SharedTexture>; 3]) -> Result<()> {
         let built = self.built.as_ref().ok_or(Error::NoProfile)?;
-        let shaders = self.shaders.as_ref().ok_or(Error::NoProfile)?;
+        let split = self.split.as_ref().ok_or(Error::NoProfile)?;
         let context = self.device.context();
         let subresource = u32::try_from(slot).map_err(|_| Error::TooLarge)?;
         let sources = match &built.sources {
@@ -1822,55 +1665,13 @@ impl<'a> Backend<'a> {
         let srvs = sources
             .each_ref()
             .map(|v| v.as_ref().map_or(core::ptr::null_mut(), Com::as_ptr));
-        let uavs: [*mut ID3D11UnorderedAccessView; 3] =
-            planes.map(|p| p.map_or(core::ptr::null_mut(), SharedTexture::view));
-        let shape = built.shape;
-        let wanted = if shape.full_chroma { 3 } else { 2 };
-        if uavs.iter().take(wanted).any(|u| u.is_null()) {
-            return Err(Error::TooLarge);
-        }
-        let (width, height) = self.visible_and_range().0;
-        // One thread a chroma sample of the two-plane layouts, which covers
-        // four luma samples; one a sample at full chroma.
-        let (cols, rows) = if shape.full_chroma {
-            (width, height)
-        } else {
-            (width.div_ceil(2), height.div_ceil(2))
-        };
-        let none_srv = [core::ptr::null_mut::<ID3D11ShaderResourceView>(); 2];
-        let none_uav = [core::ptr::null_mut::<ID3D11UnorderedAccessView>(); 3];
-        // SAFETY: a live context on this thread; the shader, the views and the
-        // targets are live, and every binding is undone before returning so
-        // nothing of the split stays bound into the next decode.
-        unsafe {
-            vcall!(
-                context,
-                CSSetShader,
-                shaders.for_shape(shape),
-                core::ptr::null(),
-                0
-            );
-            vcall!(context, CSSetShaderResources, 0, 2, srvs.as_ptr());
-            vcall!(
-                context,
-                CSSetUnorderedAccessViews,
-                0,
-                3,
-                uavs.as_ptr(),
-                core::ptr::null()
-            );
-            vcall!(context, Dispatch, cols.div_ceil(8), rows.div_ceil(8), 1);
-            vcall!(context, CSSetShaderResources, 0, 2, none_srv.as_ptr());
-            vcall!(
-                context,
-                CSSetUnorderedAccessViews,
-                0,
-                3,
-                none_uav.as_ptr(),
-                core::ptr::null()
-            );
-        }
-        Ok(())
+        split.dispatch(
+            self.device,
+            built.shape.format(),
+            srvs,
+            planes,
+            self.visible_and_range().0,
+        )
     }
 
     /// Read `slot`'s full-chroma picture into the planes through the split:
@@ -1896,7 +1697,7 @@ impl<'a> Backend<'a> {
             {
                 let (f, w, h) = texture.ok_or(Error::TooLarge)?;
                 *plane = Some(self.device.shared_texture(f, w, h)?);
-                *stage = Some(self.staging_plane(f, w, h)?);
+                *stage = Some(split::staging(self.device, f, w, h)?);
             }
             self.unpacked = Some(Unpacked {
                 layout: (format, width, height),
@@ -1964,45 +1765,6 @@ impl<'a> Backend<'a> {
         result
     }
 
-    /// A staging texture one plane is read back through.
-    fn staging_plane(
-        &self,
-        format: DXGI_FORMAT,
-        width: u32,
-        height: u32,
-    ) -> Result<Com<ID3D11Texture2D>> {
-        let desc = D3D11_TEXTURE2D_DESC {
-            Width: width,
-            Height: height,
-            MipLevels: 1,
-            ArraySize: 1,
-            Format: format,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            Usage: D3D11_USAGE_STAGING,
-            BindFlags: 0,
-            CPUAccessFlags: u32::try_from(D3D11_CPU_ACCESS_READ).unwrap_or(0),
-            MiscFlags: 0,
-        };
-        let mut texture: *mut ID3D11Texture2D = core::ptr::null_mut();
-        // SAFETY: a live device; the description and output are live.
-        let hr = unsafe {
-            vcall!(
-                self.device.device(),
-                CreateTexture2D,
-                &raw const desc,
-                core::ptr::null(),
-                &raw mut texture
-            )
-        }
-        .ok_or(Error::NoProfile)?;
-        check(hr)?;
-        // SAFETY: a texture whose reference the call handed over.
-        unsafe { Com::from_raw(texture) }.ok_or(Error::NoProfile)
-    }
-
     /// The active parameter set's visible size and range.
     fn visible_and_range(&self) -> ((u32, u32), bool) {
         match self.codec {
@@ -2065,7 +1827,7 @@ impl<'a> Backend<'a> {
         let result = copy_planes(
             &mapped,
             built.allocated.1,
-            built.shape,
+            built.shape.format(),
             (width, height),
             out,
         );
@@ -2123,105 +1885,6 @@ fn slice_bytes<T>(slices: &[T]) -> &[u8] {
     // SAFETY: plain-data structures read as the bytes they are made of,
     // for as long as they are borrowed.
     unsafe { core::slice::from_raw_parts(slices.as_ptr().cast::<u8>(), size_of_val(slices)) }
-}
-
-/// Copy the visible planes out of the mapped staging texture: the two-plane
-/// layouts plane by plane, the chroma plane after the luma plane's
-/// allocated rows; the packed full-chroma layouts unpacked, the ten-bit
-/// samples moved to the high bits as every other backend hands them out.
-fn copy_planes(
-    mapped: &D3D11_MAPPED_SUBRESOURCE,
-    allocated_rows: u32,
-    shape: Shape,
-    (width, height): (u32, u32),
-    out: &mut Planes<'_>,
-) -> Result<()> {
-    if mapped.pData.is_null() {
-        return Err(Error::Status(-1));
-    }
-    let format = shape.format();
-    let pitch = usize::try_from(mapped.RowPitch).map_err(|_| Error::TooLarge)?;
-    let rows = usize::try_from(allocated_rows).map_err(|_| Error::TooLarge)?;
-    let width = usize::try_from(width).map_err(|_| Error::TooLarge)?;
-    let height = usize::try_from(height).map_err(|_| Error::TooLarge)?;
-    let total = if format.full_chroma() {
-        pitch * rows
-    } else {
-        pitch * (rows + format.chroma_rows(rows))
-    };
-    // SAFETY: the device mapped the whole staging texture at `pData`, which
-    // is `RowPitch` bytes a row for each of its rows, and its second plane's
-    // rows after the first's.
-    let source = unsafe { core::slice::from_raw_parts(mapped.pData.cast::<u8>(), total) };
-    match format {
-        Format::Nv12 | Format::P010 => {
-            let row_bytes = width * format.sample();
-            copy_rows(source, 0, pitch, out.y, out.y_pitch, row_bytes, height)?;
-            copy_rows(
-                source,
-                pitch * rows,
-                pitch,
-                out.uv,
-                out.uv_pitch,
-                row_bytes,
-                format.chroma_rows(height),
-            )
-        }
-        Format::Yuv444 | Format::Yuv444_16 => {
-            let sample = format.sample();
-            let rows = height.min(out.y.len() / out.y_pitch.max(1));
-            for row in 0..rows {
-                let from = source
-                    .get(row * pitch..row * pitch + 4 * width)
-                    .ok_or(Error::Status(-1))?;
-                let span = |p: usize| row * p..row * p + sample * width;
-                let y = out.y.get_mut(span(out.y_pitch)).ok_or(Error::TooLarge)?;
-                let u = out.uv.get_mut(span(out.uv_pitch)).ok_or(Error::TooLarge)?;
-                let v = out.v.get_mut(span(out.v_pitch)).ok_or(Error::TooLarge)?;
-                if format == Format::Yuv444 {
-                    unpack_vuyx_row(from, y, u, v);
-                } else {
-                    unpack_y410_row(from, y, u, v);
-                }
-            }
-            Ok(())
-        }
-    }
-}
-
-/// `rows` rows of `row_bytes` from a plane of the mapping into a plane of
-/// the caller's, each at its own pitch; short output takes what fits.
-fn copy_rows(
-    source: &[u8],
-    offset: usize,
-    pitch: usize,
-    to: &mut [u8],
-    to_pitch: usize,
-    row_bytes: usize,
-    rows: usize,
-) -> Result<()> {
-    let rows = rows.min(to.len() / to_pitch.max(1));
-    for row in 0..rows {
-        let from = source
-            .get(offset + row * pitch..offset + row * pitch + row_bytes)
-            .ok_or(Error::Status(-1))?;
-        let dst = to
-            .get_mut(row * to_pitch..row * to_pitch + row_bytes)
-            .ok_or(Error::TooLarge)?;
-        dst.copy_from_slice(from);
-    }
-    Ok(())
-}
-
-/// Whole microseconds from a millisecond figure, saturated.
-fn micros(ms: f64) -> u32 {
-    #[allow(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "a non-negative duration in whole microseconds, saturated"
-    )]
-    let us = (ms * 1000.0).max(0.0).min(f64::from(u32::MAX)) as u32;
-    us
 }
 
 impl Decoder for Backend<'_> {

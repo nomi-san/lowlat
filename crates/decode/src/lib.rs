@@ -44,6 +44,9 @@ pub mod nal;
 pub mod nvdec;
 mod packed;
 pub mod software;
+/// The split into plane textures, which exists on Windows alone.
+#[cfg(windows)]
+mod split;
 /// The open stack's decode, which exists on Linux alone.
 #[cfg(target_os = "linux")]
 pub mod vaapi;
