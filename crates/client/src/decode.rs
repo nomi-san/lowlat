@@ -337,9 +337,6 @@ fn take_pictures<D: Backend>(
         // one out; as planes otherwise, whatever was asked. Decided per
         // picture, so the kind switches at the next one with no keyframe.
         let by_handle = frames.kind() == FrameKind::Handle && feed.decoder().exports();
-        // A picture behind a gate is timed from before its take, which may
-        // itself wait for the decode.
-        let began = by_handle.then(lowlat_common::clock::Time::now);
         let taken = if by_handle {
             feed.decoder_mut()
                 .take_to_slot(&mut filling, (width, height, format))
@@ -351,16 +348,11 @@ fn take_pictures<D: Backend>(
         };
         match taken {
             Ok(Some((picture, gate))) => {
+                // A picture behind a gate was not waited for here: its
+                // decode is the backend's timing on the device of the last
+                // one finished, from its take to its fence passing.
                 let (decode_us, readback_us) = feed.decoder().timings();
-                // A picture behind a gate was not waited for here: its decode
-                // is timed where it is seen finished, on the application's
-                // thread, and that figure is the one reported.
-                let decode_us = if gate == 0 {
-                    telemetry.decode_us.store(decode_us, Ordering::Relaxed);
-                    decode_us
-                } else {
-                    telemetry.decode_us.load(Ordering::Relaxed)
-                };
+                telemetry.decode_us.store(decode_us, Ordering::Relaxed);
                 telemetry.readback_us.store(readback_us, Ordering::Relaxed);
                 // What the stream is, from the picture itself: a backend
                 // that reads no parameter set knows it no earlier.
@@ -368,8 +360,14 @@ fn take_pictures<D: Backend>(
                     .stream_format
                     .store(format_code(picture.format), Ordering::Relaxed);
                 // What the host is told: decode and hand-over together,
-                // smoothed, since that is the time a picture costs here.
-                let sample_ms = f64::from(decode_us.saturating_add(readback_us)) / 1000.0;
+                // smoothed, since that is the time a picture costs here. A
+                // picture behind a gate is timed across its hand-over.
+                let cost_us = if gate == 0 {
+                    decode_us.saturating_add(readback_us)
+                } else {
+                    decode_us
+                };
+                let sample_ms = f64::from(cost_us) / 1000.0;
                 telemetry
                     .decode_reported_us
                     .store(reported.push(sample_ms), Ordering::Relaxed);
@@ -392,7 +390,6 @@ fn take_pictures<D: Backend>(
                     order: picture.order,
                     full_range: picture.full_range,
                     arrived: Some(stamp),
-                    submitted: began.filter(|_| gate != 0),
                     // The queue's, written at publish.
                     pitch: 0,
                     uv_offset: 0,

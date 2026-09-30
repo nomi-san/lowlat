@@ -2006,9 +2006,6 @@ pub unsafe extern "C" fn lowlat_client_acquire_frame(
             let arrived_us = {
                 let mut held = handle.held();
                 held.seam.set_last_seq(taken.seq);
-                if let Some(us) = taken.ready_us {
-                    held.seam.note_decode_us(us);
-                }
                 taken
                     .frame
                     .arrived

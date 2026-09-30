@@ -75,10 +75,6 @@ pub struct Frame {
     pub full_range: bool,
     /// The arrival stamp of the unit the picture was decoded from.
     pub arrived: Option<u32>,
-    /// When the picture's device work was queued, for a picture published
-    /// before it was known finished; what the acquire that sees it finished
-    /// times its decode from.
-    pub submitted: Option<lowlat_common::clock::Time>,
     /// Bytes a row, every plane. **The queue's, set at publish** from the
     /// planes it lent; whatever is given here is replaced.
     pub pitch: usize,
@@ -102,7 +98,6 @@ impl Frame {
         order: 0,
         full_range: false,
         arrived: None,
-        submitted: None,
         pitch: 0,
         uv_offset: 0,
         v_offset: 0,
@@ -209,11 +204,6 @@ pub struct Held {
     pub pitch: usize,
     /// The device slot's descriptor, or `None` for a host slot.
     pub handle: Option<Handle>,
-    /// For a picture published before its device work was known finished,
-    /// how long after it was queued it was seen finished, in microseconds:
-    /// exact when the acquire was waiting for it, an upper bound when the
-    /// acquire came late.
-    pub ready_us: Option<u32>,
 }
 
 /// The kind a queue's word says.
@@ -328,16 +318,6 @@ impl Frames {
         else {
             return Ok(None);
         };
-        let ready_us = payload.submitted.map(|at| {
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "a non-negative duration in whole microseconds, saturated"
-            )]
-            let us = (lowlat_common::clock::elapsed_ms(at) * 1000.0).clamp(0.0, f64::from(u32::MAX))
-                as u32;
-            us
-        });
         self.held.fetch_add(1, Ordering::AcqRel);
         let (y, uv, v) = if payload.handle.is_some() {
             // A device slot: the planes are offsets into the handle.
@@ -364,7 +344,6 @@ impl Frames {
             v,
             pitch: payload.pitch,
             handle: payload.handle,
-            ready_us,
         }))
     }
 

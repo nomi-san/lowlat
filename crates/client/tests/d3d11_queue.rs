@@ -19,13 +19,12 @@
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use lowlat_client::config::FrameKind;
 use lowlat_client::frames::{Frame, Frames, Vendor};
-use lowlat_common::clock::Time;
 use lowlat_core::video::{Codec, Rotation, VideoHeader};
 use lowlat_decode::d3d11::Backend;
 use lowlat_decode::{Decoder, Fed, Picture, nvdec};
@@ -159,9 +158,13 @@ impl Reader {
 struct Seen {
     pictures: usize,
     wrong: usize,
-    /// Microseconds from each picture's submit to its being seen finished.
+    /// Microseconds from each picture's publish to its being seen finished.
     ready: Vec<u32>,
 }
+
+/// When each picture was published, by the number it carries as its
+/// generation: what the consumer times its being seen finished from.
+type Published = Arc<Mutex<Vec<Instant>>>;
 
 fn header(codec: Codec, ten_bit: bool) -> VideoHeader {
     VideoHeader {
@@ -185,9 +188,11 @@ fn consume(
     reader: Reader,
     expected: BTreeSet<(u32, u32)>,
     done: &Arc<AtomicBool>,
+    published: &Published,
 ) -> std::thread::JoinHandle<Seen> {
     let frames = Arc::clone(frames);
     let done = Arc::clone(done);
+    let published = Arc::clone(published);
     std::thread::spawn(move || {
         let mut seen = Seen::default();
         let mut after = 0;
@@ -203,8 +208,10 @@ fn consume(
                 continue;
             };
             after = held.seq;
-            let handle = held.handle.expect("a picture of textures");
             let f = held.frame;
+            let at = published.lock().unwrap()[f.generation as usize - 1];
+            seen.ready.push(at.elapsed().as_micros() as u32);
+            let handle = held.handle.expect("a picture of textures");
             let sample = f.format.sample();
             let (w, h) = (f.width as usize, f.height as usize);
             let luma = reader.read(handle.textures[0], h, w * sample);
@@ -217,25 +224,29 @@ fn consume(
             if !expected.contains(&(crc32(&luma), crc32(&chroma))) {
                 seen.wrong += 1;
             }
-            seen.ready.extend(held.ready_us);
             frames.release(held.index);
         }
         seen
     })
 }
 
-/// A picture's frame as the decode thread publishes it.
-fn frame(picture: &Picture) -> Frame {
+/// A picture's frame as the decode thread publishes it, numbered in its
+/// generation by when it was published.
+fn frame(picture: &Picture, published: &Published) -> Frame {
+    let generation = {
+        let mut published = published.lock().unwrap();
+        published.push(Instant::now());
+        published.len() as u32
+    };
     Frame {
         format: picture.format,
         width: picture.width,
         height: picture.height,
         rotation: Rotation::None,
-        generation: 1,
+        generation,
         order: picture.order,
         full_range: picture.full_range,
         arrived: None,
-        submitted: Some(Time::now()),
         pitch: 0,
         uv_offset: 0,
         v_offset: 0,
@@ -265,7 +276,8 @@ fn run(
     let reader = Reader {
         device: d3d11.open(luid).expect("the application's device"),
     };
-    let consumer = consume(&frames, reader, expected, &done);
+    let published = Published::default();
+    let consumer = consume(&frames, reader, expected, &done, &published);
 
     for unit in units(clip) {
         let started = Instant::now();
@@ -280,7 +292,7 @@ fn run(
                 let Some((picture, value)) = backend.take_to_textures(planes).expect("take") else {
                     break;
                 };
-                filling.publish_gated(frame(&picture), value);
+                filling.publish_gated(frame(&picture, &published), value);
             }
         }
         if let Some(pace) = pace {
@@ -333,7 +345,8 @@ fn run_vendor(
     let reader = Reader {
         device: d3d11.open(luid).expect("the application's device"),
     };
-    let consumer = consume(&frames, reader, expected, &done);
+    let published = Published::default();
+    let consumer = consume(&frames, reader, expected, &done, &published);
 
     for unit in units(clip) {
         let started = Instant::now();
@@ -348,7 +361,7 @@ fn run_vendor(
                 let Some((picture, value)) = backend.take_to_textures(planes).expect("take") else {
                     break;
                 };
-                filling.publish_gated(frame(&picture), value);
+                filling.publish_gated(frame(&picture, &published), value);
             }
         }
         if let Some(pace) = pace {

@@ -312,21 +312,11 @@ impl Client {
         match self.frames.acquire(self.last_seq, timeout) {
             Ok(Some(held)) => {
                 self.last_seq = held.seq;
-                if let Some(us) = held.ready_us {
-                    self.note_decode_us(us);
-                }
                 Ok(Some(held))
             }
             Ok(None) => Ok(None),
             Err(crate::frames::TooManyHeld) => Err(Error::TooManyHeld),
         }
-    }
-
-    /// A picture handed out behind its device's progress, seen finished
-    /// `us` after its work was queued: that is its decode, as status and the
-    /// host are told it, since the decode thread waited for nothing.
-    pub fn note_decode_us(&self, us: u32) {
-        self.telemetry.decode_us.store(us, Ordering::Relaxed);
     }
 
     /// The sequence of the newest picture handed out, for a caller that
