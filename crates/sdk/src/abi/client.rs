@@ -173,14 +173,15 @@ pub struct lowlat_decoder_info {
     pub device: [c_char; LOWLAT_OUTPUT_MAX],
     /// A label for a menu, NUL-terminated: the interface, and the card's
     /// maker in brackets where it is known -- `VA-API [Intel]`, `VA-API
-    /// [AMD]`, `NVDEC [NVIDIA]`, `D3D11 [NVIDIA]`, `libavcodec [LGPL]`; the
-    /// interface alone for a slot with nothing behind it.
+    /// [AMD]`, `NVDEC [NVIDIA]`, `AMF [AMD]`, `D3D11 [NVIDIA]`, `libavcodec
+    /// [LGPL]`; the interface alone for a slot with nothing behind it.
     pub name: [c_char; LOWLAT_DECODER_NAME_MAX],
     /// The driver's own words, NUL-terminated (minor 13): its banner and
     /// version for the open decoder on Linux, the GPU's name and driver
-    /// version on Windows, the device's product name for the vendor's, the
-    /// library's version and licence for software; for a slot that is not
-    /// available, why not. Filled only when `size` reaches it.
+    /// version on Windows, the device's product name for NVIDIA's decoder
+    /// and the GPU's name and the runtime's version for AMD's, the library's
+    /// version and licence for software; for a slot that is not available,
+    /// why not. Filled only when `size` reaches it.
     pub driver: [c_char; LOWLAT_DECODER_NAME_MAX],
 }
 
@@ -3469,20 +3470,29 @@ mod tests {
                 lowlat_decoder::LOWLAT_DECODER_SOFTWARE
             } as u32;
             assert_eq!(row.decoder, expected, "slot {count}");
-            let interface = match expected {
+            let interfaces: &[&str] = match expected {
                 x if x == lowlat_decoder::LOWLAT_DECODER_OPEN as u32 => {
                     if cfg!(windows) {
-                        "D3D11"
+                        &["D3D11"]
                     } else {
-                        "VA-API"
+                        &["VA-API"]
                     }
                 }
-                x if x == lowlat_decoder::LOWLAT_DECODER_VENDOR as u32 => "NVDEC",
-                _ => "libavcodec",
+                // The maker's own: NVIDIA's everywhere, AMD's on Windows.
+                x if x == lowlat_decoder::LOWLAT_DECODER_VENDOR as u32 => {
+                    if cfg!(windows) {
+                        &["NVDEC", "AMF"]
+                    } else {
+                        &["NVDEC"]
+                    }
+                }
+                _ => &["libavcodec"],
             };
             let label = name.to_str().expect("a label in ASCII");
             assert!(
-                label == interface || label.starts_with(&format!("{interface} [")),
+                interfaces
+                    .iter()
+                    .any(|i| label == *i || label.starts_with(&format!("{i} ["))),
                 "a label off the grammar: {label}"
             );
             assert!(

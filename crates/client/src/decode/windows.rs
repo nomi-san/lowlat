@@ -14,13 +14,16 @@
 //!
 //! **The vendor's interface is not looked for again**: its runtime does not
 //! come back in the process that lost its device, so the stream fails and
-//! the session ends.
+//! the session ends. **AMD's decoder is**, on the same GPU only, since it
+//! decodes on no other: its runtime is made again on the new device, and a
+//! runtime that will not be ends the stream there.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use lowlat_decode::{Fault, Format, Picture, d3d11, nvdec, software};
+use lowlat_decode::{Fault, Format, Picture, amf, d3d11, nvdec, software};
+use lowlat_drivers::amf::Amf;
 use lowlat_drivers::cuda::Cuda;
 use lowlat_drivers::cuvid::Cuvid;
 use lowlat_drivers::d3d11::{Adapter, D3d11, Luid};
@@ -55,6 +58,34 @@ impl Backend for d3d11::Backend<'_> {
         // Textures a device refused are a picture lost, as a slot that does
         // not fit is, and the decoder is left to its next unit -- unless the
         // device is gone, which no later unit's decode need report.
+        let Some(planes) = filling.textures_for(width, height, format) else {
+            return if self.lost() {
+                Err(Fault::DeviceLost)
+            } else {
+                Ok(None)
+            };
+        };
+        self.take_to_textures(planes)
+    }
+}
+
+impl Backend for amf::Backend<'_> {
+    fn output(&self) -> Option<(u32, u32, Format)> {
+        amf::Backend::output(self)
+    }
+    fn timings(&self) -> (u32, u32) {
+        (self.decode_us, self.readback_us)
+    }
+    fn exports(&self) -> bool {
+        self.splits()
+    }
+    fn take_to_slot(
+        &mut self,
+        filling: &mut Filling<'_>,
+        (width, height, format): (u32, u32, Format),
+    ) -> Result<Option<(Picture, u64)>, Fault> {
+        // As the system's interface: textures refused are a picture lost,
+        // unless their device is gone.
         let Some(planes) = filling.textures_for(width, height, format) else {
             return if self.lost() {
                 Err(Fault::DeviceLost)
@@ -104,6 +135,7 @@ pub(super) fn open(opened: Opened, shared: &Shared<'_>, replacing: bool) -> Next
     match opened {
         Opened::D3d11 { luid, named, .. } => system_decoder(luid, named, shared, replacing),
         Opened::Nvdec { luid, .. } => vendor_decoder(luid, shared, replacing),
+        Opened::Amf { luid, .. } => amd_decoder(luid, shared, replacing),
         Opened::Software(dir) => {
             // The same search creation ran, landing on the same pair.
             let Ok(lavc) = Lavc::load(dir.as_deref()) else {
@@ -205,6 +237,56 @@ fn vendor_decoder(luid: Luid, shared: &Shared<'_>, replacing: bool) -> Next {
         backend.attach_textures(device, fence);
     }
     drive(backend, shared, replacing)
+}
+
+/// AMD's decoder on the adapter `luid`, on a device of the library's own
+/// there, driven until it returns; a device lost on the way is found again
+/// on the same GPU -- never another, where the decoder is not -- and the
+/// runtime made again on it.
+fn amd_decoder(mut luid: Luid, shared: &Shared<'_>, mut replacing: bool) -> Next {
+    let Ok(d3d11) = D3d11::load() else {
+        return Next::Failed;
+    };
+    loop {
+        let Ok(device) = d3d11.open(luid) else {
+            return Next::Failed;
+        };
+        let Ok(runtime) = Amf::load() else {
+            return Next::Failed;
+        };
+        let device = Arc::new(device);
+        let backend =
+            match amf::Backend::new(&runtime, &device, shared.frames.ceiling(), UNIT_BYTES) {
+                Ok(backend) => backend,
+                Err(e) => {
+                    lowlat_common::log_warn!("client: amd decoder not made, error={e}");
+                    return Next::Failed;
+                }
+            };
+        // A device that splits takes the session's device slots, whatever
+        // kind the session asks for now, so a switch to handles has them.
+        if let Some(fence) = backend.fence() {
+            shared.frames.open_device(Arc::clone(&device), fence, None);
+        }
+        let lost = device.adapter.clone();
+        match drive(backend, shared, replacing) {
+            Next::Lost => {}
+            other => return other,
+        }
+        lowlat_common::log_warn!(
+            "client: decoder device lost, adapter={} name={:?}",
+            lost.luid,
+            lost.description
+        );
+        match find_again(&d3d11, &lost, true, shared) {
+            Ok(again) => {
+                lowlat_common::log_info!("client: decoder device back, adapter={again}");
+                luid = again;
+                replacing = true;
+            }
+            Err(next) => return next,
+        }
+    }
 }
 
 /// The GPU a lost device is opened on again: the same hardware under

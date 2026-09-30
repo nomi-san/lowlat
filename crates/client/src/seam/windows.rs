@@ -1,10 +1,12 @@
 //! Which decoders a configuration opens, on Windows, and on which GPU: the
 //! system's video decoding interface on an adapter named by its identity,
-//! then the vendor's on its own GPUs, then the machine's own codec library.
+//! then the maker's own on its GPUs -- NVIDIA's, AMD's -- then the
+//! machine's own codec library.
 
 use std::path::PathBuf;
 
-use lowlat_decode::{d3d11, nvdec};
+use lowlat_decode::{amf, d3d11, nvdec};
+use lowlat_drivers::amf::Amf;
 use lowlat_drivers::cuda::{Context, Cuda};
 use lowlat_drivers::cuvid::Cuvid;
 use lowlat_drivers::d3d11::{Adapter, D3d11, Luid};
@@ -33,6 +35,13 @@ pub enum Opened {
         /// texture of a device on the adapter, which has a fence.
         handles: bool,
     },
+    /// AMD's own decoder, on the adapter with this identity.
+    Amf {
+        luid: Luid,
+        /// Its pictures can be handed out as textures: they are a device's
+        /// of the library's own, which has a fence.
+        handles: bool,
+    },
     /// The machine's own codec library, from the directory named or from
     /// the search of its own. Opened again on the decode thread, which
     /// finds the same pair the probe found.
@@ -44,7 +53,7 @@ impl Opened {
     pub fn backend(&self) -> Backend {
         match self {
             Self::D3d11 { .. } => Backend::Vaapi,
-            Self::Nvdec { .. } => Backend::Nvdec,
+            Self::Nvdec { .. } | Self::Amf { .. } => Backend::Nvdec,
             Self::Software(_) => Backend::Software,
         }
     }
@@ -52,7 +61,9 @@ impl Opened {
     /// Whether it hands pictures out as a handle.
     pub fn exports(&self) -> bool {
         match self {
-            Self::D3d11 { handles, .. } | Self::Nvdec { handles, .. } => *handles,
+            Self::D3d11 { handles, .. }
+            | Self::Nvdec { handles, .. }
+            | Self::Amf { handles, .. } => *handles,
             Self::Software(_) => false,
         }
     }
@@ -150,33 +161,74 @@ fn probe_nvdec(luid: Luid) -> Result<(Caps, bool), DecoderStage> {
     Ok((caps, writes_textures(&cuda, &context, luid)))
 }
 
-/// The vendor's interface on the adapter a device name spells, or on the
-/// first of its GPUs offered, high-performance first; the stage the walk
-/// met otherwise. With `handles`, one that cannot hand pictures out as
-/// textures is refused as the handle kind is.
-fn open_nvdec(named: Option<&str>, handles: bool) -> Result<(Opened, Caps), DecoderStage> {
-    let probe = |luid| {
-        let (caps, exports) = probe_nvdec(luid)?;
-        if handles && !exports {
-            return Err(DecoderStage::Unsupported);
-        }
-        let opened = Opened::Nvdec {
-            luid,
-            handles: exports,
-        };
-        Ok((opened, caps))
-    };
-    if let Some(named) = named {
-        return probe(Luid::parse(named).ok_or(DecoderStage::Device)?);
+/// Probe AMD's decoder on one adapter: its runtime loaded, a device of the
+/// library's own made there, a real decoder built per combination; with
+/// whether it can hand pictures out as textures, and whether it has the
+/// runtime's low-latency mode.
+fn probe_amf(luid: Luid) -> Result<(Caps, bool, bool), DecoderStage> {
+    let d3d11 = D3d11::load().map_err(|_| DecoderStage::Runtime)?;
+    let device = d3d11.open(luid).map_err(|_| DecoderStage::Device)?;
+    let amf = Amf::load().map_err(|_| DecoderStage::Runtime)?;
+    let (caps, fast) = amf::caps(&amf, &device);
+    if !caps.any() {
+        return Err(DecoderStage::Profile);
     }
+    Ok((caps, device.has_fences(), fast))
+}
+
+/// Whether the maker of `adapter` has a decoder of its own here.
+fn has_its_own(adapter: &Adapter) -> bool {
+    matches!(adapter.maker(), Some("NVIDIA" | "AMD"))
+}
+
+/// The maker's own decoder on the adapter a device name spells, or on the
+/// first adapter offered whose maker has one, high-performance first; the
+/// stage the walk met otherwise. With whether it goes ahead of the system's
+/// interface in the automatic order: NVIDIA's, having measured faster on
+/// its GPU; AMD's where its runtime has the low-latency mode, without which
+/// it is no faster there. With `handles`, one that cannot hand pictures out
+/// as textures is refused as the handle kind is.
+fn open_vendor(named: Option<&str>, handles: bool) -> Result<(Opened, Caps, bool), DecoderStage> {
     let d3d11 = D3d11::load().map_err(|_| DecoderStage::Runtime)?;
     let adapters = d3d11.adapters().map_err(|_| DecoderStage::Runtime)?;
+    let probe = |adapter: &Adapter| {
+        let luid = adapter.luid;
+        let (opened, caps, first) = match adapter.maker() {
+            Some("NVIDIA") => {
+                let (caps, exports) = probe_nvdec(luid)?;
+                let opened = Opened::Nvdec {
+                    luid,
+                    handles: exports,
+                };
+                (opened, caps, true)
+            }
+            Some("AMD") => {
+                let (caps, exports, fast) = probe_amf(luid)?;
+                let opened = Opened::Amf {
+                    luid,
+                    handles: exports,
+                };
+                (opened, caps, fast)
+            }
+            _ => return Err(DecoderStage::Device),
+        };
+        if handles && !opened.exports() {
+            return Err(DecoderStage::Unsupported);
+        }
+        Ok((opened, caps, first))
+    };
+    let mut offered = adapters.iter().filter(|a| a.decodes_here());
+    if let Some(named) = named {
+        let luid = Luid::parse(named).ok_or(DecoderStage::Device)?;
+        return probe(
+            offered
+                .find(|a| a.luid == luid)
+                .ok_or(DecoderStage::Device)?,
+        );
+    }
     let mut last = DecoderStage::Device;
-    let theirs = adapters
-        .iter()
-        .filter(|a| a.decodes_here() && a.maker() == Some("NVIDIA"));
-    for adapter in theirs {
-        match probe(adapter.luid) {
+    for adapter in offered.filter(|a| has_its_own(a)) {
+        match probe(adapter) {
             Ok(found) => return Ok(found),
             Err(stage) => last = most_telling(last, stage),
         }
@@ -184,39 +236,49 @@ fn open_nvdec(named: Option<&str>, handles: bool) -> Result<(Opened, Caps), Deco
     Err(last)
 }
 
-/// Whether a session lands on one of the vendor's GPUs: the one named, or
-/// else the first of `adapters` offered.
+/// Whether a session lands on a GPU whose maker has a decoder of its own:
+/// the one named, or else the first of `adapters` offered.
 fn lands_on_the_vendors(adapters: &[Adapter], named: Option<&str>) -> bool {
     let mut offered = adapters.iter().filter(|a| a.decodes_here());
     let target = match named {
         Some(named) => Luid::parse(named).and_then(|luid| offered.find(|a| a.luid == luid)),
         None => offered.next(),
     };
-    target.is_some_and(|a| a.maker() == Some("NVIDIA"))
+    target.is_some_and(has_its_own)
 }
 
 /// The decoder a configuration settles on, probed once here, with what it
 /// decodes. **Strict where a kind is named**: the kind opens on the GPU
 /// named or the stage is the answer. **In order where none is**: the two
 /// hardware decoders on the GPU named or the first that decodes -- the
-/// vendor's first on one of its own GPUs, where it measured faster end to
-/// end than the system's interface, both codecs and both kinds, and the
-/// system's first everywhere else -- then software, which the handle kind,
-/// needing textures, never reaches.
+/// maker's own first on its GPU where it is the faster, NVIDIA's having
+/// measured so end to end, both codecs and both kinds, and AMD's in its
+/// runtime's low-latency mode; the system's first everywhere else -- then
+/// software, which the handle kind, needing textures, never reaches.
 pub(crate) fn choose(decoding: &Decoding) -> Result<(Option<Opened>, Caps), Error> {
     let named = (!decoding.device.is_empty()).then_some(decoding.device.as_str());
     let handles = decoding.kind == FrameKind::Handle;
     let system = |named| open_d3d11(named, handles);
-    let vendor = |named| open_nvdec(named, handles);
+    let vendor = |named| open_vendor(named, handles);
     // The two hardware decoders in order, the stage the walk met otherwise.
     let either = || {
         let vendor_first = D3d11::load()
             .and_then(|d3d11| d3d11.adapters())
             .is_ok_and(|adapters| lands_on_the_vendors(&adapters, named));
         if vendor_first {
-            vendor(named).or_else(|first| system(named).map_err(|then| most_telling(first, then)))
+            match vendor(named) {
+                Ok((opened, caps, true)) => Ok((opened, caps)),
+                // No faster than the system's interface, which goes first;
+                // the maker's own is what is left where that does not open.
+                Ok((opened, caps, false)) => system(named).or(Ok((opened, caps))),
+                Err(first) => system(named).map_err(|then| most_telling(first, then)),
+            }
         } else {
-            system(named).or_else(|first| vendor(named).map_err(|then| most_telling(first, then)))
+            system(named).or_else(|first| {
+                vendor(named)
+                    .map(|(opened, caps, _)| (opened, caps))
+                    .map_err(|then| most_telling(first, then))
+            })
         }
     };
     match (decoding.kind, decoding.backend) {
@@ -227,7 +289,7 @@ pub(crate) fn choose(decoding: &Decoding) -> Result<(Option<Opened>, Caps), Erro
             Ok((Some(opened), caps))
         }
         (_, Backend::Nvdec) => {
-            let (opened, caps) = vendor(named).map_err(Error::Decoder)?;
+            let (opened, caps, _) = vendor(named).map_err(Error::Decoder)?;
             Ok((Some(opened), caps))
         }
         (FrameKind::Handle, Backend::Auto) => {
@@ -273,24 +335,27 @@ mod tests {
         }
     }
 
-    /// **The vendor's decoder goes first on the vendor's own GPU**: the one
-    /// named, or the first offered where none is. Anywhere else the system's
-    /// interface goes first, and so it does for a name no GPU has; a virtual
-    /// display's adapter under the vendor's numbers is never where a session
-    /// lands.
+    /// **The maker's own decoder is asked first on its own GPU** -- NVIDIA's
+    /// and AMD's -- the one named, or the first offered where none is.
+    /// Anywhere else the system's interface goes first, and so it does for a
+    /// name no GPU has; a virtual display's adapter under a maker's numbers
+    /// is never where a session lands.
     #[test]
-    fn the_vendors_decoder_goes_first_on_its_own_gpu() {
+    fn the_makers_decoder_is_asked_first_on_its_own_gpu() {
         let nvidia = adapter(0x10, 0x10de, false);
         let intel = adapter(0x20, 0x8086, false);
         let virtual_display = adapter(0x30, 0x10de, true);
+        let amd = adapter(0x40, 0x1002, false);
         let name = |a: &Adapter| a.luid.to_string();
 
-        let nvidia_first = [nvidia.clone(), intel.clone()];
+        let nvidia_first = [nvidia.clone(), intel.clone(), amd.clone()];
         assert!(lands_on_the_vendors(&nvidia_first, None));
         assert!(!lands_on_the_vendors(&nvidia_first, Some(&name(&intel))));
+        assert!(lands_on_the_vendors(&nvidia_first, Some(&name(&amd))));
         let intel_first = [intel.clone(), nvidia.clone()];
         assert!(!lands_on_the_vendors(&intel_first, None));
         assert!(lands_on_the_vendors(&intel_first, Some(&name(&nvidia))));
+        assert!(lands_on_the_vendors(&[amd, intel.clone()], None));
         assert!(!lands_on_the_vendors(
             &nvidia_first,
             Some("luid:7fffffff:00000001")

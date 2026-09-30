@@ -55,7 +55,7 @@ pub struct Available {
     /// takes as the first device; an adapter's identity on Windows.
     pub device: String,
     /// A label for a menu: the interface, and the card's maker in brackets
-    /// where it is known -- `VA-API [AMD]`, `NVDEC [NVIDIA]`,
+    /// where it is known -- `VA-API [AMD]`, `NVDEC [NVIDIA]`, `AMF [AMD]`,
     /// `D3D11 [Intel]`, `libavcodec [LGPL]`.
     pub name: String,
     /// The driver's own words: its banner, the device's product name, the
