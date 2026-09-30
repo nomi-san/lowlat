@@ -488,7 +488,10 @@ with the reinitialisation argument set:
 1. Its video configuration changed -- a different codec, colour or decoder was requested -- and
    the decoder was torn down for it.
 2. Its decoder reported a fault it cannot recover from, and was destroyed before the request
-   went out, so the next access unit starts a fresh one.
+   went out, so the next access unit starts a fresh one. (*Amended 2026-09-30*: a fault met
+   handing a decoded picture out -- its split or its read-back refused -- is judged as one met
+   decoding, a fatal one ending the session. It was a lost picture alone, so a decoder failing
+   every hand-out streamed nothing with nothing asked.)
 
 There is no periodic refresh, no request at start-up (the host's own start sends a keyframe),
 and no request on a gap (§3). Above all, **the request is not gated by time**: a request that
@@ -727,9 +730,13 @@ otherwise.
 | software | an LGPL libavcodec pair, loaded at runtime | planes |
 | the system's decoder | the platform's own media framework, in software only | planes, eight-bit 4:2:0 |
 
-Unset, the order is the table's, on the GPU the application names. The system's interface
-comes first because it is one backend on every vendor's device and is fed the same jobs the
-other hardware backend is, as the open stack is on Linux; then the vendor's; then software.
+Unset, the order is the table's, on the GPU the application names, or on each GPU offered
+in turn where it names none -- **both hardware decoders tried on a GPU before the walk leaves
+it** (*amended 2026-09-30*: a maker's own decoder failing on the first GPU had moved the
+session to another maker's on the next, ahead of the system's interface on the first). The
+system's interface comes first because it is one backend on every vendor's device and is fed
+the same jobs the other hardware backend is, as the open stack is on Linux; then the vendor's;
+then software.
 (*Amended 2026-09-29*, W1.5: on an NVIDIA GPU the vendor's decoder comes first, having
 measured faster end to end there, below.)
 The two vendors' own decoders go after NVDEC once they are built, except on an AMD GPU, where

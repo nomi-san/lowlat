@@ -346,6 +346,9 @@ whether an application may supply the frames, for a virtual display that already
 
 ## Change log
 
+- 2026-09-30: W1.6 reviewed before W1.7: the automatic order now tries both hardware decoders
+  on a GPU before it leaves it, and a fault met handing a picture out is judged as one met
+  decoding, on every decoder ([10 §5](10-client.md), §5.2).
 - 2026-09-30: W1.6 built: AMD's decoder first on an AMD GPU where its runtime has the
   low-latency mode, as measured; the demo's growth by handle on a GPU other than the display's
   found and left to W1.9.

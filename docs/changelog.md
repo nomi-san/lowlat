@@ -22,6 +22,27 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - **The example client's title names the decoder by its row's label**, `AMF [AMD]` or
   `D3D11 [NVIDIA]`, where it said only open or vendor, and follows a walk through the
   decoders.
+- **A session nobody placed could leave the first GPU for another maker's decoder**
+  (*2026-09-30*, found reviewing this step): with AMD's decoder in the vendor kind, the
+  automatic order tried every maker's own decoder on every GPU before the system's interface
+  on any, so NVIDIA's failing on the first GPU landed the session on AMD's integrated GPU.
+  Both hardware decoders are now tried on a GPU, in that GPU's order, before the walk moves
+  to the next ([10 §5.2](10-client.md)). A test with the first GPU's decoder failing failed
+  first.
+- **A picture decoded but not handed out was a lost picture and nothing more**
+  (*2026-09-30*): a decoder whose split or read-back failed on every picture streamed nothing,
+  with no keyframe asked and no session ended. A fault met taking a picture is now judged as
+  one met decoding, on every decoder: a fatal one ends the session, any other tears the
+  decoder down and asks for one keyframe ([10 §5](10-client.md)). A one-off read-back failure
+  now costs a keyframe rather than a picture.
+- **Four smaller faults from the same review** (*2026-09-30*), each shown failing first: the
+  read-back now refuses a decoder texture of several slices, as the split already did, rather
+  than reading its first; a picture handed out after its slot went to a later one is dropped
+  rather than shown as that later picture; the decode thread's wait for the device asks the
+  fence again after every wake, so a wake left over from an earlier timeout no longer lets a
+  unit past the bound; and AMD's decoder, its buffer and its pictures can no longer outlive
+  the runtime context they were made in -- a compile-time rule now, where it was the order of
+  a struct's fields.
 
 ### Found
 - **The processor time the handle kind took on the AMD GPU is the example client's**: by
