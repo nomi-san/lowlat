@@ -293,7 +293,7 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   drawing on a GPU other than the display's, its memory grows with every picture and its
   processor time with it, from about 3 % of a core to 30 in ten minutes, through either
   decoder; the library's route alone does not. Left to W1.9.
-- [ ] **W1.7 Intel VPL** (*added 2026-09-28*): Intel's own decoder through its current
+- [x] **W1.7 Intel VPL** (*added 2026-09-28*): Intel's own decoder through its current
   runtime, loaded at run time from where the display driver installs it, and through its
   older runtime (MFX) for the Intel parts the current one does not reach; planes, then
   handles by W1.4's split. Checked by the clips it decodes and ten minutes of each codec on
@@ -303,6 +303,33 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   its vendor's runtime, the older ones included, where the system's interface may lack a
   profile; its place in the automatic order on an Intel GPU is decided by measuring it against
   the system's interface there -- first only if it is faster, as AMD's is on the AMD GPU.
+  *Built 2026-09-30.* Decided at its interview: **the older runtime hands out planes alone**,
+  through its own memory output on the GPU named, H.264 and 4:2:0 HEVC at both depths -- no
+  textures, which would need an allocator of the library's that no part here could check; its
+  check stays owed. And a fault met handing a decoded picture out is judged as one met
+  decoding, on every decoder ([10 §5](10-client.md)). As built: the runtime is found by the
+  GPU itself, in the folder its own display device names among the devices present -- never
+  the display class's keys in order, which keep entries for removed drivers; the current
+  runtime is given the library's own device with its lock on, first of all, since a device
+  without it, or one handed over once the session has touched the hardware, is refused and the
+  runtime decodes on a device of its own; it makes its decode calls on that device's context
+  inside its decode call, so the split and the read-back queued after are ordered behind the
+  decode and nothing waits; asked for decode order, it hands each unit's picture out of that
+  unit's own call, the library's readers restoring the stream's order; a unit it will not take
+  while its own completion lags the device is offered again a millisecond later; parameter
+  sets sent in a unit of their own are kept for the next build; one runtime thread is asked for
+  where it would start one a core. Every committed clip decodes bit for bit by planes and
+  through the textures read back on a second device, in the order the system's interface lets
+  the same clip out in, full chroma at both depths included, and fails with the fence
+  signalled ahead of the split or the kept sets ignored; every 4:2:0 clip through the older
+  runtime's calls, which the current runtime answers here; nothing is allocated per unit; the
+  queue end to end, back to back and at 120 pictures a second. **It measured no faster than the
+  system's interface on the Intel card**, within 0.1 ms in one session per codec and kind, so
+  the system's interface stays first there and Intel's second ([10 §5.2](10-client.md)). Ten
+  minutes of each codec by handle and by planes from an established host, ten-bit and full
+  chroma at both depths by both kinds from a second, the kind switched, and the device lost by
+  restarting the GPU's driver under each kind, the session going on after about a second.
+  *Owed*: the older runtime on a part that needs it.
 - [ ] **W1.8 the system's decoder**, software only. Checked by the clips it decodes.
 - [ ] **W1.9 the demo**: the GPU choice's menu, the feature reports, the Sony pads, the check
   of the display's GPU, and from it the renderer's placement: handles when the decoding GPU
@@ -346,6 +373,8 @@ whether an application may supply the frames, for a virtual display that already
 
 ## Change log
 
+- 2026-09-30: W1.7 built: Intel's decoder, second on an Intel GPU as measured; its older
+  runtime planes only, its check owed until a part that needs it is at hand.
 - 2026-09-30: W1.6 reviewed before W1.7: the automatic order now tries both hardware decoders
   on a GPU before it leaves it, and a fault met handing a picture out is judged as one met
   decoding, on every decoder ([10 §5](10-client.md), §5.2).

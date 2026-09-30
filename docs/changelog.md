@@ -3,6 +3,33 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-30 - W1.7: Intel's decoder on Windows
+
+### Decided
+- **Intel's decoder comes second on an Intel GPU**: in one session per codec and kind, the
+  decoders alternating, it measured within 0.1 ms of the system's interface there -- the same
+  engine behind both -- so the system's interface stays first ([10 §5.2](10-client.md)).
+- **Intel's older runtime hands out planes alone**, for the parts the current one does not
+  reach; its check on such a part is owed until one is at hand.
+
+### Changed
+- **The vendor kind opens on an Intel GPU**: Intel's decoder through the runtime its display
+  driver installs, found by the GPU itself and opened by its full path. The current runtime
+  decodes on the library's own device, with the device's lock on, and hands out planes and the
+  same shared textures as the open decoder, split behind the decode and signalled on the
+  library's fence, nothing waiting for the decode; full chroma at both depths. Its slot is
+  labelled `VPL [Intel]`, or `MFX [Intel]` for the older runtime ([06 §3b](06-api.md)). A
+  device lost under it is found again on the same GPU and the session goes on.
+- **The split runs under the device's lock**, since a vendor's runtime calls into the same
+  context from a thread of its own.
+
+### Found
+- **The runtime declines a unit without taking it** when fed faster than its own completion
+  follows the device -- the eleventh to thirteenth unit of a small clip decoded back to back --
+  and takes it a millisecond later; taken as "no picture", that picture was lost.
+- **A device handed to the runtime without its lock is refused**, and the runtime then decodes
+  on a device of its own; handed over with the lock, first of all, it is taken.
+
 ## 2026-09-30 - W1.6: AMF on Windows
 
 ### Decided

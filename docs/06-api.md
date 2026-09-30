@@ -718,6 +718,19 @@ no full chroma, so the declaration is masked by that. Unlike NVIDIA's, a device 
 is found again on the same GPU, under its new identity, and the runtime made again there; the
 session goes on. No entry point or field is added, so the minor stays 19.
 
+**Intel's decoder on Windows since W1.7** (*2026-09-30*): `LOWLAT_DECODER_VENDOR` on an Intel
+GPU opens Intel's own decoder through the runtime its display driver installs, found by the
+GPU itself. Its current runtime decodes on the library's own device and hands out both kinds --
+planes, and by handle the same shared textures as the open decoder, signalled on the library's
+fence -- full chroma at both depths where the GPU has it. A part the current runtime does not
+reach has the older one, which hands out planes alone, eight-bit and ten-bit 4:2:0. The slot is
+the maker's own, 8 to 15, labelled `VPL [Intel]` (`MFX [Intel]` for the older runtime), its
+words the GPU's name and the runtime's version; its size limits are the device's as the open
+decoder finds them. `LOWLAT_DECODER_AUTO` keeps the open decoder first on an Intel GPU and
+Intel's second, having measured it no faster there ([10 §5.2](10-client.md)). A device lost
+under it is found again on the same GPU and a session of the runtime made again there; the
+session goes on. No entry point or field is added, so the minor stays 19.
+
 **Sound is decoded, not played** (minor 7). `acquire_audio` hands out one packet a call,
 signed sixteen-bit stereo at 48 kHz, in the order the host sent them, as many frames as the
 packet held -- 960 for a host at 20 ms, at most 8000; `count` is the room in frames going in
@@ -1009,10 +1022,10 @@ re-probed the whole machine. A slot with nothing usable behind it still answers 
 there, a device past the last, a codec library the build does not load -- and a loop skips
 it. An available row is a decoder creation will open, named by the two values creation
 takes; its `name` is a label for a menu, the interface and the card's maker (`VA-API
-[Intel]`, `NVDEC [NVIDIA]`, `AMF [AMD]`, `libavcodec [LGPL]`), and `driver` (minor 13) the
-driver's own words -- its banner and version, the device's product name, the library's
-version and licence, or why the slot is unavailable. For a startup or a settings screen, not
-a per-frame call.
+[Intel]`, `NVDEC [NVIDIA]`, `AMF [AMD]`, `VPL [Intel]`, `libavcodec [LGPL]`), and `driver`
+(minor 13) the driver's own words -- its banner and version, the device's product name, the
+library's version and licence, or why the slot is unavailable. For a startup or a settings
+screen, not a per-frame call.
 
 Two-call pattern: pass `NULL` to learn the count, then a buffer. **Nothing returned by this API
 is heap allocated on the caller's behalf**, so there is no free function and no ownership

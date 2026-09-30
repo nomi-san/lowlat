@@ -726,7 +726,7 @@ otherwise.
 | D3D11 video | the system's video decoding interface on any vendor's device, driven by the library's own readers | planes by read-back; one shared texture per plane (§4.2) |
 | NVDEC | the vendor's decode interface, loaded at runtime, as on Linux (W1.5); first on an NVIDIA GPU | planes by a device-to-host copy; shared textures filled by a device copy (§4.2) |
 | AMF | AMD's own decoder, loaded at runtime, in its low-latency mode, driven by the library's own readers (W1.6); first on an AMD GPU where the runtime has that mode | planes by read-back; shared textures filled by the split (§4.2) |
-| VPL | Intel's own decoder, loaded at runtime from where the display driver installs it, with its older runtime for the parts the current one does not reach (W1.7); first on an Intel GPU only if it measures faster | planes; shared textures (§4.2) |
+| VPL | Intel's own decoder, loaded at runtime from where the display driver installs it, with its older runtime for the parts the current one does not reach (W1.7); second on an Intel GPU, measured no faster | planes; shared textures filled by the split (§4.2); the older runtime planes alone |
 | software | an LGPL libavcodec pair, loaded at runtime | planes |
 | the system's decoder | the platform's own media framework, in software only | planes, eight-bit 4:2:0 |
 
@@ -896,6 +896,47 @@ by handle, 5.6 and 7.2 by planes, the whole process using 4 to 7 % of a core by 
 from a second host with the full range arrived in 4.4 ms by handle and 4.9 by planes, where the
 system's interface on the same GPU took 8.5; full chroma asked arrived as 4:2:0 at the depth
 asked. The kind switched fourteen times in one session, clean.
+
+**Intel's decoder** (*built 2026-09-30*, W1.7) is found by the GPU itself: its display driver
+names the runtime's folder in the display device's own key, the device present whose hardware
+numbers are the GPU's, and the runtime is opened there by its full path. The current runtime is
+given the library's own device on the GPU with the device's lock on, before anything else: a
+device without it, or one handed over once the session has touched the hardware, is refused
+and the runtime decodes on a device of its own, which the backend refuses in turn by checking
+the first picture's device. It makes its decode calls on that device's context, on the calling
+thread, inside its decode call; so the split into the slot's textures and the read-back are
+queued behind the decode on the same device, the library's fence signalled behind them, and
+nothing waits for the decode, as with AMD's. Asked for decode order, it hands out each unit's
+picture from that unit's own call; the library's readers read every unit too and let the
+pictures out in the stream's order. Fed faster than its own completion follows the device, a
+millisecond or two behind, it declines a unit without taking it, which is offered again a
+millisecond later; at a stream's pace this does not happen. The runtime would start a thread a
+core and is asked for one. Parameter sets sent in a unit of their own are kept and given to
+the next decoder built. Every committed clip decodes bit for bit by planes and through the
+textures, full chroma at both depths included, in the order the system's interface lets the
+same clip out in. A device lost under it is found again on the same GPU and a session of the
+runtime made again there: restarting the GPU's driver mid-session cost about a second and at
+most two skipped pictures. **The older runtime** is reached where the driver names no current
+one, on the GPU by its place in the plain enumeration -- one of the first four -- and hands out
+planes alone, decoded into memory of the backend's own and waited for in the read-back;
+H.264 and 4:2:0 HEVC at both depths. *Owed*: the older runtime on a part that needs it; on the
+Intel card its calls were checked through the current runtime, which answers them too.
+
+**On an Intel GPU it comes second.** Against the system's interface on the Intel card, in one
+session per codec and kind with the decoders alternating every twenty seconds, 2560x1440 from
+an established host, arrival to acquired at the mean, and the decode on the device:
+
+| stream | by handle | by planes | decode |
+|---|---|---|---|
+| H.264 | 3.16 ms against 3.12 | 4.20 ms against 4.13 | 2.33 ms against 2.32 |
+| HEVC | 2.44 ms against 2.41 | 3.49 ms against 3.48 | 1.58 ms against 1.58 |
+
+-- the same engine behind both, no faster. Alone for ten minutes a stream, a picture was
+acquired 3.3 ms after its arrival for H.264 and 2.6 for HEVC by handle, 4.1 and 3.7 by planes,
+the whole process using 4 to 6 % of a core. From a second host with the full range, ten-bit
+arrived in 2.2 ms by handle and 3.4 by planes; full chroma in 2.9 ms by handle at eight bits
+and 3.0 at ten, and 7.2 by planes at ten, where the packed layout is unpacked on the
+processor. The kind switched fourteen times in one session, clean.
 
 ## §6 Sound
 
