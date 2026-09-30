@@ -29,8 +29,11 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   out behind it, so a picture read back to planes costs one wait and a picture of textures
   none. The surfaces are padded: at the coded size the driver refused some widths and decoded
   into short surfaces with the chroma misplaced, silently.
-- **A picture behind a gate is timed from before its take**, which may wait for the decode, so
-  its reported decode time includes that wait.
+- **A picture of textures is timed on its device**: the decode figure status carries and the
+  host is told is the device's own time from the take to the fence passing, one picture in
+  eight, where it was the time the application's acquire saw the picture finished -- exact only
+  when the acquire was waiting, so an application acquiring on its own cadence showed that
+  cadence as decode ([10 §4.2](10-client.md)).
 
 ### Fixed
 - **A decoder that failed for good left the session up**: the queue closed and the application

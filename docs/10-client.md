@@ -440,6 +440,23 @@ lost under the vendor's decoder is not looked for**: its runtime does not come b
 process that lost it -- restarted mid-stream, the old context refused every call and a new one
 could not be made -- so the stream fails and the session ends as the decoder's failure (§5.2).
 
+**A picture of textures is timed on its device** (*2026-09-30*, W1.5). Nothing on the decode
+thread waits for it, so its decode figure -- what status carries and the host is told -- is the
+device's own time from the take to the fence passing, stamped where the span opens and behind
+the fence's signal, and read at a later take. Until then it was the time the application's
+acquire saw the picture finished, exact only when the acquire was waiting for it: an
+application acquiring on its own cadence showed its cadence as decode. A span is opened by
+handing the queue to the device at once -- left in the runtime's buffer, a mark is stamped when
+the buffer next goes, a picture late -- which cost the submit about 50 us a picture on every
+GPU here, so one picture in eight is timed. The figure leaves out the submit's way to the
+device and the driver's telling a waiting thread, which differ by GPU: in the clip tests, at
+the median, 0.1 ms on the NVIDIA by the system's interface and under 0.07 by its vendor's
+decoder, 0.17 on the Intel card, and from 0.1 to 1.4 ms on the integrated GPU. In a live
+session by the vendor's decoder at 2560x1440 it ran from 0.75 to 2.8 ms between the tenth and
+ninetieth percentiles, the longest in seconds whose own presents also ran long and whatever the
+stream's rate: the GPU busy with other work, the picture waiting its turn -- latency the
+acquire sees as well.
+
 **Measured** (*2026-09-28*, W1.4; 2560x1440 at 30 pictures a second from an established
 host). **Where the renderer is on the GPU that drives the display, the handle is the faster
 route**: in one session with the kind switched every twenty seconds, a picture took 2.2 to

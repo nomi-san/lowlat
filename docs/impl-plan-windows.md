@@ -253,7 +253,9 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   on the vendor's decoder, ran clean ([10 §5.2](10-client.md)). *Found at the gate*: one of
   eleven restarts by handle ended the process rather than the session -- the only run whose
   loss surfaced at a texture copy before any decode -- and was not reproduced in nine runs
-  after it; open.
+  after it; open. *Added at the gate, from W1.4's review*: a picture of textures is timed on
+  its device, one in eight, rather than where the application's acquire saw it finished,
+  which carried an application's own cadence into the figure ([10 §4.2](10-client.md)).
 - [ ] **W1.6 AMF on AMD** (*added 2026-09-28*): AMD's own decoder, loaded at run time, in
   its low-latency mode; planes, then handles; first in the automatic order on an AMD GPU.
   Checked by the clips it decodes and ten minutes of each codec on the AMD GPU. On that GPU

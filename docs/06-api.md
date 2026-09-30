@@ -744,7 +744,9 @@ counts it in `lowlat_client_status.input_dropped`.
 **Status and metrics mirror the host's** (§3): the same named channels, seen from the
 receiving side, plus the decoder's state (none yet, built, failed), the backend in use, the
 codec the decoder was built for, the queue depth, the last picture's decode and read-back
-times, the host's own encode time as it last reported it, the count decoded and the bytes
+times (a picture handed out by handle, which the decode thread does not wait for, timed on its
+device from its take to its fence passing, one in eight; *2026-09-30*), the host's own encode
+time as it last reported it, the count decoded and the bytes
 taken off the video channel (a rate is a difference over time, the application's clock), so
 one panel serves both ends. A decoder that fails past recovery ends the session: the library
 leaves it itself, a departure the host reads as the client leaving, and then reports
