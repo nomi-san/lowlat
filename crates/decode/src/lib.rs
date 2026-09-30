@@ -34,6 +34,9 @@
     )
 )]
 
+/// AMD's own decoder, reached on Windows alone.
+#[cfg(windows)]
+pub mod amf;
 pub mod bits;
 /// The system's video decoding interface, which exists on Windows alone.
 #[cfg(windows)]

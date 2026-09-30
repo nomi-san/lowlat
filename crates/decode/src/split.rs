@@ -9,9 +9,10 @@
 //! Beside it, the read-back's copy out: the rows of a picture mapped from a
 //! staging texture, into the caller's planes.
 
+use core::time::Duration;
 use std::sync::Arc;
 
-use lowlat_drivers::d3d11::{Com, Device, Fence, SharedTexture, Span, Timer};
+use lowlat_drivers::d3d11::{Com, Device, Event, Fence, SharedTexture, Span, Timer};
 use lowlat_drivers::ffi::d3d11::{
     D3D11_CPU_ACCESS_READ, D3D11_MAPPED_SUBRESOURCE, D3D11_SHADER_RESOURCE_VIEW_DESC,
     D3D11_SHADER_RESOURCE_VIEW_DESC__bindgen_ty_1, D3D11_SRV_DIMENSION_TEXTURE2DARRAY,
@@ -173,6 +174,19 @@ impl Split {
 
     pub(crate) fn fence(&self) -> Arc<Fence> {
         Arc::clone(&self.fence)
+    }
+
+    /// Sleep on the fence until no more than `most` pictures split are
+    /// unfinished on the device, or `timeout` passes: whether they are then.
+    pub(crate) fn settle(&self, most: u64, event: &Event, timeout: Duration) -> Result<bool> {
+        let Some(value) = self.signalled.checked_sub(most) else {
+            return Ok(true);
+        };
+        if self.fence.completed() >= value {
+            return Ok(true);
+        }
+        self.fence.notify_at(value, event)?;
+        Ok(event.wait(timeout) || self.fence.completed() >= value)
     }
 
     /// Open a picture's take: the span last closed is read into `decode_us`
