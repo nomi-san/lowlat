@@ -722,7 +722,7 @@ otherwise.
 |---|---|---|
 | D3D11 video | the system's video decoding interface on any vendor's device, driven by the library's own readers | planes by read-back; one shared texture per plane (§4.2) |
 | NVDEC | the vendor's decode interface, loaded at runtime, as on Linux (W1.5); first on an NVIDIA GPU | planes by a device-to-host copy; shared textures filled by a device copy (§4.2) |
-| AMF | AMD's own decoder, loaded at runtime, in its low-latency mode (W1.6); first on an AMD GPU | planes; shared textures (§4.2) |
+| AMF | AMD's own decoder, loaded at runtime, in its low-latency mode, driven by the library's own readers (W1.6); first on an AMD GPU where the runtime has that mode | planes by read-back; shared textures filled by the split (§4.2) |
 | VPL | Intel's own decoder, loaded at runtime from where the display driver installs it, with its older runtime for the parts the current one does not reach (W1.7); first on an Intel GPU only if it measures faster | planes; shared textures (§4.2) |
 | software | an LGPL libavcodec pair, loaded at runtime | planes |
 | the system's decoder | the platform's own media framework, in software only | planes, eight-bit 4:2:0 |
@@ -850,6 +850,45 @@ engine a picture, where this interface takes 9.2 to 9.9 and the vendor's decoder
 session at a trickle is unchanged -- and the interface has no such mode on this device, whose
 further configurations differ only in encryption. So W1.6 builds the vendor's decoder, first
 on an AMD GPU.
+
+**AMD's decoder** (*built 2026-09-30*, W1.6) is given the library's own device on the GPU and
+fed each unit whole. In its low-latency mode it hands a picture out as soon as it has read the
+unit, the decode still running, and in decode order; so the library's readers read every unit
+too, for the stream's shape and for the order pictures leave in, and hold each picture's
+surface until its turn. The split into the slot's textures and the read-back are queued behind
+the decode on the same device, and the library's fence signalled behind them, so nothing waits
+for the decode: a picture of textures is handed out when the fence passes, and a picture read
+back to planes costs the one wait the read-back's mapping makes. Left to itself the runtime
+takes some thirty units ahead of the engine and then spins, so before the next unit goes in,
+no more than two split pictures may be unfinished -- a sleep on the fence otherwise. Ten bits
+decode into the runtime's ten-bit layout: its eight-bit one decodes a ten-bit stream wrongly
+without an error. The runtime initialises a decoder at sizes its engine cannot decode -- H.264
+at 8192 square, where the system's interface stops at 4096 on the same device -- so the
+table's row takes the device's limits from the system's interface. A device lost under it is
+found again on the same GPU and the runtime made again there: restarting the GPU's driver
+mid-session cost one second and twelve skipped pictures. Every committed 4:2:0 clip decodes
+bit for bit by planes and through the textures, in the order the system's interface lets the
+same clip out in; full chroma is refused, the GPU having no such profile, and the declaration
+masked by it. *Open*: a stream larger than the engine decodes fails at each keyframe here,
+where the system's interface refuses it once.
+
+**On an AMD GPU it comes first**, where its runtime has the low-latency mode. Against the
+system's interface on the same GPU, in one session per codec and kind with the decoders
+alternating every twenty seconds, 2560x1440 at 30 pictures a second from an established
+host, arrival to acquired at the median, and the decode on the device by handle:
+
+| stream | by handle | by planes | decode |
+|---|---|---|---|
+| H.264 | 4.7 ms against 8.7 | 5.8 ms against 9.7 | 2.8 ms against 7.9 |
+| HEVC | 6.1 ms against 11.7 | 7.3 ms against 12.7 | 4.2 ms against 10.5 |
+
+and the present call 3.6 to 5.3 ms sooner. The system's interface alone fell behind when the
+host sent faster, 80 pictures a second and more, where AMD's decoder kept up. Alone for ten
+minutes a stream, a picture was acquired 4.8 ms after its arrival for H.264 and 6.3 for HEVC
+by handle, 5.6 and 7.2 by planes, the whole process using 4 to 7 % of a core by planes. Ten-bit
+from a second host with the full range arrived in 4.4 ms by handle and 4.9 by planes, where the
+system's interface on the same GPU took 8.5; full chroma asked arrived as 4:2:0 at the depth
+asked. The kind switched fourteen times in one session, clean.
 
 ## §6 Sound
 

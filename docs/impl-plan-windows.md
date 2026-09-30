@@ -256,7 +256,7 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   after it; open. *Added at the gate, from W1.4's review*: a picture of textures is timed on
   its device, one in eight, rather than where the application's acquire saw it finished,
   which carried an application's own cadence into the figure ([10 §4.2](10-client.md)).
-- [ ] **W1.6 AMF on AMD** (*added 2026-09-28*): AMD's own decoder, loaded at run time, in
+- [x] **W1.6 AMF on AMD** (*added 2026-09-28*): AMD's own decoder, loaded at run time, in
   its low-latency mode; planes, then handles; first in the automatic order on an AMD GPU.
   Checked by the clips it decodes and ten minutes of each codec on the AMD GPU. On that GPU
   the system's interface proved short on speed: the device's power policy stretches a decode
@@ -265,7 +265,34 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   takes 3.2 ms, decoding alone at 30 and at 60 pictures a second. The mode is the asking session's
   own -- a decoder beside it is not lifted -- so only this decoder can have it
   ([10 §5.2](10-client.md)). (*Noted at W1.4*: the system's interface by handle took 13 to 15 %
-  of a core on the AMD GPU against 4 to 6 by planes, unexplained; looked at here.)
+  of a core on the AMD GPU against 4 to 6 by planes, unexplained; looked at here.) *Built
+  2026-09-30.* Decided at its interview: AMD's decoder first on an AMD GPU only where its
+  runtime has the low-latency mode for every decoder it builds, and only if it measures faster
+  than the system's interface in one session, both codecs and both kinds -- it did, in all
+  four. As built: the runtime hands a picture out as soon as it has read the unit, its decode
+  still running, and in decode order in that mode, so the library's readers read every unit
+  too, for the stream's shape and for the order pictures leave in; the split and the read-back
+  are queued behind the decode on the library's own device, which the runtime is given, so
+  nothing waits for it, and no more than two split pictures are left unfinished when the next
+  unit goes in, since the runtime left to itself queues some thirty and then spins; ten bits
+  decode into the runtime's ten-bit layout, its eight-bit one decoding every such picture
+  wrongly without an error; the table's row reports the device's size limits as the system's
+  interface finds them, since the runtime initialises a decoder at sizes its engine cannot
+  decode; a device lost under it is found again on the same GPU and the runtime made again
+  there. Every committed 4:2:0 clip decodes bit for bit by planes and through the textures read
+  back on a second device, in the order the system's interface lets the same clip out in, and
+  fails with the fence signalled ahead of the split, the readers' order bypassed, or the bound
+  lifted; full chroma is refused, the GPU having no such profile, and the declaration masked
+  by it; nothing is allocated per unit; the queue end to end, back to back and at 120 pictures
+  a second. Ten minutes of each codec by handle and by planes from an established host,
+  ten-bit by both kinds and full chroma asked from a second, the kind switched, the decoders
+  alternating in one session, and the device lost by restarting the GPU's driver, the session
+  going on at the next keyframe ([10 §5.2](10-client.md)). *Open*: a stream larger than the
+  engine decodes would fail at each keyframe, where the system's interface refuses it once.
+  *Found at the gate*: the processor time noted at W1.4 is the example client's. By handle,
+  drawing on a GPU other than the display's, its memory grows with every picture and its
+  processor time with it, from about 3 % of a core to 30 in ten minutes, through either
+  decoder; the library's route alone does not. Left to W1.9.
 - [ ] **W1.7 Intel VPL** (*added 2026-09-28*): Intel's own decoder through its current
   runtime, loaded at run time from where the display driver installs it, and through its
   older runtime (MFX) for the Intel parts the current one does not reach; planes, then
@@ -283,7 +310,12 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   pads against an established host. (*Corrected at W1.4*: the toolkit's device made on the
   pictures' GPU, and made again when they move, moved to W1.4, whose handles on every GPU
   needed it; the placement added, W1.4 having measured a frame's crossing to the display at
-  4 ms on the Intel card.)
+  4 ms on the Intel card.) (*Added at W1.6*: by handle, drawing on a GPU other than the
+  display's, the demo's memory grows with every picture and its processor time with it -- the
+  library's route alone does not -- so its renderer is fixed here and checked by ten minutes
+  flat. The crossing measured again in separate sessions came to 1 to 2 ms over planes drawn
+  on the display's GPU, which took longer than at W1.3; the placement is measured within one
+  session here.)
 - [ ] **W1.10 packaging**: the zip from the build workflow; CI decodes the clips through a
   downloaded LGPL pair, since its runner has no GPU, and builds the demo. Checked by the
   artifact, built and unpacked.
@@ -314,6 +346,9 @@ whether an application may supply the frames, for a virtual display that already
 
 ## Change log
 
+- 2026-09-30: W1.6 built: AMD's decoder first on an AMD GPU where its runtime has the
+  low-latency mode, as measured; the demo's growth by handle on a GPU other than the display's
+  found and left to W1.9.
 - 2026-09-29: W1.5 built: NVDEC first on an NVIDIA GPU, as measured; a decoder that fails past
   recovery ends the session by the library's own departure, on both platforms.
 - 2026-09-29: W1.4's search for a lost GPU amended: the same hardware alone, for five seconds

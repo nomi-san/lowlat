@@ -3,6 +3,33 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-30 - W1.6: AMF on Windows
+
+### Decided
+- **AMD's decoder comes first on an AMD GPU where its runtime has the low-latency mode**,
+  having measured faster than the system's interface there in one session per codec and kind,
+  the decoders alternating: a picture reached the application 4.0 to 5.6 ms sooner by handle
+  and 3.8 to 5.4 ms sooner by planes, at the median ([10 §5.2](10-client.md)). Where the
+  runtime lacks the mode, the system's interface stays first.
+
+### Changed
+- **The vendor kind opens on an AMD GPU**: AMD's decoder in its low-latency mode, driven by
+  the library's own readers, which restore the order pictures leave in; planes and the same
+  shared textures as the open decoder, split on the library's device behind the decode and
+  signalled on its fence, nothing waiting for the decode. Its slot is labelled `AMF [AMD]`
+  ([06 §3b](06-api.md)). A device lost under it is found again on the same GPU and the
+  session goes on.
+- **The example client's title names the decoder by its row's label**, `AMF [AMD]` or
+  `D3D11 [NVIDIA]`, where it said only open or vendor, and follows a walk through the
+  decoders.
+
+### Found
+- **The processor time the handle kind took on the AMD GPU is the example client's**: by
+  handle, drawing on a GPU other than the display's, its memory grows with every picture and
+  its processor time with it, from about 3 % of a core to 30 in ten minutes, through either
+  decoder there. The library's route alone does not grow. Left to W1.9
+  ([impl-plan-windows.md](impl-plan-windows.md)).
+
 ## 2026-09-29 - W1.5: NVDEC on Windows
 
 ### Decided
