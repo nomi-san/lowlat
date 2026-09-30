@@ -106,6 +106,27 @@ pub mod d3d11;
 #[path = "windows/d3d11_guids.rs"]
 pub mod d3d11_guids;
 
+/// Intel's video runtime, from the vendored headers
+/// (`scripts/gen-vpl-bindings.sh`), reached on Windows alone.
+#[allow(
+    dead_code,
+    unused_imports,
+    unnecessary_transmutes,
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    missing_debug_implementations,
+    unreachable_pub,
+    clippy::all,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::float_cmp,
+    clippy::useless_transmute
+)]
+#[cfg(windows)]
+#[path = "windows/vpl.rs"]
+pub mod vpl;
+
 #[allow(dead_code, non_upper_case_globals, unreachable_pub)]
 pub mod guids;
 

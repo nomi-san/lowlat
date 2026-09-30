@@ -15124,6 +15124,58 @@ const _: () = {
     ["Offset of field: ID3D11Device5::lpVtbl"]
         [::std::mem::offset_of!(ID3D11Device5, lpVtbl) - 0usize];
 };
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11MultithreadVtbl {
+    pub QueryInterface: ::std::option::Option<
+        unsafe extern "C" fn(
+            This: *mut ID3D11Multithread,
+            riid: *const IID,
+            ppvObject: *mut *mut ::std::os::raw::c_void,
+        ) -> HRESULT,
+    >,
+    pub AddRef: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Multithread) -> ULONG>,
+    pub Release: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Multithread) -> ULONG>,
+    pub Enter: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Multithread)>,
+    pub Leave: ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Multithread)>,
+    pub SetMultithreadProtected: ::std::option::Option<
+        unsafe extern "C" fn(This: *mut ID3D11Multithread, bMTProtect: BOOL) -> BOOL,
+    >,
+    pub GetMultithreadProtected:
+        ::std::option::Option<unsafe extern "C" fn(This: *mut ID3D11Multithread) -> BOOL>,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11MultithreadVtbl"][::std::mem::size_of::<ID3D11MultithreadVtbl>() - 56usize];
+    ["Alignment of ID3D11MultithreadVtbl"]
+        [::std::mem::align_of::<ID3D11MultithreadVtbl>() - 8usize];
+    ["Offset of field: ID3D11MultithreadVtbl::QueryInterface"]
+        [::std::mem::offset_of!(ID3D11MultithreadVtbl, QueryInterface) - 0usize];
+    ["Offset of field: ID3D11MultithreadVtbl::AddRef"]
+        [::std::mem::offset_of!(ID3D11MultithreadVtbl, AddRef) - 8usize];
+    ["Offset of field: ID3D11MultithreadVtbl::Release"]
+        [::std::mem::offset_of!(ID3D11MultithreadVtbl, Release) - 16usize];
+    ["Offset of field: ID3D11MultithreadVtbl::Enter"]
+        [::std::mem::offset_of!(ID3D11MultithreadVtbl, Enter) - 24usize];
+    ["Offset of field: ID3D11MultithreadVtbl::Leave"]
+        [::std::mem::offset_of!(ID3D11MultithreadVtbl, Leave) - 32usize];
+    ["Offset of field: ID3D11MultithreadVtbl::SetMultithreadProtected"]
+        [::std::mem::offset_of!(ID3D11MultithreadVtbl, SetMultithreadProtected) - 40usize];
+    ["Offset of field: ID3D11MultithreadVtbl::GetMultithreadProtected"]
+        [::std::mem::offset_of!(ID3D11MultithreadVtbl, GetMultithreadProtected) - 48usize];
+};
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct ID3D11Multithread {
+    pub lpVtbl: *mut ID3D11MultithreadVtbl,
+}
+#[allow(clippy::unnecessary_operation, clippy::identity_op)]
+const _: () = {
+    ["Size of ID3D11Multithread"][::std::mem::size_of::<ID3D11Multithread>() - 8usize];
+    ["Alignment of ID3D11Multithread"][::std::mem::align_of::<ID3D11Multithread>() - 8usize];
+    ["Offset of field: ID3D11Multithread::lpVtbl"]
+        [::std::mem::offset_of!(ID3D11Multithread, lpVtbl) - 0usize];
+};
 pub const DXGI_GPU_PREFERENCE_UNSPECIFIED: DXGI_GPU_PREFERENCE = 0;
 pub const DXGI_GPU_PREFERENCE_MINIMUM_POWER: DXGI_GPU_PREFERENCE = 1;
 pub const DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE: DXGI_GPU_PREFERENCE = 2;

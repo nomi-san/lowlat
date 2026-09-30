@@ -44,15 +44,15 @@ use crate::ffi::d3d11::{
     D3DKMT_ADAPTERTYPE, D3DKMT_CLOSEADAPTER, D3DKMT_OPENADAPTERFROMLUID, D3DKMT_QUERYADAPTERINFO,
     DXGI_ADAPTER_DESC1, DXGI_FORMAT, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_SAMPLE_DESC, GUID,
     HANDLE, HRESULT, ID3D11Asynchronous, ID3D11Device, ID3D11Device5, ID3D11DeviceContext,
-    ID3D11DeviceContext4, ID3D11Fence, ID3D11Query, ID3D11Resource, ID3D11Texture2D,
-    ID3D11UnorderedAccessView, ID3D11VideoContext, ID3D11VideoDevice, IDXGIAdapter, IDXGIAdapter1,
-    IDXGIFactory1, IDXGIFactory6, IDXGIResource, IUnknown, KMTQAITYPE_ADAPTERTYPE, LARGE_INTEGER,
-    LUID, NTSTATUS,
+    ID3D11DeviceContext4, ID3D11Fence, ID3D11Multithread, ID3D11Query, ID3D11Resource,
+    ID3D11Texture2D, ID3D11UnorderedAccessView, ID3D11VideoContext, ID3D11VideoDevice,
+    IDXGIAdapter, IDXGIAdapter1, IDXGIFactory1, IDXGIFactory6, IDXGIResource, IUnknown,
+    KMTQAITYPE_ADAPTERTYPE, LARGE_INTEGER, LUID, NTSTATUS,
 };
 use crate::ffi::d3d11_guids::{
-    IID_ID3D11Device5, IID_ID3D11DeviceContext4, IID_ID3D11Fence, IID_ID3D11Texture2D,
-    IID_ID3D11VideoContext, IID_ID3D11VideoDevice, IID_IDXGIAdapter1, IID_IDXGIDevice,
-    IID_IDXGIFactory1, IID_IDXGIFactory6, IID_IDXGIResource,
+    IID_ID3D11Device5, IID_ID3D11DeviceContext4, IID_ID3D11Fence, IID_ID3D11Multithread,
+    IID_ID3D11Texture2D, IID_ID3D11VideoContext, IID_ID3D11VideoDevice, IID_IDXGIAdapter1,
+    IID_IDXGIDevice, IID_IDXGIFactory1, IID_IDXGIFactory6, IID_IDXGIResource,
 };
 
 /// Call a method through an interface's table: `vcall!(pointer, Method,
@@ -380,6 +380,38 @@ impl D3d11 {
         Ok(None)
     }
 
+    /// The place of the adapter with this identity in the plain
+    /// enumeration, the order a vendor's runtime numbers adapters by --
+    /// never the high-performance one [`adapters`](Self::adapters) walks.
+    /// `None` for an identity not enumerated.
+    pub fn plain_index(&self, luid: Luid) -> Result<Option<u32>> {
+        let factory = self.factory()?;
+        for index in 0.. {
+            let mut raw: *mut IDXGIAdapter1 = core::ptr::null_mut();
+            // SAFETY: a live factory; the output is a live local.
+            let hr = unsafe { vcall!(factory.as_ptr(), EnumAdapters1, index, &raw mut raw) }
+                .ok_or(Error::MissingSymbol)?;
+            if hr == DXGI_ERROR_NOT_FOUND {
+                break;
+            }
+            check(hr)?;
+            // SAFETY: an adapter whose reference the call handed over.
+            let Some(adapter) = (unsafe { Com::from_raw(raw) }) else {
+                continue;
+            };
+            // SAFETY: plain data, filled whole by the call.
+            let mut desc: DXGI_ADAPTER_DESC1 = unsafe { core::mem::zeroed() };
+            // SAFETY: a live adapter; the output is a live local.
+            let hr = unsafe { vcall!(adapter.as_ptr(), GetDesc1, &raw mut desc) }
+                .ok_or(Error::MissingSymbol)?;
+            check(hr)?;
+            if Luid::of(desc.AdapterLuid) == luid {
+                return Ok(Some(index));
+            }
+        }
+        Ok(None)
+    }
+
     /// Every adapter the system enumerates, with what the kernel says of
     /// each; [`Adapter::decodes_here`] says which are offered.
     pub fn adapters(&self) -> Result<Vec<Adapter>> {
@@ -517,6 +549,8 @@ impl D3d11 {
                 query::<ID3D11DeviceContext4>(context.as_ptr().cast(), &IID_ID3D11DeviceContext4)
                     .ok(),
             );
+        let multithread =
+            query::<ID3D11Multithread>(context.as_ptr().cast(), &IID_ID3D11Multithread).ok();
         Ok(Device {
             adapter: described,
             device,
@@ -524,7 +558,28 @@ impl D3d11 {
             video,
             video_context,
             fences,
+            multithread,
         })
+    }
+}
+
+/// The device's lock held, from [`Device::lock`] until the drop.
+pub struct Locked<'d> {
+    device: &'d Device,
+}
+
+impl fmt::Debug for Locked<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Locked")
+    }
+}
+
+impl Drop for Locked<'_> {
+    fn drop(&mut self) {
+        if let Some(multithread) = &self.device.multithread {
+            // SAFETY: a live interface, entered once by the guard's making.
+            unsafe { vcall!(multithread.as_ptr(), Leave) };
+        }
     }
 }
 
@@ -554,6 +609,8 @@ pub struct Device {
     video: Com<ID3D11VideoDevice>,
     video_context: Com<ID3D11VideoContext>,
     fences: Option<(Com<ID3D11Device5>, Com<ID3D11DeviceContext4>)>,
+    /// The device's lock, where the system has the interface.
+    multithread: Option<Com<ID3D11Multithread>>,
 }
 
 // SAFETY: the device and its children are free-threaded; the immediate
@@ -595,6 +652,32 @@ impl Device {
     /// interfaces are there (Windows 10 1703 on).
     pub fn has_fences(&self) -> bool {
         self.fences.is_some()
+    }
+
+    /// Turn the device's lock on, so that every call on its immediate
+    /// context takes it: what a runtime needs that calls into the context
+    /// from threads of its own. Whether the lock is on.
+    pub fn protect(&self) -> bool {
+        let Some(multithread) = &self.multithread else {
+            return false;
+        };
+        // SAFETY: a live interface of this device's context.
+        unsafe {
+            vcall!(multithread.as_ptr(), SetMultithreadProtected, 1);
+            vcall!(multithread.as_ptr(), GetMultithreadProtected).is_some_and(|on| on != 0)
+        }
+    }
+
+    /// Hold the device's lock until the guard drops, so that a sequence of
+    /// calls on the context -- a shader bound, run and unbound -- is not
+    /// interleaved with another thread's. Nothing is held on a device whose
+    /// lock is off, where only the opening thread calls.
+    pub fn lock(&self) -> Locked<'_> {
+        if let Some(multithread) = &self.multithread {
+            // SAFETY: a live interface of this device's context.
+            unsafe { vcall!(multithread.as_ptr(), Enter) };
+        }
+        Locked { device: self }
     }
 
     /// Whether the device is gone -- removed, hung, reset, its driver

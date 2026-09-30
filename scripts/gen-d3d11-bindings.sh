@@ -87,8 +87,10 @@ bindgen "$work/d3d11.h" \
     --allowlist-type 'ID3D11(Device|DeviceContext|Texture2D|VideoDevice|VideoContext|VideoDecoder|VideoDecoderOutputView)' \
     --allowlist-type 'IDXGI(Factory1|Factory6|Adapter1)'     --allowlist-type 'DXGI_GPU_PREFERENCE' \
     `# The fence a picture's device work is known finished by, the device and` \
-    `# context that make and signal it, and a shared texture's handle.` \
-    --allowlist-type 'ID3D11(Device5|DeviceContext4|Fence)' \
+    `# context that make and signal it, and a shared texture's handle; the` \
+    `# device's lock, for a runtime that calls into the context from threads` \
+    `# of its own.` \
+    --allowlist-type 'ID3D11(Device5|DeviceContext4|Fence|Multithread)' \
     --allowlist-type 'IDXGIResource' \
     `# The two entry points resolved at run time, and the kernel's adapter type.` \
     --allowlist-type 'PFN_D3D11_CREATE_DEVICE' \
@@ -126,7 +128,7 @@ interfaces = {
     "um/d3d11.h": ["ID3D11Device", "ID3D11VideoDevice", "ID3D11VideoContext",
                    "ID3D11Texture2D"],
     "um/d3d11_3.h": ["ID3D11Fence", "ID3D11DeviceContext4"],
-    "um/d3d11_4.h": ["ID3D11Device5"],
+    "um/d3d11_4.h": ["ID3D11Device5", "ID3D11Multithread"],
     "shared/dxgi.h": ["IDXGIFactory1", "IDXGIAdapter1", "IDXGIDevice", "IDXGIResource"],
     "shared/dxgi1_6.h": ["IDXGIFactory6"],
 }

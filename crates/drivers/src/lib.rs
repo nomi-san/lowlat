@@ -27,3 +27,6 @@ pub mod lavc;
 /// The open stack's video interface, which exists on Linux alone.
 #[cfg(target_os = "linux")]
 pub mod va;
+/// Intel's own video runtime, reached on Windows alone.
+#[cfg(windows)]
+pub mod vpl;
