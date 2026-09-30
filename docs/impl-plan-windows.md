@@ -228,9 +228,32 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   3.5 to 3.6 by planes in one session; a renderer moved to another GPU to open its textures
   pays for every frame's crossing to the display, 9.7 ms against 5.4 for planes drawn on the
   display's GPU on the Intel card -- the placement is W1.9's.
-- [ ] **W1.5 NVDEC** (*moved ahead of AMF 2026-09-28*): planes, then handles through the
+- [x] **W1.5 NVDEC** (*moved ahead of AMF 2026-09-28*): planes, then handles through the
   vendor's interop with D3D11, the copy's completion signalled on the library's fence rather
-  than waited for. Checked by the clips and ten minutes.
+  than waited for. Checked by the clips and ten minutes. *Built 2026-09-29.* Decided at its
+  interview: NVDEC's place on an NVIDIA GPU by measuring it against the system's interface in
+  one session, both codecs and both kinds -- first, since it proved faster in all four; a
+  device lost under it, which the vendor's runtime cannot come back from in the process, ends
+  the session by the library's own departure and `LOWLAT_OUTCOME_DECODER_FAILED`, and so now
+  does every decoder that fails past recovery, on both platforms; the driver's newer decode
+  into the backend's own surfaces where it has it (the 610 series on), on Linux too, the map
+  below it, textures handed out either way; W1.4's search for a lost GPU amended (below). As
+  built: the textures are the queue's own, made on a device of the library's own on the GPU
+  and registered with the vendor's runtime once per slot, written by copies between a map and
+  its release queued on the runtime's stream, the library's fence signalled on that device
+  behind them; the surfaces padded, which a small picture needs; full chroma always mapped.
+  Every committed clip decodes bit for bit both ways and through the textures read back on a
+  second device, and fails with the fence signalled ahead of the copies or two planes swapped;
+  the queue end to end, back to back and at 120 pictures a second; nothing allocated per unit;
+  the Linux clips and slots under the vendor's runtime in a Linux environment on the same
+  machine. Ten minutes of each codec by handle and by planes from an established host, ten-bit
+  and full chroma at both depths by handle from a second, the kind switched, the decoders
+  alternating in one session, and the device lost by restarting the GPU's driver, the session
+  ending as the decoder's failure. A second client beside the first on the same machine, each
+  on the vendor's decoder, ran clean ([10 §5.2](10-client.md)). *Found at the gate*: one of
+  eleven restarts by handle ended the process rather than the session -- the only run whose
+  loss surfaced at a texture copy before any decode -- and was not reproduced in nine runs
+  after it; open.
 - [ ] **W1.6 AMF on AMD** (*added 2026-09-28*): AMD's own decoder, loaded at run time, in
   its low-latency mode; planes, then handles; first in the automatic order on an AMD GPU.
   Checked by the clips it decodes and ten minutes of each codec on the AMD GPU. On that GPU
@@ -289,6 +312,8 @@ whether an application may supply the frames, for a virtual display that already
 
 ## Change log
 
+- 2026-09-29: W1.5 built: NVDEC first on an NVIDIA GPU, as measured; a decoder that fails past
+  recovery ends the session by the library's own departure, on both platforms.
 - 2026-09-29: W1.4's search for a lost GPU amended: the same hardware alone, for five seconds
   rather than ten, a session nobody placed taking another GPU only when it has run its course
   ([10 §4.2](10-client.md)).

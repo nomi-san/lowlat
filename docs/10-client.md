@@ -425,6 +425,21 @@ than waiting for the pictures to name another GPU. Restarting each GPU's driver 
 the stream was drawn again within one to three seconds, the longest on the GPU that drives
 the display, whose restart alone took nearly four.
 
+**The vendor's decoder hands out the same textures** (*built 2026-09-29*, W1.5): its pictures
+land in the queue's slots as the system decoder's do, copied there by the vendor's own runtime
+rather than split by a shader, the slot's textures made on a device of the library's own on the
+same GPU, whose fence is signalled behind the copies. The runtime writes a texture only while it
+holds it mapped, and the map and its release are queued on the runtime's stream behind the
+decode, so the decode thread queues a picture's decode, its copies and the signal and takes the
+next unit. The release orders the copies before any work that device issues after it, which is
+why the fence is that device's and is signalled there: signalled ahead of the copies instead, a
+second device read pictures unfinished. A slot made for the vendor's decoder registers its
+textures with the runtime when it is made and keeps the registrations until it is made again,
+so a picture still held survives a move to another decoder as it does between GPUs. **A device
+lost under the vendor's decoder is not looked for**: its runtime does not come back in the
+process that lost it -- restarted mid-stream, the old context refused every call and a new one
+could not be made -- so the stream fails and the session ends as the decoder's failure (§5.2).
+
 **Measured** (*2026-09-28*, W1.4; 2560x1440 at 30 pictures a second from an established
 host). **Where the renderer is on the GPU that drives the display, the handle is the faster
 route**: in one session with the kind switched every twenty seconds, a picture took 2.2 to
@@ -689,7 +704,7 @@ otherwise.
 | backend | reached through | hands out |
 |---|---|---|
 | D3D11 video | the system's video decoding interface on any vendor's device, driven by the library's own readers | planes by read-back; one shared texture per plane (§4.2) |
-| NVDEC | the vendor's decode interface, loaded at runtime, as on Linux | planes by a device-to-host copy; shared textures filled by a device copy |
+| NVDEC | the vendor's decode interface, loaded at runtime, as on Linux (W1.5); first on an NVIDIA GPU | planes by a device-to-host copy; shared textures filled by a device copy (§4.2) |
 | AMF | AMD's own decoder, loaded at runtime, in its low-latency mode (W1.6); first on an AMD GPU | planes; shared textures (§4.2) |
 | VPL | Intel's own decoder, loaded at runtime from where the display driver installs it, with its older runtime for the parts the current one does not reach (W1.7); first on an Intel GPU only if it measures faster | planes; shared textures (§4.2) |
 | software | an LGPL libavcodec pair, loaded at runtime | planes |
@@ -698,6 +713,8 @@ otherwise.
 Unset, the order is the table's, on the GPU the application names. The system's interface
 comes first because it is one backend on every vendor's device and is fed the same jobs the
 other hardware backend is, as the open stack is on Linux; then the vendor's; then software.
+(*Amended 2026-09-29*, W1.5: on an NVIDIA GPU the vendor's decoder comes first, having
+measured faster end to end there, below.)
 The two vendors' own decoders go after NVDEC once they are built, except on an AMD GPU, where
 AMD's comes first (*decided 2026-09-28*, W1.6): the system's interface proved short there on
 speed, below. Each puts a second reader and its own buffering in front of the same hardware,
@@ -764,6 +781,43 @@ no low clock of the AMD's kind below. Its kernel type reads as the discrete GPU 
 pair, beside the AMD's integrated one, and the system's high-performance order is then the
 NVIDIA, the Intel card and the integrated GPU, so a decoder nobody placed still settles on
 the NVIDIA.
+
+**The vendor's decoder** (*built 2026-09-29*, W1.5) is Linux's, fed the same jobs, on an
+NVIDIA GPU named by its identity -- its compute device found by the adapter it is -- or the
+first of the vendor's GPUs offered. Where the driver has the newer entry points (the 610
+series on, on both platforms) it decodes into surfaces of the backend's own, each picture's
+decode queued on the backend's stream and its planes copied out behind it on the same stream:
+nothing waits on the decode thread for a picture handed out as textures, and a picture read
+back to planes costs one wait for the decode and the copy together. Elsewhere it maps the
+decoder's own surface, the map waiting for the decode, and leaves it mapped until the copies
+out of it have passed. The surfaces are made wider and taller than a small picture needs: at
+the coded size the driver refused a surface whose width is not a multiple of 64 samples, and
+decoded into one 128 rows tall with its chroma misplaced, without an error. Full chroma always
+maps, since the backend's own surfaces would hold its two chroma planes interleaved, which no
+copy splits. Every committed clip decodes bit for bit either way, on Windows and on Linux, and
+through the textures read back on a second device. It hands out planes and handles alike: how
+it decodes follows the driver, never the kind.
+
+**On an NVIDIA GPU it comes first.** Against the system's interface on the same GPU, in one
+session per codec and kind with the decoders alternating every twenty seconds, 2560x1440 at 30
+pictures a second from an established host, a picture reached the application sooner in every
+case, arrival to acquired at the mean:
+
+| stream | by handle | by planes |
+|---|---|---|
+| H.264 | 2.02 ms against 2.57 | 1.51 ms against 2.26 |
+| HEVC | 1.62 ms against 2.64 | 1.57 ms against 2.42 |
+
+and the screen 0.7 to 1.3 ms sooner. Alone for ten minutes a stream, by handle, a picture was
+acquired 1.6 ms after its arrival and on the screen 2.4 ms after, the whole process using 3 % of
+a core; by planes 1.6 and 3.0 ms at 7 %, the read-back into the application's memory holding
+the decode thread 1.2 to 1.4 ms. Ten-bit and full chroma at both depths arrive by handle, with
+the full range, from a second host; at full chroma, alternating as above, the vendor's decoder
+took 1.84 ms to the system's 2.43. Two clients on the one machine, each on the vendor's decoder
+of the same GPU, ran side by side clean. The vendor's interface has no low-latency mode of the
+AMD's kind. The GPU's clock follows its load -- at this rate it changed state every few
+seconds, the video clock between 1.0 and 2.4 GHz -- and a higher clock took about half a
+millisecond off a picture's mean; the changes themselves did not make the rare late picture.
 
 **The AMD's video engine runs at a low clock under one decode** (*found 2026-09-27*). Fed a
 1440p clip back to back it decodes HEVC in 5.9 ms and H.264 in 4.6; with any idle gap between

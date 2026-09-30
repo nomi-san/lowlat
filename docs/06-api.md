@@ -689,7 +689,23 @@ system lists, high-performance first, each labelled `D3D11 [NVIDIA]`, `D3D11 [AM
 `D3D11 [Intel]` with the GPU's name and driver version as its words, and 8 the software
 pair. A virtual display's adapter, which the system enumerates under its GPU's name, has no
 slot. No entry point or field is added, so the minor stays 18. The vendor kind and the
-handle kind are still refused (the handle kind until minor 19, above).
+handle kind are still refused (the handle kind until minor 19, above, and the vendor kind
+until W1.5, below).
+
+**The vendor kind on Windows since W1.5** (*2026-09-29*): `LOWLAT_DECODER_VENDOR` opens
+NVIDIA's decoder on an NVIDIA GPU, named by its identity as the open kind's is, or on the first
+of the vendor's GPUs offered, and hands out both kinds -- planes, and by handle the same shared
+textures as the open decoder, made on a device of the library's own on that GPU and signalled
+on its fence. A row says `handles` where the vendor's runtime wrote a texture of that GPU when
+the row was probed. `LOWLAT_DECODER_AUTO` tries the vendor's decoder first where the GPU named,
+or the first offered, is an NVIDIA one, having measured faster there, and the open decoder
+first elsewhere ([10 §5.2](10-client.md)). `lowlat_enum_decoders` has seventeen slots there
+now, the same count as on Linux: 0 to 7 the open decoder on the GPUs the system lists, 8 to
+15 the maker's own decoder on the same GPUs in the same order -- `NVDEC [NVIDIA]` on an NVIDIA
+GPU, and on another maker's unavailable as no such device until its step -- and 16 the
+software pair. A device lost under the vendor's decoder is not found again, since its runtime
+does not come back in the process that lost it: the session ends as
+`LOWLAT_OUTCOME_DECODER_FAILED`. No entry point or field is added, so the minor stays 19.
 
 **Sound is decoded, not played** (minor 7). `acquire_audio` hands out one packet a call,
 signed sixteen-bit stereo at 48 kHz, in the order the host sent them, as many frames as the
@@ -730,8 +746,10 @@ receiving side, plus the decoder's state (none yet, built, failed), the backend 
 codec the decoder was built for, the queue depth, the last picture's decode and read-back
 times, the host's own encode time as it last reported it, the count decoded and the bytes
 taken off the video channel (a rate is a difference over time, the application's clock), so
-one panel serves both ends. A decoder that fails past recovery ends the session with
-`LOWLAT_OUTCOME_DECODER_FAILED`.
+one panel serves both ends. A decoder that fails past recovery ends the session: the library
+leaves it itself, a departure the host reads as the client leaving, and then reports
+`LOWLAT_OUTCOME_DECODER_FAILED`, once (*made so 2026-09-29*, W1.5: until then the session
+stayed up and the host streamed on until the application disconnected).
 
 **Events** add to §5's set: cursor (the decoded picture from the handle's own buffer,
 hotspot, suppressed; minor 9), relative mode (`LOWLAT_EVENT_RELATIVE`, on the transition

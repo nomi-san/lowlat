@@ -3,6 +3,43 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-09-29 - W1.5: NVDEC on Windows
+
+### Decided
+- **NVDEC comes first on an NVIDIA GPU**, having measured faster than the system's interface
+  there in one session per codec and kind, the decoders alternating: a picture reached the
+  application 0.55 to 1.0 ms sooner by handle and 0.75 to 0.85 ms sooner by planes
+  ([10 §5.2](10-client.md)).
+- **A decoder that fails past recovery ends the session by the library's own departure**, then
+  reports `LOWLAT_OUTCOME_DECODER_FAILED`: every decoder, on both platforms. A device lost
+  under the vendor's decoder is such a failure, since its runtime does not come back in the
+  process that lost it.
+- **The vendor's decoder decodes into surfaces of its own where the driver can** (the 610
+  series on, both platforms), and maps the decoder's own below it; it hands out planes and
+  textures either way.
+
+### Changed
+- **The vendor kind opens on Windows**: NVDEC on an NVIDIA GPU, planes and the same shared
+  textures as the open decoder, copied there by the vendor's runtime and signalled on the
+  library's fence, the decode thread waiting for nothing. `lowlat_enum_decoders` lists
+  seventeen slots there: the maker's own decoder at 8 to 15 on the adapters of 0 to 7, the
+  software pair at 16 ([06 §3b](06-api.md)).
+- **The vendor's decoder decodes into surfaces the backend owns**, on a driver of the 610
+  series or later: each picture's decode queued on the backend's stream with its planes copied
+  out behind it, so a picture read back to planes costs one wait and a picture of textures
+  none. The surfaces are padded: at the coded size the driver refused some widths and decoded
+  into short surfaces with the chroma misplaced, silently.
+- **A picture behind a gate is timed from before its take**, which may wait for the decode, so
+  its reported decode time includes that wait.
+
+### Fixed
+- **A decoder that failed for good left the session up**: the queue closed and the application
+  was told, but the host went on streaming until the application disconnected. The library now
+  leaves the session itself first ([06 §3b](06-api.md)); the test for it failed first.
+- **The vendor decoder's copy to device memory wrote a picture's coded rows** into a slot laid
+  out for its visible ones, past the planes into the allocation's slack; it copies the visible
+  rows now.
+
 ## 2026-09-28 - W1.4: the handle on Windows
 
 ### Decided
