@@ -14,6 +14,9 @@
 //! Nothing here encodes or decodes a picture. The pipelines that do live
 //! above, in `lowlat-encode` and `lowlat-decode`.
 
+/// AMD's own video runtime, reached on Windows alone.
+#[cfg(windows)]
+pub mod amf;
 pub mod cuda;
 pub mod cuvid;
 /// The system's video decoding interface, which exists on Windows alone.
