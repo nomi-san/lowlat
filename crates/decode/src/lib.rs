@@ -53,6 +53,9 @@ mod split;
 /// The open stack's decode, which exists on Linux alone.
 #[cfg(target_os = "linux")]
 pub mod vaapi;
+/// Intel's own decoder, reached on Windows alone.
+#[cfg(windows)]
+pub mod vpl;
 
 use lowlat_core::video::VideoHeader;
 

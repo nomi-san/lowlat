@@ -256,6 +256,10 @@ impl Split {
         };
         let none_srv = [core::ptr::null_mut::<ID3D11ShaderResourceView>(); 2];
         let none_uav = [core::ptr::null_mut::<ID3D11UnorderedAccessView>(); 3];
+        // A vendor's runtime calls into this context from a thread of its
+        // own; its calls wait while the split's bindings stand, rather than
+        // falling between them.
+        let _locked = device.lock();
         // SAFETY: a live context on this thread; the shader, the views and the
         // targets are live, and every binding is undone before returning so
         // nothing of the split stays bound into the next decode.

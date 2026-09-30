@@ -174,10 +174,10 @@ struct Staging {
 
 /// Units submitted whose picture has not come out, by the mark each
 /// carries: the readers' slot its picture goes to.
-struct Pending([Option<(i64, usize)>; PENDING]);
+pub(crate) struct Pending([Option<(i64, usize)>; PENDING]);
 
 impl Pending {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self([None; PENDING])
     }
 
@@ -186,7 +186,7 @@ impl Pending {
     /// only once its picture is gone, so that picture, handed out late, must
     /// find no slot rather than the new one. Full only of units whose
     /// picture never came, the oldest goes.
-    fn expect(&mut self, mark: i64, slot: usize) {
+    pub(crate) fn expect(&mut self, mark: i64, slot: usize) {
         for entry in &mut self.0 {
             if entry.is_some_and(|(_, s)| s == slot) {
                 *entry = None;
@@ -206,7 +206,7 @@ impl Pending {
     /// The slot the picture of the unit marked `mark` goes to, if a unit
     /// waits for it. Units before it that completed no picture of their own
     /// -- a field's first half, say -- have none coming.
-    fn complete(&mut self, mark: i64) -> Option<usize> {
+    pub(crate) fn complete(&mut self, mark: i64) -> Option<usize> {
         let slot = self
             .0
             .iter_mut()
