@@ -16,18 +16,20 @@
 //! come back in the process that lost its device, so the stream fails and
 //! the session ends. **AMD's decoder is**, on the same GPU only, since it
 //! decodes on no other: its runtime is made again on the new device, and a
-//! runtime that will not be ends the stream there.
+//! runtime that will not be ends the stream there. **So is Intel's**, the
+//! same way: a new session of its runtime on the new device.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use lowlat_decode::{Fault, Format, Picture, amf, d3d11, nvdec, software};
+use lowlat_decode::{Fault, Format, Picture, amf, d3d11, nvdec, software, vpl};
 use lowlat_drivers::amf::Amf;
 use lowlat_drivers::cuda::Cuda;
 use lowlat_drivers::cuvid::Cuvid;
 use lowlat_drivers::d3d11::{Adapter, D3d11, Luid};
 use lowlat_drivers::lavc::Lavc;
+use lowlat_drivers::vpl::{Runtime, Vpl};
 
 use super::{Backend, Next, Shared, drive};
 use crate::UNIT_BYTES;
@@ -97,6 +99,34 @@ impl Backend for amf::Backend<'_> {
     }
 }
 
+impl Backend for vpl::Backend<'_> {
+    fn output(&self) -> Option<(u32, u32, Format)> {
+        vpl::Backend::output(self)
+    }
+    fn timings(&self) -> (u32, u32) {
+        (self.decode_us, self.readback_us)
+    }
+    fn exports(&self) -> bool {
+        self.splits()
+    }
+    fn take_to_slot(
+        &mut self,
+        filling: &mut Filling<'_>,
+        (width, height, format): (u32, u32, Format),
+    ) -> Result<Option<(Picture, u64)>, Fault> {
+        // As the system's interface: textures refused are a picture lost,
+        // unless their device is gone.
+        let Some(planes) = filling.textures_for(width, height, format) else {
+            return if self.lost() {
+                Err(Fault::DeviceLost)
+            } else {
+                Ok(None)
+            };
+        };
+        self.take_to_textures(planes)
+    }
+}
+
 impl Backend for nvdec::Backend<'_> {
     fn output(&self) -> Option<(u32, u32, Format)> {
         nvdec::Backend::output(self)
@@ -136,6 +166,7 @@ pub(super) fn open(opened: Opened, shared: &Shared<'_>, replacing: bool) -> Next
         Opened::D3d11 { luid, named, .. } => system_decoder(luid, named, shared, replacing),
         Opened::Nvdec { luid, .. } => vendor_decoder(luid, shared, replacing),
         Opened::Amf { luid, .. } => amd_decoder(luid, shared, replacing),
+        Opened::Vpl { luid, .. } => intel_decoder(luid, shared, replacing),
         Opened::Software(dir) => {
             // The same search creation ran, landing on the same pair.
             let Ok(lavc) = Lavc::load(dir.as_deref()) else {
@@ -273,6 +304,78 @@ fn amd_decoder(mut luid: Luid, shared: &Shared<'_>, mut replacing: bool) -> Next
                     return Next::Failed;
                 }
             };
+        // A device that splits takes the session's device slots, whatever
+        // kind the session asks for now, so a switch to handles has them.
+        if let Some(fence) = backend.fence() {
+            shared.frames.open_device(Arc::clone(&device), fence, None);
+        }
+        let lost = device.adapter.clone();
+        match drive(backend, shared, replacing) {
+            Next::Lost => {}
+            other => return other,
+        }
+        lowlat_common::log_warn!(
+            "client: decoder device lost, adapter={} name={:?}",
+            lost.luid,
+            lost.description
+        );
+        match find_again(&d3d11, &lost, true, shared) {
+            Ok(again) => {
+                lowlat_common::log_info!("client: decoder device back, adapter={again}");
+                luid = again;
+                replacing = true;
+            }
+            Err(next) => return next,
+        }
+    }
+}
+
+/// Intel's decoder on the adapter `luid`, in a session of the runtime its
+/// driver installs -- on a device of the library's own there for the
+/// current runtime, into memory of the backend's own for the older one --
+/// driven until it returns; a device lost on the way is found again on the
+/// same GPU and a session made again there.
+fn intel_decoder(mut luid: Luid, shared: &Shared<'_>, mut replacing: bool) -> Next {
+    let Ok(d3d11) = D3d11::load() else {
+        return Next::Failed;
+    };
+    loop {
+        let Ok(device) = d3d11.open(luid) else {
+            return Next::Failed;
+        };
+        let Ok(Some(index)) = d3d11.plain_index(luid) else {
+            return Next::Failed;
+        };
+        let Ok(runtime) = Vpl::for_adapter(&device.adapter) else {
+            return Next::Failed;
+        };
+        let device = Arc::new(device);
+        let kind = runtime.runtime();
+        let session = match kind {
+            Runtime::Current => runtime.session(&device, index),
+            Runtime::Older => runtime.system_session(index),
+        };
+        let session = match session {
+            Ok(session) => session,
+            Err(e) => {
+                lowlat_common::log_warn!("client: intel decoder not made, error={e}");
+                return Next::Failed;
+            }
+        };
+        let decodes_on = (kind == Runtime::Current).then_some(&*device);
+        let backend = match vpl::Backend::new(
+            &session,
+            kind,
+            decodes_on,
+            shared.frames.ceiling(),
+            UNIT_BYTES,
+        ) {
+            Ok(backend) => backend,
+            Err(e) => {
+                lowlat_common::log_warn!("client: intel decoder not made, error={e}");
+                return Next::Failed;
+            }
+        };
         // A device that splits takes the session's device slots, whatever
         // kind the session asks for now, so a switch to handles has them.
         if let Some(fence) = backend.fence() {

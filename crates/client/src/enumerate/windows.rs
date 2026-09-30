@@ -1,14 +1,15 @@
 //! The decoder table on Windows: slots 0 to 7 are the system's video
 //! decoding interface on the adapters offered, high-performance first, 8 to
 //! 15 the maker's own interface on the same adapters in the same order --
-//! NVIDIA's, AMD's -- 16 the machine's own codec library.
+//! NVIDIA's, AMD's, Intel's -- 16 the machine's own codec library.
 
 use lowlat_core::video::Codec;
-use lowlat_decode::{amf, d3d11, nvdec};
+use lowlat_decode::{amf, d3d11, nvdec, vpl};
 use lowlat_drivers::amf::Amf;
 use lowlat_drivers::cuda::Cuda;
 use lowlat_drivers::cuvid::Cuvid;
 use lowlat_drivers::d3d11::{Adapter, D3d11};
+use lowlat_drivers::vpl::{Runtime, Vpl};
 
 use super::{Available, NO_CONTEXT, NO_DEVICE, PROFILE, RUNTIME, codec_library, label};
 use crate::config::Backend;
@@ -35,8 +36,8 @@ pub fn probe(slot: u32) -> Option<Available> {
     (slot == SLOTS - 1).then(codec_library)
 }
 
-/// The maker's own interface on the `nth` adapter offered: NVIDIA's and
-/// AMD's, on their own GPUs; nothing on another maker's.
+/// The maker's own interface on the `nth` adapter offered: NVIDIA's, AMD's
+/// and Intel's, on their own GPUs; nothing on another maker's.
 fn vendor(nth: usize) -> Available {
     let unnamed = label("NVDEC", None);
     let Ok(d3d11) = D3d11::load() else {
@@ -53,6 +54,7 @@ fn vendor(nth: usize) -> Available {
     match adapter.maker() {
         Some("NVIDIA") => nvidia(&adapter, device_name),
         Some("AMD") => amd(&d3d11, &adapter, device_name),
+        Some("Intel") => intel(&d3d11, &adapter, device_name),
         _ => Available::unavailable(Backend::Nvdec, &device_name, unnamed, NO_DEVICE),
     }
 }
@@ -91,6 +93,54 @@ fn amd(d3d11: &D3d11, adapter: &Adapter, device_name: String) -> Available {
         // The runtime initialises a decoder at sizes its engine cannot
         // decode, so the engine's own limits are asked the way the
         // system's interface is, on the same device.
+        max_h264: d3d11::limits(&device, Codec::H264),
+        max_hevc: d3d11::limits(&device, Codec::H265),
+    }
+}
+
+/// Intel's decoder on `adapter`, through the runtime its driver installs:
+/// the current one on a device of the library's own there, its pictures
+/// that device's textures, labelled `VPL`; the older one, planes alone,
+/// labelled `MFX`.
+fn intel(d3d11: &D3d11, adapter: &Adapter, device_name: String) -> Available {
+    let unnamed = label("VPL", Some("Intel"));
+    let Ok(runtime) = Vpl::for_adapter(adapter) else {
+        return Available::unavailable(Backend::Nvdec, &device_name, unnamed, RUNTIME);
+    };
+    let kind = runtime.runtime();
+    let name = match kind {
+        Runtime::Current => unnamed,
+        Runtime::Older => label("MFX", Some("Intel")),
+    };
+    let Ok(device) = d3d11.open(adapter.luid) else {
+        return Available::unavailable(Backend::Nvdec, &device_name, name, NO_CONTEXT);
+    };
+    let Ok(Some(index)) = d3d11.plain_index(adapter.luid) else {
+        return Available::unavailable(Backend::Nvdec, &device_name, name, NO_DEVICE);
+    };
+    let session = match kind {
+        Runtime::Current => runtime.session(&device, index),
+        Runtime::Older => runtime.system_session(index),
+    };
+    let Ok(session) = session else {
+        return Available::unavailable(Backend::Nvdec, &device_name, name, NO_CONTEXT);
+    };
+    let caps = vpl::caps(&session, kind);
+    if !caps.any() {
+        return Available::unavailable(Backend::Nvdec, &device_name, name, PROFILE);
+    }
+    let (major, minor) = session.version().unwrap_or((0, 0));
+    Available {
+        backend: Backend::Nvdec,
+        available: true,
+        device: device_name,
+        name,
+        driver: format!("{} runtime {major}.{minor}", adapter.description),
+        caps,
+        // Textures need the current runtime, on the device the fence is.
+        handle: kind == Runtime::Current && device.has_fences(),
+        // The runtime's own description of its limits is not its engine's;
+        // the system's interface asks the device.
         max_h264: d3d11::limits(&device, Codec::H264),
         max_hevc: d3d11::limits(&device, Codec::H265),
     }
@@ -225,7 +275,14 @@ mod tests {
             if slot < (OPEN_SLOTS + VENDOR_SLOTS) as usize {
                 assert_eq!(row.backend, Backend::Nvdec);
                 assert!(
-                    ["NVDEC", "NVDEC [NVIDIA]", "AMF [AMD]"].contains(&row.name.as_str()),
+                    [
+                        "NVDEC",
+                        "NVDEC [NVIDIA]",
+                        "AMF [AMD]",
+                        "VPL [Intel]",
+                        "MFX [Intel]"
+                    ]
+                    .contains(&row.name.as_str()),
                     "a label off the grammar: {}",
                     row.name
                 );

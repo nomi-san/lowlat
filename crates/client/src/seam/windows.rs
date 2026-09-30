@@ -1,16 +1,17 @@
 //! Which decoders a configuration opens, on Windows, and on which GPU: the
 //! system's video decoding interface on an adapter named by its identity,
-//! then the maker's own on its GPUs -- NVIDIA's, AMD's -- then the
-//! machine's own codec library.
+//! then the maker's own on its GPUs -- NVIDIA's, AMD's, Intel's -- then
+//! the machine's own codec library.
 
 use std::path::PathBuf;
 
-use lowlat_decode::{amf, d3d11, nvdec};
+use lowlat_decode::{amf, d3d11, nvdec, vpl};
 use lowlat_drivers::amf::Amf;
 use lowlat_drivers::cuda::{Context, Cuda};
 use lowlat_drivers::cuvid::Cuvid;
 use lowlat_drivers::d3d11::{Adapter, D3d11, Luid};
 use lowlat_drivers::ffi::d3d11::DXGI_FORMAT_R8_UNORM;
+use lowlat_drivers::vpl::{Runtime, Vpl};
 
 use super::{DecoderStage, Error, most_telling, probe_software, software_dir};
 use crate::config::{Backend, Caps, Decoding, FrameKind};
@@ -42,6 +43,14 @@ pub enum Opened {
         /// of the library's own, which has a fence.
         handles: bool,
     },
+    /// Intel's own decoder, on the adapter with this identity.
+    Vpl {
+        luid: Luid,
+        /// Its pictures can be handed out as textures: its current runtime
+        /// decodes on a device of the library's own, which has a fence; the
+        /// older one hands out planes alone.
+        handles: bool,
+    },
     /// The machine's own codec library, from the directory named or from
     /// the search of its own. Opened again on the decode thread, which
     /// finds the same pair the probe found.
@@ -53,7 +62,7 @@ impl Opened {
     pub fn backend(&self) -> Backend {
         match self {
             Self::D3d11 { .. } => Backend::Vaapi,
-            Self::Nvdec { .. } | Self::Amf { .. } => Backend::Nvdec,
+            Self::Nvdec { .. } | Self::Amf { .. } | Self::Vpl { .. } => Backend::Nvdec,
             Self::Software(_) => Backend::Software,
         }
     }
@@ -63,7 +72,8 @@ impl Opened {
         match self {
             Self::D3d11 { handles, .. }
             | Self::Nvdec { handles, .. }
-            | Self::Amf { handles, .. } => *handles,
+            | Self::Amf { handles, .. }
+            | Self::Vpl { handles, .. } => *handles,
             Self::Software(_) => false,
         }
     }
@@ -186,16 +196,51 @@ fn probe_amf(luid: Luid) -> Result<(Caps, bool, bool), DecoderStage> {
     Ok((caps, device.has_fences(), fast))
 }
 
+/// Probe Intel's decoder on `adapter`: its runtime found by the adapter, a
+/// session of it -- on a device of the library's own there for the current
+/// runtime -- and a real decoder built per combination; with whether it can
+/// hand pictures out as textures.
+fn probe_vpl(adapter: &Adapter) -> Result<(Caps, bool), DecoderStage> {
+    let d3d11 = D3d11::load().map_err(|_| DecoderStage::Runtime)?;
+    let index = d3d11
+        .plain_index(adapter.luid)
+        .ok()
+        .flatten()
+        .ok_or(DecoderStage::Device)?;
+    let vpl = Vpl::for_adapter(adapter).map_err(|_| DecoderStage::Runtime)?;
+    let (caps, handles) = match vpl.runtime() {
+        Runtime::Current => {
+            let device = d3d11.open(adapter.luid).map_err(|_| DecoderStage::Device)?;
+            let session = vpl
+                .session(&device, index)
+                .map_err(|_| DecoderStage::Device)?;
+            (vpl::caps(&session, Runtime::Current), device.has_fences())
+        }
+        Runtime::Older => {
+            let session = vpl
+                .system_session(index)
+                .map_err(|_| DecoderStage::Device)?;
+            (vpl::caps(&session, Runtime::Older), false)
+        }
+    };
+    if !caps.any() {
+        return Err(DecoderStage::Profile);
+    }
+    Ok((caps, handles))
+}
+
 /// Whether the maker of `adapter` has a decoder of its own here.
 fn has_its_own(adapter: &Adapter) -> bool {
-    matches!(adapter.maker(), Some("NVIDIA" | "AMD"))
+    matches!(adapter.maker(), Some("NVIDIA" | "AMD" | "Intel"))
 }
 
 /// The maker's own decoder on `adapter`, with whether it goes ahead of the
 /// system's interface in the automatic order: NVIDIA's, having measured
 /// faster on its GPU; AMD's where its runtime has the low-latency mode,
-/// without which it is no faster there. With `handles`, one that cannot hand
-/// pictures out as textures is refused as the handle kind is.
+/// without which it is no faster there; Intel's not, having measured no
+/// faster than the system's interface on its GPU. With `handles`,
+/// one that cannot hand pictures out as textures is refused as the handle
+/// kind is.
 fn vendor_on(adapter: &Adapter, handles: bool) -> Result<(Opened, Caps, bool), DecoderStage> {
     let luid = adapter.luid;
     let (opened, caps, first) = match adapter.maker() {
@@ -214,6 +259,14 @@ fn vendor_on(adapter: &Adapter, handles: bool) -> Result<(Opened, Caps, bool), D
                 handles: exports,
             };
             (opened, caps, fast)
+        }
+        Some("Intel") => {
+            let (caps, exports) = probe_vpl(adapter)?;
+            let opened = Opened::Vpl {
+                luid,
+                handles: exports,
+            };
+            (opened, caps, false)
         }
         _ => return Err(DecoderStage::Device),
     };
@@ -418,10 +471,12 @@ mod tests {
         let amd = adapter(0x40, 0x1002, false);
         let name = |a: &Adapter| a.luid.to_string();
         let every = [0x10, 0x20, 0x30, 0x40];
+        // Intel's own decoder is never the faster on its GPU.
+        let faster = [0x10, 0x30, 0x40];
 
         let nvidia_first = [nvidia.clone(), intel.clone(), amd.clone()];
         let land = |adapters: &[Adapter], named: Option<&str>| {
-            landing(adapters, named, &every, &every, &every)
+            landing(adapters, named, &every, &faster, &every)
         };
         assert_eq!(land(&nvidia_first, None), Ok(("vendor", 0x10)));
         assert_eq!(
@@ -451,7 +506,11 @@ mod tests {
         );
 
         // Not the faster there: the system's first, the maker's where the
-        // system's does not open.
+        // system's does not open -- Intel's on its own GPU.
+        assert_eq!(
+            landing(&intel_first, None, &every, &faster, &[0x10]),
+            Ok(("vendor", 0x20))
+        );
         assert_eq!(
             landing(&nvidia_first, None, &every, &[], &every),
             Ok(("system", 0x10))

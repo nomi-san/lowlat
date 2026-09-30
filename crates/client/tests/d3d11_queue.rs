@@ -28,7 +28,7 @@ use lowlat_client::config::FrameKind;
 use lowlat_client::frames::{Frame, Frames, Vendor};
 use lowlat_core::video::{Codec, Rotation, VideoHeader};
 use lowlat_decode::d3d11::Backend;
-use lowlat_decode::{Decoder, Fed, Picture, amf, nvdec};
+use lowlat_decode::{Decoder, Fed, Picture, amf, nvdec, vpl};
 use lowlat_drivers::amf::Amf;
 use lowlat_drivers::cuda::Cuda;
 use lowlat_drivers::cuvid::Cuvid;
@@ -38,6 +38,7 @@ use lowlat_drivers::ffi::d3d11::{
     D3D11_USAGE_STAGING, ID3D11Resource, ID3D11Texture2D,
 };
 use lowlat_drivers::vcall;
+use lowlat_drivers::vpl::{Runtime, Vpl};
 
 fn data(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -428,6 +429,68 @@ fn run_amd(
     seen
 }
 
+/// As [`run`], through Intel's decoder on `luid`, its pictures textures of a
+/// device of the library's own there, split into the slots'.
+fn run_intel(
+    d3d11: &D3d11,
+    luid: Luid,
+    clip: &str,
+    (codec, ten_bit): (Codec, bool),
+    pace: Option<Duration>,
+) -> Seen {
+    let expected = sums(&clip.replace(".bin", ".sums"));
+    let device = Arc::new(d3d11.open(luid).expect("a device"));
+    let runtime = Vpl::for_adapter(&device.adapter).expect("Intel's runtime");
+    let index = d3d11
+        .plain_index(luid)
+        .expect("the enumeration")
+        .expect("the adapter");
+    let frames = Arc::new(Frames::new((4096, 4096), FrameKind::Handle));
+    let session = runtime.session(&device, index).expect("a session");
+    let mut backend = vpl::Backend::new(
+        &session,
+        Runtime::Current,
+        Some(&device),
+        (4096, 4096),
+        1 << 20,
+    )
+    .expect("new");
+    frames.open_device(Arc::clone(&device), backend.fence().expect("a fence"), None);
+    backend.build(&header(codec, ten_bit)).expect("build");
+
+    let done = Arc::new(AtomicBool::new(false));
+    let reader = Reader {
+        device: d3d11.open(luid).expect("the application's device"),
+    };
+    let published = Published::default();
+    let consumer = consume(&frames, reader, expected, &done, &published);
+
+    for unit in units(clip) {
+        let started = Instant::now();
+        if backend.feed(&unit).expect("feed") == Fed::Picture {
+            while let Some((width, height, format)) = backend.output() {
+                let Some(mut filling) = frames.fill() else {
+                    break;
+                };
+                let planes = filling
+                    .textures_for(width, height, format)
+                    .expect("the slot's textures");
+                let Some((picture, value)) = backend.take_to_textures(planes).expect("take") else {
+                    break;
+                };
+                filling.publish_gated(frame(&picture, &published), value);
+            }
+        }
+        if let Some(pace) = pace {
+            std::thread::sleep(pace.saturating_sub(started.elapsed()));
+        }
+    }
+    done.store(true, Ordering::Release);
+    let seen = consumer.join().expect("the consumer");
+    backend.destroy();
+    seen
+}
+
 fn percentile(values: &mut [u32], q: f64) -> u32 {
     values.sort_unstable();
     values
@@ -561,6 +624,48 @@ fn every_picture_amd_hands_out_is_finished_and_whole() {
     ] {
         for pace in [None, Some(Duration::from_millis(8))] {
             let mut seen = run_amd(&d3d11, luid, clip, (codec, ten_bit), pace);
+            println!(
+                "{luid} {clip} {}: {} pictures handed out, {} wrong; seen finished after p50 {} us p99 {}",
+                if pace.is_some() {
+                    "at 120/s"
+                } else {
+                    "back to back"
+                },
+                seen.pictures,
+                seen.wrong,
+                percentile(&mut seen.ready, 0.5),
+                percentile(&mut seen.ready, 0.99),
+            );
+            if seen.wrong > 0 || seen.pictures == 0 {
+                failures.push(format!("{luid} {clip} {pace:?}: {seen:?}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
+/// **As above, through Intel's decoder** on its GPU, back to back and at 120
+/// pictures a second: its decode is queued on the library's device inside
+/// the runtime's call and the split behind it, so every picture a consumer
+/// takes must read back as a reference picture.
+#[test]
+#[ignore = "requires an Intel GPU and its runtime"]
+fn every_picture_intel_hands_out_is_finished_and_whole() {
+    let d3d11 = D3d11::load().expect("the system's libraries");
+    let luid = d3d11
+        .adapters()
+        .unwrap()
+        .into_iter()
+        .find(|a| a.decodes_here() && a.maker() == Some("Intel"))
+        .map(|a| a.luid)
+        .expect("an Intel GPU");
+    let mut failures = Vec::new();
+    for (clip, codec, ten_bit) in [
+        ("synthetic-720p-h264.bin", Codec::H264, false),
+        ("synthetic-720p-hevc10.bin", Codec::H265, true),
+    ] {
+        for pace in [None, Some(Duration::from_millis(8))] {
+            let mut seen = run_intel(&d3d11, luid, clip, (codec, ten_bit), pace);
             println!(
                 "{luid} {clip} {}: {} pictures handed out, {} wrong; seen finished after p50 {} us p99 {}",
                 if pace.is_some() {

@@ -1465,15 +1465,16 @@ typedef struct lowlat_decoder_info {
     char device[LOWLAT_OUTPUT_MAX];
     /// A label for a menu, NUL-terminated: the interface, and the card's
     /// maker in brackets where it is known -- `VA-API [Intel]`, `VA-API
-    /// [AMD]`, `NVDEC [NVIDIA]`, `AMF [AMD]`, `D3D11 [NVIDIA]`, `libavcodec
-    /// [LGPL]`; the interface alone for a slot with nothing behind it.
+    /// [AMD]`, `NVDEC [NVIDIA]`, `AMF [AMD]`, `VPL [Intel]`, `MFX [Intel]`,
+    /// `D3D11 [NVIDIA]`, `libavcodec [LGPL]`; the interface alone for a slot
+    /// with nothing behind it.
     char name[LOWLAT_DECODER_NAME_MAX];
     /// The driver's own words, NUL-terminated (minor 13): its banner and
     /// version for the open decoder on Linux, the GPU's name and driver
     /// version on Windows, the device's product name for NVIDIA's decoder
-    /// and the GPU's name and the runtime's version for AMD's, the library's
-    /// version and licence for software; for a slot that is not available,
-    /// why not. Filled only when `size` reaches it.
+    /// and the GPU's name and the runtime's version for AMD's and Intel's,
+    /// the library's version and licence for software; for a slot that is
+    /// not available, why not. Filled only when `size` reaches it.
     char driver[LOWLAT_DECODER_NAME_MAX];
 } lowlat_decoder_info;
 
