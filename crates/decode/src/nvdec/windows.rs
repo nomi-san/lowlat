@@ -18,11 +18,12 @@ use core::ffi::c_int;
 use std::sync::Arc;
 
 use lowlat_drivers::cuda::Registered;
-use lowlat_drivers::d3d11::{Device, Fence};
+use lowlat_drivers::d3d11::{Device, Fence, Span, Timer};
 use lowlat_drivers::ffi::cuda::{CU_MEMORYTYPE_ARRAY, CU_MEMORYTYPE_DEVICE, CUDA_MEMCPY2D};
 use lowlat_drivers::ffi::cuvid::CUVIDPROCPARAMS;
 
 use super::{Backend, Error, Result, micros, zeroed};
+use crate::d3d11::TIMED_EVERY;
 use crate::{Fault, Picture};
 
 /// The textures' device and its fence, and the value the fence was last
@@ -31,6 +32,12 @@ pub(super) struct Textures {
     device: Arc<Device>,
     fence: Arc<Fence>,
     value: u64,
+    /// Times a picture on the textures' device, from its take to the fence
+    /// passing; whether a span is closed and not yet read; and pictures
+    /// taken, of which one in [`TIMED_EVERY`] is timed.
+    timer: Option<Timer>,
+    timing: bool,
+    taken: u32,
 }
 
 impl Backend<'_> {
@@ -39,11 +46,42 @@ impl Backend<'_> {
     /// context is used on the thread that drives this, as the runtime's
     /// context is.
     pub fn attach_textures(&mut self, device: Arc<Device>, fence: Arc<Fence>) {
+        let timer = device.timer().ok();
         self.textures = Some(Textures {
             device,
             fence,
             value: 0,
+            timer,
+            timing: false,
+            taken: 0,
         });
+    }
+
+    /// Read the last timed picture's span, once the device has passed it,
+    /// into the decode's figure, and open the next at once if this picture
+    /// is one timed and it may be: not while the last is still unread, since
+    /// the timer holds one span. Whether it was opened.
+    fn open_span(&mut self) -> bool {
+        let Some(textures) = self.textures.as_mut() else {
+            return false;
+        };
+        let Some(timer) = textures.timer.as_ref() else {
+            return false;
+        };
+        if textures.timing {
+            match textures.device.span(timer) {
+                Ok(Span::Pending) => return false,
+                Ok(Span::Micros(us)) => self.decode_us = us,
+                Ok(Span::Unsteady) | Err(_) => {}
+            }
+            textures.timing = false;
+        }
+        let due = textures.taken % TIMED_EVERY == 0;
+        textures.taken = textures.taken.wrapping_add(1);
+        if due {
+            textures.device.begin_span(timer);
+        }
+        due
     }
 
     /// Whether pictures can be copied into textures: a device attached, and
@@ -71,9 +109,13 @@ impl Backend<'_> {
     }
 
     /// Copy `slot`'s picture into `planes` on the stream, then signal the
-    /// fence's next value behind the copies.
+    /// fence's next value behind the copies. Nothing is waited for: what
+    /// this thread spends is the submit, and the decode's figure is the
+    /// textures' device's own time for the last picture, from its take to
+    /// the fence passing.
     fn copy_to_textures(&mut self, slot: usize, planes: [Option<&Registered>; 3]) -> Result<()> {
         let started = lowlat_common::clock::Time::now();
+        let timed = self.open_span();
         self.settle()?;
         self.ensure_stream()?;
         let shape = self.shape.ok_or(Error::NoProfile)?;
@@ -188,18 +230,20 @@ impl Backend<'_> {
 
         let textures = self.textures.as_mut().ok_or(Error::NoProfile)?;
         let value = textures.value + 1;
-        textures
-            .device
-            .signal(&textures.fence, value)
-            .map_err(|e| match e {
-                lowlat_drivers::d3d11::Error::Status(hr) => {
-                    Error::Status(u32::from_ne_bytes(hr.to_ne_bytes()))
-                }
-                _ => Error::NoProfile,
-            })?;
+        let timer = textures.timer.as_ref().filter(|_| timed);
+        match timer {
+            Some(timer) => textures.device.signal_timed(&textures.fence, value, timer),
+            None => textures.device.signal(&textures.fence, value),
+        }
+        .map_err(|e| match e {
+            lowlat_drivers::d3d11::Error::Status(hr) => {
+                Error::Status(u32::from_ne_bytes(hr.to_ne_bytes()))
+            }
+            _ => Error::NoProfile,
+        })?;
         textures.value = value;
+        textures.timing |= timer.is_some();
         let done = lowlat_common::clock::Time::now();
-        self.decode_us = micros(lowlat_common::clock::diff_ms(started, synced));
         self.readback_us = micros(lowlat_common::clock::diff_ms(synced, done));
         Ok(())
     }

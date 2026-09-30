@@ -137,6 +137,7 @@ fn check_textures(
     };
     let mut textures: Option<((u32, u32, Format), [Option<SharedTexture>; 3])> = None;
     let timing = core::cell::Cell::new((0u32, 0u32));
+    let spans = core::cell::RefCell::new(Vec::new());
     let direct = core::cell::Cell::new(None);
     let (ours, times) = common::decode_clip_with(
         &mut backend,
@@ -155,6 +156,7 @@ fn check_textures(
                 reader.opened.clear();
             }
             let (_, made) = textures.as_ref().expect("made");
+            let began = std::time::Instant::now();
             let Some((picture, value)) = b.take_to_textures(made.each_ref().map(Option::as_ref))?
             else {
                 return Ok(None);
@@ -168,6 +170,12 @@ fn check_textures(
             );
             let finished = submitted.elapsed().as_micros() as u32;
             timing.set((finished, b.readback_us));
+            // From the take to the fence passing, as this thread saw it,
+            // beside the device's own timing -- of the picture before this
+            // one, by now.
+            spans
+                .borrow_mut()
+                .push((began.elapsed().as_micros() as u32, b.decode_us));
             let sample = picture.format.sample();
             let w = picture.width as usize;
             let h = picture.height as usize;
@@ -196,6 +204,30 @@ fn check_textures(
         at(1.0),
         submits.iter().filter(|&&s| s > 1000).count()
     );
+    // The device's own timing runs from the take reaching the device to the
+    // fence being signalled: never nothing, and never more than this thread
+    // saw of it. Less by the driver's telling a waiting thread, which is no
+    // one figure across GPUs -- 0.05 ms on one here, 2 on another.
+    let every = lowlat_decode::d3d11::TIMED_EVERY as usize;
+    let spans = spans.into_inner();
+    let pairs: Vec<(u32, u32)> = spans
+        .iter()
+        .zip(spans.iter().skip(1))
+        .step_by(every)
+        .map(|(this, next)| (this.0, next.1))
+        .collect();
+    let mut seen: Vec<u32> = pairs.iter().map(|p| p.0).collect();
+    let mut timed: Vec<u32> = pairs.iter().map(|p| p.1).collect();
+    seen.sort_unstable();
+    timed.sort_unstable();
+    let median = |v: &[u32]| v.get(v.len() / 2).copied().unwrap_or(0);
+    let (seen, timed) = (median(&seen), median(&timed));
+    println!("    timed pictures: take to fence p50 {seen} us; on the device p50 {timed} us");
+    if timed == 0 || timed > seen + 100 {
+        return Err(format!(
+            "the device's timing p50 {timed} us against {seen} from the take to the fence"
+        ));
+    }
     direct
         .get()
         .ok_or_else(|| "no picture came out".to_string())

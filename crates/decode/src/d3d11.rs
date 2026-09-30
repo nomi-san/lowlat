@@ -31,7 +31,9 @@ use core::fmt;
 use std::sync::Arc;
 
 use lowlat_core::video::{Codec, VideoHeader};
-use lowlat_drivers::d3d11::{Com, Device, Error as RuntimeError, Fence, SharedTexture};
+use lowlat_drivers::d3d11::{
+    Com, Device, Error as RuntimeError, Fence, SharedTexture, Span, Timer,
+};
 use lowlat_drivers::ffi::d3d11::{
     _DXVA_PicEntry_H264__bindgen_ty_1, _DXVA_PicEntry_H264__bindgen_ty_1__bindgen_ty_1,
     _DXVA_PicParams_H264__bindgen_ty_1, _DXVA_PicParams_H264__bindgen_ty_1__bindgen_ty_1,
@@ -94,6 +96,11 @@ const SHORT_H264: u32 = 2;
 const SHORT_HEVC: u32 = 1;
 /// A picture entry naming nothing.
 const NO_ENTRY: u8 = 0xff;
+/// One picture handed out as textures in this many is timed on the device:
+/// a span is opened by handing the queue to the device at once, which cost
+/// the submit about 50 us a picture on every GPU measured, the hand-over
+/// waiting for it.
+pub const TIMED_EVERY: u32 = 8;
 /// The size a decoder is built at to ask whether it builds at all: every
 /// committed clip's.
 const PROBE_SIZE: (u32, u32) = (1280, 720);
@@ -534,8 +541,16 @@ pub struct Backend<'a> {
     ranges: [(usize, usize); MAX_SLICES],
     /// Numbers each picture for the device's status reports; never zero.
     report: u32,
+    /// Times a picture split into textures on the device's own clock, from
+    /// its take to the fence passing; whether a span is closed and not yet
+    /// read; and pictures taken so, of which one in [`TIMED_EVERY`] is timed.
+    timer: Option<Timer>,
+    timing: bool,
+    taken: u32,
     /// The last read-back's wait for the device -- the decode and the copy
-    /// -- and its copy out, in microseconds, for the log.
+    /// -- and its copy out, in microseconds, for the log. For a picture
+    /// split into textures, which nothing here waits for, the decode is the
+    /// device's own timing of the last one it has finished.
     pub decode_us: u32,
     pub readback_us: u32,
 }
@@ -556,6 +571,7 @@ impl<'a> Backend<'a> {
         // without one hands pictures out by read-back only.
         let fence = device.has_fences().then(|| device.fence(0).ok()).flatten();
         let shaders = fence.as_ref().and_then(|_| Shaders::new(device).ok());
+        let timer = shaders.as_ref().and_then(|_| device.timer().ok());
         Self {
             device,
             ceiling,
@@ -579,6 +595,9 @@ impl<'a> Backend<'a> {
             }),
             ranges: [(0, 0); MAX_SLICES],
             report: 0,
+            timer,
+            timing: false,
+            taken: 0,
             decode_us: 0,
             readback_us: 0,
         }
@@ -1694,7 +1713,16 @@ impl<'a> Backend<'a> {
             },
         };
         let started = lowlat_common::clock::Time::now();
-        let split = self.split(slot, planes);
+        // Nothing is waited for: what this thread spends is the submit, and
+        // the decode's time is the device's own, from the take to the fence
+        // passing, read once the device has passed it -- the last timed
+        // picture's, by now.
+        let timed = self.read_span() && self.taken % TIMED_EVERY == 0;
+        self.taken = self.taken.wrapping_add(1);
+        if timed && let Some(timer) = &self.timer {
+            self.device.begin_span(timer);
+        }
+        let split = self.split(slot, planes, timed);
         match self.codec {
             Codec::H264 => self.h264.dpb.taken(slot),
             Codec::H265 => self.hevc.dpb.taken(slot),
@@ -1705,9 +1733,6 @@ impl<'a> Backend<'a> {
                 _ => Fault::Unrecoverable,
             })
         })?;
-        // Nothing was waited for: the decode's time is known only where the
-        // fence is seen to pass, and what this thread spent is the submit.
-        self.decode_us = 0;
         self.readback_us = micros(lowlat_common::clock::elapsed_ms(started));
         let ((width, height), full_range) = self.visible_and_range();
         Ok(Some((
@@ -1722,13 +1747,44 @@ impl<'a> Backend<'a> {
         )))
     }
 
+    /// Read the span last closed, once the device has passed it, into the
+    /// decode's figure: whether a new one may be opened -- not while the
+    /// last is still unread, since the timer holds one span.
+    fn read_span(&mut self) -> bool {
+        let Some(timer) = &self.timer else {
+            return false;
+        };
+        if !self.timing {
+            return true;
+        }
+        match self.device.span(timer) {
+            Ok(Span::Pending) => return false,
+            Ok(Span::Micros(us)) => self.decode_us = us,
+            Ok(Span::Unsteady) | Err(_) => {}
+        }
+        self.timing = false;
+        true
+    }
+
     /// The split of `slot`'s picture into `planes`, and the fence value it
-    /// is finished at.
-    fn split(&mut self, slot: usize, planes: [Option<&SharedTexture>; 3]) -> Result<u64> {
+    /// is finished at; with `timed`, the timer's span, opened at the take,
+    /// closed behind the fence's signal.
+    fn split(
+        &mut self,
+        slot: usize,
+        planes: [Option<&SharedTexture>; 3],
+        timed: bool,
+    ) -> Result<u64> {
         let fence = self.fence.as_ref().ok_or(Error::NoProfile)?;
         self.dispatch(slot, planes)?;
         let value = self.signalled + 1;
-        self.device.signal(fence, value)?;
+        match self.timer.as_ref().filter(|_| timed) {
+            Some(timer) => {
+                self.device.signal_timed(fence, value, timer)?;
+                self.timing = true;
+            }
+            None => self.device.signal(fence, value)?,
+        }
         self.signalled = value;
         Ok(value)
     }

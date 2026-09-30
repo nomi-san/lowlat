@@ -402,6 +402,7 @@ fn check_textures(
         [Option<SharedTexture>; 3],
     )> = None;
     let timing = core::cell::Cell::new((0u32, 0u32));
+    let submits = core::cell::RefCell::new(Vec::new());
     let (ours, times) = common::decode_clip_with(
         &mut backend,
         clip,
@@ -429,19 +430,23 @@ fn check_textures(
                 reader.opened.clear();
             }
             let (_, registered, made) = textures.as_ref().expect("made");
+            let began = std::time::Instant::now();
             let Some((picture, value)) =
                 b.take_to_textures(registered.each_ref().map(Option::as_ref))?
             else {
                 return Ok(None);
             };
-            let submitted = std::time::Instant::now();
             fence.notify_at(value, &event).expect("a notification");
             assert!(
                 event.wait(std::time::Duration::from_secs(2)),
                 "the fence never reached {value}"
             );
-            let waited = submitted.elapsed().as_micros() as u32;
-            timing.set((waited, b.readback_us));
+            // From the take to the fence passing, as this thread saw it;
+            // beside it the backend's own device timing, of the picture
+            // before this one by now.
+            let from_take = began.elapsed().as_micros() as u32;
+            timing.set((from_take, b.decode_us));
+            submits.borrow_mut().push(b.readback_us);
             let sample = picture.format.sample();
             let w = picture.width as usize;
             let h = picture.height as usize;
@@ -474,18 +479,36 @@ fn check_textures(
     let mode = if own { "own surfaces" } else { "mapped" };
     let wrong = ours.iter().filter(|s| !expected.contains_key(s)).count();
     let mut waits: Vec<u32> = times.iter().map(|t| t.0).collect();
-    let mut submits: Vec<u32> = times.iter().map(|t| t.1).collect();
+    // Each timed picture -- one in so many -- beside what this thread saw of
+    // it: its figure is read at the next take.
+    let every = lowlat_decode::d3d11::TIMED_EVERY as usize;
+    let pairs: Vec<(u32, u32)> = times
+        .iter()
+        .zip(times.iter().skip(1))
+        .step_by(every)
+        .map(|(this, next)| (this.0, next.1))
+        .collect();
+    let mut timed_seen: Vec<u32> = pairs.iter().map(|p| p.0).collect();
+    let mut device: Vec<u32> = pairs.iter().map(|p| p.1).collect();
+    timed_seen.sort_unstable();
+    let mut submits = submits.into_inner();
     waits.sort_unstable();
+    device.sort_unstable();
     submits.sort_unstable();
-    let at = |v: &[u32], q: f64| v.get(((v.len().max(1) - 1) as f64 * q) as usize).copied();
+    let at = |v: &[u32], q: f64| {
+        v.get(((v.len().max(1) - 1) as f64 * q) as usize)
+            .copied()
+            .unwrap_or(0)
+    };
     println!(
-        "  {clip} ({mode}): {} of {} pictures, {wrong} wrong; to the fence p50 {:?} us p95 {:?}; submit p50 {:?} us p95 {:?} max {:?}",
+        "  {clip} ({mode}): {} of {} pictures, {wrong} wrong; take to fence p50 {} us p95 {}; on the device p50 {} us p95 {}; submit p50 {} us max {}",
         ours.len(),
         theirs.len(),
         at(&waits, 0.5),
         at(&waits, 0.95),
+        at(&device, 0.5),
+        at(&device, 0.95),
         at(&submits, 0.5),
-        at(&submits, 0.95),
         at(&submits, 1.0),
     );
     if ours.len() != theirs.len() {
@@ -493,6 +516,16 @@ fn check_textures(
     }
     if got != expected {
         return Err(format!("{wrong} pictures differ from the reference"));
+    }
+    // The device's own timing runs from the take reaching the device to the
+    // fence passing: what this thread saw, less the submit's way to the
+    // device and the wake from the fence -- never nothing, never more than
+    // seen, and never short by more than those.
+    let (seen, timed) = (at(&timed_seen, 0.5), at(&device, 0.5));
+    if timed == 0 || timed > seen + 100 || timed + 250 < seen {
+        return Err(format!(
+            "the device's timing p50 {timed} us against {seen} from the take to the fence"
+        ));
     }
     Ok(mode)
 }
