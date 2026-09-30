@@ -390,7 +390,8 @@ fn run_amd(
     let runtime = Amf::load().expect("AMD's runtime");
     let device = Arc::new(d3d11.open(luid).expect("a device"));
     let frames = Arc::new(Frames::new((4096, 4096), FrameKind::Handle));
-    let mut backend = amf::Backend::new(&runtime, &device, (4096, 4096), 1 << 20).expect("new");
+    let context = runtime.context(&device).expect("a context");
+    let mut backend = amf::Backend::new(&runtime, &context, (4096, 4096), 1 << 20).expect("new");
     frames.open_device(Arc::clone(&device), backend.fence().expect("a fence"), None);
     backend.build(&header(codec, ten_bit)).expect("build");
 

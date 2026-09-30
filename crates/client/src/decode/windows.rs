@@ -255,8 +255,18 @@ fn amd_decoder(mut luid: Luid, shared: &Shared<'_>, mut replacing: bool) -> Next
             return Next::Failed;
         };
         let device = Arc::new(device);
+        let context = match runtime.context(&device) {
+            Ok(context) => context,
+            Err(e) => {
+                lowlat_common::log_warn!(
+                    "client: amd decoder not made, error={}",
+                    amf::Error::from(e)
+                );
+                return Next::Failed;
+            }
+        };
         let backend =
-            match amf::Backend::new(&runtime, &device, shared.frames.ceiling(), UNIT_BYTES) {
+            match amf::Backend::new(&runtime, &context, shared.frames.ceiling(), UNIT_BYTES) {
                 Ok(backend) => backend,
                 Err(e) => {
                     lowlat_common::log_warn!("client: amd decoder not made, error={e}");

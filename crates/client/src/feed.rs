@@ -98,11 +98,13 @@ impl<D: Decoder> Feed<D> {
         self.teardown("another decoder chosen");
     }
 
-    /// The decoder's device was found gone taking a picture, which a device
-    /// can report before any decode does: torn down as a fault that says so
-    /// tears it down.
-    pub fn lost(&mut self) {
-        self.teardown("device lost");
+    /// The decoder could not hand a decoded picture out -- its split or its
+    /// read-back refused, or its device found gone, which a device can
+    /// report before any decode does: **judged as a unit it could not decode
+    /// is**, the one rule for every fault a decoder meets, so one that fails
+    /// every take ends or rebuilds it rather than losing pictures forever.
+    pub fn take_failed(&mut self, fault: Fault) -> Decision {
+        self.fault(fault)
     }
 
     /// One message off the video channel, header and all.

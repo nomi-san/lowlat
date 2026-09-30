@@ -419,7 +419,7 @@ impl Amf {
         check(unsafe { (self.factory().create_context)(self.factory.as_ptr(), &raw mut raw) })?;
         let context = Context {
             raw: NonNull::new(raw).ok_or(Error::Unavailable)?,
-            _device: PhantomData,
+            device,
         };
         // SAFETY: a live context and a live device, which outlives it by the
         // lifetime above.
@@ -429,8 +429,9 @@ impl Amf {
         Ok(context)
     }
 
-    /// A decoder for `codec` in `context`, not yet initialised.
-    pub fn decoder(&self, context: &Context<'_>, codec: Codec) -> Result<Component> {
+    /// A decoder for `codec` in `context`, not yet initialised, which the
+    /// context outlives.
+    pub fn decoder<'c>(&self, context: &'c Context<'_>, codec: Codec) -> Result<Component<'c>> {
         let id = Name::new(codec.id())?;
         let mut raw: *mut c_void = core::ptr::null_mut();
         // SAFETY: a live factory and context; the name and the output are
@@ -445,15 +446,16 @@ impl Amf {
         })?;
         Ok(Component {
             raw: NonNull::new(raw).ok_or(Error::Unavailable)?,
+            _context: PhantomData,
         })
     }
 }
 
 /// A context on a device of the caller's: terminated and released on drop,
-/// after everything made in it.
+/// after everything made in it, which borrows it.
 pub struct Context<'d> {
     raw: NonNull<c_void>,
-    _device: PhantomData<&'d Device>,
+    device: &'d Device,
 }
 
 impl fmt::Debug for Context<'_> {
@@ -462,15 +464,20 @@ impl fmt::Debug for Context<'_> {
     }
 }
 
-impl Context<'_> {
+impl<'d> Context<'d> {
     fn table(&self) -> &ContextTable {
         // SAFETY: a live context, whose table is the context's.
         unsafe { table(self.raw) }
     }
 
+    /// The device the context was made on.
+    pub fn device(&self) -> &'d Device {
+        self.device
+    }
+
     /// A buffer of host memory, `capacity` bytes, a unit at a time handed
     /// over in it.
-    pub fn buffer(&self, capacity: usize) -> Result<Buffer> {
+    pub fn buffer(&self, capacity: usize) -> Result<Buffer<'_>> {
         let mut raw: *mut c_void = core::ptr::null_mut();
         // SAFETY: a live context; the output is a live local.
         check(unsafe {
@@ -479,6 +486,7 @@ impl Context<'_> {
         Ok(Buffer {
             raw: NonNull::new(raw).ok_or(Error::Unavailable)?,
             capacity,
+            _context: PhantomData,
         })
     }
 }
@@ -493,19 +501,19 @@ impl Drop for Context<'_> {
     }
 }
 
-/// A decoder: terminated and released on drop, which comes before its
-/// context's.
-pub struct Component {
+/// A decoder in the context it borrows: terminated and released on drop.
+pub struct Component<'c> {
     raw: NonNull<c_void>,
+    _context: PhantomData<&'c ()>,
 }
 
-impl fmt::Debug for Component {
+impl fmt::Debug for Component<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Component")
     }
 }
 
-impl Component {
+impl<'c> Component<'c> {
     fn table(&self) -> &ComponentTable {
         // SAFETY: a live component, whose table is the component's.
         unsafe { table(self.raw) }
@@ -576,8 +584,9 @@ impl Component {
     }
 
     /// The next picture the decoder hands out, if one is ready: at once for
-    /// a unit submitted, its decode still running on the device.
-    pub fn query(&self) -> Result<Option<Surface>> {
+    /// a unit submitted, its decode still running on the device. It borrows
+    /// the context, and is given back before the decoder is dropped.
+    pub fn query(&self) -> Result<Option<Surface<'c>>> {
         let mut data: *mut c_void = core::ptr::null_mut();
         // SAFETY: a live component; the output is a live local.
         let status = unsafe { (self.table().query_output)(self.raw.as_ptr(), &raw mut data) };
@@ -603,11 +612,12 @@ impl Component {
         check(status)?;
         Ok(Some(Surface {
             raw: NonNull::new(surface).ok_or(Error::Status(status))?,
+            _context: PhantomData,
         }))
     }
 }
 
-impl Drop for Component {
+impl Drop for Component<'_> {
     fn drop(&mut self) {
         // SAFETY: a live component, terminated once and then released once.
         unsafe {
@@ -617,14 +627,15 @@ impl Drop for Component {
     }
 }
 
-/// A buffer of host memory a unit is handed over in: made once, filled for
-/// each unit, released on drop, which comes before its context's.
-pub struct Buffer {
+/// A buffer of host memory a unit is handed over in, in the context it
+/// borrows: made once, filled for each unit, released on drop.
+pub struct Buffer<'c> {
     raw: NonNull<c_void>,
     capacity: usize,
+    _context: PhantomData<&'c ()>,
 }
 
-impl fmt::Debug for Buffer {
+impl fmt::Debug for Buffer<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Buffer")
             .field("capacity", &self.capacity)
@@ -632,7 +643,7 @@ impl fmt::Debug for Buffer {
     }
 }
 
-impl Buffer {
+impl Buffer<'_> {
     fn table(&self) -> &BufferTable {
         // SAFETY: a live buffer, whose table is the buffer's.
         unsafe { table(self.raw) }
@@ -663,7 +674,7 @@ impl Buffer {
     }
 }
 
-impl Drop for Buffer {
+impl Drop for Buffer<'_> {
     fn drop(&mut self) {
         // SAFETY: a live buffer this holds one reference on.
         unsafe { release(self.raw) };
@@ -671,18 +682,20 @@ impl Drop for Buffer {
 }
 
 /// A decoded picture, handed out while its decode may still be running on
-/// the device: released on drop, which gives it back to the decoder.
-pub struct Surface {
+/// the device, in the context it borrows: released on drop, which gives it
+/// back to the decoder.
+pub struct Surface<'c> {
     raw: NonNull<c_void>,
+    _context: PhantomData<&'c ()>,
 }
 
-impl fmt::Debug for Surface {
+impl fmt::Debug for Surface<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("Surface")
     }
 }
 
-impl Surface {
+impl Surface<'_> {
     fn table(&self) -> &SurfaceTable {
         // SAFETY: a live surface, whose table is the surface's.
         unsafe { table(self.raw) }
@@ -715,7 +728,7 @@ impl Surface {
     }
 }
 
-impl Drop for Surface {
+impl Drop for Surface<'_> {
     fn drop(&mut self) {
         // SAFETY: a live surface this holds one reference on.
         unsafe { release(self.raw) };

@@ -259,7 +259,7 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
             Decision::Lost => return Next::Lost,
             Decision::Fed(Fed::Picture) => {
                 telemetry.decoder.store(1, Ordering::Relaxed);
-                let lost = take_pictures(
+                let taken = take_pictures(
                     &mut feed,
                     frames,
                     telemetry,
@@ -268,9 +268,8 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
                     &mut reported,
                     &mut range,
                 );
-                if lost {
-                    feed.lost();
-                    return Next::Lost;
+                if let Some(next) = after_take(taken, telemetry, shell) {
+                    return next;
                 }
             }
             Decision::Built(fed) => {
@@ -286,7 +285,7 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
                     Ordering::Relaxed,
                 );
                 if fed == Fed::Picture {
-                    let lost = take_pictures(
+                    let taken = take_pictures(
                         &mut feed,
                         frames,
                         telemetry,
@@ -295,9 +294,8 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
                         &mut reported,
                         &mut range,
                     );
-                    if lost {
-                        feed.lost();
-                        return Next::Lost;
+                    if let Some(next) = after_take(taken, telemetry, shell) {
+                        return next;
                     }
                 }
             }
@@ -313,9 +311,10 @@ fn drive<D: Backend>(backend: D, shared: &Shared<'_>, replacing: bool) -> Next {
 
 /// Every picture the decoder has ready goes into the queue, carrying the
 /// arrival stamp of the unit just fed. `range` is the last picture's, for
-/// the log. **Whether the decoder's device was found lost**: a removed
-/// device can go on taking decodes and fail only here, so the loss is the
-/// loop's to act on, as one the feed reports is.
+/// the log. **The feed's decision on a fault met taking a picture**, which
+/// the loop acts on as on one met decoding: a removed device can go on
+/// taking decodes and fail only here, and a take that fails on every
+/// picture would otherwise lose them all with nothing asked.
 fn take_pictures<D: Backend>(
     feed: &mut Feed<D>,
     frames: &Frames,
@@ -324,15 +323,11 @@ fn take_pictures<D: Backend>(
     stamp: u32,
     reported: &mut Smoothed,
     range: &mut Option<bool>,
-) -> bool {
+) -> Option<Decision> {
     loop {
         // The layout before the take: the planes are the picture's own size.
-        let Some((width, height, format)) = feed.decoder().output() else {
-            return false;
-        };
-        let Some(mut filling) = frames.fill() else {
-            return false;
-        };
+        let (width, height, format) = feed.decoder().output()?;
+        let mut filling = frames.fill()?;
         // By handle when the session asks for one and the decoder can hand
         // one out; as planes otherwise, whatever was asked. Decided per
         // picture, so the kind switches at the next one with no keyframe.
@@ -341,9 +336,7 @@ fn take_pictures<D: Backend>(
             feed.decoder_mut()
                 .take_to_slot(&mut filling, (width, height, format))
         } else {
-            let Some(mut planes) = filling.planes_for(width, height, format) else {
-                return false;
-            };
+            let mut planes = filling.planes_for(width, height, format)?;
             lowlat_decode::Decoder::take(feed.decoder_mut(), &mut planes).map(|p| p.map(|p| (p, 0)))
         };
         match taken {
@@ -399,15 +392,28 @@ fn take_pictures<D: Backend>(
                 filling.publish_gated(frame, gate);
                 telemetry.decoded.fetch_add(1, Ordering::Relaxed);
             }
-            Ok(None) => return false,
-            Err(Fault::DeviceLost) => return true,
-            Err(_) => {
-                // The read-back failed: the picture is lost and the decoder
-                // is left to its next unit; a fault there is the feed's to
-                // judge.
-                return false;
-            }
+            Ok(None) => return None,
+            Err(fault) => return Some(feed.take_failed(fault)),
         }
+    }
+}
+
+/// What the loop does on a take's decision, as on the feed's: the keyframe
+/// asked, or the loop's end with the decoder failed or its device lost.
+fn after_take(
+    decision: Option<Decision>,
+    telemetry: &Telemetry,
+    shell: &WakeHandle,
+) -> Option<Next> {
+    match decision? {
+        Decision::Request => {
+            telemetry.request.store(true, Ordering::Release);
+            let _ = shell.notify();
+            None
+        }
+        Decision::Failed => Some(Next::Failed),
+        Decision::Lost => Some(Next::Lost),
+        Decision::Fed(_) | Decision::Built(_) | Decision::Ignored | Decision::Consumed(_) => None,
     }
 }
 
@@ -470,13 +476,15 @@ mod tests {
         }
     }
 
-    /// A backend whose device is gone by its first take while its decodes
-    /// still succeed, as a removed device was seen to behave on one driver.
-    struct LostAtTake {
+    /// A backend whose every take fails with `fault` while its decodes
+    /// still succeed -- as a removed device was seen to behave on one
+    /// driver, or a split refused on every picture would.
+    struct FailsAtTake {
+        fault: Fault,
         destroyed: Arc<AtomicU32>,
     }
 
-    impl Decoder for LostAtTake {
+    impl Decoder for FailsAtTake {
         fn build(&mut self, _: &VideoHeader) -> Result<(), Fault> {
             Ok(())
         }
@@ -484,14 +492,14 @@ mod tests {
             Ok(Fed::Picture)
         }
         fn take(&mut self, _: &mut Planes<'_>) -> Result<Option<Picture>, Fault> {
-            Err(Fault::DeviceLost)
+            Err(self.fault)
         }
         fn destroy(&mut self) {
             self.destroyed.fetch_add(1, Ordering::Relaxed);
         }
     }
 
-    impl Backend for LostAtTake {
+    impl Backend for FailsAtTake {
         fn output(&self) -> Option<(u32, u32, Format)> {
             Some((64, 64, Format::Nv12))
         }
@@ -690,28 +698,63 @@ mod tests {
     /// handed out again.
     #[test]
     fn a_device_lost_at_the_take_ends_the_loop_as_lost() {
+        let (next, destroyed, _) = fail_at_take(Fault::DeviceLost);
+        assert_eq!(next, Next::Lost);
+        assert_eq!(destroyed, 1, "the decoder was not torn down");
+    }
+
+    /// **A fault met taking a picture is judged as one met decoding.** A
+    /// fatal one ends the loop as the decoder's failure; any other tears
+    /// the decoder down and asks for one keyframe, the next units then
+    /// finding no decoder until one comes. Lost pictures alone, as a take's
+    /// fault once was, left a decoder failing every take streaming black
+    /// with nothing asked and nothing ended.
+    #[test]
+    fn a_fault_at_the_take_is_judged_as_one_at_the_decode() {
+        let (next, destroyed, _) = fail_at_take(Fault::Fatal);
+        assert_eq!(next, Next::Failed);
+        assert_eq!(destroyed, 1, "the failed decoder was not torn down");
+
+        let (next, destroyed, asked) = fail_at_take(Fault::Unrecoverable);
+        assert_eq!(next, Next::Stop, "the loop ended on a keyframe's fault");
+        assert_eq!(destroyed, 1, "the decoder was not torn down once");
+        assert!(asked, "no keyframe was asked");
+    }
+
+    /// One decoder's loop whose takes fail with `fault`, handed the unit
+    /// that builds it and then stopped: how it ended, how many times the
+    /// decoder was torn down, and whether a keyframe was asked.
+    fn fail_at_take(fault: Fault) -> (Next, u32, bool) {
         let rig = Rig::new();
         let destroyed = Arc::new(AtomicU32::new(0));
         let loop_ = rig.drive(
-            LostAtTake {
+            FailsAtTake {
+                fault,
                 destroyed: Arc::clone(&destroyed),
             },
             false,
         );
         rig.units.hand_over(&parameter_set());
-        // Bounded so that a loop that never sees the loss fails the test
-        // rather than hanging it.
+        // Bounded so that a loop that never acts fails the test rather than
+        // hanging it; one that goes on stops when told.
         let began = std::time::Instant::now();
-        while !loop_.is_finished() && began.elapsed() < Duration::from_secs(5) {
+        while !loop_.is_finished()
+            && !rig.telemetry.request.load(Ordering::Acquire)
+            && began.elapsed() < Duration::from_secs(5)
+        {
             std::thread::sleep(Duration::from_millis(5));
         }
+        // A second unit that builds nothing finds no decoder once one was
+        // torn down, so nothing is torn down twice.
+        rig.units.hand_over(&[0u8; VIDEO_HEADER_LEN]);
+        std::thread::sleep(Duration::from_millis(20));
         rig.stopping.store(true, Ordering::Release);
         rig.units.wake();
-        assert_eq!(loop_.join().expect("the loop"), Next::Lost);
-        assert_eq!(
+        let next = loop_.join().expect("the loop");
+        (
+            next,
             destroyed.load(Ordering::Relaxed),
-            1,
-            "the decoder was not torn down"
-        );
+            rig.telemetry.request.load(Ordering::Acquire),
+        )
     }
 }

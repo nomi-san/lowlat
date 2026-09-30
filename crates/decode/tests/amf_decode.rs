@@ -160,8 +160,9 @@ fn check(
     codec: Codec,
     ten_bit: bool,
 ) -> Result<(), String> {
+    let context = amf.context(device).map_err(|e| format!("context: {e:?}"))?;
     let mut backend =
-        Backend::new(amf, device, (4096, 4096), UNIT_BYTES).map_err(|e| format!("new: {e}"))?;
+        Backend::new(amf, &context, (4096, 4096), UNIT_BYTES).map_err(|e| format!("new: {e}"))?;
     backend
         .build(&header(codec, ten_bit))
         .map_err(|e| format!("build: {e:?}"))?;
@@ -193,8 +194,9 @@ fn check_textures(
     codec: Codec,
     ten_bit: bool,
 ) -> Result<(), String> {
+    let context = amf.context(device).map_err(|e| format!("context: {e:?}"))?;
     let mut backend =
-        Backend::new(amf, device, (4096, 4096), UNIT_BYTES).map_err(|e| format!("new: {e}"))?;
+        Backend::new(amf, &context, (4096, 4096), UNIT_BYTES).map_err(|e| format!("new: {e}"))?;
     let fence = backend.fence().ok_or("the device has no split")?;
     backend
         .build(&header(codec, ten_bit))
@@ -299,8 +301,9 @@ fn refused(
     codec: Codec,
     ten_bit: bool,
 ) -> Result<(), String> {
+    let context = amf.context(device).map_err(|e| format!("context: {e:?}"))?;
     let mut backend =
-        Backend::new(amf, device, (4096, 4096), UNIT_BYTES).map_err(|e| format!("new: {e}"))?;
+        Backend::new(amf, &context, (4096, 4096), UNIT_BYTES).map_err(|e| format!("new: {e}"))?;
     backend
         .build(&header(codec, ten_bit))
         .map_err(|e| format!("build: {e:?}"))?;
@@ -387,7 +390,8 @@ fn a_device_fallen_behind_holds_the_next_unit_back() {
     let device = amd(&d3d11);
     let amf = Amf::load().expect("AMD's runtime");
     let units = common::units("synthetic-720p-hevc.bin");
-    let mut backend = Backend::new(&amf, &device, (4096, 4096), UNIT_BYTES).expect("new");
+    let context = amf.context(&device).expect("a context");
+    let mut backend = Backend::new(&amf, &context, (4096, 4096), UNIT_BYTES).expect("new");
     let fence = backend.fence().expect("a split");
     backend.build(&header(Codec::H265, false)).expect("build");
     let planes = plane_textures(Format::Nv12, 1280, 720)

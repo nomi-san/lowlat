@@ -172,6 +172,56 @@ struct Staging {
     texture: Com<ID3D11Texture2D>,
 }
 
+/// Units submitted whose picture has not come out, by the mark each
+/// carries: the readers' slot its picture goes to.
+struct Pending([Option<(i64, usize)>; PENDING]);
+
+impl Pending {
+    const fn new() -> Self {
+        Self([None; PENDING])
+    }
+
+    /// The unit marked `mark`, whose picture goes to `slot`. An older unit
+    /// still naming the slot is forgotten: the readers hand a slot out again
+    /// only once its picture is gone, so that picture, handed out late, must
+    /// find no slot rather than the new one. Full only of units whose
+    /// picture never came, the oldest goes.
+    fn expect(&mut self, mark: i64, slot: usize) {
+        for entry in &mut self.0 {
+            if entry.is_some_and(|(_, s)| s == slot) {
+                *entry = None;
+            }
+        }
+        let free = self.0.iter().position(Option::is_none).or_else(|| {
+            let oldest = self.0.iter().flatten().map(|(m, _)| *m).min()?;
+            self.0
+                .iter()
+                .position(|p| p.is_some_and(|(m, _)| m == oldest))
+        });
+        if let Some(entry) = free.and_then(|i| self.0.get_mut(i)) {
+            *entry = Some((mark, slot));
+        }
+    }
+
+    /// The slot the picture of the unit marked `mark` goes to, if a unit
+    /// waits for it. Units before it that completed no picture of their own
+    /// -- a field's first half, say -- have none coming.
+    fn complete(&mut self, mark: i64) -> Option<usize> {
+        let slot = self
+            .0
+            .iter_mut()
+            .find(|p| p.is_some_and(|(m, _)| m == mark))
+            .and_then(Option::take)
+            .map(|(_, slot)| slot)?;
+        for p in &mut self.0 {
+            if p.is_some_and(|(m, _)| m < mark) {
+                *p = None;
+            }
+        }
+        Some(slot)
+    }
+}
+
 /// A view pair the split reads one of the decoder's textures through,
 /// found by the texture's address -- which cannot name another texture
 /// while it is kept, since the views hold the texture.
@@ -179,7 +229,7 @@ type Views = (usize, [Option<Com<ID3D11ShaderResourceView>>; 2]);
 
 /// A decoder built for a stream and what it has handed out, dropped in field
 /// order: the surfaces and the views before the decoder.
-struct Built {
+struct Built<'c> {
     shape: Shape,
     /// The coded size the decoder was built at.
     coded: (u32, u32),
@@ -187,24 +237,23 @@ struct Built {
     low_latency: bool,
     /// The surfaces handed out, by the readers' slot, until their picture
     /// leaves.
-    held: [Option<Surface>; SURFACES],
-    /// Units submitted whose picture has not come out: the mark and the
-    /// slot.
-    pending: [Option<(i64, usize)>; PENDING],
+    held: [Option<Surface<'c>>; SURFACES],
+    pending: Pending,
     views: [Option<Views>; VIEWS],
     /// Where the next pair of views goes.
     next_view: usize,
     staging: Option<Staging>,
-    decoder: Component,
+    decoder: Component<'c>,
 }
 
-/// AMD's decoder over one device.
+/// AMD's decoder over one device, in a context of the runtime's made there,
+/// which the decoder and the buffer borrow.
 pub struct Backend<'a> {
-    // Dropped in this order: the decoder and what it handed out, the
-    // buffer, then the context they were made in.
-    built: Option<Built>,
-    buffer: Buffer,
-    context: Context<'a>,
+    // Dropped in this order: the decoder and what it handed out, then the
+    // buffer.
+    built: Option<Built<'a>>,
+    buffer: Buffer<'a>,
+    context: &'a Context<'a>,
     amf: &'a Amf,
     device: &'a Device,
     /// The largest coded picture the caller's planes take.
@@ -277,15 +326,15 @@ pub fn caps(amf: &Amf, device: &Device) -> (Caps, bool) {
 }
 
 impl<'a> Backend<'a> {
-    /// The decoder on `device`, an AMD GPU's, the runtime's context made on
-    /// it, and the one buffer of `unit_bytes` every unit is handed over in.
+    /// The decoder in `context`, made on an AMD GPU's device, and the one
+    /// buffer of `unit_bytes` every unit is handed over in.
     pub fn new(
         amf: &'a Amf,
-        device: &'a Device,
+        context: &'a Context<'a>,
         ceiling: (u32, u32),
         unit_bytes: usize,
     ) -> Result<Self> {
-        let context = amf.context(device)?;
+        let device = context.device();
         let buffer = context.buffer(unit_bytes)?;
         Ok(Self {
             built: None,
@@ -377,7 +426,7 @@ impl<'a> Backend<'a> {
         }
         let decoder = self
             .amf
-            .decoder(&self.context, shape.decoder())
+            .decoder(self.context, shape.decoder())
             .map_err(|_| Error::NoProfile)?;
         let low_latency = configure(&decoder).map_err(|_| Error::NoProfile)?;
         decoder
@@ -388,7 +437,7 @@ impl<'a> Backend<'a> {
             coded,
             low_latency,
             held: [const { None }; SURFACES],
-            pending: [None; PENDING],
+            pending: Pending::new(),
             views: [const { None }; VIEWS],
             next_view: 0,
             staging: None,
@@ -515,18 +564,7 @@ impl<'a> Backend<'a> {
             if let Some(held) = built.held.get_mut(slot) {
                 *held = None;
             }
-            let free = built.pending.iter().position(Option::is_none).or_else(|| {
-                // Full only of units whose picture never came: the
-                // oldest goes.
-                let oldest = built.pending.iter().flatten().map(|(m, _)| *m).min()?;
-                built
-                    .pending
-                    .iter()
-                    .position(|p| p.is_some_and(|(m, _)| m == oldest))
-            });
-            if let Some(entry) = free.and_then(|i| built.pending.get_mut(i)) {
-                *entry = Some((self.mark, slot));
-            }
+            built.pending.expect(self.mark, slot);
         }
         let mut submitted = built.decoder.submit(&self.buffer)?;
         let mut tries = 0;
@@ -755,24 +793,10 @@ impl<'a> Backend<'a> {
 
 /// Put a surface the decoder handed out in the slot of the unit it
 /// completes, found by the unit's mark; one no unit asked for is let go.
-fn place(built: &mut Built, surface: Surface) {
-    let mark = surface.pts();
-    let Some(slot) = built
-        .pending
-        .iter_mut()
-        .find(|p| p.is_some_and(|(m, _)| m == mark))
-        .and_then(Option::take)
-        .map(|(_, slot)| slot)
-    else {
+fn place<'c>(built: &mut Built<'c>, surface: Surface<'c>) {
+    let Some(slot) = built.pending.complete(surface.pts()) else {
         return;
     };
-    // Units before it that completed no picture of their own -- a field's
-    // first half, say -- have none coming.
-    for p in &mut built.pending {
-        if p.is_some_and(|(m, _)| m < mark) {
-            *p = None;
-        }
-    }
     if let Some(held) = built.held.get_mut(slot) {
         *held = Some(surface);
     }
@@ -820,6 +844,11 @@ fn staging_for(
     let mut desc: D3D11_TEXTURE2D_DESC = zeroed();
     // SAFETY: a live texture; the output is live.
     unsafe { vcall!(texture, GetDesc, &raw mut desc) };
+    // The copy reads the texture's first slice: one of several is refused,
+    // as the split refuses it, rather than read at the wrong one.
+    if desc.ArraySize != 1 {
+        return Err(Error::NoProfile);
+    }
     let fits = kept
         .as_ref()
         .is_some_and(|k| (k.width, k.height, k.format) == (desc.Width, desc.Height, desc.Format));
@@ -866,7 +895,7 @@ impl Decoder for Backend<'_> {
         self.taken(slot);
         read.map_err(|e| {
             self.fault(match e {
-                Error::Device(d3d11::Error::Runtime(_)) => Fault::Fatal,
+                Error::Device(d3d11::Error::Runtime(_)) | Error::NoProfile => Fault::Fatal,
                 _ => Fault::Unrecoverable,
             })
         })?;
@@ -905,5 +934,102 @@ mod tests {
             ten_bit: false,
         };
         assert_eq!(h264.decoder(), runtime::Codec::H264);
+    }
+
+    /// **A picture handed out late finds no slot once the readers have
+    /// handed its slot out again**: it would otherwise stand in for the new
+    /// picture of that slot. The unit it belongs to is the only one it
+    /// completes; older units waiting have no picture coming; full, the
+    /// oldest unit is forgotten.
+    #[test]
+    fn a_late_picture_never_lands_in_a_slot_handed_out_again() {
+        let mut pending = Pending::new();
+        pending.expect(1, 5);
+        // The first unit's picture did not come in time: the readers let
+        // its slot go and give it to the next unit.
+        pending.expect(2, 5);
+        assert_eq!(pending.complete(1), None);
+        assert_eq!(pending.complete(2), Some(5));
+
+        pending.expect(3, 0);
+        pending.expect(4, 1);
+        assert_eq!(pending.complete(4), Some(1));
+        assert_eq!(pending.complete(3), None, "an older unit has none coming");
+
+        for mark in 10..10 + PENDING as i64 + 1 {
+            pending.expect(mark, usize::try_from(mark).expect("small"));
+        }
+        assert_eq!(pending.complete(10), None, "the oldest was forgotten");
+        assert_eq!(pending.complete(11), Some(11));
+    }
+
+    /// **A surface of several slices is refused by both routes**, the
+    /// read-back as the split: either would read the first slice, which
+    /// need not be the picture.
+    #[test]
+    #[ignore = "requires a GPU"]
+    fn a_surface_of_several_slices_is_refused_by_both_routes() {
+        use lowlat_drivers::d3d11::D3d11;
+        use lowlat_drivers::ffi::d3d11::{
+            D3D11_BIND_SHADER_RESOURCE, D3D11_USAGE_DEFAULT, DXGI_FORMAT_R8_UNORM, DXGI_SAMPLE_DESC,
+        };
+
+        let d3d11 = D3d11::load().expect("the system's libraries");
+        let adapter = d3d11
+            .adapters()
+            .expect("the adapters")
+            .into_iter()
+            .find(|a| a.decodes_here())
+            .expect("a GPU");
+        let device = d3d11.open(adapter.luid).expect("a device");
+        let desc = D3D11_TEXTURE2D_DESC {
+            Width: 64,
+            Height: 64,
+            MipLevels: 1,
+            ArraySize: 2,
+            Format: DXGI_FORMAT_R8_UNORM,
+            SampleDesc: DXGI_SAMPLE_DESC {
+                Count: 1,
+                Quality: 0,
+            },
+            Usage: D3D11_USAGE_DEFAULT,
+            BindFlags: D3D11_BIND_SHADER_RESOURCE as u32,
+            CPUAccessFlags: 0,
+            MiscFlags: 0,
+        };
+        let mut raw: *mut ID3D11Texture2D = core::ptr::null_mut();
+        // SAFETY: a live device; the description and output are live.
+        let hr = unsafe {
+            vcall!(
+                device.device(),
+                CreateTexture2D,
+                &raw const desc,
+                core::ptr::null(),
+                &raw mut raw
+            )
+        }
+        .expect("the call");
+        d3d11::check(hr).expect("an array texture");
+        // SAFETY: a texture whose reference the call handed over.
+        let texture = unsafe { Com::from_raw(raw) }.expect("a texture");
+
+        let mut staging = None;
+        assert_eq!(
+            staging_for(&device, &mut staging, texture.as_ptr()).map(|_| ()),
+            Err(Error::NoProfile)
+        );
+        let mut views = [const { None }; VIEWS];
+        let mut next = 0;
+        assert_eq!(
+            views_for(
+                &device,
+                &mut views,
+                &mut next,
+                Format::Nv12,
+                texture.as_ptr()
+            )
+            .map(|_| ()),
+            Err(Error::NoProfile)
+        );
     }
 }

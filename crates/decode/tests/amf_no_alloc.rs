@@ -44,7 +44,8 @@ fn a_unit_allocates_nothing_by_either_route() {
             ("synthetic-720p-hevc.bin", Codec::H265),
         ] {
             let units = common::units(clip);
-            let mut backend = Backend::new(&amf, &device, (4096, 4096), 1 << 20).expect("new");
+            let context = amf.context(&device).expect("a context");
+            let mut backend = Backend::new(&amf, &context, (4096, 4096), 1 << 20).expect("new");
             backend
                 .build(&VideoHeader {
                     frame_id: 1,

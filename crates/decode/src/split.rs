@@ -11,6 +11,7 @@
 
 use core::time::Duration;
 use std::sync::Arc;
+use std::time::Instant;
 
 use lowlat_drivers::d3d11::{Com, Device, Event, Fence, SharedTexture, Span, Timer};
 use lowlat_drivers::ffi::d3d11::{
@@ -182,11 +183,20 @@ impl Split {
         let Some(value) = self.signalled.checked_sub(most) else {
             return Ok(true);
         };
-        if self.fence.completed() >= value {
-            return Ok(true);
+        // A wake says only that the fence may have moved: the event can be
+        // left set by an earlier wait's notification arriving after its
+        // timeout, so the fence itself is asked after every one.
+        let started = Instant::now();
+        loop {
+            if self.fence.completed() >= value {
+                return Ok(true);
+            }
+            let Some(left) = timeout.checked_sub(started.elapsed()) else {
+                return Ok(false);
+            };
+            self.fence.notify_at(value, event)?;
+            event.wait(left);
         }
-        self.fence.notify_at(value, event)?;
-        Ok(event.wait(timeout) || self.fence.completed() >= value)
     }
 
     /// Open a picture's take: the span last closed is read into `decode_us`
@@ -434,4 +444,36 @@ pub(crate) fn micros(ms: f64) -> u32 {
     )]
     let us = (ms * 1000.0).max(0.0).min(f64::from(u32::MAX)) as u32;
     us
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lowlat_drivers::d3d11::D3d11;
+
+    /// **A wake left over from an earlier wait does not end a settle**: with
+    /// the event already set and the fence short of the value, the settle
+    /// sleeps on to its deadline and answers that the pictures are still
+    /// unfinished, rather than letting the next unit past the bound.
+    #[test]
+    #[ignore = "requires a GPU"]
+    fn a_stale_wake_does_not_end_a_settle() {
+        let d3d11 = D3d11::load().expect("the system's libraries");
+        let adapter = d3d11
+            .adapters()
+            .expect("the adapters")
+            .into_iter()
+            .find(|a| a.decodes_here())
+            .expect("a GPU");
+        let device = d3d11.open(adapter.luid).expect("a device");
+        let mut split = Split::new(&device).expect("a device with fences");
+        // Pictures signalled that the device never reaches.
+        split.signalled = split.fence.completed().saturating_add(8);
+        let event = Event::new().expect("an event");
+        event.set();
+        let timeout = Duration::from_millis(50);
+        let started = Instant::now();
+        assert_eq!(split.settle(2, &event, timeout), Ok(false));
+        assert!(started.elapsed() >= timeout, "{:?}", started.elapsed());
+    }
 }
