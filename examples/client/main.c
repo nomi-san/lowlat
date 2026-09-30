@@ -1404,6 +1404,9 @@ static void report(struct demo *d)
 
 	char title[320];
 	uint32_t width = atomic_load(&d->picture_width);
+	// The decoder by its row's label where the session is on that row's
+	// backend, else by the backend alone.
+	const lowlat_decoder_info *row = d->row < d->row_count ? &d->rows[d->row] : NULL;
 	if (width != 0) {
 		uint32_t rotation = atomic_load(&d->picture_rotation);
 		uint32_t format = atomic_load(&d->picture_format);
@@ -1420,7 +1423,8 @@ static void report(struct demo *d)
 				: rotation == LOWLAT_ROTATION_180 ? " 180deg"
 				: rotation == LOWLAT_ROTATION_270 ? " 270deg" : "",
 			video_words(&d->video),
-			st.backend == LOWLAT_DECODER_OPEN ? "open"
+			row != NULL && row->decoder == st.backend ? row->name
+				: st.backend == LOWLAT_DECODER_OPEN ? "open"
 				: st.backend == LOWLAT_DECODER_VENDOR ? "vendor"
 				: st.backend == LOWLAT_DECODER_SOFTWARE ? "software"
 				: "no decoder",
