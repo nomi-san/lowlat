@@ -39,13 +39,15 @@ use lowlat_common::dynlib::Library;
 use crate::ffi::d3d11::{
     _D3DKMT_ADAPTERTYPE__bindgen_ty_1__bindgen_ty_1 as AdapterFlags, D3D_DRIVER_TYPE_UNKNOWN,
     D3D11_BIND_SHADER_RESOURCE, D3D11_BIND_UNORDERED_ACCESS, D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
-    D3D11_FENCE_FLAG_NONE, D3D11_RESOURCE_MISC_SHARED, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC,
-    D3D11_USAGE_DEFAULT, D3DKMT_ADAPTERTYPE, D3DKMT_CLOSEADAPTER, D3DKMT_OPENADAPTERFROMLUID,
-    D3DKMT_QUERYADAPTERINFO, DXGI_ADAPTER_DESC1, DXGI_FORMAT, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE,
-    DXGI_SAMPLE_DESC, GUID, HANDLE, HRESULT, ID3D11Device, ID3D11Device5, ID3D11DeviceContext,
-    ID3D11DeviceContext4, ID3D11Fence, ID3D11Resource, ID3D11Texture2D, ID3D11UnorderedAccessView,
-    ID3D11VideoContext, ID3D11VideoDevice, IDXGIAdapter, IDXGIAdapter1, IDXGIFactory1,
-    IDXGIFactory6, IDXGIResource, IUnknown, KMTQAITYPE_ADAPTERTYPE, LARGE_INTEGER, LUID, NTSTATUS,
+    D3D11_FENCE_FLAG_NONE, D3D11_QUERY_DESC, D3D11_QUERY_TIMESTAMP, D3D11_QUERY_TIMESTAMP_DISJOINT,
+    D3D11_RESOURCE_MISC_SHARED, D3D11_SDK_VERSION, D3D11_TEXTURE2D_DESC, D3D11_USAGE_DEFAULT,
+    D3DKMT_ADAPTERTYPE, D3DKMT_CLOSEADAPTER, D3DKMT_OPENADAPTERFROMLUID, D3DKMT_QUERYADAPTERINFO,
+    DXGI_ADAPTER_DESC1, DXGI_FORMAT, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, DXGI_SAMPLE_DESC, GUID,
+    HANDLE, HRESULT, ID3D11Asynchronous, ID3D11Device, ID3D11Device5, ID3D11DeviceContext,
+    ID3D11DeviceContext4, ID3D11Fence, ID3D11Query, ID3D11Resource, ID3D11Texture2D,
+    ID3D11UnorderedAccessView, ID3D11VideoContext, ID3D11VideoDevice, IDXGIAdapter, IDXGIAdapter1,
+    IDXGIFactory1, IDXGIFactory6, IDXGIResource, IUnknown, KMTQAITYPE_ADAPTERTYPE, LARGE_INTEGER,
+    LUID, NTSTATUS,
 };
 use crate::ffi::d3d11_guids::{
     IID_ID3D11Device5, IID_ID3D11DeviceContext4, IID_ID3D11Fence, IID_ID3D11Texture2D,
@@ -767,6 +769,169 @@ impl Fence {
         let hr = unsafe { vcall!(self.fence.as_ptr(), SetEventOnCompletion, value, event.0) }
             .ok_or(Error::MissingSymbol)?;
         check(hr)
+    }
+}
+
+/// What the bracket of a timestamp pair answers: the counter's rate, and
+/// whether it stayed steady between the two. The system's own structure,
+/// which the generated declarations stop short of.
+#[repr(C)]
+#[derive(Default)]
+struct TimestampDisjoint {
+    frequency: u64,
+    disjoint: i32,
+}
+const _: () = assert!(core::mem::size_of::<TimestampDisjoint>() == 16);
+
+/// A query's answer is asked for without handing the queue to the device.
+const GETDATA_DONOTFLUSH: u32 = 1;
+
+/// A span of a device's work timed by its own clock: two timestamps and the
+/// bracket that says they compare. Opened and closed on the opening thread,
+/// as the context is, and read after the device has passed it, never
+/// waited for.
+pub struct Timer {
+    bracket: Com<ID3D11Query>,
+    begun: Com<ID3D11Query>,
+    ended: Com<ID3D11Query>,
+}
+
+impl fmt::Debug for Timer {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Timer")
+    }
+}
+
+/// What a closed span answers when asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Span {
+    /// The device has not passed it yet.
+    Pending,
+    /// The device's clock was not steady across it: no length.
+    Unsteady,
+    /// Its length, in microseconds.
+    Micros(u32),
+}
+
+impl Device {
+    /// A timer for spans of this device's work.
+    pub fn timer(&self) -> Result<Timer> {
+        let query = |kind| -> Result<Com<ID3D11Query>> {
+            let desc = D3D11_QUERY_DESC {
+                Query: kind,
+                MiscFlags: 0,
+            };
+            let mut raw: *mut ID3D11Query = core::ptr::null_mut();
+            // SAFETY: a live device; the description and output are live.
+            let hr = unsafe {
+                vcall!(
+                    self.device.as_ptr(),
+                    CreateQuery,
+                    &raw const desc,
+                    &raw mut raw
+                )
+            }
+            .ok_or(Error::MissingSymbol)?;
+            check(hr)?;
+            // SAFETY: a query whose reference the call handed over.
+            unsafe { Com::from_raw(raw) }.ok_or(Error::Unavailable)
+        };
+        Ok(Timer {
+            bracket: query(D3D11_QUERY_TIMESTAMP_DISJOINT)?,
+            begun: query(D3D11_QUERY_TIMESTAMP)?,
+            ended: query(D3D11_QUERY_TIMESTAMP)?,
+        })
+    }
+
+    /// Open `timer`'s span now: handed to the device at once, since a mark
+    /// left in the runtime's buffer is stamped when the buffer next goes,
+    /// which is later.
+    pub fn begin_span(&self, timer: &Timer) {
+        let context = self.context.as_ptr();
+        // SAFETY: a live context on its own thread and queries of this
+        // device.
+        unsafe {
+            vcall!(
+                context,
+                Begin,
+                timer.bracket.as_ptr().cast::<ID3D11Asynchronous>()
+            );
+            vcall!(
+                context,
+                End,
+                timer.begun.as_ptr().cast::<ID3D11Asynchronous>()
+            );
+            vcall!(context, Flush);
+        }
+    }
+
+    /// As [`Self::signal`], closing `timer`'s span behind the signal: the
+    /// span ends when the fence reaches `value`.
+    pub fn signal_timed(&self, fence: &Fence, value: u64, timer: &Timer) -> Result<()> {
+        let (_, context4) = self.fences.as_ref().ok_or(Error::MissingSymbol)?;
+        let context = self.context.as_ptr();
+        // SAFETY: a live context on its own thread, a fence and queries of
+        // this device.
+        let hr = unsafe { vcall!(context4.as_ptr(), Signal, fence.fence.as_ptr(), value) }
+            .ok_or(Error::MissingSymbol)?;
+        check(hr)?;
+        // SAFETY: as above.
+        unsafe {
+            vcall!(
+                context,
+                End,
+                timer.ended.as_ptr().cast::<ID3D11Asynchronous>()
+            );
+            vcall!(
+                context,
+                End,
+                timer.bracket.as_ptr().cast::<ID3D11Asynchronous>()
+            );
+            vcall!(context, Flush);
+        }
+        Ok(())
+    }
+
+    /// How long `timer`'s last closed span was, if the device has passed it.
+    pub fn span(&self, timer: &Timer) -> Result<Span> {
+        let context = self.context.as_ptr();
+        let get = |query: &Com<ID3D11Query>, out: *mut c_void, size: usize| -> Result<bool> {
+            let size = u32::try_from(size).map_err(|_| Error::Unavailable)?;
+            // SAFETY: a live context on its own thread, a query of this
+            // device, and an output of the size the query answers.
+            let hr = unsafe {
+                vcall!(
+                    context,
+                    GetData,
+                    query.as_ptr().cast::<ID3D11Asynchronous>(),
+                    out,
+                    size,
+                    GETDATA_DONOTFLUSH
+                )
+            }
+            .ok_or(Error::MissingSymbol)?;
+            check(hr)?;
+            // S_FALSE: not there yet.
+            Ok(hr == 0)
+        };
+        let mut bracket = TimestampDisjoint::default();
+        let (mut begun, mut ended) = (0u64, 0u64);
+        let sizes = (
+            core::mem::size_of::<TimestampDisjoint>(),
+            core::mem::size_of::<u64>(),
+        );
+        if !get(&timer.bracket, (&raw mut bracket).cast(), sizes.0)?
+            || !get(&timer.begun, (&raw mut begun).cast(), sizes.1)?
+            || !get(&timer.ended, (&raw mut ended).cast(), sizes.1)?
+        {
+            return Ok(Span::Pending);
+        }
+        if bracket.disjoint != 0 || bracket.frequency == 0 {
+            return Ok(Span::Unsteady);
+        }
+        let ticks = u128::from(ended.saturating_sub(begun));
+        let us = ticks * 1_000_000 / u128::from(bracket.frequency);
+        Ok(Span::Micros(u32::try_from(us).unwrap_or(u32::MAX)))
     }
 }
 
