@@ -26,7 +26,7 @@
 // default), `LOWLAT_DEVICE` the decoder's device -- a render node, or on
 // Windows a GPU's identity as the table prints it (`luid:HIGH:LOW`); the
 // first that decodes by default -- `LOWLAT_DECODER` one of `auto`, `open`, `vendor`,
-// `software`, `none`. The decoder table is printed at start, one slot a
+// `software`, `system` (Windows' own decoder, in software), `none`. The decoder table is printed at start, one slot a
 // line with the unavailable ones saying why, and `LOWLAT_DECODER_INDEX`
 // picks a slot instead. The software row is the machine's own codec library, an LGPL
 // build of it or none; `LOWLAT_FFMPEG_DIR` names where its pair is.
@@ -1427,6 +1427,7 @@ static void report(struct demo *d)
 				: st.backend == LOWLAT_DECODER_OPEN ? "open"
 				: st.backend == LOWLAT_DECODER_VENDOR ? "vendor"
 				: st.backend == LOWLAT_DECODER_SOFTWARE ? "software"
+				: st.backend == LOWLAT_DECODER_SYSTEM ? "system"
 				: "no decoder",
 			atomic_load(&d->picture_kind) == LOWLAT_FRAME_HANDLE ? "handles" : "planes",
 			gfx_name(d->gfx), d->vsync ? "" : " no vsync",
@@ -1981,7 +1982,8 @@ int main(void)
 	info.decoder = strcmp(decoder, "none") == 0 ? LOWLAT_DECODER_NONE
 		: strcmp(decoder, "open") == 0 ? LOWLAT_DECODER_OPEN
 		: strcmp(decoder, "vendor") == 0 ? LOWLAT_DECODER_VENDOR
-		: strcmp(decoder, "software") == 0 ? LOWLAT_DECODER_SOFTWARE : LOWLAT_DECODER_AUTO;
+		: strcmp(decoder, "software") == 0 ? LOWLAT_DECODER_SOFTWARE
+		: strcmp(decoder, "system") == 0 ? LOWLAT_DECODER_SYSTEM : LOWLAT_DECODER_AUTO;
 	// Pictures as device handles the renderer imports, on a decoder that
 	// exports them: on Linux the vendor's whatever was asked.
 	d.handles = getenv("LOWLAT_HANDLE") != NULL;

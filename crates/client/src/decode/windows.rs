@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use lowlat_decode::{Fault, Format, Picture, amf, d3d11, nvdec, software, vpl};
+use lowlat_decode::{Fault, Format, Picture, amf, d3d11, mf, nvdec, software, vpl};
 use lowlat_drivers::amf::Amf;
 use lowlat_drivers::cuda::Cuda;
 use lowlat_drivers::cuvid::Cuvid;
@@ -41,6 +41,15 @@ use crate::seam::Opened;
 /// within four seconds, the display's GPU the slowest.
 const FIND_AGAIN: Duration = Duration::from_secs(5);
 const FIND_EVERY: Duration = Duration::from_millis(250);
+
+impl Backend for mf::Backend {
+    fn output(&self) -> Option<(u32, u32, Format)> {
+        mf::Backend::output(self)
+    }
+    fn timings(&self) -> (u32, u32) {
+        (self.decode_us, self.readback_us)
+    }
+}
 
 impl Backend for d3d11::Backend<'_> {
     fn output(&self) -> Option<(u32, u32, Format)> {
@@ -174,6 +183,12 @@ pub(super) fn open(opened: Opened, shared: &Shared<'_>, replacing: bool) -> Next
             };
             let backend = software::Backend::new(&lavc);
             drive(backend, shared, replacing)
+        }
+        Opened::Mf => {
+            let Ok(framework) = lowlat_drivers::mf::load() else {
+                return Next::Failed;
+            };
+            drive(mf::Backend::new(framework, UNIT_BYTES), shared, replacing)
         }
     }
 }

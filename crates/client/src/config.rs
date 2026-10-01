@@ -32,6 +32,10 @@ pub enum Backend {
     /// the device names the directory it is taken from, or is empty for the
     /// search of its own.
     Software,
+    /// The system's own decoder, in software: the media framework's on
+    /// Windows, H.264 and, where its extension is installed, HEVC at eight
+    /// and ten bits; on no other system.
+    System,
     /// No decoder at all: the session carries control and sound, and every
     /// picture is taken off the wire and dropped. A test peer, or a client
     /// with nowhere to draw.

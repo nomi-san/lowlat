@@ -55,6 +55,9 @@ pub enum Opened {
     /// the search of its own. Opened again on the decode thread, which
     /// finds the same pair the probe found.
     Software(Option<PathBuf>),
+    /// The system's own decoder, in software: the media framework's. Made
+    /// again on the decode thread.
+    Mf,
 }
 
 impl Opened {
@@ -64,6 +67,7 @@ impl Opened {
             Self::D3d11 { .. } => Backend::Vaapi,
             Self::Nvdec { .. } | Self::Amf { .. } | Self::Vpl { .. } => Backend::Nvdec,
             Self::Software(_) => Backend::Software,
+            Self::Mf => Backend::System,
         }
     }
 
@@ -74,7 +78,7 @@ impl Opened {
             | Self::Nvdec { handles, .. }
             | Self::Amf { handles, .. }
             | Self::Vpl { handles, .. } => *handles,
-            Self::Software(_) => false,
+            Self::Software(_) | Self::Mf => false,
         }
     }
 }
@@ -227,6 +231,17 @@ fn probe_vpl(adapter: &Adapter) -> Result<(Caps, bool), DecoderStage> {
         return Err(DecoderStage::Profile);
     }
     Ok((caps, handles))
+}
+
+/// The system's own decoder: what it decodes here, each decoder made and
+/// dropped to ask.
+fn probe_mf() -> Result<Caps, DecoderStage> {
+    let mf = lowlat_drivers::mf::load().map_err(|_| DecoderStage::Runtime)?;
+    let (caps, _, _) = lowlat_decode::mf::caps(mf);
+    if !caps.any() {
+        return Err(DecoderStage::Runtime);
+    }
+    Ok(caps)
 }
 
 /// Whether the maker of `adapter` has a decoder of its own here.
@@ -390,7 +405,9 @@ pub(crate) fn choose(decoding: &Decoding) -> Result<(Option<Opened>, Caps), Erro
     };
     match (decoding.kind, decoding.backend) {
         (_, Backend::None) => Ok((None, Caps::default())),
-        (FrameKind::Handle, Backend::Software) => Err(Error::Decoder(DecoderStage::Unsupported)),
+        (FrameKind::Handle, Backend::Software | Backend::System) => {
+            Err(Error::Decoder(DecoderStage::Unsupported))
+        }
         (_, Backend::Vaapi) => {
             let (opened, caps) = system(named).map_err(Error::Decoder)?;
             Ok((Some(opened), caps))
@@ -408,14 +425,23 @@ pub(crate) fn choose(decoding: &Decoding) -> Result<(Option<Opened>, Caps), Erro
             let caps = probe_software(dir.as_deref()).map_err(Error::Decoder)?;
             Ok((Some(Opened::Software(dir)), caps))
         }
+        (FrameKind::Planes, Backend::System) => {
+            let caps = probe_mf().map_err(Error::Decoder)?;
+            Ok((Some(Opened::Mf), caps))
+        }
         (FrameKind::Planes, Backend::Auto) => {
             let last = match either() {
                 Ok((opened, caps)) => return Ok((Some(opened), caps)),
                 Err(stage) => stage,
             };
-            // Then software, which knows nothing of GPUs.
-            match probe_software(None) {
-                Ok(caps) => Ok((Some(Opened::Software(None)), caps)),
+            // Then software, which knows nothing of GPUs: the codec library
+            // where someone put one, the system's own decoder last.
+            let last = match probe_software(None) {
+                Ok(caps) => return Ok((Some(Opened::Software(None)), caps)),
+                Err(stage) => most_telling(last, stage),
+            };
+            match probe_mf() {
+                Ok(caps) => Ok((Some(Opened::Mf), caps)),
                 Err(stage) => Err(Error::Decoder(most_telling(last, stage))),
             }
         }
@@ -573,6 +599,35 @@ mod tests {
             (Ok(("vendor", 0x20)), 1)
         );
         assert_eq!(walk(&[nvidia], &[0x10]), (Ok(("system", 0x10)), 1));
+    }
+
+    /// **The system's decoder hands out planes alone**: asked for with the
+    /// handle kind it is refused before anything is probed.
+    #[test]
+    fn the_systems_decoder_is_refused_for_handles() {
+        let decoding = Decoding {
+            backend: Backend::System,
+            kind: FrameKind::Handle,
+            ..Decoding::default()
+        };
+        assert!(matches!(
+            choose(&decoding),
+            Err(Error::Decoder(DecoderStage::Unsupported))
+        ));
+    }
+
+    /// **Asked for by kind, the system's decoder opens for planes** where
+    /// the framework is, decoding H.264 at least.
+    #[test]
+    #[ignore = "requires the system's media framework"]
+    fn the_systems_decoder_opens_for_planes() {
+        let decoding = Decoding {
+            backend: Backend::System,
+            ..Decoding::default()
+        };
+        let (opened, caps) = choose(&decoding).expect("the system's decoder");
+        assert_eq!(opened, Some(Opened::Mf));
+        assert!(caps.h264 && !caps.hevc_444);
     }
 
     /// **Both decoders are tried on a GPU before the walk leaves it**: the

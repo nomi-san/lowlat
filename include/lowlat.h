@@ -42,7 +42,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 19
+#define LOWLAT_ABI_MINOR 20
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 /// A library built for Windows carries the client half alone.
@@ -606,9 +606,11 @@ typedef enum lowlat_transport {
 /// decodes, then the vendor's interface on the card behind it or any, then
 /// software. On Windows it is a GPU's identity as the listing spells it
 /// (`luid:HIGH:LOW`), which lasts until the GPU is reset or its driver
-/// replaced: the system's video decoding interface on that GPU or the
-/// first that decodes, the high-performance GPU first, then software. A machine without any is refused at
-/// creation with the stage named, exactly as a host without an encoder is.
+/// replaced: the system's video decoding interface and the GPU maker's own
+/// decoder on that GPU or the first that decodes, the high-performance GPU
+/// first, then software -- the codec library, then the system's own
+/// decoder. A machine without any is refused at creation with the stage
+/// named, exactly as a host without an encoder is.
 typedef enum lowlat_decoder {
     LOWLAT_DECODER_AUTO = 0,
     LOWLAT_DECODER_OPEN = 1,
@@ -625,6 +627,12 @@ typedef enum lowlat_decoder {
     /// names one, beside the running executable, then the linker's own way;
     /// the highest major of 4 through 9 that opens wins. Planes only.
     LOWLAT_DECODER_SOFTWARE = 4,
+    /// The system's own decoder, in software (minor 20): on Windows the
+    /// media framework's, H.264 on every edition that has it and HEVC at
+    /// eight and ten bits where the system's HEVC extension is installed
+    /// and licensed; 4:2:0 alone, planes alone. Refused as not in the build
+    /// on any other system.
+    LOWLAT_DECODER_SYSTEM = 5,
 } lowlat_decoder;
 
 /// How pictures leave the library.
@@ -1432,7 +1440,8 @@ typedef struct lowlat_decoder_info {
     /// Its slot in the table, the `index` it was asked for.
     uint32_t index;
     /// One of `lowlat_decoder`, `LOWLAT_DECODER_OPEN`,
-    /// `LOWLAT_DECODER_VENDOR` or `LOWLAT_DECODER_SOFTWARE`: what
+    /// `LOWLAT_DECODER_VENDOR`, `LOWLAT_DECODER_SOFTWARE` or
+    /// `LOWLAT_DECODER_SYSTEM`: what
     /// `lowlat_client_create_info.decoder` names to open this one.
     uint32_t decoder;
     /// The largest coded picture per codec, as the device reports it; zero
@@ -1461,20 +1470,23 @@ typedef struct lowlat_decoder_info {
     /// .device`: a render node on Linux, empty for the vendor's device when
     /// no node names it, which creation takes as the first device; a GPU's
     /// identity on Windows. For the software row, the directory the library
-    /// pair was found in, or empty for the linker's own search.
+    /// pair was found in, or empty for the linker's own search; empty for
+    /// the system's decoder.
     char device[LOWLAT_OUTPUT_MAX];
     /// A label for a menu, NUL-terminated: the interface, and the card's
     /// maker in brackets where it is known -- `VA-API [Intel]`, `VA-API
     /// [AMD]`, `NVDEC [NVIDIA]`, `AMF [AMD]`, `VPL [Intel]`, `MFX [Intel]`,
-    /// `D3D11 [NVIDIA]`, `libavcodec [LGPL]`; the interface alone for a slot
+    /// `D3D11 [NVIDIA]`, `libavcodec [LGPL]`, `MF [Microsoft]`; the
+    /// interface alone for a slot
     /// with nothing behind it.
     char name[LOWLAT_DECODER_NAME_MAX];
     /// The driver's own words, NUL-terminated (minor 13): its banner and
     /// version for the open decoder on Linux, the GPU's name and driver
     /// version on Windows, the device's product name for NVIDIA's decoder
     /// and the GPU's name and the runtime's version for AMD's and Intel's,
-    /// the library's version and licence for software; for a slot that is
-    /// not available, why not. Filled only when `size` reaches it.
+    /// the library's version and licence for software, each codec's module
+    /// version -- or why it did not open -- for the system's decoder; for a
+    /// slot that is not available, why not. Filled only when `size` reaches it.
     char driver[LOWLAT_DECODER_NAME_MAX];
 } lowlat_decoder_info;
 
@@ -2521,8 +2533,10 @@ lowlat_status lowlat_debug_panic(lowlat_host *hl) LOWLAT_NOEXCEPT;
 /// decoder on render nodes `renderD128` to `renderD135`, 8 to 15 the
 /// vendor's on its devices by ordinal, 16 the software decoder from the
 /// codec library's own search; on Windows, slots 0 to 7 are the open
-/// decoder on the GPUs the system lists, high-performance first, and 8 the
-/// software decoder. The same slot means the same thing on every machine and every
+/// decoder on the GPUs the system lists, high-performance first, 8 to 15
+/// the GPU maker's own decoder on the same GPUs, 16 the software decoder
+/// and 17 the system's own (minor 20). The same slot means the same thing
+/// on every machine and every
 /// call, and nothing is remembered between calls: each call opens its one
 /// slot the way creation opens it and closes it again,
 /// so a loop from zero until false costs every slot once -- a few

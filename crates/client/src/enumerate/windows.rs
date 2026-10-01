@@ -1,10 +1,11 @@
 //! The decoder table on Windows: slots 0 to 7 are the system's video
 //! decoding interface on the adapters offered, high-performance first, 8 to
 //! 15 the maker's own interface on the same adapters in the same order --
-//! NVIDIA's, AMD's, Intel's -- 16 the machine's own codec library.
+//! NVIDIA's, AMD's, Intel's -- 16 the machine's own codec library, 17 the
+//! system's own decoder.
 
 use lowlat_core::video::Codec;
-use lowlat_decode::{amf, d3d11, nvdec, vpl};
+use lowlat_decode::{amf, d3d11, mf, nvdec, vpl};
 use lowlat_drivers::amf::Amf;
 use lowlat_drivers::cuda::Cuda;
 use lowlat_drivers::cuvid::Cuvid;
@@ -21,9 +22,9 @@ pub const OPEN_SLOTS: u32 = 8;
 /// The maker's own interface's slots: one per adapter offered, the same
 /// adapter as the system interface's slot eight before.
 pub const VENDOR_SLOTS: u32 = 8;
-/// The table's length: the system interface's, the maker's, and the codec
-/// library's one slot.
-pub const SLOTS: u32 = OPEN_SLOTS + VENDOR_SLOTS + 1;
+/// The table's length: the system interface's, the maker's, the codec
+/// library's one slot and the system decoder's.
+pub const SLOTS: u32 = OPEN_SLOTS + VENDOR_SLOTS + 2;
 
 /// The slot `slot` of the table, probed now; none past the table's end.
 pub fn probe(slot: u32) -> Option<Available> {
@@ -33,7 +34,42 @@ pub fn probe(slot: u32) -> Option<Available> {
     if let Some(nth) = slot.checked_sub(OPEN_SLOTS).filter(|n| *n < VENDOR_SLOTS) {
         return Some(vendor(usize::try_from(nth).ok()?));
     }
-    (slot == SLOTS - 1).then(codec_library)
+    if slot == OPEN_SLOTS + VENDOR_SLOTS {
+        return Some(codec_library());
+    }
+    (slot == SLOTS - 1).then(system_decoder)
+}
+
+/// The system's own decoder, in software: the media framework's H.264
+/// decoder and its HEVC extension, each made and dropped to ask, with its
+/// module's version or why it was not made.
+fn system_decoder() -> Available {
+    let name = label("MF", Some("Microsoft"));
+    let Ok(framework) = lowlat_drivers::mf::load() else {
+        return Available::unavailable(Backend::System, "", name, RUNTIME);
+    };
+    let (caps, h264, hevc) = mf::caps(framework);
+    if !caps.any() {
+        return Available::unavailable(Backend::System, "", name, RUNTIME);
+    }
+    let words = |codec: &str, made: &mf::Made| match made {
+        Ok(Some([a, b, c, d])) => format!("{codec} {a}.{b}.{c}.{d}"),
+        Ok(None) => codec.to_string(),
+        Err(e) => format!("{codec}: {e}"),
+    };
+    Available {
+        backend: Backend::System,
+        available: true,
+        device: String::new(),
+        name,
+        driver: format!("{}, {}", words("H.264", &h264), words("HEVC", &hevc)),
+        caps,
+        handle: false,
+        // The decoder says none: a size its input refuses is refused when it
+        // is built.
+        max_h264: (0, 0),
+        max_hevc: (0, 0),
+    }
 }
 
 /// The maker's own interface on the `nth` adapter offered: NVIDIA's, AMD's
@@ -239,7 +275,8 @@ mod tests {
     /// unavailable with why, no adapter twice; the maker's own interface's,
     /// each on the adapter of the system interface's slot eight before; then
     /// the codec library, available with what it decodes or unavailable with
-    /// why. Labels and words follow the grammar every platform's table uses.
+    /// why; then the system's own decoder. Labels and words follow the
+    /// grammar every platform's table uses.
     #[test]
     fn every_slot_answers_and_the_table_ends() {
         let rows: Vec<Available> = (0..SLOTS)
@@ -300,6 +337,12 @@ mod tests {
                         row.name
                     );
                 }
+                continue;
+            }
+            if slot == SLOTS as usize - 1 {
+                assert_eq!(row.backend, Backend::System);
+                assert_eq!(row.name, "MF [Microsoft]");
+                assert!(!row.handle, "the system's decoder hands out no handle");
                 continue;
             }
             assert_eq!(row.backend, Backend::Software);

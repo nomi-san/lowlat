@@ -129,6 +129,8 @@ pub(crate) fn choose(decoding: &Decoding) -> Result<(Option<Opened>, Caps), Erro
     let node = (!decoding.device.is_empty()).then_some(decoding.device.as_str());
     match (decoding.kind, decoding.backend) {
         (_, Backend::None) => Ok((None, Caps::default())),
+        // The system's own decoder is Windows' media framework.
+        (_, Backend::System) => Err(Error::Decoder(DecoderStage::Unsupported)),
         // Only the vendor backend exports a handle, so asking for one
         // settles the choice on it: on the card behind the node named, or
         // any, or nothing.
@@ -234,3 +236,25 @@ pub(crate) const RENDER_NODES: [&str; 8] = [
     "/dev/dri/renderD134",
     "/dev/dri/renderD135",
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **The system's own decoder is not in a Linux build**: refused as such
+    /// whatever kind is asked, before anything is probed.
+    #[test]
+    fn the_systems_decoder_is_not_in_the_build() {
+        for kind in [FrameKind::Planes, FrameKind::Handle] {
+            let decoding = Decoding {
+                backend: Backend::System,
+                kind,
+                ..Decoding::default()
+            };
+            assert!(matches!(
+                choose(&decoding),
+                Err(Error::Decoder(DecoderStage::Unsupported))
+            ));
+        }
+    }
+}
