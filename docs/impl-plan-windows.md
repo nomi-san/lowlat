@@ -329,7 +329,12 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   minutes of each codec by handle and by planes from an established host, ten-bit and full
   chroma at both depths by both kinds from a second, the kind switched, and the device lost by
   restarting the GPU's driver under each kind, the session going on after about a second.
-  *Owed*: the older runtime on a part that needs it.
+  (*Checked 2026-10-01* on a laptop whose integrated GPU only the older runtime reaches, a
+  2015 part on its last driver: the runtime found through its own registry list, H.264 alone
+  without the plugin HEVC needs there, every H.264 clip bit for bit by planes in the readers'
+  order, five minutes from an established host -- no slower than the system's interface on
+  the same GPU, 15.5 ms from arrival to acquired against 15.8 at 1440p -- and the GPU's
+  driver restarted mid-session, the session going on.)
 - [ ] **W1.8 the system's decoder**, software only. Checked by the clips it decodes.
 - [ ] **W1.9 the demo**: the GPU choice's menu, the feature reports, the Sony pads, the check
   of the display's GPU, and from it the renderer's placement: handles when the decoding GPU

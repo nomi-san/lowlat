@@ -919,8 +919,12 @@ runtime made again there: restarting the GPU's driver mid-session cost about a s
 most two skipped pictures. **The older runtime** is reached where the driver names no current
 one, on the GPU by its place in the plain enumeration -- one of the first four -- and hands out
 planes alone, decoded into memory of the backend's own and waited for in the read-back;
-H.264 and 4:2:0 HEVC at both depths. *Owed*: the older runtime on a part that needs it; on the
-Intel card its calls were checked through the current runtime, which answers them too.
+H.264 and 4:2:0 HEVC at both depths where the runtime has them built in -- a runtime that
+decodes HEVC only through a plugin offers H.264 alone. On a 2015 integrated GPU only the older
+runtime reaches, found through the runtime's own registry list, every H.264 clip decodes bit
+for bit; from an established host at 1440p a picture was acquired 15.5 ms after its arrival,
+against 15.8 through the system's interface on the same GPU, and the GPU's driver restarted
+mid-session left the session going.
 
 **On an Intel GPU it comes second.** Against the system's interface on the Intel card, in one
 session per codec and kind with the decoders alternating every twenty seconds, 2560x1440 from

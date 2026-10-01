@@ -10,7 +10,10 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   decoders alternating, it measured within 0.1 ms of the system's interface there -- the same
   engine behind both -- so the system's interface stays first ([10 §5.2](10-client.md)).
 - **Intel's older runtime hands out planes alone**, for the parts the current one does not
-  reach; its check on such a part is owed until one is at hand.
+  reach. Checked on such a part (*2026-10-01*): a 2015 integrated GPU on its last driver, the
+  runtime found through its own registry list, H.264 only (HEVC there needs a plugin, which is
+  not loaded), every H.264 clip bit for bit, five minutes live as fast as the system's
+  interface on the same GPU, and a restart of the GPU's driver survived.
 
 ### Changed
 - **The vendor kind opens on an Intel GPU**: Intel's decoder through the runtime its display
