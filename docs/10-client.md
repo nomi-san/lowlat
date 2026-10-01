@@ -728,7 +728,7 @@ otherwise.
 | AMF | AMD's own decoder, loaded at runtime, in its low-latency mode, driven by the library's own readers (W1.6); first on an AMD GPU where the runtime has that mode | planes by read-back; shared textures filled by the split (§4.2) |
 | VPL | Intel's own decoder, loaded at runtime from where the display driver installs it, with its older runtime for the parts the current one does not reach (W1.7); second on an Intel GPU, measured no faster | planes; shared textures filled by the split (§4.2); the older runtime planes alone |
 | software | an LGPL libavcodec pair, loaded at runtime | planes |
-| the system's decoder | the platform's own media framework, in software only | planes, eight-bit 4:2:0 |
+| the system's decoder | the platform's own media framework, in software only (W1.8); last | planes: H.264 eight-bit 4:2:0, HEVC eight and ten-bit 4:2:0 |
 
 Unset, the order is the table's, on the GPU the application names, or on each GPU offered
 in turn where it names none -- **both hardware decoders tried on a GPU before the walk leaves
@@ -750,7 +750,9 @@ has its vendor's runtime, the older ones included; on an Intel GPU it comes firs
 measures faster than the system's interface.) The pair keeps D14's rule and is found in the
 directory the application names or beside the application, by the platform's versioned
 names. The system's decoder needs nothing installed for H.264 and the system's HEVC
-extension for HEVC, and comes last, because eight-bit 4:2:0 is all it decodes.
+extension for HEVC, and comes last, because eight-bit 4:2:0 is all it decodes. (*Amended
+2026-10-01*, W1.8: HEVC at ten bits too; it comes last as the one decoder on the processor
+that needs nothing put on the machine, 4:2:0 alone, below.)
 
 **The pair first** (*built 2026-09-27*, W1.2). Until the hardware backends are built the
 table is the pair's one slot: the automatic choice settles on it, and the open and vendor
@@ -943,6 +945,64 @@ the whole process using 4 to 6 % of a core. From a second host with the full ran
 arrived in 2.2 ms by handle and 3.4 by planes; full chroma in 2.9 ms by handle at eight bits
 and 3.0 at ten, and 7.2 by planes at ten, where the packed layout is unpacked on the
 processor. The kind switched fourteen times in one session, clean.
+
+**The system's decoder** (*built 2026-10-01*, W1.8) is the platform's media framework, in
+software: its own H.264 decoder on every edition that has the framework, and the HEVC
+decoder of the system's extension where that is installed and licensed -- a package of the
+system's store, made only through the framework's own enumeration, which refuses it where its
+licence is missing. It is loaded from the system's directory alone and started once for the
+process, never shut down, and the process's multithreaded apartment is kept alive with it, so
+the library's decode thread and an application's thread alike can make and drive a decoder
+and no thread of the application's is put into an apartment by the library. No device is
+given to either decoder, so both decode on the processor, and a machine with no GPU decoder
+at all still has one. It has a kind of its own, `LOWLAT_DECODER_SYSTEM`, and the table's last
+slot, `MF [Microsoft]`, whose words are each decoder's module version or why it did not open
+([06 §3b](06-api.md)).
+
+**Every sequence parameter set is read before the decoder sees its unit.** The decoders take
+what their types allow and fail inside: H.264 at ten bits or of full or 4:2:2 chroma hangs the
+H.264 decoder inside its output call, never returning, and H.264 cropped from the left or the
+top is written to the wrong place, the crop's offset named and not applied; so these are
+refused as fatal, with the declaration masked so that a host never sends them. HEVC is taken
+at eight and ten bits, 4:2:0 alone; its depth picks the output's layout, since the HEVC decoder
+handed a ten-bit stream with an eight-bit output decodes every picture wrongly without an
+error, and a picture whose layout is not its stream's is refused rather than copied. The
+parameter set also says the size the decoder is made for, which the HEVC decoder needs before
+its first unit, and the visible picture and range handed out.
+
+**One picture out of each unit's own call.** Asked to hand pictures out as soon as they can be
+decoded, the H.264 decoder does; the HEVC decoder's parser waits for the next unit's start
+before it ends a picture, which put every picture a unit late and a picture of several slices
+never out at all, so every unit is ended with an access unit delimiter, which changes nothing
+else. One input buffer and one output buffer are made and used again: the input written only
+once the decoder has said it needs more, since it holds the last unit until then, and the
+output's length cleared before each call, without which a buffer used again is refused; a
+buffer made per picture cost half a millisecond at 1440p in page faults. The output is made
+again only when the stream's size changes, which the decoder follows itself, a picture never
+lost to it. The decoder stores a picture at its coded size -- 1088 rows for 1080, a width not a
+multiple of sixteen rounded up -- so rows are copied by its own stride and the chroma read
+after its coded height; a copy at the visible width reads every such picture wrongly. Each
+decoder starts a worker thread a processor by default: HEVC is given two, which decoded a
+1440p picture faster than sixteen (4.1 ms against 4.6) at 42 % of the processor time, and
+H.264 half the processors, the default's speed at less. Every committed eight-bit 4:2:0 clip
+and every ten-bit HEVC clip decodes bit for bit and in the stream's order; nothing is allocated
+per unit.
+
+From an established host at 2560x1440, ten minutes each, a picture was acquired 5.1 ms after
+its arrival for H.264 and 6.0 for HEVC, decoded in 3.9 and 5.6, the whole process using 30 % of
+a core. In one session per codec with every decoder alternating every twenty seconds, arrival
+to acquired at the mean:
+
+| stream | the system's decoder | the LGPL pair | the system's interface, Intel card |
+|---|---|---|---|
+| H.264 | 4.60 ms | 4.24 ms | 4.07 ms |
+| HEVC | 4.93 ms | 6.07 ms | 2.88 ms |
+
+-- so it stays after the pair, which also decodes full chroma, as the order has it. Ten-bit
+with the full range from a second host arrived in 3.6 ms. On a 2015 dual-core laptop without
+the HEVC extension the table offers H.264 alone and an HEVC preference is masked to it; there
+every H.264 clip decodes bit for bit, and a 1440p stream at sixteen pictures a second was kept
+up with at 21 ms a picture, where the GPU's own decoders took 8.
 
 ## §6 Sound
 

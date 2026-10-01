@@ -122,7 +122,9 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   LGPL build and never shipped, and is found in the directory the application names or beside
   the application, by the platform's versioned names. The system's decoder is software only
   and eight-bit 4:2:0 only, H.264 on every edition and HEVC where the system's HEVC extension
-  is installed, and it comes after the pair.
+  is installed, and it comes after the pair. (*Amended 2026-10-01, at W1.8*: HEVC at ten bits
+  as well, which the extension decodes in software exactly; H.264 stays at eight bits, the
+  decoder hanging on its deeper profiles.)
 - **The hermetic session runs on Windows**, CI included: the host's session and packetiser
   and the injection crate's event, pad and usage modules build there, and every platform
   module stays Linux-only until W2.
@@ -335,7 +337,35 @@ once, here; the design is [10 §4.2 and §5.2](10-client.md), the boundary
   order, five minutes from an established host -- no slower than the system's interface on
   the same GPU, 15.5 ms from arrival to acquired against 15.8 at 1440p -- and the GPU's
   driver restarted mid-session, the session going on.)
-- [ ] **W1.8 the system's decoder**, software only. Checked by the clips it decodes.
+- [x] **W1.8 the system's decoder**, software only. Checked by the clips it decodes. *Built
+  2026-10-01.* Decided at its interview: a decoder kind of its own,
+  `LOWLAT_DECODER_SYSTEM`, with its own slot, the table's last, minor 20 -- the software kind
+  stays the codec library's, whose device string is its directory; and HEVC at ten bits too,
+  the extension decoding it into the ten-bit planar layout bit for bit. As built: the
+  framework is loaded from the system's directory alone and started once for the process,
+  never shut down, with the process's multithreaded apartment kept alive, so any thread can
+  drive a decoder and none of the application's is put into an apartment; H.264 is the
+  system's own decoder, HEVC the extension where installed and licensed, made only through
+  the framework's enumeration; no device manager is given, so both decode on the processor.
+  Every sequence parameter set is read before the decoder sees its unit, and a stream the
+  decoder would hang on or write wrongly is refused as fatal: H.264 other than eight-bit 4:2:0
+  or cropped from the left or top, HEVC other than 4:2:0 at eight or ten bits; the depth picks
+  the output's layout, since a ten-bit stream into an eight-bit output decodes wrongly without
+  an error. Every unit ends with an access unit delimiter, without which the HEVC decoder hands
+  each picture out a unit late, and a picture of several slices not at all; one input and one
+  output buffer are reused, the output's length cleared before each call; rows are copied by
+  the decoder's own stride, the chroma after its coded height. HEVC is given two worker
+  threads, faster than the default of one a processor, and H.264 half the processors.
+  Every committed eight-bit 4:2:0 clip and every ten-bit HEVC clip decodes bit for bit in the
+  stream's order; a size change mid-stream is followed; each unit's picture comes out of its own
+  call; the refused streams are refused at once; nothing is allocated per unit; each guard
+  shown failing. Ten minutes of each codec from an established host at 2560x1440: a picture
+  acquired 5.1 ms after its arrival for H.264 and 6.0 for HEVC, the whole process at 30 % of a
+  core; in one session with every decoder alternating, against the LGPL pair 0.4 ms slower on
+  H.264 and 1.1 ms faster on HEVC, so it stays after the pair; ten-bit with the full range from
+  a second host in 3.6 ms. On a 2015 dual-core laptop without the HEVC extension, H.264 alone,
+  every H.264 clip bit for bit and a 1440p stream kept up with at 21 ms a picture, HEVC asked
+  for masked to H.264 ([10 §5.2](10-client.md)).
 - [ ] **W1.9 the demo**: the GPU choice's menu, the feature reports, the Sony pads, the check
   of the display's GPU, and from it the renderer's placement: handles when the decoding GPU
   drives the display, planes drawn on the display's GPU when it does not. Checked by both Sony
@@ -378,6 +408,8 @@ whether an application may supply the frames, for a virtual display that already
 
 ## Change log
 
+- 2026-10-01: W1.8 built: the system's decoder, its own kind and slot, last in the automatic
+  order; HEVC at ten bits as well, amending W1's decision.
 - 2026-10-01: W1.7 reviewed before W1.8: on an Intel GPU the automatic order tries the
   system's interface first and builds Intel's decoder only where it does not open
   ([10 §5.2](10-client.md)).

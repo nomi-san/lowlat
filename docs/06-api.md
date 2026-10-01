@@ -731,6 +731,17 @@ Intel's second, having measured it no faster there ([10 §5.2](10-client.md)). A
 under it is found again on the same GPU and a session of the runtime made again there; the
 session goes on. No entry point or field is added, so the minor stays 19.
 
+**The system's decoder on Windows since W1.8** (*2026-10-01*, minor 20):
+`LOWLAT_DECODER_SYSTEM` names the platform's own decoder, in software -- H.264 on every
+edition that has the media framework, and HEVC at eight and ten bits where the system's HEVC
+extension is installed and licensed; 4:2:0 alone, planes alone, the handle kind refused at
+creation as for the codec library. Its slot is the table's last, 17 of 18, labelled `MF
+[Microsoft]`, its device empty and its words each decoder's module version or why it did not
+open; it reports no size limits. `LOWLAT_DECODER_AUTO` reaches it last, after the codec
+library, so a machine with any GPU decoder or a library pair never lands on it. On any other
+system the kind is refused with `LOWLAT_ERR_DECODER_UNSUPPORTED`, as not in the build
+([10 §5.2](10-client.md)).
+
 **Sound is decoded, not played** (minor 7). `acquire_audio` hands out one packet a call,
 signed sixteen-bit stereo at 48 kHz, in the order the host sent them, as many frames as the
 packet held -- 960 for a host at 20 ms, at most 8000; `count` is the room in frames going in

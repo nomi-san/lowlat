@@ -3,6 +3,42 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-01 - W1.8: the system's decoder on Windows
+
+### Decided
+- **A decoder kind of its own**, `LOWLAT_DECODER_SYSTEM` (minor 20), and the table's last
+  slot, `MF [Microsoft]`: the software kind stays the codec library's, whose device string is
+  its directory ([06 §3b](06-api.md)).
+- **HEVC at ten bits as well**, where W1 had planned eight bits alone: the system's HEVC
+  extension decodes it in software bit for bit. H.264 stays at eight bits.
+- **Last in the automatic order, after the codec library**: in one session with the decoders
+  alternating it was 0.4 ms slower than the LGPL pair on H.264 and 1.1 ms faster on HEVC, and
+  the pair also decodes full chroma ([10 §5.2](10-client.md)).
+
+### Changed
+- **The system's decoder on Windows**: the platform's media framework in software, loaded
+  from the system's directory alone, started once and never shut down; H.264 on every edition
+  that has it, HEVC where the extension is installed and licensed; planes. Every sequence
+  parameter set is read first and a stream the decoder would hang on or write wrongly refused
+  as fatal; every unit ends with an access unit delimiter, so each picture comes out of its
+  own unit's call; one input and one output buffer, reused; rows copied by the decoder's own
+  stride. Two worker threads for HEVC, half the processors for H.264.
+- **A system library is opened from the system's directory alone** for this decoder, never
+  from the application's, which a library's bare name searches first.
+
+### Found
+- **The H.264 decoder hangs inside its output call** on ten-bit, 4:2:2 and full-chroma
+  streams, which its types accept; **the HEVC decoder decodes a ten-bit stream into an
+  eight-bit output wrongly without an error**; and **the HEVC extension faults the process if
+  it is told to start streaming before an output is set**. All three are kept from it.
+- **The HEVC decoder ends a picture only at the next unit's start**: without a delimiter at the
+  end of each unit every picture came out a unit late, and a picture of several slices not at
+  all.
+- **The H.264 decoder writes a picture cropped from the left or the top to the wrong place**,
+  naming the crop's offset and not applying it.
+- **The HEVC extension's licence is checked when it is made**: a package installed from a file
+  rather than the store is refused there.
+
 ## 2026-09-30 - W1.7: Intel's decoder on Windows
 
 ### Decided
