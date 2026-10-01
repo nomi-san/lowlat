@@ -29,6 +29,7 @@
 //! travel ahead of the keyframe still builds one.
 
 use core::fmt;
+use core::ptr::NonNull;
 use core::time::Duration;
 use std::sync::Arc;
 
@@ -217,10 +218,73 @@ struct Staging {
 type Views = (usize, [Option<Com<ID3D11ShaderResourceView>>; 2]);
 
 /// The older runtime's surfaces: descriptions over one block of memory,
-/// made with the decoder and never moved while it lives.
+/// made with the decoder and never moved while it lives. **Reached through
+/// raw pointers alone, never a reference**: the runtime keeps pointers into
+/// both while it lives, and its threads write the descriptions' lock counts.
 struct Pool {
-    surfaces: Box<[mfxFrameSurface1]>,
-    _memory: Box<[u8]>,
+    surfaces: NonNull<[mfxFrameSurface1]>,
+    memory: NonNull<[u8]>,
+    /// Each surface's bytes in the block, a row's, and its rows of luma, as
+    /// the pool laid them out -- never as a description says, which the
+    /// runtime writes.
+    frame: usize,
+    pitch: usize,
+    rows: usize,
+}
+
+impl Pool {
+    /// The pool's surface at `index`.
+    fn surface(&self, index: usize) -> Option<*mut mfxFrameSurface1> {
+        (index < self.surfaces.len()).then(|| {
+            self.surfaces
+                .as_ptr()
+                .cast::<mfxFrameSurface1>()
+                .wrapping_add(index)
+        })
+    }
+
+    /// The index of `surface` among the pool's, if it is one.
+    fn index_of(&self, surface: *const mfxFrameSurface1) -> Option<usize> {
+        let first = self.surfaces.as_ptr().cast::<mfxFrameSurface1>().addr();
+        let offset = surface.addr().checked_sub(first)?;
+        let size = core::mem::size_of::<mfxFrameSurface1>();
+        let index = offset / size;
+        (offset % size == 0 && index < self.surfaces.len()).then_some(index)
+    }
+
+    /// The luma and chroma rows of the surface at `index`.
+    ///
+    /// # Safety
+    ///
+    /// The runtime has finished decoding into the surface and does not
+    /// write it while the planes are borrowed.
+    unsafe fn planes(&self, index: usize) -> Option<(&[u8], &[u8])> {
+        let luma = self.pitch * self.rows;
+        let start = index.checked_mul(self.frame)?;
+        if start + luma + luma / 2 > self.memory.len() {
+            return None;
+        }
+        let y = self.memory.as_ptr().cast::<u8>().wrapping_add(start);
+        // SAFETY: inside the block, checked above, which lives as long as
+        // the pool; the caller says nothing writes it meanwhile.
+        unsafe {
+            Some((
+                core::slice::from_raw_parts(y, luma),
+                core::slice::from_raw_parts(y.add(luma), luma / 2),
+            ))
+        }
+    }
+}
+
+impl Drop for Pool {
+    fn drop(&mut self) {
+        // SAFETY: both were made by `Box::into_raw` and are freed once, here,
+        // after the decoder that held pointers into them was closed.
+        unsafe {
+            drop(Box::from_raw(self.surfaces.as_ptr()));
+            drop(Box::from_raw(self.memory.as_ptr()));
+        }
+    }
 }
 
 /// A decoder built for a stream and what it has handed out.
@@ -331,7 +395,8 @@ pub fn caps(session: &Session<'_>, runtime: Runtime) -> Caps {
             full_chroma,
         };
         let mut param = param_for(shape, PROBE_SIZE, memory);
-        let built = session.init(&mut param).is_ok();
+        // SAFETY: parameters made here, no extension buffer attached.
+        let built = unsafe { session.init(&mut param) }.is_ok();
         session.close_decoder();
         built
     };
@@ -342,6 +407,33 @@ pub fn caps(session: &Session<'_>, runtime: Runtime) -> Caps {
         hevc_10: builds(Codec::H265, true, false),
         hevc_444: full && builds(Codec::H265, false, true),
         hevc_444_10: full && builds(Codec::H265, true, true),
+    }
+}
+
+/// What a decoder refused at its build is: the device lost, failed or hung
+/// stays the runtime's word, which the lost device's route takes; anything
+/// else is a decoder the runtime will not build, which the next keyframe
+/// would meet again.
+fn built_error(error: runtime::Error) -> Error {
+    match error {
+        runtime::Error::Status(MFX_ERR_DEVICE_LOST | MFX_ERR_DEVICE_FAILED | MFX_ERR_GPU_HANG) => {
+            Error::Runtime(error)
+        }
+        _ => Error::NoProfile,
+    }
+}
+
+/// The readers' slot the picture handed out of the call that submitted the
+/// unit marked `own` goes to: the unit its stamp names, while that unit
+/// still waits. **A stamp naming no unit this decoder submitted** -- which a
+/// runtime handing pictures out in decode order may write -- is the call's
+/// own unit's, the call being the unit then; a stamp naming an earlier unit
+/// whose slot has since been handed out again is a picture let go.
+fn slot_for(pending: &mut Pending, stamp: i64, own: i64) -> Option<usize> {
+    if (1..=own).contains(&stamp) {
+        pending.complete(stamp)
+    } else {
+        pending.complete(own)
     }
 }
 
@@ -478,19 +570,16 @@ impl<'a> Backend<'a> {
         if coded.0 > self.ceiling.0 || coded.1 > self.ceiling.1 {
             return Err(Error::TooLarge);
         }
-        let mut param: mfxVideoParam = zeroed();
-        param.__bindgen_anon_1.mfx.CodecId = shape.codec_id();
-        let mut from_unit = bitstream(unit, 0)?;
-        let found = self.session.header(&mut from_unit, &mut param)?;
-        if !found {
-            if self.sets_codec != Some(shape.codec) {
-                return Err(Error::Stream);
-            }
-            let mut from_sets = bitstream(&self.sets, 0)?;
-            if !self.session.header(&mut from_sets, &mut param)? {
-                return Err(Error::Stream);
-            }
-        }
+        let from_unit = self.session.header(unit, shape.codec_id())?;
+        let found = from_unit.is_some();
+        let mut param = match from_unit {
+            Some(param) => param,
+            None if self.sets_codec == Some(shape.codec) => self
+                .session
+                .header(&self.sets, shape.codec_id())?
+                .ok_or(Error::Stream)?,
+            None => return Err(Error::Stream),
+        };
         // SAFETY: the decoder's half of the union, which the header filled.
         let fourcc = unsafe { param.__bindgen_anon_1.mfx.FrameInfo.FourCC };
         if fourcc != shape.fourcc() {
@@ -511,9 +600,9 @@ impl<'a> Backend<'a> {
             Runtime::Current => None,
             Runtime::Older => Some(self.pool(&mut param, shape)?),
         };
-        self.session
-            .init(&mut param)
-            .map_err(|_| Error::NoProfile)?;
+        // SAFETY: the parameters the header filled, no extension buffer
+        // attached.
+        unsafe { self.session.init(&mut param) }.map_err(built_error)?;
         self.built = Some(Built {
             shape,
             coded,
@@ -539,7 +628,9 @@ impl<'a> Backend<'a> {
     /// The older runtime's surfaces for a decoder of `param`: what it asks
     /// for and the readers' spare, in one block.
     fn pool(&self, param: &mut mfxVideoParam, shape: Shape) -> Result<Pool> {
-        let request = self.session.surfaces(param)?;
+        // SAFETY: the parameters the header filled, no extension buffer
+        // attached.
+        let request = unsafe { self.session.surfaces(param) }?;
         let count = usize::from(request.NumFrameSuggested) + SPARE_SURFACES;
         // SAFETY: the decoder's half of the union, which the header filled.
         let info = unsafe { param.__bindgen_anon_1.mfx.FrameInfo };
@@ -554,23 +645,27 @@ impl<'a> Backend<'a> {
         let pitch = (width * sample).next_multiple_of(64);
         let frame = pitch * (height + height / 2);
         let pitch16 = u16::try_from(pitch).map_err(|_| Error::TooLarge)?;
-        let mut memory = vec![0u8; frame * count].into_boxed_slice();
+        let memory = NonNull::from(Box::leak(vec![0u8; frame * count].into_boxed_slice()));
         let mut surfaces: Box<[mfxFrameSurface1]> = (0..count).map(|_| zeroed()).collect();
+        let block = memory.as_ptr().cast::<u8>();
         for (i, surface) in surfaces.iter_mut().enumerate() {
-            let y = memory
-                .get_mut(i * frame..)
-                .ok_or(Error::TooLarge)?
-                .as_mut_ptr();
+            let y = block.wrapping_add(i * frame);
             surface.Info = info;
             surface.Data.__bindgen_anon_2.Pitch = pitch16;
             surface.Data.__bindgen_anon_3.Y = y;
-            // SAFETY: the chroma rows follow the luma rows in the frame's
-            // part of the block, which holds both.
-            surface.Data.__bindgen_anon_4.UV = unsafe { y.add(pitch * height) };
+            // The chroma rows follow the luma rows in the frame's part of the
+            // block, which holds both.
+            surface.Data.__bindgen_anon_4.UV = y.wrapping_add(pitch * height);
         }
+        // No reference to either is made again: the runtime holds pointers
+        // into both from here on.
+        let surfaces = NonNull::from(Box::leak(surfaces));
         Ok(Pool {
             surfaces,
-            _memory: memory,
+            memory,
+            frame,
+            pitch,
+            rows: height,
         })
     }
 
@@ -704,8 +799,9 @@ impl<'a> Backend<'a> {
             built.pending.expect(mark, slot);
         }
         let mut bitstream = bitstream(unit, mark)?;
+        let mut out = false;
         for _ in 0..BUSY_TRIES {
-            let work = match &mut built.pool {
+            let work = match &built.pool {
                 Some(pool) => free_surface(pool, &built.held).ok_or(Error::Stream)?,
                 None => core::ptr::null_mut(),
             };
@@ -715,15 +811,21 @@ impl<'a> Backend<'a> {
             // held here.
             match unsafe { session.decode(&mut bitstream, work) }? {
                 Decoded::Picture(picture) => {
-                    place(built, device, picture)?;
+                    place(built, device, picture, mark)?;
+                    out = true;
                     if bitstream.DataLength == 0 {
                         return Ok(true);
                     }
                 }
-                Decoded::MoreData if bitstream.DataLength == 0 || slot.is_none() => {
+                // The unit's picture is out, or none was asked of it: what
+                // is left of it -- filler, say, behind the last slice --
+                // completes no picture.
+                Decoded::MoreData if out || bitstream.DataLength == 0 || slot.is_none() => {
                     return Ok(true);
                 }
                 Decoded::Incompatible => return Ok(false),
+                // A warning and nothing out: the rest at once.
+                Decoded::Warning => {}
                 // A picture's unit not taken: the runtime has every surface
                 // of its own in use -- it takes one back only once its
                 // scheduler notes the decode done, a millisecond or two
@@ -902,7 +1004,10 @@ impl<'a> Backend<'a> {
                 return Err(Error::Stream);
             }
             let synced = lowlat_common::clock::Time::now();
-            let result = copy_surface(&picture, format, visible, out);
+            let result = match &built.pool {
+                Some(pool) => copy_surface(&picture, pool, format, visible, out),
+                None => Err(Error::NoProfile),
+            };
             let done = lowlat_common::clock::Time::now();
             self.decode_us = micros(lowlat_common::clock::diff_ms(started, synced));
             self.readback_us = micros(lowlat_common::clock::diff_ms(synced, done));
@@ -979,26 +1084,37 @@ impl Drop for Backend<'_> {
 }
 
 /// A surface of the pool's the runtime may decode into: neither locked by
-/// it nor held here for its turn.
-fn free_surface(pool: &mut Pool, held: &[Option<Held<'_>>]) -> Option<*mut mfxFrameSurface1> {
-    pool.surfaces
-        .iter_mut()
-        .find(|s| {
-            let at: *const mfxFrameSurface1 = &raw const **s;
-            s.Data.Locked == 0
+/// it nor held here for its turn. Its lock count is read as the atomic it
+/// is to the runtime's threads, which write it.
+fn free_surface(pool: &Pool, held: &[Option<Held<'_>>]) -> Option<*mut mfxFrameSurface1> {
+    (0..pool.surfaces.len())
+        .filter_map(|i| pool.surface(i))
+        .find(|&surface| {
+            // SAFETY: a surface of the pool's, live and in place as long as
+            // the pool; the count is a sixteen-bit field, aligned for one,
+            // which the runtime changes only atomically.
+            let locked =
+                unsafe { core::sync::atomic::AtomicU16::from_ptr(&raw mut (*surface).Data.Locked) }
+                    .load(core::sync::atomic::Ordering::Acquire);
+            locked == 0
                 && !held
                     .iter()
                     .flatten()
-                    .any(|h| core::ptr::eq(h.surface().cast_const(), at))
+                    .any(|h| core::ptr::eq(h.surface(), surface))
         })
-        .map(|s| &raw mut *s)
 }
 
-/// Put a picture the runtime handed out in the slot of the unit it
-/// completes, found by the unit's mark; one no unit asked for is let go.
-/// The first picture of a decoder on a device is checked to be that
-/// device's: a runtime that fell back to a device of its own is refused.
-fn place<'a>(built: &mut Built<'a>, device: Option<&Device>, picture: Held<'a>) -> Result<()> {
+/// Put a picture the runtime handed out of the call that submitted the unit
+/// marked `own` in the slot of the unit it completes ([`slot_for`]); one no
+/// unit waits for is let go. The first picture of a decoder on a device is
+/// checked to be that device's: a runtime that fell back to a device of its
+/// own is refused.
+fn place<'a>(
+    built: &mut Built<'a>,
+    device: Option<&Device>,
+    picture: Held<'a>,
+    own: i64,
+) -> Result<()> {
     if let Some(device) = device
         && !built.checked
     {
@@ -1007,8 +1123,8 @@ fn place<'a>(built: &mut Built<'a>, device: Option<&Device>, picture: Held<'a>) 
         }
         built.checked = true;
     }
-    let mark = i64::from_ne_bytes(picture.timestamp().to_ne_bytes());
-    let Some(slot) = built.pending.complete(mark) else {
+    let stamp = i64::from_ne_bytes(picture.timestamp().to_ne_bytes());
+    let Some(slot) = slot_for(&mut built.pending, stamp, own) else {
         return Ok(());
     };
     if let Some(held) = built.held.get_mut(slot) {
@@ -1030,38 +1146,26 @@ fn is_ours(device: &Device, texture: *mut ID3D11Texture2D) -> bool {
     owner.is_some_and(|o| o.as_ptr() == device.device())
 }
 
-/// The older runtime's picture, from its surface's planes into `out`.
+/// The older runtime's picture, from its surface's planes into `out`: the
+/// planes as the pool laid them out, whatever the surface's description
+/// says by now.
 fn copy_surface(
     picture: &Held<'_>,
+    pool: &Pool,
     format: Format,
     (width, height): (u32, u32),
     out: &mut Planes<'_>,
 ) -> Result<()> {
-    let surface = picture.surface();
-    // SAFETY: a live surface of the pool's; the fields are plain data.
-    let (pitch, y, uv, rows) = unsafe {
-        let data = &(*surface).Data;
-        let info = &(*surface).Info;
-        (
-            usize::from(data.__bindgen_anon_2.Pitch),
-            data.__bindgen_anon_3.Y,
-            data.__bindgen_anon_4.UV,
-            usize::from(info.__bindgen_anon_1.__bindgen_anon_1.Height),
-        )
-    };
-    if y.is_null() || uv.is_null() || format.full_chroma() {
+    if format.full_chroma() {
         return Err(Error::NoProfile);
     }
+    let index = pool.index_of(picture.surface()).ok_or(Error::Stream)?;
+    // SAFETY: the runtime has said the picture is decoded, and holds it as a
+    // reference at most, which it reads and does not write.
+    let (luma, chroma) = unsafe { pool.planes(index) }.ok_or(Error::TooLarge)?;
+    let pitch = pool.pitch;
     let width = usize::try_from(width).map_err(|_| Error::TooLarge)?;
     let height = usize::try_from(height).map_err(|_| Error::TooLarge)?;
-    // SAFETY: the pool made each surface's luma `pitch` bytes a row for its
-    // rows, and its chroma half as many rows after them.
-    let (luma, chroma) = unsafe {
-        (
-            core::slice::from_raw_parts(y, pitch * rows),
-            core::slice::from_raw_parts(uv, pitch * rows / 2),
-        )
-    };
     let row_bytes = width * format.sample();
     copy_rows(luma, 0, pitch, out.y, out.y_pitch, row_bytes, height)?;
     copy_rows(
@@ -1215,6 +1319,37 @@ mod tests {
         // SAFETY: the decoder's half of the union, just filled.
         let info = unsafe { param.__bindgen_anon_1.mfx.FrameInfo };
         assert_eq!((info.BitDepthLuma, info.Shift), (10, 1));
+    }
+
+    /// **A device lost at a build is the lost device's, not a stream no
+    /// decoder takes**: the older runtime has no device to ask, so only the
+    /// runtime's word says so.
+    #[test]
+    fn a_device_lost_at_a_build_is_not_a_refused_stream() {
+        for status in [MFX_ERR_DEVICE_LOST, MFX_ERR_DEVICE_FAILED, MFX_ERR_GPU_HANG] {
+            let error = runtime::Error::Status(status);
+            assert_eq!(built_error(error), Error::Runtime(error));
+        }
+        assert_eq!(built_error(runtime::Error::Status(-3)), Error::NoProfile);
+    }
+
+    /// **A stamp naming no unit submitted places the picture by its call**,
+    /// the call being the unit when pictures leave in decode order; a stamp
+    /// naming an earlier unit whose slot was handed out again places nothing.
+    #[test]
+    fn a_picture_whose_stamp_names_no_unit_goes_to_its_calls_slot() {
+        let mut pending = Pending::new();
+        pending.expect(5, 3);
+        assert_eq!(slot_for(&mut pending, 0, 5), Some(3));
+        pending.expect(6, 4);
+        assert_eq!(slot_for(&mut pending, i64::MIN, 6), Some(4));
+        pending.expect(7, 2);
+        assert_eq!(slot_for(&mut pending, 7, 7), Some(2));
+        // Unit 8's slot is unit 9's too: 8's picture, late, finds none.
+        pending.expect(8, 1);
+        pending.expect(9, 1);
+        assert_eq!(slot_for(&mut pending, 8, 9), None);
+        assert_eq!(slot_for(&mut pending, 9, 9), Some(1));
     }
 
     /// A unit of parameter sets is told from a picture's, either codec.

@@ -36,7 +36,8 @@ use lowlat_common::dynlib::Library;
 
 use crate::d3d11::{Adapter, Device};
 use crate::ffi::vpl::{
-    _mfxSession, MFX_ACCEL_MODE_VIA_D3D11, MFX_EXTBUFF_THREADS_PARAM, MFX_HANDLE_D3D11_DEVICE,
+    _mfxSession, MFX_ACCEL_MODE_VIA_D3D11, MFX_BITSTREAM_COMPLETE_FRAME, MFX_ERR_INVALID_HANDLE,
+    MFX_ERR_NOT_ENOUGH_BUFFER, MFX_EXTBUFF_THREADS_PARAM, MFX_HANDLE_D3D11_DEVICE,
     MFX_IMPL_HARDWARE, MFX_IMPL_HARDWARE2, MFX_IMPL_HARDWARE3, MFX_IMPL_HARDWARE4,
     MFX_IMPL_VIA_D3D11, MFX_RESOURCE_DX11_TEXTURE, mfxBitstream, mfxExtBuffer, mfxExtThreadsParam,
     mfxFrameAllocRequest, mfxFrameSurface1, mfxHDL, mfxHandleType, mfxInitParam,
@@ -86,6 +87,17 @@ const DISPLAY_CLASS: &str = "{4D36E968-E325-11CE-BFC1-08002BE10318}";
 /// of each picture, which one thread keeps up with (the default is one per
 /// core, sixteen here); two where a runtime will not take one.
 const THREADS: [u16; 2] = [1, 2];
+
+/// The flag a bitstream holding one whole unit carries, as the sixteen-bit
+/// field it is written into.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "the assertion bounds the value to the field"
+)]
+const COMPLETE_FRAME: u16 = {
+    assert!(MFX_BITSTREAM_COMPLETE_FRAME >= 0 && MFX_BITSTREAM_COMPLETE_FRAME <= 0xffff);
+    MFX_BITSTREAM_COMPLETE_FRAME as u16
+};
 
 /// Why the runtime or a session could not be had.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -338,6 +350,9 @@ pub enum Decoded<'s> {
     Picture(Picture<'s>),
     /// The unit taken, and no picture out of it.
     MoreData,
+    /// A warning and no picture: what is left of the unit, if anything, to
+    /// be handed over again at once.
+    Warning,
     /// Every surface of the caller's in use.
     MoreSurface,
     /// The device busy: nothing taken, the call to be made again.
@@ -362,39 +377,64 @@ impl Session<'_> {
         Ok((halves.Major, halves.Minor))
     }
 
-    /// Fill `param` from the parameter sets in `bitstream`, which is read
-    /// and not decoded. `Ok(false)` where it holds none yet.
-    pub fn header(&self, bitstream: &mut mfxBitstream, param: &mut mfxVideoParam) -> Result<bool> {
-        // SAFETY: a live session; both are live for the call, the bitstream's
-        // data the caller's.
-        let status = unsafe { (self.vpl.header)(self.raw(), bitstream, param) };
+    /// The parameters of a decoder of `codec` (the runtime's codec number),
+    /// filled from the parameter sets in `unit`, which is read and not
+    /// decoded; none where it holds none yet.
+    pub fn header(&self, unit: &[u8], codec: u32) -> Result<Option<mfxVideoParam>> {
+        let len =
+            u32::try_from(unit.len()).map_err(|_| Error::Status(MFX_ERR_NOT_ENOUGH_BUFFER))?;
+        let mut bitstream: mfxBitstream = zeroed();
+        // The runtime reads a unit and never writes it.
+        bitstream.Data = unit.as_ptr().cast_mut();
+        bitstream.DataLength = len;
+        bitstream.MaxLength = len;
+        bitstream.DataFlag = COMPLETE_FRAME;
+        let mut param: mfxVideoParam = zeroed();
+        param.__bindgen_anon_1.mfx.CodecId = codec;
+        // SAFETY: a live session; both are locals, the bitstream's data
+        // `unit`, which outlives the call; no extension buffer is attached.
+        let status = unsafe { (self.vpl.header)(self.raw(), &raw mut bitstream, &raw mut param) };
         if status == crate::ffi::vpl::MFX_ERR_MORE_DATA {
-            return Ok(false);
+            return Ok(None);
         }
-        check(status).map(|()| true)
+        check(status).map(|()| Some(param))
     }
 
     /// Whether a decoder of `param` builds here, as the runtime answers for
     /// a whole parameter set; `param` is corrected in place.
-    pub fn query(&self, param: &mut mfxVideoParam) -> Result<()> {
+    ///
+    /// # Safety
+    ///
+    /// `param`'s extension buffers, if it names any, are live for the call.
+    pub unsafe fn query(&self, param: &mut mfxVideoParam) -> Result<()> {
         let param: *mut mfxVideoParam = param;
         // SAFETY: a live session; the runtime reads and writes the one
-        // structure, which it allows.
+        // structure, which it allows, and its buffers as the caller says.
         check(unsafe { (self.vpl.query)(self.raw(), param, param) })
     }
 
     /// The surfaces a decoder of `param` asks for.
-    pub fn surfaces(&self, param: &mut mfxVideoParam) -> Result<mfxFrameAllocRequest> {
+    ///
+    /// # Safety
+    ///
+    /// As [`Session::query`].
+    pub unsafe fn surfaces(&self, param: &mut mfxVideoParam) -> Result<mfxFrameAllocRequest> {
         let mut request: mfxFrameAllocRequest = zeroed();
-        // SAFETY: a live session; both are live for the call.
+        // SAFETY: a live session; both are live for the call, `param`'s
+        // buffers as the caller says.
         check(unsafe { (self.vpl.query_io_surf)(self.raw(), param, &raw mut request) })?;
         Ok(request)
     }
 
     /// Build the session's decoder for `param`. A failure leaves nothing
     /// built: the next build would otherwise be refused.
-    pub fn init(&self, param: &mut mfxVideoParam) -> Result<()> {
-        // SAFETY: a live session; the parameters are live for the call.
+    ///
+    /// # Safety
+    ///
+    /// As [`Session::query`].
+    pub unsafe fn init(&self, param: &mut mfxVideoParam) -> Result<()> {
+        // SAFETY: a live session; the parameters are live for the call, their
+        // buffers as the caller says.
         let status = unsafe { (self.vpl.init)(self.raw(), param) };
         if status < 0 {
             self.close_decoder();
@@ -442,21 +482,37 @@ impl Session<'_> {
             MFX_WRN_DEVICE_BUSY => return Ok(Decoded::Busy),
             _ => check(status)?,
         }
-        match (NonNull::new(out), sync.is_null()) {
-            (Some(surface), false) => Ok(Decoded::Picture(Picture {
-                surface,
-                sync,
-                _session: PhantomData,
-            })),
-            // A warning with no picture: the unit taken, nothing out.
-            _ => Ok(Decoded::MoreData),
+        let nothing = if status > 0 {
+            Decoded::Warning
+        } else {
+            Decoded::MoreData
+        };
+        let Some(surface) = NonNull::new(out) else {
+            return Ok(nothing);
+        };
+        let picture = Picture {
+            surface,
+            sync,
+            session: self.raw,
+            _session: PhantomData,
+        };
+        if sync.is_null() {
+            // A surface with nothing to wait on is no picture; it goes back
+            // at once, as every surface handed out does, since the runtime
+            // may have counted a reference on it.
+            drop(picture);
+            return Ok(nothing);
         }
+        Ok(Decoded::Picture(picture))
     }
 
     /// Wait up to `wait_ms` for `picture` to be decoded: whether it is. The
     /// older runtime's; the current one's pictures are ordered on the
-    /// device instead.
+    /// device instead. A picture of another session is refused.
     pub fn sync(&self, picture: &Picture<'_>, wait_ms: u32) -> Result<bool> {
+        if picture.session != self.raw {
+            return Err(Error::Status(MFX_ERR_INVALID_HANDLE));
+        }
         // SAFETY: a live session and a sync point it handed out.
         let status = unsafe { (self.vpl.sync_operation)(self.raw(), picture.sync, wait_ms) };
         check(status)?;
@@ -477,6 +533,8 @@ impl Drop for Session<'_> {
 pub struct Picture<'s> {
     surface: NonNull<mfxFrameSurface1>,
     sync: mfxSyncPoint,
+    /// The session that handed it out, whose sync point it carries.
+    session: NonNull<_mfxSession>,
     _session: PhantomData<&'s ()>,
 }
 

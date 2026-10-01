@@ -456,6 +456,66 @@ fn a_stream_whose_sets_travel_alone_still_builds() {
     assert_eq!(pictures, 120, "pictures out of the clip");
 }
 
+/// **Bytes behind a unit's last slice cost nothing**: filler appended to
+/// every unit, as a stream may carry it, and every picture of a clip fed back
+/// to back still comes out, no unit refused and none asked for again.
+#[test]
+#[ignore = "requires an Intel GPU and its runtime"]
+fn a_units_trailing_filler_costs_no_keyframe() {
+    let d3d11 = D3d11::load().expect("the system's libraries");
+    let (device, vpl, index) = intel(&d3d11);
+    let session = vpl.session(&device, index).expect("a session");
+    let clips: [(&str, Codec, &[u8]); 2] = [
+        (
+            "synthetic-720p-h264.bin",
+            Codec::H264,
+            &[0, 0, 0, 1, 0x0c, 0xff, 0xff, 0x80],
+        ),
+        (
+            "synthetic-720p-hevc.bin",
+            Codec::H265,
+            &[0, 0, 0, 1, 0x4c, 0x01, 0xff, 0xff, 0x80],
+        ),
+    ];
+    for (clip, codec, filler) in clips {
+        let mut backend = Backend::new(
+            &session,
+            Runtime::Current,
+            Some(&device),
+            (4096, 4096),
+            UNIT_BYTES,
+        )
+        .expect("new");
+        backend.build(&header(codec, false)).expect("build");
+        let pitch = 1280;
+        let (mut y, mut uv) = (vec![0u8; pitch * 720], vec![0u8; pitch * 360]);
+        let mut pictures = 0usize;
+        for mut unit in common::units(clip) {
+            unit.extend_from_slice(filler);
+            if backend.feed(&unit).expect("feed") != Fed::Picture {
+                continue;
+            }
+            loop {
+                let mut planes = lowlat_decode::Planes {
+                    y: &mut y,
+                    y_pitch: pitch,
+                    uv: &mut uv,
+                    uv_pitch: pitch,
+                    v: &mut [],
+                    v_pitch: 0,
+                };
+                if backend.take(&mut planes).expect("take").is_none() {
+                    break;
+                }
+                pictures += 1;
+            }
+        }
+        backend.destroy();
+        println!("  {clip} with filler: {pictures} pictures");
+        assert_eq!(pictures, 120, "pictures out of {clip}");
+    }
+}
+
 /// **A device fallen behind holds the next unit back.** A clip fed back to
 /// back with every picture split into textures and never waited for: no more
 /// than [`MOST_UNFINISHED`] are unfinished when a unit goes in, so one more

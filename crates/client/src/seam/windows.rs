@@ -234,6 +234,12 @@ fn has_its_own(adapter: &Adapter) -> bool {
     matches!(adapter.maker(), Some("NVIDIA" | "AMD" | "Intel"))
 }
 
+/// Whether the maker's own decoder on `adapter` never goes ahead of the
+/// system's interface: Intel's, having measured no faster ([`vendor_on`]).
+fn never_ahead(adapter: &Adapter) -> bool {
+    adapter.maker() == Some("Intel")
+}
+
 /// The maker's own decoder on `adapter`, with whether it goes ahead of the
 /// system's interface in the automatic order: NVIDIA's, having measured
 /// faster on its GPU; AMD's where its runtime has the low-latency mode,
@@ -320,6 +326,16 @@ fn in_order<T>(
     let on = |adapter: &Adapter| {
         if !has_its_own(adapter) {
             return system(adapter);
+        }
+        // A maker's decoder never the faster on its GPU is not even asked
+        // where the system's interface opens: its probe builds decoders of
+        // its own only to be passed over.
+        if never_ahead(adapter) {
+            return system(adapter).or_else(|then| {
+                vendor(adapter)
+                    .map(|(found, _)| found)
+                    .map_err(|first| most_telling(first, then))
+            });
         }
         match vendor(adapter) {
             Ok((found, true)) => Ok(found),
@@ -519,6 +535,44 @@ mod tests {
             landing(&nvidia_first, None, &every, &[], &[]),
             Ok(("vendor", 0x10))
         );
+    }
+
+    /// **A maker's decoder never the faster is not even probed where the
+    /// system's interface opens** -- Intel's on its GPU -- and is what the
+    /// GPU offers where the system's does not; NVIDIA's is still asked first.
+    #[test]
+    fn a_decoder_never_the_faster_is_not_probed_where_the_systems_opens() {
+        let intel = adapter(0x20, 0x8086, false);
+        let nvidia = adapter(0x10, 0x10de, false);
+        let walk = |adapters: &[Adapter], systems: &[u32]| {
+            let probed = core::cell::Cell::new(0u32);
+            let landed = in_order(
+                adapters,
+                None,
+                |a| {
+                    probed.set(probed.get() + 1);
+                    Ok((("vendor", a.luid.low), false))
+                },
+                |a| {
+                    let low = a.luid.low;
+                    if systems.contains(&low) {
+                        Ok(("system", low))
+                    } else {
+                        Err(DecoderStage::Profile)
+                    }
+                },
+            );
+            (landed, probed.get())
+        };
+        assert_eq!(
+            walk(core::slice::from_ref(&intel), &[0x20]),
+            (Ok(("system", 0x20)), 0)
+        );
+        assert_eq!(
+            walk(core::slice::from_ref(&intel), &[]),
+            (Ok(("vendor", 0x20)), 1)
+        );
+        assert_eq!(walk(&[nvidia], &[0x10]), (Ok(("system", 0x10)), 1));
     }
 
     /// **Both decoders are tried on a GPU before the walk leaves it**: the
