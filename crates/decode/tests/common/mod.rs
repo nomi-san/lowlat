@@ -15,9 +15,14 @@ use lowlat_decode::{Decoder, Fault, Fed, Picture, Planes};
 #[cfg(windows)]
 pub mod reader;
 
+/// A committed clip's path: in this checkout, or under `LOWLAT_TEST_DATA`
+/// where a test binary runs on a machine without it.
 pub fn data(name: &str) -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/data")
+    std::env::var_os("LOWLAT_TEST_DATA")
+        .map_or_else(
+            || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/data"),
+            PathBuf::from,
+        )
         .join(name)
 }
 

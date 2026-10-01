@@ -353,6 +353,43 @@ fn the_older_runtime_decodes_every_clip_by_planes() {
     assert!(failures.is_empty(), "{failures:#?}");
 }
 
+/// **The runtime the Intel GPU's own driver installs decodes every clip it
+/// builds a decoder for, by planes, in the readers' order** -- whichever
+/// runtime that is: on a part the current runtime does not reach, the older
+/// one, found the older ways and decoding into the backend's own memory.
+#[test]
+#[ignore = "requires an Intel GPU and its runtime"]
+fn the_adapters_own_runtime_decodes_every_clip_it_builds_for() {
+    let d3d11 = D3d11::load().expect("the system's libraries");
+    let (device, vpl, index) = intel(&d3d11);
+    let runtime = vpl.runtime();
+    let session = match runtime {
+        Runtime::Current => vpl.session(&device, index),
+        Runtime::Older => vpl.system_session(index),
+    }
+    .expect("a session");
+    let caps = caps(&session, runtime);
+    println!(
+        "{} driver {:?}, {runtime:?} runtime {:?} at index {index}: {caps:?}",
+        device.adapter.description,
+        device.adapter.driver,
+        session.version()
+    );
+    assert!(caps.h264, "{caps:?}");
+    let mut failures = Vec::new();
+    for (clip, sums, codec, ten_bit) in clips() {
+        if !able(&caps, &clip, codec, ten_bit) {
+            println!("  {clip}: no decoder for it");
+            continue;
+        }
+        if let Err(e) = check(&session, runtime, &device, &clip, &sums, codec, ten_bit) {
+            println!("  {clip}: FAILED: {e}");
+            failures.push(format!("{clip}: {e}"));
+        }
+    }
+    assert!(failures.is_empty(), "{failures:#?}");
+}
+
 /// **A stream whose parameter sets travel in a unit of their own still
 /// builds**: the unit of sets alone is kept, and the keyframe that follows,
 /// carrying none, is decoded from them -- every picture of the clip comes

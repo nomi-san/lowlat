@@ -289,9 +289,16 @@ mod tests {
                 if row.available {
                     let system = rows.get(slot - OPEN_SLOTS as usize).expect("a row");
                     assert_eq!(row.device, system.device, "another adapter");
-                    // Every GPU here whose maker has a decoder of its own
-                    // takes its textures.
-                    assert!(row.handle, "{}: no handle", row.device);
+                    // A maker's own decoder takes its textures on every GPU
+                    // here -- but Intel's older runtime, which hands out
+                    // planes alone.
+                    assert_eq!(
+                        row.handle,
+                        row.name != "MFX [Intel]",
+                        "{}: {}",
+                        row.device,
+                        row.name
+                    );
                 }
                 continue;
             }
