@@ -43,6 +43,9 @@ pub mod bits;
 pub mod d3d11;
 pub mod h264;
 pub mod hevc;
+/// The system's own decoder, in software, reached on Windows alone.
+#[cfg(windows)]
+pub mod mf;
 pub mod nal;
 pub mod nvdec;
 mod packed;
