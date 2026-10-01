@@ -24,6 +24,9 @@ pub mod cuvid;
 pub mod d3d11;
 pub mod ffi;
 pub mod lavc;
+/// The system's media framework's decoders, reached on Windows alone.
+#[cfg(windows)]
+pub mod mf;
 /// The open stack's video interface, which exists on Linux alone.
 #[cfg(target_os = "linux")]
 pub mod va;

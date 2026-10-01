@@ -69,6 +69,15 @@ impl Library {
         NonNull::new(handle).map(|handle| Self { handle })
     }
 
+    /// Open a library of the system's by name, from the system's own
+    /// directory alone: never the application's, which a bare name searches
+    /// first.
+    #[cfg(windows)]
+    pub fn open_system(name: &CStr) -> Option<Self> {
+        let handle = imp::open_system(name);
+        NonNull::new(handle).map(|handle| Self { handle })
+    }
+
     /// Open the first name that loads.
     ///
     /// Vendor runtimes are versioned in their file name and the unversioned
@@ -178,6 +187,9 @@ mod imp {
     /// of those lets whoever writes there choose what runs.
     const SEARCH_DEFAULT_DIRS: u32 = 0x0000_1000;
 
+    /// The system's own directory alone.
+    const SEARCH_SYSTEM32: u32 = 0x0000_0800;
+
     pub(super) fn open(name: &CStr) -> *mut c_void {
         // A name that is not text names nothing the loader could find.
         let Ok(text) = name.to_str() else {
@@ -188,6 +200,17 @@ mod imp {
         } else {
             SEARCH_DEFAULT_DIRS
         };
+        load(text, flags)
+    }
+
+    pub(super) fn open_system(name: &CStr) -> *mut c_void {
+        match name.to_str() {
+            Ok(text) => load(text, SEARCH_SYSTEM32),
+            Err(_) => core::ptr::null_mut(),
+        }
+    }
+
+    fn load(text: &str, flags: u32) -> *mut c_void {
         // Built once per open, which is setup and never a data path.
         let wide: Vec<u16> = text.encode_utf16().chain(core::iter::once(0)).collect();
         // SAFETY: `wide` is NUL-terminated and outlives the call; the file
