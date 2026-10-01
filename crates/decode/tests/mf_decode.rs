@@ -148,6 +148,16 @@ fn framework() -> &'static mf::Mf {
     mf::load().expect("the system's media framework")
 }
 
+/// Whether the system has a decoder for `codec` here: HEVC needs the
+/// system's extension, which a system may not have.
+fn decodes(codec: Codec) -> bool {
+    let (caps, _, _) = caps(framework());
+    match codec {
+        Codec::H264 => caps.h264,
+        Codec::H265 => caps.hevc,
+    }
+}
+
 /// **Every clip of a shape the decoder takes comes out bit for bit and in
 /// the stream's order**: H.264 at eight bits, HEVC at eight and ten, the
 /// ten-bit ones as ten bits in sixteen.
@@ -157,9 +167,14 @@ fn every_clip_decodes_to_the_reference_pictures_in_order() {
     let mf = framework();
     let (caps, h264, hevc) = caps(mf);
     println!("caps {caps:?}, H.264 {h264:?}, HEVC {hevc:?}");
-    assert!(caps.h264 && caps.hevc && caps.hevc_10, "both decoders");
+    assert!(caps.h264, "the system's H.264 decoder");
+    assert_eq!(caps.hevc, caps.hevc_10, "HEVC at both depths or neither");
     let mut failed = Vec::new();
     for (clip, sums, codec, ten_bit) in clips() {
+        if codec == Codec::H265 && !caps.hevc {
+            println!("  {clip}: no HEVC decoder here, skipped");
+            continue;
+        }
         let mut backend = Backend::new(mf, UNIT_BYTES);
         backend.build(&header(codec, ten_bit)).expect("build");
         let ours = decode_units(&mut backend, &clip, &common::units(&clip));
@@ -181,6 +196,10 @@ fn a_change_of_size_mid_stream_is_followed() {
         ("h264-ipp-cabac", "h264-nvenc-ll", Codec::H264),
         ("hevc-ipp", "hevc-nvenc-ll", Codec::H265),
     ] {
+        if !decodes(codec) {
+            println!("  {first}: no decoder for its codec here, skipped");
+            continue;
+        }
         let path = |n: &str| format!("fixtures/{n}.bin");
         let mut units = common::units(&path(first));
         units.extend(common::units(&path(second)));
@@ -352,6 +371,10 @@ fn every_units_picture_comes_out_of_its_own_call() {
         ("fixtures/hevc-nvenc-ll.bin", Codec::H265, false),
         ("fixtures/h264-nvenc-ll.bin", Codec::H264, false),
     ] {
+        if !decodes(codec) {
+            println!("  {clip}: no decoder for its codec here, skipped");
+            continue;
+        }
         let mut backend = Backend::new(mf, UNIT_BYTES);
         backend.build(&header(codec, ten_bit)).expect("build");
         let pitch = 1280 * 2 + 64;
