@@ -378,6 +378,9 @@ whether an application may supply the frames, for a virtual display that already
 
 ## Change log
 
+- 2026-10-01: W1.7 reviewed before W1.8: on an Intel GPU the automatic order tries the
+  system's interface first and builds Intel's decoder only where it does not open
+  ([10 §5.2](10-client.md)).
 - 2026-09-30: W1.7 built: Intel's decoder, second on an Intel GPU as measured; its older
   runtime planes only, its check owed until a part that needs it is at hand.
 - 2026-09-30: W1.6 reviewed before W1.7: the automatic order now tries both hardware decoders

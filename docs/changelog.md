@@ -25,6 +25,21 @@ Newest first. One entry per phase; approach changes and gate revisions go in
   device lost under it is found again on the same GPU and the session goes on.
 - **The split runs under the device's lock**, since a vendor's runtime calls into the same
   context from a thread of its own.
+- **On an Intel GPU the automatic order built Intel's decoder only to pass it over**
+  (*2026-10-01*, found reviewing this step): it was probed first -- its runtime loaded, a
+  decoder built per profile -- and then the system's interface, which measured no slower, was
+  taken. The system's interface is now tried first there and Intel's decoder only where it does
+  not open ([10 §5.2](10-client.md)). A test counting the probes failed first.
+- **Five smaller faults from the same review** (*2026-10-01*): a device lost while a decoder
+  is built on the older runtime takes the lost device's route rather than ending the session,
+  and a picture whose stamp names no unit submitted goes to the unit its call submitted, each
+  shown failing first; a unit's bytes left over once its picture is out end the unit, and a
+  warning is retried at once, where both waited as a busy device does -- not reachable on the
+  runtime here, which takes a whole unit, filler and a trailing delimiter included; a surface
+  handed out without a sync point is given back; and the older runtime's surfaces are reached
+  through raw pointers alone and copied by the layout they were made with, since the runtime's
+  threads write them. The session's calls that take a caller's parameters are unsafe now, and
+  a wait refuses another session's picture.
 
 ### Found
 - **The runtime declines a unit without taking it** when fed faster than its own completion

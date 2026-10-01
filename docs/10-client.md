@@ -935,7 +935,9 @@ an established host, arrival to acquired at the mean, and the decode on the devi
 | H.264 | 3.16 ms against 3.12 | 4.20 ms against 4.13 | 2.33 ms against 2.32 |
 | HEVC | 2.44 ms against 2.41 | 3.49 ms against 3.48 | 1.58 ms against 1.58 |
 
--- the same engine behind both, no faster. Alone for ten minutes a stream, a picture was
+-- the same engine behind both, no faster. So the automatic order does not build Intel's
+decoder on an Intel GPU unless the system's interface does not open there (*2026-10-01*: it
+was probed first and then passed over). Alone for ten minutes a stream, a picture was
 acquired 3.3 ms after its arrival for H.264 and 2.6 for HEVC by handle, 4.1 and 3.7 by planes,
 the whole process using 4 to 6 % of a core. From a second host with the full range, ten-bit
 arrived in 2.2 ms by handle and 3.4 by planes; full chroma in 2.9 ms by handle at eight bits
