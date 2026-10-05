@@ -6,13 +6,15 @@
 //! (docs/03-connectivity.md 6). This crate is the one place that speaks HTTP,
 //! and only to the gateway (docs/00-overview.md D3).
 //!
-//! The modules here are the messages: pure, bytes in and values out, no socket
-//! and no clock. Everything they read comes from the local network, from any
-//! device that answers a search or holds the gateway's address, so none of it
-//! is trusted: a length is checked before it is read, a size is capped before
-//! anything is buffered past it, and nothing that parses can panic.
+//! The messages are pure, bytes in and values out, no socket and no clock;
+//! [`Mapper`] is the one thread that sends them. Everything they read comes
+//! from the local network, from any device that answers a search or holds the
+//! gateway's address, so none of it is trusted: a length is checked before it
+//! is read, a size is capped before anything is buffered past it, and nothing
+//! that parses can panic.
 
-#![forbid(unsafe_code)]
+// The system's own calls, in the per-platform module alone.
+#![deny(unsafe_code)]
 #![deny(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -38,13 +40,28 @@ pub mod desc;
 pub mod http;
 pub mod natpmp;
 pub mod pcp;
+pub mod route;
 pub mod soap;
 pub mod ssdp;
 pub mod url;
 
 mod error;
+#[cfg(any(target_os = "linux", windows))]
+mod mapper;
+
+#[cfg(target_os = "linux")]
+#[path = "sys/linux.rs"]
+mod sys;
+#[cfg(windows)]
+#[path = "sys/windows.rs"]
+mod sys;
+
+#[cfg(all(test, any(target_os = "linux", windows)))]
+mod fake;
 
 pub use error::{Error, Result};
+#[cfg(any(target_os = "linux", windows))]
+pub use mapper::{Config, Mapper, Protocol, Status};
 
 /// Replies captured from three gateways (`tests/data/`): an OpenWrt router, a
 /// libupnp fibre gateway, and a Debian build of the same daemon as the first

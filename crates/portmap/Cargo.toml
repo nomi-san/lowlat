@@ -9,6 +9,10 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
+# The mapper's sleep and its wake, and the log.
+lowlat-common.workspace = true
+# The one entropy source: a PCP mapping's nonce and the renewal's jitter.
+lowlat-crypto.workspace = true
 # The one HTTP exchange's response framing: the status line, the header block
 # and the size line of each chunk. A parser and nothing more -- no client, no
 # connection, no allocation of its own -- and already in the workspace's graph.
@@ -17,6 +21,20 @@ httparse = "1.10"
 # type declarations refused and the node count bounded, so a description
 # cannot grow into more than its bytes.
 roxmltree = { version = "0.21", default-features = false, features = ["std"] }
+
+# The interface a search leaves by.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+
+# The adapter walk that names the default gateway, and the interface a search
+# leaves by: the system's own declarations, as the IO shell uses them.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
+] }
 
 [lints]
 workspace = true

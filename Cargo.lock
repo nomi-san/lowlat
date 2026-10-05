@@ -910,7 +910,11 @@ name = "lowlat-portmap"
 version = "0.0.0"
 dependencies = [
  "httparse",
+ "libc",
+ "lowlat-common",
+ "lowlat-crypto",
  "roxmltree",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

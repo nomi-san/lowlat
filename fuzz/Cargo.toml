@@ -166,3 +166,10 @@ path = "fuzz_targets/portmap_pcp.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "portmap_route"
+path = "fuzz_targets/portmap_route.rs"
+test = false
+doc = false
+bench = false
