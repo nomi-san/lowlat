@@ -3,6 +3,40 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-05 - 15.1: the gateway's messages
+
+### Decided
+- **A crate of its own, `lowlat-portmap`**, its messages first: PCP, NAT-PMP, the search for a
+  gateway and its answer, the HTTP subset, the URLs a gateway hands out, its description and
+  its control actions ([impl-plan Phase 15](impl-plan.md), [00 D3](00-overview.md)). Bytes
+  in, values out, no socket and no clock. Everything it reads comes from the local network and
+  none of it is trusted: a length is checked before it is read, a size is capped before
+  anything is held past it, and nothing that parses can panic.
+- **Two parsing libraries and nothing more**: an HTTP response parser already in the
+  workspace, for a response's head and its chunk sizes, and an XML reader in safe code, with
+  document type declarations refused and its node count bounded.
+- **A response is read again from its start at each read, within a bound**, so what is read
+  depends on the bytes alone and never on where the reads were cut: a response that ends
+  within the bound is whole whatever follows it, and one that has not ended by then never
+  will be.
+- **Plain HTTP to an IPv4 address and nothing else.** A name or a secure scheme is refused
+  rather than resolved or followed, a redirect fails the exchange, and no byte that could end
+  a request line reaches one.
+- **A service's type is this side's own constant**, never the device's string, so nothing a
+  description says reaches a header or an envelope.
+
+### Checked
+- 60 tests, among them replies captured from three gateways -- a router, a fibre gateway and
+  a third in a test namespace -- with what identifies their networks replaced. Every captured
+  HTTP reply reads whole at every cut.
+- Twelve behaviours broken one at a time, each turning its tests red.
+- Seven fuzz targets, one per parser, two minutes each with no crash: 1.2 million runs of the
+  reader, which holds a response read whole and read in pieces to one outcome, and from 3 to
+  140 million of the others. Each is committed with the seeds cut from the captured replies
+  alone: minimized, the coverage the runs found came to some 5,000 inputs, and for parsers
+  this small a coverage corpus is close to dead weight ([08 §6](08-testing.md)).
+- The Linux bar on a clean clone; on Windows the workspace's tests, 60 more than before.
+
 ## 2026-10-05 - C5.22: an attempt confined to IPv4
 
 ### Decided

@@ -151,6 +151,11 @@ Every byte that arrives from the network is parsed by a fuzz target:
   buffer with no device behind them, seeded from the committed clips' units. Both found a
   crash in their first minutes -- a signed delta overflowing a scaling list, a reference
   index underflowing a list -- and both inputs are regression tests.
+- **a gateway's replies** (Phase 15), which anything on the local network can send: the
+  answer to a search, a response read in pieces cut anywhere -- read whole and read in pieces
+  must be one outcome --, the URLs a gateway hands out and the references resolved against
+  them, its description, its control answers, and the binary answers on its mapping port. All
+  are seeded with replies captured from three gateways.
 
 Rules:
 

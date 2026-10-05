@@ -1996,10 +1996,16 @@ Steps:
   timed lease, reports the address a reflexive server sees and has no PCP on either family; it
   answers an identical add with success and keeps the old lease. The development network's
   gateway has reported a public address since the same day.
-- [ ] **15.1 The messages**: PCP, NAT-PMP, SSDP, HTTP framing, URL resolution, the device
+- [x] **15.1 The messages**: PCP, NAT-PMP, SSDP, HTTP framing, URL resolution, the device
   description, SOAP. Checked by unit tests built from the known gateway quirks and the
   development gateway's captured replies, round-trip properties, and a fuzz target per parser,
   run and minimized.
+  *Done 2026-10-05.* The replies are three gateways', the second network's and the
+  namespace's as well, with what identifies their networks replaced. Minimized, the runs'
+  coverage came to some 5,000 inputs; each target keeps the captured replies as its seeds
+  instead ([changelog](changelog.md)). The response reader reads everything it holds again
+  at each read, within a bound, so the response it reads never depends on where the reads
+  were cut, which its fuzz target asserts.
 - [ ] **15.2 The mapper**: the default gateway per platform, the protocol ladder, lifetimes and
   renewal, a port that moves, the bounded stop. Checked against a fake gateway on loopback that
   serves all three.

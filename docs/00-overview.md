@@ -60,6 +60,9 @@ lowlat-crypto    credentials, key material, the process certificate, and the onl
                  source of randomness
 lowlat-net       IO shell: sockets, threads, timers, wakeups; the browser transport's
                  record layer and association, driven by the same loop
+lowlat-portmap   gateway port mapping for the client and the host: PCP, NAT-PMP and
+                 UPnP's gateway device; the one crate that speaks HTTP, and only to
+                 the gateway
 lowlat-sim       deterministic simulator and network namespace fixtures (dev-dependency)
 lowlat-drivers   the device interfaces reached at runtime: the generated bindings,
                  the loaders, the display and the device context; shared by
