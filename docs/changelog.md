@@ -3,6 +3,29 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-05 - C5.22: an attempt confined to IPv4
+
+### Decided
+- **A client's attempt may be confined to IPv4**, `lowlat_client_config.ipv4_only` (minor
+  21), in the byte that was reserved, so a caller built against an earlier minor gets both
+  families as before ([03 §3](03-connectivity.md), [06 §3b](06-api.md)): no IPv6 host
+  candidate, no IPv6 reflexive server, the host's IPv6 candidates declined with a log line, a
+  relay taken only at an IPv4 address. It exists to exercise the IPv4 path's translation where
+  IPv6 would connect directly. The example client sets it from `LOWLAT_IPV4_ONLY`.
+
+### Changed
+- **A renamed atomic call allowed**: the current stable toolchain deprecates the update the
+  picture queue's release uses, and the warning failed the lint bar at every commit; it is
+  allowed until the minimum toolchain has the new name.
+
+### Checked
+- The family rule's test, shown failing with the v4-mapped collapse taken out.
+- Live against an established host, a minute with both families and three with IPv4 only,
+  then a minute of each with the host's router no longer forwarding everything to it: every
+  session established over IPv4 to the host's own port, which the host maps on its gateway
+  itself. The host offered no IPv6 candidate in any of them, so the decline is checked by its
+  test alone.
+
 ## 2026-10-01 - W1.8: the system's decoder on Windows
 
 ### Decided

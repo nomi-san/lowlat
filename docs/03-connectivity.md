@@ -111,6 +111,11 @@ Gathering rules:
 - **Shared address space is offered only when asked for.** It is reachable when
   both ends are behind the same carrier translation or on the same overlay
   network, and a wasted check for every peer that is not, so it is opted into.
+- **A client's attempt may be confined to IPv4** (*2026-10-05*), the one exception to
+  offering both families, and only when the application asks: no IPv6 host candidate, no IPv6
+  reflexive server asked, every IPv6 candidate the peer offers declined with a log line, and a
+  relay taken only at an IPv4 address. It is a test of the IPv4 path, not a preference: where
+  IPv6 connects directly, it is how that path's translation is exercised at all.
 - **The list is capped, and a cap that binds is reported.** A machine with
   several bridges can present a long list and each entry costs the peer part of
   a budget bounded in both attempts and time.

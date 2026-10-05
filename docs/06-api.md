@@ -564,7 +564,12 @@ and it is a request to change the host's display, not a description of this one)
 uncompressed sound, reflexive servers, and `legacy_cipher`, which leaves the media key out of
 the offer so both ends key the older 128-bit cipher from the host's certificate digest; with
 it clear the session is keyed from the host's media key in the answer, and an answer without
-one takes the legacy path regardless. Nothing in the library speaks to a signaling service
+one takes the legacy path regardless. `ipv4_only` (minor 21, [03 §3](03-connectivity.md))
+confines the attempt to IPv4: no IPv6 candidate of the client's is raised, no IPv6 reflexive
+server is asked, the host's IPv6 candidates are declined with a log line, and a relay is taken
+only at an IPv4 address. It took the byte that was reserved, so a caller built against an
+earlier minor, which zeroed it, gets both families.
+Nothing in the library speaks to a signaling service
 (D3); the example client does, itself. `end_connection` says goodbye on the control channel
 and gives the message a moment to arrive; it raises no event, because the application caused
 it. **That moment holds nothing else up** (*2026-09-25*): the attempt is taken out first and

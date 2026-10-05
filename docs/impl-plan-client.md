@@ -1332,6 +1332,8 @@ slower decoder ever reopens them.
 
 Newest first.
 
+- 2026-10-05: an attempt may be confined to IPv4 (minor 21), to exercise the IPv4 path's
+  translation where IPv6 would connect directly.
 - 2026-09-25: the demo's toolkit gathers a signaling message sent in fragments, the likely
   cause of the answer lost twice; checked on loopback, in CI.
 - 2026-09-25: the handle path's copy is waited on asleep; the whole context left as it is,

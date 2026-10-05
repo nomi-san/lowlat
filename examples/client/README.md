@@ -47,7 +47,10 @@ decoders this machine can open are printed at start, one numbered row each
 with what it decodes, and `LOWLAT_DECODER_INDEX` picks a row by number.
 `LOWLAT_STUN` names reflexive servers, `host:port` separated by commas, up to
 four: without one a direct attempt offers only this machine's own addresses,
-which a host behind its own translator cannot answer. `LOWLAT_RELAY=host:port`
+which a host behind its own translator cannot answer. `LOWLAT_IPV4_ONLY`
+offers and checks IPv4 addresses only: no IPv6 candidate of this machine's,
+none of the host's checked, so a host that IPv6 would reach directly is
+reached across the translation on IPv4 instead. `LOWLAT_RELAY=host:port`
 makes the attempt a relay attempt through that relay
 ([docs/03-connectivity.md](../../docs/03-connectivity.md) section 7), with
 `LOWLAT_RELAY_USER` and `LOWLAT_RELAY_PASS` its credential, which is handed to
