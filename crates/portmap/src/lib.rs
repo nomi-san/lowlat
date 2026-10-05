@@ -41,6 +41,7 @@ pub mod http;
 pub mod natpmp;
 pub mod pcp;
 pub mod route;
+pub mod seed;
 pub mod soap;
 pub mod ssdp;
 pub mod url;
@@ -61,7 +62,7 @@ mod fake;
 
 pub use error::{Error, Result};
 #[cfg(any(target_os = "linux", windows))]
-pub use mapper::{Config, Mapper, Protocol, Status};
+pub use mapper::{Config, Mapper, Protocol, Reader, Status};
 
 /// Replies captured from three gateways (`tests/data/`): an OpenWrt router, a
 /// libupnp fibre gateway, and a Debian build of the same daemon as the first

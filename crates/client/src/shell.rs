@@ -4,7 +4,7 @@
 //! opened, lends them their rings for the life of the thread, and runs the
 //! shell's loop with the driver as its application.
 
-use std::net::SocketAddr;
+use std::net::{SocketAddr, SocketAddrV4};
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
 
@@ -20,7 +20,9 @@ use lowlat_core::init::Init;
 use lowlat_core::relay::{Relay, State as RelayState};
 use lowlat_core::send::{SendRing, SendSlot};
 use lowlat_core::session::Session;
+use lowlat_core::stun::canonical;
 use lowlat_net::{Running, Shell, Socket, Wake};
+use lowlat_portmap::Reader;
 use std::sync::atomic::Ordering;
 
 use crate::config;
@@ -44,6 +46,9 @@ pub(crate) struct Attached {
     /// identifiers are derived from.
     pub relay: Option<config::Relay>,
     pub relay_seed: [u8; 16],
+    /// The gateway's mapping of the attempt's port, read without a lock;
+    /// none when no mapping is kept.
+    pub mapping: Option<Reader>,
     pub ours: (String, String),
     pub theirs: (String, String),
     pub material: [u8; 36],
@@ -93,6 +98,7 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
         servers,
         relay,
         relay_seed,
+        mapping,
         ours,
         theirs,
         material,
@@ -197,6 +203,7 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
     let mut driver = Driver::new(init, units, packets, emit.clone(), Arc::clone(&telemetry));
     let mut reported: Vec<SocketAddr> = Vec::new();
     let mut offered = false;
+    let mut mapped = false;
     let mut pass: u32 = 0;
 
     while !running.stopping() {
@@ -314,8 +321,40 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
                 lan: addr.is_ipv6(),
             });
         }
+        // The gateway's mapping, once: offered when a reflexive server saw
+        // the gateway's own address, so nothing translates beyond it and the
+        // mapped port is open to anyone. Where the gateway keeps ports it is
+        // the reflexive candidate itself, already offered.
+        if !mapped
+            && let Some(external) = mapping.as_ref().and_then(Reader::external)
+            && let Some(addr) = confirmed(external, &reported)
+        {
+            mapped = true;
+            lowlat_common::log_info!("client: the gateway's mapping confirmed, mapped={addr}");
+            if !reported.iter().any(|seen| canonical(*seen) == addr) {
+                reported.push(addr);
+                // Marked as a reflexive server's report, which it is checked
+                // against: a public address a peer probes as one.
+                emit.send(Event::Candidate {
+                    addr,
+                    from_stun: true,
+                    lan: false,
+                });
+            }
+        }
     }
     telemetry.state.store(2, Ordering::Relaxed);
+}
+
+/// The gateway's external address and port as a candidate, once a reflexive
+/// server has reported the same address: none before, and none when it
+/// reported another, which is a translator beyond the gateway.
+fn confirmed(external: SocketAddrV4, reflexive: &[SocketAddr]) -> Option<SocketAddr> {
+    let external = SocketAddr::V4(external);
+    reflexive
+        .iter()
+        .any(|addr| canonical(*addr).ip() == external.ip())
+        .then_some(external)
 }
 
 /// Release the relay's allocation on the way out, rather than hold a relay
@@ -328,5 +367,26 @@ fn release(shell: &mut Shell<'_, Session<'_>>) {
     if matches!(relay.state(), RelayState::Setup | RelayState::Ready(_)) {
         relay.release();
         let _ = shell.turn(|_| {});
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    /// Offered once a reflexive server saw the gateway's address, in either
+    /// notation and at whatever port; never before, and never for another.
+    #[test]
+    fn a_mapping_is_offered_once_a_reflexive_server_saw_its_address() {
+        let external = SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, 7), 24137);
+        let seen: SocketAddr = "203.0.113.7:51461".parse().unwrap();
+        let mapped_form: SocketAddr = "[::ffff:203.0.113.7]:51461".parse().unwrap();
+        let beyond: SocketAddr = "198.51.100.9:24137".parse().unwrap();
+        let offered = Some(SocketAddr::V4(external));
+        assert_eq!(confirmed(external, &[]), None);
+        assert_eq!(confirmed(external, &[beyond]), None);
+        assert_eq!(confirmed(external, &[beyond, seen]), offered);
+        assert_eq!(confirmed(external, &[mapped_form]), offered);
     }
 }

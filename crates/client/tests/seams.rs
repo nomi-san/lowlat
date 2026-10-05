@@ -39,10 +39,13 @@ fn host() -> Admission {
 /// message comes back through the client. Returns whether it did.
 fn session_under(legacy: bool) {
     let mut host = host();
-    let mut client = Client::new(&lowlat_client::config::Decoding {
-        backend: lowlat_client::config::Backend::None,
-        ..Default::default()
-    })
+    let mut client = Client::new(
+        &lowlat_client::config::Decoding {
+            backend: lowlat_client::config::Backend::None,
+            ..Default::default()
+        },
+        lowlat_client::config::Port::Any,
+    )
     .expect("a client without a decoder");
     let config = Config {
         legacy_cipher: legacy,
@@ -253,10 +256,13 @@ fn a_pad_is_one_family_until_it_is_unplugged() {
     use lowlat_client::input::{Input, PadState, ReportKind};
     use lowlat_core::pad::Product;
 
-    let mut client = Client::new(&lowlat_client::config::Decoding {
-        backend: lowlat_client::config::Backend::None,
-        ..Default::default()
-    })
+    let mut client = Client::new(
+        &lowlat_client::config::Decoding {
+            backend: lowlat_client::config::Backend::None,
+            ..Default::default()
+        },
+        lowlat_client::config::Port::Any,
+    )
     .expect("a client without a decoder");
     let idle = include_bytes!("../../core/tests/data/pad/ds5/input-idle.bin");
     let state = Input::PadState {

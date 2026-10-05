@@ -2,6 +2,7 @@
 
 use std::fmt;
 use std::net::SocketAddr;
+use std::num::NonZeroU16;
 
 use lowlat_core::init::{self, Init};
 pub use lowlat_decode::Caps;
@@ -81,6 +82,55 @@ impl Decoding {
                 self.ceiling.1
             },
         )
+    }
+}
+
+/// The port every attempt binds, settled at creation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum Port {
+    /// One the system picks, per attempt.
+    #[default]
+    Any,
+    /// This one, or the first free one above it, at every attempt; and, with
+    /// a description, kept open on the gateway under it
+    /// (docs/03-connectivity.md 6).
+    Stable {
+        first: NonZeroU16,
+        mapping: Option<String>,
+    },
+}
+
+impl Port {
+    /// A stable port from what an application names: the port itself, or the
+    /// one its seed picks -- the seed its own, or the machine's name when it
+    /// gives none -- and, when it asks, the mapping listed under the seed.
+    pub fn seeded(port: u16, seed: &str, mapping: bool) -> Self {
+        let seed = if seed.is_empty() {
+            lowlat_portmap::seed::machine_name()
+        } else {
+            seed.to_owned()
+        };
+        let first = if port == 0 {
+            lowlat_portmap::seed::port(&seed)
+        } else {
+            port
+        };
+        // A seed's port is never zero, so this is the stable port.
+        match NonZeroU16::new(first) {
+            Some(first) => Port::Stable {
+                first,
+                mapping: mapping.then(|| lowlat_portmap::seed::description(&seed)),
+            },
+            None => Port::Any,
+        }
+    }
+
+    /// The port an attempt asks for first: zero for any.
+    pub fn first(&self) -> u16 {
+        match self {
+            Port::Any => 0,
+            Port::Stable { first, .. } => first.get(),
+        }
     }
 }
 
@@ -333,6 +383,29 @@ mod tests {
             ..Caps::default()
         };
         assert_eq!(all.flags(&h264_only), 0);
+    }
+
+    /// A port named is kept; none named is the seed's, and the machine's
+    /// name is the seed when the application gives none. The mapping is
+    /// listed under the seed, and only when asked for.
+    #[test]
+    fn a_seeded_port_is_the_one_named_or_the_seeds() {
+        let first = |port: &Port| port.first();
+        assert_eq!(first(&Port::seeded(30_000, "", false)), 30_000);
+        assert_eq!(first(&Port::seeded(0, "HOST-1", false)), 24097);
+        assert_eq!(
+            Port::seeded(0, "", false),
+            Port::seeded(0, &lowlat_portmap::seed::machine_name(), false)
+        );
+        let Port::Stable { mapping, .. } = Port::seeded(30_000, "HOST-1", true) else {
+            panic!("a named port is a stable one");
+        };
+        assert_eq!(mapping.as_deref(), Some("lowlat-b596f0a1"));
+        assert!(matches!(
+            Port::seeded(0, "HOST-1", false),
+            Port::Stable { mapping: None, .. }
+        ));
+        assert_eq!(first(&Port::default()), 0);
     }
 
     /// IPv4 only refuses an IPv6 address and keeps an IPv4 one in either

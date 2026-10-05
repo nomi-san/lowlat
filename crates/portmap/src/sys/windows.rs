@@ -1,4 +1,5 @@
-//! The default gateway and the interface a search leaves by, on Windows.
+//! The default gateway, the interface a search leaves by, and the machine's
+//! name, on Windows.
 
 #![allow(unsafe_code)]
 
@@ -17,6 +18,7 @@ use windows_sys::Win32::NetworkManagement::Ndis::IfOperStatusUp;
 use windows_sys::Win32::Networking::WinSock::{
     AF_INET, IP_MULTICAST_IF, IPPROTO_IP, SOCKADDR, SOCKADDR_IN, SOCKET, setsockopt,
 };
+use windows_sys::Win32::System::WindowsProgramming::GetComputerNameW;
 
 /// Beyond the local network, so the system answers with the address it
 /// gives the default route. Nothing is sent to it.
@@ -138,6 +140,21 @@ pub(crate) fn multicast_from(socket: &UdpSocket, local: Ipv4Addr) -> io::Result<
     } else {
         Err(io::Error::last_os_error())
     }
+}
+
+/// The machine's network name, as the system reports it: in capitals, and at
+/// most fifteen characters.
+pub(crate) fn machine_name() -> Option<String> {
+    // Room for the longest such name and its terminator, and more.
+    let mut name = [0u16; 64];
+    let mut len = u32::try_from(name.len()).ok()?;
+    // SAFETY: a buffer of `len` wide characters, written by the call, and its
+    // length, which the call sets to the characters written; both live for it.
+    let ok = unsafe { GetComputerNameW(name.as_mut_ptr(), &raw mut len) };
+    if ok == 0 {
+        return None;
+    }
+    String::from_utf16(name.get(..usize::try_from(len).ok()?)?).ok()
 }
 
 #[cfg(test)]

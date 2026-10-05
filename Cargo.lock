@@ -785,6 +785,7 @@ dependencies = [
  "lowlat-host",
  "lowlat-inject",
  "lowlat-net",
+ "lowlat-portmap",
  "lowlat-sim",
  "miniz_oxide",
  "zeroize",
@@ -932,6 +933,7 @@ dependencies = [
  "lowlat-host",
  "lowlat-inject",
  "lowlat-net",
+ "lowlat-portmap",
  "zeroize",
 ]
 

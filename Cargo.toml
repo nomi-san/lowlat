@@ -33,6 +33,7 @@ lowlat-common = { path = "crates/common" }
 lowlat-core = { path = "crates/core" }
 lowlat-crypto = { path = "crates/crypto" }
 lowlat-net = { path = "crates/net" }
+lowlat-portmap = { path = "crates/portmap" }
 lowlat-sim = { path = "crates/sim" }
 lowlat-drivers = { path = "crates/drivers" }
 lowlat-capture = { path = "crates/capture" }

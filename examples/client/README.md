@@ -50,7 +50,15 @@ four: without one a direct attempt offers only this machine's own addresses,
 which a host behind its own translator cannot answer. `LOWLAT_IPV4_ONLY`
 offers and checks IPv4 addresses only: no IPv6 candidate of this machine's,
 none of the host's checked, so a host that IPv6 would reach directly is
-reached across the translation on IPv4 instead. `LOWLAT_RELAY=host:port`
+reached across the translation on IPv4 instead. `LOWLAT_PORT` is the port
+every attempt binds first; by default it is the same one every run, 24000 plus
+a hash of `LOWLAT_PORT_SEED` or of the machine's name, so two copies on one
+machine can be given two. The demo asks the gateway to keep that port open, by
+PCP, NAT-PMP or UPnP, and prints what it mapped whenever that changes;
+`LOWLAT_PORT_MAPPING=0` leaves the gateway alone. On Windows the system's
+firewall asks once, at the first attempt, whether the demo may receive: what
+reaches the port from a peer it never sent to is dropped until it is allowed,
+and allowing it adds rules for TCP and UDP alike. `LOWLAT_RELAY=host:port`
 makes the attempt a relay attempt through that relay
 ([docs/03-connectivity.md](../../docs/03-connectivity.md) section 7), with
 `LOWLAT_RELAY_USER` and `LOWLAT_RELAY_PASS` its credential, which is handed to

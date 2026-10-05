@@ -211,6 +211,20 @@ mod tests {
         );
     }
 
+    /// A port another program holds in one family is taken for this socket,
+    /// which serves both: the walk steps past it rather than sharing it, and
+    /// leaving that family's datagrams to the other program.
+    #[test]
+    fn a_port_held_in_one_family_walks_forward() {
+        let held = std::net::UdpSocket::bind("0.0.0.0:0").expect("hold");
+        let taken = held.local_addr().expect("addr").port();
+
+        let walked = Socket::open(taken).expect("the walk must find room");
+        let bound = walked.local_addr().expect("addr").port();
+
+        assert_ne!(bound, taken, "bound a port another socket holds for IPv4");
+    }
+
     /// The top of the range has no successor, so the walk gives up there.
     ///
     /// Two behaviours in one fixture because they need the same exclusive port.

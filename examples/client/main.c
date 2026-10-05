@@ -57,6 +57,13 @@
 // addresses, which a host behind its own translator cannot answer.
 // `LOWLAT_IPV4_ONLY` offers and checks IPv4 addresses only, so an attempt
 // that IPv6 would connect directly crosses the translation on IPv4 instead.
+// `LOWLAT_PORT` is the port every attempt binds first -- by default the same
+// one every run, picked by `LOWLAT_PORT_SEED` or the machine's name -- and
+// the gateway is asked to keep it open, by PCP, NAT-PMP or UPnP, unless
+// `LOWLAT_PORT_MAPPING=0`; a line says what it mapped whenever that changes.
+// On Windows the system's firewall asks once whether the demo may receive,
+// at the first attempt: a peer reaching the mapped port from a port this side
+// never sent to is dropped until it is allowed.
 // `LOWLAT_RELAY=host:port` makes the attempt a relay attempt through that
 // relay, with `LOWLAT_RELAY_USER` and `LOWLAT_RELAY_PASS` its credential,
 // which is handed to the library and never printed: the relayed address is
@@ -335,6 +342,9 @@ struct demo {
 	uint64_t seconds;
 	uint64_t last_video_bytes;
 	bool established;
+	// The gateway's mapping as last printed.
+	uint32_t mapping;
+	uint16_t mapped_port;
 };
 
 // The clock the library stamps a picture's arrival on, so the two can be
@@ -1394,6 +1404,21 @@ static void report(struct demo *d)
 		d->behind_seconds = 0;
 		d->behind_warned = false;
 	}
+	// The gateway's mapping of the port, whenever it changes.
+	if (st.mapping != d->mapping || st.mapped_port != d->mapped_port) {
+		static const char *const by[] = {"nothing", "PCP", "NAT-PMP", "UPnP"};
+		if (st.mapping != LOWLAT_MAPPING_NONE && st.mapping < 4)
+			printf("demo: port mapped by %s, external %s:%u\n", by[st.mapping],
+				st.mapped_address[0] ? st.mapped_address : "(not stated)",
+				(unsigned) st.mapped_port);
+		else if (st.mapping_refusal != 0 && st.mapping_refused_by < 4)
+			printf("demo: port not mapped, %s refused with %u\n", by[st.mapping_refused_by],
+				(unsigned) st.mapping_refusal);
+		else
+			printf("demo: port not mapped\n");
+		d->mapping = st.mapping;
+		d->mapped_port = st.mapped_port;
+	}
 	d->keys_sent = 0;
 	d->buttons_sent = 0;
 	d->wheels_sent = 0;
@@ -2025,6 +2050,16 @@ int main(void)
 	}
 	info.frame_kind = d.handles ? LOWLAT_FRAME_HANDLE : LOWLAT_FRAME_PLANES;
 	snprintf(info.device, sizeof info.device, "%s", device);
+	// The port and its mapping: mapped here, as a person running a client
+	// expects, unless asked not to.
+	unsigned long port = strtoul(env_or("LOWLAT_PORT", "0"), NULL, 10);
+	if (port > UINT16_MAX) {
+		fprintf(stderr, "demo: LOWLAT_PORT is past the last port: %lu\n", port);
+		return 2;
+	}
+	info.port = (uint16_t) port;
+	snprintf(info.port_seed, sizeof info.port_seed, "%s", env_or("LOWLAT_PORT_SEED", ""));
+	info.port_mapping = strcmp(env_or("LOWLAT_PORT_MAPPING", "1"), "0") != 0;
 
 	// What this machine can open, one row each; a row picked by number
 	// names the decoder and the device for creation.

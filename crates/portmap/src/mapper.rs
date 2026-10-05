@@ -21,7 +21,7 @@
 //! NAT-PMP delete in one exchange, UPnP's a port at a time.
 
 use core::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use core::time::Duration;
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, UdpSocket};
@@ -167,6 +167,9 @@ struct Shared {
     stopping: AtomicBool,
     port: AtomicU32,
     status: Mutex<Status>,
+    /// The external address and port while the gateway states both, as one
+    /// word a reader takes without the lock; zero otherwise.
+    external: AtomicU64,
 }
 
 impl Shared {
@@ -177,14 +180,46 @@ impl Shared {
     }
 
     fn publish(&self, change: impl FnOnce(&mut Status)) {
-        change(&mut self.status.lock().unwrap_or_else(PoisonError::into_inner));
+        let mut status = self.status.lock().unwrap_or_else(PoisonError::into_inner);
+        change(&mut status);
+        // Relaxed: the word is the whole message, and nothing is read with it.
+        self.external.store(packed(&status), Ordering::Relaxed);
+    }
+}
+
+/// The external address above the port. A port is set only while something is
+/// mapped, so no mapping packs to zero.
+fn packed(status: &Status) -> u64 {
+    match status.address {
+        Some(address) if status.port != 0 => {
+            u64::from(address.to_bits()) << 16 | u64::from(status.port)
+        }
+        _ => 0,
+    }
+}
+
+/// What another thread reads of a mapper without taking its lock. It keeps
+/// nothing running: once the mapper stops it reads nothing.
+#[derive(Debug, Clone)]
+pub struct Reader {
+    shared: Arc<Shared>,
+}
+
+impl Reader {
+    /// The gateway's external address and the first port's external port,
+    /// while the gateway states both.
+    pub fn external(&self) -> Option<SocketAddrV4> {
+        let word = self.shared.external.load(Ordering::Relaxed);
+        let address = u32::try_from(word >> 16).ok()?;
+        let port = u16::try_from(word & 0xffff).ok()?;
+        (word != 0).then(|| SocketAddrV4::new(Ipv4Addr::from_bits(address), port))
     }
 }
 
 impl Mapper {
     /// Start keeping `config`'s ports mapped, on a thread of its own.
     pub fn start(config: Config) -> io::Result<Self> {
-        Self::spawn(config, None, TIMING)
+        Self::spawn(config, None, TIMING, None)
     }
 
     #[cfg(test)]
@@ -193,15 +228,33 @@ impl Mapper {
         endpoints: Endpoints,
         timing: Timing,
     ) -> io::Result<Self> {
-        Self::spawn(config, Some(endpoints), timing)
+        Self::spawn(config, Some(endpoints), timing, None)
     }
 
-    fn spawn(config: Config, endpoints: Option<Endpoints>, timing: Timing) -> io::Result<Self> {
+    /// As [`Mapper::start_with`], the ladder held to one protocol: how each is
+    /// checked against a gateway that answers all three.
+    #[cfg(test)]
+    pub(crate) fn start_only(
+        config: Config,
+        endpoints: Endpoints,
+        timing: Timing,
+        only: Protocol,
+    ) -> io::Result<Self> {
+        Self::spawn(config, Some(endpoints), timing, Some(only))
+    }
+
+    fn spawn(
+        config: Config,
+        endpoints: Option<Endpoints>,
+        timing: Timing,
+        only: Option<Protocol>,
+    ) -> io::Result<Self> {
         let shared = Arc::new(Shared {
             generation: AtomicU32::new(0),
             stopping: AtomicBool::new(false),
             port: AtomicU32::new(u32::from(config.port)),
             status: Mutex::new(Status::default()),
+            external: AtomicU64::new(0),
         });
         let runner = Runner {
             shared: Arc::clone(&shared),
@@ -210,6 +263,7 @@ impl Mapper {
             endpoints,
             timing,
             quiet: false,
+            only,
         };
         let thread = std::thread::Builder::new()
             .name("lowlat-portmap".into())
@@ -234,6 +288,13 @@ impl Mapper {
             .status
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// A reader for another thread, which takes no lock.
+    pub fn reader(&self) -> Reader {
+        Reader {
+            shared: Arc::clone(&self.shared),
+        }
     }
 
     /// Delete every mapping and end the thread, within the stop's bound.
@@ -338,6 +399,9 @@ struct Runner {
     timing: Timing,
     /// Set once nothing was found, so finding nothing again is not logged.
     quiet: bool,
+    /// The one protocol the ladder asks; every one when none. Only a test
+    /// holds it to one.
+    only: Option<Protocol>,
 }
 
 impl Runner {
@@ -458,10 +522,20 @@ impl Runner {
             self.nothing(Some(endpoints.gateway));
             return None;
         };
-        let made = self
-            .pcp(endpoints, local, first, count, seen)
-            .or_else(|| self.natpmp(endpoints, local, first, count, seen))
-            .or_else(|| self.upnp(endpoints, local, first, count, seen));
+        let asks = |protocol| self.only.is_none_or(|only| only == protocol);
+        let made = asks(Protocol::Pcp)
+            .then(|| self.pcp(endpoints, local, first, count, seen))
+            .flatten()
+            .or_else(|| {
+                asks(Protocol::NatPmp)
+                    .then(|| self.natpmp(endpoints, local, first, count, seen))
+                    .flatten()
+            })
+            .or_else(|| {
+                asks(Protocol::Upnp)
+                    .then(|| self.upnp(endpoints, local, first, count, seen))
+                    .flatten()
+            });
         match &made {
             Some(made) => {
                 self.quiet = false;
@@ -1316,16 +1390,29 @@ mod tests {
     }
 
     /// Wait for `holds`, failing with `what` after a generous bound.
-    fn until(what: &str, mut holds: impl FnMut() -> bool) {
-        let end = Instant::now() + Duration::from_secs(10);
+    fn until(what: &str, holds: impl FnMut() -> bool) {
+        until_within(
+            Duration::from_secs(10),
+            Duration::from_millis(10),
+            what,
+            holds,
+        );
+    }
+
+    /// Wait for `holds`, looking every `every`, failing with `what` after
+    /// `bound`.
+    fn until_within(bound: Duration, every: Duration, what: &str, mut holds: impl FnMut() -> bool) {
+        let end = Instant::now() + bound;
         while !holds() {
             assert!(Instant::now() < end, "never: {what}");
-            std::thread::sleep(Duration::from_millis(10));
+            std::thread::sleep(every);
         }
     }
 
-    /// Stopped within the bound, every mapping deleted from the gateway.
+    /// Stopped within the bound, every mapping deleted from the gateway, and
+    /// nothing left for a reader.
     fn stopped(mut mapper: Mapper, fake: &Fake) {
+        let reader = mapper.reader();
         let begun = Instant::now();
         mapper.stop();
         let took = begun.elapsed();
@@ -1334,6 +1421,7 @@ mod tests {
         assert!(took < Duration::from_secs(1), "the stop took {took:?}");
         assert!(fake.table().is_empty(), "left behind: {:?}", fake.table());
         assert_eq!(mapper.status().protocol, Protocol::None);
+        assert_eq!(reader.external(), None);
     }
 
     fn mapped(mapper: &Mapper, protocol: Protocol) -> impl FnMut() -> bool {
@@ -1347,6 +1435,11 @@ mod tests {
         until("a PCP mapping", mapped(&mapper, Protocol::Pcp));
         let status = mapper.status();
         assert_eq!((status.address, status.port), (Some(EXTERNAL), PORT));
+        // Read without the lock as the status states it.
+        assert_eq!(
+            mapper.reader().external(),
+            Some(SocketAddrV4::new(EXTERNAL, PORT))
+        );
         let entry = &fake.table()[&PORT];
         assert_eq!((entry.via, entry.client), ("pcp", Ipv4Addr::LOCALHOST));
         assert!(entry.nonce.is_some());
@@ -1563,6 +1656,8 @@ mod tests {
         let mapper = start(&fake, PORT, 1);
         until("a UPnP mapping", mapped(&mapper, Protocol::Upnp));
         assert_eq!(mapper.status().address, None);
+        // Mapped, and nothing a reader could offer anyone.
+        assert_eq!(mapper.reader().external(), None);
         assert!(fake.table().contains_key(&PORT));
         stopped(mapper, &fake);
     }
@@ -1629,5 +1724,195 @@ mod tests {
         assert_eq!(renew_after(0), Duration::from_secs(1));
         // An absurd lifetime is read as a day.
         assert!(renew_after(u32::MAX) <= Duration::from_secs(54_000));
+    }
+
+    /// The gateway's UPnP service, found as the ladder finds it, with a
+    /// runner to ask it through.
+    fn gateway_service(endpoints: Endpoints) -> (Runner, Service) {
+        let runner = Runner {
+            shared: Arc::new(Shared {
+                generation: AtomicU32::new(0),
+                stopping: AtomicBool::new(false),
+                port: AtomicU32::new(0),
+                status: Mutex::new(Status::default()),
+                external: AtomicU64::new(0),
+            }),
+            count: 1,
+            description: OURS.into(),
+            endpoints: Some(endpoints),
+            timing: FAST,
+            quiet: false,
+            only: None,
+        };
+        let watch = runner.watch(0);
+        let local = local_toward(endpoints.control).expect("a route to the gateway");
+        let location = search(&watch, endpoints, local).expect("the gateway answers a search");
+        let (response, ()) = http_exchange(&watch, &location, http::DESCRIPTION_CAP, |_| {
+            let request = http::request(Method::Get, location.addr, &location.path, &[], &[]);
+            (request, ())
+        })
+        .expect("its description");
+        let found = desc::parse(&response.body, &location).unwrap();
+        let service = found
+            .connections()
+            .find(|service| *service.control.addr.ip() == endpoints.gateway)
+            .expect("a connection service on the gateway")
+            .clone();
+        (runner, service)
+    }
+
+    /// The internal client the gateway lists on `port`, and the lease left.
+    fn listed(runner: &Runner, service: &Service, port: u16) -> Option<(String, String)> {
+        let kind = service.service_type;
+        let ask = |_| soap::get_specific_port_mapping_entry(kind, port);
+        match runner.control(&runner.watch(0), service, ask)? {
+            entry @ Answer::Done(_) => Some((
+                entry.get("NewInternalClient")?.to_owned(),
+                entry.get("NewLeaseDuration").unwrap_or("?").to_owned(),
+            )),
+            Answer::Fault(_) => None,
+        }
+    }
+
+    /// Asked short, so a renewal comes within a minute or two: the gateway may
+    /// grant more.
+    const LIVE: Timing = Timing {
+        lease_s: 120,
+        readd: Duration::from_secs(10),
+        lifetime_s: 60,
+        retry: Duration::from_secs(5),
+        teardown: Duration::from_millis(250),
+    };
+    /// The live checks' port, and how often they look at the gateway's table.
+    const FIRST: u16 = 24_791;
+    const EVERY: Duration = Duration::from_secs(1);
+
+    /// The real gateway, each protocol in turn: mapped and listed, moved, made
+    /// again after the gateway lost it, and deleted within the bound. By hand,
+    /// on a network whose gateway speaks all three and lists every protocol's
+    /// mappings through UPnP; it takes a few minutes:
+    /// `cargo test -p lowlat-portmap --lib live_each -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "maps ports on this network's real gateway"]
+    fn live_each_protocol_on_the_real_gateway() {
+        let gateway = sys::gateway().expect("a default gateway");
+        let endpoints = Endpoints::of(gateway);
+        let (runner, service) = gateway_service(endpoints);
+        let local = local_toward(endpoints.control).unwrap().to_string();
+        let kind = service.service_type;
+        for protocol in [Protocol::Pcp, Protocol::NatPmp, Protocol::Upnp] {
+            let name = protocol.as_str();
+            let config = Config {
+                port: FIRST,
+                count: 1,
+                description: OURS.into(),
+            };
+            let mut mapper = Mapper::start_only(config, endpoints, LIVE, protocol).unwrap();
+            let bound = Duration::from_secs(30);
+            until_within(bound, EVERY, "mapped", mapped(&mapper, protocol));
+            let status = mapper.status();
+            println!(
+                "live: {name} mapped {FIRST}, external {:?}:{}",
+                status.address, status.port
+            );
+            assert_eq!(status.port, FIRST, "{name}: another external port");
+            let (client, lease) = listed(&runner, &service, FIRST).expect("not listed");
+            assert_eq!(client, local, "{name}: listed for another client");
+            println!("live: {name} listed for {client}, lease {lease}");
+
+            // Moved with the port: the old entry gone, the new one listed.
+            mapper.set_port(FIRST + 1);
+            until_within(bound, EVERY, "listed at the new port", || {
+                listed(&runner, &service, FIRST + 1).is_some()
+            });
+            assert_eq!(
+                listed(&runner, &service, FIRST),
+                None,
+                "{name}: the old entry stayed"
+            );
+            println!("live: {name} moved to {}", FIRST + 1);
+
+            // Lost by the gateway, made again at the next renewal.
+            let gone = |_| soap::delete_port_mapping(kind, FIRST + 1);
+            runner.control(&runner.watch(0), &service, gone);
+            assert_eq!(
+                listed(&runner, &service, FIRST + 1),
+                None,
+                "{name}: not deleted"
+            );
+            let lost = Instant::now();
+            until_within(Duration::from_secs(180), EVERY, "made again", || {
+                listed(&runner, &service, FIRST + 1).is_some()
+            });
+            println!(
+                "live: {name} made again {:?} after the gateway lost it",
+                lost.elapsed()
+            );
+
+            // Deleted within the bound.
+            let begun = Instant::now();
+            mapper.stop();
+            let took = begun.elapsed();
+            assert!(
+                took < Duration::from_secs(1),
+                "{name}: the stop took {took:?}"
+            );
+            assert_eq!(
+                listed(&runner, &service, FIRST + 1),
+                None,
+                "{name}: left listed"
+            );
+            println!("live: {name} stopped in {took:?}, nothing listed");
+        }
+    }
+
+    /// The real gateway's UPnP service across renewals: the lease it lists
+    /// stays near whole, so a gateway that answers an identical add and keeps
+    /// the old lease has the mapping made again; then deleted within the
+    /// bound. By hand, on any network whose gateway speaks UPnP:
+    /// `cargo test -p lowlat-portmap --lib live_upnp -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "maps a port on this network's real gateway"]
+    fn live_upnp_renewals_on_the_real_gateway() {
+        let gateway = sys::gateway().expect("a default gateway");
+        let endpoints = Endpoints::of(gateway);
+        let (runner, service) = gateway_service(endpoints);
+        let config = Config {
+            port: FIRST,
+            count: 1,
+            description: OURS.into(),
+        };
+        let mut mapper = Mapper::start_only(config, endpoints, LIVE, Protocol::Upnp).unwrap();
+        let bound = Duration::from_secs(30);
+        until_within(bound, EVERY, "mapped", mapped(&mapper, Protocol::Upnp));
+        let status = mapper.status();
+        println!(
+            "live: upnp mapped {FIRST}, external {:?}:{}",
+            status.address, status.port
+        );
+        // Six renewals.
+        let began = Instant::now();
+        let mut least = u64::MAX;
+        while began.elapsed() < Duration::from_secs(65) {
+            std::thread::sleep(Duration::from_secs(5));
+            let (client, lease) = listed(&runner, &service, FIRST).expect("not listed");
+            println!(
+                "live: upnp listed for {client}, lease {lease} at {:?}",
+                began.elapsed()
+            );
+            least = least.min(lease.parse().unwrap_or(0));
+        }
+        // A lease that kept running down would be near half by now.
+        let whole = u64::from(LIVE.lease_s);
+        assert!(least > whole * 3 / 4, "upnp: the lease ran down to {least}");
+        let begun = Instant::now();
+        mapper.stop();
+        let took = begun.elapsed();
+        assert!(
+            took < Duration::from_secs(1),
+            "upnp: the stop took {took:?}"
+        );
+        assert_eq!(listed(&runner, &service, FIRST), None, "upnp: left listed");
+        println!("live: upnp stopped in {took:?}, nothing listed");
     }
 }

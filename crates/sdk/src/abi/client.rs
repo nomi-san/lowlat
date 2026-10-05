@@ -11,7 +11,7 @@ use core::ffi::{c_char, c_void};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration;
 
-use ::lowlat_client::config::{Backend, Decoding, FrameKind};
+use ::lowlat_client::config::{Backend, Decoding, FrameKind, Port};
 use ::lowlat_client::{Client, Event, Outcome};
 use lowlat_common::events::Delivery;
 use lowlat_event_type::*;
@@ -111,7 +111,8 @@ pub enum lowlat_handle_kind {
 /// What a client is created with.
 ///
 /// **Zeroed is the sensible default**: the first decoder that opens, planes,
-/// the largest picture the generation declares.
+/// the largest picture the generation declares, the machine's stable port and
+/// no mapping.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct lowlat_client_create_info {
@@ -132,6 +133,43 @@ pub struct lowlat_client_create_info {
     /// decoder, the directory its library pair is taken from, or empty for
     /// the search of its own.
     pub device: [c_char; LOWLAT_OUTPUT_MAX],
+    /// The port every attempt binds first (minor 22), stepping up past one
+    /// that is taken -- fifty ports, then any the system picks. **Zero for
+    /// the seed's own**, 24000 plus the seed's hash modulo 2000, the same at
+    /// every attempt and every run.
+    pub port: u16,
+    /// Ask the gateway to keep the port open (minor 22), by whichever of PCP,
+    /// NAT-PMP and UPnP's gateway device it answers, for the handle's life:
+    /// asked at creation, so the mapping is usually in before the first
+    /// answer, moved when an attempt's port does, and deleted at
+    /// `lowlat_client_destroy` within a quarter of a second. Nothing about it
+    /// is ever an error, and no attempt waits for it. Off when zeroed.
+    pub port_mapping: bool,
+    pub reserved: u8,
+    /// What picks the port when `port` is zero, and names this client's
+    /// entries in the gateway's table (minor 22), NUL-terminated; empty for
+    /// the machine's name. Two instances on one machine with different seeds
+    /// hold different ports.
+    pub port_seed: [c_char; LOWLAT_PORT_SEED_MAX],
+}
+
+/// The longest seed `lowlat_client_create_info.port_seed` carries, its
+/// terminator included.
+pub const LOWLAT_PORT_SEED_MAX: usize = 64;
+
+/// The creation info's size before the port was appended: the least a caller
+/// may pass.
+const CREATE_INFO_MINOR_21: usize = core::mem::offset_of!(lowlat_client_create_info, port);
+
+/// Which protocol keeps a client's port mapped on its gateway (minor 22).
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_mapping {
+    /// Nothing mapped: none asked for, or no gateway that maps.
+    LOWLAT_MAPPING_NONE = 0,
+    LOWLAT_MAPPING_PCP = 1,
+    LOWLAT_MAPPING_NAT_PMP = 2,
+    LOWLAT_MAPPING_UPNP = 3,
 }
 
 /// The longest name a decoder's row carries.
@@ -475,11 +513,45 @@ pub struct lowlat_client_status {
     /// Whether the path goes through the relay (minor 14).
     pub relayed: bool,
     pub reserved: u8,
+    /// What keeps this client's port mapped on the gateway (minor 22): one of
+    /// [`lowlat_mapping`], none while nothing is mapped or with
+    /// `port_mapping` off.
+    pub mapping: u32,
+    /// The gateway's external address, NUL-terminated, and the port it
+    /// mapped (minor 22): empty and zero while nothing is mapped, and the
+    /// address empty where the gateway states none. The mapping is offered
+    /// to a host as a candidate only once a reflexive server reports the same
+    /// address. Filled only when `size` reaches it.
+    pub mapped_address: [c_char; LOWLAT_ADDRESS_MAX],
+    pub mapped_port: u16,
+    /// The gateway's last refusal (minor 22): its own code, in the numbering
+    /// of the protocol `mapping_refused_by` names; zero for none.
+    pub mapping_refusal: u16,
+    pub mapping_refused_by: u32,
 }
 
 /// The status's size before the relay's fields were appended: the least a
 /// caller may pass, and what a caller built against an older header passes.
 const STATUS_MINOR_13: usize = core::mem::offset_of!(lowlat_client_status, relay_address);
+
+/// The gateway's mapping as the status carries it.
+fn put_mapping(status: &mut lowlat_client_status, mapping: &::lowlat_portmap::Status) {
+    let code = |protocol| match protocol {
+        ::lowlat_portmap::Protocol::None => lowlat_mapping::LOWLAT_MAPPING_NONE,
+        ::lowlat_portmap::Protocol::Pcp => lowlat_mapping::LOWLAT_MAPPING_PCP,
+        ::lowlat_portmap::Protocol::NatPmp => lowlat_mapping::LOWLAT_MAPPING_NAT_PMP,
+        ::lowlat_portmap::Protocol::Upnp => lowlat_mapping::LOWLAT_MAPPING_UPNP,
+    } as u32;
+    status.mapping = code(mapping.protocol);
+    status.mapped_port = mapping.port;
+    if let Some(address) = mapping.address {
+        put(&mut status.mapped_address, &address.to_string());
+    }
+    if let Some((protocol, refusal)) = mapping.refusal {
+        status.mapping_refusal = refusal;
+        status.mapping_refused_by = code(protocol);
+    }
+}
 
 /// What one channel did, seen from the receiving end.
 ///
@@ -819,12 +891,39 @@ pub unsafe extern "C" fn lowlat_client_create(
         if out.is_null() {
             return LOWLAT_ERR_INVALID_ARGUMENT;
         }
-        let info = unsafe { info.as_ref() };
-        if let Some(info) = info
-            && (info.size as usize) < core::mem::size_of::<lowlat_client_create_info>()
-        {
-            return LOWLAT_ERR_INVALID_ARGUMENT;
-        }
+        // As far as the caller's size reaches, the rest read as zero.
+        let copy = if info.is_null() {
+            None
+        } else {
+            // SAFETY: a non-null `info` points to a creation info whose
+            // `size` is set, by the caller's contract.
+            let size = unsafe { core::ptr::addr_of!((*info).size).read_unaligned() } as usize;
+            if size < CREATE_INFO_MINOR_21 {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            // SAFETY: every field is plain data for which zero is valid.
+            let mut copy: lowlat_client_create_info = unsafe { core::mem::zeroed() };
+            // SAFETY: the caller's structure is at least `size` bytes by its
+            // contract; the copy is a whole one, both plain data.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    info.cast::<u8>(),
+                    (&raw mut copy).cast::<u8>(),
+                    size.min(core::mem::size_of::<lowlat_client_create_info>()),
+                );
+            }
+            Some(copy)
+        };
+        let info = copy.as_ref();
+        let port = match info {
+            None => Port::seeded(0, "", false),
+            Some(info) => {
+                let Some(seed) = taken(&info.port_seed) else {
+                    return LOWLAT_ERR_INVALID_ARGUMENT;
+                };
+                Port::seeded(info.port, seed, info.port_mapping)
+            }
+        };
         let decoding = match info {
             None => Decoding::default(),
             Some(info) => {
@@ -859,7 +958,7 @@ pub unsafe extern "C" fn lowlat_client_create(
                 }
             }
         };
-        let mut seam = match Client::new(&decoding) {
+        let mut seam = match Client::new(&decoding, port) {
             Ok(seam) => seam,
             Err(error) => return refused(error),
         };
@@ -1873,6 +1972,11 @@ pub unsafe extern "C" fn lowlat_client_get_status(
                 relay_port: 0,
                 relayed: t.path_relayed.load(Ordering::Relaxed),
                 reserved: 0,
+                mapping: 0,
+                mapped_address: [0; LOWLAT_ADDRESS_MAX],
+                mapped_port: 0,
+                mapping_refusal: 0,
+                mapping_refused_by: 0,
             };
             if let Some(relayed) =
                 ::lowlat_client::driver::unpack_relayed(t.relayed.load(Ordering::Relaxed))
@@ -1882,6 +1986,9 @@ pub unsafe extern "C" fn lowlat_client_get_status(
                     &mut status.relay_port,
                     &std::net::SocketAddr::V4(relayed),
                 );
+            }
+            if let Some(mapping) = held.seam.mapping() {
+                put_mapping(&mut status, &mapping);
             }
             // As much as the caller's size reaches, and no more: a caller
             // built against an older header gets the fields it knows.
@@ -2698,7 +2805,82 @@ mod tests {
             max_width: 0,
             max_height: 0,
             device: [0; LOWLAT_OUTPUT_MAX],
+            port: 0,
+            port_mapping: false,
+            reserved: 0,
+            port_seed: [0; LOWLAT_PORT_SEED_MAX],
         }
+    }
+
+    /// The creation info is read as far as its size reaches, the rest as
+    /// zero, down to the size it had at minor 21 and no lower; a seed with no
+    /// terminator is refused, as every overrun field is.
+    #[test]
+    fn a_creation_info_is_read_as_far_as_its_size_reaches() {
+        let create = |info: &lowlat_client_create_info| {
+            let mut handle: *mut lowlat_client = core::ptr::null_mut();
+            let status = unsafe { lowlat_client_create(info, &raw mut handle) };
+            unsafe { lowlat_client_destroy(handle) };
+            status
+        };
+        let mut info = no_decoder();
+        info.size = CREATE_INFO_MINOR_21 as u32;
+        // Past the size, garbage the library must not read.
+        info.port_seed = [b'x' as c_char; LOWLAT_PORT_SEED_MAX];
+        assert_eq!(create(&info), LOWLAT_OK, "minor 21's size was refused");
+        info.size -= 1;
+        assert_eq!(create(&info), LOWLAT_ERR_INVALID_ARGUMENT);
+        info.size = core::mem::size_of::<lowlat_client_create_info>() as u32;
+        assert_eq!(
+            create(&info),
+            LOWLAT_ERR_INVALID_ARGUMENT,
+            "a seed with no terminator was read"
+        );
+        put(&mut info.port_seed, "player-two");
+        info.port = 30_000;
+        assert_eq!(create(&info), LOWLAT_OK);
+    }
+
+    /// The mapping as the status carries it: the protocol, the address and
+    /// port, the refusal and whose it is; no address where none is stated.
+    #[test]
+    fn a_mapping_is_reported_as_the_gateway_states_it() {
+        use ::lowlat_portmap::{Protocol, Status};
+        // SAFETY: plain data.
+        let mut status: lowlat_client_status = unsafe { core::mem::zeroed() };
+        put_mapping(
+            &mut status,
+            &Status {
+                protocol: Protocol::Upnp,
+                address: Some(core::net::Ipv4Addr::new(203, 0, 113, 7)),
+                port: 24137,
+                refusal: Some((Protocol::Pcp, 2)),
+            },
+        );
+        assert_eq!(status.mapping, lowlat_mapping::LOWLAT_MAPPING_UPNP as u32);
+        assert_eq!(taken(&status.mapped_address), Some("203.0.113.7"));
+        assert_eq!(status.mapped_port, 24137);
+        assert_eq!(
+            (status.mapping_refusal, status.mapping_refused_by),
+            (2, lowlat_mapping::LOWLAT_MAPPING_PCP as u32)
+        );
+        // SAFETY: plain data.
+        let mut status: lowlat_client_status = unsafe { core::mem::zeroed() };
+        put_mapping(
+            &mut status,
+            &Status {
+                protocol: Protocol::NatPmp,
+                address: None,
+                port: 24137,
+                refusal: None,
+            },
+        );
+        assert_eq!(
+            status.mapping,
+            lowlat_mapping::LOWLAT_MAPPING_NAT_PMP as u32
+        );
+        assert_eq!(taken(&status.mapped_address), Some(""));
+        assert_eq!((status.mapping_refusal, status.mapping_refused_by), (0, 0));
     }
 
     /// **A panic is contained, and what follows it is refused.** The test
@@ -2856,6 +3038,11 @@ mod tests {
             relay_port: 7,
             relayed: true,
             reserved: 0,
+            mapping: 7,
+            mapped_address: [0; LOWLAT_ADDRESS_MAX],
+            mapped_port: 7,
+            mapping_refusal: 7,
+            mapping_refused_by: 7,
         };
         assert_eq!(
             unsafe { lowlat_client_get_status(handle, &raw mut status) },
@@ -2864,6 +3051,16 @@ mod tests {
         assert_eq!(status.state, LOWLAT_CLIENT_IDLE);
         assert_eq!(taken(&status.relay_address), Some(""));
         assert_eq!((status.relay_port, status.relayed), (0, false));
+        // No mapping asked for: none reported.
+        assert_eq!(
+            (
+                status.mapping,
+                status.mapped_port,
+                status.mapping_refusal,
+                status.mapping_refused_by
+            ),
+            (lowlat_mapping::LOWLAT_MAPPING_NONE as u32, 0, 0, 0)
+        );
         // A caller built against the header before the relay's fields gets
         // the fields it knows and nothing past them; one shorter still is
         // refused.

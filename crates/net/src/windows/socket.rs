@@ -97,6 +97,12 @@ impl Socket {
         // and every v4-level option below is refused until this is cleared.
         self.set_int(ws::IPPROTO_IPV6, ws::IPV6_V6ONLY, 0)?;
 
+        // Exclusive, before the bind. Without it a dual-stack bind succeeds on
+        // a port another socket holds in one family: the walk never sees the
+        // port as taken, and that family's datagrams go to the other socket.
+        // It also keeps another program from binding over this one.
+        self.set_int(ws::SOL_SOCKET, ws::SO_EXCLUSIVEADDRUSE, 1)?;
+
         // Ask high and accept what the system grants; the granted value is
         // logged at open, because a silently clamped request is invisible
         // until a burst is lost.

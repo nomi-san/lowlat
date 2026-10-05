@@ -29,7 +29,13 @@ host = [
 ]
 # The client half: the connecting side, decode and present, and every
 # `lowlat_client_*` entry point.
-client = ["dep:lowlat-client", "dep:lowlat-core", "dep:lowlat-net", "dep:zeroize"]
+client = [
+    "dep:lowlat-client",
+    "dep:lowlat-core",
+    "dep:lowlat-net",
+    "dep:lowlat-portmap",
+    "dep:zeroize",
+]
 # The client's software decoder takes a GPL build of the machine's codec
 # library as well as an LGPL one. The default build never does: a build with
 # this on is its maker's combination, and the GPL's terms apply to it.
@@ -41,6 +47,8 @@ lowlat-common.workspace = true
 lowlat-host = { workspace = true, optional = true }
 lowlat-client = { workspace = true, optional = true }
 lowlat-net = { workspace = true, optional = true }
+# The gateway's mapping as the client's status reports it.
+lowlat-portmap = { workspace = true, optional = true }
 lowlat-core = { workspace = true, optional = true }
 lowlat-crypto = { workspace = true, optional = true }
 lowlat-audio = { workspace = true, optional = true }

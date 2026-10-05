@@ -1,4 +1,5 @@
-//! The default gateway and the interface a search leaves by, on Linux.
+//! The default gateway, the interface a search leaves by, and the machine's
+//! name, on Linux.
 
 #![allow(unsafe_code)]
 
@@ -36,6 +37,21 @@ pub(crate) fn multicast_from(socket: &UdpSocket, local: Ipv4Addr) -> io::Result<
     } else {
         Err(io::Error::last_os_error())
     }
+}
+
+/// The machine's host name.
+pub(crate) fn machine_name() -> Option<String> {
+    // Longer than any host name the kernel holds, terminator included.
+    let mut name = [0u8; 256];
+    // SAFETY: a buffer of its own length, written by the call and live for it.
+    let rc = unsafe { libc::gethostname(name.as_mut_ptr().cast(), name.len()) };
+    if rc != 0 {
+        return None;
+    }
+    let end = name.iter().position(|&byte| byte == 0)?;
+    core::str::from_utf8(name.get(..end)?)
+        .ok()
+        .map(str::to_owned)
 }
 
 #[cfg(test)]

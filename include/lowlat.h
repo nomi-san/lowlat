@@ -42,7 +42,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 21
+#define LOWLAT_ABI_MINOR 22
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 /// A library built for Windows carries the client half alone.
@@ -141,6 +141,10 @@
 #endif
 
 #if defined(LOWLAT_CLIENT)
+/// The longest seed `lowlat_client_create_info.port_seed` carries, its
+/// terminator included.
+#define LOWLAT_PORT_SEED_MAX 64
+
 /// The longest name a decoder's row carries.
 #define LOWLAT_DECODER_NAME_MAX 128
 
@@ -737,6 +741,15 @@ typedef enum lowlat_pad_sink {
 #endif
 
 #if defined(LOWLAT_CLIENT)
+/// Which protocol keeps a client's port mapped on its gateway (minor 22).
+typedef enum lowlat_mapping {
+    /// Nothing mapped: none asked for, or no gateway that maps.
+    LOWLAT_MAPPING_NONE = 0,
+    LOWLAT_MAPPING_PCP = 1,
+    LOWLAT_MAPPING_NAT_PMP = 2,
+    LOWLAT_MAPPING_UPNP = 3,
+} lowlat_mapping;
+
 /// One client, as the application holds it.
 ///
 /// Opaque: the application holds a pointer it cannot look inside, so what is
@@ -1493,7 +1506,8 @@ typedef struct lowlat_decoder_info {
 /// What a client is created with.
 ///
 /// **Zeroed is the sensible default**: the first decoder that opens, planes,
-/// the largest picture the generation declares.
+/// the largest picture the generation declares, the machine's stable port and
+/// no mapping.
 typedef struct lowlat_client_create_info {
     /// Set by the caller to `sizeof(lowlat_client_create_info)`.
     uint32_t size;
@@ -1512,6 +1526,24 @@ typedef struct lowlat_client_create_info {
     /// decoder, the directory its library pair is taken from, or empty for
     /// the search of its own.
     char device[LOWLAT_OUTPUT_MAX];
+    /// The port every attempt binds first (minor 22), stepping up past one
+    /// that is taken -- fifty ports, then any the system picks. **Zero for
+    /// the seed's own**, 24000 plus the seed's hash modulo 2000, the same at
+    /// every attempt and every run.
+    uint16_t port;
+    /// Ask the gateway to keep the port open (minor 22), by whichever of PCP,
+    /// NAT-PMP and UPnP's gateway device it answers, for the handle's life:
+    /// asked at creation, so the mapping is usually in before the first
+    /// answer, moved when an attempt's port does, and deleted at
+    /// `lowlat_client_destroy` within a quarter of a second. Nothing about it
+    /// is ever an error, and no attempt waits for it. Off when zeroed.
+    bool port_mapping;
+    uint8_t reserved;
+    /// What picks the port when `port` is zero, and names this client's
+    /// entries in the gateway's table (minor 22), NUL-terminated; empty for
+    /// the machine's name. Two instances on one machine with different seeds
+    /// hold different ports.
+    char port_seed[LOWLAT_PORT_SEED_MAX];
 } lowlat_client_create_info;
 
 /// What a client asks of a host, per attempt.
@@ -1698,6 +1730,21 @@ typedef struct lowlat_client_status {
     /// Whether the path goes through the relay (minor 14).
     bool relayed;
     uint8_t reserved;
+    /// What keeps this client's port mapped on the gateway (minor 22): one of
+    /// `lowlat_mapping`, none while nothing is mapped or with
+    /// `port_mapping` off.
+    uint32_t mapping;
+    /// The gateway's external address, NUL-terminated, and the port it
+    /// mapped (minor 22): empty and zero while nothing is mapped, and the
+    /// address empty where the gateway states none. The mapping is offered
+    /// to a host as a candidate only once a reflexive server reports the same
+    /// address. Filled only when `size` reaches it.
+    char mapped_address[LOWLAT_ADDRESS_MAX];
+    uint16_t mapped_port;
+    /// The gateway's last refusal (minor 22): its own code, in the numbering
+    /// of the protocol `mapping_refused_by` names; zero for none.
+    uint16_t mapping_refusal;
+    uint32_t mapping_refused_by;
 } lowlat_client_status;
 
 /// What one channel did, seen from the receiving end.

@@ -21,8 +21,9 @@ use lowlat_core::envelope::Cipher;
 use lowlat_crypto::Credentials;
 use lowlat_decode::software;
 use lowlat_net::{Guest, Wake};
+use lowlat_portmap::Mapper;
 
-use crate::config::{Backend, Caps, Config, Decoding, FrameKind, Video};
+use crate::config::{Backend, Caps, Config, Decoding, FrameKind, Port, Video};
 use crate::driver::{Telemetry, Units};
 use crate::event::{Arrival, Ask, DecoderStage, Error, Event, LEAVE_GRACE_MS, Peer, Transport};
 use crate::frames::{Frames, Held};
@@ -102,6 +103,11 @@ pub struct Client {
     /// with whatever session comes next, so no next one begins until it is
     /// cleared.
     leaving: Arc<AtomicBool>,
+    /// The port every attempt asks for first; zero for any.
+    port: u16,
+    /// The gateway keeping that port open, for the handle's life. Dropped
+    /// after the attempt, which deletes the mapping within its bound.
+    mapper: Option<Mapper>,
 }
 
 /// An attempt taken out of its client and still leaving: everything the
@@ -197,12 +203,42 @@ impl std::fmt::Debug for Attempt {
     }
 }
 
+/// The gateway asked to keep `port` open, on a thread of its own. One that
+/// cannot start is logged and done without: a mapping is never in the way of
+/// an attempt.
+fn mapped(port: u16, description: String) -> Option<Mapper> {
+    let config = lowlat_portmap::Config {
+        port,
+        count: 1,
+        description,
+    };
+    match Mapper::start(config) {
+        Ok(mapper) => Some(mapper),
+        Err(error) => {
+            lowlat_common::log_warn!(
+                "client: no port mapping, the mapper did not start, err={error}"
+            );
+            None
+        }
+    }
+}
+
 impl Client {
     /// Create a client, opening its decoder's device once to see that it
     /// decodes: a machine without one is refused here, with the stage named,
-    /// rather than after it has connected.
-    pub fn new(decoding: &Decoding) -> Result<Self, Error> {
+    /// rather than after it has connected. A port to keep mapped is asked of
+    /// the gateway from here on, so the mapping is usually in before the
+    /// first answer.
+    pub fn new(decoding: &Decoding, port: Port) -> Result<Self, Error> {
         let (opened, caps) = sys::choose(decoding)?;
+        let first = port.first();
+        let mapper = match port {
+            Port::Stable {
+                first,
+                mapping: Some(description),
+            } => mapped(first.get(), description),
+            _ => None,
+        };
         let (emit, events) = events::queue();
         let telemetry = Arc::new(Telemetry::default());
         let packets = Packets::new();
@@ -220,7 +256,15 @@ impl Client {
             sound: Arc::new(Mutex::new(Sound::new(packets.clone(), telemetry))),
             packets,
             leaving: Arc::new(AtomicBool::new(false)),
+            port: first,
+            mapper,
         })
+    }
+
+    /// What the gateway states of the mapping kept for this client; none
+    /// when none is asked for.
+    pub fn mapping(&self) -> Option<lowlat_portmap::Status> {
+        self.mapper.as_ref().map(Mapper::status)
     }
 
     /// Another decoder, chosen by the application: probed here, on the
@@ -553,8 +597,13 @@ impl Client {
         self.telemetry.relayed.store(0, Ordering::Relaxed);
         self.telemetry.path_relayed.store(false, Ordering::Relaxed);
 
-        let socket = lowlat_net::Socket::open_or_any_port(0).map_err(|_| Error::Io)?;
+        let socket = lowlat_net::Socket::open_or_any_port(self.port).map_err(|_| Error::Io)?;
         let bound = socket.local_addr().map_err(|_| Error::Io)?.port();
+        // A port taken by something else walked the bind up, and the mapping
+        // follows it.
+        if let Some(mapper) = &self.mapper {
+            mapper.set_port(bound);
+        }
         let wake = Wake::new().map_err(|_| Error::Io)?;
         let shell_wake = wake.handle().map_err(|_| Error::Io)?;
 
@@ -579,6 +628,7 @@ impl Client {
                 .collect(),
             relay: attempt.config.relay.clone(),
             relay_seed,
+            mapping: self.mapper.as_ref().map(Mapper::reader),
             ours: (attempt.ours.ufrag.clone(), attempt.ours.pwd.clone()),
             theirs: (theirs.ufrag.clone(), theirs.pwd.clone()),
             material,

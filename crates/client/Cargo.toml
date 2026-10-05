@@ -18,6 +18,8 @@ gpl-libavcodec = ["lowlat-drivers/gpl-libavcodec"]
 lowlat-common.workspace = true
 lowlat-core.workspace = true
 lowlat-net.workspace = true
+# The gateway keeping this client's port open, and the port itself.
+lowlat-portmap.workspace = true
 # The offer's credentials are generated here; the core owns no generator.
 lowlat-crypto.workspace = true
 # The decoders, and the trait the feed drives one through.
