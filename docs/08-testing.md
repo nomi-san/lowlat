@@ -95,6 +95,11 @@ symmetric translation: the one fixture in which the relay's bytes come from some
 implementation. It is judged on both ends -- the client's path is the host's own address, the
 host's the relayed one -- and it runs beside the same topology without the relay, which must
 time out. It needs the relay server on the machine and is skipped where there is none.
+And, with Phase 15, a real mapping daemon in one gateway of the symmetric pair, which no punch
+crosses: the endpoint behind it maps its port through the client's own mapper and offers the
+mapped address once the reflexive server confirms it, and the far side's path must be that
+address. It runs beside the same gateways with no mapping asked for, which must time out, and
+is skipped where the daemon is not on the machine.
 
 - Each fixture is a script that builds the topology, runs the case, and tears it down, leaving
   no state behind.

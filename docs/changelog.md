@@ -3,6 +3,28 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-05 - 15.5: the mapping documented, and Phase 15's gate
+
+### Decided
+- **[03 §6](03-connectivity.md) describes the mapping as built**: the anchor it is, the ladder,
+  the leases and their checks, another device's entry never touched, the mapped address offered
+  only once a reflexive server confirms it, and the firewall's question on Windows. The
+  deferral it replaced is kept as a dated note. [02 §1](02-io-shell.md) gains the mapper's
+  thread.
+- **The confirmation rule is the mapping crate's** and both the client and the fixtures' endpoint
+  apply it, so what the namespace matrix proves is the rule the client runs.
+- **A mapped pair in the namespace fixtures** ([08 §5](08-testing.md)): the symmetric topology
+  with a real mapping daemon in one gateway and, beside it, the same gateways with no mapping
+  asked for. A fixture endpoint publishes its candidates a line each, the gateway's mapping
+  beside the reflexive address.
+
+### Checked
+- The mapped pair establishes: the endpoint behind the daemon maps its port by PCP, the
+  reflexive server reports the gateway's address at the port the translator chose, and the far
+  side's path is the mapped address. With no mapping asked for, both sides time out, as the
+  symmetric pair does; the rest of the matrix is unchanged.
+- The Linux bar on a clean clone; on Windows clippy and the changed crates' tests.
+
 ## 2026-10-05 - 15.3: the client's port and its mapping
 
 ### Decided

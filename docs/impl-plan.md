@@ -2038,13 +2038,24 @@ Steps:
   connecting.
   *Deferred 2026-10-05*: the host's own deployment already forwards a port, for the relay that
   runs beside it ([03 §7](03-connectivity.md)).
-- [ ] **15.5 Docs**: [03 §6](03-connectivity.md) rewritten, [06](06-api.md), and
+- [x] **15.5 Docs**: [03 §6](03-connectivity.md) rewritten, [06](06-api.md), and
   [02](02-io-shell.md) for the mapper's thread.
+  *Done 2026-10-05*, with [08 §5](08-testing.md) for the mapped pair; 06 §3b had the client's
+  fields from 15.3.
 
 **Gate:** both CI jobs against the fake gateway; every fuzz target run; the namespace matrix
 with the mapping daemon in a gateway, a topology that fails today establishing through the
 confirmed mapped candidate; each protocol live on the development network and the advertised
 candidate on the second; ~~the host half~~ (deferred with 15.4); the Linux tests.
+*Met 2026-10-05 for the client's half.* The symmetric pair, which fails, establishes with a
+mapping daemon in one gateway: the endpoint behind it maps its port by PCP, the reflexive
+server reports the gateway's address at another port, and the far side's path is the mapped
+address; the same gateways with no mapping asked for time out, and the rest of the matrix is
+unchanged. Each protocol was forced live on the development network (15.3). On the second
+network the mapping was confirmed and, the gateway keeping ports, was the reflexive candidate
+itself -- so the path only a mapping gives is the matrix's to show. The fake gateway's tests
+and the Linux tests pass in both bars; the continuous integration jobs run them at the next
+push. Every fuzz target ran (15.1, 15.2).
 
 ---
 

@@ -27,6 +27,13 @@ core with hardware AES, which is far cheaper than the handoff it would otherwise
 Input injection rides the delivering network thread. Injection is cheap and fire and forget;
 a dedicated thread would add a hop for no gain.
 
+**A client keeping its port mapped has one more thread** ([03 §6](03-connectivity.md)): one per
+handle with `port_mapping` on, asleep between renewals and woken by a port that moves or by
+destroy, every wait it makes on the network cut into short slices so destroy never waits one
+out. Its sockets are short-lived ones to the gateway alone -- a datagram each way, or an HTTP
+exchange -- and never the session's. It shares nothing with the media path: the session thread
+reads the mapped address from one atomic word, without a lock.
+
 **No thread in the SDK raises its own priority.** No priority class, no scheduling policy
 change, no CPU affinity. We are a library inside another process, and outranking that
 process's own UI thread is a priority inversion that has produced hard hangs on low-core

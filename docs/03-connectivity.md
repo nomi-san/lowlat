@@ -223,33 +223,60 @@ nobody is listening on. This is not a bug to be worked around at this layer; it 
 
 ## §6 Gateway port mapping
 
-An opportunistic mapping on the gateway, when the gateway supports it, yields a candidate that
-is reachable even under symmetric translation.
+**The client keeps its port open on its gateway** (Phase 15, [impl-plan.md](impl-plan.md); the
+host's half is deferred). A mapping needs no candidate of its own to be worth having: it keeps
+the port open, so the reflexive candidate gathered through that port is reachable by anyone for
+as long as the mapping lives, and a peer whose own translator moves its source port can still
+reach the client. The mapped address becomes a candidate only when it is verified to be the
+address the world sees. The work is `lowlat-portmap`'s, the one crate that speaks HTTP, and
+only to the gateway ([00 D3](00-overview.md)).
 
-- **One persistent runner for the lifetime of the connection, on a stable port.** Not one
-  mapping per attempt. Per-attempt mappings leak: they accumulate on the gateway across
-  reconnects until its table is full, at which point mapping stops working for everything on
-  the network, including other applications.
-- The mapping is removed on clean shutdown and its lease is short enough that an unclean
-  shutdown expires rather than persisting.
-- Discovery failure is not an error. It is the common case on networks where the feature is
-  disabled, and it must not delay the punch. Gathering proceeds without it.
-- **A mapped candidate whose external address is not globally routable is discarded, never
-  advertised.** Shared address space, private ranges, link-local, and loopback all fail that
-  test. Offering one spends the whole punch budget probing an address nothing can reach.
+- **A stable port, one mapper for the handle's life.** Every attempt binds the same port -- the
+  one the application names, or the seed's own ([06 §3b](06-api.md)) -- and a thread of its own
+  ([02 §1](02-io-shell.md)) keeps it mapped from creation to destroy: asked at creation, so the
+  mapping is usually in before the first answer; moved when an attempt's bind walks past a
+  taken port; deleted at destroy within a quarter of a second. Not a mapping per attempt:
+  per-attempt mappings accumulate on the gateway across reconnects until its table is full, and
+  then mapping stops working for everything on the network.
+- **Cheapest first.** PCP, then NAT-PMP, then UPnP's gateway device. The first two are a
+  datagram each way; UPnP is a search, a description and an HTTP exchange per action, reached
+  only when neither answers. PCP is asked for the mapping itself, since a gateway that speaks
+  only NAT-PMP answers a PCP request in its own version at once. External port equals internal
+  port, UDP, never below 1024. **Only the gateway is asked anything**: anything on the local
+  network can answer a search, so an answer or a control service on another address is passed
+  over.
+- **Leases, renewed and checked.** UPnP takes a 2700 s lease, added again every 300 s and read
+  back: a gateway that answers an identical add with success and keeps the old lease -- a fibre
+  gateway in the field does -- has the mapping deleted and added again. PCP and NAT-PMP take a
+  7200 s lifetime renewed at half plus up to an eighth, and the gateway's epoch is held against
+  this side's clock as the protocol specifies, so a gateway that restarted has the mapping made
+  again by the same renewal. A gateway that takes only permanent mappings is given one, kept
+  clean: an entry under this client's description on the port is deleted before the add, and
+  every mapping at destroy.
+- **Another device's entry is never touched.** The description names the client's seed, so two
+  machines whose ports collide are told apart: an entry under it on the port is a leftover and
+  is deleted before the add, anything else is a conflict, reported and left in place.
+- **Never in the way.** No discovery or mapping failure is an error, none delays an attempt, and
+  a gateway that maps nothing is logged once.
+- **The mapped address is offered only when a reflexive server confirms it.** The gateway's
+  external address and mapped port become a candidate once a reflexive server reports the same
+  address, so nothing translates beyond the gateway. Behind a gateway that keeps ports that
+  candidate is the reflexive one, already offered. Behind one that randomises its source ports
+  it is the only address of the client's a peer can reach: two such translators, which no punch
+  crosses, establish through it in the namespace fixtures ([08 §5](08-testing.md)). Behind a
+  carrier's translation the comparison fails and the mapping only keeps the port open. A gateway
+  that states a reserved external address, or none, is mapped all the same and never offered;
+  only an address that cannot be one -- unspecified, loopback -- is refused.
+- **IPv4 only.** IPv6 pinholes are deferred: neither gateway at hand offers one.
+- **On Windows the stable port draws the firewall's question** at the first attempt -- a port
+  bound by number is asked about, one the system picks never was (measured). Until the
+  application is allowed, what reaches the port from a peer it never sent to, the case the
+  mapping exists for, is dropped; what comes from an address and port the client sent to passes
+  regardless, so a session between translators that keep ports never needs the answer.
 
-**Deferred, and not part of the first connectivity phase** ([impl-plan.md](impl-plan.md)). The
-discovery mechanism cannot sit behind the sans-IO boundary, the benefit is opportunistic by
-construction, and on a carrier-grade translated upstream it is worse than absent: the gateway
-returns its own WAN address, that address is itself shared address space, and the rule above
-then discards the only candidate the whole mechanism produced. The escalation path in §8 does
-not depend on it, because the relay is ours.
-
-*Re-planned 2026-10-05 as Phase 15 ([impl-plan.md](impl-plan.md)); the reasoning above does not
-hold.* A mapping needs no candidate of its own: it keeps the port open on the gateway, and the
-reflexive candidate gathered through that port carries it, so a carrier's translation upstream
-leaves it useful rather than worse than absent. The mapped address is advertised only when a
-reflexive server confirms it. This section is rewritten when the phase is built.
+*Superseded 2026-10-05*: this section first deferred mapping, reasoning that a carrier's
+translation upstream would leave the mapped candidate unreachable. A mapping needs no candidate
+of its own to keep the port open.
 
 ## §7 Relay
 
