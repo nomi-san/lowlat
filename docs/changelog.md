@@ -3,6 +3,50 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-05 - 15.2: the mapper
+
+### Decided
+- **A thread per mapper, asleep between renewals.** It maps when started and renews when due;
+  a port that moves or a stop wakes it at once, and every wait on the network is cut into
+  slices that look for either, so a stop never waits out an exchange. The connect of an HTTP
+  exchange, which nothing can interrupt, is bounded on its own.
+- **PCP is asked for the mapping itself.** A gateway that speaks only NAT-PMP answers a PCP
+  request in its own version, which moves the ladder on at once, so an announcement first
+  would add a round trip to every PCP gateway and tell nothing more. UPnP is reached only when
+  neither answers ([impl-plan Phase 15](impl-plan.md)).
+- **Only the gateway is asked anything.** Anything on the local network can answer a search,
+  so the search goes to the gateway and to the group, out of the interface that faces the
+  gateway, and only an answer placing the description on the gateway's own address is taken;
+  a control service on any other address is passed over.
+- **Another device's mapping is left in place.** Before an add, the entry on the port is read:
+  one carrying this side's description is a leftover and is deleted first, and anything else
+  is a conflict, reported with the protocol's code for one.
+- **The default gateway per platform**: on Linux the kernel's routing table, its default route
+  of lowest metric; on Windows the first gateway of the adapter holding the address that the
+  default route leaves from.
+- **A renewal is checked**, as planned: a UPnP lease is read back after the add, and a PCP or
+  NAT-PMP gateway's epoch is held against this side's clock as the protocol specifies; a
+  gateway that lost its state has the mappings made again by the same renewal.
+- **A stop deletes within its bound**: PCP's and NAT-PMP's deletes in one exchange, sent again
+  halfway through for those not yet answered, and UPnP's a port at a time. A refusal is logged
+  when it changes, and finding nothing once, since a gateway that refuses refuses at every look.
+
+### Checked
+- 22 tests, 17 of them against a fake gateway on loopback that serves all three protocols and
+  counts what it is asked: each protocol reached in turn, both ways a gateway says it takes
+  only permanent mappings, a renewal that kept the old lease made again and one that grew left
+  alone, a restarted gateway mapped again, a port that moves, a range mapped and deleted whole,
+  nothing below 1024, nothing asked of another host, a leftover deleted and another device's
+  entry kept, an external address that cannot be and one not stated, and a stop within its
+  bound while an answer is slow and while nothing answers.
+- Eleven behaviours broken one at a time, each now turning its tests red. Two at first did
+  not: the old mapping of a port that moved, which the test let lapse rather than seeing it
+  deleted, and the refusal to ask any host but the gateway, where no test had another host to
+  ask.
+- A fuzz target for the routing table's text: two minutes and 8.2 million runs with no crash,
+  committed with two seeds. The seven parsers' targets ran again beside it, none crashing.
+- The Linux bar on a clean clone; on Windows the workspace's tests, 22 more than before.
+
 ## 2026-10-05 - 15.1: the gateway's messages
 
 ### Decided

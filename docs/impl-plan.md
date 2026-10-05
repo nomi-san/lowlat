@@ -2006,9 +2006,16 @@ Steps:
   instead ([changelog](changelog.md)). The response reader reads everything it holds again
   at each read, within a bound, so the response it reads never depends on where the reads
   were cut, which its fuzz target asserts.
-- [ ] **15.2 The mapper**: the default gateway per platform, the protocol ladder, lifetimes and
+- [x] **15.2 The mapper**: the default gateway per platform, the protocol ladder, lifetimes and
   renewal, a port that moves, the bounded stop. Checked against a fake gateway on loopback that
   serves all three.
+  *Done 2026-10-05.* PCP is asked for the mapping itself, with no announcement first: a
+  gateway that speaks only NAT-PMP answers in its own version at once, so the ladder loses
+  nothing and a PCP gateway maps in one round trip. Only the gateway is asked anything, and an
+  entry on the port that another device made is reported and left in place. At a stop PCP's
+  and NAT-PMP's deletes go in one exchange and UPnP's a port at a time, all within the bound.
+  Two of the eleven behaviours broken to check the tests left them green at first, and both
+  tests were rewritten ([changelog](changelog.md)).
 - [ ] **15.3 The client**: `port`, `port_seed` and `port_mapping` on the create info (minor 22),
   the mapper per handle, the confirmed mapped candidate, the mapping in status; the example
   client's `LOWLAT_PORT`, `LOWLAT_PORT_SEED` and `LOWLAT_PORT_MAPPING`. Checked by the seam's
