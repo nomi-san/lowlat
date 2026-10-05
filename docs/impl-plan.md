@@ -1967,7 +1967,9 @@ Decisions taken at the interview:
 - **A gateway that reports a reserved address is mapped all the same** and never advertised;
   only a bogus answer (unspecified, loopback) is refused.
 - **Timed leases, renewed; permanent where the gateway takes nothing else, and cleaned.** UPnP
-  2700 s, added again every 300 s; PCP and NAT-PMP 7200 s, renewed at half. A gateway that
+  2700 s, added again every 300 s and read back: a gateway that answers an identical add with
+  success and keeps the old lease has the mapping deleted and added again (found at the probe,
+  15.0); PCP and NAT-PMP 7200 s, renewed at half. A gateway that
   refuses a timed lease is mapped permanently: an entry with our own description on our port is
   deleted before the add, and every mapping is deleted at a clean shutdown in one exchange
   bounded near 250 ms.
@@ -1983,10 +1985,17 @@ Decisions taken at the interview:
 
 Steps:
 
-- [ ] **15.0 Probe**: a mapping daemon in a gateway namespace of the fixture script, serving all
+- [x] **15.0 Probe**: a mapping daemon in a gateway namespace of the fixture script, serving all
   three protocols; the second test network's gateway probed as the development one was -- its
   lease behaviour, its external address against a reflexive answer, PCP over IPv6. Checked by a
   mapping made through each protocol and seen in the gateway's rules or table.
+  *Done 2026-10-05.* In the namespace each protocol's mapping admitted an unsolicited datagram
+  from outside, and behind a translator that randomises source ports the host's own traffic
+  from the mapped port left on another port: there only the mapped address reaches the host,
+  which makes it the gate's topology. The second network's gateway speaks UPnP alone, takes a
+  timed lease, reports the address a reflexive server sees and has no PCP on either family; it
+  answers an identical add with success and keeps the old lease. The development network's
+  gateway has reported a public address since the same day.
 - [ ] **15.1 The messages**: PCP, NAT-PMP, SSDP, HTTP framing, URL resolution, the device
   description, SOAP. Checked by unit tests built from the known gateway quirks and the
   development gateway's captured replies, round-trip properties, and a fuzz target per parser,
