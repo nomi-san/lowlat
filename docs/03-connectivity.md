@@ -245,6 +245,12 @@ returns its own WAN address, that address is itself shared address space, and th
 then discards the only candidate the whole mechanism produced. The escalation path in §8 does
 not depend on it, because the relay is ours.
 
+*Re-planned 2026-10-05 as Phase 15 ([impl-plan.md](impl-plan.md)); the reasoning above does not
+hold.* A mapping needs no candidate of its own: it keeps the port open on the gateway, and the
+reflexive candidate gathered through that port carries it, so a carrier's translation upstream
+leaves it useful rather than worse than absent. The mapped address is advertised only when a
+reflexive server confirms it. This section is rewritten when the phase is built.
+
 ## §7 Relay
 
 When no direct path exists, media can be forwarded through a relay, and **the client is the

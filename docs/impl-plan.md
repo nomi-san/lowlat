@@ -164,7 +164,8 @@ gate is satisfied where the risk actually is.
    broken, belongs to Gate A, where frames exist.*
 
 **Not in scope:** the relay (Phase 2b, dropped; the client's C10); gateway port mapping
-([03 §6](03-connectivity.md)); real sockets outside the fixtures and the two-machine run.
+([03 §6](03-connectivity.md); *taken up 2026-10-05 as Phase 15*); real sockets outside the
+fixtures and the two-machine run.
 
 ---
 
@@ -1934,12 +1935,92 @@ which the desk felt).
 and a guest's swipes move the host's pointer as a real pad's would, outside the one-pointer
 arbitration; a paired Bluetooth pad at the client, if one is paired.
 
+## Phase 15 - Gateway port mapping
+
+**Planned 2026-10-05, interview of the same day; before W1.9
+([impl-plan-windows.md](impl-plan-windows.md)).** Phase 2 left gateway mapping out on a premise
+that does not hold ([03 §6](03-connectivity.md)): a mapping needs no candidate of its own. Its
+job is to keep a stable port open on the gateway, so that the reflexive candidate gathered
+through that port is reachable by anyone, and an established host keeps its own port mapped
+this way -- which alone let a client reach it over IPv4 with its router forwarding nothing
+else. The decisions are recorded once, here; the design is [03 §6](03-connectivity.md),
+rewritten when built, and the boundary [06 §3, §3b](06-api.md).
+
+Decisions taken at the interview:
+
+- **A crate of its own, `lowlat-portmap`**, used by the client and the host and by nothing else.
+  Its sockets are short-lived ones to the gateway, on a thread that mostly sleeps, sharing
+  nothing with the media path, and it is the one place that speaks HTTP
+  ([00 D3](00-overview.md), amended). It is written here on two parsing libraries, an HTTP
+  response parser and an XML reader: every published client surveyed brings an asynchronous
+  runtime, a copyleft HTTP client, a newer compiler or a random number generator of its own.
+- **Three protocols, cheapest first**: PCP, then NAT-PMP, then UPnP's Internet Gateway Device.
+  On the development network's gateway all three share one table, and the first two answer in
+  half a millisecond with fixed binary messages where a UPnP call takes 12.6 ms over HTTP.
+  External port equals internal port, UDP, never below 1024.
+- **The mapped address is advertised only when a reflexive server confirms it.** The gateway's
+  external address and mapped port become a candidate when that address equals the reflexive
+  one, so nothing translates beyond the gateway. A gateway that rewrites the source port of
+  outbound traffic leaves the reflexive port useless to a peer while the mapped one is open to
+  anyone. Behind a carrier's translation -- the development gateway reports an address behind
+  its provider's -- the comparison fails and the mapping only keeps the port open.
+- **A gateway that reports a reserved address is mapped all the same** and never advertised;
+  only a bogus answer (unspecified, loopback) is refused.
+- **Timed leases, renewed; permanent where the gateway takes nothing else, and cleaned.** UPnP
+  2700 s, added again every 300 s; PCP and NAT-PMP 7200 s, renewed at half. A gateway that
+  refuses a timed lease is mapped permanently: an entry with our own description on our port is
+  deleted before the add, and every mapping is deleted at a clean shutdown in one exchange
+  bounded near 250 ms.
+- **The client's port is stable.** A zero `port` on the create info means 24000 plus a hash of a
+  seed modulo 2000, the seed the application's `port_seed` or, when it is empty, the machine's
+  name; every attempt binds it and walks up when it is taken. A caller built before the field
+  keeps a port per attempt.
+- **Off in the library, on in our applications**: `port_mapping` is off when zeroed on both
+  halves' configuration; the example client and the service turn it on.
+- **Never in the way**: no discovery or mapping failure is an error, none delays an attempt, and
+  the mapper starts with the handle, so its mapping is usually in before the first answer.
+- **IPv6 pinholes are deferred**: neither gateway at hand offers one.
+
+Steps:
+
+- [ ] **15.0 Probe**: a mapping daemon in a gateway namespace of the fixture script, serving all
+  three protocols; the second test network's gateway probed as the development one was -- its
+  lease behaviour, its external address against a reflexive answer, PCP over IPv6. Checked by a
+  mapping made through each protocol and seen in the gateway's rules or table.
+- [ ] **15.1 The messages**: PCP, NAT-PMP, SSDP, HTTP framing, URL resolution, the device
+  description, SOAP. Checked by unit tests built from the known gateway quirks and the
+  development gateway's captured replies, round-trip properties, and a fuzz target per parser,
+  run and minimized.
+- [ ] **15.2 The mapper**: the default gateway per platform, the protocol ladder, lifetimes and
+  renewal, a port that moves, the bounded stop. Checked against a fake gateway on loopback that
+  serves all three.
+- [ ] **15.3 The client**: `port`, `port_seed` and `port_mapping` on the create info (minor 22),
+  the mapper per handle, the confirmed mapped candidate, the mapping in status; the example
+  client's `LOWLAT_PORT`, `LOWLAT_PORT_SEED` and `LOWLAT_PORT_MAPPING`. Checked by the seam's
+  tests and live: each protocol forced on the development gateway and read back from its table,
+  made again after a delete, moved with the port, absent when off, a bounded destroy; on the
+  second network, the mapped candidate advertised and the path it gave.
+- [ ] **15.4 The host**: the host configuration's flag and the service's, mapping
+  `[base, base + guests)`. Checked by the range in the gateway's table and an established client
+  connecting.
+- [ ] **15.5 Docs**: [03 §6](03-connectivity.md) rewritten, [06](06-api.md), and
+  [02](02-io-shell.md) for the mapper's thread.
+
+**Gate:** both CI jobs against the fake gateway; every fuzz target run; the namespace matrix
+with the mapping daemon in a gateway, a topology that fails today establishing through the
+confirmed mapped candidate; each protocol live on the development network and the advertised
+candidate on the second; the host half; the Linux tests.
+
 ---
 
 ## Change log
 
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
+
+- 2026-10-05: **Phase 15 planned: gateway port mapping**, which Phase 2 left out on a premise
+  that does not hold. The mapping keeps a stable port open and is advertised only when a
+  reflexive server confirms its address. Before W1.9.
 
 - 2026-09-25: **Phase 1's envelope keeps its layout and lends out its cipher.** A live
   session's records are sealed by a vetted library, keyed on the session's thread and lent
