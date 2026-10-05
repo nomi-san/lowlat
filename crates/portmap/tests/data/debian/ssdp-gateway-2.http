@@ -1,0 +1,12 @@
+HTTP/1.1 200 OK
+CACHE-CONTROL: max-age=1800
+ST: urn:schemas-upnp-org:device:InternetGatewayDevice:2
+USN: uuid:3e5d1a6c-15a0-4c0f-9a51-000000000015::urn:schemas-upnp-org:device:InternetGatewayDevice:2
+EXT:
+SERVER: Debian/6.18.40.1-microsoft-standard-WSL2 UPnP/1.1 MiniUPnPd/2.3.9
+LOCATION: http://192.168.10.1:45345/rootDesc.xml
+OPT: "http://schemas.upnp.org/upnp/1/0/"; ns=01
+01-NLS: 1791195020
+BOOTID.UPNP.ORG: 1791195020
+CONFIGID.UPNP.ORG: 1337
+

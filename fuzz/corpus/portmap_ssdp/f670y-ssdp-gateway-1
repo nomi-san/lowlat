@@ -1,0 +1,12 @@
+HTTP/1.1 200 OK
+CACHE-CONTROL: max-age=1800
+DATE: Mon, 05 Oct 2026 10:05:10 GMT
+EXT:
+LOCATION: http://192.168.1.1:52869/gatedesc.xml
+OPT: "http://schemas.upnp.org/upnp/1/0/"; ns=01
+01-NLS: 374215e8-c061-11f1-a190-000000000000
+SERVER: Linux, UPnP/1.0, Portable SDK for UPnP devices/1.6.22
+X-User-Agent: redsonic
+ST: urn:schemas-upnp-org:device:InternetGatewayDevice:1
+USN: uuid:20809696-105a-3721-e8b8-000000000000::urn:schemas-upnp-org:device:InternetGatewayDevice:1
+

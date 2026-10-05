@@ -1,0 +1,22 @@
+[package]
+name = "lowlat-portmap"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# The one HTTP exchange's response framing: the status line, the header block
+# and the size line of each chunk. A parser and nothing more -- no client, no
+# connection, no allocation of its own -- and already in the workspace's graph.
+httparse = "1.10"
+# The gateway's description and its control answers. Safe code only, document
+# type declarations refused and the node count bounded, so a description
+# cannot grow into more than its bytes.
+roxmltree = { version = "0.21", default-features = false, features = ["std"] }
+
+[lints]
+workspace = true

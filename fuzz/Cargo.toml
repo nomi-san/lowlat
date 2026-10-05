@@ -24,6 +24,9 @@ lowlat-crypto = { path = "../crates/crypto" }
 lowlat-decode = { path = "../crates/decode" }
 # The pointer's picture: a PNG from the host, inflated and unfiltered here.
 lowlat-client = { path = "../crates/client" }
+# The gateway's replies: anything on the local network can answer a search or
+# hold the gateway's address, so everything read back is parsed here first.
+lowlat-portmap = { path = "../crates/portmap" }
 
 [[bin]]
 name = "envelope"
@@ -111,6 +114,55 @@ doc = false
 [[bin]]
 name = "relay"
 path = "fuzz_targets/relay.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "portmap_ssdp"
+path = "fuzz_targets/portmap_ssdp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "portmap_http"
+path = "fuzz_targets/portmap_http.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "portmap_url"
+path = "fuzz_targets/portmap_url.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "portmap_desc"
+path = "fuzz_targets/portmap_desc.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "portmap_soap"
+path = "fuzz_targets/portmap_soap.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "portmap_natpmp"
+path = "fuzz_targets/portmap_natpmp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "portmap_pcp"
+path = "fuzz_targets/portmap_pcp.rs"
 test = false
 doc = false
 bench = false

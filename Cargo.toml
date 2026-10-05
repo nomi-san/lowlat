@@ -5,6 +5,7 @@ members = [
     "crates/core",
     "crates/crypto",
     "crates/net",
+    "crates/portmap",
     "crates/sim",
     "crates/drivers",
     "crates/capture",

@@ -1,0 +1,3 @@
+# Seeds cut from gateways' replies keep their CRLF line ends: a conversion would
+# start the fuzzer from framing no gateway sends.
+portmap_*/** -text

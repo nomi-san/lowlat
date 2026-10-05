@@ -1,0 +1,9 @@
+HTTP/1.1 200 OK
+Content-Type: text/xml; charset="utf-8"
+Connection: close
+Content-Length: 346
+Server: Debian/6.18.40.1-microsoft-standard-WSL2 UPnP/1.1 MiniUPnPd/2.3.9
+Ext:
+
+<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:GetExternalIPAddressResponse xmlns:u="urn:schemas-upnp-org:service:WANIPConnection:2"><NewExternalIPAddress></NewExternalIPAddress></u:GetExternalIPAddressResponse></s:Body></s:Envelope>

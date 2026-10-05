@@ -1,0 +1,104 @@
+HTTP/1.1 200 OK
+CONTENT-LENGTH: 3982
+CONTENT-TYPE: text/xml
+DATE: Mon, 05 Oct 2026 10:05:35 GMT
+LAST-MODIFIED: Mon, 05 Oct 2026 02:05:19 GMT
+SERVER: Linux, UPnP/1.0, Portable SDK for UPnP devices/1.6.22
+X-User-Agent: redsonic
+CONNECTION: close
+
+<?xml version="1.0"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+  <specVersion>
+    <major>1</major>
+    <minor>0</minor>
+  </specVersion>
+  <URLBase>http://192.168.1.1:52869</URLBase>
+  <device>
+    <deviceType>urn:schemas-upnp-org:device:InternetGatewayDevice:1</deviceType>
+    <friendlyName>UPNP IGD</friendlyName>
+    <manufacturer>ZTE</manufacturer>
+    <manufacturerURL>http://www.zte.com</manufacturerURL>
+    <modelDescription>ZTE Broadband Home Gateway</modelDescription>
+    <modelName>F670Y</modelName>
+    <modelNumber>V1.0</modelNumber>
+    <modelURL>http://www.zte.com</modelURL>
+    <UDN>uuid:20809696-105a-3721-e8b8-000000000000</UDN>
+    <UPC></UPC>
+    <serialNumber>ZTEG00000000</serialNumber>
+    <iconList>
+      <icon>
+        <mimetype>image/gif</mimetype>
+        <width>118</width>
+        <height>119</height>
+        <depth>8</depth>
+        <url>/ligd.gif</url>
+      </icon>
+    </iconList>
+    <serviceList>
+      <service>
+        <serviceType>urn:schemas-microsoft-com:service:OSInfo:1</serviceType>
+        <serviceId>urn:microsoft-com:serviceId:OSInfo1</serviceId>
+        <controlURL>/upnp/control/OSInfo1</controlURL>
+        <eventSubURL>/upnp/event/OSInfo1</eventSubURL>
+        <SCPDURL>/gateinfoSCPD.xml</SCPDURL>
+      </service>
+    </serviceList>
+    <deviceList>
+      <device>
+        <deviceType>urn:schemas-upnp-org:device:WANDevice:1</deviceType>
+        <friendlyName>UPNP IGD</friendlyName>
+        <manufacturer>ZTE</manufacturer>
+        <manufacturerURL>http://www.zte.com</manufacturerURL>
+        <modelDescription>WAN Device on Linux IGD</modelDescription>
+        <modelName>F670Y</modelName>
+        <modelNumber>V1.0</modelNumber>
+        <modelURL>http://www.zte.com</modelURL>
+        <UDN>uuid:20809696-205a-3721-e8b8-000000000000</UDN>
+        <UPC></UPC>
+        <serialNumber>ZTEG00000000</serialNumber>
+        <serviceList>
+          <service>
+            <serviceType>urn:schemas-upnp-org:service:WANCommonInterfaceConfig:1</serviceType>
+            <serviceId>urn:upnp-org:serviceId:WANCommonIFC1</serviceId>
+            <controlURL>/upnp/control/WANCommonIFC1</controlURL>
+            <eventSubURL>/upnp/control/WANCommonIFC1</eventSubURL>
+            <SCPDURL>/gateicfgSCPD.xml</SCPDURL>
+          </service>
+        </serviceList>
+        <deviceList>
+          <device>
+            <deviceType>urn:schemas-upnp-org:device:WANConnectionDevice:1</deviceType>
+            <friendlyName>UPNP IGD</friendlyName>
+            <manufacturer>ZTE</manufacturer>
+            <manufacturerURL>http://www.zte.com</manufacturerURL>
+            <modelDescription>WanConnectionDevice ZTE HGW</modelDescription>
+            <modelName>F670Y</modelName>
+            <modelNumber>V1.0</modelNumber>
+            <modelURL>http://www.zte.com</modelURL>
+            <UDN>uuid:20809696-305a-3721-e8b8-000000000000</UDN>
+            <UPC></UPC>
+            <serialNumber>ZTEG00000000</serialNumber>
+            <serviceList>
+              <service>
+                <serviceType>urn:schemas-upnp-org:service:WANIPConnection:1</serviceType>
+                <serviceId>urn:upnp-org:serviceId:WANIPConn1</serviceId>
+                <controlURL>/upnp/control/WANIPConn1</controlURL>
+                <eventSubURL>/upnp/control/WANIPConn1</eventSubURL>
+                <SCPDURL>/gateconnSCPD.xml</SCPDURL>
+              </service>
+              <service>
+                <serviceType>urn:schemas-upnp-org:service:WANIPv6FirewallControl:1</serviceType>
+                <serviceId>urn:upnp-org:serviceId:WANIPv6FwCtrl1</serviceId>
+                <controlURL>/upnp/control/WANIPv6FwCtrl1</controlURL>
+                <eventSubURL>/upnp/control/WANIPv6FwCtrl1</eventSubURL>
+                <SCPDURL>/gatev6fwctrlSCPD.xml</SCPDURL>
+              </service>
+            </serviceList>
+          </device>
+        </deviceList>
+      </device>
+    </deviceList>
+    <presentationURL>http://192.168.1.1</presentationURL>
+  </device>
+</root>

@@ -1,0 +1,9 @@
+HTTP/1.1 200 OK
+Content-Type: text/xml; charset="utf-8"
+Connection: close
+Content-Length: 540
+Server: OpenWRT/OpenWrt UPnP/1.1 MiniUPnPd/2.0
+Ext:
+
+<?xml version="1.0"?>
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body><u:GetSpecificPortMappingEntryResponse xmlns:u="urn:schemas-upnp-org:service:WANIPConnection:1"><NewInternalPort>47913</NewInternalPort><NewInternalClient>192.168.1.166</NewInternalClient><NewEnabled>1</NewEnabled><NewPortMappingDescription>lowlat-probe</NewPortMappingDescription><NewLeaseDuration>120</NewLeaseDuration></u:GetSpecificPortMappingEntryResponse></s:Body></s:Envelope>

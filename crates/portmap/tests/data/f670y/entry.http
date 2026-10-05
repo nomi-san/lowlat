@@ -1,0 +1,17 @@
+HTTP/1.1 200 OK
+CONTENT-LENGTH: 531
+CONTENT-TYPE: text/xml; charset="utf-8"
+DATE: Mon, 05 Oct 2026 10:05:35 GMT
+EXT:
+SERVER: Linux, UPnP/1.0, Portable SDK for UPnP devices/1.6.22
+X-User-Agent: redsonic
+
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>
+<u:GetSpecificPortMappingEntryResponse xmlns:u="urn:schemas-upnp-org:service:WANIPConnection:1">
+<NewInternalPort>47913</NewInternalPort>
+<NewInternalClient>192.168.1.100</NewInternalClient>
+<NewEnabled>1</NewEnabled>
+<NewPortMappingDescription>lowlat-probe</NewPortMappingDescription>
+<NewLeaseDuration>120</NewLeaseDuration>
+</u:GetSpecificPortMappingEntryResponse>
+</s:Body> </s:Envelope>

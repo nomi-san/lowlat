@@ -1,0 +1,22 @@
+HTTP/1.1 500 Internal Server Error
+CONTENT-LENGTH: 411
+CONTENT-TYPE: text/xml; charset="utf-8"
+DATE: Mon, 05 Oct 2026 10:05:35 GMT
+EXT:
+SERVER: Linux, UPnP/1.0, Portable SDK for UPnP devices/1.6.22
+X-User-Agent: redsonic
+
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">
+<s:Body>
+<s:Fault>
+<faultcode>s:Client</faultcode>
+<faultstring>UPnPError</faultstring>
+<detail>
+<UPnPError xmlns="urn:schemas-upnp-org:control-1-0">
+<errorCode>501</errorCode>
+<errorDescription>Action Failed</errorDescription>
+</UPnPError>
+</detail>
+</s:Fault>
+</s:Body>
+</s:Envelope>

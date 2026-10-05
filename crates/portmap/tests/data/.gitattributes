@@ -1,0 +1,4 @@
+# Replies byte for byte as gateways sent them: CRLF line ends, and a stated length that
+# counts every byte of the body. A line-ending conversion breaks both, so none of these
+# is ever treated as text.
+* -text

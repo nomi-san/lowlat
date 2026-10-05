@@ -1,0 +1,12 @@
+HTTP/1.1 200 OK
+CACHE-CONTROL: max-age=120
+ST: urn:schemas-upnp-org:device:InternetGatewayDevice:1
+USN: uuid:00000000-0000-4000-8000-00000000000d::urn:schemas-upnp-org:device:InternetGatewayDevice:1
+EXT:
+SERVER: OpenWRT/OpenWrt UPnP/1.1 MiniUPnPd/2.0
+LOCATION: http://192.168.1.1:5000/rootDesc.xml
+OPT: "http://schemas.upnp.org/upnp/1/0/"; ns=01
+01-NLS: 1790888542
+BOOTID.UPNP.ORG: 1790888542
+CONFIGID.UPNP.ORG: 1337
+

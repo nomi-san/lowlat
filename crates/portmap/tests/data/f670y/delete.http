@@ -1,0 +1,11 @@
+HTTP/1.1 200 OK
+CONTENT-LENGTH: 274
+CONTENT-TYPE: text/xml; charset="utf-8"
+DATE: Mon, 05 Oct 2026 10:05:35 GMT
+EXT:
+SERVER: Linux, UPnP/1.0, Portable SDK for UPnP devices/1.6.22
+X-User-Agent: redsonic
+
+<s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><s:Body>
+<u:DeletePortMappingResponse xmlns:u="urn:schemas-upnp-org:service:WANIPConnection:1"></u:DeletePortMappingResponse>
+</s:Body> </s:Envelope>
