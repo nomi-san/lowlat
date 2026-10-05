@@ -5,7 +5,8 @@
 # proves it against translation somebody else implemented, which is the only
 # thing that checks the description. Each topology states the outcome it
 # expects, and several expect failure. The relay's pair runs a real relay
-# server, the machine's own turnserver, and is skipped where there is none.
+# server, the machine's own turnserver, and is skipped where there is none; the
+# mapped pair runs a real mapping daemon, the machine's own miniupnpd, likewise.
 #
 # Requires root, and skips rather than fails when it cannot have it.
 #
@@ -177,6 +178,65 @@ nat_forwarded() {
     ip netns exec "$1" nft add rule ip nat post oifname "$2" meta l4proto udp masquerade to ":$4"
 }
 
+# ns ext_if lan_if lan_cidr -> a symmetric translator with a mapping daemon on
+# its LAN side. The translation is nat_symmetric's; new inbound is forwarded
+# only through the daemon's own chain, and the daemon's chains are hooked in as
+# its nftables backend expects them by default. It answers PCP, NAT-PMP and
+# UPnP's gateway device. The documentation addresses are reserved ones, so it is
+# told to map behind them all the same.
+nat_mapped() {
+    ip netns exec "$1" nft -f - <<NFT || return 1
+table inet filter {
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+        ct state established,related accept
+        iifname "$3" oifname "$2" accept
+        jump miniupnpd
+    }
+    chain miniupnpd {
+    }
+    chain prerouting {
+        type nat hook prerouting priority -100; policy accept;
+        jump prerouting_miniupnpd
+    }
+    chain postrouting {
+        type nat hook postrouting priority 100; policy accept;
+        jump postrouting_miniupnpd
+        oifname "$2" masquerade random
+    }
+    chain prerouting_miniupnpd {
+    }
+    chain postrouting_miniupnpd {
+    }
+}
+NFT
+    cat >"$RUN/miniupnpd.conf" <<CONF
+ext_ifname=$2
+listening_ip=$3
+http_port=0
+enable_upnp=yes
+enable_pcp_pmp=yes
+ext_allow_private_ipv4=yes
+ipv6_disable=yes
+secure_mode=yes
+system_uptime=yes
+min_lifetime=120
+max_lifetime=86400
+lease_file=$RUN/upnp.leases
+uuid=3e5d1a6c-15a0-4c0f-9a51-000000000015
+allow 1024-65535 $4 1024-65535
+deny 0-65535 0.0.0.0/0 0-65535
+CONF
+    ip netns exec "$1" miniupnpd -d -f "$RUN/miniupnpd.conf" -P "$RUN/miniupnpd.daemon.pid" \
+        >"$RUN/miniupnpd.out" 2>&1 &
+    echo $! >"$RUN/mapper.pid"
+    for _ in $(seq 50); do
+        ip netns exec "$1" ss -lnu | grep -q ':5351 ' && return 0
+        sleep 0.1
+    done
+    return 1
+}
+
 # ns ip -> a real relay on that machine, configured as the deployment is: its
 # relayed addresses are the machine's own, with no external address, so the
 # relay range never needs the router.
@@ -213,7 +273,7 @@ start_server() {
     sleep 0.3
 }
 
-# ns bind_addr publish await ufrag pwd peer_ufrag peer_pwd seed out
+# ns bind_addr publish await ufrag pwd peer_ufrag peer_pwd seed out [flag]
 start_peer() {
     ip netns exec "$1" "$PEER" peer \
         --bind "$2" \
@@ -221,7 +281,7 @@ start_peer() {
         --publish "$3" --await "$4" \
         --local-ufrag "$5" --local-pwd "$6" \
         --remote-ufrag "$7" --remote-pwd "$8" \
-        --seed "$9" --timeout-ms "$TIMEOUT_MS" $VERBOSE \
+        --seed "$9" --timeout-ms "$TIMEOUT_MS" $VERBOSE ${11:-} \
         >"${10}" 2>&1 &
 }
 
@@ -543,6 +603,50 @@ topology_relay_host_box_without_relay() {
     judge "relay-host-box-without-relay" failed
 }
 
+# The symmetric case, which fails, with a mapping daemon in the left gateway.
+# The left endpoint maps its port, the reflexive server confirms the gateway's
+# address, and the right reaches the left at the mapped address, which no
+# translator moves. The right's path must be that address.
+topology_mapped() {
+    build_two_sided || return 1
+    nat_mapped llgwa exta lana 192.168.10.0/24 || return 1
+    nat_symmetric llgwb extb || return 1
+    start_server
+    start_peer llha "192.168.10.2:$LEFT_PORT" "$RUN/a.cand" "$RUN/b.cand" \
+        "$LEFT_UFRAG" "$LEFT_PWD" "$RIGHT_UFRAG" "$RIGHT_PWD" 161 "$RUN/a.out" --map
+    local a=$!
+    start_peer llhb "192.168.20.2:$RIGHT_PORT" "$RUN/b.cand" "$RUN/a.cand" \
+        "$RIGHT_UFRAG" "$RIGHT_PWD" "$LEFT_UFRAG" "$LEFT_PWD" 178 "$RUN/b.out"
+    local b=$!
+    wait "$a" 2>/dev/null
+    wait "$b" 2>/dev/null
+
+    local mapped left right
+    mapped=$(grep -Eo '^mapped .*' "$RUN/a.out" | head -1 | cut -d' ' -f2)
+    left=$(grep -Eo '^(established|failed|timeout).*' "$RUN/a.out" | tail -1)
+    right=$(grep -Eo '^(established|failed|timeout).*' "$RUN/b.out" | tail -1)
+    if [[ $mapped == "$LEFT_PUBLIC:$LEFT_PORT" && $left == established* \
+        && $right == "established $mapped" ]]; then
+        pass=$((pass + 1))
+        log "  PASS mapped: mapped at $mapped, left [$left] right [$right]"
+    else
+        fail=$((fail + 1))
+        log "  FAIL mapped: mapped [$mapped], left [$left] right [$right]"
+        log "    reflexive: $(grep -h '^reflexive' "$RUN/a.out" "$RUN/b.out" | tr '\n' ' ')"
+    fi
+}
+
+# The same with no mapping asked for, which must fail, so the case above passes
+# on the mapping rather than on anything else the daemon's gateway does.
+topology_mapped_unused() {
+    build_two_sided || return 1
+    nat_mapped llgwa exta lana 192.168.10.0/24 || return 1
+    nat_symmetric llgwb extb || return 1
+    start_server
+    run_pair "192.168.10.2:$LEFT_PORT" "192.168.20.2:$RIGHT_PORT"
+    judge "mapped-unused" failed
+}
+
 run_topology() {
     log "$1:"
     cleanup
@@ -551,11 +655,15 @@ run_topology() {
         log "  SKIP $1: no turnserver on this machine"
         return
     fi
+    if [[ $1 == mapped* ]] && ! command -v miniupnpd >/dev/null; then
+        log "  SKIP $1: no miniupnpd on this machine"
+        return
+    fi
     if ! "topology_$(echo "$1" | tr - _)"; then
         fail=$((fail + 1))
         log "  FAIL $1: could not build the topology"
     fi
-    for pid in server relay; do
+    for pid in server relay mapper; do
         if [[ -f $RUN/$pid.pid ]]; then
             kill "$(cat "$RUN/$pid.pid")" 2>/dev/null
         fi
@@ -579,7 +687,7 @@ fi
 trap cleanup EXIT
 
 ALL="port-restricted full-cone restricted-cone symmetric carrier-grade hairpin multihome"
-ALL+=" relay-host-box relay-host-box-without-relay"
+ALL+=" relay-host-box relay-host-box-without-relay mapped mapped-unused"
 if [[ $# -gt 0 ]]; then
     topologies=("$@")
 else

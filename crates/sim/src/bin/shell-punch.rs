@@ -19,6 +19,11 @@
 //! makes a relay attempt instead (docs/03-connectivity.md 7.2): it publishes
 //! the relayed address once the relay has one, takes the peer's address as the
 //! host's own, and sends everything through the relay.
+//!
+//! With `--map` the endpoint asks its gateway to keep its port open, through
+//! the client's own mapper, and publishes the gateway's address beside the
+//! reflexive one, a line each, once the reflexive server has confirmed it
+//! (docs/03-connectivity.md 6).
 
 #[cfg(target_os = "linux")]
 #[path = "shell-punch/linux.rs"]

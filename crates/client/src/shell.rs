@@ -4,7 +4,7 @@
 //! opened, lends them their rings for the life of the thread, and runs the
 //! shell's loop with the driver as its application.
 
-use std::net::{SocketAddr, SocketAddrV4};
+use std::net::SocketAddr;
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
 
@@ -22,7 +22,7 @@ use lowlat_core::send::{SendRing, SendSlot};
 use lowlat_core::session::Session;
 use lowlat_core::stun::canonical;
 use lowlat_net::{Running, Shell, Socket, Wake};
-use lowlat_portmap::Reader;
+use lowlat_portmap::{Reader, confirmed};
 use std::sync::atomic::Ordering;
 
 use crate::config;
@@ -346,17 +346,6 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
     telemetry.state.store(2, Ordering::Relaxed);
 }
 
-/// The gateway's external address and port as a candidate, once a reflexive
-/// server has reported the same address: none before, and none when it
-/// reported another, which is a translator beyond the gateway.
-fn confirmed(external: SocketAddrV4, reflexive: &[SocketAddr]) -> Option<SocketAddr> {
-    let external = SocketAddr::V4(external);
-    reflexive
-        .iter()
-        .any(|addr| canonical(*addr).ip() == external.ip())
-        .then_some(external)
-}
-
 /// Release the relay's allocation on the way out, rather than hold a relay
 /// port until it expires. After everything else, so a departure goes out
 /// through the relay before the relay is let go.
@@ -367,26 +356,5 @@ fn release(shell: &mut Shell<'_, Session<'_>>) {
     if matches!(relay.state(), RelayState::Setup | RelayState::Ready(_)) {
         relay.release();
         let _ = shell.turn(|_| {});
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::net::Ipv4Addr;
-
-    /// Offered once a reflexive server saw the gateway's address, in either
-    /// notation and at whatever port; never before, and never for another.
-    #[test]
-    fn a_mapping_is_offered_once_a_reflexive_server_saw_its_address() {
-        let external = SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, 7), 24137);
-        let seen: SocketAddr = "203.0.113.7:51461".parse().unwrap();
-        let mapped_form: SocketAddr = "[::ffff:203.0.113.7]:51461".parse().unwrap();
-        let beyond: SocketAddr = "198.51.100.9:24137".parse().unwrap();
-        let offered = Some(SocketAddr::V4(external));
-        assert_eq!(confirmed(external, &[]), None);
-        assert_eq!(confirmed(external, &[beyond]), None);
-        assert_eq!(confirmed(external, &[beyond, seen]), offered);
-        assert_eq!(confirmed(external, &[mapped_form]), offered);
     }
 }

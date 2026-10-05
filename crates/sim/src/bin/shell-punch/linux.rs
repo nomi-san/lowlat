@@ -16,6 +16,7 @@ use lowlat_core::relay::{Relay, State as RelayState};
 use lowlat_core::send::{SendRing, SendSlot};
 use lowlat_core::session::Session;
 use lowlat_net::{Shell, Socket, Wake};
+use lowlat_portmap::{Config, Mapper, Reader, confirmed};
 
 /// How long to keep running after a path is found.
 ///
@@ -24,6 +25,10 @@ use lowlat_net::{Shell, Socket, Wake};
 /// strands a peer that was about to succeed. It would then report a one-sided
 /// result that says nothing about the topology.
 const SETTLE_MS: f64 = 600.0;
+
+/// How long a mapped endpoint waits, once it has its reflexive address, for
+/// the gateway's mapping to be confirmed before it publishes without it.
+const MAP_WAIT_MS: f64 = 3000.0;
 
 /// Ring geometry. No media crosses these fixtures; the session exists because
 /// an endpoint owns one, and the shell drives the endpoint rather than the
@@ -120,6 +125,23 @@ fn peer(args: &[String]) -> Result<(), String> {
     };
 
     let socket = Socket::open(bind.port()).map_err(|e| format!("open {}: {e}", bind.port()))?;
+    // With `--map` the gateway is asked to keep the port open, as a client with
+    // its mapping on does, for the run; the mapping is deleted when it ends.
+    let mapper = if args.iter().any(|a| a == "--map") {
+        let port = socket
+            .local_addr()
+            .map_err(|e| format!("local: {e}"))?
+            .port();
+        let config = Config {
+            port,
+            count: 1,
+            description: "lowlat-fixture".into(),
+        };
+        Some(Mapper::start(config).map_err(|e| format!("mapper: {e}"))?)
+    } else {
+        None
+    };
+    let mapping = mapper.as_ref().map(Mapper::reader);
     let wake = Wake::new().map_err(|e| format!("wake: {e}"))?;
     let mut shell = Shell::new(socket, wake, endpoint);
     // A relay attempt's peer is a host offering its own address; a direct
@@ -150,19 +172,26 @@ fn peer(args: &[String]) -> Result<(), String> {
     // the loop waits on the endpoint's deadline -- tens of milliseconds when
     // nothing is due. That delay is invisible against a peer that waits, and
     // decisive against one that does not.
+    // One address a line: a mapped endpoint publishes its gateway's beside the
+    // reflexive one.
     let (candidates, inbox) = mpsc::channel::<SocketAddr>();
     if let Some(path) = expect.clone() {
         let notify = shell.wake_handle().map_err(|e| format!("handle: {e}"))?;
         thread::spawn(move || {
             loop {
-                if let Ok(text) = fs::read_to_string(&path)
-                    && let Ok(addr) = text.trim().parse::<SocketAddr>()
-                {
-                    if candidates.send(addr).is_err() {
+                if let Ok(text) = fs::read_to_string(&path) {
+                    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+                    let addrs: Vec<SocketAddr> =
+                        lines.iter().filter_map(|l| l.trim().parse().ok()).collect();
+                    if !addrs.is_empty() && addrs.len() == lines.len() {
+                        for addr in addrs {
+                            if candidates.send(addr).is_err() {
+                                return;
+                            }
+                        }
+                        let _ = notify.notify();
                         return;
                     }
-                    let _ = notify.notify();
-                    return;
                 }
                 thread::sleep(Duration::from_millis(1));
             }
@@ -182,6 +211,7 @@ fn peer(args: &[String]) -> Result<(), String> {
     }
 
     let mut published = false;
+    let mut reflexive_at: Option<f64> = None;
     let mut reached = false;
     let mut settled_at: Option<f64> = None;
 
@@ -189,12 +219,12 @@ fn peer(args: &[String]) -> Result<(), String> {
         // Whatever signaling delivered, injected where the application's work is
         // pulled: after the wake has been taken, so nothing enqueued from here
         // on is lost.
-        let mut arrived = None;
+        let mut arrived = Vec::new();
         let turn = shell
             .turn(|endpoint| {
                 while let Ok(addr) = inbox.try_recv() {
                     if endpoint.add_candidate(addr, peer_kind).is_ok() {
-                        arrived = Some(addr);
+                        arrived.push(addr);
                     }
                     // The rendezvous file is the whole of this fixture's
                     // signaling: a peer that published is bound and
@@ -214,7 +244,7 @@ fn peer(args: &[String]) -> Result<(), String> {
         {
             return Ok(());
         }
-        if let Some(addr) = arrived {
+        for addr in arrived {
             println!("candidate {addr}");
         }
         if verbose && (turn.received > 0 || turn.sent > 0) {
@@ -224,12 +254,32 @@ fn peer(args: &[String]) -> Result<(), String> {
             );
         }
 
-        if !published && let Some(mapped) = shell.endpoint().conn().reflexive().next() {
-            if let Some(path) = publish.as_ref() {
-                fs::write(path, mapped.to_string()).map_err(|e| format!("publish: {e}"))?;
+        if !published && let Some(reflexive) = shell.endpoint().conn().reflexive().next() {
+            // The gateway's mapping goes beside it once the reflexive server has
+            // confirmed its address, as a client offers it, or not at all if
+            // that has not happened within the wait.
+            let found_at = *reflexive_at.get_or_insert(now_ms);
+            let mapped = mapping
+                .as_ref()
+                .and_then(Reader::external)
+                .and_then(|external| confirmed(external, &[reflexive]));
+            if mapping.is_none() || mapped.is_some() || now_ms > found_at + MAP_WAIT_MS {
+                let mut lines = reflexive.to_string();
+                if let Some(mapped) = mapped.filter(|mapped| *mapped != reflexive) {
+                    lines = format!("{lines}\n{mapped}");
+                }
+                if let Some(path) = publish.as_ref() {
+                    // Whole or not at all, for the reader polling it.
+                    let partial = path.with_extension("partial");
+                    fs::write(&partial, &lines).map_err(|e| format!("publish: {e}"))?;
+                    fs::rename(&partial, path).map_err(|e| format!("publish: {e}"))?;
+                }
+                published = true;
+                println!("reflexive {reflexive}");
+                if let Some(mapped) = mapped {
+                    println!("mapped {mapped}");
+                }
             }
-            published = true;
-            println!("reflexive {mapped}");
         }
         if !published && let Some(relayed) = shell.endpoint().relay().and_then(Relay::relayed) {
             if let Some(path) = publish.as_ref() {

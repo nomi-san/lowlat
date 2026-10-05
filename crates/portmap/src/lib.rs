@@ -62,7 +62,7 @@ mod fake;
 
 pub use error::{Error, Result};
 #[cfg(any(target_os = "linux", windows))]
-pub use mapper::{Config, Mapper, Protocol, Reader, Status};
+pub use mapper::{Config, Mapper, Protocol, Reader, Status, confirmed};
 
 /// Replies captured from three gateways (`tests/data/`): an OpenWrt router, a
 /// libupnp fibre gateway, and a Debian build of the same daemon as the first

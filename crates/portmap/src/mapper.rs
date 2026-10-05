@@ -198,6 +198,18 @@ fn packed(status: &Status) -> u64 {
     }
 }
 
+/// The gateway's external address and port as a candidate, once a reflexive
+/// server has reported the same address: none before, and none when it
+/// reported another, which is a translator beyond the gateway. An address in
+/// its v4-mapped form is the IPv4 address it carries.
+pub fn confirmed(external: SocketAddrV4, reflexive: &[SocketAddr]) -> Option<SocketAddr> {
+    let external = SocketAddr::V4(external);
+    reflexive
+        .iter()
+        .any(|addr| addr.ip().to_canonical() == external.ip())
+        .then_some(external)
+}
+
 /// What another thread reads of a mapper without taking its lock. It keeps
 /// nothing running: once the mapper stops it reads nothing.
 #[derive(Debug, Clone)]
@@ -1694,6 +1706,21 @@ mod tests {
         assert!(fake.table().is_empty());
         assert_eq!(mapper.status(), Status::default());
         stopped(mapper, &fake);
+    }
+
+    /// Confirmed once a reflexive server saw the gateway's address, in either
+    /// notation and at whatever port; never before, and never for another.
+    #[test]
+    fn a_mapping_is_confirmed_once_a_reflexive_server_saw_its_address() {
+        let external = SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, 7), 24137);
+        let seen: SocketAddr = "203.0.113.7:51461".parse().unwrap();
+        let mapped_form: SocketAddr = "[::ffff:203.0.113.7]:51461".parse().unwrap();
+        let beyond: SocketAddr = "198.51.100.9:24137".parse().unwrap();
+        let offered = Some(SocketAddr::V4(external));
+        assert_eq!(confirmed(external, &[]), None);
+        assert_eq!(confirmed(external, &[beyond]), None);
+        assert_eq!(confirmed(external, &[beyond, seen]), offered);
+        assert_eq!(confirmed(external, &[mapped_form]), offered);
     }
 
     #[test]

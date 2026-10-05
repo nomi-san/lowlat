@@ -946,6 +946,7 @@ dependencies = [
  "lowlat-core",
  "lowlat-crypto",
  "lowlat-net",
+ "lowlat-portmap",
  "md-5",
  "sha1",
 ]
