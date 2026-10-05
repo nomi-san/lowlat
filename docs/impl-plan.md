@@ -2016,12 +2016,23 @@ Steps:
   and NAT-PMP's deletes go in one exchange and UPnP's a port at a time, all within the bound.
   Two of the eleven behaviours broken to check the tests left them green at first, and both
   tests were rewritten ([changelog](changelog.md)).
-- [ ] **15.3 The client**: `port`, `port_seed` and `port_mapping` on the create info (minor 22),
+- [x] **15.3 The client**: `port`, `port_seed` and `port_mapping` on the create info (minor 22),
   the mapper per handle, the confirmed mapped candidate, the mapping in status; the example
   client's `LOWLAT_PORT`, `LOWLAT_PORT_SEED` and `LOWLAT_PORT_MAPPING`. Checked by the seam's
   tests and live: each protocol forced on the development gateway and read back from its table,
   made again after a delete, moved with the port, absent when off, a bounded destroy; on the
   second network, the mapped candidate advertised and the path it gave.
+  *Done 2026-10-05.* Live on the development gateway each protocol, forced in turn, was listed
+  in its table, moved, made again at its next renewal after the gateway lost it, and deleted in
+  under 10 ms; the second network's gateway, which keeps the old lease, had the mapping made
+  again at each renewal, mid-session too, without disturbing the stream. The example client,
+  from each network to an established host on the other over IPv4, had its mapping confirmed by
+  the reflexive server and deleted at exit, and none with the mapping off. **Both gateways keep
+  ports, so there the mapped candidate is the reflexive one**: the path only a mapping gives is
+  the namespace gate's to show. A caller built before minor 22 gets the stable port with no
+  mapping, no client release having been published, and on Windows a socket is now bound for
+  exclusive use, without which a port another program held in one family was taken as free
+  ([changelog](changelog.md)).
 - [ ] **15.4 The host**: the host configuration's flag and the service's, mapping
   `[base, base + guests)`. Checked by the range in the gateway's table and an established client
   connecting.

@@ -3,6 +3,56 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-05 - 15.3: the client's port and its mapping
+
+### Decided
+- **The port and the mapping are the handle's, named at creation** (minor 22,
+  [06 §3b](06-api.md)); the attempt's configuration is untouched. Every attempt binds the port
+  the creation info names or, when it names none, the seed's own -- 24000 plus a hash of the
+  application's seed, or of the machine's name, modulo 2000 -- stepping up past one that is
+  taken. `port_mapping` starts the mapper at creation, so the mapping is usually in before the
+  first answer; it follows the attempt's port when the bind walks and is deleted at destroy.
+- **The mapping is offered once a reflexive server confirms its address**
+  ([impl-plan Phase 15](impl-plan.md)). The session thread reads the mapper's external address
+  and port without a lock and offers them once, never an address and port already offered,
+  which behind a gateway that keeps ports is the reflexive candidate itself.
+- **The gateway lists the mapping under the seed**, so another machine on the same port is
+  never taken for a leftover of ours and deleted.
+- **A caller built before the port gets the stable port, with no mapping.** No release of the
+  client half has been published, so none is held to its per-attempt port; the creation info is
+  read as far as `size` reaches from this minor, as the other structures are.
+- **On Windows a socket is bound for exclusive use** ([02 §5](02-io-shell.md)). A dual-stack bind
+  there succeeds on a port another socket holds in one family, so a walk never saw such a port
+  as taken and that family's datagrams went to the other socket (measured); Linux refuses such a
+  bind already.
+- **The stable port is what draws the Windows firewall's question**, and nothing is added to
+  draw it. Measured from a fresh program path each time: a datagram socket bound to a port by
+  number is asked about at once, one bound to a port the system picks never is, and a TCP
+  listener is asked about either way. So a client with a stable port is asked at its first
+  attempt, as an established client is, and allowing it admits what a peer sends the mapped
+  port from a port this side never sent to.
+
+### Checked
+- Nine more tests: the stable port bound at every attempt, past a held one and back once free;
+  the seed's port and description; the mapping confirmed in either notation and never for
+  another address; the creation info read as far as its size, refused below minor 21's or with
+  an unterminated seed; the status's mapping; a port held in one family walked past, on both
+  systems.
+- Fourteen behaviours broken one at a time, each turning its tests red.
+- Live, the development network's gateway, each protocol forced in turn: mapped and listed in
+  its table for this machine, moved with the port, made again at the next renewal after the
+  gateway lost it -- PCP in 63 s, NAT-PMP in 34, UPnP at its next add -- and deleted in under
+  10 ms.
+- Live, the second network's gateway, which keeps the old lease on an identical add: the mapping
+  made again at each renewal and listed near whole throughout, and during a session at its
+  300 s renewal with the stream undisturbed.
+- The example client from each network to an established host on the other, over IPv4: mapped
+  by PCP on one gateway and UPnP on the other, confirmed by the reflexive server, the session
+  established through both gateways, the mapping deleted at exit; with the mapping off, none.
+  Both gateways keep ports, so there the mapped candidate is the reflexive one, and a path only
+  the mapping gives is the namespace gate's to show.
+- The Linux bar on a clean clone; on Windows the workspace's tests, nine more than before.
+
 ## 2026-10-05 - 15.2: the mapper
 
 ### Decided

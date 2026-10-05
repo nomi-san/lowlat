@@ -171,6 +171,7 @@ setup path that shrank a 64 MB receive buffer to 5 MB left it that way for the e
 | `IP_MTU_DISCOVER`, `IPV6_MTU_DISCOVER` | `IP_PMTUDISC_DO`, `IPV6_PMTUDISC_DO` | refuse to fragment, so an oversized probe fails fast instead of being split and arriving anyway ([01 §8](01-protocol.md)). **Both families: neither setting carries to the other**, and a socket left at the v6 default fragments locally, which a probe reads as the size having worked -- on a path whose minimum is 1280 and a ladder that climbs past it. The same pair on Windows, whose don't-fragment options are refused on a dual-stack socket |
 | non-blocking | on | all paths |
 | `SIO_UDP_CONNRESET`, `SIO_UDP_NETRESET` | off, Windows only | otherwise an ICMP unreachable, or a hop limit expiring on a mapping probe, fails the next receive; the probe provokes the second by design |
+| `SO_EXCLUSIVEADDRUSE` | on, Windows only, before the bind | without it a dual-stack bind succeeds on a port another socket holds in one family (measured), so a port walk never sees that port as taken and that family's datagrams go to the other socket; it also keeps another program from binding over this one. Linux refuses such a bind by default |
 
 **On Windows the established path is marked per destination, not per socket.** The system
 accepts a per-socket type of service and sends zero, and refuses the v6 traffic class, so once

@@ -351,7 +351,8 @@ Everything below is in the header (minor 4 the session, minor 5 the pictures, mi
 input, minor 7 the sound, minor 8 the preferences and the handle, minor 9 the cursor and the
 metrics, minor 10 the pad reports, minor 14 the relay, minor 15 the picture's range, minor 16
 its arrival time, minor 17 the range asked for, minor 18 the client's deliberate panic, minor
-19 the handle on Windows and the kind switched live); the header is the truth.
+19 the handle on Windows and the kind switched live, minor 22 the port and its mapping); the
+header is the truth.
 
 ```c
 lowlat_status lowlat_client_create(const lowlat_client_create_info *info, lowlat_client **out);
@@ -554,6 +555,28 @@ square when zero), and a render node (the first that decodes when empty; for sof
 directory of the library pair). The decoder is opened here, not at the attempt, so a machine
 without one is refused at creation with the stage named: `LOWLAT_ERR_NO_DECODER_RUNTIME`,
 `_DEVICE`, `_PROFILE` or `_LICENCE`.
+
+**Creation names the port, and can ask the gateway to keep it open** (minor 22,
+[03 §6](03-connectivity.md)). `lowlat_client_create_info.port` is the port every attempt binds
+first, stepping up past one that is taken -- fifty ports, then any the system picks. Zero picks
+the seed's own, 24000 plus a hash of `port_seed` modulo 2000, the seed the application's or,
+when empty, the machine's name: the same port at every attempt and every run, and two
+instances on one machine given two seeds hold two. `port_mapping` asks the gateway to keep the
+port open for the handle's life, by PCP, NAT-PMP or UPnP's gateway device, whichever answers
+first: asked at creation, so the mapping is usually in before the first answer, moved when an
+attempt's port does, and deleted at `lowlat_client_destroy` within a quarter of a second.
+**Nothing about it is ever an error, and no attempt waits for it.** The gateway's external
+address and mapped port are offered to the host as a candidate once a reflexive server reports
+the same address, so that nothing translates beyond the gateway, and never otherwise; where
+the gateway keeps ports that candidate is the reflexive one, already offered. Status carries
+the mapping (`mapping`, one of `lowlat_mapping`; `mapped_address` and `mapped_port`) and the
+gateway's last refusal (`mapping_refusal`, in the numbering of the protocol
+`mapping_refused_by` names). The seed names this client's entries in the gateway's table, so
+another machine's entry on the same port is left alone. **On Windows the stable port draws the
+system firewall's question at the first attempt**: a port bound by number is what it asks
+about, where one the system picks was never asked (measured), and until the application is
+allowed, what reaches the port from a peer it never sent to -- the case the mapping exists
+for -- is dropped.
 
 **The seam is the host's, mirrored.** A client makes the offer: `new_attempt` produces the
 credentials and certificate digest the application puts in it (its `port` is zero -- the
@@ -1256,6 +1279,16 @@ object that ships. Not for applications. Nothing moves.
 `lowlat_client_set_decoder` in a session of the handle kind is accepted where it was refused,
 a decoder that hands out no handle then handing out planes. Nothing moves, and a caller built
 against an earlier minor gets the fields it knows.
+
+**Minor 22** (2026-10-05) is the port and its mapping ([§3b](#3b-client)): `port`,
+`port_mapping` and `port_seed` appended to `lowlat_client_create_info` with
+`LOWLAT_PORT_SEED_MAX`; `lowlat_mapping`; `mapping`, `mapped_address`, `mapped_port`,
+`mapping_refusal` and `mapping_refused_by` appended to `lowlat_client_status`. Nothing moves.
+**The creation info is read as far as the caller's `size` reaches**, with the size it had at
+minor 21 as the least accepted: until this minor it was refused unless `size` covered the
+whole of it, the fault minor 14 corrected for the configuration and the status, corrected for
+the creation info the first time it grows. A caller built against an earlier minor gets the
+stable port with no mapping, where it had a port the system picked per attempt.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected
