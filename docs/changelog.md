@@ -23,8 +23,9 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - Live against an established host, a minute with both families and three with IPv4 only,
   then a minute of each with the host's router no longer forwarding everything to it: every
   session established over IPv4 to the host's own port, which the host maps on its gateway
-  itself. The host offered no IPv6 candidate in any of them, so the decline is checked by its
-  test alone.
+  itself. The host offered no IPv6 candidate in any of them. Once it did again, a minute and a
+  half each: both families established over IPv6, and IPv4 only declined the host's IPv6
+  candidate and established over IPv4, both clean.
 
 ## 2026-10-01 - W1.8: the system's decoder on Windows
 
