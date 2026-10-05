@@ -55,6 +55,8 @@
 // `LOWLAT_STUN` names reflexive servers, `host:port` separated by commas, up
 // to four: without one a direct attempt offers only this machine's own
 // addresses, which a host behind its own translator cannot answer.
+// `LOWLAT_IPV4_ONLY` offers and checks IPv4 addresses only, so an attempt
+// that IPv6 would connect directly crosses the translation on IPv4 instead.
 // `LOWLAT_RELAY=host:port` makes the attempt a relay attempt through that
 // relay, with `LOWLAT_RELAY_USER` and `LOWLAT_RELAY_PASS` its credential,
 // which is handed to the library and never printed: the relayed address is
@@ -1772,6 +1774,9 @@ static bool begin_attempt(struct demo *d)
 	cfg.raw_audio = getenv("LOWLAT_RAW_AUDIO") != NULL;
 	// No media key offered, so the session takes the legacy 128-bit cipher.
 	cfg.legacy_cipher = getenv("LOWLAT_LEGACY_CIPHER") != NULL;
+	// IPv4 addresses only, offered and checked, so the attempt crosses the
+	// translation on the IPv4 path where IPv6 would connect directly.
+	cfg.ipv4_only = getenv("LOWLAT_IPV4_ONLY") != NULL;
 	cfg.video = d->video;
 	const char *stun = getenv("LOWLAT_STUN");
 	for (const char *at = stun; at != NULL && *at != '\0' && cfg.server_count < LOWLAT_SERVERS_MAX;) {

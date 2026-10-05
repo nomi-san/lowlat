@@ -483,6 +483,16 @@ impl Client {
         let Some(attempt) = self.attempt.as_mut().filter(|attempt| attempt.id == id) else {
             return;
         };
+        // The marker's address is never read, so the family is asked of real
+        // candidates only.
+        if !sync && !attempt.config.admits(addr) {
+            lowlat_common::log_info!(
+                "client: attempt={} declined an IPv6 candidate, addr={}",
+                id,
+                addr
+            );
+            return;
+        }
         let arrival = if sync {
             Arrival::PeerReady
         } else {
@@ -555,9 +565,18 @@ impl Client {
         let (ask, asked) = mpsc::channel::<Ask>();
         let requests: Arc<Ring<Request, RING_DEPTH>> = Arc::new(Ring::new());
 
+        if attempt.config.ipv4_only {
+            lowlat_common::log_info!("client: attempt={} offers and checks IPv4 only", id);
+        }
         let args = crate::shell::Attached {
             socket,
-            servers: attempt.config.servers.clone(),
+            servers: attempt
+                .config
+                .servers
+                .iter()
+                .copied()
+                .filter(|server| attempt.config.admits(*server))
+                .collect(),
             relay: attempt.config.relay.clone(),
             relay_seed,
             ours: (attempt.ours.ufrag.clone(), attempt.ours.pwd.clone()),
@@ -619,8 +638,12 @@ impl Client {
         if attempt.config.relay.is_none() {
             let shared = attempt.config.shared_address_space;
             for ip in lowlat_net::host_addresses(shared) {
+                let addr = SocketAddr::new(ip, bound);
+                if !attempt.config.admits(addr) {
+                    continue;
+                }
                 self.emit.send(Event::Candidate {
-                    addr: SocketAddr::new(ip, bound),
+                    addr,
                     from_stun: false,
                     lan: true,
                 });

@@ -214,6 +214,11 @@ pub struct Config {
     pub servers: Vec<SocketAddr>,
     /// Offer addresses from the carrier-grade shared range.
     pub shared_address_space: bool,
+    /// Offer and check IPv4 addresses only: no IPv6 host candidate, no IPv6
+    /// reflexive server, and a peer's IPv6 candidates declined. For a path
+    /// whose IPv6 would connect directly, so the attempt crosses the
+    /// translation on its IPv4 path.
+    pub ipv4_only: bool,
     /// A relay to go through. Set, the attempt is a relay attempt: it offers
     /// the relayed address and nothing else, and every check goes through
     /// the relay.
@@ -221,6 +226,13 @@ pub struct Config {
 }
 
 impl Config {
+    /// Whether an address may be offered or checked. **The family is the
+    /// address's, never its notation's**: an IPv4 address in its v4-mapped
+    /// form is IPv4.
+    pub fn admits(&self, addr: SocketAddr) -> bool {
+        !self.ipv4_only || lowlat_core::stun::canonical(addr).is_ipv4()
+    }
+
     /// The initialization this configuration declares, given what the
     /// decoder takes.
     pub fn init(&self, caps: &Caps) -> Init {
@@ -321,6 +333,24 @@ mod tests {
             ..Caps::default()
         };
         assert_eq!(all.flags(&h264_only), 0);
+    }
+
+    /// IPv4 only refuses an IPv6 address and keeps an IPv4 one in either
+    /// form; by default both families pass.
+    #[test]
+    fn ipv4_only_refuses_ipv6_and_keeps_a_v4_mapped_address() {
+        let v4: SocketAddr = "192.0.2.1:9".parse().unwrap();
+        let mapped: SocketAddr = "[::ffff:192.0.2.1]:9".parse().unwrap();
+        let v6: SocketAddr = "[2001:db8::1]:9".parse().unwrap();
+        let only = Config {
+            ipv4_only: true,
+            ..Config::default()
+        };
+        assert!(only.admits(v4));
+        assert!(only.admits(mapped), "a v4-mapped address was read as IPv6");
+        assert!(!only.admits(v6));
+        let both = Config::default();
+        assert!(both.admits(v4) && both.admits(mapped) && both.admits(v6));
     }
 
     #[test]

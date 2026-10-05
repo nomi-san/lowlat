@@ -342,7 +342,13 @@ pub struct lowlat_client_config {
     pub legacy_cipher: bool,
     /// Offer addresses from the carrier-grade shared range as candidates.
     pub shared_address_space: bool,
-    pub reserved: u8,
+    /// Offer and check IPv4 addresses only (minor 21): no IPv6 host
+    /// candidate, no IPv6 reflexive server, the host's IPv6 candidates
+    /// declined, and a relay taken only at an IPv4 address. For a path whose
+    /// IPv6 would connect directly, so the attempt crosses the translation on
+    /// its IPv4 path. A caller built against minor 20 or earlier zeroed this
+    /// byte, and gets both families.
+    pub ipv4_only: bool,
     /// How many of `servers` are set.
     pub server_count: u32,
     /// Reflexive servers, consulted for this client's own mapped address,
@@ -915,7 +921,8 @@ fn configured(cfg: &lowlat_client_config) -> Option<::lowlat_client::Config> {
         }
     }
     // A relay needs a credential, and one whose name resolves: the first
-    // IPv4 address it has, the family most paths carry.
+    // IPv4 address it has, the family most paths carry, and no other when
+    // the attempt is IPv4 only.
     let relay = match taken(&cfg.relay)? {
         "" => None,
         text => {
@@ -923,7 +930,7 @@ fn configured(cfg: &lowlat_client_config) -> Option<::lowlat_client::Config> {
             let server = found
                 .iter()
                 .find(|addr| addr.is_ipv4())
-                .or(found.first())
+                .or(found.first().filter(|_| !cfg.ipv4_only))
                 .copied()?;
             let username = taken(&cfg.relay_username).filter(|text| !text.is_empty())?;
             let password = taken(&cfg.relay_password).filter(|text| !text.is_empty())?;
@@ -938,6 +945,7 @@ fn configured(cfg: &lowlat_client_config) -> Option<::lowlat_client::Config> {
         legacy_cipher: cfg.legacy_cipher,
         servers,
         shared_address_space: cfg.shared_address_space,
+        ipv4_only: cfg.ipv4_only,
         relay,
     })
 }
@@ -3012,7 +3020,7 @@ mod tests {
             raw_audio: false,
             legacy_cipher: true,
             shared_address_space: false,
-            reserved: 0,
+            ipv4_only: false,
             server_count: 0,
             servers: [[0; LOWLAT_SERVER_MAX]; LOWLAT_SERVERS_MAX],
             relay: [0; LOWLAT_SERVER_MAX],

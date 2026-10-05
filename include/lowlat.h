@@ -42,7 +42,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 20
+#define LOWLAT_ABI_MINOR 21
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 /// A library built for Windows carries the client half alone.
@@ -1560,7 +1560,13 @@ typedef struct lowlat_client_config {
     bool legacy_cipher;
     /// Offer addresses from the carrier-grade shared range as candidates.
     bool shared_address_space;
-    uint8_t reserved;
+    /// Offer and check IPv4 addresses only (minor 21): no IPv6 host
+    /// candidate, no IPv6 reflexive server, the host's IPv6 candidates
+    /// declined, and a relay taken only at an IPv4 address. For a path whose
+    /// IPv6 would connect directly, so the attempt crosses the translation on
+    /// its IPv4 path. A caller built against minor 20 or earlier zeroed this
+    /// byte, and gets both families.
+    bool ipv4_only;
     /// How many of `servers` are set.
     uint32_t server_count;
     /// Reflexive servers, consulted for this client's own mapped address,
