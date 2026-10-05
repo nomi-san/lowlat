@@ -2036,13 +2036,15 @@ Steps:
 - [ ] **15.4 The host**: the host configuration's flag and the service's, mapping
   `[base, base + guests)`. Checked by the range in the gateway's table and an established client
   connecting.
+  *Deferred 2026-10-05*: the host's own deployment already forwards a port, for the relay that
+  runs beside it ([03 §7](03-connectivity.md)).
 - [ ] **15.5 Docs**: [03 §6](03-connectivity.md) rewritten, [06](06-api.md), and
   [02](02-io-shell.md) for the mapper's thread.
 
 **Gate:** both CI jobs against the fake gateway; every fuzz target run; the namespace matrix
 with the mapping daemon in a gateway, a topology that fails today establishing through the
 confirmed mapped candidate; each protocol live on the development network and the advertised
-candidate on the second; the host half; the Linux tests.
+candidate on the second; ~~the host half~~ (deferred with 15.4); the Linux tests.
 
 ---
 
@@ -2050,6 +2052,10 @@ candidate on the second; the host half; the Linux tests.
 
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
+
+- 2026-10-05: **Phase 15's host half deferred** (15.4, and the gate's host leg with it): the
+  host's own deployment already forwards a port, for the relay that runs beside it. The client
+  half stands alone.
 
 - 2026-10-05: **Phase 15 planned: gateway port mapping**, which Phase 2 left out on a premise
   that does not hold. The mapping keeps a stable port open and is advertised only when a
