@@ -350,6 +350,10 @@ impl Frames {
     /// The consumer is done with a slot it holds.
     pub fn release(&self, index: usize) {
         if self.ring.release(index) {
+            #[allow(
+                deprecated,
+                reason = "its new name, try_update, is newer than the minimum toolchain"
+            )]
             let _ = self
                 .held
                 .fetch_update(Ordering::AcqRel, Ordering::Acquire, |h| h.checked_sub(1));
