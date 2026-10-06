@@ -2,11 +2,12 @@
 
 use std::env;
 use std::fs;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr, SocketAddrV4};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use lowlat_core::channel::{RecvRing, SlotMeta};
 use lowlat_core::conn::{Conn, Credentials, Kind, State};
@@ -29,6 +30,9 @@ const SETTLE_MS: f64 = 600.0;
 /// How long a mapped endpoint waits, once it has its reflexive address, for
 /// the gateway's mapping to be confirmed before it publishes without it.
 const MAP_WAIT_MS: f64 = 3000.0;
+
+/// How long the translation probe gives its servers.
+const NAT_WAIT: Duration = Duration::from_secs(3);
 
 /// Ring geometry. No media crosses these fixtures; the session exists because
 /// an endpoint owns one, and the shell drives the endpoint rather than the
@@ -143,6 +147,57 @@ fn peer(args: &[String]) -> Result<(), String> {
         None
     };
     let mapping = mapper.as_ref().map(Mapper::reader);
+
+    // With `--nat-server` the translation in front of the port is probed
+    // first, from the socket the punch then takes, as a client probes from
+    // its own port -- once the gateway has mapped it, when it is asked to.
+    let mut nat_servers = Vec::new();
+    for pair in args.windows(2) {
+        if pair[0] == "--nat-server" {
+            let server: SocketAddrV4 = pair[1]
+                .parse()
+                .map_err(|_| "bad --nat-server".to_string())?;
+            nat_servers.push(server);
+        }
+    }
+    if !nat_servers.is_empty() {
+        if let Some(reader) = &mapping {
+            let began = Instant::now();
+            while reader.external().is_none()
+                && began.elapsed() < Duration::from_secs_f64(MAP_WAIT_MS / 1000.0)
+            {
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
+        // Its own identifiers, apart from the punch's, so a late answer to
+        // the probe is never taken for one of the punch's.
+        let seed = [seed_byte ^ 0xA5; 16];
+        let probed = lowlat_net::nat::probe(
+            &socket,
+            &nat_servers,
+            seed,
+            NAT_WAIT,
+            &AtomicBool::new(false),
+        )
+        .map_err(|e| format!("nat: {e}"))?;
+        let public = probed.verdict.public;
+        let confirmed = mapping
+            .as_ref()
+            .and_then(Reader::external)
+            .zip(public)
+            .is_some_and(|(external, public)| IpAddr::V4(*external.ip()) == public.ip());
+        let number = lowlat_core::nat::number(probed.verdict.mapping, confirmed);
+        println!(
+            "nat type={} mapping={:?} public={} confirmed={} answered={}/{}",
+            number.map_or_else(|| "unknown".to_string(), |number| number.to_string()),
+            probed.verdict.mapping,
+            public.map_or_else(|| "none".to_string(), |public| public.to_string()),
+            u8::from(confirmed),
+            probed.answered,
+            probed.asked
+        );
+    }
+
     let wake = Wake::new().map_err(|e| format!("wake: {e}"))?;
     let mut shell = Shell::new(socket, wake, endpoint);
     // A relay attempt's peer is a host offering its own address; a direct

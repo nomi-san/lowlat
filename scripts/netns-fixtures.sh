@@ -37,6 +37,9 @@ RIGHT_PORT=6000
 LEFT_PUBLIC=203.0.113.1
 RIGHT_PUBLIC=203.0.113.5
 SERVER=203.0.113.254
+# A second reflexive server at a second address: one is where a translator
+# put the port, two say whether that place is the same for every destination.
+SERVER2=203.0.113.253
 SERVER_PORT=3478
 
 LEFT_UFRAG=aaaa
@@ -265,11 +268,14 @@ CONF
     sleep 1
 }
 
-# Start the reflexive server. It only ever reports the address it saw.
+# Start the reflexive servers. They only ever report the address they saw.
 start_server() {
     ip netns exec llnet "$PUNCH" server --bind "$SERVER:$SERVER_PORT" \
         >"$RUN/server.out" 2>&1 &
     echo $! >"$RUN/server.pid"
+    ip netns exec llnet "$PUNCH" server --bind "$SERVER2:$SERVER_PORT" \
+        >"$RUN/server2.out" 2>&1 &
+    echo $! >"$RUN/server2.pid"
     sleep 0.3
 }
 
@@ -278,6 +284,7 @@ start_peer() {
     ip netns exec "$1" "$PEER" peer \
         --bind "$2" \
         --server "$SERVER:$SERVER_PORT" \
+        --nat-server "$SERVER:$SERVER_PORT" --nat-server "$SERVER2:$SERVER_PORT" \
         --publish "$3" --await "$4" \
         --local-ufrag "$5" --local-pwd "$6" \
         --remote-ufrag "$7" --remote-pwd "$8" \
@@ -322,6 +329,22 @@ judge() {
     fi
 }
 
+# name expected -> the left side's translation, as its probe numbered it
+# before the punch: the console numbering, the mapping alone deciding it, a
+# confirmed mapping on the gateway numbering 2.
+judge_nat() {
+    local name=$1 expected=$2
+    local nat
+    nat=$(grep -Eo '^nat .*' "$RUN/a.out" | head -1)
+    if [[ $nat == "nat type=$expected "* ]]; then
+        pass=$((pass + 1))
+        log "  PASS $name nat: expected type $expected, [$nat]"
+    else
+        fail=$((fail + 1))
+        log "  FAIL $name nat: expected type $expected, [$nat]"
+    fi
+}
+
 # Two hosts, each behind its own gateway, with three routers between them.
 #
 # The router count is load bearing, not scenery. A mapping probe is emitted at a
@@ -353,6 +376,7 @@ build_two_sided() {
     done
 
     ip -n llnet addr add "$SERVER/32" dev lo || return 1
+    ip -n llnet addr add "$SERVER2/32" dev lo || return 1
     ip -n llha route add default via 192.168.10.1 || return 1
     ip -n llhb route add default via 192.168.20.1 || return 1
     ip -n llgwa route add default via 203.0.113.2 || return 1
@@ -370,6 +394,7 @@ topology_port_restricted() {
     start_server
     run_pair 192.168.10.2:$LEFT_PORT 192.168.20.2:$RIGHT_PORT
     judge "port-restricted" established
+    judge_nat "port-restricted" 2
 }
 
 topology_full_cone() {
@@ -379,6 +404,7 @@ topology_full_cone() {
     start_server
     run_pair 192.168.10.2:$LEFT_PORT 192.168.20.2:$RIGHT_PORT
     judge "full-cone" established
+    judge_nat "full-cone" 2
 }
 
 topology_restricted_cone() {
@@ -388,6 +414,7 @@ topology_restricted_cone() {
     start_server
     run_pair 192.168.10.2:$LEFT_PORT 192.168.20.2:$RIGHT_PORT
     judge "restricted-cone" established
+    judge_nat "restricted-cone" 2
 }
 
 topology_symmetric() {
@@ -397,6 +424,7 @@ topology_symmetric() {
     start_server
     run_pair 192.168.10.2:$LEFT_PORT 192.168.20.2:$RIGHT_PORT
     judge "symmetric" failed
+    judge_nat "symmetric" 3
 }
 
 # Two layers on the left: a customer translator behind a carrier one. Both keep
@@ -420,6 +448,7 @@ topology_carrier_grade() {
     done
 
     ip -n llnet addr add "$SERVER/32" dev lo || return 1
+    ip -n llnet addr add "$SERVER2/32" dev lo || return 1
     ip -n llha route add default via 192.168.10.1 || return 1
     ip -n llhb route add default via 192.168.20.1 || return 1
     ip -n llgwa route add default via 100.64.0.1 || return 1
@@ -437,6 +466,7 @@ topology_carrier_grade() {
     start_server
     run_pair 192.168.10.2:$LEFT_PORT 192.168.20.2:$RIGHT_PORT
     judge "carrier-grade" established
+    judge_nat "carrier-grade" 2
 }
 
 # A multihomed host answers from the address it was probed at.
@@ -470,6 +500,7 @@ topology_multihome() {
     forward llnet || return 1
     forward llgwb || return 1
     ip -n llnet addr add "$SERVER/32" dev lo || return 1
+    ip -n llnet addr add "$SERVER2/32" dev lo || return 1
     ip -n llha route add default via 203.0.113.14 || return 1
     ip -n llhb route add default via 192.168.20.1 || return 1
     ip -n llgwb route add default via 203.0.113.6 || return 1
@@ -504,6 +535,8 @@ topology_multihome() {
         fail=$((fail + 1))
         log "  FAIL multihome: the answer did not come from the probed address, right [$right] left [$left]"
     fi
+    # Nothing translates in front of the probing side.
+    judge_nat "multihome" 1
 }
 
 # Both hosts behind one translator, reaching each other by its public address.
@@ -518,6 +551,7 @@ topology_hairpin() {
     forward llgwa || return 1
     forward llnet || return 1
     ip -n llnet addr add "$SERVER/32" dev lo || return 1
+    ip -n llnet addr add "$SERVER2/32" dev lo || return 1
     ip -n llha route add default via 192.168.10.1 || return 1
     ip -n llhb route add default via 192.168.11.1 || return 1
     ip -n llgwa route add default via 203.0.113.2 || return 1
@@ -541,6 +575,7 @@ topology_hairpin() {
     start_server
     run_pair 192.168.10.2:$LEFT_PORT 192.168.11.2:$RIGHT_PORT
     judge "hairpin" established
+    judge_nat "hairpin" 2
 }
 
 # The deployment of docs/03-connectivity.md 7.1 against a real relay: the relay
@@ -634,6 +669,9 @@ topology_mapped() {
         log "  FAIL mapped: mapped [$mapped], left [$left] right [$right]"
         log "    reflexive: $(grep -h '^reflexive' "$RUN/a.out" "$RUN/b.out" | tr '\n' ' ')"
     fi
+    # A port per destination, reached all the same through the confirmed
+    # mapping.
+    judge_nat "mapped" 2
 }
 
 # The same with no mapping asked for, which must fail, so the case above passes
@@ -645,6 +683,7 @@ topology_mapped_unused() {
     start_server
     run_pair "192.168.10.2:$LEFT_PORT" "192.168.20.2:$RIGHT_PORT"
     judge "mapped-unused" failed
+    judge_nat "mapped-unused" 3
 }
 
 run_topology() {
@@ -663,7 +702,7 @@ run_topology() {
         fail=$((fail + 1))
         log "  FAIL $1: could not build the topology"
     fi
-    for pid in server relay mapper; do
+    for pid in server server2 relay mapper; do
         if [[ -f $RUN/$pid.pid ]]; then
             kill "$(cat "$RUN/$pid.pid")" 2>/dev/null
         fi

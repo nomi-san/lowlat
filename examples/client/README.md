@@ -50,7 +50,11 @@ four: without one a direct attempt offers only this machine's own addresses,
 which a host behind its own translator cannot answer. `LOWLAT_IPV4_ONLY`
 offers and checks IPv4 addresses only: no IPv6 candidate of this machine's,
 none of the host's checked, so a host that IPv6 would reach directly is
-reached across the translation on IPv4 instead. `LOWLAT_PORT` is the port
+reached across the translation on IPv4 instead. `LOWLAT_NAT=1` asks those
+servers at start, before the attempt, where they see the port, and prints the
+translation in front of it: the number game consoles give it, how it maps,
+where the first server saw the port, and the gateway's mapping beside it --
+two servers at two addresses are the least that tells. `LOWLAT_PORT` is the port
 every attempt binds first; by default it is the same one every run, 24000 plus
 a hash of `LOWLAT_PORT_SEED` or of the machine's name, so two copies on one
 machine can be given two. The demo asks the gateway to keep that port open, by

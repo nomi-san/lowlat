@@ -57,6 +57,8 @@
 // addresses, which a host behind its own translator cannot answer.
 // `LOWLAT_IPV4_ONLY` offers and checks IPv4 addresses only, so an attempt
 // that IPv6 would connect directly crosses the translation on IPv4 instead.
+// `LOWLAT_NAT=1` asks those servers at start, before the attempt, where they
+// see the port, and prints what the translation in front of it is.
 // `LOWLAT_PORT` is the port every attempt binds first -- by default the same
 // one every run, picked by `LOWLAT_PORT_SEED` or the machine's name -- and
 // the gateway is asked to keep it open, by PCP, NAT-PMP or UPnP, unless
@@ -1796,6 +1798,59 @@ static void *sound_loop(void *opaque)
 // library mints for the offer, the service's socket and the offer itself.
 // The configuration is read from the environment each time; the
 // preferences are the ones in force, the chord's moves included.
+// The reflexive servers `LOWLAT_STUN` names, into `servers`; how many.
+static uint32_t stun_servers(char (*servers)[LOWLAT_SERVER_MAX])
+{
+	uint32_t count = 0;
+	const char *stun = getenv("LOWLAT_STUN");
+	for (const char *at = stun; at != NULL && *at != '\0' && count < LOWLAT_SERVERS_MAX;) {
+		size_t len = strcspn(at, ",");
+		if (len > 0 && len < LOWLAT_SERVER_MAX)
+			snprintf(servers[count++], LOWLAT_SERVER_MAX, "%.*s", (int) len, at);
+		at += len + (at[len] == ',');
+	}
+	return count;
+}
+
+// The translation in front of the port, asked of the reflexive servers and
+// waited for, then printed: the number, how the translation maps, where the
+// first server saw the port, and what the gateway says beside it.
+static void print_nat(lowlat_client *cl)
+{
+	lowlat_nat_probe probe;
+	memset(&probe, 0, sizeof probe);
+	probe.size = (uint32_t) sizeof probe;
+	probe.server_count = stun_servers(probe.servers);
+	lowlat_status s = lowlat_client_probe_nat(cl, &probe);
+	if (s != LOWLAT_OK) {
+		printf("demo: no NAT probe: %s\n", lowlat_status_string(s));
+		return;
+	}
+	lowlat_nat_info nat;
+	memset(&nat, 0, sizeof nat);
+	nat.size = (uint32_t) sizeof nat;
+	do {
+		MTY_Sleep(50);
+		lowlat_client_get_nat(cl, &nat);
+	} while (nat.state == LOWLAT_NAT_STATE_PROBING);
+	static const char *const mappings[] = {"unknown", "no answer", "none", "independent",
+		"dependent", "address dependent", "address and port dependent"};
+	static const char *const by[] = {"none", "PCP", "NAT-PMP", "UPnP"};
+	char number[16];
+	if (nat.nat_type == LOWLAT_NAT_TYPE_UNKNOWN)
+		snprintf(number, sizeof number, "unknown");
+	else
+		snprintf(number, sizeof number, "%u", (unsigned) nat.nat_type);
+	printf("demo: NAT type %s, mapping %s, public %s:%u%s, %u of %u servers answered\n",
+		number, nat.mapping < 7 ? mappings[nat.mapping] : "?", nat.public_address,
+		(unsigned) nat.public_port, nat.port_preserved ? " (port kept)" : "",
+		(unsigned) nat.servers_answered, (unsigned) nat.servers_asked);
+	printf("demo: gateway mapping by %s%s%s%s\n", nat.gateway < 4 ? by[nat.gateway] : "?",
+		nat.gateway_confirmed ? ", confirmed" : "",
+		nat.double_translation ? ", a second translator beyond it" : "",
+		nat.carrier_range ? ", in a carrier's shared range" : "");
+}
+
 static bool begin_attempt(struct demo *d)
 {
 	const char *peer = d->peers[d->peer_at];
@@ -1815,13 +1870,7 @@ static bool begin_attempt(struct demo *d)
 	// translation on the IPv4 path where IPv6 would connect directly.
 	cfg.ipv4_only = getenv("LOWLAT_IPV4_ONLY") != NULL;
 	cfg.video = d->video;
-	const char *stun = getenv("LOWLAT_STUN");
-	for (const char *at = stun; at != NULL && *at != '\0' && cfg.server_count < LOWLAT_SERVERS_MAX;) {
-		size_t len = strcspn(at, ",");
-		if (len > 0 && len < LOWLAT_SERVER_MAX)
-			snprintf(cfg.servers[cfg.server_count++], LOWLAT_SERVER_MAX, "%.*s", (int) len, at);
-		at += len + (at[len] == ',');
-	}
+	cfg.server_count = stun_servers(cfg.servers);
 	const char *relay = getenv("LOWLAT_RELAY");
 	if (relay != NULL && relay[0] != '\0') {
 		snprintf(cfg.relay, sizeof cfg.relay, "%s", relay);
@@ -2133,6 +2182,8 @@ int main(void)
 	// The renderer converts with each picture's range, so it takes either.
 	const char *range = getenv("LOWLAT_FULL_RANGE");
 	d.video.full_range = range == NULL || strcmp(range, "0") != 0;
+	if (strcmp(env_or("LOWLAT_NAT", "0"), "0") != 0)
+		print_nat(d.client);
 	if (!begin_attempt(&d))
 		return 1;
 
