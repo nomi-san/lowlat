@@ -208,27 +208,27 @@ const SENT_IDS: usize = 16;
 /// oldest is overwritten, which narrows matching by one rather than
 /// anything worse.
 #[derive(Debug, Clone, Copy)]
-struct SentIds {
+pub(crate) struct SentIds {
     slots: [Option<TransactionId>; SENT_IDS],
     at: usize,
 }
 
 impl SentIds {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             slots: [None; SENT_IDS],
             at: 0,
         }
     }
 
-    fn push(&mut self, tid: TransactionId) {
+    pub(crate) fn push(&mut self, tid: TransactionId) {
         if let Some(slot) = self.slots.get_mut(self.at) {
             *slot = Some(tid);
         }
         self.at = (self.at + 1) % SENT_IDS;
     }
 
-    fn contains(&self, tid: TransactionId) -> bool {
+    pub(crate) fn contains(&self, tid: TransactionId) -> bool {
         self.slots.iter().flatten().any(|sent| *sent == tid)
     }
 }
@@ -333,6 +333,18 @@ impl<'a> Conn<'a> {
     /// rather than any single entry.
     pub fn reflexive(&self) -> impl Iterator<Item = SocketAddr> + '_ {
         self.servers.iter().flatten().filter_map(|s| s.mapped)
+    }
+
+    /// Each server that answered, with the address it saw us at, in the
+    /// order the servers were added: what tells how the translation in front
+    /// of this socket maps ([`crate::nat::classify`]).
+    pub fn answers(&self) -> impl Iterator<Item = crate::nat::Answer> + '_ {
+        self.servers.iter().flatten().filter_map(|s| {
+            s.mapped.map(|mapped| crate::nat::Answer {
+                server: s.addr,
+                mapped,
+            })
+        })
     }
 
     /// The chosen path, once there is one.
@@ -1620,6 +1632,14 @@ mod tests {
         assert!(
             learned(seen_by_first) && learned(seen_by_second),
             "one server's answer overwrote the other's"
+        );
+        // Each with the server that saw it, in the order they were added:
+        // the pairs that tell this translation is symmetric.
+        assert_eq!(
+            conn.answers()
+                .map(|answer| (answer.server, answer.mapped))
+                .collect::<std::vec::Vec<_>>(),
+            [(first, seen_by_first), (second, seen_by_second)]
         );
 
         // And an answered server is not probed again, or every session would

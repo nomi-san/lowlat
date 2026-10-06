@@ -19,7 +19,7 @@
 //!   and offering all three makes the peer spend checks discovering which of
 //!   them answers.
 
-use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 use std::net::UdpSocket;
 
 /// Private address space, always offered.
@@ -114,6 +114,23 @@ fn probed_v6() -> Option<IpAddr> {
         // A route question asked over v6 cannot be answered by a v4 source.
         IpAddr::V4(_) => None,
     }
+}
+
+/// The IPv4 address this machine sends from toward `to`, as the routing
+/// table picks it: a connected datagram socket sends nothing and says it.
+pub fn local_toward(to: SocketAddrV4) -> Option<Ipv4Addr> {
+    let socket = UdpSocket::bind(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    socket.connect(to).ok()?;
+    match socket.local_addr().ok()? {
+        SocketAddr::V4(local) if !local.ip().is_unspecified() => Some(*local.ip()),
+        _ => None,
+    }
+}
+
+/// Whether an address is in the shared space a carrier's translation hands
+/// its customers.
+pub fn is_shared(addr: Ipv4Addr) -> bool {
+    in_network(addr, SHARED_V4.0, SHARED_V4.1)
 }
 
 /// The addresses to offer as host candidates, IPv4 first.

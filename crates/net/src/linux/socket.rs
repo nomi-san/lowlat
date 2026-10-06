@@ -2,6 +2,7 @@
 //! option set, and the address conversions.
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use core::time::Duration;
 use std::io;
 use std::mem;
 use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
@@ -245,6 +246,58 @@ impl Socket {
             return Err(io::Error::last_os_error());
         }
         Ok(usize::try_from(sent).unwrap_or(0))
+    }
+
+    /// One datagram, if one arrives within `wait`: its length, and where it
+    /// came from. For a short exchange on a socket no loop has taken; a
+    /// datagram longer than `buf` is cut to it.
+    pub fn recv_from(
+        &self,
+        buf: &mut [u8],
+        wait: Duration,
+    ) -> io::Result<Option<(usize, SocketAddr)>> {
+        let mut ready = libc::pollfd {
+            fd: self.fd.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let ms = libc::c_int::try_from(wait.as_millis()).unwrap_or(libc::c_int::MAX);
+        // SAFETY: one live pollfd and its count; the kernel writes `revents`.
+        let rc = unsafe { libc::poll(&raw mut ready, 1, ms) };
+        if rc < 0 {
+            let error = io::Error::last_os_error();
+            return match error.kind() {
+                io::ErrorKind::Interrupted => Ok(None),
+                _ => Err(error),
+            };
+        }
+        if rc == 0 {
+            return Ok(None);
+        }
+        let mut storage: libc::sockaddr_storage = unsafe { mem::zeroed() };
+        let mut len = socklen(mem::size_of::<libc::sockaddr_storage>());
+        // SAFETY: `buf` is writable for its length, and `storage` is large
+        // enough for any family with `len` describing it exactly.
+        let got = unsafe {
+            libc::recvfrom(
+                self.fd.as_raw_fd(),
+                buf.as_mut_ptr().cast(),
+                buf.len(),
+                0,
+                core::ptr::addr_of_mut!(storage).cast(),
+                &mut len,
+            )
+        };
+        if got < 0 {
+            let error = io::Error::last_os_error();
+            return match error.kind() {
+                io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted => Ok(None),
+                _ => Err(error),
+            };
+        }
+        let from = from_storage(&storage)
+            .ok_or_else(|| io::Error::other("unrecognised source address"))?;
+        Ok(Some((usize::try_from(got).unwrap_or(0), from)))
     }
 
     /// The descriptor, for the calls in this module's siblings.

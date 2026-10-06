@@ -2,6 +2,7 @@
 //! address conversions.
 
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use core::time::Duration;
 use std::io;
 use std::mem;
 use std::os::windows::io::{AsRawSocket, FromRawSocket, OwnedSocket};
@@ -294,6 +295,72 @@ impl Socket {
             return Err(last_error());
         }
         Ok(usize::try_from(sent).unwrap_or(0))
+    }
+
+    /// One datagram, if one arrives within `wait`: its length, and where it
+    /// came from. For a short exchange on a socket no loop has taken -- a
+    /// loop's receive is posted to its completion port, and this one never
+    /// touches one, so the socket is lent to a loop afterwards as it was. A
+    /// datagram longer than `buf` is passed over.
+    pub fn recv_from(
+        &self,
+        buf: &mut [u8],
+        wait: Duration,
+    ) -> io::Result<Option<(usize, SocketAddr)>> {
+        let mut readable = ws::FD_SET {
+            fd_count: 1,
+            ..ws::FD_SET::default()
+        };
+        if let Some(slot) = readable.fd_array.first_mut() {
+            *slot = self.raw();
+        }
+        let micros = wait.as_micros();
+        let timeout = ws::TIMEVAL {
+            tv_sec: i32::try_from(micros / 1_000_000).unwrap_or(i32::MAX),
+            tv_usec: i32::try_from(micros % 1_000_000).unwrap_or(0),
+        };
+        // SAFETY: one set naming this live socket and a timeout, both live
+        // for the call; the first argument is ignored on this system.
+        let rc = unsafe {
+            ws::select(
+                0,
+                &raw mut readable,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                &raw const timeout,
+            )
+        };
+        if rc == ws::SOCKET_ERROR {
+            return Err(last_error());
+        }
+        if rc == 0 {
+            return Ok(None);
+        }
+        let mut storage = ws::SOCKADDR_STORAGE::default();
+        let mut len = len_of::<ws::SOCKADDR_STORAGE>();
+        let room = i32::try_from(buf.len()).unwrap_or(i32::MAX);
+        // SAFETY: `buf` is writable for `room` bytes, and `storage` is large
+        // enough for any family with `len` describing it exactly.
+        let got = unsafe {
+            ws::recvfrom(
+                self.raw(),
+                buf.as_mut_ptr(),
+                room,
+                0,
+                (&raw mut storage).cast(),
+                &raw mut len,
+            )
+        };
+        if got < 0 {
+            let error = last_error();
+            return match error.raw_os_error() {
+                Some(ws::WSAEWOULDBLOCK | ws::WSAEMSGSIZE) => Ok(None),
+                _ => Err(error),
+            };
+        }
+        let from = from_storage(&storage)
+            .ok_or_else(|| io::Error::other("unrecognised source address"))?;
+        Ok(Some((usize::try_from(got).unwrap_or(0), from)))
     }
 
     /// Connect to `to`, which a UDP socket takes as a filter on what it

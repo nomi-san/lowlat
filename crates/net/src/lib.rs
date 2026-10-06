@@ -41,6 +41,8 @@ mod sys;
 #[cfg(any(target_os = "linux", windows))]
 pub mod guest;
 #[cfg(any(target_os = "linux", windows))]
+pub mod nat;
+#[cfg(any(target_os = "linux", windows))]
 mod send;
 #[cfg(any(target_os = "linux", windows))]
 pub mod shell;

@@ -52,6 +52,7 @@ pub mod error;
 pub mod init;
 pub mod message;
 pub mod microphone;
+pub mod nat;
 pub mod packet;
 pub mod pad;
 pub mod pmtu;
