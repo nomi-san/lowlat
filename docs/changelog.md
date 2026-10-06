@@ -45,8 +45,23 @@ Newest first. One entry per phase; approach changes and gate revisions go in
 - Every fix's check shown failing with the fix reverted, 22 in the mapping crate and 5 in the
   client; one was vacuous at first -- the connect's check skipped a start that had blocked
   before timing it -- and was rewritten.
-- Windows: clippy clean and 942 tests. Owed: the Linux bar, the response reader fuzzed past
-  its caps, and the live legs on both networks.
+- Windows: clippy clean and 942 tests. Linux, on a clean clone: the same forms clean and 1231
+  tests pass, the two dual-stack name tests failing under WSL as before.
+- The eight mapping targets fuzzed two minutes each with no crash, from 0.8 million runs of
+  the response reader to 134 million of NAT-PMP's. The reader never reached its head cap,
+  then or in five minutes allowed 16 KB, so it is now seeded at its caps
+  ([08 §6](08-testing.md)): with the head's fault put back, the fuzzer found it in 11,763
+  runs; with the fix, two million runs in five minutes found nothing.
+- Live on the development network, each protocol in turn: mapped, moved, made again after the
+  gateway lost it, and deleted at destroy within 32 ms. The first run showed a port moved to
+  mapped only at the next retry, four seconds on in the test and five minutes in a client --
+  the next look was timed from the last whatever its port, which the fake gateway's short
+  retry hid; it is mapped at once now, 3 to 4 ms after the delete.
+- Live on the second network through a pause of the test's own traffic to the gateway: the
+  renewal went unanswered, the mapping was kept, and it was renewed after the pause.
+- Two copies of the example client on one machine and one seed: the second walked past the
+  first's port at creation, each held its own entry, the first's outlived the second, and
+  nothing was left after both; each confirmed its mapping and connected to the host.
 
 ## 2026-10-05 - 15.5: the mapping documented, and Phase 15's gate
 

@@ -180,8 +180,11 @@ Rules:
   than its longest seed unless told to, so a limit past every seed is never exercised, however
   long the run: the gateway's response reader kept its head cap kilobytes beyond every
   captured reply, and its own property -- read whole and read in pieces, one outcome -- did
-  not hold there, which a review found and the fuzzer never could. A target whose limits lie
-  past its seeds runs with a longer bound.
+  not hold there, which a review found and the fuzzer never could. A longer bound is not
+  enough: the fuzzer keeps an input only for the coverage it adds, and nothing between the
+  longest reply and the cap adds any, so runs of two and five minutes allowed 16 KB never
+  reached the 8 KB cap. A target whose limits lie past its seeds is given seeds at them: with
+  four at the reader's caps, the fault, put back, was found in under twelve thousand runs.
 - **A crash is a release blocker.** These parse hostile input from the network by definition.
 
 ## §7 Model checking and unsafe

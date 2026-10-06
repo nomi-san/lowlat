@@ -2044,7 +2044,7 @@ Steps:
   [02](02-io-shell.md) for the mapper's thread.
   *Done 2026-10-05*, with [08 §5](08-testing.md) for the mapped pair; 06 §3b had the client's
   fields from 15.3.
-- [ ] **15.6 The review's fixes** (*planned and interviewed 2026-10-06*): who owns a mapping on
+- [x] **15.6 The review's fixes** (*planned and interviewed 2026-10-06*): who owns a mapping on
   the gateway, across handles, machines, interruptions and renewals. The port is the handle's
   from creation when the mapping is kept, held between attempts and lent to each; a request
   cut short by destroy or a move is deleted with the rest; a renewal nothing answers is tried
@@ -2054,8 +2054,12 @@ Steps:
   over a connection that is down and an answer that is no protocol, and searches twice; a
   renewal states and keeps the port granted; and the parsing faults the review found. Each
   checked against the fake gateway, shown failing with its fix reverted.
-  *Built 2026-10-06* ([changelog](changelog.md)); the Linux bar, the response reader fuzzed
-  past its caps, and the live legs on both networks are owed.
+  *Done 2026-10-06* ([changelog](changelog.md)): both bars; every mapping target fuzzed, the
+  response reader from seeds at its caps once a longer bound proved never to reach them
+  ([08 §6](08-testing.md)); each protocol live on the development network, a renewal through a
+  pause on the second, and two clients on one machine and one seed. The live run found a port
+  moved to mapped only at the next retry, which the fake gateway's short retry had hidden; it
+  is mapped at once now.
 
 **Gate:** both CI jobs against the fake gateway; every fuzz target run; the namespace matrix
 with the mapping daemon in a gateway, a topology that fails today establishing through the
