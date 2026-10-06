@@ -1976,7 +1976,9 @@ Decisions taken at the interview:
 - **The client's port is stable.** A zero `port` on the create info means 24000 plus a hash of a
   seed modulo 2000, the seed the application's `port_seed` or, when it is empty, the machine's
   name; every attempt binds it and walks up when it is taken. A caller built before the field
-  keeps a port per attempt.
+  keeps a port per attempt. *Corrected 2026-10-06*: as built in 15.3, a caller built before the
+  field gets the stable port with no mapping -- no client release had been published -- and
+  with the mapping kept, the port is the handle's from creation (15.6).
 - **Off in the library, on in our applications**: `port_mapping` is off when zeroed on both
   halves' configuration; the example client and the service turn it on.
 - **Never in the way**: no discovery or mapping failure is an error, none delays an attempt, and
@@ -2042,6 +2044,18 @@ Steps:
   [02](02-io-shell.md) for the mapper's thread.
   *Done 2026-10-05*, with [08 §5](08-testing.md) for the mapped pair; 06 §3b had the client's
   fields from 15.3.
+- [ ] **15.6 The review's fixes** (*planned and interviewed 2026-10-06*): who owns a mapping on
+  the gateway, across handles, machines, interruptions and renewals. The port is the handle's
+  from creation when the mapping is kept, held between attempts and lent to each; a request
+  cut short by destroy or a move is deleted with the rest; a renewal nothing answers is tried
+  until the mapping lapses, its nonce kept; an attempt asks for a look; the description names
+  the machine as well as the seed, through a keyed hash; an entry is read before it is
+  deleted; the connect is cut by destroy and the delete's bound counted from it; UPnP passes
+  over a connection that is down and an answer that is no protocol, and searches twice; a
+  renewal states and keeps the port granted; and the parsing faults the review found. Each
+  checked against the fake gateway, shown failing with its fix reverted.
+  *Built 2026-10-06* ([changelog](changelog.md)); the Linux bar, the response reader fuzzed
+  past its caps, and the live legs on both networks are owed.
 
 **Gate:** both CI jobs against the fake gateway; every fuzz target run; the namespace matrix
 with the mapping daemon in a gateway, a topology that fails today establishing through the
@@ -2063,6 +2077,12 @@ push. Every fuzz target ran (15.1, 15.2).
 
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
+
+- 2026-10-06: **Phase 15 reviewed; 15.6 added for what the review found.** Three choices
+  changed with it: the port a handle keeps mapped is the handle's from creation, not bound at
+  each attempt; the gateway's entry names the machine as well as the seed, through a keyed hash
+  of the machine's identifier; and destroy's quarter second is kept by a connect it can cut,
+  where shortening the connect would have cost a slow gateway its mapping.
 
 - 2026-10-05: **Phase 15's host half deferred** (15.4, and the gate's host leg with it): the
   host's own deployment already forwards a port, for the relay that runs beside it. The client

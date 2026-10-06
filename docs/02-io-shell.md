@@ -28,11 +28,14 @@ Input injection rides the delivering network thread. Injection is cheap and fire
 a dedicated thread would add a hop for no gain.
 
 **A client keeping its port mapped has one more thread** ([03 §6](03-connectivity.md)): one per
-handle with `port_mapping` on, asleep between renewals and woken by a port that moves or by
-destroy, every wait it makes on the network cut into short slices so destroy never waits one
-out. Its sockets are short-lived ones to the gateway alone -- a datagram each way, or an HTTP
-exchange -- and never the session's. It shares nothing with the media path: the session thread
-reads the mapped address from one atomic word, without a lock.
+handle with `port_mapping` on, asleep between renewals and woken by a port that moves, by an
+attempt asking it to look, or by destroy. Every wait it makes on the network is cut into short
+slices, the connect included, so destroy never waits one out, and its deletes are bounded from
+destroy. Its sockets are short-lived ones to the gateway alone -- a datagram each way, or an
+HTTP exchange -- and never the session's. It shares nothing with the media path: the session
+thread reads the mapped address from one atomic word, without a lock. **The handle holds the
+port itself between attempts** (*2026-10-06*): a bound socket nothing reads, lent to each
+attempt's thread and bound again by that thread the moment the attempt ends.
 
 **No thread in the SDK raises its own priority.** No priority class, no scheduling policy
 change, no CPU affinity. We are a library inside another process, and outranking that

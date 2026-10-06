@@ -176,6 +176,12 @@ Rules:
   small stateless parser the fuzzer rediscovers full coverage in milliseconds and the corpus
   is close to dead weight.
 - Targets run in continuous integration for a bounded time per commit, and unbounded nightly.
+- **A bound is fuzzed only if inputs reach it** (*2026-10-06*). The fuzzer makes nothing longer
+  than its longest seed unless told to, so a limit past every seed is never exercised, however
+  long the run: the gateway's response reader kept its head cap kilobytes beyond every
+  captured reply, and its own property -- read whole and read in pieces, one outcome -- did
+  not hold there, which a review found and the fuzzer never could. A target whose limits lie
+  past its seeds runs with a longer bound.
 - **A crash is a release blocker.** These parse hostile input from the network by definition.
 
 ## §7 Model checking and unsafe

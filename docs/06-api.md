@@ -565,18 +565,22 @@ instances on one machine given two seeds hold two. `port_mapping` asks the gatew
 port open for the handle's life, by PCP, NAT-PMP or UPnP's gateway device, whichever answers
 first: asked at creation, so the mapping is usually in before the first answer, moved when an
 attempt's port does, and deleted at `lowlat_client_destroy` within a quarter of a second.
-**Nothing about it is ever an error, and no attempt waits for it.** The gateway's external
+**Nothing about it is ever an error, and no attempt waits for it.** **With `port_mapping` on
+the port is the handle's from creation** (*2026-10-06*): bound there, held between attempts and
+lent to each, so a second handle with the same seed walks past it before anything is mapped;
+and each attempt has the gateway looked at again as it begins. The gateway's external
 address and mapped port are offered to the host as a candidate once a reflexive server reports
 the same address, so that nothing translates beyond the gateway, and never otherwise; where
 the gateway keeps ports that candidate is the reflexive one, already offered. Status carries
 the mapping (`mapping`, one of `lowlat_mapping`; `mapped_address` and `mapped_port`) and the
 gateway's last refusal (`mapping_refusal`, in the numbering of the protocol
-`mapping_refused_by` names). The seed names this client's entries in the gateway's table, so
-another machine's entry on the same port is left alone. **On Windows the stable port draws the
-system firewall's question at the first attempt**: a port bound by number is what it asks
-about, where one the system picks was never asked (measured), and until the application is
-allowed, what reaches the port from a peer it never sent to -- the case the mapping exists
-for -- is dropped.
+`mapping_refused_by` names). The seed, with the machine's own identifier reduced by a keyed
+hash, names this client's entries in the gateway's table, so another machine's entry on the
+same port is left alone, whatever its name. **On Windows the stable port draws the system
+firewall's question** -- at creation with `port_mapping` on, at the first attempt without it:
+a port bound by number is what it asks about, where one the system picks was never asked
+(measured), and until the application is allowed, what reaches the port from a peer it never
+sent to -- the case the mapping exists for -- is dropped.
 
 **The seam is the host's, mirrored.** A client makes the offer: `new_attempt` produces the
 credentials and certificate digest the application puts in it (its `port` is zero -- the

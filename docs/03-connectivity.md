@@ -235,16 +235,22 @@ only to the gateway ([00 D3](00-overview.md)).
   one the application names, or the seed's own ([06 §3b](06-api.md)) -- and a thread of its own
   ([02 §1](02-io-shell.md)) keeps it mapped from creation to destroy: asked at creation, so the
   mapping is usually in before the first answer; moved when an attempt's bind walks past a
-  taken port; deleted at destroy within a quarter of a second. Not a mapping per attempt:
+  taken port; deleted at destroy within a quarter of a second of it. Not a mapping per attempt:
   per-attempt mappings accumulate on the gateway across reconnects until its table is full, and
   then mapping stops working for everything on the network.
+- **The port is the handle's from creation** (*2026-10-06*): bound there, held between attempts,
+  lent to each and taken back the moment it ends, so what the gateway keeps open is always a
+  port this handle holds. A second handle with the same seed walks past it at creation, before
+  anything is mapped. Mapping the port first and walking at the attempt, as it first did, had
+  the second handle take the first one's entry for its own and delete it on its walk.
 - **Cheapest first.** PCP, then NAT-PMP, then UPnP's gateway device. The first two are a
   datagram each way; UPnP is a search, a description and an HTTP exchange per action, reached
   only when neither answers. PCP is asked for the mapping itself, since a gateway that speaks
   only NAT-PMP answers a PCP request in its own version at once. External port equals internal
   port, UDP, never below 1024. **Only the gateway is asked anything**: anything on the local
   network can answer a search, so an answer or a control service on another address is passed
-  over.
+  over. A connection service that says it is down is passed over, as is one that answers with
+  no protocol at all, and the search goes out twice within its wait.
 - **Leases, renewed and checked.** UPnP takes a 2700 s lease, added again every 300 s and read
   back: a gateway that answers an identical add with success and keeps the old lease -- a fibre
   gateway in the field does -- has the mapping deleted and added again. PCP and NAT-PMP take a
@@ -253,9 +259,28 @@ only to the gateway ([00 D3](00-overview.md)).
   again by the same renewal. A gateway that takes only permanent mappings is given one, kept
   clean: an entry under this client's description on the port is deleted before the add, and
   every mapping at destroy.
-- **Another device's entry is never touched.** The description names the client's seed, so two
-  machines whose ports collide are told apart: an entry under it on the port is a leftover and
-  is deleted before the add, anything else is a conflict, reported and left in place.
+- **A renewal nothing answers is tried until the mapping lapses** (*2026-10-06*): PCP's and
+  NAT-PMP's again at half the time left, never under four seconds apart, UPnP's every thirty
+  seconds, and the mapping -- with the nonce that names it -- is kept meanwhile. A gateway that
+  is only slow still holds the mapping, and refuses a new nonce for the same port until it
+  lapses: giving up at the first silence lost it for an hour. A renewal states what the gateway
+  granted, and suggests at the next one an external port the gateway moved.
+- **An attempt looks again** (*2026-10-06*). As an attempt begins the mapper is asked to look:
+  with nothing mapped it climbs the ladder then, so a network that came up after creation is
+  mapped for the first attempt and not at the next retry; with a mapping, the gateway and this
+  side's address toward it are checked and the mapping renewed then, so a gateway that
+  restarted or a network left behind is found before the attempt needs it. A look cuts nothing
+  short, and comes at most once in ten seconds.
+- **Another device's entry is never touched.** The description names the client's seed and its
+  machine -- the machine's own identifier, reduced by a keyed hash so that nothing of it leaves
+  the machine -- so two machines whose ports collide, or that share a name or a seed, are told
+  apart: an entry under it on the port is a leftover and is deleted before the add, anything
+  else is a conflict, reported and left in place. An entry is read before it is deleted, at a
+  move and at destroy, so one of ours that lapsed and was taken since is left to its device.
+- **Nothing asked is forgotten** (*2026-10-06*). Destroy and a move cut every wait short, the
+  connect included, and the delete's quarter second is counted from destroy. A request that
+  went out and whose answer was cut short may have been carried out, so it is deleted with
+  everything else rather than left for its lease to run out.
 - **Never in the way.** No discovery or mapping failure is an error, none delays an attempt, and
   a gateway that maps nothing is logged once.
 - **The mapped address is offered only when a reflexive server confirms it.** The gateway's
@@ -266,13 +291,17 @@ only to the gateway ([00 D3](00-overview.md)).
   crosses, establish through it in the namespace fixtures ([08 §5](08-testing.md)). Behind a
   carrier's translation the comparison fails and the mapping only keeps the port open. A gateway
   that states a reserved external address, or none, is mapped all the same and never offered;
-  only an address that cannot be one -- unspecified, loopback -- is refused.
+  only an address that cannot be one -- unspecified, loopback -- is refused. It is offered
+  unmarked (*2026-10-06*): neither an address of this machine nor a reflexive server's report
+  of the socket, so a peer checks it once the readiness marker has come, and never spends its
+  one low-TTL probe on it.
 - **IPv4 only.** IPv6 pinholes are deferred: neither gateway at hand offers one.
-- **On Windows the stable port draws the firewall's question** at the first attempt -- a port
-  bound by number is asked about, one the system picks never was (measured). Until the
-  application is allowed, what reaches the port from a peer it never sent to, the case the
-  mapping exists for, is dropped; what comes from an address and port the client sent to passes
-  regardless, so a session between translators that keep ports never needs the answer.
+- **On Windows the stable port draws the firewall's question** at creation, where the port is
+  bound with the mapping kept, and at the first attempt without it -- a port bound by number is
+  asked about, one the system picks never was (measured). Until the application is allowed,
+  what reaches the port from a peer it never sent to, the case the mapping exists for, is
+  dropped; what comes from an address and port the client sent to passes regardless, so a
+  session between translators that keep ports never needs the answer.
 
 *Superseded 2026-10-05*: this section first deferred mapping, reasoning that a carrier's
 translation upstream would leave the mapped candidate unreachable. A mapping needs no candidate
@@ -476,7 +505,10 @@ Also from the same capture: **a candidate may carry neither marking** -- a peer'
 address at its local port, a translated-path guess no server verified, offered in case its
 translator preserves ports (observed beside the server-verified mapping at a different
 port, and observed alone). The candidate model carries all three classes end to end for
-that reason. And a readiness marker's address field is arbitrary in practice: one peer
+that reason. *(Added 2026-10-06.)* An unmarked candidate has a second source: a peer that
+keeps its own port mapped on its gateway offers the address the gateway states, at that port,
+with no comparison against any reflexive answer -- the public address where its gateway is the
+outermost translator, an address behind a carrier's translation where it is not. And a readiness marker's address field is arbitrary in practice: one peer
 sends a fixed placeholder, another echoes the recipient's own reflexive address, so the
 marker must never reach the candidate table whatever it carries.
 

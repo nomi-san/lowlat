@@ -3,6 +3,51 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-06 - 15.6: the review's fixes
+
+### Decided
+- **The port a handle keeps mapped is the handle's from creation** ([03 §6](03-connectivity.md),
+  [06 §3b](06-api.md)): bound there, held between attempts, lent to each, and bound again by
+  the attempt's own thread the moment it ends. A second handle with the same seed mapped the
+  first one's port at creation and deleted it on its walk; it now walks past it before
+  anything is mapped. The system firewall's question comes at creation when the mapping is
+  kept.
+- **Nothing asked is forgotten.** A request cut short by destroy or a move may have been carried
+  out, so it is deleted with the rest; a request is never sent once a stop is seen. Destroy and
+  a move cut every wait, the connect included -- a connect waited for in slices -- and the
+  delete's quarter second is counted from destroy.
+- **A renewal nothing answers is tried until the mapping lapses**, PCP's and NAT-PMP's at half
+  the time left and never under four seconds apart, UPnP's every thirty seconds, the mapping
+  and its nonce kept meanwhile: giving up at the first silence lost the nonce, and a gateway
+  that still held the mapping then refused a new one for the same port for up to two hours.
+- **An attempt looks again**: the ladder climbed at once when nothing is mapped, a mapping
+  checked against the gateway and the address toward it and renewed. A look cuts nothing
+  short and comes at most once in ten seconds.
+- **The gateway's entry names the machine as well as the seed**: `ll-`, the seed's hash, and a
+  keyed hash of the machine's own identifier, so nothing of the identifier leaves the machine.
+  Two machines sharing a name or a seed deleted each other's entry every five minutes. An
+  entry is read before it is deleted, so one that lapsed and was taken since is left alone.
+- **UPnP climbs further**: a connection service that says it is down is passed over, as is one
+  that answers with no protocol at all; the search goes out twice in its wait; only the
+  headers read must be text, and a description or a control answer is read whatever bytes its
+  names carry.
+- **The mapped candidate goes out unmarked**, the address no reflexive server reported of the
+  socket.
+- **Smaller**: a range ending at the last port (a debug build's arithmetic stopped the mapper);
+  renewals that state the port and address granted and suggest the port, and never state an
+  address that cannot be one; a route metric printed negative; a gateway of 0.0.0.0 passed
+  over; a datagram past the longest message passed over; a refusal logged once per protocol;
+  the response reader's head read from its cap, so its outcome is the same at every cut, and
+  the fuzzing rule that came of it ([08 §6](08-testing.md)); the example client's line for an
+  address that moves or a first refusal.
+
+### Checked
+- Every fix's check shown failing with the fix reverted, 22 in the mapping crate and 5 in the
+  client; one was vacuous at first -- the connect's check skipped a start that had blocked
+  before timing it -- and was rewritten.
+- Windows: clippy clean and 942 tests. Owed: the Linux bar, the response reader fuzzed past
+  its caps, and the live legs on both networks.
+
 ## 2026-10-05 - 15.5: the mapping documented, and Phase 15's gate
 
 ### Decided
