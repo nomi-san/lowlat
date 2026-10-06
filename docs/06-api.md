@@ -351,8 +351,8 @@ Everything below is in the header (minor 4 the session, minor 5 the pictures, mi
 input, minor 7 the sound, minor 8 the preferences and the handle, minor 9 the cursor and the
 metrics, minor 10 the pad reports, minor 14 the relay, minor 15 the picture's range, minor 16
 its arrival time, minor 17 the range asked for, minor 18 the client's deliberate panic, minor
-19 the handle on Windows and the kind switched live, minor 22 the port and its mapping); the
-header is the truth.
+19 the handle on Windows and the kind switched live, minor 22 the port and its mapping, minor
+23 the translation in front of it); the header is the truth.
 
 ```c
 lowlat_status lowlat_client_create(const lowlat_client_create_info *info, lowlat_client **out);
@@ -406,6 +406,8 @@ lowlat_status lowlat_client_set_video_config(lowlat_client *cl, const lowlat_cli
 lowlat_status lowlat_client_set_decoder(lowlat_client *cl, uint32_t decoder,
                                         const char *device);                /* minor 11 */
 lowlat_status lowlat_client_get_metrics(lowlat_client *cl, lowlat_client_metrics *out);
+lowlat_status lowlat_client_probe_nat(lowlat_client *cl, const lowlat_nat_probe *cfg);
+lowlat_status lowlat_client_get_nat(lowlat_client *cl, lowlat_nat_info *out);  /* minor 23 */
 ```
 
 **Minor 11 (2026-09-21): the software decoder, and a decoder chosen mid-session.**
@@ -581,6 +583,25 @@ firewall's question** -- at creation with `port_mapping` on, at the first attemp
 a port bound by number is what it asks about, where one the system picks was never asked
 (measured), and until the application is allowed, what reaches the port from a peer it never
 sent to -- the case the mapping exists for -- is dropped.
+
+**The translation in front of the port can be asked for** (minor 23, *2026-10-06*,
+[03 §6.1](03-connectivity.md)). `lowlat_client_probe_nat` asks up to four reflexive servers,
+named as the configuration names them and each at its name's first IPv4 address, where they
+see the port every attempt binds, on a thread of the library's own: each every half second
+until it answers or the timeout passes, three seconds when zero and thirty at most.
+`lowlat_client_get_nat` reads the result, polled. It carries the number game consoles give a
+translation -- `LOWLAT_NAT_TYPE_1` nothing translates, `_2` one public port for every
+destination or a confirmed mapping on the gateway, `_3` a port per destination or no answer,
+`LOWLAT_NAT_TYPE_UNKNOWN` while fewer than two server addresses have answered -- beside how
+the translation itself maps (`lowlat_nat_mapping`), where the first server saw the port and
+whether the port was kept, how many servers answered, and the gateway's view as it stands
+when read: what keeps the port mapped, and whether the gateway's own address is where the
+servers saw the port (`gateway_confirmed`), another address (`double_translation`), or in a
+carrier's shared range (`carrier_range`). An attempt's own reflexive answers fill the same
+result once two server addresses have answered (`source`). A probe is refused with
+`LOWLAT_ERR_ALREADY_STARTED` while an attempt holds the port or another probe runs;
+`lowlat_client_begin_p2p` during one stops it, and what was known before stands. A server
+whose name has no IPv4 address is refused.
 
 **The seam is the host's, mirrored.** A client makes the offer: `new_attempt` produces the
 credentials and certificate digest the application puts in it (its `port` is zero -- the
@@ -1293,6 +1314,11 @@ minor 21 as the least accepted: until this minor it was refused unless `size` co
 whole of it, the fault minor 14 corrected for the configuration and the status, corrected for
 the creation info the first time it grows. A caller built against an earlier minor gets the
 stable port with no mapping, where it had a port the system picked per attempt.
+
+**Minor 23** (2026-10-06) is the translation in front of the port ([§3b](#3b-client)):
+`lowlat_client_probe_nat` with `lowlat_nat_probe`, `lowlat_client_get_nat` with
+`lowlat_nat_info`, `lowlat_nat_mapping`, and `LOWLAT_NAT_TYPE_*`, `LOWLAT_NAT_STATE_*` and
+`LOWLAT_NAT_SOURCE_*`. Nothing moves.
 
 **This surface is ours and carries no inherited compatibility.** It was designed here rather
 than adopted, so before the first major version a name that turns out to be wrong is corrected

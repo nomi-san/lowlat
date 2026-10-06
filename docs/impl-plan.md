@@ -2060,6 +2060,17 @@ Steps:
   pause on the second, and two clients on one machine and one seed. The live run found a port
   moved to mapped only at the next retry, which the fake gateway's short retry had hidden; it
   is mapped at once now.
+- [x] **15.7 The translation in front of the port** (*planned 2026-10-06*): the client says
+  what translation sits in front of its port -- the number game consoles give it, and how it
+  maps -- from what reflexive servers report of the port every attempt binds: probed on
+  demand on a thread of its own, and read off an attempt's own answers once two server
+  addresses answered. The mapping alone decides the number, and a confirmed mapping on the
+  gateway numbers 2 whatever the translation does with the rest ([03 §6.1](03-connectivity.md),
+  [06 §3b](06-api.md), minor 23).
+  *Done 2026-10-06* ([changelog](changelog.md)): both bars; every check shown failing with
+  what it guards reverted; the namespace matrix with a second reflexive address, every
+  topology numbered as it must be ([08 §5](08-testing.md)); live on both networks, agreeing
+  with an independent tool run beside it.
 
 **Gate:** both CI jobs against the fake gateway; every fuzz target run; the namespace matrix
 with the mapping daemon in a gateway, a topology that fails today establishing through the
@@ -2081,6 +2092,11 @@ push. Every fuzz target ran (15.1, 15.2).
 
 Newest first. Record approach changes and gate revisions here; per-commit detail belongs in
 [changelog.md](changelog.md).
+
+- 2026-10-06: **15.7 added: the client says what translation sits in front of its port**, at
+  minor 23, rather than leaving an application to find out for itself. Under a confirmed
+  mapping on the gateway the number is 2, where the translation alone would say 3: the mapped
+  port is reached at the address a peer is told, which is what the number is for.
 
 - 2026-10-06: **Phase 15 reviewed; 15.6 added for what the review found.** Three choices
   changed with it: the port a handle keeps mapped is the handle's from creation, not bound at

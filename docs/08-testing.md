@@ -100,6 +100,12 @@ crosses: the endpoint behind it maps its port through the client's own mapper an
 mapped address once the reflexive server confirms it, and the far side's path must be that
 address. It runs beside the same gateways with no mapping asked for, which must time out, and
 is skipped where the daemon is not on the machine.
+And, with 15.7, a second reflexive server at a second address, so every topology is also a
+known answer for the translation the client numbers ([03 §6.1](03-connectivity.md)): the
+endpoint behind the left gateway probes from its own port before it punches, and its number is
+judged -- 2 behind every cone, the carrier-grade pair and the hairpin, 3 behind the symmetric
+translator, 1 for the multihomed host with nothing in front of it, and behind the mapping
+daemon's gateway 2 with the mapping confirmed and 3 with none asked for.
 
 - Each fixture is a script that builds the topology, runs the case, and tears it down, leaving
   no state behind.

@@ -307,6 +307,45 @@ only to the gateway ([00 D3](00-overview.md)).
 translation upstream would leave the mapped candidate unreachable. A mapping needs no candidate
 of its own to keep the port open.
 
+### §6.1 The translation in front of the port
+
+**The client says what translation sits in front of its port** (15.7, *2026-10-06*,
+[06 §3b](06-api.md)): the number game consoles give it, and how it maps, from what reflexive
+servers report of the port every attempt binds.
+
+- **The mapping alone decides the number.** One public port for every destination -- a
+  mapping independent of the destination -- is 2: the address a peer is told is where its
+  datagrams arrive. A port per destination, per address or per address and port, is 3: the
+  address a peer is told was made for a server, not for the peer. No translation at all is
+  1. Filtering is not measured: it decides which peers reach an
+  independent mapping first, never whether the address a peer is told is the one that works.
+- **Two server addresses are the least that tells.** One answer says where the translator put
+  the port for one destination; only a second destination says whether that place is the same
+  for everyone. Two ports of one address then split a mapping per address from one per
+  address and port, which the number does not need. Fewer than two addresses answering is
+  unknown; none answering is 3, a network that drops the answers being no better. Plain
+  reflexive servers suffice -- the ones an attempt asks -- and nothing asks one to answer from
+  elsewhere.
+- **A confirmed mapping is 2.** Behind a translator that moves source ports, the port mapped
+  on the gateway (above) is reached at the address a peer is told whatever the translator
+  does with the rest, so a port per destination under a confirmed mapping numbers 2, and the
+  raw mapping is reported beside it. The gateway's view is read as it stands when the result
+  is read: confirmed when its own address is where the servers saw the port; a second
+  translation beyond it when that is another address -- a carrier's, or another router's --
+  and the carrier's shared range named when the gateway's address is in it.
+- **Probed on demand, and read off attempts.** A probe runs on a thread of its own on the port
+  every attempt binds -- the handle's own with the mapping kept, lent and given back as it was,
+  or the stable port bound for the probe -- and asks each server every half second until it
+  answers or the timeout passes. An attempt's own reflexive answers fill the same result once
+  two server addresses have answered, so a configuration naming two needs no probe. A probe is
+  refused while an attempt holds the port, and an attempt begun during one stops it at once,
+  what was known before standing.
+- **IPv4 only**, like the mapping: the other family has no translation to number.
+
+The namespace fixtures are its known answers ([08 §5](08-testing.md)), and on both networks at
+hand it agrees with an independent tool run beside it (both translators there keep one port
+for every destination: 2).
+
 ## §7 Relay
 
 When no direct path exists, media can be forwarded through a relay, and **the client is the

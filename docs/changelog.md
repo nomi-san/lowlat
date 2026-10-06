@@ -3,6 +3,43 @@
 Newest first. One entry per phase; approach changes and gate revisions go in
 [impl-plan.md](impl-plan.md) instead.
 
+## 2026-10-06 - 15.7: the translation in front of the client's port
+
+### Decided
+- **The client says what translation sits in front of its port** ([03 §6.1](03-connectivity.md),
+  [06 §3b](06-api.md), minor 23): the number game consoles give it -- 1 nothing translates,
+  2 one public port for every destination, 3 a port per destination or no answer -- beside
+  how the translation maps, where the first server saw the port, and the gateway's view.
+- **The mapping alone decides the number, from two server addresses.** One answer says where
+  the translator put the port for one destination; a second says whether that place is the
+  same for everyone, and two ports of one address split the dependent kinds further. Plain
+  reflexive servers, the ones an attempt asks, suffice; filtering is not measured.
+- **A confirmed mapping on the gateway numbers 2**, the raw mapping reported beside it: behind
+  a translator that moves source ports the mapped port is still reached at the address a peer
+  is told. The gateway's view -- confirmed, a second translation beyond it, a carrier's range --
+  is read as it stands when the result is read.
+- **On the port every attempt binds**, on a thread of its own: the handle's held socket, lent
+  and given back as it was, or the stable port bound for the probe. An attempt begun during a
+  probe stops it, what was known before standing; an attempt's own answers fill the result
+  once two server addresses answered. IPv4 only.
+- **The demo prints it** before its attempt with `LOWLAT_NAT=1`.
+
+### Checked
+- Every check shown failing with what it guards reverted: 27 on Windows -- the classifier,
+  the probe, the client's thread and the attempt's fill, the boundary and the C harness against
+  the built library -- and on Linux the receive's own and the namespace judge's.
+- Windows: clippy clean and 962 tests. Linux, on a clean clone: the same forms clean and 1251
+  tests pass, the two dual-stack name tests failing under WSL as before; a first run found
+  exact float comparisons in a new test that the newer toolchain here does not flag,
+  rewritten before the commit.
+- The namespace matrix with a second reflexive address: 18 of 18, every topology numbered as
+  it must be -- the cones, the carrier-grade pair and the hairpin 2, the symmetric translator
+  3, the multihomed host with nothing in front of it 1, and the mapping daemon's gateway 2
+  with the mapping confirmed and 3 without -- and the punch's outcomes unchanged.
+- Live on the development network and the second, each beside an independent tool run on the
+  same machine: both translators keep one port for every destination, 2 by both, plain and
+  with the port mapped, the mapping confirmed. The demo printed the same and connected.
+
 ## 2026-10-06 - 15.6: the review's fixes
 
 ### Decided

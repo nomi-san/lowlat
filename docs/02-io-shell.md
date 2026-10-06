@@ -37,6 +37,14 @@ thread reads the mapped address from one atomic word, without a lock. **The hand
 port itself between attempts** (*2026-10-06*): a bound socket nothing reads, lent to each
 attempt's thread and bound again by that thread the moment the attempt ends.
 
+**A probe of the translation has a thread of its own while it runs** ([03 §6.1](03-connectivity.md),
+*2026-10-06*): started by the application, on the port every attempt binds -- the held socket,
+lent and given back as it was, or the stable port bound for the probe -- and gone once its
+servers have answered or its timeout has passed. It waits on the socket itself, a slice at a
+time, and never gives it to a loop, so on Windows the socket an attempt is lent afterwards was
+never tied to a completion port; an attempt that begins meanwhile stops it within a slice, and
+destroy likewise.
+
 **No thread in the SDK raises its own priority.** No priority class, no scheduling policy
 change, no CPU affinity. We are a library inside another process, and outranking that
 process's own UI thread is a priority inversion that has produced hard hangs on low-core
