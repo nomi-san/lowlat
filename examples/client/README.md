@@ -54,11 +54,13 @@ reached across the translation on IPv4 instead. `LOWLAT_PORT` is the port
 every attempt binds first; by default it is the same one every run, 24000 plus
 a hash of `LOWLAT_PORT_SEED` or of the machine's name, so two copies on one
 machine can be given two. The demo asks the gateway to keep that port open, by
-PCP, NAT-PMP or UPnP, and prints what it mapped whenever that changes;
-`LOWLAT_PORT_MAPPING=0` leaves the gateway alone. On Windows the system's
-firewall asks once, at the first attempt, whether the demo may receive: what
-reaches the port from a peer it never sent to is dropped until it is allowed,
-and allowing it adds rules for TCP and UDP alike. `LOWLAT_RELAY=host:port`
+PCP, NAT-PMP or UPnP, holding the port from start to exit, and prints what it
+mapped, or why it could not, whenever that changes; `LOWLAT_PORT_MAPPING=0`
+leaves the gateway alone and binds the port at each attempt instead. On
+Windows the system's firewall asks once, at start (at the first attempt with
+the mapping off), whether the demo may receive: what reaches the port from a
+peer it never sent to is dropped until it is allowed, and allowing it adds
+rules for TCP and UDP alike. `LOWLAT_RELAY=host:port`
 makes the attempt a relay attempt through that relay
 ([docs/03-connectivity.md](../../docs/03-connectivity.md) section 7), with
 `LOWLAT_RELAY_USER` and `LOWLAT_RELAY_PASS` its credential, which is handed to

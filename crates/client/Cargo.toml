@@ -41,6 +41,8 @@ lowlat-host.workspace = true
 # sends is checked as the host would inject it.
 lowlat-inject.workspace = true
 lowlat-sim.workspace = true
+# A gateway on loopback, so a handle's mapping is checked without the real one.
+lowlat-portmap = { workspace = true, features = ["fake"] }
 
 [lints]
 workspace = true

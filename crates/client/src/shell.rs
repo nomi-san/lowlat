@@ -4,7 +4,7 @@
 //! opened, lends them their rings for the life of the thread, and runs the
 //! shell's loop with the driver as its application.
 
-use std::net::SocketAddr;
+use std::net::{SocketAddr, SocketAddrV4};
 use std::sync::mpsc;
 use std::sync::{Arc, OnceLock};
 
@@ -321,29 +321,67 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
                 lan: addr.is_ipv6(),
             });
         }
-        // The gateway's mapping, once: offered when a reflexive server saw
-        // the gateway's own address, so nothing translates beyond it and the
-        // mapped port is open to anyone. Where the gateway keeps ports it is
-        // the reflexive candidate itself, already offered.
-        if !mapped
-            && let Some(external) = mapping.as_ref().and_then(Reader::external)
-            && let Some(addr) = confirmed(external, &reported)
-        {
-            mapped = true;
-            lowlat_common::log_info!("client: the gateway's mapping confirmed, mapped={addr}");
-            if !reported.iter().any(|seen| canonical(*seen) == addr) {
-                reported.push(addr);
-                // Marked as a reflexive server's report, which it is checked
-                // against: a public address a peer probes as one.
-                emit.send(Event::Candidate {
-                    addr,
-                    from_stun: true,
-                    lan: false,
-                });
+        // The gateway's mapping, once it is confirmed.
+        if !mapped {
+            match offer(mapping.as_ref().and_then(Reader::external), &reported) {
+                Offer::Unconfirmed => {}
+                Offer::Known(addr) => {
+                    mapped = true;
+                    lowlat_common::log_info!(
+                        "client: the gateway's mapping confirmed, mapped={addr} offered=0"
+                    );
+                }
+                Offer::New(addr) => {
+                    mapped = true;
+                    lowlat_common::log_info!(
+                        "client: the gateway's mapping confirmed, mapped={addr} offered=1"
+                    );
+                    reported.push(addr);
+                    emit.send(mapped_candidate(addr));
+                }
             }
         }
     }
     telemetry.state.store(2, Ordering::Relaxed);
+}
+
+/// What the gateway's mapping adds to the candidates.
+#[derive(Debug, PartialEq, Eq)]
+enum Offer {
+    /// Nothing yet: no reflexive server has seen the gateway's own address,
+    /// or one saw another, a translator beyond the gateway.
+    Unconfirmed,
+    /// Confirmed, and a reflexive candidate is the mapped address already,
+    /// as behind a gateway that keeps ports.
+    Known(SocketAddr),
+    /// Confirmed, and the one address of the client's a peer can reach
+    /// behind a gateway that moves source ports.
+    New(SocketAddr),
+}
+
+/// The mapping a mapper states, against the reflexive addresses reported so
+/// far: offered when a reflexive server saw the gateway's own address, so
+/// nothing translates beyond it and the mapped port is open to anyone.
+fn offer(external: Option<SocketAddrV4>, reported: &[SocketAddr]) -> Offer {
+    let Some(addr) = external.and_then(|external| confirmed(external, reported)) else {
+        return Offer::Unconfirmed;
+    };
+    if reported.iter().any(|seen| canonical(*seen) == addr) {
+        Offer::Known(addr)
+    } else {
+        Offer::New(addr)
+    }
+}
+
+/// The mapped address as a peer is offered it: unmarked, neither an address
+/// of this machine nor a reflexive server's report of this socket, so a peer
+/// checks it once the readiness marker has come, as it does a reflexive one.
+fn mapped_candidate(addr: SocketAddr) -> Event {
+    Event::Candidate {
+        addr,
+        from_stun: false,
+        lan: false,
+    }
 }
 
 /// Release the relay's allocation on the way out, rather than hold a relay
@@ -356,5 +394,36 @@ fn release(shell: &mut Shell<'_, Session<'_>>) {
     if matches!(relay.state(), RelayState::Setup | RelayState::Ready(_)) {
         relay.release();
         let _ = shell.turn(|_| {});
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+
+    /// Offered once a reflexive server saw the gateway's address, at
+    /// whatever port and in either notation; not again where a reflexive
+    /// candidate is it already; and unmarked.
+    #[test]
+    fn the_mapping_is_offered_once_confirmed_and_unmarked() {
+        let external = SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, 7), 25637);
+        let beyond: SocketAddr = "198.51.100.9:25637".parse().unwrap();
+        let moved: SocketAddr = "203.0.113.7:51461".parse().unwrap();
+        let kept: SocketAddr = "[::ffff:203.0.113.7]:25637".parse().unwrap();
+        let mapped = SocketAddr::V4(external);
+        assert_eq!(offer(None, &[moved]), Offer::Unconfirmed);
+        assert_eq!(offer(Some(external), &[]), Offer::Unconfirmed);
+        assert_eq!(offer(Some(external), &[beyond]), Offer::Unconfirmed);
+        assert_eq!(offer(Some(external), &[beyond, moved]), Offer::New(mapped));
+        assert_eq!(offer(Some(external), &[kept]), Offer::Known(mapped));
+        assert!(matches!(
+            mapped_candidate(mapped),
+            Event::Candidate {
+                from_stun: false,
+                lan: false,
+                ..
+            }
+        ));
     }
 }

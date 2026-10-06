@@ -342,9 +342,13 @@ struct demo {
 	uint64_t seconds;
 	uint64_t last_video_bytes;
 	bool established;
-	// The gateway's mapping as last printed.
+	// The gateway's mapping as last printed: by what, where, and the last
+	// refusal.
 	uint32_t mapping;
 	uint16_t mapped_port;
+	char mapped_address[LOWLAT_ADDRESS_MAX];
+	uint16_t mapping_refusal;
+	uint32_t mapping_refused_by;
 };
 
 // The clock the library stamps a picture's arrival on, so the two can be
@@ -1404,8 +1408,13 @@ static void report(struct demo *d)
 		d->behind_seconds = 0;
 		d->behind_warned = false;
 	}
-	// The gateway's mapping of the port, whenever it changes.
-	if (st.mapping != d->mapping || st.mapped_port != d->mapped_port) {
+	// The gateway's mapping of the port, whenever any of it changes: by what,
+	// where, or the last refusal while nothing is mapped.
+	bool unmapped = st.mapping == LOWLAT_MAPPING_NONE;
+	if (st.mapping != d->mapping || st.mapped_port != d->mapped_port
+		|| strcmp(st.mapped_address, d->mapped_address) != 0
+		|| (unmapped && (st.mapping_refusal != d->mapping_refusal
+			|| st.mapping_refused_by != d->mapping_refused_by))) {
 		static const char *const by[] = {"nothing", "PCP", "NAT-PMP", "UPnP"};
 		if (st.mapping != LOWLAT_MAPPING_NONE && st.mapping < 4)
 			printf("demo: port mapped by %s, external %s:%u\n", by[st.mapping],
@@ -1418,6 +1427,9 @@ static void report(struct demo *d)
 			printf("demo: port not mapped\n");
 		d->mapping = st.mapping;
 		d->mapped_port = st.mapped_port;
+		memcpy(d->mapped_address, st.mapped_address, sizeof d->mapped_address);
+		d->mapping_refusal = st.mapping_refusal;
+		d->mapping_refused_by = st.mapping_refused_by;
 	}
 	d->keys_sent = 0;
 	d->buttons_sent = 0;

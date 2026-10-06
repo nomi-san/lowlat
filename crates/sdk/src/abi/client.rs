@@ -139,17 +139,20 @@ pub struct lowlat_client_create_info {
     /// every attempt and every run.
     pub port: u16,
     /// Ask the gateway to keep the port open (minor 22), by whichever of PCP,
-    /// NAT-PMP and UPnP's gateway device it answers, for the handle's life:
-    /// asked at creation, so the mapping is usually in before the first
-    /// answer, moved when an attempt's port does, and deleted at
+    /// NAT-PMP and UPnP's gateway device it answers, for the handle's life.
+    /// The port is then the handle's from creation -- bound there, held
+    /// between attempts and lent to each -- so a second handle walks past it
+    /// before anything is mapped, and the system firewall's question comes at
+    /// creation. Asked at creation, so the mapping is usually in before the
+    /// first answer; looked at again as each attempt begins; deleted at
     /// `lowlat_client_destroy` within a quarter of a second. Nothing about it
     /// is ever an error, and no attempt waits for it. Off when zeroed.
     pub port_mapping: bool,
     pub reserved: u8,
-    /// What picks the port when `port` is zero, and names this client's
-    /// entries in the gateway's table (minor 22), NUL-terminated; empty for
-    /// the machine's name. Two instances on one machine with different seeds
-    /// hold different ports.
+    /// What picks the port when `port` is zero, and, with the machine's own
+    /// identifier, names this client's entries in the gateway's table (minor
+    /// 22), NUL-terminated; empty for the machine's name. Two instances on
+    /// one machine with different seeds hold different ports.
     pub port_seed: [c_char; LOWLAT_PORT_SEED_MAX],
 }
 

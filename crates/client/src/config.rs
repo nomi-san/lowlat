@@ -92,18 +92,29 @@ pub enum Port {
     #[default]
     Any,
     /// This one, or the first free one above it, at every attempt; and, with
-    /// a description, kept open on the gateway under it
+    /// a mapping, the handle's own from creation, kept open on the gateway
     /// (docs/03-connectivity.md 6).
     Stable {
         first: NonZeroU16,
-        mapping: Option<String>,
+        mapping: Option<Mapping>,
     },
+}
+
+/// How the gateway is asked to keep a port open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Mapping {
+    /// How the gateway lists the mapping, and how this side tells its own.
+    pub description: String,
+    /// The gateway to ask instead of the system's default: none but in a
+    /// test, whose fake gateway makes one.
+    pub gateway: Option<lowlat_portmap::Gateway>,
 }
 
 impl Port {
     /// A stable port from what an application names: the port itself, or the
     /// one its seed picks -- the seed its own, or the machine's name when it
-    /// gives none -- and, when it asks, the mapping listed under the seed.
+    /// gives none -- and, when it asks, the mapping listed under the seed and
+    /// the machine.
     pub fn seeded(port: u16, seed: &str, mapping: bool) -> Self {
         let seed = if seed.is_empty() {
             lowlat_portmap::seed::machine_name()
@@ -119,7 +130,10 @@ impl Port {
         match NonZeroU16::new(first) {
             Some(first) => Port::Stable {
                 first,
-                mapping: mapping.then(|| lowlat_portmap::seed::description(&seed)),
+                mapping: mapping.then(|| Mapping {
+                    description: lowlat_portmap::seed::description(&seed),
+                    gateway: None,
+                }),
             },
             None => Port::Any,
         }
@@ -400,7 +414,7 @@ mod tests {
         let Port::Stable { mapping, .. } = Port::seeded(30_000, "HOST-1", true) else {
             panic!("a named port is a stable one");
         };
-        let listed = mapping.unwrap();
+        let listed = mapping.unwrap().description;
         assert_eq!(listed, lowlat_portmap::seed::description("HOST-1"));
         assert!(listed.starts_with("ll-b596f0a1"), "{listed}");
         assert!(matches!(

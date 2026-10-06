@@ -10,7 +10,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
@@ -23,7 +23,7 @@ use lowlat_decode::software;
 use lowlat_net::{Guest, Wake};
 use lowlat_portmap::Mapper;
 
-use crate::config::{Backend, Caps, Config, Decoding, FrameKind, Port, Video};
+use crate::config::{Backend, Caps, Config, Decoding, FrameKind, Mapping, Port, Video};
 use crate::driver::{Telemetry, Units};
 use crate::event::{Arrival, Ask, DecoderStage, Error, Event, LEAVE_GRACE_MS, Peer, Transport};
 use crate::frames::{Frames, Held};
@@ -105,6 +105,11 @@ pub struct Client {
     leaving: Arc<AtomicBool>,
     /// The port every attempt asks for first; zero for any.
     port: u16,
+    /// With a mapping kept, that port itself, held between attempts: bound at
+    /// creation, lent to each attempt, and taken back by the attempt's thread
+    /// as it ends. Empty while an attempt has it, or once it was lost to
+    /// another socket in between, when the next attempt walks.
+    held: Option<Arc<Mutex<Option<lowlat_net::Socket>>>>,
     /// The gateway keeping that port open, for the handle's life. Dropped
     /// after the attempt, which deletes the mapping within its bound.
     mapper: Option<Mapper>,
@@ -203,15 +208,49 @@ impl std::fmt::Debug for Attempt {
     }
 }
 
+/// The handle's port, bound at creation with the walk an attempt makes, so
+/// that what the gateway is asked to keep open is a port this handle holds:
+/// a second handle with the same seed walks past it here, before anything is
+/// mapped. One that does not bind is logged and done without, mapping
+/// included.
+fn hold(first: u16) -> Option<(u16, lowlat_net::Socket)> {
+    let held = lowlat_net::Socket::open_or_any_port(first)
+        .and_then(|socket| Ok((socket.local_addr()?.port(), socket)));
+    match held {
+        Ok(held) => Some(held),
+        Err(error) => {
+            lowlat_common::log_warn!(
+                "client: no port mapping, the port did not bind, port={first} err={error}"
+            );
+            None
+        }
+    }
+}
+
+/// Bind `port` again into the handle's slot the moment an attempt's socket
+/// has let it go, so nothing else takes it between attempts. Taken by another
+/// socket in that moment, the walk holds the next free one, and the next
+/// attempt's mapping follows; none at all, and the next attempt walks.
+fn retake(held: &Mutex<Option<lowlat_net::Socket>>, port: u16) {
+    match lowlat_net::Socket::open(port) {
+        Ok(socket) => *held.lock().unwrap_or_else(PoisonError::into_inner) = Some(socket),
+        Err(error) => {
+            lowlat_common::log_warn!(
+                "client: the port was not taken back, port={port} err={error}"
+            );
+        }
+    }
+}
+
 /// The gateway asked to keep `port` open, on a thread of its own. One that
 /// cannot start is logged and done without: a mapping is never in the way of
 /// an attempt.
-fn mapped(port: u16, description: String) -> Option<Mapper> {
+fn mapped(port: u16, mapping: Mapping) -> Option<Mapper> {
     let config = lowlat_portmap::Config {
         port,
         count: 1,
-        description,
-        gateway: None,
+        description: mapping.description,
+        gateway: mapping.gateway,
     };
     match Mapper::start(config) {
         Ok(mapper) => Some(mapper),
@@ -232,13 +271,19 @@ impl Client {
     /// first answer.
     pub fn new(decoding: &Decoding, port: Port) -> Result<Self, Error> {
         let (opened, caps) = sys::choose(decoding)?;
-        let first = port.first();
-        let mapper = match port {
+        let (first, held, mapper) = match port {
             Port::Stable {
                 first,
-                mapping: Some(description),
-            } => mapped(first.get(), description),
-            _ => None,
+                mapping: Some(mapping),
+            } => match hold(first.get()) {
+                Some((bound, socket)) => (
+                    bound,
+                    Some(Arc::new(Mutex::new(Some(socket)))),
+                    mapped(bound, mapping),
+                ),
+                None => (first.get(), None, None),
+            },
+            other => (other.first(), None, None),
         };
         let (emit, events) = events::queue();
         let telemetry = Arc::new(Telemetry::default());
@@ -258,6 +303,7 @@ impl Client {
             packets,
             leaving: Arc::new(AtomicBool::new(false)),
             port: first,
+            held,
             mapper,
         })
     }
@@ -598,12 +644,22 @@ impl Client {
         self.telemetry.relayed.store(0, Ordering::Relaxed);
         self.telemetry.path_relayed.store(false, Ordering::Relaxed);
 
-        let socket = lowlat_net::Socket::open_or_any_port(self.port).map_err(|_| Error::Io)?;
+        // The handle's own port when it holds one, lent for the attempt;
+        // otherwise bound here, the walk stepping past a port that is taken.
+        let lent = self
+            .held
+            .as_ref()
+            .and_then(|held| held.lock().unwrap_or_else(PoisonError::into_inner).take());
+        let socket = match lent {
+            Some(socket) => socket,
+            None => lowlat_net::Socket::open_or_any_port(self.port).map_err(|_| Error::Io)?,
+        };
         let bound = socket.local_addr().map_err(|_| Error::Io)?.port();
         // A port taken by something else walked the bind up, and the mapping
-        // follows it.
+        // follows it; and the gateway is looked at again for the attempt.
         if let Some(mapper) = &self.mapper {
             mapper.set_port(bound);
+            mapper.refresh();
         }
         let wake = Wake::new().map_err(|_| Error::Io)?;
         let shell_wake = wake.handle().map_err(|_| Error::Io)?;
@@ -654,8 +710,14 @@ impl Client {
             packets: self.packets.clone(),
             epoch: Arc::clone(&attempt.epoch),
         };
+        let held = self.held.clone();
         let thread = Guest::spawn(wake, move |wake, running| {
-            crate::shell::run(args, wake, running)
+            crate::shell::run(args, wake, running);
+            // The attempt's socket closed with its loop: the port is taken
+            // back at once, before anything else can bind it in between.
+            if let Some(held) = held {
+                retake(&held, bound);
+            }
         })
         .map_err(|_| Error::Io)?;
         attempt.inject = Some(inject);
