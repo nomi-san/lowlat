@@ -606,8 +606,9 @@ struct Runner {
 impl Runner {
     fn run(self) {
         let mut mapped: Option<Mapped> = None;
-        // When the ladder last found something or nothing, uncut.
-        let mut looked: Option<Instant> = None;
+        // When the ladder last found something or nothing, uncut, and for
+        // which port: a port moved to is looked at at once.
+        let mut looked: Option<(Instant, u16)> = None;
         loop {
             let seen = self.shared.generation.load(Ordering::Acquire);
             let cuts = self.shared.cuts.load(Ordering::Acquire);
@@ -625,20 +626,21 @@ impl Runner {
             let now = Instant::now();
             let next = match mapped.take() {
                 None => {
-                    let due = looked.map_or(now, |at| at + self.timing.retry);
-                    let asked = look && looked.is_none_or(|at| now >= at + self.timing.look_floor);
+                    let last = looked.filter(|&(_, port)| port == first).map(|(at, _)| at);
+                    let due = last.map_or(now, |at| at + self.timing.retry);
+                    let asked = look && last.is_none_or(|at| now >= at + self.timing.look_floor);
                     if now < due && !asked {
                         due
                     } else {
                         match self.map(first, cuts) {
                             Looked::Kept(made) => {
-                                looked = Some(now);
+                                looked = Some((now, first));
                                 let at = made.renew_at;
                                 mapped = Some(made);
                                 at
                             }
                             Looked::Nothing => {
-                                looked = Some(now);
+                                looked = Some((now, first));
                                 Instant::now() + self.timing.retry
                             }
                             // The next pass sees why.
@@ -2111,9 +2113,14 @@ mod tests {
 
     #[test]
     fn a_port_that_moves_is_mapped_where_it_went() {
+        // Looked at again after a minute: the moved port must not wait for it.
+        let timing = Timing {
+            retry: Duration::from_secs(60),
+            ..FAST
+        };
         for behaviour in [Behaviour::default(), Behaviour::upnp_only()] {
             let fake = Fake::start(behaviour);
-            let mapper = start(&fake, PORT, 1);
+            let mapper = start_timed(&fake, PORT, timing);
             until("the first port", || fake.table().contains_key(&PORT));
             mapper.set_port(PORT + 100);
             until("the moved port alone", || {
