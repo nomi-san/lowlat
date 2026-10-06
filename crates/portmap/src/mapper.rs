@@ -2769,6 +2769,57 @@ mod tests {
         }
     }
 
+    /// The real gateway's UPnP service through a pause: something outside
+    /// the process blocks this test's own traffic to the gateway from 15 s
+    /// to 40 s in -- a firewall rule naming this binary -- and the mapping is
+    /// kept through it, renewed after, and deleted at the stop. By hand, on
+    /// any network whose gateway speaks UPnP:
+    /// `cargo test -p lowlat-portmap --lib live_upnp_pause -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "maps a port on this network's real gateway, and wants a pause made"]
+    fn live_upnp_pause_on_the_real_gateway() {
+        let gateway = sys::gateway().expect("a default gateway");
+        let endpoints = Endpoints::of(gateway);
+        let (runner, service) = gateway_service(endpoints);
+        let config = Config {
+            port: FIRST,
+            count: 1,
+            description: OURS.into(),
+            gateway: None,
+        };
+        let mut mapper = Mapper::start_only(config, endpoints, LIVE, Protocol::Upnp).unwrap();
+        until_within(
+            Duration::from_secs(30),
+            EVERY,
+            "mapped",
+            mapped(&mapper, Protocol::Upnp),
+        );
+        println!("live: upnp mapped {FIRST}; the pause runs from 15 s to 40 s");
+        // Nothing asks the gateway from here but the mapper: the status alone
+        // says whether the mapping was given up.
+        let began = Instant::now();
+        while began.elapsed() < Duration::from_secs(75) {
+            std::thread::sleep(EVERY);
+            let at = began.elapsed();
+            assert_eq!(
+                mapper.status().protocol,
+                Protocol::Upnp,
+                "upnp: lost {at:?} in"
+            );
+        }
+        let (client, lease) = listed(&runner, &service, FIRST).expect("not listed after the pause");
+        println!("live: upnp listed for {client}, lease {lease} after the pause");
+        let begun = Instant::now();
+        mapper.stop();
+        let took = begun.elapsed();
+        assert!(
+            took < Duration::from_secs(1),
+            "upnp: the stop took {took:?}"
+        );
+        assert_eq!(listed(&runner, &service, FIRST), None, "upnp: left listed");
+        println!("live: upnp stopped in {took:?}, nothing listed");
+    }
+
     /// The real gateway's UPnP service across renewals: the lease it lists
     /// stays near whole, so a gateway that answers an identical add and keeps
     /// the old lease has the mapping made again; then deleted within the
