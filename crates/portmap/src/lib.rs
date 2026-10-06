@@ -57,12 +57,12 @@ mod sys;
 #[path = "sys/windows.rs"]
 mod sys;
 
-#[cfg(all(test, any(target_os = "linux", windows)))]
-mod fake;
+#[cfg(all(any(test, feature = "fake"), any(target_os = "linux", windows)))]
+pub mod fake;
 
 pub use error::{Error, Result};
 #[cfg(any(target_os = "linux", windows))]
-pub use mapper::{Config, Mapper, Protocol, Reader, Status, confirmed};
+pub use mapper::{Config, Gateway, Mapper, Protocol, Reader, Status, confirmed};
 
 /// Replies captured from three gateways (`tests/data/`): an OpenWrt router, a
 /// libupnp fibre gateway, and a Debian build of the same daemon as the first

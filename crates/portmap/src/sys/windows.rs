@@ -1,14 +1,16 @@
-//! The default gateway, the interface a search leaves by, and the machine's
-//! name, on Windows.
+//! The default gateway, the interface a search leaves by, a connection a stop
+//! can cut short, and the machine's name and identifier, on Windows.
 
 #![allow(unsafe_code)]
 
 use core::net::{Ipv4Addr, SocketAddrV4};
+use core::time::Duration;
 use std::io;
-use std::net::UdpSocket;
-use std::os::windows::io::AsRawSocket;
+use std::net::{TcpStream, UdpSocket};
+use std::os::windows::io::{AsRawSocket, FromRawSocket, OwnedSocket, RawSocket};
+use std::sync::OnceLock;
 
-use windows_sys::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, NO_ERROR};
+use windows_sys::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_SUCCESS, NO_ERROR};
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     GAA_FLAG_INCLUDE_GATEWAYS, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER,
     GAA_FLAG_SKIP_FRIENDLY_NAME, GAA_FLAG_SKIP_MULTICAST, GetAdaptersAddresses,
@@ -16,7 +18,13 @@ use windows_sys::Win32::NetworkManagement::IpHelper::{
 };
 use windows_sys::Win32::NetworkManagement::Ndis::IfOperStatusUp;
 use windows_sys::Win32::Networking::WinSock::{
-    AF_INET, IP_MULTICAST_IF, IPPROTO_IP, SOCKADDR, SOCKADDR_IN, SOCKET, setsockopt,
+    AF_INET, FD_SET, FIONBIO, INVALID_SOCKET, IP_MULTICAST_IF, IPPROTO_IP, IPPROTO_TCP, SO_ERROR,
+    SOCK_STREAM, SOCKADDR, SOCKADDR_IN, SOCKET, SOCKET_ERROR, SOL_SOCKET, TIMEVAL,
+    WSA_FLAG_NO_HANDLE_INHERIT, WSA_FLAG_OVERLAPPED, WSADATA, WSAEWOULDBLOCK, WSAGetLastError,
+    WSASocketW, WSAStartup, connect, getsockopt, ioctlsocket, select, setsockopt,
+};
+use windows_sys::Win32::System::Registry::{
+    HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RRF_SUBKEY_WOW6464KEY, RegGetValueW,
 };
 use windows_sys::Win32::System::WindowsProgramming::GetComputerNameW;
 
@@ -92,7 +100,11 @@ fn gateway_of(first: *const IP_ADAPTER_ADDRESSES_LH, local: Ipv4Addr) -> Option<
             // SAFETY: as above, for the adapter's gateway records.
             let record = unsafe { &*gateway };
             gateway = record.Next;
-            if let Some(found) = ipv4(record.Address.lpSockaddr) {
+            // A tunnel that sends everything to its far end lists 0.0.0.0: no
+            // gateway at all.
+            if let Some(found) = ipv4(record.Address.lpSockaddr)
+                && !found.is_unspecified()
+            {
                 return Some(found);
             }
         }
@@ -140,6 +152,186 @@ pub(crate) fn multicast_from(socket: &UdpSocket, local: Ipv4Addr) -> io::Result<
     } else {
         Err(io::Error::last_os_error())
     }
+}
+
+/// Start the socket library once per process, before the first socket of our
+/// own. The reference it takes is never given back: a library inside someone
+/// else's process cannot know when its last socket has closed.
+fn start() -> io::Result<()> {
+    static STARTED: OnceLock<i32> = OnceLock::new();
+    let code = *STARTED.get_or_init(|| {
+        let mut data = WSADATA::default();
+        // SAFETY: version 2.2 and writable storage of the right type.
+        unsafe { WSAStartup(0x0202, &raw mut data) }
+    });
+    if code == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::from_raw_os_error(code))
+    }
+}
+
+/// The last socket error, as an error.
+fn last_error() -> io::Error {
+    // SAFETY: reads the calling thread's own error value.
+    io::Error::from_raw_os_error(unsafe { WSAGetLastError() })
+}
+
+/// A TCP connection being made, waited for in pieces so that a stop is seen
+/// between them: the system's own connect waits whole.
+#[derive(Debug)]
+pub(crate) struct Connecting {
+    socket: OwnedSocket,
+}
+
+impl Connecting {
+    /// Begin connecting to `to`. Nothing waits here.
+    pub(crate) fn start(to: SocketAddrV4) -> io::Result<Self> {
+        start()?;
+        let flags = WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT;
+        // SAFETY: plain arguments and no protocol record; the socket returned
+        // is owned below.
+        let raw = unsafe {
+            WSASocketW(
+                i32::from(AF_INET),
+                SOCK_STREAM,
+                IPPROTO_TCP,
+                core::ptr::null(),
+                0,
+                flags,
+            )
+        };
+        if raw == INVALID_SOCKET {
+            return Err(last_error());
+        }
+        let handle = RawSocket::try_from(raw).map_err(io::Error::other)?;
+        // SAFETY: a socket this call opened and nothing else holds.
+        let socket = unsafe { OwnedSocket::from_raw_socket(handle) };
+        let mut nonblocking: u32 = 1;
+        // SAFETY: a live socket and the flag's word, written during the call.
+        if unsafe { ioctlsocket(raw, FIONBIO, &raw mut nonblocking) } != 0 {
+            return Err(last_error());
+        }
+        let mut address = SOCKADDR_IN {
+            sin_family: AF_INET,
+            sin_port: to.port().to_be(),
+            ..SOCKADDR_IN::default()
+        };
+        address.sin_addr.S_un.S_addr = u32::from_ne_bytes(to.ip().octets());
+        let len = i32::try_from(core::mem::size_of_val(&address)).map_err(io::Error::other)?;
+        // SAFETY: a live socket and an address of `len` bytes read during the
+        // call only.
+        let rc = unsafe { connect(raw, (&raw const address).cast(), len) };
+        if rc == SOCKET_ERROR {
+            let error = last_error();
+            if error.raw_os_error() != Some(WSAEWOULDBLOCK) {
+                return Err(error);
+            }
+        }
+        Ok(Self { socket })
+    }
+
+    /// Wait up to `wait` for the connection: the stream once it is made, a
+    /// blocking one as the caller's reads expect, or this again while it is
+    /// still being made. A failed connect is in the exception set, which is
+    /// why this selects rather than polls: the poll call reports no failed
+    /// connect before Windows 10 2004.
+    pub(crate) fn wait(self, wait: Duration) -> io::Result<Result<TcpStream, Self>> {
+        let raw = SOCKET::try_from(self.socket.as_raw_socket()).map_err(io::Error::other)?;
+        let mut writable = FD_SET {
+            fd_count: 1,
+            ..FD_SET::default()
+        };
+        let mut failed = FD_SET {
+            fd_count: 1,
+            ..FD_SET::default()
+        };
+        if let (Some(w), Some(f)) = (writable.fd_array.first_mut(), failed.fd_array.first_mut()) {
+            *w = raw;
+            *f = raw;
+        }
+        let micros = wait.as_micros().max(1);
+        let timeout = TIMEVAL {
+            tv_sec: i32::try_from(micros / 1_000_000).unwrap_or(i32::MAX),
+            tv_usec: i32::try_from(micros % 1_000_000).unwrap_or(0),
+        };
+        // SAFETY: two sets naming one live socket and a timeout, all live for
+        // the call; the first argument is ignored on this system.
+        let rc = unsafe {
+            select(
+                0,
+                core::ptr::null_mut(),
+                &raw mut writable,
+                &raw mut failed,
+                &raw const timeout,
+            )
+        };
+        if rc == SOCKET_ERROR {
+            return Err(last_error());
+        }
+        if rc == 0 {
+            return Ok(Err(self));
+        }
+        // Connected or failed: the connect's own outcome says which.
+        let mut outcome: i32 = 0;
+        let mut len = i32::try_from(core::mem::size_of_val(&outcome)).map_err(io::Error::other)?;
+        // SAFETY: a live socket, and an integer and its length written during
+        // the call only.
+        let rc = unsafe {
+            getsockopt(
+                raw,
+                SOL_SOCKET,
+                SO_ERROR,
+                (&raw mut outcome).cast(),
+                &raw mut len,
+            )
+        };
+        if rc == SOCKET_ERROR {
+            return Err(last_error());
+        }
+        if outcome != 0 {
+            return Err(io::Error::from_raw_os_error(outcome));
+        }
+        if failed.fd_count != 0 {
+            return Err(io::Error::from(io::ErrorKind::ConnectionRefused));
+        }
+        let stream = TcpStream::from(self.socket);
+        stream.set_nonblocking(false)?;
+        Ok(Ok(stream))
+    }
+}
+
+/// The installation's identifier, `MachineGuid`, from the system's 64-bit
+/// view whatever this build is. It must not leave the machine as it is: the
+/// caller reduces it with a keyed hash first.
+pub(crate) fn machine_id() -> Option<Vec<u8>> {
+    let key: Vec<u16> = "SOFTWARE\\Microsoft\\Cryptography\0"
+        .encode_utf16()
+        .collect();
+    let value: Vec<u16> = "MachineGuid\0".encode_utf16().collect();
+    // Room for the identifier's 36 characters and more.
+    let mut text = [0u16; 128];
+    let mut size = u32::try_from(core::mem::size_of_val(&text)).ok()?;
+    // SAFETY: two terminated wide strings, a buffer of `size` bytes and its
+    // length, all live for the call; the type is not asked for.
+    let rc = unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            key.as_ptr(),
+            value.as_ptr(),
+            RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY,
+            core::ptr::null_mut(),
+            text.as_mut_ptr().cast(),
+            &raw mut size,
+        )
+    };
+    if rc != ERROR_SUCCESS {
+        return None;
+    }
+    let end = text.iter().position(|&unit| unit == 0)?;
+    let id = String::from_utf16(text.get(..end)?).ok()?;
+    let id = id.trim();
+    (!id.is_empty()).then(|| id.as_bytes().to_vec())
 }
 
 /// The machine's network name, as the system reports it: in capitals, and at

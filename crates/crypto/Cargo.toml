@@ -30,6 +30,7 @@ zeroize = { version = "1", default-features = false, features = ["alloc"] }
 # About four times the core's portable implementation on a full datagram. The
 # core cannot hold it: it always brings a random source, which the core must
 # be unable to reach. Already in the graph as the signaling TLS provider.
+# Also the keyed hash an identifier tied to a machine is reduced with.
 ring = { version = "0.17", default-features = false }
 # The envelope's construction, which the record cipher implements.
 lowlat-core.workspace = true

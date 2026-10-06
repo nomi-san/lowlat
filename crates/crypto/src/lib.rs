@@ -122,6 +122,20 @@ pub fn credentials() -> Result<Credentials, Error> {
     })
 }
 
+/// An identifier for one application on one machine: HMAC-SHA256 keyed by the
+/// machine's own identifier, over the application's. The same for the pair at
+/// every run, and nothing of the machine's identifier can be read back from it,
+/// which is the only form such an identifier may leave the machine in.
+pub fn app_specific(machine: &[u8], application: &[u8]) -> [u8; 32] {
+    let key = ring::hmac::Key::new(ring::hmac::HMAC_SHA256, machine);
+    let tag = ring::hmac::sign(&key, application);
+    let mut out = [0u8; 32];
+    for (slot, byte) in out.iter_mut().zip(tag.as_ref()) {
+        *slot = *byte;
+    }
+    out
+}
+
 /// The seed a connectivity attempt derives its transaction identifiers from.
 ///
 /// The core takes this rather than reading a generator, which is what lets a
@@ -233,6 +247,15 @@ mod tests {
         ] {
             assert_eq!(base64(input.as_bytes()), expected, "input {input:?}");
         }
+    }
+
+    /// RFC 4231's second case, the one whose key is shorter than a block.
+    #[test]
+    fn an_app_specific_identifier_is_the_published_hmac() {
+        assert_eq!(
+            hex(&app_specific(b"Jefe", b"what do ya want for nothing?")),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
     }
 
     #[test]

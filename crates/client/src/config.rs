@@ -387,7 +387,7 @@ mod tests {
 
     /// A port named is kept; none named is the seed's, and the machine's
     /// name is the seed when the application gives none. The mapping is
-    /// listed under the seed, and only when asked for.
+    /// listed under the seed and the machine, and only when asked for.
     #[test]
     fn a_seeded_port_is_the_one_named_or_the_seeds() {
         let first = |port: &Port| port.first();
@@ -400,7 +400,9 @@ mod tests {
         let Port::Stable { mapping, .. } = Port::seeded(30_000, "HOST-1", true) else {
             panic!("a named port is a stable one");
         };
-        assert_eq!(mapping.as_deref(), Some("lowlat-b596f0a1"));
+        let listed = mapping.unwrap();
+        assert_eq!(listed, lowlat_portmap::seed::description("HOST-1"));
+        assert!(listed.starts_with("ll-b596f0a1"), "{listed}");
         assert!(matches!(
             Port::seeded(0, "HOST-1", false),
             Port::Stable { mapping: None, .. }

@@ -135,7 +135,8 @@ fn peer(args: &[String]) -> Result<(), String> {
         let config = Config {
             port,
             count: 1,
-            description: "lowlat-fixture".into(),
+            description: "ll-fixture".into(),
+            gateway: None,
         };
         Some(Mapper::start(config).map_err(|e| format!("mapper: {e}"))?)
     } else {

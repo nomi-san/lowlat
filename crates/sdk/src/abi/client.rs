@@ -2854,6 +2854,7 @@ mod tests {
                 protocol: Protocol::Upnp,
                 address: Some(core::net::Ipv4Addr::new(203, 0, 113, 7)),
                 port: 24137,
+                internal: 24137,
                 refusal: Some((Protocol::Pcp, 2)),
             },
         );
@@ -2872,6 +2873,7 @@ mod tests {
                 protocol: Protocol::NatPmp,
                 address: None,
                 port: 24137,
+                internal: 24137,
                 refusal: None,
             },
         );

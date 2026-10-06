@@ -125,7 +125,10 @@ fn read(received: &[u8], cap: usize, closed: bool) -> Result<Option<Response>> {
     loop {
         let mut headers = [httparse::EMPTY_HEADER; MAX_HEADERS];
         let mut response = httparse::Response::new(&mut headers);
-        let head = match response.parse(rest) {
+        // A head is read from no more than it may hold and one byte, so a
+        // fault further on is never seen before the head is known too large:
+        // what is read never depends on how much had arrived.
+        let head = match response.parse(rest.get(..=HEAD_CAP).unwrap_or(rest)) {
             Ok(httparse::Status::Complete(head)) => head,
             Ok(httparse::Status::Partial) if rest.len() > HEAD_CAP => return Err(Error::TooLarge),
             Ok(httparse::Status::Partial) => return pending(closed),
@@ -176,10 +179,19 @@ fn pending<T>(closed: bool) -> Result<Option<T>> {
     }
 }
 
+/// The body's framing from the three headers that state it. Only those are
+/// read as text: any other may carry bytes that are not, as the protocol
+/// allows, and is none of this side's business.
 fn framing(headers: &[httparse::Header<'_>]) -> Result<Framing> {
     let mut length = None;
     let mut chunked = false;
     for header in headers {
+        let framing = ["transfer-encoding", "content-length", "content-encoding"]
+            .iter()
+            .any(|name| header.name.eq_ignore_ascii_case(name));
+        if !framing {
+            continue;
+        }
         let value = core::str::from_utf8(header.value)
             .map_err(|_| Error::Framing)?
             .trim();
@@ -424,6 +436,42 @@ mod tests {
         let mut reader = Reader::new(64);
         assert_eq!(reader.push(&wire[..20]).unwrap(), None);
         assert_eq!(reader.push(&wire[20..]).unwrap(), Some(ok(b"ok")));
+    }
+
+    /// A fault past the head's cap is never seen before the cap is: read
+    /// whole or a byte at a time, the same refusal.
+    #[test]
+    fn a_head_past_its_cap_is_refused_alike_at_every_cut() {
+        let mut wire = b"HTTP/1.1 200 OK\r\nX: ".to_vec();
+        wire.resize(8200, b'a');
+        wire.extend_from_slice(b"\x00\r\n\r\n");
+        let whole = Reader::new(512).push(&wire).map(|_| ());
+        for step in [1, 7, 64, 4096] {
+            let mut reader = Reader::new(512);
+            let mut outcome = Ok(());
+            for piece in wire.chunks(step) {
+                match reader.push(piece) {
+                    Ok(None) => {}
+                    Ok(Some(_)) => break,
+                    Err(error) => {
+                        outcome = Err(error);
+                        break;
+                    }
+                }
+            }
+            assert_eq!(outcome, whole, "read {step} bytes at a time");
+        }
+        assert_eq!(whole, Err(Error::TooLarge));
+    }
+
+    /// A header this side does not read may hold any byte the protocol
+    /// allows; only the framing's own must be text.
+    #[test]
+    fn a_header_not_read_may_hold_any_byte() {
+        let wire = b"HTTP/1.1 200 OK\r\nServer: Caf\xe9 Router\r\nContent-Length: 2\r\n\r\nok";
+        every_split(wire, 64, &ok(b"ok"));
+        let framing = b"HTTP/1.1 200 OK\r\nContent-Length: 2\xe9\r\n\r\nok";
+        assert_eq!(Reader::new(64).push(framing), Err(Error::Framing));
     }
 
     #[test]

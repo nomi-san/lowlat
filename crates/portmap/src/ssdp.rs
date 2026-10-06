@@ -67,16 +67,20 @@ pub fn parse(datagram: &[u8]) -> Result<Answer<'_>> {
         Some(code) => return Err(Error::Status(code)),
         None => return Err(Error::Http),
     }
+    // Only the two headers read are read as text: any other may carry bytes
+    // that are not, as the protocol allows.
     let mut location = None;
     let mut target = None;
     for header in response.headers.iter() {
-        let value = core::str::from_utf8(header.value)
-            .map_err(|_| Error::Malformed)?
-            .trim();
+        let text = || {
+            core::str::from_utf8(header.value)
+                .map(str::trim)
+                .map_err(|_| Error::Malformed)
+        };
         if header.name.eq_ignore_ascii_case("location") {
-            location = Some(value);
+            location = Some(text()?);
         } else if header.name.eq_ignore_ascii_case("st") {
-            target = Some(value);
+            target = Some(text()?);
         }
     }
     match location {
@@ -116,6 +120,10 @@ mod tests {
         let empty =
             b"HTTP/1.1 200 OK\r\nSERVER:\r\nUSN:\r\nLOCATION: http://192.168.1.1/d.xml\r\n\r\n";
         assert_eq!(parse(empty).unwrap().location, "http://192.168.1.1/d.xml");
+        // A header not read may hold any byte the protocol allows.
+        let latin =
+            b"HTTP/1.1 200 OK\r\nSERVER: Caf\xe9 Router\r\nLOCATION: http://192.168.1.1/d.xml\r\n\r\n";
+        assert_eq!(parse(latin).unwrap().location, "http://192.168.1.1/d.xml");
     }
 
     #[test]

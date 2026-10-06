@@ -69,8 +69,11 @@ impl Description {
 
 /// Read a description fetched from `location`.
 pub fn parse(body: &[u8], location: &Url) -> Result<Description> {
-    let text = core::str::from_utf8(body).map_err(|_| Error::Xml)?;
-    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    // Read as the protocol's encoding whatever the device declares: a byte
+    // that is not one stands for itself in a name nothing here reads, and
+    // refusing the whole description for it would map nothing.
+    let text = String::from_utf8_lossy(body);
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     let options = roxmltree::ParsingOptions {
         nodes_limit: MAX_NODES,
         ..roxmltree::ParsingOptions::default()
@@ -264,6 +267,25 @@ mod tests {
         };
         assert_eq!(reached(MAX_DEPTH), 1);
         assert_eq!(reached(MAX_DEPTH + 1), 0);
+    }
+
+    /// A device that declares another encoding and writes its name in it is
+    /// read all the same: the services are what is read, and they are text.
+    #[test]
+    fn a_name_in_another_encoding_hides_no_service() {
+        let text = description(&format!(
+            "<device><friendlyName>Routeur #</friendlyName><serviceList>{}</serviceList></device>",
+            service(IP_CONNECTION_1, "/ctl")
+        ));
+        // The name's last character as a Latin-1 byte, which is no UTF-8.
+        let mut body = text.into_bytes();
+        let at = body.iter().position(|&byte| byte == b'#').unwrap();
+        body[at] = 0xe9;
+        let found = parse(&body, &location()).unwrap();
+        assert_eq!(
+            controls(&found),
+            vec![(IP_CONNECTION_1, "/ctl".to_string())]
+        );
     }
 
     #[test]

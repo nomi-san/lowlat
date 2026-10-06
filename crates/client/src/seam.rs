@@ -211,6 +211,7 @@ fn mapped(port: u16, description: String) -> Option<Mapper> {
         port,
         count: 1,
         description,
+        gateway: None,
     };
     match Mapper::start(config) {
         Ok(mapper) => Some(mapper),

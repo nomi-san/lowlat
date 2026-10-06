@@ -1,6 +1,17 @@
-//! A gateway on loopback that speaks all three protocols, for the mapper's
-//! tests: its behaviours are switched per test, its table read and changed,
-//! every action counted, and it can restart.
+//! A gateway on loopback that speaks all three protocols, for tests: its
+//! behaviours are switched per test, its table read and changed, every action
+//! counted, and it can restart or fall silent. Test-only: nothing in a
+//! shipping build makes one.
+
+// Test support: a fixture that cannot be built is a broken test, not input.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::panic,
+    clippy::cast_possible_truncation,
+    missing_debug_implementations
+)]
 
 use core::net::{Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4};
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -12,21 +23,33 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
-use crate::mapper::Endpoints;
+use crate::mapper::{Endpoints, FAST, Gateway};
 
 /// The address the fake states as its outside.
-pub(crate) const EXTERNAL: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 7);
+pub const EXTERNAL: Ipv4Addr = Ipv4Addr::new(203, 0, 113, 7);
 const SERVICE: &str = "urn:schemas-upnp-org:service:WANIPConnection:1";
+/// The second service's kind, which a mapper asks before the first's.
+const SECOND_SERVICE: &str = "urn:schemas-upnp-org:service:WANIPConnection:2";
 /// A second loopback address, standing for a host that is not the gateway.
 const ELSEWHERE: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
+/// How long a request applied and never answered holds its connection.
+const HOLD: Duration = Duration::from_secs(3);
 
-fn description(control: &str) -> String {
+fn description(control: &str, second: bool) -> String {
+    let second = if second {
+        format!(
+            "<service><serviceType>{SECOND_SERVICE}</serviceType>\
+             <controlURL>/ctl/Second</controlURL></service>"
+        )
+    } else {
+        String::new()
+    };
     format!(
         "<?xml version=\"1.0\"?><root xmlns=\"urn:schemas-upnp-org:device-1-0\">\
          <device><deviceType>urn:schemas-upnp-org:device:InternetGatewayDevice:1</deviceType>\
          <deviceList><device><deviceType>urn:schemas-upnp-org:device:WANDevice:1</deviceType>\
          <deviceList><device><deviceType>urn:schemas-upnp-org:device:WANConnectionDevice:1</deviceType>\
-         <serviceList><service><serviceType>{SERVICE}</serviceType>\
+         <serviceList>{second}<service><serviceType>{SERVICE}</serviceType>\
          <controlURL>{control}</controlURL></service></serviceList></device></deviceList></device>\
          </deviceList></device></root>"
     )
@@ -34,28 +57,44 @@ fn description(control: &str) -> String {
 
 /// What the fake places on a host that is not the gateway.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Elsewhere {
+pub enum Elsewhere {
     /// The description, by the search's answer.
     Location,
     /// The control service, by the description.
     Control,
 }
 
+/// A second connection service, which a mapper asks first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Second {
+    /// Answers every action with a plain 404, no fault in it.
+    Broken,
+    /// A connection that is down: it says so, and states no address.
+    Down,
+}
+
 #[derive(Debug, Clone)]
-pub(crate) struct Behaviour {
-    pub(crate) pcp: bool,
-    pub(crate) natpmp: bool,
-    pub(crate) upnp: bool,
+pub struct Behaviour {
+    pub pcp: bool,
+    pub natpmp: bool,
+    pub upnp: bool,
     /// A timed UPnP lease refused with this code: only permanent mappings.
-    pub(crate) permanent_only: Option<u16>,
+    pub permanent_only: Option<u16>,
     /// An identical UPnP add answered with success, the old lease kept.
-    pub(crate) keeps_old_lease: bool,
+    pub keeps_old_lease: bool,
     /// The external address UPnP states.
-    pub(crate) stated: &'static str,
+    pub stated: &'static str,
     /// How long each HTTP answer takes.
-    pub(crate) slow: Duration,
+    pub slow: Duration,
     /// A part of the device placed on another host, which serves it there.
-    pub(crate) elsewhere: Option<Elsewhere>,
+    pub elsewhere: Option<Elsewhere>,
+    /// One request carried out and never answered: `"MAP"`, a PCP mapping,
+    /// or a UPnP action by its name. Its connection is held open a while.
+    pub unanswered: Option<&'static str>,
+    /// A second connection service, listed before the working one.
+    pub second: Option<Second>,
+    /// How many search datagrams are passed over before one is answered.
+    pub searches_ignored: u32,
 }
 
 impl Default for Behaviour {
@@ -69,12 +108,15 @@ impl Default for Behaviour {
             stated: "203.0.113.7",
             slow: Duration::ZERO,
             elsewhere: None,
+            unanswered: None,
+            second: None,
+            searches_ignored: 0,
         }
     }
 }
 
 impl Behaviour {
-    pub(crate) fn upnp_only() -> Self {
+    pub fn upnp_only() -> Self {
         Self {
             pcp: false,
             natpmp: false,
@@ -84,13 +126,13 @@ impl Behaviour {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Entry {
-    pub(crate) via: &'static str,
-    pub(crate) client: Ipv4Addr,
-    pub(crate) description: String,
+pub struct Entry {
+    pub via: &'static str,
+    pub client: Ipv4Addr,
+    pub description: String,
     /// When it lapses; never, for a permanent one.
-    pub(crate) expires: Option<Instant>,
-    pub(crate) nonce: Option<[u8; 12]>,
+    pub expires: Option<Instant>,
+    pub nonce: Option<[u8; 12]>,
 }
 
 #[derive(Debug)]
@@ -105,15 +147,21 @@ struct State {
     /// `elsewhere`.
     calls: BTreeMap<(String, u16), u32>,
     description: String,
+    /// Nothing answered until then.
+    muted_until: Option<Instant>,
+    /// Added to every external port granted from a restart on.
+    shift: u16,
+    /// Search datagrams passed over so far.
+    searches_seen: u32,
+    /// The external port a PCP mapping of each internal port last suggested.
+    suggested: BTreeMap<u16, u16>,
 }
 
 impl State {
     fn count(&mut self, what: &str, port: u16) {
         *self.calls.entry((what.to_string(), port)).or_default() += 1;
     }
-}
 
-impl State {
     fn epoch(&self) -> u32 {
         u32::try_from(self.started.elapsed().as_secs()).unwrap()
     }
@@ -123,9 +171,13 @@ impl State {
         self.table
             .retain(|_, entry| entry.expires.is_none_or(|at| at > now));
     }
+
+    fn muted(&self) -> bool {
+        self.muted_until.is_some_and(|until| Instant::now() < until)
+    }
 }
 
-pub(crate) struct Fake {
+pub struct Fake {
     state: Arc<Mutex<State>>,
     stop: Arc<AtomicBool>,
     threads: Vec<JoinHandle<()>>,
@@ -133,13 +185,17 @@ pub(crate) struct Fake {
 }
 
 impl Fake {
-    pub(crate) fn start(behaviour: Behaviour) -> Self {
+    pub fn start(behaviour: Behaviour) -> Self {
         let state = Arc::new(Mutex::new(State {
             behaviour: behaviour.clone(),
             table: BTreeMap::new(),
             started: Instant::now(),
             calls: BTreeMap::new(),
             description: String::new(),
+            muted_until: None,
+            shift: 0,
+            searches_seen: 0,
+            suggested: BTreeMap::new(),
         }));
         let stop = Arc::new(AtomicBool::new(false));
         let mut threads = Vec::new();
@@ -154,7 +210,7 @@ impl Fake {
             elsewhere = Some(listener.local_addr().unwrap().port());
             let (state, stop) = (Arc::clone(&state), Arc::clone(&stop));
             threads.push(std::thread::spawn(move || {
-                serve_http(&listener, &state, &stop, true);
+                serve_http(&listener, state, stop, true);
             }));
         }
 
@@ -189,11 +245,11 @@ impl Fake {
                 "/ctl/IPConn".to_string(),
             ),
         };
-        state.lock().unwrap().description = description(&control_url);
+        state.lock().unwrap().description = description(&control_url, behaviour.second.is_some());
         {
             let (state, stop) = (Arc::clone(&state), Arc::clone(&stop));
             threads.push(std::thread::spawn(move || {
-                serve_http(&listener, &state, &stop, false);
+                serve_http(&listener, state, stop, false);
             }));
         }
 
@@ -222,33 +278,69 @@ impl Fake {
         }
     }
 
+    /// This fake as a mapper's gateway, with intervals short enough to see
+    /// renewals within a test.
+    pub fn gateway(&self) -> Gateway {
+        Gateway {
+            endpoints: self.endpoints,
+            timing: FAST,
+        }
+    }
+
+    /// As [`Fake::gateway`], a PCP or NAT-PMP mapping asking for
+    /// `lifetime_s`, so that nothing but a look renews it within a test.
+    pub fn gateway_with_lifetime(&self, lifetime_s: u32) -> Gateway {
+        Gateway {
+            endpoints: self.endpoints,
+            timing: crate::mapper::Timing { lifetime_s, ..FAST },
+        }
+    }
+
     /// The live mappings.
-    pub(crate) fn table(&self) -> BTreeMap<u16, Entry> {
+    pub fn table(&self) -> BTreeMap<u16, Entry> {
         let mut state = self.state.lock().unwrap();
         state.purge();
         state.table.clone()
     }
 
-    pub(crate) fn insert(&self, port: u16, entry: Entry) {
+    pub fn insert(&self, port: u16, entry: Entry) {
         self.state.lock().unwrap().table.insert(port, entry);
     }
 
     /// Forget every mapping and begin a new epoch, as a gateway that
     /// restarted.
-    pub(crate) fn restart(&self) {
+    pub fn restart(&self) {
+        self.restart_shifted(0);
+    }
+
+    /// Restart, and from then on grant every PCP and NAT-PMP mapping the
+    /// external port `shift` above the one asked for.
+    pub fn restart_shifted(&self, shift: u16) {
         let mut state = self.state.lock().unwrap();
         state.table.clear();
         state.started = Instant::now();
+        state.shift = shift;
+    }
+
+    /// Answer nothing for `span`: no datagram, and every connection closed
+    /// unanswered. What is asked meanwhile is not carried out.
+    pub fn mute(&self, span: Duration) {
+        self.state.lock().unwrap().muted_until = Some(Instant::now() + span);
     }
 
     /// How often `what` was asked, for `port` when it names one.
-    pub(crate) fn calls(&self, action: &str, port: u16) -> u32 {
+    pub fn calls(&self, action: &str, port: u16) -> u32 {
         let state = self.state.lock().unwrap();
         state
             .calls
             .get(&(action.to_string(), port))
             .copied()
             .unwrap_or(0)
+    }
+
+    /// The external port the last PCP mapping of `port` suggested.
+    pub fn suggested(&self, port: u16) -> Option<u16> {
+        self.state.lock().unwrap().suggested.get(&port).copied()
     }
 }
 
@@ -279,6 +371,9 @@ fn serve_control(socket: &UdpSocket, state: &Mutex<State>, stop: &AtomicBool) {
         };
         let request = &buf[..n];
         let mut state = state.lock().unwrap();
+        if state.muted() {
+            continue;
+        }
         state.purge();
         let answer = match request.first() {
             Some(2) if state.behaviour.pcp => pcp(&mut state, request),
@@ -291,8 +386,15 @@ fn serve_control(socket: &UdpSocket, state: &Mutex<State>, stop: &AtomicBool) {
             Some(0) if state.behaviour.natpmp => natpmp(&mut state, request, *sender.ip()),
             _ => None,
         };
+        // A mapping carried out and never answered.
+        let mapping = request.first() == Some(&2)
+            && request.get(1) == Some(&1)
+            && request.get(4..8) != Some(&[0, 0, 0, 0][..]);
+        let withheld = state.behaviour.unanswered == Some("MAP") && mapping;
         drop(state);
-        if let Some(answer) = answer {
+        if let Some(answer) = answer
+            && !withheld
+        {
             let _ = socket.send_to(&answer, from);
         }
     }
@@ -316,6 +418,7 @@ fn pcp(state: &mut State, request: &[u8]) -> Option<Vec<u8>> {
     }
     let nonce: [u8; 12] = request[24..36].try_into().unwrap();
     let port = u16::from_be_bytes([request[40], request[41]]);
+    let suggested = u16::from_be_bytes([request[42], request[43]]);
     let mut granted = 0;
     match state.table.get(&port) {
         // A mapping named by another nonce is not this request's to change.
@@ -325,6 +428,7 @@ fn pcp(state: &mut State, request: &[u8]) -> Option<Vec<u8>> {
             state.count("pcp-delete", port);
         }
         _ => {
+            state.suggested.insert(port, suggested);
             state.table.insert(
                 port,
                 Entry {
@@ -342,7 +446,8 @@ fn pcp(state: &mut State, request: &[u8]) -> Option<Vec<u8>> {
     answer.extend_from_slice(&nonce);
     answer.extend_from_slice(&[17, 0, 0, 0]);
     answer.extend_from_slice(&port.to_be_bytes());
-    answer.extend_from_slice(&(if granted == 0 { 0 } else { port }).to_be_bytes());
+    let external = if granted == 0 { 0 } else { port + state.shift };
+    answer.extend_from_slice(&external.to_be_bytes());
     answer.extend_from_slice(&EXTERNAL.to_ipv6_mapped().octets());
     Some(answer)
 }
@@ -374,10 +479,11 @@ fn natpmp(state: &mut State, request: &[u8], client: Ipv4Addr) -> Option<Vec<u8>
                     },
                 );
             }
+            let external = if lifetime == 0 { 0 } else { port + state.shift };
             let mut answer = vec![0, 129, 0, 0];
             answer.extend_from_slice(&epoch);
             answer.extend_from_slice(&port.to_be_bytes());
-            answer.extend_from_slice(&(if lifetime == 0 { 0 } else { port }).to_be_bytes());
+            answer.extend_from_slice(&external.to_be_bytes());
             answer.extend_from_slice(&lifetime.to_be_bytes());
             Some(answer)
         }
@@ -394,10 +500,14 @@ fn serve_search(socket: &UdpSocket, location: &str, state: &Mutex<State>, stop: 
         let text = String::from_utf8_lossy(&buf[..n]);
         {
             let mut state = state.lock().unwrap();
-            if !state.behaviour.upnp || !text.starts_with("M-SEARCH") {
+            if !state.behaviour.upnp || state.muted() || !text.starts_with("M-SEARCH") {
                 continue;
             }
             state.count("M-SEARCH", 0);
+            if state.searches_seen < state.behaviour.searches_ignored {
+                state.searches_seen += 1;
+                continue;
+            }
         }
         let target = text
             .lines()
@@ -412,17 +522,33 @@ fn serve_search(socket: &UdpSocket, location: &str, state: &Mutex<State>, stop: 
     }
 }
 
-fn serve_http(listener: &TcpListener, state: &Mutex<State>, stop: &AtomicBool, elsewhere: bool) {
+/// Each connection on a thread of its own, as a gateway serves them: one held
+/// open never keeps the next waiting.
+fn serve_http(
+    listener: &TcpListener,
+    state: Arc<Mutex<State>>,
+    stop: Arc<AtomicBool>,
+    elsewhere: bool,
+) {
     while !stop.load(Ordering::Acquire) {
         match listener.accept() {
             Ok((stream, _)) => {
                 if elsewhere {
                     state.lock().unwrap().count("elsewhere", 0);
                 }
-                answer(stream, state, stop);
+                let (state, stop) = (Arc::clone(&state), Arc::clone(&stop));
+                std::thread::spawn(move || answer(stream, &state, &stop));
             }
             Err(_) => std::thread::sleep(Duration::from_millis(5)),
         }
+    }
+}
+
+/// Wait out `span` in slices, so that the fake itself still stops at once.
+fn hold(span: Duration, stop: &AtomicBool) {
+    let end = Instant::now() + span;
+    while Instant::now() < end && !stop.load(Ordering::Acquire) {
+        std::thread::sleep(Duration::from_millis(10));
     }
 }
 
@@ -466,21 +592,30 @@ fn answer(mut stream: TcpStream, state: &Mutex<State>, stop: &AtomicBool) {
         }
     }
     let body = &buf[head..head + length];
-    // A slow answer, in slices, so that the fake itself still stops at once.
-    let slow = state.lock().unwrap().behaviour.slow;
-    let end = Instant::now() + slow;
-    while Instant::now() < end && !stop.load(Ordering::Acquire) {
-        std::thread::sleep(Duration::from_millis(10));
+    // Silent: the connection closed, nothing carried out.
+    if state.lock().unwrap().muted() {
+        return;
     }
-    let (status, body) = match (path.as_str(), action) {
+    let slow = state.lock().unwrap().behaviour.slow;
+    hold(slow, stop);
+    let (status, body) = match (path.as_str(), action.as_deref()) {
         ("/rootDesc.xml", _) => {
             let mut state = state.lock().unwrap();
             state.count("GET", 0);
             (200, state.description.clone())
         }
-        ("/ctl/IPConn", Some(action)) => control(&mut state.lock().unwrap(), &action, body),
+        ("/ctl/IPConn", Some(action)) => control(&mut state.lock().unwrap(), action, body),
+        ("/ctl/Second", Some(action)) => second(&mut state.lock().unwrap(), action),
         _ => (404, String::new()),
     };
+    // Carried out, and the answer withheld while the connection stays open.
+    let withheld = action
+        .as_deref()
+        .is_some_and(|action| state.lock().unwrap().behaviour.unanswered == Some(action));
+    if withheld {
+        hold(HOLD, stop);
+        return;
+    }
     let reason = match status {
         200 => "OK",
         500 => "Internal Server Error",
@@ -492,6 +627,20 @@ fn answer(mut stream: TcpStream, state: &Mutex<State>, stop: &AtomicBool) {
          Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
+}
+
+/// The second service: a 404 with no fault for every action, or a connection
+/// that says it is down.
+fn second(state: &mut State, action: &str) -> (u16, String) {
+    state.count(&format!("second-{action}"), 0);
+    match state.behaviour.second {
+        Some(Second::Down) => match action {
+            "GetStatusInfo" => done(action, &[("NewConnectionStatus", "Disconnected".into())]),
+            "GetExternalIPAddress" => done(action, &[("NewExternalIPAddress", String::new())]),
+            _ => fault(501),
+        },
+        _ => (404, String::new()),
+    }
 }
 
 fn control(state: &mut State, action: &str, body: &[u8]) -> (u16, String) {

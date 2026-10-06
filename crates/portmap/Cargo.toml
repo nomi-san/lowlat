@@ -8,6 +8,12 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 
+[features]
+default = []
+# A gateway on loopback that speaks all three protocols, for tests of the
+# crates above that keep a mapping. Test-only, never in a shipping build.
+fake = []
+
 [dependencies]
 # The mapper's sleep and its wake, and the log.
 lowlat-common.workspace = true
@@ -27,14 +33,15 @@ roxmltree = { version = "0.21", default-features = false, features = ["std"] }
 libc.workspace = true
 
 # The adapter walk that names the default gateway, the interface a search
-# leaves by, and the machine's name: the system's own declarations, as the IO
-# shell uses them.
+# leaves by, a connection a stop can cut short, and the machine's name and
+# identifier: the system's own declarations, as the IO shell uses them.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
     "Win32_Networking_WinSock",
+    "Win32_System_Registry",
     "Win32_System_WindowsProgramming",
 ] }
 

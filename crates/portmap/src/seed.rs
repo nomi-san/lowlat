@@ -26,10 +26,33 @@ pub fn port(seed: &str) -> u16 {
     BASE + u16::try_from(djb2(seed) % SPAN).unwrap_or(0)
 }
 
-/// How the gateway lists this side's mapping: by its seed, so another
-/// machine's entry on the same port is never taken for a leftover of ours.
+/// What the machine's own identifier is reduced under: the application's
+/// name for the purpose, fixed.
+const APPLICATION: &[u8] = b"lowlat port mapping";
+
+/// How the gateway lists this side's mapping: the seed, and the machine.
+///
+/// **A seed alone is shared**: machines left with one default name, or an
+/// application that names its instances the same on every machine, would
+/// each take the other's entry for a leftover of its own and delete it. The
+/// machine's own identifier, reduced by a keyed hash so that nothing of it
+/// leaves the machine, tells them apart; this side's own entry for an
+/// address it no longer has still matches.
+#[cfg(any(target_os = "linux", windows))]
 pub fn description(seed: &str) -> String {
-    format!("lowlat-{:08x}", djb2(seed))
+    describe(seed, crate::sys::machine_id().as_deref())
+}
+
+/// The description from a seed and the machine's identifier, where the
+/// system has one.
+pub fn describe(seed: &str, machine: Option<&[u8]>) -> String {
+    match machine {
+        Some(id) => {
+            let [a, b, c, ..] = lowlat_crypto::app_specific(id, APPLICATION);
+            format!("ll-{:08x}-{a:02x}{b:02x}{c:02x}", djb2(seed))
+        }
+        None => format!("ll-{:08x}", djb2(seed)),
+    }
 }
 
 /// The machine's name, the seed when the application gives none: on Windows
@@ -44,21 +67,23 @@ pub fn machine_name() -> String {
 mod tests {
     use super::*;
 
-    /// djb2's values, computed apart from this code; the last one wraps.
+    /// djb2's values and the keyed hash's, computed apart from this code; the
+    /// last seed wraps.
     #[test]
     fn a_seed_picks_its_port_and_its_description() {
+        let machine = Some(&b"0123456789abcdef0123456789abcdef"[..]);
         assert_eq!(
-            (port(""), description("")),
-            (25381, "lowlat-00001505".into())
+            (port(""), describe("", None), describe("", machine)),
+            (25381, "ll-00001505".into(), "ll-00001505-ccb40a".into())
         );
         assert_eq!(
-            (port("HOST-1"), description("HOST-1")),
-            (24097, "lowlat-b596f0a1".into())
+            (port("HOST-1"), describe("HOST-1", None)),
+            (24097, "ll-b596f0a1".into())
         );
         let long = "a much longer seed that wraps around thirty-two bits";
         assert_eq!(
-            (port(long), description(long)),
-            (25375, "lowlat-e9ca2dff".into())
+            (port(long), describe(long, machine)),
+            (25375, "ll-e9ca2dff-ccb40a".into())
         );
     }
 
@@ -71,7 +96,34 @@ mod tests {
             .map(|n| format!("seed-{n}"))
             .find(|seed| port(seed) == port(first))
             .unwrap();
-        assert_ne!(description(first), description(&other));
+        assert_ne!(describe(first, None), describe(&other, None));
+    }
+
+    /// One seed on two machines: one port, and two descriptions.
+    #[test]
+    fn a_description_tells_apart_machines_that_share_a_seed() {
+        let ours = describe("debian", Some(b"one machine"));
+        let theirs = describe("debian", Some(b"another machine"));
+        assert_ne!(ours, theirs);
+        assert!(ours.starts_with("ll-") && theirs.starts_with("ll-"));
+    }
+
+    /// The machine's identifier is read where the system keeps one, and the
+    /// description carries its hash, never the identifier itself.
+    #[cfg(any(target_os = "linux", windows))]
+    #[test]
+    fn this_machine_has_an_identifier_and_hides_it() {
+        let Some(id) = crate::sys::machine_id() else {
+            return;
+        };
+        let text = description("seed");
+        assert_eq!(text, describe("seed", Some(&id)));
+        assert_eq!(text.len(), "ll-00000000-000000".len());
+        let id = String::from_utf8_lossy(&id).to_ascii_lowercase();
+        assert!(
+            !text.contains(id.as_str()),
+            "the description carries the identifier"
+        );
     }
 
     #[cfg(any(target_os = "linux", windows))]

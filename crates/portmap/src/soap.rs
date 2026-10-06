@@ -175,8 +175,10 @@ pub fn parse(name: &str, status: u16, body: &[u8]) -> Result<Answer> {
     } else {
         Error::Status(status)
     };
-    let text = core::str::from_utf8(body).map_err(|_| not_xml)?;
-    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    // As a description is read: a byte that is not the protocol's encoding
+    // never refuses the whole answer.
+    let text = String::from_utf8_lossy(body);
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     let options = roxmltree::ParsingOptions {
         nodes_limit: MAX_NODES,
         ..roxmltree::ParsingOptions::default()
