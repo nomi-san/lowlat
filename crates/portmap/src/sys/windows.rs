@@ -334,8 +334,8 @@ pub(crate) fn machine_id() -> Option<Vec<u8>> {
     (!id.is_empty()).then(|| id.as_bytes().to_vec())
 }
 
-/// The machine's network name, as the system reports it: in capitals, and at
-/// most fifteen characters.
+/// The machine's network name, as the system reports it: at most fifteen
+/// characters, in capitals on most machines but not on every one.
 pub(crate) fn machine_name() -> Option<String> {
     // Room for the longest such name and its terminator, and more.
     let mut name = [0u16; 64];

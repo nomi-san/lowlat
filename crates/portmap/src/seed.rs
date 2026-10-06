@@ -56,8 +56,8 @@ pub fn describe(seed: &str, machine: Option<&[u8]>) -> String {
 }
 
 /// The machine's name, the seed when the application gives none: on Windows
-/// its network name, in capitals, as the system reports it; on Linux its host
-/// name. Empty when the system will not say.
+/// its network name, as the system reports it; on Linux its host name. Empty
+/// when the system will not say.
 #[cfg(any(target_os = "linux", windows))]
 pub fn machine_name() -> String {
     crate::sys::machine_name().unwrap_or_default()
@@ -131,7 +131,12 @@ mod tests {
     fn the_machine_has_a_name() {
         let name = machine_name();
         assert!(!name.is_empty());
+        // The network name, not the longer host name. Its case is the
+        // system's: capitals on most machines, not on every one.
         #[cfg(windows)]
-        assert_eq!(name, name.to_uppercase(), "a network name is in capitals");
+        assert!(
+            name.chars().count() <= 15,
+            "a network name is at most fifteen characters"
+        );
     }
 }
