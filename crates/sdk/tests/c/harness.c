@@ -727,6 +727,28 @@ static int client_half(library lib, const char *(*status_string)(lowlat_status))
         fprintf(stderr, "harness: metrics before a session were not zero\n");
         return 1;
     }
+    // The translation in front of the port: nothing known before a probe,
+    // and a probe naming no server refused.
+    lowlat_status (*client_get_nat)(lowlat_client *, lowlat_nat_info *);
+    lowlat_status (*client_probe_nat)(lowlat_client *, const lowlat_nat_probe *);
+    RESOLVE(client_get_nat, lib, "lowlat_client_get_nat");
+    RESOLVE(client_probe_nat, lib, "lowlat_client_probe_nat");
+    lowlat_nat_info nat;
+    memset(&nat, 0, sizeof nat);
+    nat.size = (uint32_t) sizeof nat;
+    if (client_get_nat(cl, &nat) != LOWLAT_OK || nat.state != LOWLAT_NAT_STATE_NONE
+        || nat.nat_type != LOWLAT_NAT_TYPE_UNKNOWN
+        || nat.mapping != LOWLAT_NAT_MAPPING_UNKNOWN) {
+        fprintf(stderr, "harness: a translation was known before a probe\n");
+        return 1;
+    }
+    lowlat_nat_probe asked;
+    memset(&asked, 0, sizeof asked);
+    asked.size = (uint32_t) sizeof asked;
+    if (client_probe_nat(cl, &asked) != LOWLAT_ERR_INVALID_ARGUMENT) {
+        fprintf(stderr, "harness: a probe naming no server was not refused\n");
+        return 1;
+    }
     client_end(cl);
 
     /* The point of the whole program, for this half: a panic inside the

@@ -38,6 +38,7 @@ pub mod event;
 pub mod feed;
 pub mod frames;
 pub mod input;
+pub mod nat;
 pub mod report;
 pub mod seam;
 mod shell;

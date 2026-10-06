@@ -6,7 +6,7 @@
 //! `begin_p2p` takes what the answer carried. Nothing here speaks to a
 //! signaling service.
 
-use std::net::SocketAddr;
+use std::net::{SocketAddr, SocketAddrV4};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -113,6 +113,12 @@ pub struct Client {
     /// The gateway keeping that port open, for the handle's life. Dropped
     /// after the attempt, which deletes the mapping within its bound.
     mapper: Option<Mapper>,
+    /// The translation in front of the port, as last probed or read off an
+    /// attempt.
+    nat: crate::nat::Shared,
+    /// A probe running on the port, or one that has finished and is not yet
+    /// joined.
+    probing: Option<crate::nat::Probing>,
 }
 
 /// An attempt taken out of its client and still leaving: everything the
@@ -305,6 +311,8 @@ impl Client {
             port: first,
             held,
             mapper,
+            nat: Arc::default(),
+            probing: None,
         })
     }
 
@@ -312,6 +320,59 @@ impl Client {
     /// when none is asked for.
     pub fn mapping(&self) -> Option<lowlat_portmap::Status> {
         self.mapper.as_ref().map(Mapper::status)
+    }
+
+    /// Ask `servers` where they see the handle's port, on a thread of its
+    /// own, until each has answered or `timeout` has passed: the port an
+    /// attempt binds, so the answers are what a peer would meet. Refused
+    /// while an attempt holds the port or another probe runs; an attempt
+    /// begun meanwhile stops it, and what was known before stands.
+    pub fn probe_nat(
+        &mut self,
+        servers: Vec<SocketAddrV4>,
+        timeout: Duration,
+    ) -> Result<(), Error> {
+        // Acquire, as at a new attempt: an attempt still leaving holds it.
+        let attempting = self.attempt.as_ref().is_some_and(|a| a.thread.is_some());
+        if attempting || self.leaving.load(Ordering::Acquire) {
+            return Err(Error::Busy);
+        }
+        let state = self
+            .nat
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .state;
+        if state == crate::nat::State::Probing {
+            return Err(Error::Busy);
+        }
+        if let Some(done) = self.probing.take() {
+            done.finish();
+        }
+        let seed = lowlat_crypto::transaction_seed().map_err(|_| Error::Crypto)?;
+        // The handle's own port, lent and given back as it was; without one
+        // held, the port an attempt would bind, for the probe alone.
+        let lent = self
+            .held
+            .as_ref()
+            .and_then(|held| held.lock().unwrap_or_else(PoisonError::into_inner).take());
+        let (socket, held) = match lent {
+            Some(socket) => (socket, self.held.clone()),
+            None => (
+                lowlat_net::Socket::open_or_any_port(self.port).map_err(|_| Error::Io)?,
+                None,
+            ),
+        };
+        let probing = crate::nat::Probing::start(socket, held, servers, seed, timeout, &self.nat)
+            .map_err(|_| Error::Io)?;
+        self.probing = Some(probing);
+        Ok(())
+    }
+
+    /// The translation in front of the port, as last probed or read off an
+    /// attempt, with the gateway's view as it stands now.
+    pub fn nat(&self) -> crate::nat::Nat {
+        let observed = *self.nat.lock().unwrap_or_else(PoisonError::into_inner);
+        crate::nat::read(&observed, self.mapping())
     }
 
     /// Another decoder, chosen by the application: probed here, on the
@@ -644,6 +705,10 @@ impl Client {
         self.telemetry.relayed.store(0, Ordering::Relaxed);
         self.telemetry.path_relayed.store(false, Ordering::Relaxed);
 
+        // A probe on the port gives way: stopped, and the port given back.
+        if let Some(probing) = self.probing.take() {
+            probing.finish();
+        }
         // The handle's own port when it holds one, lent for the attempt;
         // otherwise bound here, the walk stepping past a port that is taken.
         let lent = self
@@ -686,6 +751,7 @@ impl Client {
             relay: attempt.config.relay.clone(),
             relay_seed,
             mapping: self.mapper.as_ref().map(Mapper::reader),
+            nat: Arc::clone(&self.nat),
             ours: (attempt.ours.ufrag.clone(), attempt.ours.pwd.clone()),
             theirs: (theirs.ufrag.clone(), theirs.pwd.clone()),
             material,
@@ -987,6 +1053,9 @@ impl Drop for Client {
     fn drop(&mut self) {
         if let Some(id) = self.attempt.as_ref().map(|attempt| attempt.id.clone()) {
             self.end_connection(&id);
+        }
+        if let Some(probing) = self.probing.take() {
+            probing.finish();
         }
     }
 }

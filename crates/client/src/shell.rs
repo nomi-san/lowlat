@@ -49,6 +49,9 @@ pub(crate) struct Attached {
     /// The gateway's mapping of the attempt's port, read without a lock;
     /// none when no mapping is kept.
     pub mapping: Option<Reader>,
+    /// Where the translation in front of the port is kept, for what the
+    /// attempt's own reflexive answers say of it.
+    pub nat: crate::nat::Shared,
     pub ours: (String, String),
     pub theirs: (String, String),
     pub material: [u8; 36],
@@ -99,6 +102,7 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
         relay,
         relay_seed,
         mapping,
+        nat,
         ours,
         theirs,
         material,
@@ -313,6 +317,14 @@ pub(crate) fn run(args: Attached, wake: Wake, running: &Running) {
             .reflexive()
             .filter(|addr| !reported.contains(addr))
             .collect();
+        if !fresh.is_empty() {
+            // What the answers so far say of the translation, once they can.
+            let answers: Vec<_> = shell.endpoint().conn().answers().collect();
+            let port = shell.socket().local_addr().map_or(0, |local| local.port());
+            if let Some(observed) = crate::nat::attempt(&answers, &servers, port) {
+                crate::nat::publish(&nat, observed);
+            }
+        }
         for addr in fresh {
             reported.push(addr);
             emit.send(Event::Candidate {

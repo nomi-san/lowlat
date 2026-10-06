@@ -42,7 +42,7 @@
 #define LOWLAT_ABI_MAJOR 0
 
 /// The minor version, raised when surface is appended.
-#define LOWLAT_ABI_MINOR 22
+#define LOWLAT_ABI_MINOR 23
 
 /// The host half is in this build: every `lowlat_host_*` entry point exists.
 /// A library built for Windows carries the client half alone.
@@ -150,6 +150,38 @@
 
 /// The longest relay username or password this boundary carries.
 #define LOWLAT_RELAY_CREDENTIAL_MAX 128
+
+/// The numbering game consoles report a translation by, as
+/// `lowlat_nat_info.nat_type` carries it (minor 23): unknown while the
+/// answers cannot tell.
+#define LOWLAT_NAT_TYPE_UNKNOWN 0
+
+/// Nothing translates.
+#define LOWLAT_NAT_TYPE_1 1
+
+/// One public port serves every destination, or the gateway's mapping of the
+/// port is confirmed: a peer reaches the port at the address it is told.
+#define LOWLAT_NAT_TYPE_2 2
+
+/// A public port per destination, or no answer at all: the address a peer
+/// is told was made for somebody else.
+#define LOWLAT_NAT_TYPE_3 3
+
+/// Where `lowlat_nat_info` stands (minor 23): nothing asked yet.
+#define LOWLAT_NAT_STATE_NONE 0
+
+/// A probe is running; the fields still say what was known before it.
+#define LOWLAT_NAT_STATE_PROBING 1
+
+/// A result is in.
+#define LOWLAT_NAT_STATE_DONE 2
+
+/// What `lowlat_nat_info`'s result was read from (minor 23), zero before
+/// there is one: a probe.
+#define LOWLAT_NAT_SOURCE_PROBE 1
+
+/// An attempt's own reflexive answers, once two server addresses answered.
+#define LOWLAT_NAT_SOURCE_ATTEMPT 2
 
 /// The sound codec on the wire, as `lowlat_client_status.audio_codec`
 /// reports it.
@@ -749,6 +781,28 @@ typedef enum lowlat_mapping {
     LOWLAT_MAPPING_NAT_PMP = 2,
     LOWLAT_MAPPING_UPNP = 3,
 } lowlat_mapping;
+
+/// How the translation in front of a client's port maps it (minor 23), as
+/// `lowlat_nat_info` reports it.
+typedef enum lowlat_nat_mapping {
+    /// Nothing to compare: no result yet, or answers from fewer than two
+    /// server addresses.
+    LOWLAT_NAT_MAPPING_UNKNOWN = 0,
+    /// No server answered.
+    LOWLAT_NAT_MAPPING_NO_ANSWER = 1,
+    /// Nothing translates: the first server saw the port as it is.
+    LOWLAT_NAT_MAPPING_NONE = 2,
+    /// One public address and port, whatever the destination.
+    LOWLAT_NAT_MAPPING_INDEPENDENT = 3,
+    /// A public port per destination, the servers asked not telling whether
+    /// per address or per address and port.
+    LOWLAT_NAT_MAPPING_DEPENDENT = 4,
+    /// A public port per destination address: two ports of one server saw
+    /// one port.
+    LOWLAT_NAT_MAPPING_ADDRESS_DEPENDENT = 5,
+    /// A public port per destination address and port.
+    LOWLAT_NAT_MAPPING_ADDRESS_AND_PORT_DEPENDENT = 6,
+} lowlat_nat_mapping;
 
 /// One client, as the application holds it.
 ///
@@ -1749,6 +1803,65 @@ typedef struct lowlat_client_status {
     uint16_t mapping_refusal;
     uint32_t mapping_refused_by;
 } lowlat_client_status;
+
+/// What a probe of the translation in front of a client's port asks
+/// (minor 23, `lowlat_client_probe_nat`).
+typedef struct lowlat_nat_probe {
+    /// Set by the caller to `sizeof(lowlat_nat_probe)`.
+    uint32_t size;
+    /// How many of `servers` are set.
+    uint32_t server_count;
+    /// Reflexive servers, each as `host:port`, NUL-terminated, named as
+    /// `lowlat_client_config.servers` names them; each is asked at the first
+    /// IPv4 address its name has. **Two at two addresses are the least that
+    /// tells the mapping**; two ports of one address beside them tell it
+    /// further.
+    char servers[LOWLAT_SERVERS_MAX][LOWLAT_SERVER_MAX];
+    /// How long the servers have to answer, in milliseconds: zero for three
+    /// seconds, and thirty seconds at most.
+    uint32_t timeout_ms;
+} lowlat_nat_probe;
+
+/// The translation in front of a client's port (minor 23,
+/// `lowlat_client_get_nat`).
+typedef struct lowlat_nat_info {
+    /// Set by the caller to `sizeof(lowlat_nat_info)`.
+    uint32_t size;
+    /// One of `LOWLAT_NAT_STATE_*`.
+    uint32_t state;
+    /// One of `LOWLAT_NAT_TYPE_*`. A confirmed mapping on the gateway numbers
+    /// 2 whatever `mapping` says, since a peer reaches it at the address it
+    /// is told.
+    uint32_t nat_type;
+    /// One of `lowlat_nat_mapping`: how the translation itself maps the
+    /// port, beside the number.
+    uint32_t mapping;
+    /// Where the first server to answer saw the port, NUL-terminated, and
+    /// the port it saw; empty and zero without an answer.
+    char public_address[LOWLAT_ADDRESS_MAX];
+    uint16_t public_port;
+    /// The public port is the client's own.
+    bool port_preserved;
+    /// The gateway's view, as it stands when this is read, with
+    /// `lowlat_client_create_info.port_mapping` on: its own address is where
+    /// the servers saw the port, so nothing translates beyond it and its
+    /// mapping is open to anyone.
+    bool gateway_confirmed;
+    /// Its own address is another one: a second translator beyond the
+    /// gateway, a carrier's or another router's, its mapping reaching only
+    /// that far.
+    bool double_translation;
+    /// Its own address is in the shared space a carrier hands its customers.
+    bool carrier_range;
+    /// Servers asked, and how many of them answered.
+    uint32_t servers_asked;
+    uint32_t servers_answered;
+    /// One of `LOWLAT_NAT_SOURCE_*`.
+    uint32_t source;
+    /// What keeps the port mapped on the gateway as this is read: one of
+    /// `lowlat_mapping`.
+    uint32_t gateway;
+} lowlat_nat_info;
 
 /// What one channel did, seen from the receiving end.
 ///
@@ -3019,6 +3132,41 @@ lowlat_status lowlat_client_send_user_data(lowlat_client *cl,
 /// `lowlat_client_status` whose `size` is set.
 lowlat_status lowlat_client_get_status(lowlat_client *cl,
                                        lowlat_client_status *out) LOWLAT_NOEXCEPT;
+
+/// Ask reflexive servers where they see this client's port, on a thread of
+/// the library's own; `lowlat_client_get_nat` reads what they said.
+///
+/// **The port is the one every attempt binds**, held by the handle with
+/// `port_mapping` on and bound for the probe without it, so the answers are
+/// what a peer would meet. Refused while an attempt holds the port or another
+/// probe runs; an attempt begun during one stops it, and what was known
+/// before stands. Each server is asked every half second until it answers or
+/// the timeout passes.
+///
+/// @param[in] cl The handle from `lowlat_client_create`.
+/// @param[in] cfg The servers and the timeout, `size` set.
+/// @returns `LOWLAT_OK` once the probe is running, `LOWLAT_ERR_ALREADY_STARTED`
+/// while an attempt or a probe holds the port, `LOWLAT_ERR_INVALID_ARGUMENT` for no
+/// server or one whose name has no IPv4 address, or `LOWLAT_ERR_IO`.
+///
+/// @attention `cl` came from `lowlat_client_create`; `cfg` points to one
+/// `lowlat_nat_probe` whose `size` is set.
+lowlat_status lowlat_client_probe_nat(lowlat_client *cl,
+                                      const lowlat_nat_probe *cfg) LOWLAT_NOEXCEPT;
+
+/// The translation in front of this client's port, as last probed by
+/// `lowlat_client_probe_nat` or read off an attempt's own reflexive
+/// answers, with the gateway's view as it stands now. Polled: nothing says
+/// when it changes.
+///
+/// @param[in] cl The handle from `lowlat_client_create`.
+/// @param[out] out One `lowlat_nat_info` with `size` set, filled.
+/// @returns `LOWLAT_OK`, or `LOWLAT_ERR_INVALID_ARGUMENT`.
+///
+/// @attention `cl` came from `lowlat_client_create`; `out` points to one
+/// `lowlat_nat_info` whose `size` is set.
+lowlat_status lowlat_client_get_nat(lowlat_client *cl,
+                                    lowlat_nat_info *out) LOWLAT_NOEXCEPT;
 
 /// Read what this client measured of the session, per channel.
 ///

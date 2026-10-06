@@ -537,14 +537,19 @@ pub struct lowlat_client_status {
 /// caller may pass, and what a caller built against an older header passes.
 const STATUS_MINOR_13: usize = core::mem::offset_of!(lowlat_client_status, relay_address);
 
-/// The gateway's mapping as the status carries it.
-fn put_mapping(status: &mut lowlat_client_status, mapping: &::lowlat_portmap::Status) {
-    let code = |protocol| match protocol {
+/// A protocol as `lowlat_mapping` numbers it.
+fn mapping_code(protocol: ::lowlat_portmap::Protocol) -> u32 {
+    (match protocol {
         ::lowlat_portmap::Protocol::None => lowlat_mapping::LOWLAT_MAPPING_NONE,
         ::lowlat_portmap::Protocol::Pcp => lowlat_mapping::LOWLAT_MAPPING_PCP,
         ::lowlat_portmap::Protocol::NatPmp => lowlat_mapping::LOWLAT_MAPPING_NAT_PMP,
         ::lowlat_portmap::Protocol::Upnp => lowlat_mapping::LOWLAT_MAPPING_UPNP,
-    } as u32;
+    }) as u32
+}
+
+/// The gateway's mapping as the status carries it.
+fn put_mapping(status: &mut lowlat_client_status, mapping: &::lowlat_portmap::Status) {
+    let code = mapping_code;
     status.mapping = code(mapping.protocol);
     status.mapped_port = mapping.port;
     if let Some(address) = mapping.address {
@@ -554,6 +559,119 @@ fn put_mapping(status: &mut lowlat_client_status, mapping: &::lowlat_portmap::St
         status.mapping_refusal = refusal;
         status.mapping_refused_by = code(protocol);
     }
+}
+
+/// What a probe of the translation in front of a client's port asks
+/// (minor 23, [`lowlat_client_probe_nat`]).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_nat_probe {
+    /// Set by the caller to `sizeof(lowlat_nat_probe)`.
+    pub size: u32,
+    /// How many of `servers` are set.
+    pub server_count: u32,
+    /// Reflexive servers, each as `host:port`, NUL-terminated, named as
+    /// `lowlat_client_config.servers` names them; each is asked at the first
+    /// IPv4 address its name has. **Two at two addresses are the least that
+    /// tells the mapping**; two ports of one address beside them tell it
+    /// further.
+    pub servers: [[c_char; LOWLAT_SERVER_MAX]; LOWLAT_SERVERS_MAX],
+    /// How long the servers have to answer, in milliseconds: zero for three
+    /// seconds, and thirty seconds at most.
+    pub timeout_ms: u32,
+}
+
+/// How the translation in front of a client's port maps it (minor 23), as
+/// [`lowlat_nat_info`] reports it.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum lowlat_nat_mapping {
+    /// Nothing to compare: no result yet, or answers from fewer than two
+    /// server addresses.
+    LOWLAT_NAT_MAPPING_UNKNOWN = 0,
+    /// No server answered.
+    LOWLAT_NAT_MAPPING_NO_ANSWER = 1,
+    /// Nothing translates: the first server saw the port as it is.
+    LOWLAT_NAT_MAPPING_NONE = 2,
+    /// One public address and port, whatever the destination.
+    LOWLAT_NAT_MAPPING_INDEPENDENT = 3,
+    /// A public port per destination, the servers asked not telling whether
+    /// per address or per address and port.
+    LOWLAT_NAT_MAPPING_DEPENDENT = 4,
+    /// A public port per destination address: two ports of one server saw
+    /// one port.
+    LOWLAT_NAT_MAPPING_ADDRESS_DEPENDENT = 5,
+    /// A public port per destination address and port.
+    LOWLAT_NAT_MAPPING_ADDRESS_AND_PORT_DEPENDENT = 6,
+}
+
+/// The numbering game consoles report a translation by, as
+/// `lowlat_nat_info.nat_type` carries it (minor 23): unknown while the
+/// answers cannot tell.
+pub const LOWLAT_NAT_TYPE_UNKNOWN: u32 = 0;
+/// Nothing translates.
+pub const LOWLAT_NAT_TYPE_1: u32 = 1;
+/// One public port serves every destination, or the gateway's mapping of the
+/// port is confirmed: a peer reaches the port at the address it is told.
+pub const LOWLAT_NAT_TYPE_2: u32 = 2;
+/// A public port per destination, or no answer at all: the address a peer
+/// is told was made for somebody else.
+pub const LOWLAT_NAT_TYPE_3: u32 = 3;
+
+/// Where [`lowlat_nat_info`] stands (minor 23): nothing asked yet.
+pub const LOWLAT_NAT_STATE_NONE: u32 = 0;
+/// A probe is running; the fields still say what was known before it.
+pub const LOWLAT_NAT_STATE_PROBING: u32 = 1;
+/// A result is in.
+pub const LOWLAT_NAT_STATE_DONE: u32 = 2;
+
+/// What [`lowlat_nat_info`]'s result was read from (minor 23), zero before
+/// there is one: a probe.
+pub const LOWLAT_NAT_SOURCE_PROBE: u32 = 1;
+/// An attempt's own reflexive answers, once two server addresses answered.
+pub const LOWLAT_NAT_SOURCE_ATTEMPT: u32 = 2;
+
+/// The translation in front of a client's port (minor 23,
+/// [`lowlat_client_get_nat`]).
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct lowlat_nat_info {
+    /// Set by the caller to `sizeof(lowlat_nat_info)`.
+    pub size: u32,
+    /// One of `LOWLAT_NAT_STATE_*`.
+    pub state: u32,
+    /// One of `LOWLAT_NAT_TYPE_*`. A confirmed mapping on the gateway numbers
+    /// 2 whatever `mapping` says, since a peer reaches it at the address it
+    /// is told.
+    pub nat_type: u32,
+    /// One of [`lowlat_nat_mapping`]: how the translation itself maps the
+    /// port, beside the number.
+    pub mapping: u32,
+    /// Where the first server to answer saw the port, NUL-terminated, and
+    /// the port it saw; empty and zero without an answer.
+    pub public_address: [c_char; LOWLAT_ADDRESS_MAX],
+    pub public_port: u16,
+    /// The public port is the client's own.
+    pub port_preserved: bool,
+    /// The gateway's view, as it stands when this is read, with
+    /// `lowlat_client_create_info.port_mapping` on: its own address is where
+    /// the servers saw the port, so nothing translates beyond it and its
+    /// mapping is open to anyone.
+    pub gateway_confirmed: bool,
+    /// Its own address is another one: a second translator beyond the
+    /// gateway, a carrier's or another router's, its mapping reaching only
+    /// that far.
+    pub double_translation: bool,
+    /// Its own address is in the shared space a carrier hands its customers.
+    pub carrier_range: bool,
+    /// Servers asked, and how many of them answered.
+    pub servers_asked: u32,
+    pub servers_answered: u32,
+    /// One of `LOWLAT_NAT_SOURCE_*`.
+    pub source: u32,
+    /// What keeps the port mapped on the gateway as this is read: one of
+    /// [`lowlat_mapping`].
+    pub gateway: u32,
 }
 
 /// What one channel did, seen from the receiving end.
@@ -2007,6 +2125,157 @@ pub unsafe extern "C" fn lowlat_client_get_status(
     }
 }
 
+/// The longest a probe of the translation is given, and what zero asks for.
+const NAT_PROBE_LONGEST: Duration = Duration::from_secs(30);
+const NAT_PROBE_DEFAULT: Duration = Duration::from_secs(3);
+
+/// The probe's servers: each name at its first IPv4 address. A name that
+/// has none is refused, as is a probe naming no server.
+fn probe_servers(cfg: &lowlat_nat_probe) -> Option<Vec<std::net::SocketAddrV4>> {
+    let mut servers = Vec::new();
+    for server in cfg.servers.iter().take(cfg.server_count as usize) {
+        let text = taken(server)?;
+        if text.is_empty() {
+            continue;
+        }
+        let found = ::lowlat_net::addrs::resolve_server(text);
+        let v4 = found.iter().find_map(|addr| match addr {
+            std::net::SocketAddr::V4(v4) => Some(*v4),
+            std::net::SocketAddr::V6(_) => None,
+        })?;
+        if !servers.contains(&v4) {
+            servers.push(v4);
+        }
+    }
+    (!servers.is_empty()).then_some(servers)
+}
+
+/// Ask reflexive servers where they see this client's port, on a thread of
+/// the library's own; [`lowlat_client_get_nat`] reads what they said.
+///
+/// **The port is the one every attempt binds**, held by the handle with
+/// `port_mapping` on and bound for the probe without it, so the answers are
+/// what a peer would meet. Refused while an attempt holds the port or another
+/// probe runs; an attempt begun during one stops it, and what was known
+/// before stands. Each server is asked every half second until it answers or
+/// the timeout passes.
+///
+/// @param[in] cl The handle from [`lowlat_client_create`].
+/// @param[in] cfg The servers and the timeout, `size` set.
+/// @returns [`LOWLAT_OK`] once the probe is running, [`LOWLAT_ERR_ALREADY_STARTED`]
+/// while an attempt or a probe holds the port, [`LOWLAT_ERR_INVALID_ARGUMENT`] for no
+/// server or one whose name has no IPv4 address, or [`LOWLAT_ERR_IO`].
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`]; `cfg` points to one
+/// [`lowlat_nat_probe`] whose `size` is set.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_probe_nat(
+    cl: *mut lowlat_client,
+    cfg: *const lowlat_nat_probe,
+) -> lowlat_status {
+    unsafe {
+        entered(cl, |handle| {
+            let Some(cfg) = cfg.as_ref() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            if (cfg.size as usize) < core::mem::size_of::<lowlat_nat_probe>() {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let Some(servers) = probe_servers(cfg) else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            let timeout = match cfg.timeout_ms {
+                0 => NAT_PROBE_DEFAULT,
+                ms => Duration::from_millis(u64::from(ms)).min(NAT_PROBE_LONGEST),
+            };
+            match handle.held().seam.probe_nat(servers, timeout) {
+                Ok(()) => LOWLAT_OK,
+                Err(error) => refused(error),
+            }
+        })
+    }
+}
+
+/// The translation as [`lowlat_nat_info`] carries it.
+fn nat_info(size: u32, nat: &::lowlat_client::nat::Nat) -> lowlat_nat_info {
+    use ::lowlat_client::nat::{Source, State};
+    use ::lowlat_core::nat::Mapping;
+    let mapping = match nat.mapping {
+        None | Some(Mapping::Unknown) => lowlat_nat_mapping::LOWLAT_NAT_MAPPING_UNKNOWN,
+        Some(Mapping::NoAnswer) => lowlat_nat_mapping::LOWLAT_NAT_MAPPING_NO_ANSWER,
+        Some(Mapping::None) => lowlat_nat_mapping::LOWLAT_NAT_MAPPING_NONE,
+        Some(Mapping::Independent) => lowlat_nat_mapping::LOWLAT_NAT_MAPPING_INDEPENDENT,
+        Some(Mapping::Dependent) => lowlat_nat_mapping::LOWLAT_NAT_MAPPING_DEPENDENT,
+        Some(Mapping::AddressDependent) => lowlat_nat_mapping::LOWLAT_NAT_MAPPING_ADDRESS_DEPENDENT,
+        Some(Mapping::AddressAndPortDependent) => {
+            lowlat_nat_mapping::LOWLAT_NAT_MAPPING_ADDRESS_AND_PORT_DEPENDENT
+        }
+    };
+    let mut info = lowlat_nat_info {
+        size,
+        state: match nat.state {
+            State::None => LOWLAT_NAT_STATE_NONE,
+            State::Probing => LOWLAT_NAT_STATE_PROBING,
+            State::Done => LOWLAT_NAT_STATE_DONE,
+        },
+        nat_type: nat.number.map_or(LOWLAT_NAT_TYPE_UNKNOWN, u32::from),
+        mapping: mapping as u32,
+        public_address: [0; LOWLAT_ADDRESS_MAX],
+        public_port: 0,
+        port_preserved: nat.port_preserved,
+        gateway_confirmed: nat.confirmed,
+        double_translation: nat.double,
+        carrier_range: nat.carrier,
+        servers_asked: u32::try_from(nat.asked).unwrap_or(u32::MAX),
+        servers_answered: u32::try_from(nat.answered).unwrap_or(u32::MAX),
+        source: match (nat.mapping, nat.source) {
+            (None, _) => 0,
+            (Some(_), Source::Probe) => LOWLAT_NAT_SOURCE_PROBE,
+            (Some(_), Source::Attempt) => LOWLAT_NAT_SOURCE_ATTEMPT,
+        },
+        gateway: mapping_code(nat.gateway),
+    };
+    if let Some(public) = nat.public {
+        put_address(&mut info.public_address, &mut info.public_port, &public);
+    }
+    info
+}
+
+/// The translation in front of this client's port, as last probed by
+/// [`lowlat_client_probe_nat`] or read off an attempt's own reflexive
+/// answers, with the gateway's view as it stands now. Polled: nothing says
+/// when it changes.
+///
+/// @param[in] cl The handle from [`lowlat_client_create`].
+/// @param[out] out One [`lowlat_nat_info`] with `size` set, filled.
+/// @returns [`LOWLAT_OK`], or [`LOWLAT_ERR_INVALID_ARGUMENT`].
+///
+/// # Safety
+///
+/// `cl` came from [`lowlat_client_create`]; `out` points to one
+/// [`lowlat_nat_info`] whose `size` is set.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn lowlat_client_get_nat(
+    cl: *mut lowlat_client,
+    out: *mut lowlat_nat_info,
+) -> lowlat_status {
+    unsafe {
+        entered(cl, |handle| {
+            let Some(out) = out.as_mut() else {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            };
+            if (out.size as usize) < core::mem::size_of::<lowlat_nat_info>() {
+                return LOWLAT_ERR_INVALID_ARGUMENT;
+            }
+            let nat = handle.held().seam.nat();
+            *out = nat_info(out.size, &nat);
+            LOWLAT_OK
+        })
+    }
+}
+
 /// One channel's figures, as the session thread last published them.
 fn channel_metrics(
     t: &::lowlat_client::Telemetry,
@@ -2886,6 +3155,189 @@ mod tests {
         );
         assert_eq!(taken(&status.mapped_address), Some(""));
         assert_eq!((status.mapping_refusal, status.mapping_refused_by), (0, 0));
+    }
+
+    /// A reflexive server on loopback answering `limit` requests with the
+    /// source it saw moved by `shift` ports; its name.
+    fn reflexive(
+        at: std::net::Ipv4Addr,
+        shift: u16,
+        limit: usize,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        let socket = std::net::UdpSocket::bind((at, 0)).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let name = socket.local_addr().unwrap().to_string();
+        let thread = std::thread::spawn(move || {
+            let mut buf = [0u8; 256];
+            for _ in 0..limit {
+                let Ok((len, from)) = socket.recv_from(&mut buf) else {
+                    return;
+                };
+                let Ok(request) = ::lowlat_core::stun::Message::parse(&buf[..len]) else {
+                    continue;
+                };
+                let seen = std::net::SocketAddr::new(from.ip(), from.port().wrapping_add(shift));
+                let mut out = [0u8; 256];
+                let len = ::lowlat_core::stun::encode_binding_response(
+                    &mut out,
+                    request.transaction_id(),
+                    seen,
+                    "any",
+                )
+                .unwrap();
+                let _ = socket.send_to(&out[..len], from);
+            }
+        });
+        (name, thread)
+    }
+
+    fn probe_of(names: &[&str], timeout_ms: u32) -> lowlat_nat_probe {
+        let mut cfg = lowlat_nat_probe {
+            size: core::mem::size_of::<lowlat_nat_probe>() as u32,
+            server_count: names.len() as u32,
+            servers: [[0; LOWLAT_SERVER_MAX]; LOWLAT_SERVERS_MAX],
+            timeout_ms,
+        };
+        for (slot, name) in cfg.servers.iter_mut().zip(names) {
+            put(slot, name);
+        }
+        cfg
+    }
+
+    fn nat_of(handle: *mut lowlat_client) -> lowlat_nat_info {
+        // SAFETY: plain data.
+        let mut info: lowlat_nat_info = unsafe { core::mem::zeroed() };
+        info.size = core::mem::size_of::<lowlat_nat_info>() as u32;
+        assert_eq!(
+            unsafe { lowlat_client_get_nat(handle, &raw mut info) },
+            LOWLAT_OK
+        );
+        info
+    }
+
+    /// **The translation through the boundary**: nothing known before a
+    /// probe; a probe refused without its size, without a server, or naming
+    /// one with no IPv4 address; one at a time; and what two servers said,
+    /// read whole.
+    #[test]
+    fn the_translation_is_probed_and_read_through_the_boundary() {
+        let info = no_decoder();
+        let mut handle: *mut lowlat_client = core::ptr::null_mut();
+        assert_eq!(
+            unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
+            LOWLAT_OK
+        );
+        // SAFETY: plain data.
+        let mut short: lowlat_nat_info = unsafe { core::mem::zeroed() };
+        short.size = core::mem::size_of::<lowlat_nat_info>() as u32 - 1;
+        assert_eq!(
+            unsafe { lowlat_client_get_nat(handle, &raw mut short) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        let before = nat_of(handle);
+        assert_eq!(
+            (before.state, before.nat_type, before.mapping, before.source),
+            (
+                LOWLAT_NAT_STATE_NONE,
+                LOWLAT_NAT_TYPE_UNKNOWN,
+                lowlat_nat_mapping::LOWLAT_NAT_MAPPING_UNKNOWN as u32,
+                0
+            )
+        );
+        assert_eq!(taken(&before.public_address), Some(""));
+
+        let probe =
+            |handle, cfg: &lowlat_nat_probe| unsafe { lowlat_client_probe_nat(handle, cfg) };
+        assert_eq!(
+            unsafe { lowlat_client_probe_nat(handle, core::ptr::null()) },
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            probe(handle, &probe_of(&[], 0)),
+            LOWLAT_ERR_INVALID_ARGUMENT
+        );
+        assert_eq!(
+            probe(handle, &probe_of(&["[::1]:3478"], 0)),
+            LOWLAT_ERR_INVALID_ARGUMENT,
+            "a server with no IPv4 address was taken"
+        );
+        let (silent, _never) = reflexive(std::net::Ipv4Addr::LOCALHOST, 0, 0);
+        let mut sized = probe_of(&[&silent], 30_000);
+        sized.size -= 1;
+        assert_eq!(probe(handle, &sized), LOWLAT_ERR_INVALID_ARGUMENT);
+        assert_eq!(probe(handle, &probe_of(&[&silent], 30_000)), LOWLAT_OK);
+        assert_eq!(nat_of(handle).state, LOWLAT_NAT_STATE_PROBING);
+        assert_eq!(
+            probe(handle, &probe_of(&[&silent], 0)),
+            LOWLAT_ERR_ALREADY_STARTED,
+            "a second probe ran beside the first"
+        );
+        // Destroy stops it at once.
+        let began = std::time::Instant::now();
+        unsafe { lowlat_client_destroy(handle) };
+        assert!(
+            began.elapsed() < Duration::from_millis(500),
+            "{:?}",
+            began.elapsed()
+        );
+
+        assert_eq!(
+            unsafe { lowlat_client_create(&raw const info, &raw mut handle) },
+            LOWLAT_OK
+        );
+        let (a, first) = reflexive(std::net::Ipv4Addr::LOCALHOST, 5, 1);
+        let (b, second) = reflexive(std::net::Ipv4Addr::new(127, 0, 0, 2), 5, 1);
+        assert_eq!(probe(handle, &probe_of(&[&a, &b], 0)), LOWLAT_OK);
+        let end = std::time::Instant::now() + Duration::from_secs(5);
+        let after = loop {
+            let after = nat_of(handle);
+            if after.state == LOWLAT_NAT_STATE_DONE {
+                break after;
+            }
+            assert!(std::time::Instant::now() < end, "the probe never finished");
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        first.join().unwrap();
+        second.join().unwrap();
+        assert_eq!(after.nat_type, LOWLAT_NAT_TYPE_2);
+        assert_eq!(
+            after.mapping,
+            lowlat_nat_mapping::LOWLAT_NAT_MAPPING_INDEPENDENT as u32
+        );
+        assert_eq!(after.source, LOWLAT_NAT_SOURCE_PROBE);
+        assert_eq!((after.servers_asked, after.servers_answered), (2, 2));
+        assert_eq!(taken(&after.public_address), Some("127.0.0.1"));
+        assert!(after.public_port != 0 && !after.port_preserved);
+        assert_eq!(
+            (
+                after.gateway,
+                after.gateway_confirmed,
+                after.double_translation
+            ),
+            (lowlat_mapping::LOWLAT_MAPPING_NONE as u32, false, false)
+        );
+        unsafe { lowlat_client_destroy(handle) };
+    }
+
+    /// **Each structure is the size its fields come to**, written out rather
+    /// than taken from `size_of`, which would agree with any layout: no
+    /// padding the header does not show.
+    #[test]
+    fn the_translations_structures_are_the_size_their_fields_come_to() {
+        assert_eq!(
+            core::mem::size_of::<lowlat_nat_probe>(),
+            4 + 4 + LOWLAT_SERVERS_MAX * LOWLAT_SERVER_MAX + 4
+        );
+        assert_eq!(
+            core::mem::size_of::<lowlat_nat_info>(),
+            4 * 4                     // size, state, nat_type, mapping
+                + LOWLAT_ADDRESS_MAX  // public_address
+                + 2                   // public_port
+                + 1 + 1 + 1 + 1       // port_preserved, confirmed, double, carrier
+                + 4 * 4 // servers_asked, servers_answered, source, gateway
+        );
     }
 
     /// **A panic is contained, and what follows it is refused.** The test
