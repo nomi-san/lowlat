@@ -385,6 +385,17 @@ impl StreamIo {
         self.continuation = true;
     }
 
+    pub(crate) fn finish_output(&mut self, timeout: Duration) -> io::Result<()> {
+        let deadline = Instant::now() + timeout;
+        while self.output.pending() != 0 || self.tls.as_ref().is_some_and(|tls| tls.wants_write()) {
+            let remaining = deadline
+                .checked_duration_since(Instant::now())
+                .ok_or(io::ErrorKind::TimedOut)?;
+            self.wait(remaining.min(Duration::from_millis(50)).as_secs_f64() * 1000.0)?;
+        }
+        Ok(())
+    }
+
     fn flush(&mut self) -> io::Result<()> {
         if !self.writable || self.connecting {
             return Ok(());

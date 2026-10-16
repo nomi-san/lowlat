@@ -36,6 +36,8 @@ realm=lowlat.fixture
 user=fixture:fixture-password
 lt-cred-mech
 fingerprint
+max-allocate-lifetime=60
+stale-nonce=10
 cert=$task_tmp/server.pem
 pkey=$task_tmp/server.key
 no-cli
@@ -57,6 +59,8 @@ test "$task_ready" = true
 export LOWLAT_TEST_TURN_ADDR="$task_ip:34780"
 export LOWLAT_TEST_TURN_TLS_PORT=53490
 export LOWLAT_TEST_TURN_CA="$task_tmp/ca.der"
+export LOWLAT_TEST_BLOCK_CLIENT_UDP=1
+export LOWLAT_TEST_TURN_SOAK_SECONDS=65
 if ! cargo test -p lowlat-net --features turn-stream --test turn_stream_bud -- --ignored --nocapture; then
     tail -n 60 "$task_tmp/stdout.log" "$task_tmp/turn.log" 2>/dev/null || true
     exit 1

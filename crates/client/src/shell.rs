@@ -445,6 +445,7 @@ fn release(shell: &mut Shell<'_, Session<'_>>) {
     if matches!(relay.state(), RelayState::Setup | RelayState::Ready(_)) {
         relay.release();
         let _ = shell.turn(|_| {});
+        let _ = shell.finish_output(std::time::Duration::from_millis(100));
     }
 }
 

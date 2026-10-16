@@ -175,6 +175,18 @@ impl<'a, M: Media> Shell<'a, M> {
         self.stats
     }
 
+    /// On a clean leave, give a pending stream frame a bounded chance to reach
+    /// the socket before closing its allocation. UDP already flushes per pass.
+    /// This is teardown only, never a wait inserted in ordinary media sends.
+    pub fn finish_output(&mut self, timeout: core::time::Duration) -> io::Result<()> {
+        #[cfg(feature = "turn-stream")]
+        if let Io::Stream { stream, .. } = &mut self.io {
+            return stream.finish_output(timeout);
+        }
+        let _ = timeout;
+        Ok(())
+    }
+
     /// One pass of the loop.
     ///
     /// `app` is called on every pass, after the wake has been taken if there

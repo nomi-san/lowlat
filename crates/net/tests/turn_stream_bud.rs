@@ -25,6 +25,39 @@ const KEY: [u8; 32] = [0x77; 32];
 const LEFT: (&str, &str) = ("aaaa", "passwordforaaaa");
 const RIGHT: (&str, &str) = ("bbbb", "passwordforbbbb");
 
+#[cfg(target_os = "linux")]
+struct BlockUdp(u16);
+#[cfg(target_os = "linux")]
+impl BlockUdp {
+    fn new(port: u16) -> Self {
+        assert!(Self::rule("-I", port).success());
+        Self(port)
+    }
+    fn rule(operation: &str, port: u16) -> std::process::ExitStatus {
+        std::process::Command::new("sudo")
+            .args([
+                "-n",
+                "iptables",
+                operation,
+                "OUTPUT",
+                "-p",
+                "udp",
+                "--sport",
+                &port.to_string(),
+                "-j",
+                "DROP",
+            ])
+            .status()
+            .unwrap()
+    }
+}
+#[cfg(target_os = "linux")]
+impl Drop for BlockUdp {
+    fn drop(&mut self) {
+        let _ = Self::rule("-D", self.0);
+    }
+}
+
 struct Arena {
     recv: Vec<u8>,
     recv_meta: Vec<SlotMeta>,
@@ -135,6 +168,13 @@ fn turn_stream_bud_coturn_udp_tcp_tls_bidirectional() {
             )),
         );
         let mut client = Shell::new(Socket::open(0).unwrap(), wake, client_endpoint);
+        #[cfg(target_os = "linux")]
+        let _udp_block = if mode != 0 && std::env::var_os("LOWLAT_TEST_BLOCK_CLIENT_UDP").is_some()
+        {
+            Some(BlockUdp::new(client.socket().local_addr().unwrap().port()))
+        } else {
+            None
+        };
         let mut host = Shell::new(
             Socket::open(0).unwrap(),
             Wake::new().unwrap(),
@@ -204,5 +244,82 @@ fn turn_stream_bud_coturn_udp_tcp_tls_bidirectional() {
         );
         assert_eq!(client.endpoint().path(), Some(host_address));
         assert!(offered);
+        assert_eq!(
+            host.endpoint().path(),
+            client.endpoint().relay().and_then(Relay::relayed)
+        );
+        let seconds: u64 = std::env::var("LOWLAT_TEST_TURN_SOAK_SECONDS")
+            .unwrap_or_else(|_| "0".into())
+            .parse()
+            .unwrap();
+        let started = Instant::now();
+        let mut tick = Instant::now();
+        while started.elapsed() < Duration::from_secs(seconds) {
+            client.turn(|_| {}).unwrap();
+            host.turn(|_| {}).unwrap();
+            assert!(matches!(
+                client.endpoint().relay().unwrap().state(),
+                lowlat_core::relay::State::Ready(_)
+            ));
+            if Instant::now() >= tick {
+                client
+                    .endpoint()
+                    .session()
+                    .send_message(CHANNEL, b"", b"keepalive")
+                    .unwrap();
+                host.endpoint()
+                    .session()
+                    .send_message(CHANNEL, b"", b"keepalive")
+                    .unwrap();
+                tick = Instant::now() + Duration::from_secs(2);
+            }
+            while client
+                .endpoint()
+                .session()
+                .take_message(CHANNEL, &mut output)
+                .is_some()
+            {}
+            while host
+                .endpoint()
+                .session()
+                .take_message(CHANNEL, &mut output)
+                .is_some()
+            {}
+        }
+        client
+            .endpoint()
+            .session()
+            .send_message(CHANNEL, b"", b"after-renewal")
+            .unwrap();
+        host.endpoint()
+            .session()
+            .send_message(CHANNEL, b"", b"after-renewal")
+            .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let (mut left_ok, mut right_ok) = (false, false);
+        while Instant::now() < deadline && (!left_ok || !right_ok) {
+            client.turn(|_| {}).unwrap();
+            host.turn(|_| {}).unwrap();
+            while let Some(Ok(len)) = client
+                .endpoint()
+                .session()
+                .take_message(CHANNEL, &mut output)
+            {
+                left_ok |= &output[..len] == b"after-renewal";
+            }
+            while let Some(Ok(len)) = host.endpoint().session().take_message(CHANNEL, &mut output) {
+                right_ok |= &output[..len] == b"after-renewal";
+            }
+        }
+        assert!(
+            left_ok && right_ok,
+            "carrier {mode} lost media after renewal"
+        );
+        client.endpoint().relay_mut().unwrap().release();
+        client.turn(|_| {}).unwrap();
+        client.finish_output(Duration::from_millis(100)).unwrap();
+        eprintln!(
+            "fixture carrier {mode}: authenticated traffic survived {seconds}s and clean output drain"
+        );
     }
 }
