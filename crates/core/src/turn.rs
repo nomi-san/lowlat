@@ -30,6 +30,8 @@
 //! **Nothing after the integrity attribute is authenticated.** An answer is
 //! read up to it and no further.
 
+pub mod stream;
+
 use core::fmt;
 use core::net::{IpAddr, SocketAddr};
 

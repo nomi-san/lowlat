@@ -1,0 +1,30 @@
+name: TURN stream foundations
+
+on:
+  push:
+    branches: [codex/turn-stream-transport]
+  pull_request:
+    paths:
+      - crates/core/**
+      - crates/net/**
+      - .github/workflows/turn-stream.yml
+
+jobs:
+  transport:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy -p lowlat-core -p lowlat-net --all-targets -- -D warnings
+      - run: cargo test -p lowlat-core
+      - run: cargo test -p lowlat-net turn_stream

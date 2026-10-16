@@ -29,6 +29,7 @@
 // The host candidates wait on the platform's interface walk.
 #[cfg_attr(not(any(target_os = "linux", windows)), allow(dead_code))]
 pub mod addrs;
+pub mod turn_stream;
 pub mod web;
 
 #[cfg(target_os = "linux")]
